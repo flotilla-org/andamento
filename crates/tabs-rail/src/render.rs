@@ -750,6 +750,11 @@ fn append_group_header(
         group.tab_count,
         group.collapsed,
         group.children.iter().any(|tab| tab.card.active),
+        group
+            .children
+            .iter()
+            .find(|tab| tab.card.active)
+            .map(|tab| tab.card.name.as_str()),
         cols,
         theme,
     ));
@@ -1650,12 +1655,18 @@ fn group_header_line(
     tab_count: usize,
     collapsed: bool,
     contains_active_tab: bool,
+    active_tab_name: Option<&str>,
     width: usize,
     theme: Option<RenderTheme>,
 ) -> String {
     let marker = if collapsed { "▶" } else { "▼" };
-    let count_label = format!("{marker} {label} ({tab_count})");
-    let compact_label = format!("{marker} {label}");
+    let active_suffix = collapsed
+        .then_some(active_tab_name)
+        .flatten()
+        .map(|name| format!(": {name}"))
+        .unwrap_or_default();
+    let count_label = format!("{marker} {label} ({tab_count}){active_suffix}");
+    let compact_label = format!("{marker} {label}{active_suffix}");
     let label = if count_label.width() <= width {
         count_label
     } else if compact_label.width() <= width {
@@ -2000,14 +2011,23 @@ mod tests {
         let rendered =
             render_lines_with_collapsed_groups(Some(&model), &[], 8, 24, true, &[group_path]);
 
-        assert!(rendered.lines[0].starts_with("▶ zellij (2)"));
+        assert!(rendered.lines[0].starts_with("▶ zellij (2): tests"));
         assert!(
             rendered.lines[0].contains("──"),
             "collapsed group header should keep the same section treatment: {:?}",
             rendered.lines[0]
         );
         assert!(!rendered.lines.iter().any(|line| line.contains("server")));
-        assert!(!rendered.lines.iter().any(|line| line.contains("tests")));
+        assert_eq!(
+            rendered
+                .lines
+                .iter()
+                .filter(|line| line.contains("tests"))
+                .count(),
+            1,
+            "collapsed group should show the active tab only in the group header: {:?}",
+            rendered.lines
+        );
         assert_eq!(
             hit_at(&rendered.hit_regions, 0, 0).map(|hit| hit.action),
             Some(HitAction::ToggleGroup)
