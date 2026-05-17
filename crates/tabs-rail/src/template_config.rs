@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
+use std::path::Path;
 
 use serde::Deserialize;
 use tabs_shared::MetadataValue;
@@ -12,6 +13,18 @@ pub fn parse_template_config_json(
         .map_err(|source| TemplateConfigError::Parse(source.to_string()))?;
     config.validate()?;
     Ok(config)
+}
+
+pub fn load_template_catalog_from_json_file(
+    path: impl AsRef<Path>,
+) -> Result<TemplateConfigCatalog, TemplateConfigError> {
+    let content = std::fs::read_to_string(path.as_ref()).map_err(|source| {
+        TemplateConfigError::Io(format!(
+            "failed to read {}: {source}",
+            path.as_ref().display()
+        ))
+    })?;
+    parse_template_config_json(&content).map(TemplateConfigCatalog::from_config)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -363,6 +376,7 @@ impl TemplateConfigValueSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TemplateConfigError {
+    Io(String),
     Parse(String),
     Validation(String),
 }
@@ -370,6 +384,7 @@ pub enum TemplateConfigError {
 impl fmt::Display for TemplateConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            TemplateConfigError::Io(message) => write!(formatter, "{message}"),
             TemplateConfigError::Parse(message) => {
                 write!(formatter, "invalid template config: {message}")
             }
@@ -601,5 +616,47 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn loads_template_catalog_from_json_file() {
+        let path = std::env::temp_dir().join(format!(
+            "tabs-rail-template-config-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"
+            {
+              "templates": [
+                {
+                  "name": "file-tab-title",
+                  "slot": "tab-title",
+                  "node-kind": "tab",
+                  "fields": [
+                    { "class": "required", "sources": [{ "kind": "literal", "value": "From file" }] }
+                  ]
+                }
+              ]
+            }
+            "#,
+        )
+        .expect("write fixture");
+
+        let catalog = load_template_catalog_from_json_file(&path).expect("load catalog");
+        std::fs::remove_file(&path).expect("remove fixture");
+        let metadata = BTreeMap::new();
+
+        let resolved = catalog
+            .resolve(TemplateConfigMatchContext {
+                slot: TemplateConfigSlot::TabTitle,
+                node_kind: TemplateConfigNodeKind::Tab,
+                metadata: &metadata,
+                collapsed: false,
+                active_tab_name: None,
+            })
+            .expect("matching template");
+
+        assert_eq!(resolved.template.name, "file-tab-title");
     }
 }
