@@ -1,4 +1,5 @@
 mod render;
+pub mod template_config;
 
 #[cfg(not(target_family = "wasm"))]
 fn main() {}
