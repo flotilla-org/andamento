@@ -80,13 +80,33 @@ plugin location="tabs-controller" {
 
 ## External Rail Templates
 
-The rail can load a JSON template config from a real filesystem path exposed to the plugin:
+The rail can load a KDL template config from a real filesystem path exposed to the plugin:
 
 ```kdl
 plugin location="tabs-rail" {
-    template_config_path "/host/Users/robert/.config/tabs-rail/templates.json"
+    template_config_path "/host/Users/robert/dev/zellij-scratch/templates/andamento-git.kdl"
 }
 ```
+
+Example template:
+
+```kdl
+template "git.group-header" slot="group-header" node-kind="group" {
+    when exists="git.repo"
+
+    field priority=100 {
+        value source="collapsed-toggle" collapsed="▶" expanded="▼"
+    }
+    field priority=100 {
+        value key="git.repo"
+        value key="group.label"
+    }
+    field key="git.branch" priority=60 prefix=" "
+    field source="active-tab-name" priority=80 condition="collapsed" prefix=": "
+}
+```
+
+Templates are matched by `slot`, `node-kind`, and `when` predicates. Field order is the render order; numeric `priority` controls which fields are dropped first when the sidebar is narrow. A `key=` value reads metadata and renders it by value type.
 
 Use `rail_grouping "none"` or omit the setting for the flat tab rail.
 

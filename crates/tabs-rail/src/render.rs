@@ -2455,6 +2455,7 @@ enum TemplateField {
     Required(String),
     Optional(String),
     Priority(String),
+    Prioritized { value: String, priority: i64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2689,6 +2690,10 @@ fn external_template_fields(
         .render_fields(context)
         .into_iter()
         .map(|field| match field.class {
+            _ if field.priority.is_some() => TemplateField::Prioritized {
+                value: field.value,
+                priority: field.priority.unwrap_or(100),
+            },
             TemplateConfigFieldClass::Required => TemplateField::Required(field.value),
             TemplateConfigFieldClass::Optional => TemplateField::Optional(field.value),
             TemplateConfigFieldClass::Priority => TemplateField::Priority(field.value),
@@ -2937,21 +2942,44 @@ fn render_template_fields(fields: &[TemplateField], width: usize) -> String {
     if full.width() <= width {
         return full;
     }
-    let without_optional = join_template_fields(fields, false);
-    if without_optional.width() <= width {
-        return without_optional;
+    for threshold in droppable_template_field_priorities(fields) {
+        let candidate = join_template_fields_above_priority(fields, threshold);
+        if candidate.width() <= width {
+            return candidate;
+        }
     }
-    truncate_to_width(&without_optional, width)
+    truncate_to_width(&join_highest_priority_template_fields(fields), width)
 }
 
 fn join_template_fields(fields: &[TemplateField], include_optional: bool) -> String {
+    join_template_fields_by(fields, |field| {
+        include_optional || !matches!(field, TemplateField::Optional(_))
+    })
+}
+
+fn join_template_fields_above_priority(fields: &[TemplateField], threshold: i64) -> String {
+    join_template_fields_by(fields, |field| template_field_priority(field) > threshold)
+}
+
+fn join_highest_priority_template_fields(fields: &[TemplateField]) -> String {
+    let Some(highest_priority) = fields.iter().map(template_field_priority).max() else {
+        return String::new();
+    };
+    join_template_fields_by(fields, |field| {
+        template_field_priority(field) == highest_priority
+    })
+}
+
+fn join_template_fields_by(
+    fields: &[TemplateField],
+    include: impl Fn(&TemplateField) -> bool,
+) -> String {
     let mut output = String::new();
     for field in fields {
-        let value = match field {
-            TemplateField::Required(value) | TemplateField::Priority(value) => value,
-            TemplateField::Optional(value) if include_optional => value,
-            TemplateField::Optional(_) => continue,
-        };
+        if !include(field) {
+            continue;
+        }
+        let value = template_field_value(field);
         if output.is_empty() || value.starts_with(':') {
             output.push_str(value);
         } else {
@@ -2960,6 +2988,37 @@ fn join_template_fields(fields: &[TemplateField], include_optional: bool) -> Str
         }
     }
     output
+}
+
+fn droppable_template_field_priorities(fields: &[TemplateField]) -> Vec<i64> {
+    let Some(highest_priority) = fields.iter().map(template_field_priority).max() else {
+        return vec![];
+    };
+    let mut priorities = fields
+        .iter()
+        .map(template_field_priority)
+        .filter(|priority| *priority < highest_priority)
+        .collect::<Vec<_>>();
+    priorities.sort_unstable();
+    priorities.dedup();
+    priorities
+}
+
+fn template_field_value(field: &TemplateField) -> &str {
+    match field {
+        TemplateField::Required(value)
+        | TemplateField::Optional(value)
+        | TemplateField::Priority(value) => value,
+        TemplateField::Prioritized { value, .. } => value,
+    }
+}
+
+fn template_field_priority(field: &TemplateField) -> i64 {
+    match field {
+        TemplateField::Optional(_) => 0,
+        TemplateField::Required(_) | TemplateField::Priority(_) => 100,
+        TemplateField::Prioritized { priority, .. } => *priority,
+    }
 }
 
 fn truncate_to_width(text: &str, max_width: usize) -> String {
@@ -3590,6 +3649,26 @@ mod tests {
     }
 
     #[test]
+    fn render_template_fields_drops_low_numeric_priorities_first() {
+        let fields = vec![
+            TemplateField::Prioritized {
+                value: "repo".to_owned(),
+                priority: 100,
+            },
+            TemplateField::Prioritized {
+                value: "main".to_owned(),
+                priority: 10,
+            },
+            TemplateField::Prioritized {
+                value: ": tests".to_owned(),
+                priority: 80,
+            },
+        ];
+
+        assert_eq!(render_template_fields(&fields, 12), "repo: tests");
+    }
+
+    #[test]
     fn template_matcher_prefers_more_specific_metadata_match() {
         const GENERIC_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
             class: TemplateFieldClass::Required,
@@ -3877,6 +3956,60 @@ mod tests {
             render_lines_with_template_catalog(Some(&model()), &[], 7, 24, true, Some(&catalog));
 
         assert!(rendered.lines[0].starts_with("┌ External"));
+    }
+
+    #[test]
+    fn external_kdl_template_catalog_can_render_numeric_priority_fields() {
+        let config = crate::template_config::parse_template_config_kdl(
+            r#"
+            template "git.group-header" slot="group-header" node-kind="group" {
+              when exists="git.repo"
+
+              field priority=100 {
+                value source="collapsed-toggle" collapsed="▶" expanded="▼"
+              }
+              field key="git.repo" priority=100
+              field key="git.branch" priority=10
+            }
+            "#,
+        )
+        .expect("valid template config");
+        let catalog = crate::template_config::TemplateConfigCatalog::from_config(config);
+        let metadata = RenderMetadata::from([
+            (
+                "git.repo".to_owned(),
+                MetadataValue::Text("rjwittams/zellij-scratch".to_owned()),
+            ),
+            (
+                "git.branch".to_owned(),
+                MetadataValue::Text("main".to_owned()),
+            ),
+        ]);
+
+        let fields = group_header_template_fields_with_template_catalog(
+            &metadata,
+            false,
+            None,
+            Some(&catalog),
+        );
+
+        assert_eq!(
+            fields,
+            vec![
+                TemplateField::Prioritized {
+                    value: "▼".to_owned(),
+                    priority: 100,
+                },
+                TemplateField::Prioritized {
+                    value: "rjwittams/zellij-scratch".to_owned(),
+                    priority: 100,
+                },
+                TemplateField::Prioritized {
+                    value: "main".to_owned(),
+                    priority: 10,
+                },
+            ]
+        );
     }
 
     #[test]

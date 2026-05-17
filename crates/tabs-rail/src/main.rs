@@ -21,7 +21,7 @@ fn template_catalog_from_configuration(
     else {
         return Ok(None);
     };
-    template_config::load_template_catalog_from_json_file(path).map(Some)
+    template_config::load_template_catalog_from_file(path).map(Some)
 }
 
 #[cfg(target_family = "wasm")]
@@ -223,6 +223,45 @@ mod tests {
                   ]
                 }
               ]
+            }
+            "#,
+        )
+        .expect("write template config");
+        let configuration = std::collections::BTreeMap::from([(
+            CONFIG_TEMPLATE_CONFIG_PATH.to_owned(),
+            path.to_string_lossy().into_owned(),
+        )]);
+
+        let catalog = template_catalog_from_configuration(&configuration)
+            .expect("load catalog")
+            .expect("configured catalog");
+        let metadata = std::collections::BTreeMap::<String, MetadataValue>::new();
+
+        let resolved = catalog
+            .resolve(template_config::TemplateConfigMatchContext {
+                slot: template_config::TemplateConfigSlot::TabTitle,
+                node_kind: template_config::TemplateConfigNodeKind::Tab,
+                metadata: &metadata,
+                collapsed: false,
+                active_tab_name: None,
+            })
+            .expect("matching template");
+
+        assert_eq!(resolved.template.name, "configured-tab-title");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn loads_kdl_template_catalog_from_plugin_configuration_path() {
+        let path = std::env::temp_dir().join(format!(
+            "tabs-rail-plugin-template-config-{}.kdl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"
+            template "configured-tab-title" slot="tab-title" node-kind="tab" {
+              field text="Configured" priority=100
             }
             "#,
         )

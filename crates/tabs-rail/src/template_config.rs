@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fmt;
 use std::path::Path;
 
+use kdl::{KdlDocument, KdlNode, KdlValue};
 use serde::Deserialize;
 use tabs_shared::MetadataValue;
 
@@ -11,6 +12,28 @@ pub fn parse_template_config_json(
 ) -> Result<ExternalTemplateConfig, TemplateConfigError> {
     let config = serde_json::from_str::<ExternalTemplateConfig>(input)
         .map_err(|source| TemplateConfigError::Parse(source.to_string()))?;
+    config.validate()?;
+    Ok(config)
+}
+
+pub fn parse_template_config_kdl(
+    input: &str,
+) -> Result<ExternalTemplateConfig, TemplateConfigError> {
+    let document = input
+        .parse::<KdlDocument>()
+        .map_err(|source| TemplateConfigError::Parse(source.to_string()))?;
+    let version = document
+        .get_arg("version")
+        .map(kdl_u32)
+        .transpose()?
+        .unwrap_or_else(default_template_config_version);
+    let templates = document
+        .nodes()
+        .iter()
+        .filter(|node| node.name().value() == "template")
+        .map(parse_kdl_template)
+        .collect::<Result<Vec<_>, _>>()?;
+    let config = ExternalTemplateConfig { version, templates };
     config.validate()?;
     Ok(config)
 }
@@ -25,6 +48,26 @@ pub fn load_template_catalog_from_json_file(
         ))
     })?;
     parse_template_config_json(&content).map(TemplateConfigCatalog::from_config)
+}
+
+pub fn load_template_catalog_from_file(
+    path: impl AsRef<Path>,
+) -> Result<TemplateConfigCatalog, TemplateConfigError> {
+    let content = std::fs::read_to_string(path.as_ref()).map_err(|source| {
+        TemplateConfigError::Io(format!(
+            "failed to read {}: {source}",
+            path.as_ref().display()
+        ))
+    })?;
+    if path
+        .as_ref()
+        .extension()
+        .is_some_and(|extension| extension == "kdl")
+    {
+        parse_template_config_kdl(&content).map(TemplateConfigCatalog::from_config)
+    } else {
+        parse_template_config_json(&content).map(TemplateConfigCatalog::from_config)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -148,6 +191,7 @@ pub struct TemplateConfigCandidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateConfigRenderedField {
     pub class: TemplateConfigFieldClass,
+    pub priority: Option<i64>,
     pub value: String,
 }
 
@@ -275,6 +319,8 @@ fn format_metadata_value(value: &MetadataValue) -> String {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct TemplateConfigFieldSpec {
     pub class: TemplateConfigFieldClass,
+    #[serde(default)]
+    pub priority: Option<i64>,
     pub sources: Vec<TemplateConfigValueSource>,
     #[serde(default)]
     pub prefix: String,
@@ -299,6 +345,7 @@ impl TemplateConfigFieldSpec {
         let value = format!("{}{}{}", self.prefix, value, self.suffix);
         Some(TemplateConfigRenderedField {
             class: self.class,
+            priority: self.priority,
             value,
         })
     }
@@ -374,6 +421,232 @@ impl TemplateConfigValueSource {
     }
 }
 
+fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, TemplateConfigError> {
+    let children = node.children().ok_or_else(|| {
+        TemplateConfigError::Validation(format!(
+            "template {} must define a child block",
+            kdl_node_arg_string(node, 0).unwrap_or("<missing>")
+        ))
+    })?;
+    let mut predicates = vec![];
+    let mut fields = vec![];
+    for child in children.nodes() {
+        match child.name().value() {
+            "when" => predicates.push(parse_kdl_when(child)?),
+            "predicate" => predicates.push(parse_kdl_predicate(child)?),
+            "field" => fields.push(parse_kdl_field(child)?),
+            other => {
+                return Err(TemplateConfigError::Validation(format!(
+                    "template {} has unsupported child node: {other}",
+                    kdl_required_arg_string(node, 0, "template name")?
+                )));
+            }
+        }
+    }
+    Ok(TemplateConfigDefinition {
+        name: kdl_required_arg_string(node, 0, "template name")?,
+        slot: parse_kdl_slot(&kdl_required_prop_string(node, "slot")?)?,
+        node_kind: parse_kdl_node_kind(&kdl_required_prop_string(node, "node-kind")?)?,
+        predicates,
+        sizing: parse_kdl_sizing(kdl_prop_string(node, "sizing").as_deref().unwrap_or("auto"))?,
+        fields,
+    })
+}
+
+fn parse_kdl_when(node: &KdlNode) -> Result<TemplateConfigPredicate, TemplateConfigError> {
+    if let Some(key) = kdl_prop_string(node, "exists") {
+        return Ok(TemplateConfigPredicate::Exists { key });
+    }
+    if let Some(key) = kdl_prop_string(node, "text-equals") {
+        return Ok(TemplateConfigPredicate::TextEquals {
+            key,
+            value: kdl_required_prop_string(node, "value")?,
+        });
+    }
+    if let Some(key) = kdl_prop_string(node, "text-prefix") {
+        return Ok(TemplateConfigPredicate::TextPrefix {
+            key,
+            prefix: kdl_required_prop_string(node, "prefix")?,
+        });
+    }
+    Err(TemplateConfigError::Validation(
+        "when must set exists, text-equals, or text-prefix".to_owned(),
+    ))
+}
+
+fn parse_kdl_predicate(node: &KdlNode) -> Result<TemplateConfigPredicate, TemplateConfigError> {
+    match kdl_required_arg_string(node, 0, "predicate kind")?.as_str() {
+        "exists" => Ok(TemplateConfigPredicate::Exists {
+            key: kdl_required_prop_string(node, "key")?,
+        }),
+        "text-equals" => Ok(TemplateConfigPredicate::TextEquals {
+            key: kdl_required_prop_string(node, "key")?,
+            value: kdl_required_prop_string(node, "value")?,
+        }),
+        "text-prefix" => Ok(TemplateConfigPredicate::TextPrefix {
+            key: kdl_required_prop_string(node, "key")?,
+            prefix: kdl_required_prop_string(node, "prefix")?,
+        }),
+        other => Err(TemplateConfigError::Validation(format!(
+            "unsupported predicate kind: {other}"
+        ))),
+    }
+}
+
+fn parse_kdl_field(node: &KdlNode) -> Result<TemplateConfigFieldSpec, TemplateConfigError> {
+    let sources = if let Some(children) = node.children() {
+        children
+            .nodes()
+            .iter()
+            .filter(|child| child.name().value() == "value")
+            .map(parse_kdl_value_source)
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        vec![parse_kdl_value_source(node)?]
+    };
+    Ok(TemplateConfigFieldSpec {
+        class: TemplateConfigFieldClass::Required,
+        priority: kdl_prop_i64(node, "priority").or(Some(100)),
+        sources,
+        prefix: kdl_prop_string(node, "prefix").unwrap_or_default(),
+        suffix: kdl_prop_string(node, "suffix").unwrap_or_default(),
+        condition: parse_kdl_condition(
+            kdl_prop_string(node, "condition")
+                .as_deref()
+                .unwrap_or("always"),
+        )?,
+    })
+}
+
+fn parse_kdl_value_source(
+    node: &KdlNode,
+) -> Result<TemplateConfigValueSource, TemplateConfigError> {
+    if let Some(source) = kdl_prop_string(node, "source") {
+        return match source.as_str() {
+            "active-tab-name" => Ok(TemplateConfigValueSource::ActiveTabName),
+            "tab-number" | "tab-number-from-position" => {
+                Ok(TemplateConfigValueSource::TabNumberFromPosition)
+            }
+            "collapsed-toggle" => Ok(TemplateConfigValueSource::CollapsedToggle {
+                collapsed: kdl_required_prop_string(node, "collapsed")?,
+                expanded: kdl_required_prop_string(node, "expanded")?,
+            }),
+            "metadata-text" => Ok(TemplateConfigValueSource::MetadataText {
+                key: kdl_required_prop_string(node, "key")?,
+            }),
+            "metadata-display" => Ok(TemplateConfigValueSource::MetadataDisplay {
+                key: kdl_required_prop_string(node, "key")?,
+            }),
+            "literal" => Ok(TemplateConfigValueSource::Literal {
+                value: kdl_required_prop_string(node, "value")?,
+            }),
+            other => Err(TemplateConfigError::Validation(format!(
+                "unsupported value source: {other}"
+            ))),
+        };
+    }
+    if let Some(key) = kdl_prop_string(node, "key") {
+        return Ok(TemplateConfigValueSource::MetadataDisplay { key });
+    }
+    if let Some(value) = kdl_prop_string(node, "literal").or_else(|| kdl_prop_string(node, "text"))
+    {
+        return Ok(TemplateConfigValueSource::Literal { value });
+    }
+    Err(TemplateConfigError::Validation(format!(
+        "{} node must include key, text, literal, or source",
+        node.name().value()
+    )))
+}
+
+fn parse_kdl_slot(value: &str) -> Result<TemplateConfigSlot, TemplateConfigError> {
+    match value {
+        "group-header" => Ok(TemplateConfigSlot::GroupHeader),
+        "tab-title" => Ok(TemplateConfigSlot::TabTitle),
+        "tab-status" => Ok(TemplateConfigSlot::TabStatus),
+        other => Err(TemplateConfigError::Validation(format!(
+            "unsupported template slot: {other}"
+        ))),
+    }
+}
+
+fn parse_kdl_node_kind(value: &str) -> Result<TemplateConfigNodeKind, TemplateConfigError> {
+    match value {
+        "group" => Ok(TemplateConfigNodeKind::Group),
+        "tab" => Ok(TemplateConfigNodeKind::Tab),
+        other => Err(TemplateConfigError::Validation(format!(
+            "unsupported template node-kind: {other}"
+        ))),
+    }
+}
+
+fn parse_kdl_sizing(value: &str) -> Result<TemplateConfigSizingHint, TemplateConfigError> {
+    match value {
+        "auto" => Ok(TemplateConfigSizingHint::Auto),
+        other => Err(TemplateConfigError::Validation(format!(
+            "unsupported template sizing: {other}"
+        ))),
+    }
+}
+
+fn parse_kdl_condition(value: &str) -> Result<TemplateConfigFieldCondition, TemplateConfigError> {
+    match value {
+        "always" => Ok(TemplateConfigFieldCondition::Always),
+        "collapsed" => Ok(TemplateConfigFieldCondition::Collapsed),
+        other => Err(TemplateConfigError::Validation(format!(
+            "unsupported field condition: {other}"
+        ))),
+    }
+}
+
+fn kdl_required_arg_string(
+    node: &KdlNode,
+    index: usize,
+    label: &str,
+) -> Result<String, TemplateConfigError> {
+    kdl_node_arg_string(node, index)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            TemplateConfigError::Validation(format!(
+                "{} node must include string argument for {label}",
+                node.name().value()
+            ))
+        })
+}
+
+fn kdl_node_arg_string(node: &KdlNode, index: usize) -> Option<&str> {
+    node.get(index).and_then(|entry| entry.value().as_string())
+}
+
+fn kdl_required_prop_string(node: &KdlNode, key: &str) -> Result<String, TemplateConfigError> {
+    kdl_prop_string(node, key).ok_or_else(|| {
+        TemplateConfigError::Validation(format!(
+            "{} node must include string property {key}",
+            node.name().value()
+        ))
+    })
+}
+
+fn kdl_prop_string(node: &KdlNode, key: &str) -> Option<String> {
+    node.get(key)
+        .and_then(|entry| entry.value().as_string())
+        .map(str::to_owned)
+}
+
+fn kdl_prop_i64(node: &KdlNode, key: &str) -> Option<i64> {
+    node.get(key).and_then(|entry| entry.value().as_i64())
+}
+
+fn kdl_u32(value: &KdlValue) -> Result<u32, TemplateConfigError> {
+    let Some(value) = value.as_i64() else {
+        return Err(TemplateConfigError::Validation(
+            "version must be an integer".to_owned(),
+        ));
+    };
+    u32::try_from(value).map_err(|_| {
+        TemplateConfigError::Validation(format!("version must be a positive u32: {value}"))
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TemplateConfigError {
     Io(String),
@@ -441,6 +714,61 @@ mod tests {
             TemplateConfigValueSource::MetadataText {
                 key: "zellij.tab.name".to_owned()
             }
+        );
+    }
+
+    #[test]
+    fn parses_compact_template_config_kdl() {
+        let config = parse_template_config_kdl(
+            r#"
+            version 1
+
+            template "git.group-header" slot="group-header" node-kind="group" {
+              when exists="git.repo"
+
+              field priority=100 {
+                value source="collapsed-toggle" collapsed="▶" expanded="▼"
+              }
+              field priority=100 {
+                value key="git.repo"
+                value key="group.label"
+              }
+              field key="git.branch" priority=60 prefix=" "
+              field source="active-tab-name" priority=80 condition="collapsed" prefix=": "
+            }
+            "#,
+        )
+        .expect("valid template config");
+
+        assert_eq!(config.version, 1);
+        assert_eq!(config.templates[0].name, "git.group-header");
+        assert_eq!(config.templates[0].slot, TemplateConfigSlot::GroupHeader);
+        assert_eq!(config.templates[0].node_kind, TemplateConfigNodeKind::Group);
+        assert_eq!(
+            config.templates[0].predicates,
+            vec![TemplateConfigPredicate::Exists {
+                key: "git.repo".to_owned()
+            }]
+        );
+        assert_eq!(config.templates[0].fields[0].priority, Some(100));
+        assert_eq!(
+            config.templates[0].fields[0].sources[0],
+            TemplateConfigValueSource::CollapsedToggle {
+                collapsed: "▶".to_owned(),
+                expanded: "▼".to_owned()
+            }
+        );
+        assert_eq!(config.templates[0].fields[2].prefix, " ");
+        assert_eq!(config.templates[0].fields[2].priority, Some(60));
+        assert_eq!(
+            config.templates[0].fields[2].sources,
+            vec![TemplateConfigValueSource::MetadataDisplay {
+                key: "git.branch".to_owned()
+            }]
+        );
+        assert_eq!(
+            config.templates[0].fields[3].condition,
+            TemplateConfigFieldCondition::Collapsed
         );
     }
 
@@ -608,10 +936,12 @@ mod tests {
             vec![
                 TemplateConfigRenderedField {
                     class: TemplateConfigFieldClass::Required,
+                    priority: None,
                     value: "waiting".to_owned(),
                 },
                 TemplateConfigRenderedField {
                     class: TemplateConfigFieldClass::Priority,
+                    priority: None,
                     value: ": input".to_owned(),
                 },
             ]

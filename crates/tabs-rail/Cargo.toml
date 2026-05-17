@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 ansi_term.workspace = true
+kdl.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tabs-shared.workspace = true
