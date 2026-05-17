@@ -309,7 +309,7 @@ General shape:
 
 Tile size should start as automatic squash-down based on available space. Templates can later add sizing hints such as minimum useful size, preferred size, compact variant, and expanded variant.
 
-Status: started internally. The renderer now has generic ordered template fields with required, optional, and priority classes. Group headers, tab titles, and tab status text are the first callers, so narrow collapsed groups can drop the count before dropping active-tab context while tab text composition uses the same field path. This is still hard-coded Rust, not external template config, and should be extended to nested groups before adding user-authored templates.
+Status: started internally. The renderer now has generic ordered template fields with required, optional, and priority classes. Render nodes also carry an initial metadata map populated from the current compatibility view model. Group headers, tab titles, and tab status text are the first field callers, and these field builders now read their display values from render metadata. This is still hard-coded Rust, not external template config, and should be extended to nested groups before adding user-authored templates.
 
 ### Sensible Order For Templates And Deep Hierarchy
 

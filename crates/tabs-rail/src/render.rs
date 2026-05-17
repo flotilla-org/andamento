@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use ansi_term::{Color, Style};
 use tabs_shared::{
@@ -11,6 +11,8 @@ use zellij_tile::prelude::{PaletteColor, SizeInPixels, Styling};
 
 const ACTIVE_CELL_HEIGHT: usize = 5;
 const COMPACT_CELL_HEIGHT: usize = 2;
+
+type RenderMetadata = BTreeMap<String, MetadataValue>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalTab {
@@ -96,6 +98,7 @@ struct RenderCard {
     active: bool,
     pinned: bool,
     status: Option<TabStatusSummary>,
+    metadata: RenderMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +114,7 @@ struct RenderGroup {
     full_label: String,
     tab_count: usize,
     collapsed: bool,
+    metadata: RenderMetadata,
     children: Vec<RenderTab>,
 }
 
@@ -361,13 +365,24 @@ fn metadata_projection_blocks(nodes: &[RenderNode]) -> Vec<MetadataBlock> {
 
 fn group_metadata_block(group: &RenderGroup) -> MetadataBlock {
     let mut lines = vec![];
-    push_metadata_text_line(&mut lines, 0, "group", &group.label);
-    push_metadata_text_line(&mut lines, 2, "group.full_label", &group.full_label);
+    push_metadata_text_line(
+        &mut lines,
+        0,
+        "group",
+        metadata_text(&group.metadata, "group.label").unwrap_or(&group.label),
+    );
+    push_metadata_text_line(
+        &mut lines,
+        2,
+        "group.full_label",
+        metadata_text(&group.metadata, "group.full_label").unwrap_or(&group.full_label),
+    );
     push_metadata_text_line(
         &mut lines,
         2,
         "group.tab_count",
-        &group.tab_count.to_string(),
+        &metadata_display_value(&group.metadata, "group.tab_count")
+            .unwrap_or_else(|| group.tab_count.to_string()),
     );
     push_group_path_metadata(&mut lines, 2, &group.path);
     MetadataBlock { lines, hit: None }
@@ -377,30 +392,39 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
     let mut lines = vec![];
     let indent = tab.indent;
     let card = &tab.card;
-    push_metadata_text_line(&mut lines, indent, "tab", &card.name);
+    push_metadata_text_line(
+        &mut lines,
+        indent,
+        "tab",
+        metadata_text(&card.metadata, "zellij.tab.name").unwrap_or(&card.name),
+    );
     push_metadata_text_line(
         &mut lines,
         indent + 2,
         "zellij.tab.id",
-        &card.tab_id.to_string(),
+        &metadata_display_value(&card.metadata, "zellij.tab.id")
+            .unwrap_or_else(|| card.tab_id.to_string()),
     );
     push_metadata_text_line(
         &mut lines,
         indent + 2,
         "zellij.tab.position",
-        &card.position.to_string(),
+        &metadata_display_value(&card.metadata, "zellij.tab.position")
+            .unwrap_or_else(|| card.position.to_string()),
     );
     push_metadata_text_line(
         &mut lines,
         indent + 2,
         "zellij.tab.active",
-        bool_text(card.active),
+        &metadata_display_value(&card.metadata, "zellij.tab.active")
+            .unwrap_or_else(|| bool_text(card.active).to_owned()),
     );
     push_metadata_text_line(
         &mut lines,
         indent + 2,
         "rail.tab.pinned",
-        bool_text(card.pinned),
+        &metadata_display_value(&card.metadata, "rail.tab.pinned")
+            .unwrap_or_else(|| bool_text(card.pinned).to_owned()),
     );
     if let Some(grouping) = tab.grouping.as_ref() {
         push_metadata_text_line(&mut lines, indent + 2, "group.label", &grouping.label);
@@ -746,15 +770,15 @@ fn append_group_header(
 ) {
     let row = lines.len();
     lines.push(group_header_line(
-        &group.label,
-        group.tab_count,
+        &group.metadata,
         group.collapsed,
         group.children.iter().any(|tab| tab.card.active),
-        group
-            .children
-            .iter()
-            .find(|tab| tab.card.active)
-            .map(|tab| tab.card.name.as_str()),
+        group.children.iter().find_map(|tab| {
+            tab.card
+                .active
+                .then(|| metadata_text(&tab.card.metadata, "zellij.tab.name"))
+                .flatten()
+        }),
         cols,
         theme,
     ));
@@ -1244,6 +1268,7 @@ fn nodes_to_render(
         return tabs
             .into_iter()
             .map(|tab| {
+                let metadata = metadata_for_local_tab(&tab);
                 RenderNode::Tab(RenderTab {
                     card: RenderCard {
                         tab_id: tab.tab_id,
@@ -1252,6 +1277,7 @@ fn nodes_to_render(
                         active: tab.active,
                         pinned: false,
                         status: None,
+                        metadata,
                     },
                     indent: 0,
                     grouping: None,
@@ -1320,6 +1346,7 @@ fn pending_nodes_to_render_nodes(
                 }
                 let collapsed = collapsed_groups.iter().any(|collapsed| collapsed == &path);
                 pending_group = Some(RenderGroup {
+                    metadata: metadata_for_group_header(&path, &label, &full_label, tab_count),
                     path,
                     label,
                     full_label,
@@ -1347,18 +1374,110 @@ fn pending_nodes_to_render_nodes(
     nodes
 }
 
+fn metadata_for_group_header(
+    path: &GroupPath,
+    label: &str,
+    full_label: &str,
+    tab_count: usize,
+) -> RenderMetadata {
+    let mut metadata = RenderMetadata::new();
+    metadata.insert(
+        "group.label".to_owned(),
+        MetadataValue::Text(label.to_owned()),
+    );
+    metadata.insert(
+        "group.full_label".to_owned(),
+        MetadataValue::Text(full_label.to_owned()),
+    );
+    metadata.insert(
+        "group.tab_count".to_owned(),
+        MetadataValue::Integer(tab_count as i64),
+    );
+    for segment in &path.0 {
+        metadata.insert(segment.key.clone(), segment.value.clone());
+    }
+    metadata
+}
+
 fn render_card_from_model(card: &TabCard, local_by_id: &HashMap<u64, &LocalTab>) -> RenderCard {
     let local = local_by_id.get(&card.tab_id).copied();
+    let position = local.map(|tab| tab.position).unwrap_or(card.position);
+    let name = local
+        .map(|tab| tab.name.clone())
+        .unwrap_or_else(|| card.name.clone());
+    let active = local.map(|tab| tab.active).unwrap_or(card.active);
+    let status = card.status.clone();
     RenderCard {
         tab_id: card.tab_id,
-        position: local.map(|tab| tab.position).unwrap_or(card.position),
-        name: local
-            .map(|tab| tab.name.clone())
-            .unwrap_or_else(|| card.name.clone()),
-        active: local.map(|tab| tab.active).unwrap_or(card.active),
+        position,
+        name: name.clone(),
+        active,
         pinned: card.pinned,
-        status: card.status.clone(),
+        status,
+        metadata: metadata_for_tab_card(card, position, &name, active),
     }
+}
+
+fn metadata_for_local_tab(tab: &LocalTab) -> RenderMetadata {
+    let mut metadata = RenderMetadata::new();
+    metadata.insert(
+        "zellij.tab.id".to_owned(),
+        MetadataValue::Integer(tab.tab_id as i64),
+    );
+    metadata.insert(
+        "zellij.tab.position".to_owned(),
+        MetadataValue::Integer(tab.position as i64),
+    );
+    metadata.insert(
+        "zellij.tab.name".to_owned(),
+        MetadataValue::Text(tab.name.clone()),
+    );
+    metadata.insert(
+        "zellij.tab.active".to_owned(),
+        MetadataValue::Bool(tab.active),
+    );
+    metadata.insert("rail.tab.pinned".to_owned(), MetadataValue::Bool(false));
+    metadata
+}
+
+fn metadata_for_tab_card(
+    card: &TabCard,
+    position: usize,
+    name: &str,
+    active: bool,
+) -> RenderMetadata {
+    let mut metadata = RenderMetadata::new();
+    metadata.insert(
+        "zellij.tab.id".to_owned(),
+        MetadataValue::Integer(card.tab_id as i64),
+    );
+    metadata.insert(
+        "zellij.tab.position".to_owned(),
+        MetadataValue::Integer(position as i64),
+    );
+    metadata.insert(
+        "zellij.tab.name".to_owned(),
+        MetadataValue::Text(name.to_owned()),
+    );
+    metadata.insert("zellij.tab.active".to_owned(), MetadataValue::Bool(active));
+    metadata.insert(
+        "rail.tab.pinned".to_owned(),
+        MetadataValue::Bool(card.pinned),
+    );
+    if let Some(grouping) = card.grouping.as_ref() {
+        metadata.insert(
+            "group.label".to_owned(),
+            MetadataValue::Text(grouping.label.clone()),
+        );
+        metadata.insert(
+            "group.full_label".to_owned(),
+            MetadataValue::Text(grouping.full_label.clone()),
+        );
+    }
+    if let Some(status) = card.status.as_ref() {
+        metadata.extend(status_metadata(status));
+    }
+    metadata
 }
 
 fn visible_cells(
@@ -1457,28 +1576,75 @@ fn cell_height(card: &RenderCard, sizing: RailSizingPreset, joined_cell: bool) -
     }
 }
 
-fn format_status(status: &TabStatusSummary) -> String {
-    join_template_fields(&status_template_fields(status), true)
+fn format_status(card: &RenderCard) -> String {
+    join_template_fields(&status_template_fields(&card.metadata), true)
 }
 
-fn status_template_fields(status: &TabStatusSummary) -> Vec<TemplateField> {
-    let mut fields = vec![TemplateField::Required(status.title.clone())];
-    if let Some(detail) = status.detail.as_ref().filter(|detail| !detail.is_empty()) {
+fn status_template_fields(metadata: &RenderMetadata) -> Vec<TemplateField> {
+    let Some(title) = metadata_text(metadata, "status.title") else {
+        return vec![];
+    };
+    let mut fields = vec![TemplateField::Required(title.to_owned())];
+    if let Some(detail) =
+        metadata_text(metadata, "status.detail").filter(|detail| !detail.is_empty())
+    {
         fields.push(TemplateField::Priority(format!(": {detail}")));
     }
     fields
 }
 
-fn tab_title(card: &RenderCard) -> String {
-    join_template_fields(&tab_title_template_fields(card), true)
+fn status_metadata(status: &TabStatusSummary) -> RenderMetadata {
+    let mut metadata = RenderMetadata::new();
+    metadata.insert(
+        "status.priority".to_owned(),
+        MetadataValue::Text(format!("{:?}", status.priority).to_ascii_lowercase()),
+    );
+    metadata.insert(
+        "status.title".to_owned(),
+        MetadataValue::Text(status.title.clone()),
+    );
+    if let Some(detail) = status.detail.as_ref() {
+        metadata.insert(
+            "status.detail".to_owned(),
+            MetadataValue::Text(detail.clone()),
+        );
+    }
+    metadata.insert(
+        "status.source_pane".to_owned(),
+        MetadataValue::Text(format_pane_target(status.source_pane)),
+    );
+    metadata
 }
 
-fn tab_title_template_fields(card: &RenderCard) -> Vec<TemplateField> {
-    let title = if card.name.is_empty() {
-        format!("Tab {}", card.position + 1)
-    } else {
-        card.name.clone()
-    };
+fn metadata_text<'a>(metadata: &'a RenderMetadata, key: &str) -> Option<&'a str> {
+    match metadata.get(key) {
+        Some(MetadataValue::Text(value)) => Some(value),
+        _ => None,
+    }
+}
+
+fn metadata_display_value(metadata: &RenderMetadata, key: &str) -> Option<String> {
+    metadata.get(key).map(format_metadata_value)
+}
+
+fn tab_title(card: &RenderCard) -> String {
+    join_template_fields(&tab_title_template_fields(&card.metadata), true)
+}
+
+fn tab_title_template_fields(metadata: &RenderMetadata) -> Vec<TemplateField> {
+    let title = metadata_text(metadata, "zellij.tab.name")
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            metadata.get("zellij.tab.position").and_then(|position| {
+                if let MetadataValue::Integer(position) = position {
+                    Some(format!("Tab {}", position + 1))
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| "Tab".to_owned());
     vec![TemplateField::Required(title)]
 }
 
@@ -1501,7 +1667,7 @@ fn body_lines(
         .map(|rect| rect.columns + 1)
         .unwrap_or(0);
     let text_width = inner_width.saturating_sub(icon_reserve);
-    let text_lines = wrap_to_width(&format_status(status), text_width, body_rows);
+    let text_lines = wrap_to_width(&format_status(card), text_width, body_rows);
     for (line, text_line) in lines.iter_mut().zip(text_lines) {
         if icon_reserve > 0 {
             line.push_str(&" ".repeat(icon_reserve));
@@ -1661,15 +1827,14 @@ fn render_footer(
 }
 
 fn group_header_line(
-    label: &str,
-    tab_count: usize,
+    metadata: &RenderMetadata,
     collapsed: bool,
     contains_active_tab: bool,
     active_tab_name: Option<&str>,
     width: usize,
     theme: Option<RenderTheme>,
 ) -> String {
-    let fields = group_header_template_fields(label, tab_count, collapsed, active_tab_name);
+    let fields = group_header_template_fields(metadata, collapsed, active_tab_name);
     let label = render_template_fields(&fields, width);
     let remaining = width.saturating_sub(label.width());
     let text = if remaining >= 2 {
@@ -1692,16 +1857,19 @@ enum TemplateField {
 }
 
 fn group_header_template_fields(
-    label: &str,
-    tab_count: usize,
+    metadata: &RenderMetadata,
     collapsed: bool,
     active_tab_name: Option<&str>,
 ) -> Vec<TemplateField> {
+    let label = metadata_text(metadata, "group.label").unwrap_or("group");
+    let tab_count = metadata_display_value(metadata, "group.tab_count").unwrap_or_default();
     let mut fields = vec![
         TemplateField::Required(if collapsed { "▶" } else { "▼" }.to_owned()),
         TemplateField::Required(label.to_owned()),
-        TemplateField::Optional(format!("({tab_count})")),
     ];
+    if !tab_count.is_empty() {
+        fields.push(TemplateField::Optional(format!("({tab_count})")));
+    }
     if let Some(active_tab_name) = collapsed.then_some(active_tab_name).flatten() {
         fields.push(TemplateField::Priority(format!(": {active_tab_name}")));
     }
@@ -2110,7 +2278,13 @@ mod tests {
 
     #[test]
     fn group_header_template_fields_render_in_priority_order() {
-        let fields = group_header_template_fields("zellij", 2, true, Some("tests"));
+        let mut metadata = RenderMetadata::new();
+        metadata.insert(
+            "group.label".to_owned(),
+            MetadataValue::Text("zellij".to_owned()),
+        );
+        metadata.insert("group.tab_count".to_owned(), MetadataValue::Integer(2));
+        let fields = group_header_template_fields(&metadata, true, Some("tests"));
 
         assert_eq!(
             fields,
@@ -2120,6 +2294,35 @@ mod tests {
                 TemplateField::Optional("(2)".to_owned()),
                 TemplateField::Priority(": tests".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn group_header_rendering_reads_label_and_count_from_metadata() {
+        let mut metadata = RenderMetadata::new();
+        metadata.insert(
+            "group.label".to_owned(),
+            MetadataValue::Text("metadata-label".to_owned()),
+        );
+        metadata.insert("group.tab_count".to_owned(), MetadataValue::Integer(3));
+        let group = RenderGroup {
+            path: GroupPath::default(),
+            label: "typed-label".to_owned(),
+            full_label: "/typed".to_owned(),
+            tab_count: 1,
+            collapsed: false,
+            metadata,
+            children: vec![],
+        };
+        let mut lines = vec![];
+        let mut hit_regions = vec![];
+
+        append_group_header(&mut lines, &mut hit_regions, &group, 32, None);
+
+        assert!(
+            lines[0].starts_with("▼ metadata-label (3)"),
+            "group header template should render from metadata: {:?}",
+            lines[0]
         );
     }
 
@@ -2137,37 +2340,74 @@ mod tests {
 
     #[test]
     fn tab_title_template_fields_use_required_title() {
-        let card = RenderCard {
-            tab_id: 7,
-            position: 6,
-            name: "agent".to_owned(),
-            active: false,
-            pinned: false,
-            status: None,
-        };
+        let mut metadata = RenderMetadata::new();
+        metadata.insert(
+            "zellij.tab.name".to_owned(),
+            MetadataValue::Text("agent".to_owned()),
+        );
 
         assert_eq!(
-            tab_title_template_fields(&card),
+            tab_title_template_fields(&metadata),
             vec![TemplateField::Required("agent".to_owned())]
         );
     }
 
     #[test]
-    fn status_template_fields_use_title_and_detail() {
-        let status = TabStatusSummary {
-            priority: Priority::Waiting,
-            title: "waiting".to_owned(),
-            detail: Some("input".to_owned()),
-            icon: None,
-            source_pane: PaneTarget::Terminal(9),
+    fn tab_title_template_fields_read_name_from_metadata() {
+        let mut metadata = RenderMetadata::new();
+        metadata.insert(
+            "zellij.tab.name".to_owned(),
+            MetadataValue::Text("metadata-agent".to_owned()),
+        );
+        let card = RenderCard {
+            tab_id: 7,
+            position: 6,
+            name: "typed-agent".to_owned(),
+            active: false,
+            pinned: false,
+            status: None,
+            metadata,
         };
 
         assert_eq!(
-            status_template_fields(&status),
+            tab_title_template_fields(&card.metadata),
+            vec![TemplateField::Required("metadata-agent".to_owned())]
+        );
+    }
+
+    #[test]
+    fn status_template_fields_use_title_and_detail() {
+        let mut metadata = RenderMetadata::new();
+        metadata.insert(
+            "status.title".to_owned(),
+            MetadataValue::Text("waiting".to_owned()),
+        );
+        metadata.insert(
+            "status.detail".to_owned(),
+            MetadataValue::Text("input".to_owned()),
+        );
+
+        assert_eq!(
+            status_template_fields(&metadata),
             vec![
                 TemplateField::Required("waiting".to_owned()),
                 TemplateField::Priority(": input".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn render_card_adapter_populates_status_metadata() {
+        let model = model();
+        let card = render_card_from_model(&model.tabs[0], &HashMap::new());
+
+        assert_eq!(
+            metadata_text(&card.metadata, "status.title"),
+            Some("waiting")
+        );
+        assert_eq!(
+            metadata_text(&card.metadata, "status.detail"),
+            Some("input")
         );
     }
 
