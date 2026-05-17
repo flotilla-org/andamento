@@ -44,10 +44,10 @@ Metadata updates should be patch-based. One update does not replace the whole me
 Internal store shape:
 
 ```text
-store[entity_id][metadata_key][source_id] = MetadataEntry
+store[metadata_target][metadata_key][source_id] = MetadataEntry
 ```
 
-Where `entity_id` can initially be a pane id or tab id. `MetadataEntry` should contain:
+Where `metadata_target` can initially be a pane id or tab id. It should later also support semantic group targets. `MetadataEntry` should contain:
 
 ```text
 value
@@ -61,7 +61,7 @@ Patch semantics:
 
 ```text
 MetadataPatch {
-  entity_id
+  metadata_target
   source_id
   set: Map<metadata_key, value_with_optional_ttl>
   unset: Set<metadata_key>
@@ -70,8 +70,8 @@ MetadataPatch {
 
 Rules:
 
-- `set` replaces `store[entity][key][source]`.
-- `unset` removes `store[entity][key][source]`.
+- `set` replaces `store[target][key][source]`.
+- `unset` removes `store[target][key][source]`.
 - omitted keys are unchanged.
 - updates are assumed to arrive in order per source.
 - no tombstones are needed for the first model.
@@ -82,6 +82,93 @@ Rules:
 - `ordinal` is producer-supplied stable ordering metadata used after aggregation count.
 
 The collector should encode domain-specific knowledge into `precedence` and `ordinal`. For example, a Zellij cwd collector can give the focused pane's cwd higher `precedence` and encode pane layout order as `ordinal`. The aggregation layer should not need to know what cwd means or why focus matters.
+
+### Metadata Targets Can Be Semantic Groups
+
+Metadata should not be limited to concrete Zellij objects. Panes and tabs are important targets, but the sidebar will become much more useful if external tools can attach metadata directly to semantic groups.
+
+Target shape:
+
+```text
+MetadataTarget =
+  Pane(PaneTarget)
+  Tab(TabId)
+  Group(GroupPath)
+```
+
+This lets a producer describe a project, worktree, convoy, or latent workflow item even when there is no single pane or tab that owns the fact.
+
+Examples:
+
+```text
+Group([zellij.pane.cwd = "/Users/robert/dev/zellij"])
+Group([project.name = "zellij"])
+Group([project.name = "zellij", zellij.pane.cwd = "/Users/robert/dev/zellij-worktree-a"])
+Group([project.name = "zellij", flotilla.convoy.id = "abc123"])
+```
+
+Group-targeted metadata should merge with metadata rolled up from descendant panes/tabs. For example, a build tool can set `progress.tests` on a convoy group, while panes under that convoy can still contribute status, commands, and attention markers. The renderer should consume the resolved group view without caring whether a value was written directly to the group or aggregated upward.
+
+### Group Identity Is A Metadata Path
+
+Group identity should be structured, not a display string. A group path is an ordered list of metadata-key/value segments:
+
+```text
+GroupPath = Vec<GroupSegment>
+
+GroupSegment {
+  key: MetadataKey
+  value: MetadataValue
+}
+```
+
+The key should be the same metadata-key concept used elsewhere, serialized as a string at pipe/config boundaries. The value should use the existing `MetadataValue` tagged value type rather than being forced to a string.
+
+Examples:
+
+```text
+[
+  { key: "zellij.pane.cwd", value: Text("/Users/robert/dev/zellij") }
+]
+
+[
+  { key: "project.name", value: Text("zellij") },
+  { key: "zellij.pane.cwd", value: Text("/Users/robert/dev/zellij-worktree-a") },
+  { key: "flotilla.convoy.id", value: Text("abc123") }
+]
+```
+
+This gives the sidebar:
+
+- stable identity for nested groups.
+- prefix matching for rollups and hierarchy.
+- external metadata targets that can address broad or narrow scopes.
+- multiple grouping dimensions without parsing ad hoc label strings.
+- a path from exact cwd grouping to project/worktree/convoy hierarchies.
+
+Display labels must stay separate from identity. A segment value might be a full path, while the displayed label might be `zellij`, `worktree-a`, or a template-rendered string. This avoids baking presentation choices into the data model.
+
+### Tabs Can Have Explicit Subject Or Scope
+
+Pane-derived grouping answers "what does this tab currently contain?" That is useful, but it is not the same as "what is this tab specifically about?"
+
+Later metadata should allow a tab to declare a subject or scope explicitly. Possible well-known keys:
+
+```text
+tab.subject
+tab.scope
+tab.materialized_from
+```
+
+The value can be a `GroupPath` or a compact representation of one. This lets the sidebar distinguish:
+
+- a tab that happens to have panes in `/repo`.
+- the main overview tab for project `zellij`.
+- a worktree tab under the same project.
+- a convoy or task tab associated with flotilla.
+- a tab that was materialized from a latent node.
+
+Grouping should eventually prefer explicit subject/scope metadata when present and fall back to pane-derived metadata such as cwd.
 
 ### Resolution Is Separate From Storage
 
@@ -142,6 +229,63 @@ rendering: projection -> rows
 
 The grouped list is not the stored tab order. It is one computed projection. This leaves room for later manual ordering, recency/activity ordering, urgency ordering, and pinning without replacing the metadata model.
 
+### Render Nodes Should Become First-Class
+
+Directory grouping currently produces a flat row list: group headers plus tab rows. That is enough for the first milestone, but the next rendering model should treat groups, tabs, and latent items as first-class render nodes.
+
+Possible shape:
+
+```text
+RenderNode =
+  Group {
+    path: GroupPath
+    label
+    metadata
+    children
+    collapsed
+    activation
+  }
+  Tab {
+    tab_id
+    subject?
+    metadata
+  }
+  Latent {
+    path: GroupPath
+    label
+    metadata
+    materialization_recipe
+  }
+```
+
+This model supports:
+
+- group-level borders and status rollups.
+- collapsed/expanded groups.
+- label templates and string substitution.
+- pinning at group or tab level.
+- manual ordering over groups and tabs.
+- horizontal sub-tab bars for lower hierarchy levels.
+- expanded overview mode over the same data.
+
+The renderer can still project these nodes into simple rows for the sidebar. The important change is that row layout becomes one projection of a richer tree, not the primary model.
+
+### Latent Tabs Are Materializable Nodes
+
+A latent tab is a sidebar node for work that is not currently a Zellij tab. On activation, it can be materialized by sending a Zellij action or plugin message that creates the real tab/panes.
+
+This should wait until group identity and render nodes are stable, but it is a natural fit for flotilla. Flotilla can expose desired work items as latent nodes, while running agents appear as materialized tabs/panes under the same group path.
+
+Latent nodes should have:
+
+- stable group path identity.
+- display label/template data.
+- metadata such as status, priority, progress, and owner.
+- an activation/materialization recipe.
+- an optional relation to a materialized tab once created.
+
+The sidebar should not need a separate rendering path for latent tabs. They should be another render node with different activation behavior.
+
 ### Config Should Have Strong Defaults
 
 Zellij plugin configuration is limited to key/value pairs, so rich configuration should eventually live in a real file.
@@ -169,6 +313,8 @@ For image support, the ideal future primitive is not raw image bytes. It is a re
 ## First Milestone: Group Tabs By Directory
 
 Grouping tabs by directory is a good first slice because it exercises the important mechanics end to end without requiring arbitrary external metadata, rich config, content summaries, image placements, or complex aggregation.
+
+Status: implemented as the first tracer bullet. The current code collects `zellij.pane.cwd`, resolves a primary cwd per tab with precedence/count/ordinal selection, renders directory groups, supports grouped/ungrouped mode, and shows selected cwd metadata in the config editor. The design below remains the reference for the milestone and the compatibility baseline for future changes.
 
 The milestone should prove:
 
@@ -234,7 +380,7 @@ Scope:
 - in-order patch application.
 - latest-value resolution.
 
-This is the foundation for everything else.
+Status: partially implemented for cwd and pane status. The next slices should continue moving Zellij-derived facts into the same metadata machinery rather than adding separate side channels.
 
 ### 2. Directory Grouping For Tabs
 
@@ -252,7 +398,7 @@ Scope:
 - keep active tab visibility and click-to-switch behavior.
 - keep an ungrouped fallback path.
 
-This is the first user-visible milestone.
+Status: implemented as the first user-visible milestone.
 
 ### 3. Basic Group Configuration
 
@@ -261,14 +407,72 @@ Add minimal configuration for grouping behavior.
 Scope:
 
 - grouping mode: `none` or `directory`.
-- grouping enabled/disabled.
 - exact cwd vs common ancestor mode.
 - optional max group label width.
 - optional hidden `Other` group behavior.
 
-This can initially remain in plugin key/value config or a hard-coded profile. Do not introduce full external config until the need is concrete. The config shape should leave room for future grouping criteria without changing the renderer contract.
+Status: partially implemented. The config editor can now switch between ungrouped and directory grouping. Richer grouping criteria should wait until group identity is represented as `GroupPath`.
 
-### 4. Resizable Sidebar Width
+### 4. Hierarchical Group Identity
+
+Replace the current stringly cwd group identity with a structured group path while preserving existing directory grouping behavior.
+
+Scope:
+
+- introduce `GroupPath` and `GroupSegment`.
+- use `MetadataKey` plus `MetadataValue` for group segments.
+- keep display labels separate from identity.
+- map exact cwd grouping to a one-segment path using `zellij.pane.cwd`.
+- serialize group paths through the shared view model.
+- update debug/config rendering to show the group path and display label.
+- keep the existing `rail_grouping "directory"` user-facing behavior unchanged.
+
+This is the recommended next slice. It is small enough to keep behavior stable, but it gives later group metadata, explicit tab subjects, hierarchy, and latent tabs a sound identity model.
+
+### 5. Group Metadata Targets
+
+Allow metadata patches to target semantic groups in addition to panes and tabs.
+
+Scope:
+
+- extend metadata target/entity id with `Group(GroupPath)`.
+- support group-targeted metadata in the store.
+- expose group-targeted values through resolved group views.
+- define merge behavior between direct group metadata and rollups from child panes/tabs.
+- add debug rendering for direct group values versus rolled-up values.
+
+This should come after `GroupPath`; otherwise external tools would have to target unstable label strings.
+
+### 6. Explicit Tab Subject/Scope
+
+Allow tabs to state what they are semantically about.
+
+Scope:
+
+- add well-known keys such as `tab.subject` and/or `tab.scope`.
+- let values reference a group path.
+- prefer explicit tab subject/scope for grouping when present.
+- fall back to pane-derived cwd grouping.
+- render subject/scope in debug views.
+
+This unlocks project overview tabs, worktree tabs, convoy tabs, and better grouping for tabs whose panes are not enough to infer intent.
+
+### 7. Render Nodes, Collapse, And Templates
+
+Move from a flat row projection to first-class render nodes.
+
+Scope:
+
+- group, tab, and future latent node types.
+- collapsed/expanded state.
+- group-level borders and status/progress rollups.
+- label templates using resolved metadata.
+- string substitution rules for compact labels.
+- optional sub-tab-bar projection for lower levels.
+
+This is where most rendering/layout improvements should land. It should consume the group path and metadata model rather than inventing a renderer-only hierarchy.
+
+### 8. Resizable Sidebar Width
 
 Add a way to change sidebar width as grouped and detailed rendering becomes denser.
 
@@ -281,7 +485,7 @@ Scope:
 
 This is not required to prove directory grouping, but it is likely to become important as nested/grouped rows and richer metadata are added.
 
-### 5. Metadata Resolver Configuration
+### 9. Metadata Resolver Configuration
 
 Add richer resolution only after there is more than one source for at least one key.
 
@@ -295,7 +499,7 @@ Scope:
 
 This should wait until external metadata or inferred metadata exists.
 
-### 6. External Metadata Patch Input
+### 10. External Metadata Patch Input
 
 Add a pipe/protocol for arbitrary producers.
 
@@ -309,7 +513,7 @@ Scope:
 
 This unlocks shell integrations, build/test progress, PR state, ports, and workflow-specific annotations.
 
-### 7. Aggregation And Profiles
+### 11. Aggregation And Profiles
 
 Add key-aware aggregation and default profiles.
 
@@ -320,7 +524,7 @@ Scope:
 - severity/status rollups.
 - profiles for compact navigation, workflow/status-heavy, and overview-heavy usage.
 
-### 8. Ordering, Pinning, And Manual Arrangement
+### 12. Ordering, Pinning, And Manual Arrangement
 
 Add richer ordering as a policy over projection items.
 
@@ -338,8 +542,8 @@ The projection should support common item types such as:
 ```text
 ProjectionItem =
   PinnedTab(tab_id)
-  PinnedGroup(group_id)
-  Group(group_id, children: Vec<TabId>)
+  PinnedGroup(group_path)
+  Group(group_path, children: Vec<TabId>)
   Tab(tab_id)
 ```
 
@@ -351,7 +555,21 @@ A future layered ordering policy can be:
 4. grouping/default order.
 5. stable tab order fallback.
 
-### 9. Expanded Overview Mode
+### 13. Latent Tabs And Materialization
+
+Represent work items that are not currently real Zellij tabs.
+
+Scope:
+
+- latent render nodes.
+- materialization recipes.
+- activation behavior that creates a tab/panes or asks another plugin to do so.
+- relation from latent node to materialized tab.
+- flotilla integration for desired work items and convoys.
+
+This should wait until group paths, group metadata targets, and render nodes are stable enough that latent nodes do not become a parallel model.
+
+### 14. Expanded Overview Mode
 
 Build a larger projection over the same state model.
 
@@ -367,14 +585,30 @@ This should not require a new data model. It should consume the same metadata st
 
 ## Open Questions
 
-- Should the first directory grouping use exact cwd only, or common ancestor by default?
-- Should tabs be allowed to appear in multiple groups if panes span multiple directories, or should each tab have one primary group?
-- Should group order follow first tab occurrence, alphabetical directory order, or most recently active group?
-- Should cwd metadata be pane-only with tab grouping derived from panes, or should derived tab metadata be materialized back into the metadata store?
-- What is the minimal grouping config shape that supports `none` and `directory` now without blocking future criteria?
-- Should resizable sidebar width be part of the first grouping milestone or the next polish milestone?
+- Should group path values support all `MetadataValue` variants immediately, or only text values until there is a real non-text group segment?
+- Should explicit tab subject/scope be stored as normal metadata values, or should it become a typed top-level tab relation in the shared model?
+- How should group-targeted metadata and rolled-up child metadata resolve when they set the same key?
+- Should group order follow first visible tab occurrence, explicit group metadata, recency/activity, manual order, or a layered policy from the start?
+- What should the first label-template syntax look like, and how much formatting should it support?
+- Where should collapsed state live: transient controller state, plugin config, or the future `/host` config file?
+- What is the minimum materialization recipe shape for latent tabs without coupling too tightly to flotilla?
 - When external metadata arrives, should values be typed JSON-like data, strings only, or a small tagged enum?
 
 ## Recommended Next Step
 
-Implement milestone 1 as a vertical slice: Zellij event ingestion to metadata patches, directory grouping, and grouped sidebar rendering. Keep the resolver and grouping config deliberately small, but structure the code so later external metadata and richer resolution can slot in without replacing the state model.
+Implement the hierarchical group identity slice.
+
+Goal: replace the current cwd string group identity with `GroupPath` while preserving existing behavior.
+
+The next slice should:
+
+- add shared `GroupPath` and `GroupSegment` types.
+- represent the current exact cwd group as `[{ key: "zellij.pane.cwd", value: Text(cwd) }]`.
+- keep compact labels as derived display data, not identity.
+- update `TabGroupingInfo` and `RailRow::GroupHeader` to carry the structured path.
+- keep `rail_grouping "directory"` and the renderer behavior unchanged from a user's perspective.
+- extend config/debug rendering to show both label and group path.
+- add round-trip tests for group paths in shared view models.
+- add controller tests proving directory grouping now uses the path identity.
+
+After this lands, the next best slices are group metadata targets and explicit tab subject/scope. Rendering polish such as collapse, group borders, and templates will be cleaner once the tree has stable semantic identities.
