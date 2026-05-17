@@ -3041,6 +3041,7 @@ mod tests {
             ],
             rows: vec![],
             resolved_metadata: vec![],
+            observed_identities: vec![],
         }
     }
 
@@ -3093,6 +3094,7 @@ mod tests {
                 },
             ],
             resolved_metadata: vec![],
+            observed_identities: vec![],
         }
     }
 
@@ -3108,6 +3110,7 @@ mod tests {
             tabs: vec![],
             rows: vec![],
             resolved_metadata: vec![],
+            observed_identities: vec![],
         };
         for (tab_id, worktree) in [(1, "worktree-a"), (2, "worktree-b")] {
             let path = GroupPath(vec![

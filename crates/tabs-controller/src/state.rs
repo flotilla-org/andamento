@@ -6,9 +6,9 @@ use crate::metadata::{
 };
 use tabs_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataEntry,
-    MetadataIdentity, MetadataSourceEntry, MetadataValue, PaneTarget, Priority, RailConfig,
-    RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello, ResolvedMetadata,
-    SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
+    MetadataIdentity, MetadataSourceEntry, MetadataValue, ObservedMetadataIdentity, PaneTarget,
+    Priority, RailConfig, RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello,
+    ResolvedMetadata, SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -345,10 +345,14 @@ impl ControllerState {
             }
         }
 
+        let resolved_metadata = self.resolved_metadata_for_tabs(&tabs);
+        let observed_identities = observed_metadata_identities(&resolved_metadata);
+
         ControllerViewModel {
             sort_mode: self.sort_mode,
             config: self.rail_config,
-            resolved_metadata: self.resolved_metadata_for_tabs(&tabs),
+            resolved_metadata,
+            observed_identities,
             rows: self.rows_for_tabs(&tabs),
             tabs,
         }
@@ -767,6 +771,31 @@ fn cwd_group_path(cwd: &str) -> GroupPath {
         key: KEY_PANE_CWD.to_owned(),
         value: MetadataValue::Text(cwd.to_owned()),
     }])
+}
+
+fn observed_metadata_identities(
+    resolved_metadata: &[ResolvedMetadata],
+) -> Vec<ObservedMetadataIdentity> {
+    let mut by_identity: BTreeMap<MetadataIdentity, (BTreeSet<EntityId>, usize)> = BTreeMap::new();
+    for metadata in resolved_metadata {
+        for reachable in &metadata.reachable_identities {
+            let (targets, nearest_distance) = by_identity
+                .entry(reachable.identity.clone())
+                .or_insert_with(|| (BTreeSet::new(), reachable.distance));
+            targets.insert(metadata.target.clone());
+            *nearest_distance = (*nearest_distance).min(reachable.distance);
+        }
+    }
+    by_identity
+        .into_iter()
+        .map(
+            |(identity, (targets, nearest_distance))| ObservedMetadataIdentity {
+                identity,
+                target_count: targets.len(),
+                nearest_distance,
+            },
+        )
+        .collect()
 }
 
 #[cfg(test)]
@@ -1370,6 +1399,62 @@ mod tests {
                     value: MetadataValue::Text(cwd.clone()),
                 }
                 && reachable.distance == 1));
+    }
+
+    #[test]
+    fn view_model_exposes_observed_metadata_identity_index() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "repo".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
+        let cwd = "/Users/robert/dev/katzensteg".to_owned();
+        state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
+        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+            target: EntityId::Identity(MetadataIdentity {
+                key: KEY_PANE_CWD.to_owned(),
+                value: MetadataValue::Text(cwd.clone()),
+            }),
+            source_id: "dir-watcher".to_owned(),
+            set: BTreeMap::from([(
+                "git.repo".to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+
+        assert!(model.observed_identities.iter().any(|observed| {
+            observed.identity
+                == MetadataIdentity {
+                    key: KEY_PANE_CWD.to_owned(),
+                    value: MetadataValue::Text(cwd.clone()),
+                }
+                && observed.target_count == 2
+                && observed.nearest_distance == 1
+        }));
+        assert!(model.observed_identities.iter().any(|observed| {
+            observed.identity
+                == MetadataIdentity {
+                    key: "git.repo".to_owned(),
+                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                }
+                && observed.target_count == 2
+                && observed.nearest_distance == 2
+        }));
     }
 
     #[test]

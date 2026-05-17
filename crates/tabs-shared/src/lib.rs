@@ -232,6 +232,13 @@ pub struct ReachableMetadataIdentity {
     pub distance: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservedMetadataIdentity {
+    pub identity: MetadataIdentity,
+    pub target_count: usize,
+    pub nearest_distance: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RailGroupingMode {
@@ -307,6 +314,8 @@ pub struct ControllerViewModel {
     pub rows: Vec<RailRow>,
     #[serde(default)]
     pub resolved_metadata: Vec<ResolvedMetadata>,
+    #[serde(default)]
+    pub observed_identities: Vec<ObservedMetadataIdentity>,
 }
 
 #[cfg(test)]
@@ -359,6 +368,14 @@ mod tests {
             }],
             rows: vec![],
             resolved_metadata: vec![],
+            observed_identities: vec![ObservedMetadataIdentity {
+                identity: MetadataIdentity {
+                    key: "git.repo".to_owned(),
+                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                },
+                target_count: 2,
+                nearest_distance: 1,
+            }],
         };
         let encoded = serde_json::to_string(&model).unwrap();
         let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
@@ -442,6 +459,7 @@ mod tests {
                 },
             ],
             resolved_metadata: vec![],
+            observed_identities: vec![],
         };
 
         let encoded = serde_json::to_string(&model).unwrap();
