@@ -736,7 +736,7 @@ fn append_group_header(
         row_start: row,
         row_end: row,
         col_start: 0,
-        col_end: cols.saturating_sub(1),
+        col_end: 0,
         tab_id: 0,
         tab_position: 0,
         group_path: Some(group.path.clone()),
@@ -1631,7 +1631,7 @@ fn group_header_line(
     width: usize,
     theme: Option<RenderTheme>,
 ) -> String {
-    let marker = if collapsed { "▸" } else { "▾" };
+    let marker = if collapsed { "▶" } else { "▼" };
     let count_label = format!("{marker} {label} ({tab_count})");
     let text = if count_label.width() <= width {
         count_label
@@ -1857,13 +1857,14 @@ mod tests {
     }
 
     #[test]
-    fn grouped_rendering_draws_clickable_group_header() {
+    fn grouped_rendering_draws_clickable_group_toggle() {
         let rendered = render_lines(Some(&grouped_model()), &[], 8, 24, true);
 
         assert!(rendered.lines[0].contains("zellij"));
-        let hit = hit_at(&rendered.hit_regions, 0, 2).expect("group header should be clickable");
+        let hit = hit_at(&rendered.hit_regions, 0, 0).expect("group toggle should be clickable");
         assert_eq!(hit.action, HitAction::ToggleGroup);
         assert!(hit.group_path.is_some());
+        assert_eq!(hit_at(&rendered.hit_regions, 0, 2), None);
     }
 
     #[test]
@@ -1941,7 +1942,7 @@ mod tests {
         assert!(!rendered.lines.iter().any(|line| line.contains("server")));
         assert!(!rendered.lines.iter().any(|line| line.contains("tests")));
         assert_eq!(
-            hit_at(&rendered.hit_regions, 0, 2).map(|hit| hit.action),
+            hit_at(&rendered.hit_regions, 0, 0).map(|hit| hit.action),
             Some(HitAction::ToggleGroup)
         );
     }
