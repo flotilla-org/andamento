@@ -157,6 +157,7 @@ struct CurrentGroupHeader {
     path: GroupPath,
     label: String,
     full_label: String,
+    templates: ResolvedTemplateSlots,
 }
 
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -1730,6 +1731,7 @@ fn pending_nodes_to_render_nodes(
                     path,
                     label,
                     full_label,
+                    templates,
                 });
             }
             PendingRenderNode::Tab(mut tab) if current_group.is_some() && tab.indent > 0 => {
@@ -1740,7 +1742,7 @@ fn pending_nodes_to_render_nodes(
                     &group_header.path,
                     &group_header.label,
                     &group_header.full_label,
-                    &ResolvedTemplateSlots::default(),
+                    &group_header.templates,
                     collapsed_groups,
                 );
                 group.children.push(RenderNode::Tab(tab));
@@ -4309,6 +4311,38 @@ mod tests {
         assert!(rendered.lines.iter().any(|line| line.contains(
             "template.tab_status.candidates: builtin.tab-status(1), builtin.tab-status.waiting(4), builtin.tab-status.terminal-source(3)"
         )));
+    }
+
+    #[test]
+    fn metadata_view_keeps_resolved_group_templates_after_child_rows() {
+        let mut model = grouped_model();
+        model.config.view = RailViewMode::Metadata;
+        if let RailRow::GroupHeader { templates, .. } = &mut model.rows[0] {
+            templates.group_header = Some(ResolvedTemplateSlot {
+                template_name: "andamento.git.group-header".to_owned(),
+                fields: vec![
+                    tabs_shared::ResolvedTemplateField {
+                        text: "zellij-org/zellij".to_owned(),
+                        priority: 100,
+                    },
+                    tabs_shared::ResolvedTemplateField {
+                        text: " feat/kitty-image-plumbing".to_owned(),
+                        priority: 60,
+                    },
+                ],
+            });
+        }
+
+        let rendered = render_lines(Some(&model), &[], 80, 180, true);
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| { line.contains("template.group_header: andamento.git.group-header") }));
+        assert!(!rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("template.group_header: builtin.group-header")));
     }
 
     #[test]
