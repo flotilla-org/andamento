@@ -4013,6 +4013,69 @@ mod tests {
     }
 
     #[test]
+    fn external_kdl_group_header_template_uses_resolved_group_metadata() {
+        let config = crate::template_config::parse_template_config_kdl(
+            r#"
+            template "git.group-header" slot="group-header" node-kind="group" {
+              when exists="git.repo"
+
+              field priority=100 {
+                value source="collapsed-toggle" collapsed="▶" expanded="▼"
+              }
+              field key="git.repo" priority=100
+              field key="git.branch" priority=60
+            }
+            "#,
+        )
+        .expect("valid template config");
+        let catalog = crate::template_config::TemplateConfigCatalog::from_config(config);
+        let mut model = grouped_model();
+        let group_path = GroupPath(vec![GroupSegment {
+            key: "zellij.pane.cwd".to_owned(),
+            value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
+        }]);
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Group(group_path),
+            values: BTreeMap::from([
+                (
+                    "git.repo".to_owned(),
+                    MetadataEntry {
+                        value: MetadataValue::Text("rjwittams/zellij-scratch".to_owned()),
+                        updated_at: 1,
+                        ttl_ms: None,
+                        precedence: 0,
+                        ordinal: 0,
+                    },
+                ),
+                (
+                    "git.branch".to_owned(),
+                    MetadataEntry {
+                        value: MetadataValue::Text("main".to_owned()),
+                        updated_at: 1,
+                        ttl_ms: None,
+                        precedence: 0,
+                        ordinal: 0,
+                    },
+                ),
+            ]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered =
+            render_lines_with_template_catalog(Some(&model), &[], 10, 80, true, Some(&catalog));
+
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.contains("▼ rjwittams/zellij-scratch main")),
+            "{:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
     fn status_template_fields_use_title_and_detail() {
         let mut metadata = RenderMetadata::new();
         metadata.insert(
