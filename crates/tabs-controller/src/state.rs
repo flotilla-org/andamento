@@ -533,8 +533,9 @@ impl ControllerState {
             BTreeMap::new();
         for tab in tabs {
             let tab_target = EntityId::Tab(tab.tab_id);
+            let tab_seed_values = self.tab_seed_metadata_entries(tab.tab_id);
             let (tab_values, tab_sources, tab_identities) =
-                self.resolve_target_metadata(&tab_target);
+                self.resolve_target_metadata(&tab_target, tab_seed_values);
             by_target
                 .entry(tab_target.clone())
                 .or_default()
@@ -552,8 +553,12 @@ impl ControllerState {
                 .as_ref()
                 .map(|grouping| EntityId::Group(grouping.path.clone()));
             if let Some(group_target) = group_target.as_ref() {
+                let group_seed_values = match group_target {
+                    EntityId::Group(path) => self.group_path_seed_metadata_entries(path),
+                    _ => BTreeMap::new(),
+                };
                 let (group_values, group_sources, group_identities) =
-                    self.resolve_target_metadata(group_target);
+                    self.resolve_target_metadata(group_target, group_seed_values);
                 by_target
                     .entry(group_target.clone())
                     .or_default()
@@ -566,18 +571,6 @@ impl ControllerState {
                     .entry(group_target.clone())
                     .or_default()
                     .extend(group_identities);
-            }
-            if let Some(entry) = self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD) {
-                by_target
-                    .entry(tab_target)
-                    .or_default()
-                    .insert(KEY_PANE_CWD.to_owned(), entry.clone());
-                if let Some(group_target) = group_target {
-                    by_target
-                        .entry(group_target)
-                        .or_default()
-                        .insert(KEY_PANE_CWD.to_owned(), entry);
-                }
             }
         }
         by_target
@@ -594,6 +587,7 @@ impl ControllerState {
     fn resolve_target_metadata(
         &self,
         target: &EntityId,
+        seed_values: BTreeMap<String, MetadataEntry>,
     ) -> (
         BTreeMap<String, MetadataEntry>,
         BTreeMap<String, Vec<MetadataSourceEntry>>,
@@ -618,6 +612,15 @@ impl ControllerState {
             let current_values = self
                 .metadata
                 .resolved_entries_for(&current, self.receive_counter);
+            let current_values = if &current == target {
+                seed_values
+                    .clone()
+                    .into_iter()
+                    .chain(current_values)
+                    .collect::<BTreeMap<_, _>>()
+            } else {
+                current_values
+            };
             for (key, entry) in current_values {
                 let identity = EntityId::Identity(MetadataIdentity {
                     key: key.clone(),
@@ -637,6 +640,37 @@ impl ControllerState {
         }
 
         (values, source_entries, reachable_identities)
+    }
+
+    fn tab_seed_metadata_entries(&self, tab_id: u64) -> BTreeMap<String, MetadataEntry> {
+        self.tab_primary_metadata_entry(tab_id, KEY_PANE_CWD)
+            .map(|entry| BTreeMap::from([(KEY_PANE_CWD.to_owned(), entry)]))
+            .unwrap_or_default()
+    }
+
+    fn group_path_seed_metadata_entries(
+        &self,
+        path: &GroupPath,
+    ) -> BTreeMap<String, MetadataEntry> {
+        path.0
+            .iter()
+            .map(|segment| {
+                (
+                    segment.key.clone(),
+                    self.seed_metadata_entry(segment.value.clone()),
+                )
+            })
+            .collect()
+    }
+
+    fn seed_metadata_entry(&self, value: MetadataValue) -> MetadataEntry {
+        MetadataEntry {
+            value,
+            updated_at: self.receive_counter,
+            ttl_ms: None,
+            precedence: 0,
+            ordinal: 0,
+        }
     }
 
     fn group_label_for_cwd(&self, cwd: &str, all_group_cwds: &[String]) -> String {
@@ -1219,6 +1253,123 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn resolved_tab_metadata_follows_selected_cwd_identity_facts() {
+        let mut state = ControllerState::default();
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "repo".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
+        state.set_pane_cwd(
+            PaneTarget::Terminal(1),
+            "/Users/robert/dev/katzensteg".to_owned(),
+        );
+        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+            target: EntityId::Identity(MetadataIdentity {
+                key: KEY_PANE_CWD.to_owned(),
+                value: MetadataValue::Text("/Users/robert/dev/katzensteg".to_owned()),
+            }),
+            source_id: "dir-watcher".to_owned(),
+            set: BTreeMap::from([(
+                "git.repo".to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let tab_metadata = model
+            .resolved_metadata
+            .iter()
+            .find(|metadata| metadata.target == EntityId::Tab(1))
+            .expect("tab metadata");
+
+        assert_eq!(
+            tab_metadata
+                .values
+                .get("git.repo")
+                .map(|entry| &entry.value),
+            Some(&MetadataValue::Text("rjwittams/katzensteg".to_owned()))
+        );
+        assert!(tab_metadata
+            .reachable_identities
+            .iter()
+            .any(|reachable| reachable.identity
+                == MetadataIdentity {
+                    key: KEY_PANE_CWD.to_owned(),
+                    value: MetadataValue::Text("/Users/robert/dev/katzensteg".to_owned()),
+                }
+                && reachable.distance == 1));
+    }
+
+    #[test]
+    fn resolved_group_metadata_follows_group_path_identity_facts() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "repo".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
+        let cwd = "/Users/robert/dev/katzensteg".to_owned();
+        state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
+        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+            target: EntityId::Identity(MetadataIdentity {
+                key: KEY_PANE_CWD.to_owned(),
+                value: MetadataValue::Text(cwd.clone()),
+            }),
+            source_id: "dir-watcher".to_owned(),
+            set: BTreeMap::from([(
+                "git.repo".to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let group_path = cwd_group_path(&cwd);
+        let group_metadata = model
+            .resolved_metadata
+            .iter()
+            .find(|metadata| metadata.target == EntityId::Group(group_path.clone()))
+            .expect("group metadata");
+
+        assert_eq!(
+            group_metadata
+                .values
+                .get("git.repo")
+                .map(|entry| &entry.value),
+            Some(&MetadataValue::Text("rjwittams/katzensteg".to_owned()))
+        );
+        assert!(group_metadata
+            .reachable_identities
+            .iter()
+            .any(|reachable| reachable.identity
+                == MetadataIdentity {
+                    key: KEY_PANE_CWD.to_owned(),
+                    value: MetadataValue::Text(cwd.clone()),
+                }
+                && reachable.distance == 1));
     }
 
     #[test]
