@@ -16,8 +16,8 @@ use std::collections::{BTreeMap, HashMap};
 use render::{hit_at, status_icon_is_renderable, HitAction, HitRegion, LocalTab, VisibleCard};
 #[cfg(target_family = "wasm")]
 use tabs_shared::{
-    ControllerViewModel, RendererHello, StatusIcon, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
-    MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
+    ControllerViewModel, RailViewMode, RendererHello, StatusIcon, MSG_RENDERER_HELLO,
+    MSG_REQUEST_STATE, MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
 };
 #[cfg(target_family = "wasm")]
 use zellij_tile::prelude::*;
@@ -44,6 +44,7 @@ pub struct PluginState {
     mode_info: Option<ModeInfo>,
     icon_asset_ids: HashMap<StatusIcon, u32>,
     next_icon_asset_id: u32,
+    metadata_scroll_offset: usize,
 }
 
 #[cfg(target_family = "wasm")]
@@ -115,10 +116,7 @@ impl ZellijPlugin for PluginState {
                     .collect();
                 true
             }
-            Event::Mouse(mouse) => {
-                self.handle_mouse(mouse);
-                false
-            }
+            Event::Mouse(mouse) => self.handle_mouse(mouse),
             _ => false,
         }
     }
@@ -151,8 +149,10 @@ impl ZellijPlugin for PluginState {
             self.mode_info
                 .as_ref()
                 .map(|mode_info| mode_info.style.colors.into()),
+            self.metadata_scroll_offset,
             terminal_pixel_cell_size(),
         );
+        self.metadata_scroll_offset = rendered.metadata_scroll_offset;
         if should_sync_graphics(controller_available) {
             self.sync_graphics(&rendered.visible_cards);
         }
@@ -198,32 +198,64 @@ impl PluginState {
         );
     }
 
-    fn handle_mouse(&mut self, mouse: Mouse) {
+    fn handle_mouse(&mut self, mouse: Mouse) -> bool {
         match mouse {
             Mouse::LeftClick(row, col) if row >= 0 => {
                 let Some(hit) = hit_at(&self.hit_regions, row as usize, col as usize) else {
-                    return;
+                    return false;
                 };
                 match hit.action {
-                    HitAction::SwitchTab => switch_tab_to((hit.tab_position + 1) as u32),
-                    HitAction::TogglePin => self.toggle_pin(hit.tab_id),
-                    HitAction::OpenConfig => self.open_config_pane(),
+                    HitAction::SwitchTab => {
+                        switch_tab_to((hit.tab_position + 1) as u32);
+                        false
+                    }
+                    HitAction::TogglePin => {
+                        self.toggle_pin(hit.tab_id);
+                        false
+                    }
+                    HitAction::OpenConfig => {
+                        self.open_config_pane();
+                        false
+                    }
+                    HitAction::ScrollMetadataUp => {
+                        self.metadata_scroll_offset = self.metadata_scroll_offset.saturating_sub(1);
+                        true
+                    }
+                    HitAction::ScrollMetadataDown => {
+                        self.metadata_scroll_offset = self.metadata_scroll_offset.saturating_add(1);
+                        true
+                    }
                 }
             }
             Mouse::ScrollUp(_) => {
-                if let Some(active_tab_idx) = self.active_tab_idx() {
+                if self.is_metadata_view() {
+                    self.metadata_scroll_offset = self.metadata_scroll_offset.saturating_sub(1);
+                    return true;
+                } else if let Some(active_tab_idx) = self.active_tab_idx() {
                     let prev = max(active_tab_idx.saturating_sub(1), 1);
                     switch_tab_to(prev as u32);
                 }
+                false
             }
             Mouse::ScrollDown(_) => {
-                if let Some(active_tab_idx) = self.active_tab_idx() {
+                if self.is_metadata_view() {
+                    self.metadata_scroll_offset = self.metadata_scroll_offset.saturating_add(1);
+                    return true;
+                } else if let Some(active_tab_idx) = self.active_tab_idx() {
                     let next = min(active_tab_idx + 1, self.local_tabs.len());
                     switch_tab_to(next as u32);
                 }
+                false
             }
-            _ => {}
+            _ => false,
         }
+    }
+
+    fn is_metadata_view(&self) -> bool {
+        self.controller_model
+            .as_ref()
+            .map(|model| model.config.view == RailViewMode::Metadata)
+            .unwrap_or(false)
     }
 
     fn active_tab_idx(&self) -> Option<usize> {

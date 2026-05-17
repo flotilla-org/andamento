@@ -24,6 +24,8 @@ pub enum HitAction {
     SwitchTab,
     TogglePin,
     OpenConfig,
+    ScrollMetadataUp,
+    ScrollMetadataDown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +44,7 @@ pub struct RenderedRail {
     pub lines: Vec<String>,
     pub hit_regions: Vec<HitRegion>,
     pub visible_cards: Vec<VisibleCard>,
+    pub metadata_scroll_offset: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +134,7 @@ pub fn render_lines_with_theme(
         cols,
         controller_available,
         theme,
+        0,
         None,
     )
 }
@@ -142,6 +146,7 @@ pub fn render_lines_with_theme_and_cell_size(
     cols: usize,
     controller_available: bool,
     theme: Option<RenderTheme>,
+    metadata_scroll_offset: usize,
     terminal_cell_size: Option<SizeInPixels>,
 ) -> RenderedRail {
     if rows == 0 || cols == 0 {
@@ -149,6 +154,7 @@ pub fn render_lines_with_theme_and_cell_size(
             lines: vec![],
             hit_regions: vec![],
             visible_cards: vec![],
+            metadata_scroll_offset: 0,
         };
     }
 
@@ -159,8 +165,9 @@ pub fn render_lines_with_theme_and_cell_size(
     let mut visible_cards = vec![];
     let cards = cards_to_render(model, tabs);
     let config = model.map(|model| model.config).unwrap_or_default();
+    let mut effective_metadata_scroll_offset = 0;
     if let Some(model) = model.filter(|model| model.config.view == RailViewMode::Metadata) {
-        render_metadata_projection(
+        effective_metadata_scroll_offset = render_metadata_projection(
             &mut lines,
             &mut hit_regions,
             model,
@@ -168,6 +175,7 @@ pub fn render_lines_with_theme_and_cell_size(
             card_rows_available,
             cols,
             theme,
+            metadata_scroll_offset,
         );
     } else if cards.is_empty() {
         lines[0] = pad_to_width("tabs: waiting for tab state", cols);
@@ -202,16 +210,7 @@ pub fn render_lines_with_theme_and_cell_size(
     }
 
     if controller_available {
-        lines[rows - 1] = settings_line(cols, theme);
-        hit_regions.push(HitRegion {
-            row_start: rows - 1,
-            row_end: rows - 1,
-            col_start: 0,
-            col_end: cols.saturating_sub(1),
-            tab_id: 0,
-            tab_position: 0,
-            action: HitAction::OpenConfig,
-        });
+        render_footer(&mut lines, &mut hit_regions, rows - 1, cols, theme);
     } else {
         lines[rows - 1] = style_body_text(
             pad_to_width(&truncate_to_width("controller unavailable", cols), cols),
@@ -223,6 +222,7 @@ pub fn render_lines_with_theme_and_cell_size(
         lines,
         hit_regions,
         visible_cards,
+        metadata_scroll_offset: effective_metadata_scroll_offset,
     }
 }
 
@@ -234,7 +234,8 @@ fn render_metadata_projection(
     available_rows: usize,
     cols: usize,
     theme: Option<RenderTheme>,
-) {
+    metadata_scroll_offset: usize,
+) -> usize {
     let local_by_id: HashMap<u64, &LocalTab> = tabs.iter().map(|tab| (tab.tab_id, tab)).collect();
     let rows: Vec<RailRow> = if model.rows.is_empty() {
         model
@@ -246,194 +247,37 @@ fn render_metadata_projection(
     } else {
         model.rows.clone()
     };
-    let mut output_row = 0;
+    let content_lines = metadata_projection_lines(model, tabs, &rows, &local_by_id);
+    let scroll_offset =
+        clamp_scroll_offset(metadata_scroll_offset, content_lines.len(), available_rows);
+    for (output_row, line) in content_lines
+        .iter()
+        .skip(scroll_offset)
+        .take(available_rows)
+        .enumerate()
+    {
+        lines[output_row] =
+            style_body_text(pad_to_width(&truncate_to_width(line, cols), cols), theme);
+    }
+    let mut source_row = 0;
     for row in rows {
-        if output_row >= available_rows {
+        if source_row >= scroll_offset.saturating_add(available_rows) {
             break;
         }
         match row {
-            RailRow::GroupHeader {
-                path,
-                label,
-                full_label,
-                tab_count,
-                ..
-            } => {
-                push_metadata_line(
-                    lines,
-                    &mut output_row,
-                    available_rows,
-                    0,
-                    "group",
-                    &label,
-                    cols,
-                    theme,
-                );
-                push_metadata_line(
-                    lines,
-                    &mut output_row,
-                    available_rows,
-                    2,
-                    "group.full_label",
-                    &full_label,
-                    cols,
-                    theme,
-                );
-                push_metadata_line(
-                    lines,
-                    &mut output_row,
-                    available_rows,
-                    2,
-                    "group.tab_count",
-                    &tab_count.to_string(),
-                    cols,
-                    theme,
-                );
-                push_group_path_metadata(
-                    lines,
-                    &mut output_row,
-                    available_rows,
-                    2,
-                    &path,
-                    cols,
-                    theme,
-                );
+            RailRow::GroupHeader { path, .. } => {
+                source_row += group_metadata_line_count(&path);
             }
             RailRow::Tab { tab, indent } => {
-                let block_start = output_row;
-                let active = local_by_id
-                    .get(&tab.tab_id)
-                    .map(|local| local.active)
-                    .unwrap_or(tab.active);
-                push_metadata_line(
-                    lines,
-                    &mut output_row,
-                    available_rows,
-                    indent,
-                    "tab",
-                    &tab.name,
-                    cols,
-                    theme,
-                );
-                push_metadata_line(
-                    lines,
-                    &mut output_row,
-                    available_rows,
-                    indent + 2,
-                    "zellij.tab.id",
-                    &tab.tab_id.to_string(),
-                    cols,
-                    theme,
-                );
-                push_metadata_line(
-                    lines,
-                    &mut output_row,
-                    available_rows,
-                    indent + 2,
-                    "zellij.tab.position",
-                    &tab.position.to_string(),
-                    cols,
-                    theme,
-                );
-                push_metadata_line(
-                    lines,
-                    &mut output_row,
-                    available_rows,
-                    indent + 2,
-                    "zellij.tab.active",
-                    bool_text(active),
-                    cols,
-                    theme,
-                );
-                push_metadata_line(
-                    lines,
-                    &mut output_row,
-                    available_rows,
-                    indent + 2,
-                    "rail.tab.pinned",
-                    bool_text(tab.pinned),
-                    cols,
-                    theme,
-                );
-                if let Some(grouping) = tab.grouping.as_ref() {
-                    push_metadata_line(
-                        lines,
-                        &mut output_row,
-                        available_rows,
-                        indent + 2,
-                        "group.label",
-                        &grouping.label,
-                        cols,
-                        theme,
-                    );
-                    push_metadata_line(
-                        lines,
-                        &mut output_row,
-                        available_rows,
-                        indent + 2,
-                        "group.full_label",
-                        &grouping.full_label,
-                        cols,
-                        theme,
-                    );
-                    push_group_path_metadata(
-                        lines,
-                        &mut output_row,
-                        available_rows,
-                        indent + 2,
-                        &grouping.path,
-                        cols,
-                        theme,
-                    );
-                }
-                if let Some(status) = tab.status.as_ref() {
-                    push_metadata_line(
-                        lines,
-                        &mut output_row,
-                        available_rows,
-                        indent + 2,
-                        "status.priority",
-                        &format!("{:?}", status.priority).to_ascii_lowercase(),
-                        cols,
-                        theme,
-                    );
-                    push_metadata_line(
-                        lines,
-                        &mut output_row,
-                        available_rows,
-                        indent + 2,
-                        "status.title",
-                        &status.title,
-                        cols,
-                        theme,
-                    );
-                    if let Some(detail) = status.detail.as_ref() {
-                        push_metadata_line(
-                            lines,
-                            &mut output_row,
-                            available_rows,
-                            indent + 2,
-                            "status.detail",
-                            detail,
-                            cols,
-                            theme,
-                        );
-                    }
-                    push_metadata_line(
-                        lines,
-                        &mut output_row,
-                        available_rows,
-                        indent + 2,
-                        "status.source_pane",
-                        &format_pane_target(status.source_pane),
-                        cols,
-                        theme,
-                    );
-                }
-                if output_row > block_start {
+                let block_start = source_row;
+                let block_len = tab_metadata_line_count(&tab);
+                source_row += block_len;
+                let visible_start = block_start.max(scroll_offset);
+                let visible_end = source_row.min(scroll_offset.saturating_add(available_rows));
+                if visible_start < visible_end {
                     hit_regions.push(HitRegion {
-                        row_start: block_start,
-                        row_end: output_row - 1,
+                        row_start: visible_start - scroll_offset,
+                        row_end: visible_end - scroll_offset - 1,
                         col_start: indent.min(cols.saturating_sub(1)),
                         col_end: cols.saturating_sub(1),
                         tab_id: tab.tab_id,
@@ -444,56 +288,132 @@ fn render_metadata_projection(
             }
         }
     }
+    scroll_offset
 }
 
-fn push_group_path_metadata(
-    lines: &mut [String],
-    output_row: &mut usize,
-    available_rows: usize,
-    indent: usize,
-    path: &GroupPath,
-    cols: usize,
-    theme: Option<RenderTheme>,
-) {
+fn metadata_projection_lines(
+    model: &ControllerViewModel,
+    tabs: &[LocalTab],
+    rows: &[RailRow],
+    local_by_id: &HashMap<u64, &LocalTab>,
+) -> Vec<String> {
+    let mut lines = vec![];
+    for row in rows {
+        match row {
+            RailRow::GroupHeader {
+                path,
+                label,
+                full_label,
+                tab_count,
+                ..
+            } => {
+                push_metadata_text_line(&mut lines, 0, "group", label);
+                push_metadata_text_line(&mut lines, 2, "group.full_label", full_label);
+                push_metadata_text_line(&mut lines, 2, "group.tab_count", &tab_count.to_string());
+                push_group_path_metadata(&mut lines, 2, path);
+            }
+            RailRow::Tab { tab, indent } => {
+                let active = local_by_id
+                    .get(&tab.tab_id)
+                    .map(|local| local.active)
+                    .unwrap_or(tab.active);
+                push_metadata_text_line(&mut lines, *indent, "tab", &tab.name);
+                push_metadata_text_line(
+                    &mut lines,
+                    indent + 2,
+                    "zellij.tab.id",
+                    &tab.tab_id.to_string(),
+                );
+                push_metadata_text_line(
+                    &mut lines,
+                    indent + 2,
+                    "zellij.tab.position",
+                    &tab.position.to_string(),
+                );
+                push_metadata_text_line(
+                    &mut lines,
+                    indent + 2,
+                    "zellij.tab.active",
+                    bool_text(active),
+                );
+                push_metadata_text_line(
+                    &mut lines,
+                    indent + 2,
+                    "rail.tab.pinned",
+                    bool_text(tab.pinned),
+                );
+                if let Some(grouping) = tab.grouping.as_ref() {
+                    push_metadata_text_line(&mut lines, indent + 2, "group.label", &grouping.label);
+                    push_metadata_text_line(
+                        &mut lines,
+                        indent + 2,
+                        "group.full_label",
+                        &grouping.full_label,
+                    );
+                    push_group_path_metadata(&mut lines, indent + 2, &grouping.path);
+                }
+                if let Some(status) = tab.status.as_ref() {
+                    push_metadata_text_line(
+                        &mut lines,
+                        indent + 2,
+                        "status.priority",
+                        &format!("{:?}", status.priority).to_ascii_lowercase(),
+                    );
+                    push_metadata_text_line(&mut lines, indent + 2, "status.title", &status.title);
+                    if let Some(detail) = status.detail.as_ref() {
+                        push_metadata_text_line(&mut lines, indent + 2, "status.detail", detail);
+                    }
+                    push_metadata_text_line(
+                        &mut lines,
+                        indent + 2,
+                        "status.source_pane",
+                        &format_pane_target(status.source_pane),
+                    );
+                }
+            }
+        }
+    }
+    if lines.is_empty() && !model.tabs.is_empty() && !tabs.is_empty() {
+        push_metadata_text_line(&mut lines, 0, "metadata", "no projected rows");
+    }
+    lines
+}
+
+fn push_group_path_metadata(lines: &mut Vec<String>, indent: usize, path: &GroupPath) {
     for segment in &path.0 {
-        push_metadata_line(
+        push_metadata_text_line(
             lines,
-            output_row,
-            available_rows,
             indent,
             &segment.key,
             &format_metadata_value(&segment.value),
-            cols,
-            theme,
         );
     }
 }
 
-fn push_metadata_line(
-    lines: &mut [String],
-    output_row: &mut usize,
-    available_rows: usize,
-    indent: usize,
-    key: &str,
-    value: &str,
-    cols: usize,
-    theme: Option<RenderTheme>,
-) {
-    if *output_row >= available_rows {
-        return;
-    }
-    let indent = indent.min(cols.saturating_sub(1));
-    let content_cols = cols.saturating_sub(indent);
-    let line = format!("{}: {}", key, value);
-    lines[*output_row] = style_body_text(
-        format!(
-            "{}{}",
-            " ".repeat(indent),
-            pad_to_width(&truncate_to_width(&line, content_cols), content_cols)
-        ),
-        theme,
-    );
-    *output_row += 1;
+fn push_metadata_text_line(lines: &mut Vec<String>, indent: usize, key: &str, value: &str) {
+    lines.push(format!("{}{}: {}", " ".repeat(indent), key, value));
+}
+
+fn group_metadata_line_count(path: &GroupPath) -> usize {
+    3 + path.0.len()
+}
+
+fn tab_metadata_line_count(tab: &TabCard) -> usize {
+    let grouping_lines = tab
+        .grouping
+        .as_ref()
+        .map(|grouping| 2 + grouping.path.0.len())
+        .unwrap_or(0);
+    let status_lines = tab
+        .status
+        .as_ref()
+        .map(|status| 3 + usize::from(status.detail.is_some()))
+        .unwrap_or(0);
+    5 + grouping_lines + status_lines
+}
+
+fn clamp_scroll_offset(offset: usize, content_rows: usize, available_rows: usize) -> usize {
+    offset.min(content_rows.saturating_sub(available_rows))
 }
 
 fn format_metadata_value(value: &MetadataValue) -> String {
@@ -1385,8 +1305,54 @@ fn body_line(text: &str, width: usize, active: bool, theme: Option<RenderTheme>)
     }
 }
 
-fn settings_line(width: usize, theme: Option<RenderTheme>) -> String {
-    style_body_text(pad_to_width("settings", width), theme)
+fn render_footer(
+    lines: &mut [String],
+    hit_regions: &mut Vec<HitRegion>,
+    row: usize,
+    width: usize,
+    theme: Option<RenderTheme>,
+) {
+    if width == 0 {
+        return;
+    }
+    let mut chars = vec![' '; width];
+    chars[0] = '⚙';
+    if width >= 2 {
+        chars[width - 2] = '▲';
+        chars[width - 1] = '▼';
+    } else {
+        chars[0] = '⚙';
+    }
+    lines[row] = style_body_text(chars.into_iter().collect(), theme);
+    hit_regions.push(HitRegion {
+        row_start: row,
+        row_end: row,
+        col_start: 0,
+        col_end: 0,
+        tab_id: 0,
+        tab_position: 0,
+        action: HitAction::OpenConfig,
+    });
+    if width >= 2 {
+        hit_regions.push(HitRegion {
+            row_start: row,
+            row_end: row,
+            col_start: width - 2,
+            col_end: width - 2,
+            tab_id: 0,
+            tab_position: 0,
+            action: HitAction::ScrollMetadataUp,
+        });
+        hit_regions.push(HitRegion {
+            row_start: row,
+            row_end: row,
+            col_start: width - 1,
+            col_end: width - 1,
+            tab_id: 0,
+            tab_position: 0,
+            action: HitAction::ScrollMetadataDown,
+        });
+    }
 }
 
 fn group_header_line(
@@ -1823,6 +1789,7 @@ mod tests {
             24,
             true,
             None,
+            0,
             Some(SizeInPixels {
                 width: 9,
                 height: 18,
@@ -2061,8 +2028,38 @@ mod tests {
 
         assert_eq!(
             hit_at(&rendered.hit_regions, 8, 2).map(|hit| hit.action),
+            None
+        );
+        assert_eq!(
+            hit_at(&rendered.hit_regions, 8, 0).map(|hit| hit.action),
             Some(HitAction::OpenConfig)
         );
-        assert_eq!(rendered.lines[8].trim(), "settings");
+        assert_eq!(
+            hit_at(&rendered.hit_regions, 8, 22).map(|hit| hit.action),
+            Some(HitAction::ScrollMetadataUp)
+        );
+        assert_eq!(
+            hit_at(&rendered.hit_regions, 8, 23).map(|hit| hit.action),
+            Some(HitAction::ScrollMetadataDown)
+        );
+        assert!(rendered.lines[8].starts_with("⚙"));
+        assert!(rendered.lines[8].ends_with("▲▼"));
+    }
+
+    #[test]
+    fn metadata_view_scroll_offset_moves_visible_lines_and_clamps() {
+        let mut model = grouped_model();
+        model.config.view = RailViewMode::Metadata;
+
+        let top =
+            render_lines_with_theme_and_cell_size(Some(&model), &[], 5, 64, true, None, 0, None);
+        let scrolled =
+            render_lines_with_theme_and_cell_size(Some(&model), &[], 5, 64, true, None, 2, None);
+        let overscrolled =
+            render_lines_with_theme_and_cell_size(Some(&model), &[], 5, 64, true, None, 999, None);
+
+        assert!(top.lines[0].contains("group: zellij"));
+        assert!(scrolled.lines[0].contains("group.tab_count"));
+        assert!(overscrolled.metadata_scroll_offset < 999);
     }
 }
