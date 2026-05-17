@@ -25,7 +25,7 @@ pub enum Priority {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "kebab-case")]
 pub enum PaneTarget {
     Terminal(u32),
@@ -160,6 +160,14 @@ pub struct GroupPath(pub Vec<GroupSegment>);
 pub struct GroupSegment {
     pub key: String,
     pub value: MetadataValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
+pub enum MetadataTarget {
+    Pane(PaneTarget),
+    Tab(u64),
+    Group(GroupPath),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -378,6 +386,19 @@ mod tests {
         let decoded: GroupPath = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, path);
+    }
+
+    #[test]
+    fn metadata_target_group_round_trips_json() {
+        let target = MetadataTarget::Group(GroupPath(vec![GroupSegment {
+            key: "project.name".to_owned(),
+            value: MetadataValue::Text("zellij".to_owned()),
+        }]));
+
+        let encoded = serde_json::to_string(&target).unwrap();
+        let decoded: MetadataTarget = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, target);
     }
 
     #[test]

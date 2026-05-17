@@ -411,7 +411,7 @@ Scope:
 - optional max group label width.
 - optional hidden `Other` group behavior.
 
-Status: partially implemented. The config editor can now switch between ungrouped and directory grouping. Richer grouping criteria should wait until group identity is represented as `GroupPath`.
+Status: partially implemented. The config editor can now switch between ungrouped and directory grouping. Richer grouping criteria can now build on structured `GroupPath` identity.
 
 ### 4. Hierarchical Group Identity
 
@@ -427,7 +427,7 @@ Scope:
 - update debug/config rendering to show the group path and display label.
 - keep the existing `rail_grouping "directory"` user-facing behavior unchanged.
 
-This is the recommended next slice. It is small enough to keep behavior stable, but it gives later group metadata, explicit tab subjects, hierarchy, and latent tabs a sound identity model.
+Status: implemented. Directory grouping now uses structured `GroupPath` identity while keeping labels separate from identity and preserving the existing `rail_grouping "directory"` behavior.
 
 ### 5. Group Metadata Targets
 
@@ -441,7 +441,7 @@ Scope:
 - define merge behavior between direct group metadata and rollups from child panes/tabs.
 - add debug rendering for direct group values versus rolled-up values.
 
-This should come after `GroupPath`; otherwise external tools would have to target unstable label strings.
+Status: started. The shared model now has `MetadataTarget::{Pane, Tab, Group}`, and the controller metadata store uses that target type internally. External patch input, resolved group views, and rollup/direct merge behavior are still future work.
 
 ### 6. Explicit Tab Subject/Scope
 
@@ -596,19 +596,14 @@ This should not require a new data model. It should consume the same metadata st
 
 ## Recommended Next Step
 
-Implement the hierarchical group identity slice.
-
-Goal: replace the current cwd string group identity with `GroupPath` while preserving existing behavior.
+Continue the group metadata targets slice.
 
 The next slice should:
 
-- add shared `GroupPath` and `GroupSegment` types.
-- represent the current exact cwd group as `[{ key: "zellij.pane.cwd", value: Text(cwd) }]`.
-- keep compact labels as derived display data, not identity.
-- update `TabGroupingInfo` and `RailRow::GroupHeader` to carry the structured path.
-- keep `rail_grouping "directory"` and the renderer behavior unchanged from a user's perspective.
-- extend config/debug rendering to show both label and group path.
-- add round-trip tests for group paths in shared view models.
-- add controller tests proving directory grouping now uses the path identity.
+- add an internal or shared metadata patch shape using `MetadataTarget`.
+- support `set`/`unset` patch application with source ids and plugin-assigned `updated_at`.
+- expose group-targeted metadata in a debug/config view before using it for rendering policy.
+- define the first merge rule between direct group metadata and rolled-up child metadata.
+- keep external pipe input for arbitrary metadata as a separate follow-up once the internal target and patch semantics are stable.
 
-After this lands, the next best slices are group metadata targets and explicit tab subject/scope. Rendering polish such as collapse, group borders, and templates will be cleaner once the tree has stable semantic identities.
+After this lands, the next best slice is explicit tab subject/scope. Rendering polish such as collapse, group borders, and templates will be cleaner once group metadata and tab subjects have stable semantic identities.

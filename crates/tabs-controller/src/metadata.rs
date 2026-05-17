@@ -1,13 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
-use tabs_shared::{MetadataEntry, MetadataValue};
+use tabs_shared::{MetadataEntry, MetadataTarget, MetadataValue};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum EntityId {
-    Pane(String),
-    #[allow(dead_code)]
-    Tab(u64),
-}
+pub type EntityId = MetadataTarget;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateEntry {
@@ -118,7 +113,7 @@ pub fn select_primary_value(entries: &[CandidateEntry]) -> Option<MetadataValue>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tabs_shared::{MetadataEntry, MetadataValue};
+    use tabs_shared::{GroupPath, GroupSegment, MetadataEntry, MetadataValue, PaneTarget};
 
     fn entry(value: &str, precedence: i64, ordinal: i64, updated_at: u64) -> MetadataEntry {
         MetadataEntry {
@@ -134,26 +129,26 @@ mod tests {
     fn unset_removes_only_that_source_key() {
         let mut store = MetadataStore::default();
         store.set(
-            EntityId::Pane("terminal:1".to_owned()),
+            EntityId::Pane(PaneTarget::Terminal(1)),
             "zellij.pane.cwd",
             "zellij",
             entry("/a", 0, 0, 1),
         );
         store.set(
-            EntityId::Pane("terminal:1".to_owned()),
+            EntityId::Pane(PaneTarget::Terminal(1)),
             "zellij.pane.cwd",
             "shell",
             entry("/b", 0, 0, 2),
         );
 
         store.unset(
-            &EntityId::Pane("terminal:1".to_owned()),
+            &EntityId::Pane(PaneTarget::Terminal(1)),
             "zellij.pane.cwd",
             "zellij",
         );
 
         let entries = store.entries_for(
-            &EntityId::Pane("terminal:1".to_owned()),
+            &EntityId::Pane(PaneTarget::Terminal(1)),
             "zellij.pane.cwd",
             3,
         );
@@ -208,7 +203,7 @@ mod tests {
         let mut value = entry("/a", 0, 0, 10);
         value.ttl_ms = Some(5);
         store.set(
-            EntityId::Pane("terminal:1".to_owned()),
+            EntityId::Pane(PaneTarget::Terminal(1)),
             "zellij.pane.cwd",
             "zellij",
             value,
@@ -216,10 +211,33 @@ mod tests {
 
         assert!(store
             .entries_for(
-                &EntityId::Pane("terminal:1".to_owned()),
+                &EntityId::Pane(PaneTarget::Terminal(1)),
                 "zellij.pane.cwd",
                 16,
             )
             .is_empty());
+    }
+
+    #[test]
+    fn group_targets_are_distinct_metadata_entities() {
+        let mut store = MetadataStore::default();
+        let group = GroupPath(vec![GroupSegment {
+            key: "project.name".to_owned(),
+            value: MetadataValue::Text("zellij".to_owned()),
+        }]);
+        store.set(
+            EntityId::Group(group.clone()),
+            "summary.local_llm",
+            "flotilla",
+            entry("running tests", 0, 0, 1),
+        );
+
+        let entries = store.entries_for(&EntityId::Group(group), "summary.local_llm", 1);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].entry.value,
+            MetadataValue::Text("running tests".to_owned())
+        );
     }
 }

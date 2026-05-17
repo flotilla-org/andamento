@@ -440,7 +440,7 @@ impl ControllerState {
             .filter_map(|pane| {
                 self.metadata
                     .entries_for(
-                        &EntityId::Pane(format_pane_id(pane.pane_id)),
+                        &EntityId::Pane(pane.pane_id),
                         KEY_PANE_CWD,
                         self.receive_counter,
                     )
@@ -481,7 +481,7 @@ impl ControllerState {
     }
 
     fn refresh_pane_cwd_metadata(&mut self, pane_id: PaneTarget) {
-        let entity_id = EntityId::Pane(format_pane_id(pane_id));
+        let entity_id = EntityId::Pane(pane_id);
         let Some(pane) = self.panes.get(&pane_id) else {
             self.metadata.unset(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ);
             return;
@@ -548,13 +548,6 @@ fn cwd_group_path(cwd: &str) -> GroupPath {
         key: KEY_PANE_CWD.to_owned(),
         value: MetadataValue::Text(cwd.to_owned()),
     }])
-}
-
-fn format_pane_id(pane_id: PaneTarget) -> String {
-    match pane_id {
-        PaneTarget::Terminal(id) => format!("terminal:{id}"),
-        PaneTarget::Plugin(id) => format!("plugin:{id}"),
-    }
 }
 
 #[cfg(test)]
