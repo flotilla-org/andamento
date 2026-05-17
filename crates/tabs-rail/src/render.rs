@@ -1,15 +1,16 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::template_config::{
+use ansi_term::{Color, Style};
+use tabs_shared::template_config::{
     TemplateConfigCatalog, TemplateConfigFieldClass, TemplateConfigMatchContext,
     TemplateConfigNodeKind, TemplateConfigSlot,
 };
-use ansi_term::{Color, Style};
 use tabs_shared::{
     ControllerViewModel, GroupPath, GroupSegment, MetadataEntry, MetadataSourceEntry,
     MetadataTarget, MetadataValue, ObservedMetadataIdentity, PaneTarget, Priority, RailConfig,
     RailRow, RailSizingPreset, RailStructure, RailViewMode, ReachableMetadataIdentity,
-    ResolvedMetadata, StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
+    ResolvedMetadata, ResolvedTemplateSlot, ResolvedTemplateSlots, StatusIcon, TabCard,
+    TabGroupingInfo, TabStatusSummary,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::{PaletteColor, SizeInPixels, Styling};
@@ -108,6 +109,7 @@ struct RenderCard {
     metadata: RenderMetadata,
     metadata_sources: RenderMetadataSources,
     reachable_identities: RenderReachableIdentities,
+    templates: ResolvedTemplateSlots,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +129,7 @@ struct RenderGroup {
     metadata: RenderMetadata,
     metadata_sources: RenderMetadataSources,
     reachable_identities: RenderReachableIdentities,
+    templates: ResolvedTemplateSlots,
     children: Vec<RenderNode>,
 }
 
@@ -144,6 +147,7 @@ enum PendingRenderNode {
         label: String,
         full_label: String,
         tab_count: usize,
+        templates: ResolvedTemplateSlots,
     },
     Tab(RenderTab),
 }
@@ -465,10 +469,11 @@ fn group_metadata_block(group: &RenderGroup) -> MetadataBlock {
     push_additional_metadata_lines(&mut lines, 2, &group.metadata, &excluded_keys);
     push_metadata_source_detail_lines(&mut lines, 2, &group.metadata_sources);
     push_reachable_identity_lines(&mut lines, 2, &group.reachable_identities);
-    push_template_diagnostic_line(
+    push_template_or_builtin_diagnostic_line(
         &mut lines,
         2,
         "template.group_header",
+        group.templates.group_header.as_ref(),
         TemplateRenderContext {
             slot: TemplateSlot::GroupHeader,
             node_kind: RenderNodeKind::Group,
@@ -539,10 +544,11 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
     );
     push_metadata_source_detail_lines(&mut lines, indent + 2, &card.metadata_sources);
     push_reachable_identity_lines(&mut lines, indent + 2, &card.reachable_identities);
-    push_template_diagnostic_line(
+    push_template_or_builtin_diagnostic_line(
         &mut lines,
         indent + 2,
         "template.tab_title",
+        card.templates.tab_title.as_ref(),
         TemplateRenderContext {
             slot: TemplateSlot::TabTitle,
             node_kind: RenderNodeKind::Tab,
@@ -578,10 +584,11 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
             "status.source_pane",
             &format_pane_target(status.source_pane),
         );
-        push_template_diagnostic_line(
+        push_template_or_builtin_diagnostic_line(
             &mut lines,
             indent + 2,
             "template.tab_status",
+            card.templates.tab_status.as_ref(),
             TemplateRenderContext {
                 slot: TemplateSlot::TabStatus,
                 node_kind: RenderNodeKind::Tab,
@@ -726,12 +733,25 @@ fn format_metadata_value(value: &MetadataValue) -> String {
     }
 }
 
-fn push_template_diagnostic_line(
+fn push_template_or_builtin_diagnostic_line(
     lines: &mut Vec<String>,
     indent: usize,
     key: &str,
+    resolved_slot: Option<&ResolvedTemplateSlot>,
     context: TemplateRenderContext<'_>,
 ) {
+    if let Some(slot) = resolved_slot {
+        push_metadata_text_line(lines, indent, key, &slot.template_name);
+        let fields = slot
+            .fields
+            .iter()
+            .map(|field| format!("{}({})", field.text, field.priority))
+            .collect::<Vec<_>>();
+        if !fields.is_empty() {
+            push_metadata_text_line(lines, indent, &format!("{key}.fields"), &fields.join(", "));
+        }
+        return;
+    }
     if let Some(template) = matched_template(context) {
         push_metadata_text_line(lines, indent, key, template.name);
         push_metadata_text_line(
@@ -1058,6 +1078,7 @@ fn append_group_header(
         group.collapsed,
         contains_active_tab(&group.children),
         active_tab_name(&group.children),
+        group.templates.group_header.as_ref(),
         inner_width,
         theme,
         template_catalog,
@@ -1609,6 +1630,7 @@ fn nodes_to_render(
                         metadata,
                         metadata_sources: RenderMetadataSources::new(),
                         reachable_identities: RenderReachableIdentities::new(),
+                        templates: ResolvedTemplateSlots::default(),
                     },
                     indent: 0,
                     grouping: None,
@@ -1640,12 +1662,14 @@ fn nodes_to_render(
                     label,
                     full_label,
                     tab_count,
+                    templates,
                     ..
                 } => PendingRenderNode::GroupHeader {
                     path: path.clone(),
                     label: label.clone(),
                     full_label: full_label.clone(),
                     tab_count: *tab_count,
+                    templates: templates.clone(),
                 },
                 RailRow::Tab { tab, indent } => PendingRenderNode::Tab(RenderTab {
                     card: render_card_from_model(tab, &local_by_id),
@@ -1673,8 +1697,16 @@ fn pending_nodes_to_render_nodes(
                 label,
                 full_label,
                 tab_count: _,
+                templates,
             } => {
-                ensure_group_path(&mut nodes, &path, &label, &full_label, collapsed_groups);
+                ensure_group_path(
+                    &mut nodes,
+                    &path,
+                    &label,
+                    &full_label,
+                    &templates,
+                    collapsed_groups,
+                );
                 current_group = Some(CurrentGroupHeader {
                     path,
                     label,
@@ -1689,6 +1721,7 @@ fn pending_nodes_to_render_nodes(
                     &group_header.path,
                     &group_header.label,
                     &group_header.full_label,
+                    &ResolvedTemplateSlots::default(),
                     collapsed_groups,
                 );
                 group.children.push(RenderNode::Tab(tab));
@@ -1708,6 +1741,7 @@ fn ensure_group_path<'a>(
     path: &GroupPath,
     leaf_label: &str,
     leaf_full_label: &str,
+    templates: &ResolvedTemplateSlots,
     collapsed_groups: &[GroupPath],
 ) -> &'a mut RenderGroup {
     if path.0.is_empty() {
@@ -1720,6 +1754,7 @@ fn ensure_group_path<'a>(
                     metadata: metadata_for_group_header(path, leaf_label, leaf_full_label, 0),
                     metadata_sources: RenderMetadataSources::new(),
                     reachable_identities: RenderReachableIdentities::new(),
+                    templates: templates.clone(),
                     path: path.clone(),
                     label: leaf_label.to_owned(),
                     full_label: leaf_full_label.to_owned(),
@@ -1741,6 +1776,7 @@ fn ensure_group_path<'a>(
         1,
         leaf_label,
         leaf_full_label,
+        templates,
         collapsed_groups,
     )
 }
@@ -1751,6 +1787,7 @@ fn ensure_group_path_at<'a>(
     depth: usize,
     leaf_label: &str,
     leaf_full_label: &str,
+    templates: &ResolvedTemplateSlots,
     collapsed_groups: &[GroupPath],
 ) -> &'a mut RenderGroup {
     let segment = &path.0[depth - 1];
@@ -1783,6 +1820,11 @@ fn ensure_group_path_at<'a>(
                 metadata: metadata_for_group_header(&prefix, &label, &full_label, 0),
                 metadata_sources: RenderMetadataSources::new(),
                 reachable_identities: RenderReachableIdentities::new(),
+                templates: if is_leaf {
+                    templates.clone()
+                } else {
+                    ResolvedTemplateSlots::default()
+                },
                 path: prefix.clone(),
                 label: label.clone(),
                 full_label: full_label.clone(),
@@ -1799,6 +1841,7 @@ fn ensure_group_path_at<'a>(
     if is_leaf {
         group.label = label;
         group.full_label = full_label;
+        group.templates = templates.clone();
         group.metadata.extend(metadata_for_group_header(
             &group.path,
             &group.label,
@@ -1813,6 +1856,7 @@ fn ensure_group_path_at<'a>(
             depth + 1,
             leaf_label,
             leaf_full_label,
+            templates,
             collapsed_groups,
         )
     }
@@ -1967,6 +2011,7 @@ fn render_card_from_model(card: &TabCard, local_by_id: &HashMap<u64, &LocalTab>)
         metadata: metadata_for_tab_card(card, position, &name, active),
         metadata_sources: RenderMetadataSources::new(),
         reachable_identities: RenderReachableIdentities::new(),
+        templates: card.templates.clone(),
     }
 }
 
@@ -2132,10 +2177,15 @@ fn format_status_with_template_catalog(
     card: &RenderCard,
     template_catalog: Option<&TemplateConfigCatalog>,
 ) -> String {
-    join_template_fields(
-        &status_template_fields_with_template_catalog(&card.metadata, template_catalog),
-        true,
-    )
+    let fields = card
+        .templates
+        .tab_status
+        .as_ref()
+        .map(template_fields_from_resolved_slot)
+        .unwrap_or_else(|| {
+            status_template_fields_with_template_catalog(&card.metadata, template_catalog)
+        });
+    join_template_fields(&fields, true)
 }
 
 #[cfg(test)]
@@ -2204,10 +2254,15 @@ fn tab_title_with_template_catalog(
     card: &RenderCard,
     template_catalog: Option<&TemplateConfigCatalog>,
 ) -> String {
-    join_template_fields(
-        &tab_title_template_fields_with_template_catalog(&card.metadata, template_catalog),
-        true,
-    )
+    let fields = card
+        .templates
+        .tab_title
+        .as_ref()
+        .map(template_fields_from_resolved_slot)
+        .unwrap_or_else(|| {
+            tab_title_template_fields_with_template_catalog(&card.metadata, template_catalog)
+        });
+    join_template_fields(&fields, true)
 }
 
 #[cfg(test)]
@@ -2426,16 +2481,20 @@ fn group_header_line(
     collapsed: bool,
     contains_active_tab: bool,
     active_tab_name: Option<&str>,
+    resolved_slot: Option<&ResolvedTemplateSlot>,
     width: usize,
     theme: Option<RenderTheme>,
     template_catalog: Option<&TemplateConfigCatalog>,
 ) -> String {
-    let fields = group_header_template_fields_with_template_catalog(
-        metadata,
-        collapsed,
-        active_tab_name,
-        template_catalog,
-    );
+    let fields = match resolved_slot {
+        Some(slot) => group_header_fields_from_resolved_slot(slot, collapsed, active_tab_name),
+        None => group_header_template_fields_with_template_catalog(
+            metadata,
+            collapsed,
+            active_tab_name,
+            template_catalog,
+        ),
+    };
     let label = render_template_fields(&fields, width);
     let remaining = width.saturating_sub(label.width());
     let text = if remaining >= 2 {
@@ -2937,6 +2996,39 @@ fn group_header_template_fields_with_template_catalog(
     })
 }
 
+fn group_header_fields_from_resolved_slot(
+    slot: &ResolvedTemplateSlot,
+    collapsed: bool,
+    active_tab_name: Option<&str>,
+) -> Vec<TemplateField> {
+    let mut fields = vec![TemplateField::Required(
+        if collapsed { "▶" } else { "▼" }.to_owned(),
+    )];
+    fields.extend(slot.fields.iter().map(|field| TemplateField::Prioritized {
+        value: field.text.clone(),
+        priority: field.priority,
+    }));
+    if collapsed {
+        if let Some(active_tab_name) = active_tab_name {
+            fields.push(TemplateField::Prioritized {
+                value: format!(": {active_tab_name}"),
+                priority: 80,
+            });
+        }
+    }
+    fields
+}
+
+fn template_fields_from_resolved_slot(slot: &ResolvedTemplateSlot) -> Vec<TemplateField> {
+    slot.fields
+        .iter()
+        .map(|field| TemplateField::Prioritized {
+            value: field.text.clone(),
+            priority: field.priority,
+        })
+        .collect()
+}
+
 fn render_template_fields(fields: &[TemplateField], width: usize) -> String {
     let full = join_template_fields(fields, true);
     if full.width() <= width {
@@ -3135,6 +3227,7 @@ mod tests {
                         source_pane: PaneTarget::Terminal(9),
                     }),
                     grouping: None,
+                    templates: ResolvedTemplateSlots::default(),
                 },
                 TabCard {
                     tab_id: 1,
@@ -3144,6 +3237,7 @@ mod tests {
                     pinned: false,
                     status: None,
                     grouping: None,
+                    templates: ResolvedTemplateSlots::default(),
                 },
             ],
             rows: vec![],
@@ -3165,6 +3259,7 @@ mod tests {
             pinned: false,
             status: None,
             grouping: None,
+            templates: ResolvedTemplateSlots::default(),
         };
         let tab_two = TabCard {
             tab_id: 2,
@@ -3174,6 +3269,7 @@ mod tests {
             pinned: false,
             status: None,
             grouping: None,
+            templates: ResolvedTemplateSlots::default(),
         };
         ControllerViewModel {
             sort_mode: SortMode::Position,
@@ -3190,6 +3286,7 @@ mod tests {
                     label: "zellij".to_owned(),
                     full_label: "/Users/robert/dev/zellij".to_owned(),
                     tab_count: 2,
+                    templates: ResolvedTemplateSlots::default(),
                 },
                 RailRow::Tab {
                     tab: tab_one,
@@ -3238,6 +3335,7 @@ mod tests {
                 pinned: false,
                 status: None,
                 grouping: None,
+                templates: ResolvedTemplateSlots::default(),
             };
             model.rows.push(RailRow::GroupHeader {
                 group_id: format!("project-a/{worktree}"),
@@ -3245,6 +3343,7 @@ mod tests {
                 label: worktree.to_owned(),
                 full_label: format!("project-a/{worktree}"),
                 tab_count: 1,
+                templates: ResolvedTemplateSlots::default(),
             });
             model.rows.push(RailRow::Tab { tab, indent: 2 });
         }
@@ -3318,6 +3417,7 @@ mod tests {
             metadata: metadata_for_group_header(&GroupPath::default(), "parent", "parent", 1),
             metadata_sources: RenderMetadataSources::new(),
             reachable_identities: RenderReachableIdentities::new(),
+            templates: ResolvedTemplateSlots::default(),
             children: vec![RenderNode::Group(RenderGroup {
                 path: GroupPath::default(),
                 label: "typed-child".to_owned(),
@@ -3328,6 +3428,7 @@ mod tests {
                 metadata: metadata_for_group_header(&GroupPath::default(), "child", "child", 1),
                 metadata_sources: RenderMetadataSources::new(),
                 reachable_identities: RenderReachableIdentities::new(),
+                templates: ResolvedTemplateSlots::default(),
                 children: vec![RenderNode::Tab(RenderTab {
                     card: RenderCard {
                         tab_id: 42,
@@ -3344,6 +3445,7 @@ mod tests {
                         }),
                         metadata_sources: RenderMetadataSources::new(),
                         reachable_identities: RenderReachableIdentities::new(),
+                        templates: ResolvedTemplateSlots::default(),
                     },
                     indent: 4,
                     grouping: None,
@@ -3866,6 +3968,7 @@ mod tests {
             metadata,
             metadata_sources: RenderMetadataSources::new(),
             reachable_identities: RenderReachableIdentities::new(),
+            templates: ResolvedTemplateSlots::default(),
             children: vec![],
         };
         let mut lines = vec![];
@@ -3923,6 +4026,7 @@ mod tests {
             metadata,
             metadata_sources: RenderMetadataSources::new(),
             reachable_identities: RenderReachableIdentities::new(),
+            templates: ResolvedTemplateSlots::default(),
         };
 
         assert_eq!(
@@ -3933,7 +4037,7 @@ mod tests {
 
     #[test]
     fn external_template_catalog_can_override_tab_title_rendering() {
-        let config = crate::template_config::parse_template_config_json(
+        let config = tabs_shared::template_config::parse_template_config_json(
             r#"
             {
               "templates": [
@@ -3950,7 +4054,7 @@ mod tests {
             "#,
         )
         .expect("valid template config");
-        let catalog = crate::template_config::TemplateConfigCatalog::from_config(config);
+        let catalog = tabs_shared::template_config::TemplateConfigCatalog::from_config(config);
 
         let rendered =
             render_lines_with_template_catalog(Some(&model()), &[], 7, 24, true, Some(&catalog));
@@ -3960,7 +4064,7 @@ mod tests {
 
     #[test]
     fn external_kdl_template_catalog_can_render_numeric_priority_fields() {
-        let config = crate::template_config::parse_template_config_kdl(
+        let config = tabs_shared::template_config::parse_template_config_kdl(
             r#"
             template "git.group-header" slot="group-header" node-kind="group" {
               when exists="git.repo"
@@ -3974,7 +4078,7 @@ mod tests {
             "#,
         )
         .expect("valid template config");
-        let catalog = crate::template_config::TemplateConfigCatalog::from_config(config);
+        let catalog = tabs_shared::template_config::TemplateConfigCatalog::from_config(config);
         let metadata = RenderMetadata::from([
             (
                 "git.repo".to_owned(),
@@ -4014,7 +4118,7 @@ mod tests {
 
     #[test]
     fn external_kdl_group_header_template_uses_resolved_group_metadata() {
-        let config = crate::template_config::parse_template_config_kdl(
+        let config = tabs_shared::template_config::parse_template_config_kdl(
             r#"
             template "git.group-header" slot="group-header" node-kind="group" {
               when exists="git.repo"
@@ -4028,7 +4132,7 @@ mod tests {
             "#,
         )
         .expect("valid template config");
-        let catalog = crate::template_config::TemplateConfigCatalog::from_config(config);
+        let catalog = tabs_shared::template_config::TemplateConfigCatalog::from_config(config);
         let mut model = grouped_model();
         let group_path = GroupPath(vec![GroupSegment {
             key: "zellij.pane.cwd".to_owned(),

@@ -5,7 +5,8 @@ use std::path::Path;
 
 use kdl::{KdlDocument, KdlNode, KdlValue};
 use serde::Deserialize;
-use tabs_shared::MetadataValue;
+
+use crate::MetadataValue;
 
 pub fn parse_template_config_json(
     input: &str,

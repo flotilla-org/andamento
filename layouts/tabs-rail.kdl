@@ -3,11 +3,11 @@ plugins {
         rail_structure "joined-cells"
         rail_sizing "active-large"
         rail_grouping "directory"
+        template_config_path "/host/Users/robert/dev/zellij-scratch/templates/andamento-git.kdl"
     }
     tabs-rail location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-rail.wasm" {
         controller_plugin_url "tabs-controller"
         config_plugin_url "tabs-rail-config"
-        template_config_path "/host/Users/robert/dev/zellij-scratch/templates/andamento-git.kdl"
     }
     tabs-rail-config location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-rail-config.wasm"
 }

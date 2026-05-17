@@ -24,6 +24,7 @@ fn main() {}
 #[derive(Default)]
 struct PluginState {
     state: ControllerState,
+    template_config_path: Option<String>,
     permissions_granted: bool,
     own_identity: Option<RendererHello>,
     bootstrap_requested: bool,
@@ -42,11 +43,13 @@ impl ZellijPlugin for PluginState {
         });
         self.state
             .set_rail_config(parse_rail_config(&configuration));
+        self.template_config_path = template_config_path_from_configuration(&configuration);
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
             PermissionType::ReadCliPipes,
             PermissionType::MessageAndLaunchOtherPlugins,
+            PermissionType::OpenFiles,
         ]);
         subscribe(&[
             EventType::TabUpdate,
@@ -60,6 +63,10 @@ impl ZellijPlugin for PluginState {
         match event {
             Event::PermissionRequestResult(status) => {
                 self.permissions_granted = matches!(status, PermissionStatus::Granted);
+                if self.permissions_granted {
+                    self.reload_template_catalog();
+                    self.push_view_model_to_rails();
+                }
                 self.request_bootstrap_snapshot();
             }
             Event::TabUpdate(tabs) => {
@@ -118,6 +125,22 @@ impl ZellijPlugin for PluginState {
 
 #[cfg(target_family = "wasm")]
 impl PluginState {
+    fn reload_template_catalog(&mut self) {
+        let Some(path) = self.template_config_path.as_deref() else {
+            self.state.set_template_catalog(None);
+            return;
+        };
+        match tabs_shared::template_config::load_template_catalog_from_file(path) {
+            Ok(catalog) => {
+                self.state.set_template_catalog(Some(catalog));
+            }
+            Err(error) => {
+                eprintln!("tabs-controller: failed to load template config: {error}");
+                self.state.set_template_catalog(None);
+            }
+        }
+    }
+
     fn request_bootstrap_snapshot(&mut self) {
         if !self.permissions_granted || self.bootstrap_requested {
             return;
@@ -300,6 +323,17 @@ fn parse_rail_config(configuration: &BTreeMap<String, String>) -> RailConfig {
             .and_then(|value| parse_rail_view(value))
             .unwrap_or_default(),
     }
+}
+
+fn template_config_path_from_configuration(
+    configuration: &BTreeMap<String, String>,
+) -> Option<String> {
+    configuration
+        .get("template_config_path")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
 }
 
 fn parse_rail_structure(value: &str) -> Option<RailStructure> {
@@ -604,6 +638,19 @@ mod tests {
         let config = parse_rail_config(&configuration);
 
         assert_eq!(config.view, RailViewMode::Metadata);
+    }
+
+    #[test]
+    fn parses_template_config_path_from_plugin_configuration() {
+        let mut configuration = BTreeMap::new();
+        configuration.insert(
+            "template_config_path".to_owned(),
+            " /host/tmp/andamento.kdl ".to_owned(),
+        );
+
+        let path = template_config_path_from_configuration(&configuration);
+
+        assert_eq!(path.as_deref(), Some("/host/tmp/andamento.kdl"));
     }
 
     #[test]

@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod template_config;
+
 pub const MSG_RENDERER_HELLO: &str = "tabs-renderer-hello";
 pub const MSG_CONFIG_EDITOR_HELLO: &str = "tabs-config-editor-hello";
 pub const MSG_REQUEST_STATE: &str = "tabs-request-state";
@@ -95,6 +97,8 @@ pub struct TabCard {
     pub status: Option<TabStatusSummary>,
     #[serde(default)]
     pub grouping: Option<TabGroupingInfo>,
+    #[serde(default)]
+    pub templates: ResolvedTemplateSlots,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,11 +280,36 @@ pub enum RailRow {
         label: String,
         full_label: String,
         tab_count: usize,
+        #[serde(default)]
+        templates: ResolvedTemplateSlots,
     },
     Tab {
         tab: TabCard,
         indent: usize,
     },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedTemplateSlots {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_header: Option<ResolvedTemplateSlot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_title: Option<ResolvedTemplateSlot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_status: Option<ResolvedTemplateSlot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedTemplateSlot {
+    pub template_name: String,
+    #[serde(default)]
+    pub fields: Vec<ResolvedTemplateField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedTemplateField {
+    pub text: String,
+    pub priority: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,6 +395,7 @@ mod tests {
                     source_pane: PaneTarget::Terminal(3),
                 }),
                 grouping: None,
+                templates: ResolvedTemplateSlots::default(),
             }],
             rows: vec![],
             resolved_metadata: vec![],
@@ -432,6 +462,7 @@ mod tests {
                     label: "zellij".to_owned(),
                     full_label: "/Users/robert/dev/zellij".to_owned(),
                 }),
+                templates: ResolvedTemplateSlots::default(),
             }],
             rows: vec![
                 RailRow::GroupHeader {
@@ -440,6 +471,7 @@ mod tests {
                     label: "zellij".to_owned(),
                     full_label: "/Users/robert/dev/zellij".to_owned(),
                     tab_count: 1,
+                    templates: ResolvedTemplateSlots::default(),
                 },
                 RailRow::Tab {
                     tab: TabCard {
@@ -455,6 +487,7 @@ mod tests {
                             label: "zellij".to_owned(),
                             full_label: "/Users/robert/dev/zellij".to_owned(),
                         }),
+                        templates: ResolvedTemplateSlots::default(),
                     },
                     indent: 2,
                 },

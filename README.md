@@ -80,10 +80,10 @@ plugin location="tabs-controller" {
 
 ## External Rail Templates
 
-The rail can load a KDL template config from a real filesystem path exposed to the plugin:
+The controller can load a KDL template config from a real filesystem path exposed to the plugin, resolve templates against metadata, and send resolved fields to each rail:
 
 ```kdl
-plugin location="tabs-rail" {
+plugin location="tabs-controller" {
     template_config_path "/host/Users/robert/dev/zellij-scratch/templates/andamento-git.kdl"
 }
 ```
@@ -95,14 +95,10 @@ template "git.group-header" slot="group-header" node-kind="group" {
     when exists="git.repo"
 
     field priority=100 {
-        value source="collapsed-toggle" collapsed="▶" expanded="▼"
-    }
-    field priority=100 {
         value key="git.repo"
         value key="group.label"
     }
     field key="git.branch" priority=60 prefix=" "
-    field source="active-tab-name" priority=80 condition="collapsed" prefix=": "
 }
 ```
 

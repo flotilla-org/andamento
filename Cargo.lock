@@ -1952,8 +1952,6 @@ name = "tabs-rail"
 version = "0.1.0"
 dependencies = [
  "ansi_term",
- "kdl",
- "serde",
  "serde_json",
  "tabs-shared",
  "unicode-width",
@@ -1975,6 +1973,7 @@ dependencies = [
 name = "tabs-shared"
 version = "0.1.0"
 dependencies = [
+ "kdl",
  "serde",
  "serde_json",
 ]

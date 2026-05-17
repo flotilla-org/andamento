@@ -8,7 +8,8 @@ use tabs_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataEntry,
     MetadataIdentity, MetadataSourceEntry, MetadataValue, ObservedMetadataIdentity, PaneTarget,
     Priority, RailConfig, RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello,
-    ResolvedMetadata, SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
+    ResolvedMetadata, ResolvedTemplateField, ResolvedTemplateSlot, ResolvedTemplateSlots,
+    SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -55,6 +56,7 @@ pub struct ControllerState {
     known_config_editors: BTreeMap<u32, RendererHello>,
     sort_mode: SortMode,
     rail_config: RailConfig,
+    template_catalog: Option<tabs_shared::template_config::TemplateConfigCatalog>,
     receive_counter: u64,
 }
 
@@ -241,6 +243,13 @@ impl ControllerState {
         self.rail_config = rail_config;
     }
 
+    pub fn set_template_catalog(
+        &mut self,
+        catalog: Option<tabs_shared::template_config::TemplateConfigCatalog>,
+    ) {
+        self.template_catalog = catalog;
+    }
+
     pub fn apply_metadata_patch(&mut self, patch: tabs_shared::MetadataPatch) {
         self.receive_counter = self.receive_counter.saturating_add(1);
         self.metadata.apply_patch(patch, self.receive_counter);
@@ -326,6 +335,7 @@ impl ControllerState {
                 pinned: self.pinned_tabs.contains(&tab.tab_id),
                 status: self.status_for_tab(tab.tab_id),
                 grouping: grouping_by_tab.get(&tab.tab_id).cloned(),
+                templates: ResolvedTemplateSlots::default(),
             })
             .collect();
 
@@ -347,13 +357,15 @@ impl ControllerState {
 
         let resolved_metadata = self.resolved_metadata_for_tabs(&tabs);
         let observed_identities = observed_metadata_identities(&resolved_metadata);
+        self.resolve_tab_templates(&mut tabs, &resolved_metadata);
+        let rows = self.rows_with_group_templates(self.rows_for_tabs(&tabs), &resolved_metadata);
 
         ControllerViewModel {
             sort_mode: self.sort_mode,
             config: self.rail_config,
             resolved_metadata,
             observed_identities,
-            rows: self.rows_for_tabs(&tabs),
+            rows,
             tabs,
         }
     }
@@ -408,6 +420,7 @@ impl ControllerState {
                 label: grouping.label,
                 full_label: grouping.full_label,
                 tab_count: grouped_tabs.len(),
+                templates: ResolvedTemplateSlots::default(),
             });
             rows.extend(
                 grouped_tabs
@@ -416,6 +429,99 @@ impl ControllerState {
             );
         }
         rows
+    }
+
+    fn rows_with_group_templates(
+        &self,
+        rows: Vec<RailRow>,
+        resolved_metadata: &[ResolvedMetadata],
+    ) -> Vec<RailRow> {
+        rows.into_iter()
+            .map(|row| match row {
+                RailRow::GroupHeader {
+                    group_id,
+                    path,
+                    label,
+                    full_label,
+                    tab_count,
+                    mut templates,
+                } => {
+                    let metadata = group_template_metadata(
+                        &path,
+                        &label,
+                        &full_label,
+                        tab_count,
+                        resolved_metadata,
+                    );
+                    templates.group_header = self.resolve_template_slot(
+                        tabs_shared::template_config::TemplateConfigSlot::GroupHeader,
+                        tabs_shared::template_config::TemplateConfigNodeKind::Group,
+                        &metadata,
+                    );
+                    RailRow::GroupHeader {
+                        group_id,
+                        path,
+                        label,
+                        full_label,
+                        tab_count,
+                        templates,
+                    }
+                }
+                RailRow::Tab { tab, indent } => RailRow::Tab { tab, indent },
+            })
+            .collect()
+    }
+
+    fn resolve_tab_templates(&self, tabs: &mut [TabCard], resolved_metadata: &[ResolvedMetadata]) {
+        for tab in tabs {
+            let metadata = tab_template_metadata(tab, resolved_metadata);
+            tab.templates.tab_title = self.resolve_template_slot(
+                tabs_shared::template_config::TemplateConfigSlot::TabTitle,
+                tabs_shared::template_config::TemplateConfigNodeKind::Tab,
+                &metadata,
+            );
+            if tab.status.is_some() {
+                tab.templates.tab_status = self.resolve_template_slot(
+                    tabs_shared::template_config::TemplateConfigSlot::TabStatus,
+                    tabs_shared::template_config::TemplateConfigNodeKind::Tab,
+                    &metadata,
+                );
+            }
+        }
+    }
+
+    fn resolve_template_slot(
+        &self,
+        slot: tabs_shared::template_config::TemplateConfigSlot,
+        node_kind: tabs_shared::template_config::TemplateConfigNodeKind,
+        metadata: &BTreeMap<String, MetadataValue>,
+    ) -> Option<ResolvedTemplateSlot> {
+        let catalog = self.template_catalog.as_ref()?;
+        let context = tabs_shared::template_config::TemplateConfigMatchContext {
+            slot,
+            node_kind,
+            metadata,
+            collapsed: false,
+            active_tab_name: None,
+        };
+        let resolved = catalog.resolve(context)?;
+        let fields = resolved
+            .template
+            .render_fields(context)
+            .into_iter()
+            .map(|field| ResolvedTemplateField {
+                text: field.value,
+                priority: field.priority.unwrap_or(match field.class {
+                    tabs_shared::template_config::TemplateConfigFieldClass::Optional => 0,
+                    tabs_shared::template_config::TemplateConfigFieldClass::Required
+                    | tabs_shared::template_config::TemplateConfigFieldClass::Priority => 100,
+                }),
+            })
+            .collect::<Vec<_>>();
+        (!fields.is_empty()).then_some(ResolvedTemplateSlot {
+            template_name: resolved.template.name.clone(),
+            fields,
+        })
     }
 
     fn tab_grouping_infos(&self) -> HashMap<u64, TabGroupingInfo> {
@@ -771,6 +877,100 @@ fn cwd_group_path(cwd: &str) -> GroupPath {
         key: KEY_PANE_CWD.to_owned(),
         value: MetadataValue::Text(cwd.to_owned()),
     }])
+}
+
+fn group_template_metadata(
+    path: &GroupPath,
+    label: &str,
+    full_label: &str,
+    tab_count: usize,
+    resolved_metadata: &[ResolvedMetadata],
+) -> BTreeMap<String, MetadataValue> {
+    let mut metadata = resolved_metadata_values(resolved_metadata, &EntityId::Group(path.clone()));
+    metadata.insert(
+        "group.label".to_owned(),
+        MetadataValue::Text(label.to_owned()),
+    );
+    metadata.insert(
+        "group.full_label".to_owned(),
+        MetadataValue::Text(full_label.to_owned()),
+    );
+    metadata.insert(
+        "group.tab_count".to_owned(),
+        MetadataValue::Integer(tab_count as i64),
+    );
+    for segment in &path.0 {
+        metadata.insert(segment.key.clone(), segment.value.clone());
+    }
+    metadata
+}
+
+fn tab_template_metadata(
+    tab: &TabCard,
+    resolved_metadata: &[ResolvedMetadata],
+) -> BTreeMap<String, MetadataValue> {
+    let mut metadata = resolved_metadata_values(resolved_metadata, &EntityId::Tab(tab.tab_id));
+    metadata.insert(
+        "zellij.tab.id".to_owned(),
+        MetadataValue::Integer(tab.tab_id as i64),
+    );
+    metadata.insert(
+        "zellij.tab.position".to_owned(),
+        MetadataValue::Integer(tab.position as i64),
+    );
+    metadata.insert(
+        "zellij.tab.name".to_owned(),
+        MetadataValue::Text(tab.name.clone()),
+    );
+    metadata.insert(
+        "zellij.tab.active".to_owned(),
+        MetadataValue::Bool(tab.active),
+    );
+    metadata.insert(
+        "rail.tab.pinned".to_owned(),
+        MetadataValue::Bool(tab.pinned),
+    );
+    if let Some(status) = tab.status.as_ref() {
+        metadata.insert(
+            "status.priority".to_owned(),
+            MetadataValue::Text(format!("{:?}", status.priority).to_ascii_lowercase()),
+        );
+        metadata.insert(
+            "status.title".to_owned(),
+            MetadataValue::Text(status.title.clone()),
+        );
+        if let Some(detail) = status.detail.as_ref() {
+            metadata.insert(
+                "status.detail".to_owned(),
+                MetadataValue::Text(detail.clone()),
+            );
+        }
+        metadata.insert(
+            "status.source_pane".to_owned(),
+            MetadataValue::Text(match status.source_pane {
+                PaneTarget::Terminal(id) => format!("terminal:{id}"),
+                PaneTarget::Plugin(id) => format!("plugin:{id}"),
+            }),
+        );
+    }
+    metadata
+}
+
+fn resolved_metadata_values(
+    resolved_metadata: &[ResolvedMetadata],
+    target: &EntityId,
+) -> BTreeMap<String, MetadataValue> {
+    resolved_metadata
+        .iter()
+        .find(|metadata| &metadata.target == target)
+        .map(|metadata| {
+            metadata
+                .values
+                .iter()
+                .map(|(key, entry)| (key.clone(), entry.value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn observed_metadata_identities(
@@ -1399,6 +1599,86 @@ mod tests {
                     value: MetadataValue::Text(cwd.clone()),
                 }
                 && reachable.distance == 1));
+    }
+
+    #[test]
+    fn view_model_resolves_group_header_template_fields_from_group_metadata() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.set_template_catalog(Some(
+            tabs_shared::template_config::TemplateConfigCatalog::from_config(
+                tabs_shared::template_config::parse_template_config_kdl(
+                    r#"
+                    template "git.group-header" slot="group-header" node-kind="group" {
+                      when exists="git.repo"
+                      field key="git.repo" priority=100
+                      field key="git.branch" priority=60
+                    }
+                    "#,
+                )
+                .expect("valid template config"),
+            ),
+        ));
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "repo".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
+        let cwd = "/Users/robert/dev/katzensteg".to_owned();
+        state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
+        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+            target: EntityId::Identity(MetadataIdentity {
+                key: KEY_PANE_CWD.to_owned(),
+                value: MetadataValue::Text(cwd),
+            }),
+            source_id: "git-watcher".to_owned(),
+            set: BTreeMap::from([
+                (
+                    "git.repo".to_owned(),
+                    tabs_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "git.branch".to_owned(),
+                    tabs_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("main".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+            ]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let group_slot = model
+            .rows
+            .iter()
+            .find_map(|row| match row {
+                RailRow::GroupHeader { templates, .. } => templates.group_header.as_ref(),
+                RailRow::Tab { .. } => None,
+            })
+            .expect("group header template");
+
+        assert_eq!(group_slot.template_name, "git.group-header");
+        assert_eq!(
+            group_slot
+                .fields
+                .iter()
+                .map(|field| (field.text.as_str(), field.priority))
+                .collect::<Vec<_>>(),
+            vec![("rjwittams/katzensteg", 100), ("main", 60)]
+        );
     }
 
     #[test]

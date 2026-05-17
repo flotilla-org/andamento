@@ -4,12 +4,8 @@ template "andamento.git.group-header" slot="group-header" node-kind="group" {
   when exists="git.repo"
 
   field priority=100 {
-    value source="collapsed-toggle" collapsed="▶" expanded="▼"
-  }
-  field priority=100 {
     value key="git.repo"
     value key="group.label"
   }
   field key="git.branch" priority=60 prefix=" "
-  field source="active-tab-name" priority=80 condition="collapsed" prefix=": "
 }

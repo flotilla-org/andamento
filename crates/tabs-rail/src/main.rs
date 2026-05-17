@@ -1,41 +1,10 @@
 mod render;
-pub mod template_config;
-
-const CONFIG_TEMPLATE_CONFIG_PATH: &str = "template_config_path";
 
 #[cfg(not(target_family = "wasm"))]
 fn main() {}
 
 fn should_sync_graphics(controller_available: bool) -> bool {
     controller_available
-}
-
-fn template_config_path_from_configuration(
-    configuration: &std::collections::BTreeMap<String, String>,
-) -> Option<String> {
-    configuration
-        .get(CONFIG_TEMPLATE_CONFIG_PATH)
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(str::to_owned)
-}
-
-fn should_reload_template_catalog_after_permission_result(
-    permissions_granted: bool,
-    template_config_path: Option<&str>,
-) -> bool {
-    permissions_granted && template_config_path.is_some_and(|path| !path.trim().is_empty())
-}
-
-#[cfg(test)]
-fn template_catalog_from_configuration(
-    configuration: &std::collections::BTreeMap<String, String>,
-) -> Result<Option<template_config::TemplateConfigCatalog>, template_config::TemplateConfigError> {
-    let Some(path) = template_config_path_from_configuration(configuration) else {
-        return Ok(None);
-    };
-    template_config::load_template_catalog_from_file(&path).map(Some)
 }
 
 #[cfg(target_family = "wasm")]
@@ -77,8 +46,6 @@ pub struct PluginState {
     next_icon_asset_id: u32,
     metadata_scroll_offset: usize,
     collapsed_groups: BTreeSet<GroupPath>,
-    template_config_path: Option<String>,
-    template_catalog: Option<template_config::TemplateConfigCatalog>,
 }
 
 #[cfg(target_family = "wasm")]
@@ -98,7 +65,6 @@ impl ZellijPlugin for PluginState {
             .get(CONFIG_CONFIG_PLUGIN_URL)
             .cloned()
             .unwrap_or_else(|| "tabs-rail-config".to_owned());
-        self.template_config_path = template_config_path_from_configuration(&configuration);
 
         request_permission(&[
             PermissionType::ReadApplicationState,
@@ -124,12 +90,6 @@ impl ZellijPlugin for PluginState {
             Event::PermissionRequestResult(status) => {
                 self.permissions_granted = matches!(status, PermissionStatus::Granted);
                 if self.permissions_granted {
-                    if should_reload_template_catalog_after_permission_result(
-                        self.permissions_granted,
-                        self.template_config_path.as_deref(),
-                    ) {
-                        self.reload_template_catalog();
-                    }
                     set_selectable(false);
                 }
                 self.send_renderer_hello();
@@ -194,7 +154,7 @@ impl ZellijPlugin for PluginState {
             self.metadata_scroll_offset,
             terminal_pixel_cell_size(),
             &collapsed_groups,
-            self.template_catalog.as_ref(),
+            None,
         );
         self.metadata_scroll_offset = rendered.metadata_scroll_offset;
         if should_sync_graphics(controller_available) {
@@ -208,135 +168,15 @@ impl ZellijPlugin for PluginState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tabs_shared::MetadataValue;
-
     #[test]
     fn graphics_sync_waits_for_controller_model() {
         assert!(!should_sync_graphics(false));
         assert!(should_sync_graphics(true));
     }
-
-    #[test]
-    fn loads_template_catalog_from_plugin_configuration_path() {
-        let path = std::env::temp_dir().join(format!(
-            "tabs-rail-plugin-template-config-{}.json",
-            std::process::id()
-        ));
-        std::fs::write(
-            &path,
-            r#"
-            {
-              "templates": [
-                {
-                  "name": "configured-tab-title",
-                  "slot": "tab-title",
-                  "node-kind": "tab",
-                  "fields": [
-                    { "class": "required", "sources": [{ "kind": "literal", "value": "Configured" }] }
-                  ]
-                }
-              ]
-            }
-            "#,
-        )
-        .expect("write template config");
-        let configuration = std::collections::BTreeMap::from([(
-            CONFIG_TEMPLATE_CONFIG_PATH.to_owned(),
-            path.to_string_lossy().into_owned(),
-        )]);
-
-        let catalog = template_catalog_from_configuration(&configuration)
-            .expect("load catalog")
-            .expect("configured catalog");
-        let metadata = std::collections::BTreeMap::<String, MetadataValue>::new();
-
-        let resolved = catalog
-            .resolve(template_config::TemplateConfigMatchContext {
-                slot: template_config::TemplateConfigSlot::TabTitle,
-                node_kind: template_config::TemplateConfigNodeKind::Tab,
-                metadata: &metadata,
-                collapsed: false,
-                active_tab_name: None,
-            })
-            .expect("matching template");
-
-        assert_eq!(resolved.template.name, "configured-tab-title");
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn loads_kdl_template_catalog_from_plugin_configuration_path() {
-        let path = std::env::temp_dir().join(format!(
-            "tabs-rail-plugin-template-config-{}.kdl",
-            std::process::id()
-        ));
-        std::fs::write(
-            &path,
-            r#"
-            template "configured-tab-title" slot="tab-title" node-kind="tab" {
-              field text="Configured" priority=100
-            }
-            "#,
-        )
-        .expect("write template config");
-        let configuration = std::collections::BTreeMap::from([(
-            CONFIG_TEMPLATE_CONFIG_PATH.to_owned(),
-            path.to_string_lossy().into_owned(),
-        )]);
-
-        let catalog = template_catalog_from_configuration(&configuration)
-            .expect("load catalog")
-            .expect("configured catalog");
-        let metadata = std::collections::BTreeMap::<String, MetadataValue>::new();
-
-        let resolved = catalog
-            .resolve(template_config::TemplateConfigMatchContext {
-                slot: template_config::TemplateConfigSlot::TabTitle,
-                node_kind: template_config::TemplateConfigNodeKind::Tab,
-                metadata: &metadata,
-                collapsed: false,
-                active_tab_name: None,
-            })
-            .expect("matching template");
-
-        assert_eq!(resolved.template.name, "configured-tab-title");
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn template_catalog_reload_waits_for_granted_file_permission_and_configured_path() {
-        assert!(!should_reload_template_catalog_after_permission_result(
-            false,
-            Some("/host/tmp/templates.kdl")
-        ));
-        assert!(!should_reload_template_catalog_after_permission_result(
-            true, None
-        ));
-        assert!(should_reload_template_catalog_after_permission_result(
-            true,
-            Some("/host/tmp/templates.kdl")
-        ));
-    }
 }
 
 #[cfg(target_family = "wasm")]
 impl PluginState {
-    fn reload_template_catalog(&mut self) {
-        let Some(path) = self.template_config_path.as_deref() else {
-            self.template_catalog = None;
-            return;
-        };
-        match template_config::load_template_catalog_from_file(path) {
-            Ok(catalog) => {
-                self.template_catalog = Some(catalog);
-            }
-            Err(error) => {
-                eprintln!("tabs-rail: failed to load template config: {error}");
-                self.template_catalog = None;
-            }
-        }
-    }
-
     fn send_renderer_hello(&self) {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
             return;

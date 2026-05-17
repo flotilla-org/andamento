@@ -532,6 +532,7 @@ mod tests {
                         label: "app".to_owned(),
                         full_label: "/repo/app".to_owned(),
                     }),
+                    templates: tabs_shared::ResolvedTemplateSlots::default(),
                 },
                 TabCard {
                     tab_id: 2,
@@ -541,6 +542,7 @@ mod tests {
                     pinned: false,
                     status: None,
                     grouping: None,
+                    templates: tabs_shared::ResolvedTemplateSlots::default(),
                 },
             ],
             rows: vec![],
