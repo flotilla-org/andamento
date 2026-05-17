@@ -212,7 +212,8 @@ The sidebar should show the most useful information for the available width and 
 - compact sidebar rows.
 - ungrouped tab rail.
 - grouped sidebar sections.
-- selected tab/pane detail.
+- metadata inspection mode in the actual rail plugin.
+- selected group/tab/pane detail.
 - future expanded overview grid.
 
 This argues for a normalized state cache first, then render policies over it. Avoid baking grouping or display decisions directly into the update ingestion path.
@@ -269,6 +270,40 @@ This model supports:
 - expanded overview mode over the same data.
 
 The renderer can still project these nodes into simple rows for the sidebar. The important change is that row layout becomes one projection of a richer tree, not the primary model.
+
+### Metadata Inspection Mode Should Arrive Early
+
+The rail should have a metadata inspection projection before the final template system is ready. This is not just a config-panel debug screen; it is a mode of the actual sidebar so the user can inspect the data plane in the same hierarchy and spatial context that normal rendering uses.
+
+Early behavior:
+
+- every node expands to the biggest size it needs, ignoring compact card sizing.
+- every present resolved metadata key renders as a generic `key: value` line.
+- groups, tabs, and later panes/latent nodes all use the same generic metadata display.
+- clicking a value can reveal raw resolution detail for that key: source entries, ttl, updated time, precedence, ordinal, and later the reason a value won.
+- the projection can later show which template matched and why.
+
+This mode is also the authoring loop for future match templates:
+
+```text
+edit external template/config file -> reload -> inspect metadata and match result -> adjust
+```
+
+The plugin should preview, reload, and report parse/match errors, but editing should stay in the user's normal editor rather than implementing a terminal text editor.
+
+### Template Matching Is A Projection Policy
+
+Template rendering should be driven by match rules over render nodes and resolved metadata, not by one-off code at each hierarchy level.
+
+General shape:
+
+1. match on render node type, such as group, tab, pane, or latent.
+2. optionally match metadata predicates: exact value first, prefix matching early, regex only if needed later.
+3. choose the most specific matching template by default.
+4. later allow interactive cycling among multiple matching templates for a tile.
+5. render a priority list of fields, each with its own coalescing and truncation behavior.
+
+Tile size should start as automatic squash-down based on available space. Templates can later add sizing hints such as minimum useful size, preferred size, compact variant, and expanded variant.
 
 ### Latent Tabs Are Materializable Nodes
 
@@ -441,7 +476,7 @@ Scope:
 - define merge behavior between direct group metadata and rollups from child panes/tabs.
 - add debug rendering for direct group values versus rolled-up values.
 
-Status: started. The shared model now has `MetadataTarget::{Pane, Tab, Group}`, and the controller metadata store uses that target type internally. External patch input, resolved group views, and rollup/direct merge behavior are still future work.
+Status: started. The shared model now has `MetadataTarget::{Pane, Tab, Group}` and `MetadataPatch`/`MetadataValueUpdate`, and the controller metadata store can apply collaborative source-scoped patches internally. External patch input, resolved group views, and rollup/direct merge behavior are still future work.
 
 ### 6. Explicit Tab Subject/Scope
 
@@ -469,6 +504,8 @@ Scope:
 - label templates using resolved metadata.
 - string substitution rules for compact labels.
 - optional sub-tab-bar projection for lower levels.
+- metadata inspection projection that renders all resolved metadata generically.
+- template match diagnostics for authoring.
 
 This is where most rendering/layout improvements should land. It should consume the group path and metadata model rather than inventing a renderer-only hierarchy.
 
@@ -596,14 +633,14 @@ This should not require a new data model. It should consume the same metadata st
 
 ## Recommended Next Step
 
-Continue the group metadata targets slice.
+Build the first metadata inspection path.
 
 The next slice should:
 
-- add an internal or shared metadata patch shape using `MetadataTarget`.
-- support `set`/`unset` patch application with source ids and plugin-assigned `updated_at`.
-- expose group-targeted metadata in a debug/config view before using it for rendering policy.
-- define the first merge rule between direct group metadata and rolled-up child metadata.
-- keep external pipe input for arbitrary metadata as a separate follow-up once the internal target and patch semantics are stable.
+- define a resolved metadata debug view that can expose keys for a group/tab target without committing to final template rendering.
+- add enough controller view-model data for the rail to render a generic `key: value` metadata projection.
+- start with the current directory group metadata and any directly targeted group metadata available internally.
+- keep raw source-entry drill-in as the next follow-up after the generic resolved view is visible.
+- keep external pipe input for arbitrary metadata separate until the inspection projection can show what arrived.
 
 After this lands, the next best slice is explicit tab subject/scope. Rendering polish such as collapse, group borders, and templates will be cleaner once group metadata and tab subjects have stable semantic identities.

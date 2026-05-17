@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use tabs_shared::{MetadataEntry, MetadataTarget, MetadataValue};
+use tabs_shared::{MetadataEntry, MetadataPatch, MetadataTarget, MetadataValue};
 
 pub type EntityId = MetadataTarget;
 
@@ -53,6 +53,27 @@ impl MetadataStore {
         }
         if entity_entries.is_empty() {
             self.entries.remove(entity_id);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn apply_patch(&mut self, patch: MetadataPatch, now: u64) {
+        for key in patch.unset {
+            self.unset(&patch.target, &key, &patch.source_id);
+        }
+        for (key, update) in patch.set {
+            self.set(
+                patch.target.clone(),
+                key,
+                patch.source_id.clone(),
+                MetadataEntry {
+                    value: update.value,
+                    updated_at: now,
+                    ttl_ms: update.ttl_ms,
+                    precedence: update.precedence.unwrap_or_default(),
+                    ordinal: update.ordinal.unwrap_or_default(),
+                },
+            );
         }
     }
 
@@ -113,7 +134,10 @@ pub fn select_primary_value(entries: &[CandidateEntry]) -> Option<MetadataValue>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tabs_shared::{GroupPath, GroupSegment, MetadataEntry, MetadataValue, PaneTarget};
+    use tabs_shared::{
+        GroupPath, GroupSegment, MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate,
+        PaneTarget,
+    };
 
     fn entry(value: &str, precedence: i64, ordinal: i64, updated_at: u64) -> MetadataEntry {
         MetadataEntry {
@@ -239,5 +263,108 @@ mod tests {
             entries[0].entry.value,
             MetadataValue::Text("running tests".to_owned())
         );
+    }
+
+    #[test]
+    fn metadata_patch_sets_values_with_controller_timestamp() {
+        let mut store = MetadataStore::default();
+        let target = EntityId::Group(GroupPath(vec![GroupSegment {
+            key: "project.name".to_owned(),
+            value: MetadataValue::Text("zellij".to_owned()),
+        }]));
+        store.apply_patch(
+            MetadataPatch {
+                target: target.clone(),
+                source_id: "flotilla".to_owned(),
+                set: BTreeMap::from([(
+                    "summary.local_llm".to_owned(),
+                    MetadataValueUpdate {
+                        value: MetadataValue::Text("running tests".to_owned()),
+                        ttl_ms: Some(30_000),
+                        precedence: Some(10),
+                        ordinal: Some(2),
+                    },
+                )]),
+                unset: vec![],
+            },
+            42,
+        );
+
+        let entries = store.entries_for(&target, "summary.local_llm", 42);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source_id, "flotilla");
+        assert_eq!(entries[0].entry.updated_at, 42);
+        assert_eq!(entries[0].entry.ttl_ms, Some(30_000));
+        assert_eq!(entries[0].entry.precedence, 10);
+        assert_eq!(entries[0].entry.ordinal, 2);
+    }
+
+    #[test]
+    fn metadata_patch_omitted_keys_are_unchanged() {
+        let mut store = MetadataStore::default();
+        let target = EntityId::Pane(PaneTarget::Terminal(1));
+        store.set(
+            target.clone(),
+            "zellij.pane.cwd",
+            "zellij",
+            entry("/repo", 0, 0, 1),
+        );
+
+        store.apply_patch(
+            MetadataPatch {
+                target: target.clone(),
+                source_id: "zellij".to_owned(),
+                set: BTreeMap::from([(
+                    "zellij.pane.title".to_owned(),
+                    MetadataValueUpdate {
+                        value: MetadataValue::Text("server".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                )]),
+                unset: vec![],
+            },
+            2,
+        );
+
+        assert_eq!(store.entries_for(&target, "zellij.pane.cwd", 2).len(), 1);
+        let title = store.entries_for(&target, "zellij.pane.title", 2);
+        assert_eq!(title.len(), 1);
+        assert_eq!(title[0].entry.precedence, 0);
+        assert_eq!(title[0].entry.ordinal, 0);
+    }
+
+    #[test]
+    fn metadata_patch_unset_removes_only_patch_source_key() {
+        let mut store = MetadataStore::default();
+        let target = EntityId::Pane(PaneTarget::Terminal(1));
+        store.set(
+            target.clone(),
+            "zellij.pane.cwd",
+            "zellij",
+            entry("/repo", 0, 0, 1),
+        );
+        store.set(
+            target.clone(),
+            "zellij.pane.cwd",
+            "shell",
+            entry("/shell", 0, 0, 1),
+        );
+
+        store.apply_patch(
+            MetadataPatch {
+                target: target.clone(),
+                source_id: "zellij".to_owned(),
+                set: BTreeMap::new(),
+                unset: vec!["zellij.pane.cwd".to_owned()],
+            },
+            2,
+        );
+
+        let entries = store.entries_for(&target, "zellij.pane.cwd", 2);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source_id, "shell");
     }
 }

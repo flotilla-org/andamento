@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -168,6 +169,24 @@ pub enum MetadataTarget {
     Pane(PaneTarget),
     Tab(u64),
     Group(GroupPath),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataValueUpdate {
+    pub value: MetadataValue,
+    pub ttl_ms: Option<u64>,
+    pub precedence: Option<i64>,
+    pub ordinal: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataPatch {
+    pub target: MetadataTarget,
+    pub source_id: String,
+    #[serde(default)]
+    pub set: BTreeMap<String, MetadataValueUpdate>,
+    #[serde(default)]
+    pub unset: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -399,6 +418,32 @@ mod tests {
         let decoded: MetadataTarget = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, target);
+    }
+
+    #[test]
+    fn metadata_patch_round_trips_json() {
+        let patch = MetadataPatch {
+            target: MetadataTarget::Group(GroupPath(vec![GroupSegment {
+                key: "project.name".to_owned(),
+                value: MetadataValue::Text("zellij".to_owned()),
+            }])),
+            source_id: "flotilla".to_owned(),
+            set: std::collections::BTreeMap::from([(
+                "summary.local_llm".to_owned(),
+                MetadataValueUpdate {
+                    value: MetadataValue::Text("running tests".to_owned()),
+                    ttl_ms: Some(30_000),
+                    precedence: Some(10),
+                    ordinal: Some(2),
+                },
+            )]),
+            unset: vec!["old.summary".to_owned()],
+        };
+
+        let encoded = serde_json::to_string(&patch).unwrap();
+        let decoded: MetadataPatch = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, patch);
     }
 
     #[test]
