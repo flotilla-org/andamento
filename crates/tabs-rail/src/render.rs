@@ -1993,6 +1993,41 @@ enum TemplateField {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateFieldClass {
+    Required,
+    Optional,
+    Priority,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateFieldCondition {
+    Always,
+    Collapsed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateValueSource {
+    Literal(&'static str),
+    MetadataText(&'static str),
+    MetadataDisplay(&'static str),
+    TabNumberFromPosition,
+    ActiveTabName,
+    CollapsedToggle {
+        collapsed: &'static str,
+        expanded: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TemplateFieldSpec {
+    class: TemplateFieldClass,
+    sources: &'static [TemplateValueSource],
+    prefix: &'static str,
+    suffix: &'static str,
+    condition: TemplateFieldCondition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RenderNodeKind {
     Group,
     Tab,
@@ -2023,7 +2058,7 @@ struct TemplateDefinition<'a> {
     slot: TemplateSlot,
     node_kind: RenderNodeKind,
     predicates: &'a [MetadataPredicate],
-    build: fn(&TemplateRenderContext<'_>) -> Vec<TemplateField>,
+    fields: &'a [TemplateFieldSpec],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2051,43 +2086,106 @@ const TERMINAL_STATUS_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
         prefix: "terminal:",
     },
 ];
+const GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
+    TemplateFieldSpec {
+        class: TemplateFieldClass::Required,
+        sources: &[TemplateValueSource::CollapsedToggle {
+            collapsed: "▶",
+            expanded: "▼",
+        }],
+        prefix: "",
+        suffix: "",
+        condition: TemplateFieldCondition::Always,
+    },
+    TemplateFieldSpec {
+        class: TemplateFieldClass::Required,
+        sources: &[
+            TemplateValueSource::MetadataText("group.label"),
+            TemplateValueSource::Literal("group"),
+        ],
+        prefix: "",
+        suffix: "",
+        condition: TemplateFieldCondition::Always,
+    },
+    TemplateFieldSpec {
+        class: TemplateFieldClass::Optional,
+        sources: &[TemplateValueSource::MetadataDisplay("group.tab_count")],
+        prefix: "(",
+        suffix: ")",
+        condition: TemplateFieldCondition::Always,
+    },
+    TemplateFieldSpec {
+        class: TemplateFieldClass::Priority,
+        sources: &[TemplateValueSource::ActiveTabName],
+        prefix: ": ",
+        suffix: "",
+        condition: TemplateFieldCondition::Collapsed,
+    },
+];
+const TAB_TITLE_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
+    class: TemplateFieldClass::Required,
+    sources: &[
+        TemplateValueSource::MetadataText("zellij.tab.name"),
+        TemplateValueSource::TabNumberFromPosition,
+        TemplateValueSource::Literal("Tab"),
+    ],
+    prefix: "",
+    suffix: "",
+    condition: TemplateFieldCondition::Always,
+}];
+const STATUS_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
+    TemplateFieldSpec {
+        class: TemplateFieldClass::Required,
+        sources: &[TemplateValueSource::MetadataText("status.title")],
+        prefix: "",
+        suffix: "",
+        condition: TemplateFieldCondition::Always,
+    },
+    TemplateFieldSpec {
+        class: TemplateFieldClass::Priority,
+        sources: &[TemplateValueSource::MetadataText("status.detail")],
+        prefix: ": ",
+        suffix: "",
+        condition: TemplateFieldCondition::Always,
+    },
+];
 
 const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
     TemplateDefinition {
         slot: TemplateSlot::GroupHeader,
         node_kind: RenderNodeKind::Group,
         predicates: &[],
-        build: build_group_header_template_fields,
+        fields: GROUP_HEADER_TEMPLATE_FIELDS,
     },
     TemplateDefinition {
         slot: TemplateSlot::TabTitle,
         node_kind: RenderNodeKind::Tab,
         predicates: &[],
-        build: build_tab_title_template_fields,
+        fields: TAB_TITLE_TEMPLATE_FIELDS,
     },
     TemplateDefinition {
         slot: TemplateSlot::TabStatus,
         node_kind: RenderNodeKind::Tab,
         predicates: STATUS_TEMPLATE_PREDICATES,
-        build: build_status_template_fields,
+        fields: STATUS_TEMPLATE_FIELDS,
     },
     TemplateDefinition {
         slot: TemplateSlot::TabStatus,
         node_kind: RenderNodeKind::Tab,
         predicates: WAITING_STATUS_TEMPLATE_PREDICATES,
-        build: build_status_template_fields,
+        fields: STATUS_TEMPLATE_FIELDS,
     },
     TemplateDefinition {
         slot: TemplateSlot::TabStatus,
         node_kind: RenderNodeKind::Tab,
         predicates: TERMINAL_STATUS_TEMPLATE_PREDICATES,
-        build: build_status_template_fields,
+        fields: STATUS_TEMPLATE_FIELDS,
     },
 ];
 
 fn template_fields_for(context: TemplateRenderContext<'_>) -> Vec<TemplateField> {
     resolve_template(BUILTIN_TEMPLATES, &context)
-        .map(|template| (template.build)(&context))
+        .map(|template| template.build_fields(&context))
         .unwrap_or_default()
 }
 
@@ -2109,6 +2207,13 @@ fn resolve_template<'a>(
 }
 
 impl TemplateDefinition<'_> {
+    fn build_fields(&self, context: &TemplateRenderContext<'_>) -> Vec<TemplateField> {
+        self.fields
+            .iter()
+            .filter_map(|field| field.render(context))
+            .collect()
+    }
+
     fn matches(&self, context: &TemplateRenderContext<'_>) -> bool {
         self.slot == context.slot
             && self.node_kind == context.node_kind
@@ -2123,6 +2228,73 @@ impl TemplateDefinition<'_> {
             .iter()
             .map(MetadataPredicate::specificity)
             .sum()
+    }
+}
+
+impl TemplateFieldSpec {
+    fn render(&self, context: &TemplateRenderContext<'_>) -> Option<TemplateField> {
+        if !self.condition.matches(context) {
+            return None;
+        }
+        let value = self
+            .sources
+            .iter()
+            .find_map(|source| source.resolve(context))?;
+        let value = format!("{}{}{}", self.prefix, value, self.suffix);
+        Some(self.class.field(value))
+    }
+}
+
+impl TemplateFieldCondition {
+    fn matches(&self, context: &TemplateRenderContext<'_>) -> bool {
+        match self {
+            TemplateFieldCondition::Always => true,
+            TemplateFieldCondition::Collapsed => context.collapsed,
+        }
+    }
+}
+
+impl TemplateValueSource {
+    fn resolve(&self, context: &TemplateRenderContext<'_>) -> Option<String> {
+        let value = match self {
+            TemplateValueSource::Literal(value) => (*value).to_owned(),
+            TemplateValueSource::MetadataText(key) => {
+                metadata_text(context.metadata, key)?.to_owned()
+            }
+            TemplateValueSource::MetadataDisplay(key) => {
+                metadata_display_value(context.metadata, key)?
+            }
+            TemplateValueSource::TabNumberFromPosition => {
+                let MetadataValue::Integer(position) =
+                    context.metadata.get("zellij.tab.position")?
+                else {
+                    return None;
+                };
+                format!("Tab {}", position + 1)
+            }
+            TemplateValueSource::ActiveTabName => context.active_tab_name?.to_owned(),
+            TemplateValueSource::CollapsedToggle {
+                collapsed,
+                expanded,
+            } => {
+                if context.collapsed {
+                    (*collapsed).to_owned()
+                } else {
+                    (*expanded).to_owned()
+                }
+            }
+        };
+        (!value.is_empty()).then_some(value)
+    }
+}
+
+impl TemplateFieldClass {
+    fn field(&self, value: String) -> TemplateField {
+        match self {
+            TemplateFieldClass::Required => TemplateField::Required(value),
+            TemplateFieldClass::Optional => TemplateField::Optional(value),
+            TemplateFieldClass::Priority => TemplateField::Priority(value),
+        }
     }
 }
 
@@ -2160,59 +2332,6 @@ fn group_header_template_fields(
         collapsed,
         active_tab_name,
     })
-}
-
-fn build_group_header_template_fields(context: &TemplateRenderContext<'_>) -> Vec<TemplateField> {
-    let metadata = context.metadata;
-    let label = metadata_text(metadata, "group.label").unwrap_or("group");
-    let tab_count = metadata_display_value(metadata, "group.tab_count").unwrap_or_default();
-    let mut fields = vec![
-        TemplateField::Required(if context.collapsed { "▶" } else { "▼" }.to_owned()),
-        TemplateField::Required(label.to_owned()),
-    ];
-    if !tab_count.is_empty() {
-        fields.push(TemplateField::Optional(format!("({tab_count})")));
-    }
-    if let Some(active_tab_name) = context
-        .collapsed
-        .then_some(context.active_tab_name)
-        .flatten()
-    {
-        fields.push(TemplateField::Priority(format!(": {active_tab_name}")));
-    }
-    fields
-}
-
-fn build_tab_title_template_fields(context: &TemplateRenderContext<'_>) -> Vec<TemplateField> {
-    let metadata = context.metadata;
-    let title = metadata_text(metadata, "zellij.tab.name")
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            metadata.get("zellij.tab.position").and_then(|position| {
-                if let MetadataValue::Integer(position) = position {
-                    Some(format!("Tab {}", position + 1))
-                } else {
-                    None
-                }
-            })
-        })
-        .unwrap_or_else(|| "Tab".to_owned());
-    vec![TemplateField::Required(title)]
-}
-
-fn build_status_template_fields(context: &TemplateRenderContext<'_>) -> Vec<TemplateField> {
-    let metadata = context.metadata;
-    let Some(title) = metadata_text(metadata, "status.title") else {
-        return vec![];
-    };
-    let mut fields = vec![TemplateField::Required(title.to_owned())];
-    if let Some(detail) =
-        metadata_text(metadata, "status.detail").filter(|detail| !detail.is_empty())
-    {
-        fields.push(TemplateField::Priority(format!(": {detail}")));
-    }
-    fields
 }
 
 fn render_template_fields(fields: &[TemplateField], width: usize) -> String {
@@ -2858,22 +2977,28 @@ mod tests {
         );
     }
 
-    fn generic_test_template_fields(_: &TemplateRenderContext<'_>) -> Vec<TemplateField> {
-        vec![TemplateField::Required("generic".to_owned())]
-    }
-
-    fn specific_test_template_fields(_: &TemplateRenderContext<'_>) -> Vec<TemplateField> {
-        vec![TemplateField::Required("specific".to_owned())]
-    }
-
     #[test]
     fn template_matcher_prefers_more_specific_metadata_match() {
+        const GENERIC_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
+            class: TemplateFieldClass::Required,
+            sources: &[TemplateValueSource::Literal("generic")],
+            prefix: "",
+            suffix: "",
+            condition: TemplateFieldCondition::Always,
+        }];
+        const SPECIFIC_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
+            class: TemplateFieldClass::Required,
+            sources: &[TemplateValueSource::Literal("specific")],
+            prefix: "",
+            suffix: "",
+            condition: TemplateFieldCondition::Always,
+        }];
         let templates = [
             TemplateDefinition {
                 slot: TemplateSlot::TabStatus,
                 node_kind: RenderNodeKind::Tab,
                 predicates: &[],
-                build: generic_test_template_fields,
+                fields: GENERIC_FIELDS,
             },
             TemplateDefinition {
                 slot: TemplateSlot::TabStatus,
@@ -2882,7 +3007,7 @@ mod tests {
                     key: "status.priority",
                     value: "waiting",
                 }],
-                build: specific_test_template_fields,
+                fields: SPECIFIC_FIELDS,
             },
         ];
         let mut metadata = RenderMetadata::new();
@@ -2901,19 +3026,33 @@ mod tests {
         let template = resolve_template(&templates, &context).expect("matching template");
 
         assert_eq!(
-            (template.build)(&context),
+            template.build_fields(&context),
             vec![TemplateField::Required("specific".to_owned())]
         );
     }
 
     #[test]
     fn template_matcher_supports_text_prefix_predicates() {
+        const GENERIC_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
+            class: TemplateFieldClass::Required,
+            sources: &[TemplateValueSource::Literal("generic")],
+            prefix: "",
+            suffix: "",
+            condition: TemplateFieldCondition::Always,
+        }];
+        const SPECIFIC_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
+            class: TemplateFieldClass::Required,
+            sources: &[TemplateValueSource::Literal("specific")],
+            prefix: "",
+            suffix: "",
+            condition: TemplateFieldCondition::Always,
+        }];
         let templates = [
             TemplateDefinition {
                 slot: TemplateSlot::TabStatus,
                 node_kind: RenderNodeKind::Tab,
                 predicates: &[],
-                build: generic_test_template_fields,
+                fields: GENERIC_FIELDS,
             },
             TemplateDefinition {
                 slot: TemplateSlot::TabStatus,
@@ -2922,7 +3061,7 @@ mod tests {
                     key: "status.source_pane",
                     prefix: "terminal:",
                 }],
-                build: specific_test_template_fields,
+                fields: SPECIFIC_FIELDS,
             },
         ];
         let mut metadata = RenderMetadata::new();
@@ -2941,8 +3080,36 @@ mod tests {
         let template = resolve_template(&templates, &context).expect("matching template");
 
         assert_eq!(
-            (template.build)(&context),
+            template.build_fields(&context),
             vec![TemplateField::Required("specific".to_owned())]
+        );
+    }
+
+    #[test]
+    fn template_field_specs_coalesce_sources_and_apply_wrappers() {
+        let mut metadata = RenderMetadata::new();
+        metadata.insert("zellij.tab.position".to_owned(), MetadataValue::Integer(6));
+        let context = TemplateRenderContext {
+            slot: TemplateSlot::TabTitle,
+            node_kind: RenderNodeKind::Tab,
+            metadata: &metadata,
+            collapsed: false,
+            active_tab_name: None,
+        };
+        let spec = TemplateFieldSpec {
+            class: TemplateFieldClass::Optional,
+            sources: &[
+                TemplateValueSource::MetadataText("zellij.tab.name"),
+                TemplateValueSource::TabNumberFromPosition,
+            ],
+            prefix: "[",
+            suffix: "]",
+            condition: TemplateFieldCondition::Always,
+        };
+
+        assert_eq!(
+            spec.render(&context),
+            Some(TemplateField::Optional("[Tab 7]".to_owned()))
         );
     }
 
