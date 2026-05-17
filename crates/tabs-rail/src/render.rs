@@ -7,9 +7,9 @@ use crate::template_config::{
 use ansi_term::{Color, Style};
 use tabs_shared::{
     ControllerViewModel, GroupPath, GroupSegment, MetadataEntry, MetadataSourceEntry,
-    MetadataTarget, MetadataValue, PaneTarget, Priority, RailConfig, RailRow, RailSizingPreset,
-    RailStructure, RailViewMode, ReachableMetadataIdentity, ResolvedMetadata, StatusIcon, TabCard,
-    TabGroupingInfo, TabStatusSummary,
+    MetadataTarget, MetadataValue, ObservedMetadataIdentity, PaneTarget, Priority, RailConfig,
+    RailRow, RailSizingPreset, RailStructure, RailViewMode, ReachableMetadataIdentity,
+    ResolvedMetadata, StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::{PaletteColor, SizeInPixels, Styling};
@@ -290,6 +290,9 @@ pub fn render_lines_with_options(
             &mut lines,
             &mut hit_regions,
             &nodes,
+            model
+                .map(|model| model.observed_identities.as_slice())
+                .unwrap_or(&[]),
             card_rows_available,
             cols,
             theme,
@@ -334,12 +337,14 @@ fn render_metadata_projection(
     lines: &mut [String],
     hit_regions: &mut Vec<HitRegion>,
     nodes: &[RenderNode],
+    observed_identities: &[ObservedMetadataIdentity],
     available_rows: usize,
     cols: usize,
     theme: Option<RenderTheme>,
     metadata_scroll_offset: usize,
 ) -> usize {
-    let blocks = metadata_projection_blocks(nodes);
+    let mut blocks = observed_identity_metadata_blocks(observed_identities);
+    blocks.extend(metadata_projection_blocks(nodes));
     let content_lines = blocks
         .iter()
         .flat_map(|block| block.lines.iter().cloned())
@@ -380,6 +385,29 @@ fn render_metadata_projection(
         }
     }
     scroll_offset
+}
+
+fn observed_identity_metadata_blocks(
+    observed_identities: &[ObservedMetadataIdentity],
+) -> Vec<MetadataBlock> {
+    if observed_identities.is_empty() {
+        return vec![];
+    }
+    let mut lines = vec!["observed_identities".to_owned()];
+    for observed in observed_identities {
+        push_metadata_text_line(
+            &mut lines,
+            2,
+            &format!("observed_identity.{}", observed.identity.key),
+            &format!(
+                "{} target_count={} nearest_distance={}",
+                format_metadata_value(&observed.identity.value),
+                observed.target_count,
+                observed.nearest_distance
+            ),
+        );
+    }
+    vec![MetadataBlock { lines, hit: None }]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4066,12 +4094,32 @@ mod tests {
             }],
         }];
 
-        let rendered = render_lines(Some(&model), &[], 12, 80, true);
+        let rendered = render_lines(Some(&model), &[], 12, 120, true);
 
         assert!(rendered
             .lines
             .iter()
             .any(|line| line.contains("identity.git.repo: rjwittams/katzensteg distance=1")));
+    }
+
+    #[test]
+    fn metadata_view_renders_observed_identity_index() {
+        let mut model = model();
+        model.config.view = RailViewMode::Metadata;
+        model.observed_identities = vec![tabs_shared::ObservedMetadataIdentity {
+            identity: tabs_shared::MetadataIdentity {
+                key: "git.repo".to_owned(),
+                value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+            },
+            target_count: 2,
+            nearest_distance: 1,
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 12, 120, true);
+
+        assert!(rendered.lines.iter().any(|line| line.contains(
+            "observed_identity.git.repo: rjwittams/katzensteg target_count=2 nearest_distance=1"
+        )));
     }
 
     #[test]
