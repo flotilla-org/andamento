@@ -1465,11 +1465,16 @@ fn format_status(status: &TabStatusSummary) -> String {
 }
 
 fn tab_title(card: &RenderCard) -> String {
-    if card.name.is_empty() {
+    join_template_fields(&tab_title_template_fields(card), true)
+}
+
+fn tab_title_template_fields(card: &RenderCard) -> Vec<TemplateField> {
+    let title = if card.name.is_empty() {
         format!("Tab {}", card.position + 1)
     } else {
         card.name.clone()
-    }
+    };
+    vec![TemplateField::Required(title)]
 }
 
 fn body_lines(
@@ -2123,6 +2128,23 @@ mod tests {
         ];
 
         assert_eq!(render_template_fields(&fields, 17), "▶ zellij: tests");
+    }
+
+    #[test]
+    fn tab_title_template_fields_use_required_title() {
+        let card = RenderCard {
+            tab_id: 7,
+            position: 6,
+            name: "agent".to_owned(),
+            active: false,
+            pinned: false,
+            status: None,
+        };
+
+        assert_eq!(
+            tab_title_template_fields(&card),
+            vec![TemplateField::Required("agent".to_owned())]
+        );
     }
 
     #[test]
