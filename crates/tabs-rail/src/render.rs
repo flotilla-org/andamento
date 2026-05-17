@@ -96,16 +96,28 @@ struct RenderCard {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum RenderRow {
-    GroupHeader {
-        label: String,
-        full_label: String,
-        tab_count: usize,
-    },
-    Card {
-        card: RenderCard,
-        indent: usize,
-    },
+enum RenderNode {
+    Group(RenderGroup),
+    Tab(RenderTab),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderGroup {
+    label: String,
+    tab_count: usize,
+    children: Vec<RenderTab>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderTab {
+    card: RenderCard,
+    indent: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PendingRenderNode {
+    GroupHeader { label: String, tab_count: usize },
+    Tab(RenderTab),
 }
 
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -163,7 +175,7 @@ pub fn render_lines_with_theme_and_cell_size(
     let mut lines = vec![blank(cols); rows];
     let mut hit_regions = vec![];
     let mut visible_cards = vec![];
-    let cards = cards_to_render(model, tabs);
+    let nodes = nodes_to_render(model, tabs);
     let config = model.map(|model| model.config).unwrap_or_default();
     let mut effective_metadata_scroll_offset = 0;
     if let Some(model) = model.filter(|model| model.config.view == RailViewMode::Metadata) {
@@ -177,36 +189,21 @@ pub fn render_lines_with_theme_and_cell_size(
             theme,
             metadata_scroll_offset,
         );
-    } else if cards.is_empty() {
+    } else if nodes.is_empty() {
         lines[0] = pad_to_width("tabs: waiting for tab state", cols);
     } else {
-        if let Some(rows_to_render) = rows_to_render(model, tabs) {
-            render_projection_rows(
-                &mut lines,
-                &mut hit_regions,
-                &mut visible_cards,
-                &rows_to_render,
-                card_rows_available,
-                cols,
-                controller_available,
-                config,
-                theme,
-                terminal_cell_size,
-            );
-        } else {
-            render_cards(
-                &mut lines,
-                &mut hit_regions,
-                &mut visible_cards,
-                &cards,
-                card_rows_available,
-                cols,
-                controller_available,
-                config,
-                theme,
-                terminal_cell_size,
-            );
-        }
+        render_nodes(
+            &mut lines,
+            &mut hit_regions,
+            &mut visible_cards,
+            &nodes,
+            card_rows_available,
+            cols,
+            controller_available,
+            config,
+            theme,
+            terminal_cell_size,
+        );
     }
 
     if controller_available {
@@ -545,11 +542,11 @@ fn render_cards(
     }
 }
 
-fn render_projection_rows(
+fn render_nodes(
     lines: &mut [String],
     hit_regions: &mut Vec<HitRegion>,
     visible_cards: &mut Vec<VisibleCard>,
-    rows: &[RenderRow],
+    nodes: &[RenderNode],
     available_rows: usize,
     cols: usize,
     controller_available: bool,
@@ -557,138 +554,280 @@ fn render_projection_rows(
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
 ) {
-    if rows.is_empty() || available_rows == 0 {
+    if nodes.is_empty() || available_rows == 0 {
         return;
     }
-    let row_height = |row: &RenderRow| match row {
-        RenderRow::GroupHeader { .. } => 1,
-        RenderRow::Card { card, .. } => cell_height(card, config.sizing, false).max(2),
-    };
-    let visible = visible_projection_rows(rows, available_rows, row_height);
-    let mut output_row = 0;
-    for (row_index, height) in visible {
-        match &rows[row_index] {
-            RenderRow::GroupHeader {
-                label, tab_count, ..
-            } => {
-                if let Some(line) = lines.get_mut(output_row) {
-                    *line = group_header_line(label, *tab_count, cols, theme);
-                }
-                output_row += height;
-            }
-            RenderRow::Card { card, indent } => {
-                output_row = render_indented_box(
+
+    if let Some(cards) = top_level_cards(nodes) {
+        return render_cards(
+            lines,
+            hit_regions,
+            visible_cards,
+            &cards,
+            available_rows,
+            cols,
+            controller_available,
+            config,
+            theme,
+            terminal_cell_size,
+        );
+    }
+
+    let mut buffered_lines = vec![];
+    let mut buffered_hits = vec![];
+    let mut buffered_cards = vec![];
+    render_nodes_to_buffer(
+        &mut buffered_lines,
+        &mut buffered_hits,
+        &mut buffered_cards,
+        nodes,
+        cols,
+        controller_available,
+        config,
+        theme,
+        terminal_cell_size,
+    );
+    copy_visible_buffer(
+        lines,
+        hit_regions,
+        visible_cards,
+        buffered_lines,
+        buffered_hits,
+        buffered_cards,
+        active_tab_id(nodes),
+        available_rows,
+    );
+}
+
+fn top_level_cards(nodes: &[RenderNode]) -> Option<Vec<RenderCard>> {
+    nodes
+        .iter()
+        .map(|node| match node {
+            RenderNode::Tab(tab) if tab.indent == 0 => Some(tab.card.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn render_nodes_to_buffer(
+    lines: &mut Vec<String>,
+    hit_regions: &mut Vec<HitRegion>,
+    visible_cards: &mut Vec<VisibleCard>,
+    nodes: &[RenderNode],
+    cols: usize,
+    controller_available: bool,
+    config: RailConfig,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+) {
+    let mut pending_tabs = vec![];
+    for node in nodes {
+        match node {
+            RenderNode::Tab(tab) => pending_tabs.push(tab.clone()),
+            RenderNode::Group(group) => {
+                append_tab_run(
                     lines,
                     hit_regions,
                     visible_cards,
-                    card,
-                    output_row,
-                    height,
+                    &pending_tabs,
                     cols,
-                    *indent,
                     controller_available,
+                    config,
+                    theme,
+                    terminal_cell_size,
+                );
+                pending_tabs.clear();
+                lines.push(group_header_line(
+                    &group.label,
+                    group.tab_count,
+                    cols,
+                    theme,
+                ));
+                append_tab_run(
+                    lines,
+                    hit_regions,
+                    visible_cards,
+                    &group.children,
+                    cols,
+                    controller_available,
+                    config,
                     theme,
                     terminal_cell_size,
                 );
             }
         }
     }
-}
-
-fn visible_projection_rows<F>(
-    rows: &[RenderRow],
-    available_rows: usize,
-    row_height: F,
-) -> Vec<(usize, usize)>
-where
-    F: Fn(&RenderRow) -> usize,
-{
-    let active_index = rows
-        .iter()
-        .position(|row| matches!(row, RenderRow::Card { card, .. } if card.active))
-        .unwrap_or(0);
-    let active_height = row_height(&rows[active_index]);
-    if active_height > available_rows {
-        return vec![];
-    }
-    let mut selected = vec![(active_index, active_height)];
-    let mut used_rows = active_height;
-    let mut before = active_index;
-    let mut after = active_index + 1;
-    loop {
-        let before_height = before
-            .checked_sub(1)
-            .map(|index| (index, row_height(&rows[index])));
-        let after_height = (after < rows.len()).then(|| (after, row_height(&rows[after])));
-        match (before_height, after_height) {
-            (Some((index, height)), _) if used_rows + height <= available_rows => {
-                selected.insert(0, (index, height));
-                used_rows += height;
-                before = index;
-            }
-            (_, Some((index, height))) if used_rows + height <= available_rows => {
-                selected.push((index, height));
-                used_rows += height;
-                after = index + 1;
-            }
-            _ => break,
-        }
-    }
-    selected
-}
-
-fn render_indented_box(
-    lines: &mut [String],
-    hit_regions: &mut Vec<HitRegion>,
-    visible_cards: &mut Vec<VisibleCard>,
-    card: &RenderCard,
-    row: usize,
-    box_height: usize,
-    cols: usize,
-    indent: usize,
-    controller_available: bool,
-    theme: Option<RenderTheme>,
-    terminal_cell_size: Option<SizeInPixels>,
-) -> usize {
-    let indent = indent.min(cols.saturating_sub(1));
-    let inner_cols = cols.saturating_sub(indent);
-    let mut local_lines = vec![blank(inner_cols); box_height];
-    let mut local_hits = vec![];
-    let mut local_cards = vec![];
-    render_standalone_box(
-        &mut local_lines,
-        &mut local_hits,
-        &mut local_cards,
-        card,
-        0,
-        box_height,
-        inner_cols,
+    append_tab_run(
+        lines,
+        hit_regions,
+        visible_cards,
+        &pending_tabs,
+        cols,
         controller_available,
+        config,
         theme,
         terminal_cell_size,
     );
-    for (line_offset, local_line) in local_lines.into_iter().enumerate() {
-        if let Some(line) = lines.get_mut(row + line_offset) {
-            *line = format!("{}{}", " ".repeat(indent), local_line);
-        }
+}
+
+fn append_tab_run(
+    lines: &mut Vec<String>,
+    hit_regions: &mut Vec<HitRegion>,
+    visible_cards: &mut Vec<VisibleCard>,
+    tabs: &[RenderTab],
+    cols: usize,
+    controller_available: bool,
+    config: RailConfig,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+) {
+    if tabs.is_empty() {
+        return;
     }
+    let indent = tabs
+        .iter()
+        .map(|tab| tab.indent)
+        .min()
+        .unwrap_or(0)
+        .min(cols.saturating_sub(1));
+    let inner_cols = cols.saturating_sub(indent);
+    let cards = tabs.iter().map(|tab| tab.card.clone()).collect::<Vec<_>>();
+    let run_height = generous_card_run_height(&cards, config.sizing);
+    let mut local_lines = vec![blank(inner_cols); run_height];
+    let mut local_hits = vec![];
+    let mut local_cards = vec![];
+    render_cards(
+        &mut local_lines,
+        &mut local_hits,
+        &mut local_cards,
+        &cards,
+        run_height,
+        inner_cols,
+        controller_available,
+        config,
+        theme,
+        terminal_cell_size,
+    );
+    let used_rows = local_lines
+        .iter()
+        .rposition(|line| !line.trim().is_empty())
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let row_offset = lines.len();
+    lines.extend(
+        local_lines
+            .into_iter()
+            .take(used_rows)
+            .map(|line| format!("{}{}", " ".repeat(indent), line)),
+    );
     hit_regions.extend(local_hits.into_iter().map(|mut hit| {
-        hit.row_start += row;
-        hit.row_end += row;
+        hit.row_start += row_offset;
+        hit.row_end += row_offset;
         hit.col_start += indent;
         hit.col_end += indent;
         hit
     }));
     visible_cards.extend(local_cards.into_iter().map(|mut visible_card| {
-        visible_card.row_start += row;
-        visible_card.status_row = visible_card.status_row.map(|status_row| status_row + row);
+        visible_card.row_start += row_offset;
+        visible_card.status_row = visible_card.status_row.map(|row| row + row_offset);
         if let Some(rect) = visible_card.status_icon_rect.as_mut() {
             rect.x += indent;
-            rect.y += row;
+            rect.y += row_offset;
         }
         visible_card
     }));
-    row + box_height
+}
+
+fn generous_card_run_height(cards: &[RenderCard], sizing: RailSizingPreset) -> usize {
+    cards
+        .iter()
+        .map(|card| cell_height(card, sizing, false).max(ACTIVE_CELL_HEIGHT) + 1)
+        .sum::<usize>()
+        + 1
+}
+
+fn copy_visible_buffer(
+    lines: &mut [String],
+    hit_regions: &mut Vec<HitRegion>,
+    visible_cards: &mut Vec<VisibleCard>,
+    buffered_lines: Vec<String>,
+    buffered_hits: Vec<HitRegion>,
+    buffered_cards: Vec<VisibleCard>,
+    active_tab_id: Option<u64>,
+    available_rows: usize,
+) {
+    if buffered_lines.is_empty() || available_rows == 0 {
+        return;
+    }
+    let active_row = active_tab_id
+        .and_then(|tab_id| {
+            buffered_hits
+                .iter()
+                .find(|hit| hit.action == HitAction::SwitchTab && hit.tab_id == tab_id)
+                .map(|hit| hit.row_start)
+        })
+        .or_else(|| {
+            buffered_cards
+                .iter()
+                .find(|card| card.status_priority.is_some() || card.status_row.is_some())
+                .map(|card| card.row_start)
+        })
+        .or_else(|| {
+            buffered_hits
+                .iter()
+                .find(|hit| hit.action == HitAction::SwitchTab)
+                .map(|hit| hit.row_start)
+        })
+        .unwrap_or(0);
+    let visible_start = active_row
+        .saturating_sub(available_rows / 2)
+        .min(buffered_lines.len().saturating_sub(available_rows));
+    let visible_end = buffered_lines.len().min(visible_start + available_rows);
+
+    for (output_row, line) in buffered_lines[visible_start..visible_end]
+        .iter()
+        .enumerate()
+    {
+        lines[output_row] = line.clone();
+    }
+    hit_regions.extend(buffered_hits.into_iter().filter_map(|mut hit| {
+        if hit.row_end < visible_start || hit.row_start >= visible_end {
+            return None;
+        }
+        hit.row_start = hit.row_start.saturating_sub(visible_start);
+        hit.row_end = hit.row_end.min(visible_end - 1) - visible_start;
+        Some(hit)
+    }));
+    visible_cards.extend(buffered_cards.into_iter().filter_map(|mut visible_card| {
+        if visible_card.row_start < visible_start || visible_card.row_start >= visible_end {
+            return None;
+        }
+        visible_card.row_start -= visible_start;
+        visible_card.status_row = visible_card
+            .status_row
+            .filter(|row| *row >= visible_start && *row < visible_end)
+            .map(|row| row - visible_start);
+        if let Some(rect) = visible_card.status_icon_rect.as_mut() {
+            if rect.y < visible_start || rect.y >= visible_end {
+                visible_card.status_icon_rect = None;
+            } else {
+                rect.y -= visible_start;
+            }
+        }
+        Some(visible_card)
+    }));
+}
+
+fn active_tab_id(nodes: &[RenderNode]) -> Option<u64> {
+    nodes.iter().find_map(|node| match node {
+        RenderNode::Tab(tab) if tab.card.active => Some(tab.card.tab_id),
+        RenderNode::Tab(_) => None,
+        RenderNode::Group(group) => group
+            .children
+            .iter()
+            .find(|tab| tab.card.active)
+            .map(|tab| tab.card.tab_id),
+    })
 }
 
 fn render_joined_cells(
@@ -991,68 +1130,94 @@ fn add_card_metadata(
     });
 }
 
-fn cards_to_render(model: Option<&ControllerViewModel>, tabs: &[LocalTab]) -> Vec<RenderCard> {
+fn nodes_to_render(model: Option<&ControllerViewModel>, tabs: &[LocalTab]) -> Vec<RenderNode> {
     let local_by_id: HashMap<u64, &LocalTab> = tabs.iter().map(|tab| (tab.tab_id, tab)).collect();
-    if let Some(model) = model {
+    let Some(model) = model else {
+        let mut tabs = tabs.to_vec();
+        tabs.sort_by_key(|tab| tab.position);
+        return tabs
+            .into_iter()
+            .map(|tab| {
+                RenderNode::Tab(RenderTab {
+                    card: RenderCard {
+                        tab_id: tab.tab_id,
+                        position: tab.position,
+                        name: tab.name,
+                        active: tab.active,
+                        pinned: false,
+                        status: None,
+                    },
+                    indent: 0,
+                })
+            })
+            .collect();
+    };
+
+    let pending_rows = if model.rows.is_empty() {
         model
             .tabs
             .iter()
-            .map(|card| render_card_from_model(card, &local_by_id))
-            .collect()
-    } else {
-        let mut tabs = tabs.to_vec();
-        tabs.sort_by_key(|tab| tab.position);
-        tabs.into_iter()
-            .map(|tab| RenderCard {
-                tab_id: tab.tab_id,
-                position: tab.position,
-                name: tab.name,
-                active: tab.active,
-                pinned: false,
-                status: None,
+            .cloned()
+            .map(|tab| {
+                PendingRenderNode::Tab(RenderTab {
+                    card: render_card_from_model(&tab, &local_by_id),
+                    indent: 0,
+                })
             })
             .collect()
-    }
-}
-
-fn rows_to_render(
-    model: Option<&ControllerViewModel>,
-    tabs: &[LocalTab],
-) -> Option<Vec<RenderRow>> {
-    let model = model?;
-    if model.rows.is_empty() {
-        return None;
-    }
-    if model
-        .rows
-        .iter()
-        .all(|row| matches!(row, RailRow::Tab { indent: 0, .. }))
-    {
-        return None;
-    }
-    let local_by_id: HashMap<u64, &LocalTab> = tabs.iter().map(|tab| (tab.tab_id, tab)).collect();
-    Some(
+    } else {
         model
             .rows
             .iter()
             .map(|row| match row {
                 RailRow::GroupHeader {
-                    label,
-                    full_label,
-                    tab_count,
-                    ..
-                } => RenderRow::GroupHeader {
+                    label, tab_count, ..
+                } => PendingRenderNode::GroupHeader {
                     label: label.clone(),
-                    full_label: full_label.clone(),
                     tab_count: *tab_count,
                 },
-                RailRow::Tab { tab, indent } => RenderRow::Card {
+                RailRow::Tab { tab, indent } => PendingRenderNode::Tab(RenderTab {
                     card: render_card_from_model(tab, &local_by_id),
                     indent: *indent,
-                },
+                }),
             })
-            .collect(),
-    )
+            .collect()
+    };
+    pending_nodes_to_render_nodes(pending_rows)
+}
+
+fn pending_nodes_to_render_nodes(pending_rows: Vec<PendingRenderNode>) -> Vec<RenderNode> {
+    let mut nodes = vec![];
+    let mut pending_group: Option<RenderGroup> = None;
+    for pending in pending_rows {
+        match pending {
+            PendingRenderNode::GroupHeader { label, tab_count } => {
+                if let Some(group) = pending_group.take() {
+                    nodes.push(RenderNode::Group(group));
+                }
+                pending_group = Some(RenderGroup {
+                    label,
+                    tab_count,
+                    children: vec![],
+                });
+            }
+            PendingRenderNode::Tab(tab) if pending_group.is_some() && tab.indent > 0 => {
+                if let Some(group) = pending_group.as_mut() {
+                    group.children.push(tab);
+                }
+            }
+            PendingRenderNode::Tab(tab) => {
+                if let Some(group) = pending_group.take() {
+                    nodes.push(RenderNode::Group(group));
+                }
+                nodes.push(RenderNode::Tab(tab));
+            }
+        }
+    }
+    if let Some(group) = pending_group.take() {
+        nodes.push(RenderNode::Group(group));
+    }
+    nodes
 }
 
 fn render_card_from_model(card: &TabCard, local_by_id: &HashMap<u64, &LocalTab>) -> RenderCard {
@@ -1604,6 +1769,45 @@ mod tests {
         assert_eq!(
             hit_at(&rendered.hit_regions, 3, 4).map(|hit| hit.action),
             Some(HitAction::SwitchTab)
+        );
+    }
+
+    #[test]
+    fn grouped_joined_cells_render_child_tabs_as_one_indented_run() {
+        let rendered = render_lines(Some(&grouped_model()), &[], 8, 24, true);
+
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.starts_with("  ├ tests")),
+            "joined grouped child tabs should use an indented separator, not a standalone box: {:?}",
+            rendered.lines
+        );
+        assert!(
+            !rendered
+                .lines
+                .iter()
+                .any(|line| line.starts_with("  ┌ tests")),
+            "inactive and active children in the same group should not each start their own box: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
+    fn grouped_box_per_tab_keeps_complete_child_boxes() {
+        let mut model = grouped_model();
+        model.config.structure = RailStructure::BoxPerTab;
+
+        let rendered = render_lines(Some(&model), &[], 8, 24, true);
+
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.starts_with("  ┌ tests")),
+            "box-per-tab grouped children should keep standalone boxes: {:?}",
+            rendered.lines
         );
     }
 
