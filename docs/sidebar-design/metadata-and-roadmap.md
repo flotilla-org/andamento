@@ -329,6 +329,7 @@ The order should be:
 
 4. **Build arbitrary-depth groups from `GroupPath`.**
    Convert a multi-segment `GroupPath` into nested group nodes. The first implementation can still use one-segment cwd groups, but the projection builder should not assume there is only one group level. Tabs without a path still render as top-level leaves.
+   Status: multi-segment paths now expand into nested render groups, common prefixes are shared, and nested group/tab indentation is derived from group depth. Existing one-segment directory grouping remains the compatibility baseline.
 
 5. **Keep layout policies separate from tree shape.**
    Joined cells, boxes, collapsed groups, horizontal sub-tab bars, and expanded overview modes should be projections over the recursive tree. Do not encode "children of groups are tab rows" into the data model.

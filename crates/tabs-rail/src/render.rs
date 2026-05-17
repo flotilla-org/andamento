@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use ansi_term::{Color, Style};
 use tabs_shared::{
-    ControllerViewModel, GroupPath, MetadataValue, PaneTarget, Priority, RailConfig, RailRow,
-    RailSizingPreset, RailStructure, RailViewMode, StatusIcon, TabCard, TabGroupingInfo,
+    ControllerViewModel, GroupPath, GroupSegment, MetadataValue, PaneTarget, Priority, RailConfig,
+    RailRow, RailSizingPreset, RailStructure, RailViewMode, StatusIcon, TabCard, TabGroupingInfo,
     TabStatusSummary,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -114,6 +114,7 @@ struct RenderGroup {
     full_label: String,
     tab_count: usize,
     collapsed: bool,
+    indent: usize,
     metadata: RenderMetadata,
     children: Vec<RenderNode>,
 }
@@ -134,6 +135,13 @@ enum PendingRenderNode {
         tab_count: usize,
     },
     Tab(RenderTab),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CurrentGroupHeader {
+    path: GroupPath,
+    label: String,
+    full_label: String,
 }
 
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -769,19 +777,23 @@ fn append_group_header(
     theme: Option<RenderTheme>,
 ) {
     let row = lines.len();
-    lines.push(group_header_line(
+    let indent = group.indent.min(cols);
+    let inner_width = cols.saturating_sub(indent);
+    let mut line = " ".repeat(indent);
+    line.push_str(&group_header_line(
         &group.metadata,
         group.collapsed,
         contains_active_tab(&group.children),
         active_tab_name(&group.children),
-        cols,
+        inner_width,
         theme,
     ));
+    lines.push(line);
     hit_regions.push(HitRegion {
         row_start: row,
         row_end: row,
-        col_start: 0,
-        col_end: 0,
+        col_start: indent,
+        col_end: indent,
         tab_id: 0,
         tab_position: 0,
         group_path: Some(group.path.clone()),
@@ -1337,46 +1349,175 @@ fn pending_nodes_to_render_nodes(
     collapsed_groups: &[GroupPath],
 ) -> Vec<RenderNode> {
     let mut nodes = vec![];
-    let mut pending_group: Option<RenderGroup> = None;
+    let mut current_group: Option<CurrentGroupHeader> = None;
     for pending in pending_rows {
         match pending {
             PendingRenderNode::GroupHeader {
                 path,
                 label,
                 full_label,
-                tab_count,
+                tab_count: _,
             } => {
-                if let Some(group) = pending_group.take() {
-                    nodes.push(RenderNode::Group(group));
-                }
-                let collapsed = collapsed_groups.iter().any(|collapsed| collapsed == &path);
-                pending_group = Some(RenderGroup {
-                    metadata: metadata_for_group_header(&path, &label, &full_label, tab_count),
+                ensure_group_path(&mut nodes, &path, &label, &full_label, collapsed_groups);
+                current_group = Some(CurrentGroupHeader {
                     path,
                     label,
                     full_label,
-                    tab_count,
-                    collapsed,
-                    children: vec![],
                 });
             }
-            PendingRenderNode::Tab(tab) if pending_group.is_some() && tab.indent > 0 => {
-                if let Some(group) = pending_group.as_mut() {
-                    group.children.push(RenderNode::Tab(tab));
-                }
+            PendingRenderNode::Tab(mut tab) if current_group.is_some() && tab.indent > 0 => {
+                let group_header = current_group.as_ref().expect("checked above");
+                tab.indent = group_header.path.0.len() * 2;
+                let group = ensure_group_path(
+                    &mut nodes,
+                    &group_header.path,
+                    &group_header.label,
+                    &group_header.full_label,
+                    collapsed_groups,
+                );
+                group.children.push(RenderNode::Tab(tab));
             }
             PendingRenderNode::Tab(tab) => {
-                if let Some(group) = pending_group.take() {
-                    nodes.push(RenderNode::Group(group));
-                }
+                current_group = None;
                 nodes.push(RenderNode::Tab(tab));
             }
         }
     }
-    if let Some(group) = pending_group.take() {
-        nodes.push(RenderNode::Group(group));
-    }
+    refresh_group_tab_counts(&mut nodes);
     nodes
+}
+
+fn ensure_group_path<'a>(
+    nodes: &'a mut Vec<RenderNode>,
+    path: &GroupPath,
+    leaf_label: &str,
+    leaf_full_label: &str,
+    collapsed_groups: &[GroupPath],
+) -> &'a mut RenderGroup {
+    if path.0.is_empty() {
+        let group_index = nodes
+            .iter()
+            .position(|node| matches!(node, RenderNode::Group(group) if group.path == *path))
+            .unwrap_or_else(|| {
+                let collapsed = collapsed_groups.iter().any(|collapsed| collapsed == path);
+                nodes.push(RenderNode::Group(RenderGroup {
+                    metadata: metadata_for_group_header(path, leaf_label, leaf_full_label, 0),
+                    path: path.clone(),
+                    label: leaf_label.to_owned(),
+                    full_label: leaf_full_label.to_owned(),
+                    tab_count: 0,
+                    collapsed,
+                    indent: 0,
+                    children: vec![],
+                }));
+                nodes.len() - 1
+            });
+        let RenderNode::Group(group) = &mut nodes[group_index] else {
+            unreachable!("group index should point at a group");
+        };
+        return group;
+    }
+    ensure_group_path_at(
+        nodes,
+        path,
+        1,
+        leaf_label,
+        leaf_full_label,
+        collapsed_groups,
+    )
+}
+
+fn ensure_group_path_at<'a>(
+    nodes: &'a mut Vec<RenderNode>,
+    path: &GroupPath,
+    depth: usize,
+    leaf_label: &str,
+    leaf_full_label: &str,
+    collapsed_groups: &[GroupPath],
+) -> &'a mut RenderGroup {
+    let segment = &path.0[depth - 1];
+    let prefix = GroupPath(path.0[..depth].to_vec());
+    let is_leaf = depth == path.0.len();
+    let label = if is_leaf {
+        leaf_label.to_owned()
+    } else {
+        group_segment_label(segment)
+    };
+    let full_label = if is_leaf {
+        leaf_full_label.to_owned()
+    } else {
+        prefix
+            .0
+            .iter()
+            .map(group_segment_label)
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let group_index = nodes
+        .iter()
+        .position(|node| matches!(node, RenderNode::Group(group) if group.path == prefix))
+        .unwrap_or_else(|| {
+            let indent = prefix.0.len().saturating_sub(1) * 2;
+            let collapsed = collapsed_groups
+                .iter()
+                .any(|collapsed| collapsed == &prefix);
+            nodes.push(RenderNode::Group(RenderGroup {
+                metadata: metadata_for_group_header(&prefix, &label, &full_label, 0),
+                path: prefix.clone(),
+                label: label.clone(),
+                full_label: full_label.clone(),
+                tab_count: 0,
+                collapsed,
+                indent,
+                children: vec![],
+            }));
+            nodes.len() - 1
+        });
+    let RenderNode::Group(group) = &mut nodes[group_index] else {
+        unreachable!("group index should point at a group");
+    };
+    if is_leaf {
+        group.label = label;
+        group.full_label = full_label;
+        group.metadata.extend(metadata_for_group_header(
+            &group.path,
+            &group.label,
+            &group.full_label,
+            0,
+        ));
+        group
+    } else {
+        ensure_group_path_at(
+            &mut group.children,
+            path,
+            depth + 1,
+            leaf_label,
+            leaf_full_label,
+            collapsed_groups,
+        )
+    }
+}
+
+fn group_segment_label(segment: &GroupSegment) -> String {
+    format_metadata_value(&segment.value)
+}
+
+fn refresh_group_tab_counts(nodes: &mut [RenderNode]) -> usize {
+    nodes.iter_mut().fold(0, |total, node| {
+        total
+            + match node {
+                RenderNode::Tab(_) => 1,
+                RenderNode::Group(group) => {
+                    let tab_count = refresh_group_tab_counts(&mut group.children);
+                    group.tab_count = tab_count;
+                    group.metadata.insert(
+                        "group.tab_count".to_owned(),
+                        MetadataValue::Integer(tab_count as i64),
+                    );
+                    tab_count
+                }
+            }
+    })
 }
 
 fn metadata_for_group_header(
@@ -2090,6 +2231,50 @@ mod tests {
         }
     }
 
+    fn nested_group_model() -> ControllerViewModel {
+        let mut model = ControllerViewModel {
+            sort_mode: SortMode::PinnedFirst,
+            config: RailConfig {
+                grouping: RailGroupingMode::Directory,
+                structure: RailStructure::JoinedCells,
+                sizing: RailSizingPreset::Compact,
+                view: RailViewMode::Normal,
+            },
+            tabs: vec![],
+            rows: vec![],
+        };
+        for (tab_id, worktree) in [(1, "worktree-a"), (2, "worktree-b")] {
+            let path = GroupPath(vec![
+                GroupSegment {
+                    key: "project".to_owned(),
+                    value: MetadataValue::Text("project-a".to_owned()),
+                },
+                GroupSegment {
+                    key: "worktree".to_owned(),
+                    value: MetadataValue::Text(worktree.to_owned()),
+                },
+            ]);
+            let tab = TabCard {
+                tab_id,
+                position: tab_id as usize - 1,
+                name: format!("agent-{tab_id}"),
+                active: tab_id == 2,
+                pinned: false,
+                status: None,
+                grouping: None,
+            };
+            model.rows.push(RailRow::GroupHeader {
+                group_id: format!("project-a/{worktree}"),
+                path,
+                label: worktree.to_owned(),
+                full_label: format!("project-a/{worktree}"),
+                tab_count: 1,
+            });
+            model.rows.push(RailRow::Tab { tab, indent: 2 });
+        }
+        model
+    }
+
     fn flat_rows_model() -> ControllerViewModel {
         let mut model = model();
         model.config.structure = RailStructure::JoinedCells;
@@ -2153,6 +2338,7 @@ mod tests {
             full_label: "typed-parent".to_owned(),
             tab_count: 1,
             collapsed: false,
+            indent: 0,
             metadata: metadata_for_group_header(&GroupPath::default(), "parent", "parent", 1),
             children: vec![RenderNode::Group(RenderGroup {
                 path: GroupPath::default(),
@@ -2160,6 +2346,7 @@ mod tests {
                 full_label: "typed-child".to_owned(),
                 tab_count: 1,
                 collapsed: false,
+                indent: 0,
                 metadata: metadata_for_group_header(&GroupPath::default(), "child", "child", 1),
                 children: vec![RenderNode::Tab(RenderTab {
                     card: RenderCard {
@@ -2206,6 +2393,50 @@ mod tests {
             lines
         );
         assert!(visible_cards.iter().any(|card| card.tab_id == 42));
+    }
+
+    #[test]
+    fn multi_segment_group_path_renders_nested_group_headers() {
+        let rendered = render_lines(Some(&nested_group_model()), &[], 12, 36, true);
+
+        assert!(
+            rendered.lines[0].starts_with("▼ project-a (2)"),
+            "parent group should render from the first path segment: {:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered.lines[1].starts_with("  ▼ worktree-a (1)"),
+            "leaf group should render below the parent: {:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.starts_with("    ├ agent-1") || line.starts_with("    ┌ agent-1")),
+            "tab should be indented under the leaf group: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
+    fn multi_segment_group_paths_share_common_parent() {
+        let rendered = render_lines(Some(&nested_group_model()), &[], 14, 36, true);
+
+        let parent_headers = rendered
+            .lines
+            .iter()
+            .filter(|line| line.starts_with("▼ project-a"))
+            .count();
+        assert_eq!(
+            parent_headers, 1,
+            "sibling leaf groups should share their common parent: {:?}",
+            rendered.lines
+        );
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.starts_with("  ▼ worktree-b (1)")));
     }
 
     #[test]
@@ -2382,6 +2613,7 @@ mod tests {
             full_label: "/typed".to_owned(),
             tab_count: 1,
             collapsed: false,
+            indent: 0,
             metadata,
             children: vec![],
         };
