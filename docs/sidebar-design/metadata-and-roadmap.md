@@ -325,6 +325,7 @@ The order should be:
 
 3. **Make render nodes recursive before adding more hierarchy features.**
    Replace the local `RenderGroup { children: Vec<RenderTab> }` shape with a node that can contain `Vec<RenderNode>`. The renderer should walk children generically with a depth/indent context. A tab is then just a leaf node, not the only possible child of a group.
+   Status: renderer-internal node children are now recursive and the render, active-tab, and metadata-inspection walkers handle nested groups. The projection builder still emits only the existing one-level cwd groups; multi-segment `GroupPath` expansion is the next step.
 
 4. **Build arbitrary-depth groups from `GroupPath`.**
    Convert a multi-segment `GroupPath` into nested group nodes. The first implementation can still use one-segment cwd groups, but the projection builder should not assume there is only one group level. Tabs without a path still render as top-level leaves.

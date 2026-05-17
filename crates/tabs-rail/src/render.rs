@@ -115,7 +115,7 @@ struct RenderGroup {
     tab_count: usize,
     collapsed: bool,
     metadata: RenderMetadata,
-    children: Vec<RenderTab>,
+    children: Vec<RenderNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -355,7 +355,7 @@ fn metadata_projection_blocks(nodes: &[RenderNode]) -> Vec<MetadataBlock> {
         match node {
             RenderNode::Group(group) => {
                 blocks.push(group_metadata_block(group));
-                blocks.extend(group.children.iter().map(tab_metadata_block));
+                blocks.extend(metadata_projection_blocks(&group.children));
             }
             RenderNode::Tab(tab) => blocks.push(tab_metadata_block(tab)),
         }
@@ -733,7 +733,7 @@ fn render_nodes_to_buffer(
                 pending_tabs.clear();
                 append_group_header(lines, hit_regions, group, cols, theme);
                 if !group.collapsed {
-                    append_tab_run(
+                    render_nodes_to_buffer(
                         lines,
                         hit_regions,
                         visible_cards,
@@ -772,13 +772,8 @@ fn append_group_header(
     lines.push(group_header_line(
         &group.metadata,
         group.collapsed,
-        group.children.iter().any(|tab| tab.card.active),
-        group.children.iter().find_map(|tab| {
-            tab.card
-                .active
-                .then(|| metadata_text(&tab.card.metadata, "zellij.tab.name"))
-                .flatten()
-        }),
+        contains_active_tab(&group.children),
+        active_tab_name(&group.children),
         cols,
         theme,
     ));
@@ -946,11 +941,21 @@ fn active_tab_id(nodes: &[RenderNode]) -> Option<u64> {
     nodes.iter().find_map(|node| match node {
         RenderNode::Tab(tab) if tab.card.active => Some(tab.card.tab_id),
         RenderNode::Tab(_) => None,
-        RenderNode::Group(group) => group
-            .children
-            .iter()
-            .find(|tab| tab.card.active)
-            .map(|tab| tab.card.tab_id),
+        RenderNode::Group(group) => active_tab_id(&group.children),
+    })
+}
+
+fn contains_active_tab(nodes: &[RenderNode]) -> bool {
+    active_tab_id(nodes).is_some()
+}
+
+fn active_tab_name(nodes: &[RenderNode]) -> Option<&str> {
+    nodes.iter().find_map(|node| match node {
+        RenderNode::Tab(tab) if tab.card.active => {
+            metadata_text(&tab.card.metadata, "zellij.tab.name")
+        }
+        RenderNode::Tab(_) => None,
+        RenderNode::Group(group) => active_tab_name(&group.children),
     })
 }
 
@@ -1357,7 +1362,7 @@ fn pending_nodes_to_render_nodes(
             }
             PendingRenderNode::Tab(tab) if pending_group.is_some() && tab.indent > 0 => {
                 if let Some(group) = pending_group.as_mut() {
-                    group.children.push(tab);
+                    group.children.push(RenderNode::Tab(tab));
                 }
             }
             PendingRenderNode::Tab(tab) => {
@@ -2135,6 +2140,72 @@ mod tests {
         assert_eq!(hit.action, HitAction::ToggleGroup);
         assert!(hit.group_path.is_some());
         assert_eq!(hit_at(&rendered.hit_regions, 0, 2), None);
+    }
+
+    #[test]
+    fn render_nodes_walk_nested_groups_recursively() {
+        let mut config = RailConfig::default();
+        config.structure = RailStructure::JoinedCells;
+        config.sizing = RailSizingPreset::Compact;
+        let nodes = vec![RenderNode::Group(RenderGroup {
+            path: GroupPath::default(),
+            label: "typed-parent".to_owned(),
+            full_label: "typed-parent".to_owned(),
+            tab_count: 1,
+            collapsed: false,
+            metadata: metadata_for_group_header(&GroupPath::default(), "parent", "parent", 1),
+            children: vec![RenderNode::Group(RenderGroup {
+                path: GroupPath::default(),
+                label: "typed-child".to_owned(),
+                full_label: "typed-child".to_owned(),
+                tab_count: 1,
+                collapsed: false,
+                metadata: metadata_for_group_header(&GroupPath::default(), "child", "child", 1),
+                children: vec![RenderNode::Tab(RenderTab {
+                    card: RenderCard {
+                        tab_id: 42,
+                        position: 0,
+                        name: "typed-leaf".to_owned(),
+                        active: true,
+                        pinned: false,
+                        status: None,
+                        metadata: metadata_for_local_tab(&LocalTab {
+                            tab_id: 42,
+                            position: 0,
+                            name: "leaf".to_owned(),
+                            active: true,
+                        }),
+                    },
+                    indent: 4,
+                    grouping: None,
+                })],
+            })],
+        })];
+        let mut lines = vec![blank(32); 8];
+        let mut hit_regions = vec![];
+        let mut visible_cards = vec![];
+
+        render_nodes(
+            &mut lines,
+            &mut hit_regions,
+            &mut visible_cards,
+            &nodes,
+            8,
+            32,
+            true,
+            config,
+            None,
+            None,
+        );
+
+        assert!(lines[0].starts_with("▼ parent"));
+        assert!(lines[1].starts_with("▼ child"));
+        assert!(
+            lines.iter().any(|line| line.starts_with("    ┌ leaf")),
+            "nested tab should render through the recursive group walker: {:?}",
+            lines
+        );
+        assert!(visible_cards.iter().any(|card| card.tab_id == 42));
     }
 
     #[test]
