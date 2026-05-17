@@ -14,6 +14,10 @@ SOURCE_ID = "andamento-git-watcher"
 DEFAULT_TTL_MS = 10_000
 
 
+def log(message):
+    print(f"[andamento-git-watcher] {message}", flush=True)
+
+
 def text_value(value):
     return {"type": "text", "value": value}
 
@@ -103,8 +107,10 @@ def git_facts(cwd):
     return facts
 
 
-def get_observed_identities():
+def get_observed_identities(verbose=False):
     output = run_text(["zellij", "pipe", "--name", OBSERVED_IDENTITIES_PIPE])
+    if verbose:
+        log(f"observed identity pipe returned {len(output)} bytes")
     return parse_observed_identities_output(output)
 
 
@@ -127,7 +133,7 @@ def parse_observed_identities_output(output):
 def publish_patch(patch, dry_run):
     payload = json.dumps(patch, separators=(",", ":"))
     if dry_run:
-        print(payload)
+        log(f"dry-run patch {payload}")
         return
     subprocess.run(
         ["zellij", "pipe", "--name", METADATA_PATCH_PIPE, "--", payload],
@@ -135,12 +141,23 @@ def publish_patch(patch, dry_run):
     )
 
 
-def run_once(dry_run):
-    observed = get_observed_identities()
-    for cwd in observed_text_identities(observed, "zellij.pane.cwd"):
+def run_once(dry_run, verbose=False):
+    observed = get_observed_identities(verbose=verbose)
+    cwds = observed_text_identities(observed, "zellij.pane.cwd")
+    if verbose:
+        log(f"observed {len(observed)} identities; {len(cwds)} cwd identities")
+    if not cwds and verbose:
+        log("no zellij.pane.cwd identities to enrich")
+    for cwd in cwds:
+        if verbose:
+            log(f"checking cwd {cwd}")
         facts = git_facts(cwd)
         if facts:
+            if verbose:
+                log(f"publishing {len(facts)} git facts for {cwd}: {', '.join(sorted(facts))}")
             publish_patch(metadata_patch("zellij.pane.cwd", cwd, facts), dry_run)
+        elif verbose:
+            log(f"no git facts for {cwd}")
 
 
 def main(argv):
@@ -149,14 +166,22 @@ def main(argv):
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--test", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
     if args.test:
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(WatcherTests)
         result = unittest.TextTestRunner(verbosity=2).run(suite)
         return 0 if result.wasSuccessful() else 1
+    verbose = not args.quiet
+    if verbose:
+        mode = "dry-run" if args.dry_run else "publish"
+        cadence = "once" if args.once else f"every {args.interval:g}s"
+        log(f"starting ({mode}, {cadence})")
     while True:
-        run_once(args.dry_run)
+        run_once(args.dry_run, verbose=verbose)
         if args.once:
+            if verbose:
+                log("done")
             return 0
         time.sleep(args.interval)
 
