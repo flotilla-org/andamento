@@ -43,12 +43,11 @@ def identity_target(key, value):
 
 def metadata_patch(target_key, target_value, facts):
     return {
-        "MetadataPatch": {
-            "target": identity_target(target_key, target_value),
-            "source_id": SOURCE_ID,
-            "set": {key: value_update(value) for key, value in sorted(facts.items()) if value},
-            "unset": [],
-        }
+        "type": "metadata-patch",
+        "target": identity_target(target_key, target_value),
+        "source_id": SOURCE_ID,
+        "set": {key: value_update(value) for key, value in sorted(facts.items()) if value},
+        "unset": [],
     }
 
 
@@ -211,10 +210,10 @@ class WatcherTests(unittest.TestCase):
 
     def test_metadata_patch_shape(self):
         patch = metadata_patch("zellij.pane.cwd", "/repo", {"git.repo": "rjwittams/katzensteg"})
-        body = patch["MetadataPatch"]
-        self.assertEqual(body["source_id"], SOURCE_ID)
-        self.assertEqual(body["target"], identity_target("zellij.pane.cwd", "/repo"))
-        self.assertEqual(body["set"]["git.repo"]["value"], text_value("rjwittams/katzensteg"))
+        self.assertEqual(patch["type"], "metadata-patch")
+        self.assertEqual(patch["source_id"], SOURCE_ID)
+        self.assertEqual(patch["target"], identity_target("zellij.pane.cwd", "/repo"))
+        self.assertEqual(patch["set"]["git.repo"]["value"], text_value("rjwittams/katzensteg"))
 
 
 if __name__ == "__main__":
