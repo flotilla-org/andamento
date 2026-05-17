@@ -1659,21 +1659,8 @@ fn group_header_line(
     width: usize,
     theme: Option<RenderTheme>,
 ) -> String {
-    let marker = if collapsed { "▶" } else { "▼" };
-    let active_suffix = collapsed
-        .then_some(active_tab_name)
-        .flatten()
-        .map(|name| format!(": {name}"))
-        .unwrap_or_default();
-    let count_label = format!("{marker} {label} ({tab_count}){active_suffix}");
-    let compact_label = format!("{marker} {label}{active_suffix}");
-    let label = if count_label.width() <= width {
-        count_label
-    } else if compact_label.width() <= width {
-        compact_label
-    } else {
-        truncate_to_width(&compact_label, width)
-    };
+    let fields = group_header_template_fields(label, tab_count, collapsed, active_tab_name);
+    let label = render_group_header_fields(&fields, width);
     let remaining = width.saturating_sub(label.width());
     let text = if remaining >= 2 {
         format!("{label} {}", "─".repeat(remaining - 1))
@@ -1685,6 +1672,60 @@ fn group_header_line(
         contains_active_tab,
         theme,
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GroupHeaderField {
+    Required(String),
+    Optional(String),
+    Priority(String),
+}
+
+fn group_header_template_fields(
+    label: &str,
+    tab_count: usize,
+    collapsed: bool,
+    active_tab_name: Option<&str>,
+) -> Vec<GroupHeaderField> {
+    let mut fields = vec![
+        GroupHeaderField::Required(if collapsed { "▶" } else { "▼" }.to_owned()),
+        GroupHeaderField::Required(label.to_owned()),
+        GroupHeaderField::Optional(format!("({tab_count})")),
+    ];
+    if let Some(active_tab_name) = collapsed.then_some(active_tab_name).flatten() {
+        fields.push(GroupHeaderField::Priority(format!(": {active_tab_name}")));
+    }
+    fields
+}
+
+fn render_group_header_fields(fields: &[GroupHeaderField], width: usize) -> String {
+    let full = join_group_header_fields(fields, true);
+    if full.width() <= width {
+        return full;
+    }
+    let without_optional = join_group_header_fields(fields, false);
+    if without_optional.width() <= width {
+        return without_optional;
+    }
+    truncate_to_width(&without_optional, width)
+}
+
+fn join_group_header_fields(fields: &[GroupHeaderField], include_optional: bool) -> String {
+    let mut output = String::new();
+    for field in fields {
+        let value = match field {
+            GroupHeaderField::Required(value) | GroupHeaderField::Priority(value) => value,
+            GroupHeaderField::Optional(value) if include_optional => value,
+            GroupHeaderField::Optional(_) => continue,
+        };
+        if output.is_empty() || value.starts_with(':') {
+            output.push_str(value);
+        } else {
+            output.push(' ');
+            output.push_str(value);
+        }
+    }
+    output
 }
 
 fn truncate_to_width(text: &str, max_width: usize) -> String {
@@ -2031,6 +2072,44 @@ mod tests {
         assert_eq!(
             hit_at(&rendered.hit_regions, 0, 0).map(|hit| hit.action),
             Some(HitAction::ToggleGroup)
+        );
+    }
+
+    #[test]
+    fn collapsed_group_header_prefers_active_tab_over_count_when_narrow() {
+        let model = grouped_model();
+        let group_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("expected first row to be a group header"),
+        };
+
+        let rendered =
+            render_lines_with_collapsed_groups(Some(&model), &[], 8, 17, true, &[group_path]);
+
+        assert!(
+            rendered.lines[0].starts_with("▶ zellij: tests"),
+            "narrow collapsed header should retain the active tab field before the count: {:?}",
+            rendered.lines[0]
+        );
+        assert!(
+            !rendered.lines[0].contains("(2)"),
+            "tab count should be dropped before active tab context on narrow collapsed groups: {:?}",
+            rendered.lines[0]
+        );
+    }
+
+    #[test]
+    fn group_header_template_fields_render_in_priority_order() {
+        let fields = group_header_template_fields("zellij", 2, true, Some("tests"));
+
+        assert_eq!(
+            fields,
+            vec![
+                GroupHeaderField::Required("▶".to_owned()),
+                GroupHeaderField::Required("zellij".to_owned()),
+                GroupHeaderField::Optional("(2)".to_owned()),
+                GroupHeaderField::Priority(": tests".to_owned()),
+            ]
         );
     }
 

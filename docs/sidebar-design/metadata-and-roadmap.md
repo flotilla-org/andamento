@@ -309,6 +309,8 @@ General shape:
 
 Tile size should start as automatic squash-down based on available space. Templates can later add sizing hints such as minimum useful size, preferred size, compact variant, and expanded variant.
 
+Status: started internally for group headers. The renderer now builds group headers from ordered fields with required, optional, and priority classes, so narrow collapsed groups can drop the count before dropping active-tab context. This is still hard-coded Rust, not external template config.
+
 ### Latent Tabs Are Materializable Nodes
 
 A latent tab is a sidebar node for work that is not currently a Zellij tab. On activation, it can be materialized by sending a Zellij action or plugin message that creates the real tab/panes.
