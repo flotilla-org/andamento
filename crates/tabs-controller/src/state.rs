@@ -276,9 +276,13 @@ impl ControllerState {
         &self.template_config
     }
 
-    pub fn apply_metadata_patch(&mut self, patch: tabs_shared::MetadataPatch) {
-        self.receive_counter = self.receive_counter.saturating_add(1);
-        self.metadata.apply_patch(patch, self.receive_counter);
+    pub fn apply_metadata_patch(&mut self, patch: tabs_shared::MetadataPatch) -> bool {
+        let next_receive_counter = self.receive_counter.saturating_add(1);
+        let outcome = self.metadata.apply_patch(patch, next_receive_counter);
+        if outcome.touched {
+            self.receive_counter = next_receive_counter;
+        }
+        outcome.view_changed
     }
 
     pub fn bootstrap_snapshot(&self) -> ControllerBootstrapSnapshot {
@@ -1291,6 +1295,54 @@ mod tests {
 
         assert!(!state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into()));
         assert_eq!(state.receive_counter, receive_counter);
+    }
+
+    #[test]
+    fn duplicate_metadata_patch_is_not_a_model_change() {
+        let mut state = ControllerState::default();
+        let patch = tabs_shared::MetadataPatch {
+            target: tabs_shared::MetadataTarget::Tab(1),
+            source_id: "watcher".to_owned(),
+            set: BTreeMap::from([(
+                "git.repo".to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        };
+
+        assert!(state.apply_metadata_patch(patch.clone()));
+        let receive_counter = state.receive_counter;
+        assert!(!state.apply_metadata_patch(patch));
+        assert_eq!(state.receive_counter, receive_counter);
+    }
+
+    #[test]
+    fn duplicate_ttl_metadata_patch_refreshes_without_model_change() {
+        let mut state = ControllerState::default();
+        let patch = tabs_shared::MetadataPatch {
+            target: tabs_shared::MetadataTarget::Tab(1),
+            source_id: "watcher".to_owned(),
+            set: BTreeMap::from([(
+                "git.repo".to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    ttl_ms: Some(10_000),
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        };
+
+        assert!(state.apply_metadata_patch(patch.clone()));
+        let receive_counter = state.receive_counter;
+        assert!(!state.apply_metadata_patch(patch));
+        assert!(state.receive_counter > receive_counter);
     }
 
     #[test]

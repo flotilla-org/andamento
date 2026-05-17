@@ -386,9 +386,9 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             }
         }
         Ok(Some(ControllerMessage::External(ExternalMessage::MetadataPatch(patch)))) => {
-            state.apply_metadata_patch(patch);
+            let state_changed = state.apply_metadata_patch(patch);
             HandlePipeResult {
-                state_changed: true,
+                state_changed,
                 bootstrap_request: None,
                 cli_pipe_output: None,
             }
@@ -1047,6 +1047,42 @@ mod tests {
                 .map(|entry| entry.source_id.as_str()),
             Some("test")
         );
+    }
+
+    #[test]
+    fn duplicate_metadata_patch_message_does_not_request_state_broadcast() {
+        let mut state = ControllerState::default();
+        let patch = tabs_shared::MetadataPatch {
+            target: tabs_shared::MetadataTarget::Tab(1),
+            source_id: "test".to_owned(),
+            set: BTreeMap::from([(
+                "git.repo".to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: tabs_shared::MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    ttl_ms: Some(10_000),
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        };
+        let payload = serde_json::to_string(&ExternalMessage::MetadataPatch(patch)).unwrap();
+
+        let first = handle_pipe_message(
+            &mut state,
+            pipe(
+                MSG_APPLY_METADATA_PATCH,
+                Some(payload.clone()),
+                BTreeMap::new(),
+            ),
+        );
+        let second = handle_pipe_message(
+            &mut state,
+            pipe(MSG_APPLY_METADATA_PATCH, Some(payload), BTreeMap::new()),
+        );
+
+        assert!(first.state_changed);
+        assert!(!second.state_changed);
     }
 
     #[test]

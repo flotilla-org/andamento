@@ -43,20 +43,26 @@ impl MetadataStore {
             .insert(source_id.into(), entry);
     }
 
-    pub fn unset(&mut self, entity_id: &EntityId, key: &str, source_id: &str) {
+    pub fn unset(
+        &mut self,
+        entity_id: &EntityId,
+        key: &str,
+        source_id: &str,
+    ) -> Option<MetadataEntry> {
         let Some(entity_entries) = self.entries.get_mut(entity_id) else {
-            return;
+            return None;
         };
         let Some(key_entries) = entity_entries.get_mut(key) else {
-            return;
+            return None;
         };
-        key_entries.remove(source_id);
+        let removed = key_entries.remove(source_id);
         if key_entries.is_empty() {
             entity_entries.remove(key);
         }
         if entity_entries.is_empty() {
             self.entries.remove(entity_id);
         }
+        removed
     }
 
     pub fn source_entry(
@@ -71,24 +77,67 @@ impl MetadataStore {
     }
 
     #[allow(dead_code)]
-    pub fn apply_patch(&mut self, patch: MetadataPatch, now: u64) {
+    pub fn apply_patch(&mut self, patch: MetadataPatch, now: u64) -> MetadataPatchOutcome {
+        let mut outcome = MetadataPatchOutcome::default();
         for key in patch.unset {
-            self.unset(&patch.target, &key, &patch.source_id);
+            if let Some(entry) = self.unset(&patch.target, &key, &patch.source_id) {
+                outcome.touched = true;
+                outcome.view_changed |= entry_is_live(&entry, now);
+            }
         }
         for (key, update) in patch.set {
-            self.set(
-                patch.target.clone(),
-                key,
-                patch.source_id.clone(),
-                MetadataEntry {
-                    value: update.value,
-                    updated_at: now,
-                    ttl_ms: update.ttl_ms,
-                    precedence: update.precedence.unwrap_or_default(),
-                    ordinal: update.ordinal.unwrap_or_default(),
-                },
-            );
+            let next_entry = MetadataEntry {
+                value: update.value,
+                updated_at: now,
+                ttl_ms: update.ttl_ms,
+                precedence: update.precedence.unwrap_or_default(),
+                ordinal: update.ordinal.unwrap_or_default(),
+            };
+            let existing_entry = self
+                .entries
+                .get(&patch.target)
+                .and_then(|entity_entries| entity_entries.get(&key))
+                .and_then(|source_entries| source_entries.get(&patch.source_id))
+                .cloned();
+
+            match existing_entry {
+                Some(existing)
+                    if metadata_entry_payload_matches(&existing, &next_entry)
+                        && entry_is_live(&existing, now) =>
+                {
+                    if existing.ttl_ms.is_some() {
+                        self.set(
+                            patch.target.clone(),
+                            key,
+                            patch.source_id.clone(),
+                            next_entry,
+                        );
+                        outcome.touched = true;
+                    }
+                }
+                Some(existing) if metadata_entry_payload_matches(&existing, &next_entry) => {
+                    self.set(
+                        patch.target.clone(),
+                        key,
+                        patch.source_id.clone(),
+                        next_entry,
+                    );
+                    outcome.touched = true;
+                    outcome.view_changed = true;
+                }
+                _ => {
+                    self.set(
+                        patch.target.clone(),
+                        key,
+                        patch.source_id.clone(),
+                        next_entry,
+                    );
+                    outcome.touched = true;
+                    outcome.view_changed = true;
+                }
+            }
         }
+        outcome
     }
 
     pub fn entries_for(&self, entity_id: &EntityId, key: &str, now: u64) -> Vec<CandidateEntry> {
@@ -184,6 +233,19 @@ impl MetadataStore {
             })
             .collect()
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MetadataPatchOutcome {
+    pub view_changed: bool,
+    pub touched: bool,
+}
+
+fn metadata_entry_payload_matches(left: &MetadataEntry, right: &MetadataEntry) -> bool {
+    left.value == right.value
+        && left.ttl_ms == right.ttl_ms
+        && left.precedence == right.precedence
+        && left.ordinal == right.ordinal
 }
 
 fn entry_is_live(entry: &MetadataEntry, now: u64) -> bool {
@@ -411,6 +473,66 @@ mod tests {
         assert_eq!(entries[0].entry.ttl_ms, Some(30_000));
         assert_eq!(entries[0].entry.precedence, 10);
         assert_eq!(entries[0].entry.ordinal, 2);
+    }
+
+    #[test]
+    fn duplicate_metadata_patch_without_ttl_is_noop() {
+        let mut store = MetadataStore::default();
+        let target = EntityId::Pane(PaneTarget::Terminal(1));
+        let patch = MetadataPatch {
+            target: target.clone(),
+            source_id: "watcher".to_owned(),
+            set: BTreeMap::from([(
+                "git.repo".to_owned(),
+                MetadataValueUpdate {
+                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    ttl_ms: None,
+                    precedence: Some(10),
+                    ordinal: Some(2),
+                },
+            )]),
+            unset: vec![],
+        };
+
+        let first = store.apply_patch(patch.clone(), 10);
+        let second = store.apply_patch(patch, 11);
+
+        let entries = store.entries_for(&target, "git.repo", 11);
+        assert_eq!(first.view_changed, true);
+        assert_eq!(first.touched, true);
+        assert_eq!(second.view_changed, false);
+        assert_eq!(second.touched, false);
+        assert_eq!(entries[0].entry.updated_at, 10);
+    }
+
+    #[test]
+    fn duplicate_metadata_patch_with_ttl_refreshes_without_view_change() {
+        let mut store = MetadataStore::default();
+        let target = EntityId::Pane(PaneTarget::Terminal(1));
+        let patch = MetadataPatch {
+            target: target.clone(),
+            source_id: "watcher".to_owned(),
+            set: BTreeMap::from([(
+                "git.repo".to_owned(),
+                MetadataValueUpdate {
+                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    ttl_ms: Some(10_000),
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        };
+
+        let first = store.apply_patch(patch.clone(), 10);
+        let second = store.apply_patch(patch, 11);
+
+        let entries = store.entries_for(&target, "git.repo", 11);
+        assert_eq!(first.view_changed, true);
+        assert_eq!(first.touched, true);
+        assert_eq!(second.view_changed, false);
+        assert_eq!(second.touched, true);
+        assert_eq!(entries[0].entry.updated_at, 11);
     }
 
     #[test]
