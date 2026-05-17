@@ -392,6 +392,18 @@ fn group_metadata_block(group: &RenderGroup) -> MetadataBlock {
         &metadata_display_value(&group.metadata, "group.tab_count")
             .unwrap_or_else(|| group.tab_count.to_string()),
     );
+    push_template_diagnostic_line(
+        &mut lines,
+        2,
+        "template.group_header",
+        TemplateRenderContext {
+            slot: TemplateSlot::GroupHeader,
+            node_kind: RenderNodeKind::Group,
+            metadata: &group.metadata,
+            collapsed: group.collapsed,
+            active_tab_name: active_tab_name(&group.children),
+        },
+    );
     push_group_path_metadata(&mut lines, 2, &group.path);
     MetadataBlock { lines, hit: None }
 }
@@ -434,6 +446,18 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
         &metadata_display_value(&card.metadata, "rail.tab.pinned")
             .unwrap_or_else(|| bool_text(card.pinned).to_owned()),
     );
+    push_template_diagnostic_line(
+        &mut lines,
+        indent + 2,
+        "template.tab_title",
+        TemplateRenderContext {
+            slot: TemplateSlot::TabTitle,
+            node_kind: RenderNodeKind::Tab,
+            metadata: &card.metadata,
+            collapsed: false,
+            active_tab_name: None,
+        },
+    );
     if let Some(grouping) = tab.grouping.as_ref() {
         push_metadata_text_line(&mut lines, indent + 2, "group.label", &grouping.label);
         push_metadata_text_line(
@@ -460,6 +484,18 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
             indent + 2,
             "status.source_pane",
             &format_pane_target(status.source_pane),
+        );
+        push_template_diagnostic_line(
+            &mut lines,
+            indent + 2,
+            "template.tab_status",
+            TemplateRenderContext {
+                slot: TemplateSlot::TabStatus,
+                node_kind: RenderNodeKind::Tab,
+                metadata: &card.metadata,
+                collapsed: false,
+                active_tab_name: None,
+            },
         );
     }
     MetadataBlock {
@@ -497,6 +533,17 @@ fn format_metadata_value(value: &MetadataValue) -> String {
         MetadataValue::Bool(value) => bool_text(*value).to_owned(),
         MetadataValue::Integer(value) => value.to_string(),
         MetadataValue::StringList(values) => values.join(", "),
+    }
+}
+
+fn push_template_diagnostic_line(
+    lines: &mut Vec<String>,
+    indent: usize,
+    key: &str,
+    context: TemplateRenderContext<'_>,
+) {
+    if let Some(name) = matched_template_name(context) {
+        push_metadata_text_line(lines, indent, key, name);
     }
 }
 
@@ -2055,6 +2102,7 @@ enum MetadataPredicate {
 
 #[derive(Debug, Clone, Copy)]
 struct TemplateDefinition<'a> {
+    name: &'static str,
     slot: TemplateSlot,
     node_kind: RenderNodeKind,
     predicates: &'a [MetadataPredicate],
@@ -2152,30 +2200,35 @@ const STATUS_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
 
 const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
     TemplateDefinition {
+        name: "builtin.group-header",
         slot: TemplateSlot::GroupHeader,
         node_kind: RenderNodeKind::Group,
         predicates: &[],
         fields: GROUP_HEADER_TEMPLATE_FIELDS,
     },
     TemplateDefinition {
+        name: "builtin.tab-title",
         slot: TemplateSlot::TabTitle,
         node_kind: RenderNodeKind::Tab,
         predicates: &[],
         fields: TAB_TITLE_TEMPLATE_FIELDS,
     },
     TemplateDefinition {
+        name: "builtin.tab-status",
         slot: TemplateSlot::TabStatus,
         node_kind: RenderNodeKind::Tab,
         predicates: STATUS_TEMPLATE_PREDICATES,
         fields: STATUS_TEMPLATE_FIELDS,
     },
     TemplateDefinition {
+        name: "builtin.tab-status.waiting",
         slot: TemplateSlot::TabStatus,
         node_kind: RenderNodeKind::Tab,
         predicates: WAITING_STATUS_TEMPLATE_PREDICATES,
         fields: STATUS_TEMPLATE_FIELDS,
     },
     TemplateDefinition {
+        name: "builtin.tab-status.terminal-source",
         slot: TemplateSlot::TabStatus,
         node_kind: RenderNodeKind::Tab,
         predicates: TERMINAL_STATUS_TEMPLATE_PREDICATES,
@@ -2187,6 +2240,10 @@ fn template_fields_for(context: TemplateRenderContext<'_>) -> Vec<TemplateField>
     resolve_template(BUILTIN_TEMPLATES, &context)
         .map(|template| template.build_fields(&context))
         .unwrap_or_default()
+}
+
+fn matched_template_name(context: TemplateRenderContext<'_>) -> Option<&'static str> {
+    resolve_template(BUILTIN_TEMPLATES, &context).map(|template| template.name)
 }
 
 fn resolve_template<'a>(
@@ -2995,12 +3052,14 @@ mod tests {
         }];
         let templates = [
             TemplateDefinition {
+                name: "test.generic",
                 slot: TemplateSlot::TabStatus,
                 node_kind: RenderNodeKind::Tab,
                 predicates: &[],
                 fields: GENERIC_FIELDS,
             },
             TemplateDefinition {
+                name: "test.specific",
                 slot: TemplateSlot::TabStatus,
                 node_kind: RenderNodeKind::Tab,
                 predicates: &[MetadataPredicate::TextEquals {
@@ -3049,12 +3108,14 @@ mod tests {
         }];
         let templates = [
             TemplateDefinition {
+                name: "test.generic",
                 slot: TemplateSlot::TabStatus,
                 node_kind: RenderNodeKind::Tab,
                 predicates: &[],
                 fields: GENERIC_FIELDS,
             },
             TemplateDefinition {
+                name: "test.specific",
                 slot: TemplateSlot::TabStatus,
                 node_kind: RenderNodeKind::Tab,
                 predicates: &[MetadataPredicate::TextPrefix {
@@ -3284,6 +3345,37 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.starts_with("┌ tests")));
+    }
+
+    #[test]
+    fn metadata_view_renders_matched_template_names() {
+        let mut model = grouped_model();
+        model.config.view = RailViewMode::Metadata;
+        model.tabs[1].status = Some(TabStatusSummary {
+            priority: Priority::Waiting,
+            title: "waiting".to_owned(),
+            detail: Some("input".to_owned()),
+            icon: None,
+            source_pane: PaneTarget::Terminal(9),
+        });
+        if let RailRow::Tab { tab, .. } = &mut model.rows[2] {
+            tab.status = model.tabs[1].status.clone();
+        }
+
+        let rendered = render_lines(Some(&model), &[], 24, 64, true);
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("template.group_header: builtin.group-header")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("template.tab_title: builtin.tab-title")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("template.tab_status: builtin.tab-status.waiting")));
     }
 
     #[test]
