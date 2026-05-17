@@ -9,7 +9,7 @@ use tabs_shared::{
     MetadataIdentity, MetadataSourceEntry, MetadataValue, ObservedMetadataIdentity, PaneTarget,
     Priority, RailConfig, RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello,
     ResolvedMetadata, ResolvedTemplateField, ResolvedTemplateSlot, ResolvedTemplateSlots,
-    SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
+    SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -57,6 +57,7 @@ pub struct ControllerState {
     sort_mode: SortMode,
     rail_config: RailConfig,
     template_catalog: Option<tabs_shared::template_config::TemplateConfigCatalog>,
+    template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
 }
 
@@ -250,6 +251,14 @@ impl ControllerState {
         self.template_catalog = catalog;
     }
 
+    pub fn set_template_config_diagnostics(&mut self, diagnostics: TemplateConfigDiagnostics) {
+        self.template_config = diagnostics;
+    }
+
+    pub fn template_config_diagnostics(&self) -> &TemplateConfigDiagnostics {
+        &self.template_config
+    }
+
     pub fn apply_metadata_patch(&mut self, patch: tabs_shared::MetadataPatch) {
         self.receive_counter = self.receive_counter.saturating_add(1);
         self.metadata.apply_patch(patch, self.receive_counter);
@@ -363,6 +372,7 @@ impl ControllerState {
         ControllerViewModel {
             sort_mode: self.sort_mode,
             config: self.rail_config,
+            template_config: self.template_config.clone(),
             resolved_metadata,
             observed_identities,
             rows,

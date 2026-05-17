@@ -2,6 +2,8 @@ mod metadata;
 mod state;
 
 use std::collections::BTreeMap;
+#[cfg(target_family = "wasm")]
+use std::path::PathBuf;
 
 use state::ControllerState;
 #[cfg(target_family = "wasm")]
@@ -15,6 +17,7 @@ use tabs_shared::{
     MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
     MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_TOGGLE_PIN,
 };
+use tabs_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use zellij_tile::prelude::*;
 
 #[cfg(not(target_family = "wasm"))]
@@ -44,18 +47,24 @@ impl ZellijPlugin for PluginState {
         self.state
             .set_rail_config(parse_rail_config(&configuration));
         self.template_config_path = template_config_path_from_configuration(&configuration);
+        self.state
+            .set_template_config_diagnostics(initial_template_config_diagnostics(
+                self.template_config_path.clone(),
+            ));
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
             PermissionType::ReadCliPipes,
             PermissionType::MessageAndLaunchOtherPlugins,
             PermissionType::OpenFiles,
+            PermissionType::FullHdAccess,
         ]);
         subscribe(&[
             EventType::TabUpdate,
             EventType::PaneUpdate,
             EventType::CwdChanged,
             EventType::PermissionRequestResult,
+            EventType::FailedToChangeHostFolder,
         ]);
     }
 
@@ -64,10 +73,22 @@ impl ZellijPlugin for PluginState {
             Event::PermissionRequestResult(status) => {
                 self.permissions_granted = matches!(status, PermissionStatus::Granted);
                 if self.permissions_granted {
+                    change_host_folder(PathBuf::from("/"));
                     self.reload_template_catalog();
                     self.push_view_model_to_rails();
                 }
                 self.request_bootstrap_snapshot();
+            }
+            Event::FailedToChangeHostFolder(error) => {
+                self.state
+                    .set_template_config_diagnostics(template_config_error_diagnostics(
+                        self.template_config_path.clone(),
+                        format!(
+                            "failed to set /host root: {}",
+                            error.unwrap_or_else(|| "unknown error".to_owned())
+                        ),
+                    ));
+                self.push_view_model_to_rails();
             }
             Event::TabUpdate(tabs) => {
                 self.state.update_tabs_from_zellij(tabs);
@@ -121,6 +142,44 @@ impl ZellijPlugin for PluginState {
         }
         false
     }
+
+    fn render(&mut self, rows: usize, cols: usize) {
+        let diagnostics = self.state.template_config_diagnostics();
+        let mut lines = vec![
+            "andamento controller".to_owned(),
+            format!(
+                "permissions: {}",
+                if self.permissions_granted {
+                    "granted"
+                } else {
+                    "waiting"
+                }
+            ),
+            format!(
+                "template state: {}",
+                template_config_state_text(diagnostics.state)
+            ),
+            format!(
+                "template path: {}",
+                diagnostics.path.as_deref().unwrap_or("<not configured>")
+            ),
+            format!("template count: {}", diagnostics.template_count),
+        ];
+        if !diagnostics.template_names.is_empty() {
+            lines.push(format!(
+                "template names: {}",
+                diagnostics.template_names.join(", ")
+            ));
+        }
+        if let Some(error) = diagnostics.last_error.as_ref() {
+            lines.push(format!("template error: {error}"));
+        }
+        lines.truncate(rows);
+        while lines.len() < rows {
+            lines.push(String::new());
+        }
+        print!("{}", render_plain_lines(&lines, cols).join("\n"));
+    }
 }
 
 #[cfg(target_family = "wasm")]
@@ -128,15 +187,30 @@ impl PluginState {
     fn reload_template_catalog(&mut self) {
         let Some(path) = self.template_config_path.as_deref() else {
             self.state.set_template_catalog(None);
+            self.state
+                .set_template_config_diagnostics(TemplateConfigDiagnostics::default());
             return;
         };
         match tabs_shared::template_config::load_template_catalog_from_file(path) {
             Ok(catalog) => {
+                let diagnostics = TemplateConfigDiagnostics {
+                    path: Some(path.to_owned()),
+                    state: TemplateConfigState::Loaded,
+                    template_count: catalog.len(),
+                    template_names: catalog.template_names(),
+                    last_error: None,
+                };
                 self.state.set_template_catalog(Some(catalog));
+                self.state.set_template_config_diagnostics(diagnostics);
             }
             Err(error) => {
                 eprintln!("tabs-controller: failed to load template config: {error}");
                 self.state.set_template_catalog(None);
+                self.state
+                    .set_template_config_diagnostics(template_config_error_diagnostics(
+                        Some(path.to_owned()),
+                        error.to_string(),
+                    ));
             }
         }
     }
@@ -334,6 +408,56 @@ fn template_config_path_from_configuration(
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .map(str::to_owned)
+}
+
+fn initial_template_config_diagnostics(path: Option<String>) -> TemplateConfigDiagnostics {
+    TemplateConfigDiagnostics {
+        state: if path.is_some() {
+            TemplateConfigState::PendingPermission
+        } else {
+            TemplateConfigState::NotConfigured
+        },
+        path,
+        template_count: 0,
+        template_names: vec![],
+        last_error: None,
+    }
+}
+
+fn template_config_error_diagnostics(
+    path: Option<String>,
+    error: String,
+) -> TemplateConfigDiagnostics {
+    TemplateConfigDiagnostics {
+        path,
+        state: TemplateConfigState::Error,
+        template_count: 0,
+        template_names: vec![],
+        last_error: Some(error),
+    }
+}
+
+fn template_config_state_text(state: TemplateConfigState) -> &'static str {
+    match state {
+        TemplateConfigState::NotConfigured => "not configured",
+        TemplateConfigState::PendingPermission => "pending permission",
+        TemplateConfigState::Loaded => "loaded",
+        TemplateConfigState::Error => "error",
+    }
+}
+
+fn render_plain_lines(lines: &[String], cols: usize) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| {
+            let mut line = line.chars().take(cols).collect::<String>();
+            let width = line.chars().count();
+            if width < cols {
+                line.push_str(&" ".repeat(cols - width));
+            }
+            line
+        })
+        .collect()
 }
 
 fn parse_rail_structure(value: &str) -> Option<RailStructure> {

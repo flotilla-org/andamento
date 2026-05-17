@@ -22,10 +22,23 @@ const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigAction {
+    SetPage(ConfigPage),
     SetStructure(RailStructure),
     SetSizing(RailSizingPreset),
     SetGrouping(RailGroupingMode),
     SetView(RailViewMode),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigPage {
+    Settings,
+    Templates,
+}
+
+impl Default for ConfigPage {
+    fn default() -> Self {
+        Self::Settings
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +63,7 @@ struct PluginState {
     own_client_id: Option<u16>,
     model: Option<ControllerViewModel>,
     pending_config: Option<RailConfig>,
+    page: ConfigPage,
     hit_regions: Vec<HitRegion>,
     permissions_granted: bool,
 }
@@ -123,9 +137,10 @@ impl ZellijPlugin for PluginState {
             .pending_config
             .or_else(|| self.model.as_ref().map(|model| model.config))
             .unwrap_or_default();
-        let rendered = render_config(config, self.model.as_ref(), rows, cols);
+        let rendered = render_config(config, self.model.as_ref(), self.page, rows, cols);
         self.hit_regions = rendered.hit_regions;
         print!("{}", rendered.lines.join("\n"));
+        render_tab_ribbons(self.page, cols);
     }
 }
 
@@ -163,6 +178,10 @@ impl PluginState {
         else {
             return false;
         };
+        if let ConfigAction::SetPage(page) = hit.action {
+            self.page = page;
+            return true;
+        }
         let mut config = self
             .pending_config
             .or_else(|| self.model.as_ref().map(|model| model.config))
@@ -187,6 +206,7 @@ impl PluginState {
 
 fn apply_config_action(mut config: RailConfig, action: ConfigAction) -> RailConfig {
     match action {
+        ConfigAction::SetPage(_) => {}
         ConfigAction::SetStructure(structure) => config.structure = structure,
         ConfigAction::SetSizing(sizing) => config.sizing = sizing,
         ConfigAction::SetGrouping(grouping) => config.grouping = grouping,
@@ -202,6 +222,7 @@ fn permission_result_should_resync(granted: bool) -> bool {
 fn render_config(
     config: RailConfig,
     model: Option<&ControllerViewModel>,
+    page: ConfigPage,
     rows: usize,
     cols: usize,
 ) -> RenderedConfig {
@@ -213,107 +234,14 @@ fn render_config(
     }
     let mut lines = vec![];
     let mut hit_regions = vec![];
-    push_plain(&mut lines, cols, "tab rail config");
+    push_tab_row(&mut lines, &mut hit_regions, cols, page);
     push_plain(&mut lines, cols, "");
-    push_plain(&mut lines, cols, "structure");
-    push_option(
-        &mut lines,
-        &mut hit_regions,
-        cols,
-        "joined cells",
-        config.structure == RailStructure::JoinedCells,
-        ConfigAction::SetStructure(RailStructure::JoinedCells),
-    );
-    push_option(
-        &mut lines,
-        &mut hit_regions,
-        cols,
-        "split around active",
-        config.structure == RailStructure::SplitAroundActive,
-        ConfigAction::SetStructure(RailStructure::SplitAroundActive),
-    );
-    push_option(
-        &mut lines,
-        &mut hit_regions,
-        cols,
-        "box per tab",
-        config.structure == RailStructure::BoxPerTab,
-        ConfigAction::SetStructure(RailStructure::BoxPerTab),
-    );
-    push_plain(&mut lines, cols, "");
-    push_plain(&mut lines, cols, "grouping");
-    push_option(
-        &mut lines,
-        &mut hit_regions,
-        cols,
-        "ungrouped",
-        config.grouping == RailGroupingMode::None,
-        ConfigAction::SetGrouping(RailGroupingMode::None),
-    );
-    push_option(
-        &mut lines,
-        &mut hit_regions,
-        cols,
-        "directory",
-        config.grouping == RailGroupingMode::Directory,
-        ConfigAction::SetGrouping(RailGroupingMode::Directory),
-    );
-    push_plain(&mut lines, cols, "");
-    push_plain(&mut lines, cols, "view");
-    push_option(
-        &mut lines,
-        &mut hit_regions,
-        cols,
-        "normal",
-        config.view == RailViewMode::Normal,
-        ConfigAction::SetView(RailViewMode::Normal),
-    );
-    push_option(
-        &mut lines,
-        &mut hit_regions,
-        cols,
-        "metadata",
-        config.view == RailViewMode::Metadata,
-        ConfigAction::SetView(RailViewMode::Metadata),
-    );
-    push_plain(&mut lines, cols, "");
-    push_plain(&mut lines, cols, "sizing");
-    push_option(
-        &mut lines,
-        &mut hit_regions,
-        cols,
-        "compact",
-        config.sizing == RailSizingPreset::Compact,
-        ConfigAction::SetSizing(RailSizingPreset::Compact),
-    );
-    push_option(
-        &mut lines,
-        &mut hit_regions,
-        cols,
-        "large",
-        config.sizing == RailSizingPreset::Large,
-        ConfigAction::SetSizing(RailSizingPreset::Large),
-    );
-    push_option(
-        &mut lines,
-        &mut hit_regions,
-        cols,
-        "active large",
-        config.sizing == RailSizingPreset::ActiveLarge,
-        ConfigAction::SetSizing(RailSizingPreset::ActiveLarge),
-    );
-    push_option(
-        &mut lines,
-        &mut hit_regions,
-        cols,
-        "pinned large",
-        config.sizing == RailSizingPreset::PinnedLarge,
-        ConfigAction::SetSizing(RailSizingPreset::PinnedLarge),
-    );
-    push_plain(&mut lines, cols, "");
-    push_cwd_metadata(&mut lines, cols, model);
-    push_plain(&mut lines, cols, "");
-    push_plain(&mut lines, cols, "click to apply");
+    match page {
+        ConfigPage::Settings => {
+            push_settings_page(&mut lines, &mut hit_regions, cols, config, model)
+        }
+        ConfigPage::Templates => push_templates_page(&mut lines, cols, model),
+    }
 
     lines.truncate(rows);
     hit_regions.retain(|hit| hit.row < rows);
@@ -323,6 +251,275 @@ fn render_config(
 
     RenderedConfig { lines, hit_regions }
 }
+
+fn push_settings_page(
+    lines: &mut Vec<String>,
+    hit_regions: &mut Vec<HitRegion>,
+    cols: usize,
+    config: RailConfig,
+    model: Option<&ControllerViewModel>,
+) {
+    push_plain(lines, cols, "structure");
+    push_option(
+        lines,
+        hit_regions,
+        cols,
+        "joined cells",
+        config.structure == RailStructure::JoinedCells,
+        ConfigAction::SetStructure(RailStructure::JoinedCells),
+    );
+    push_option(
+        lines,
+        hit_regions,
+        cols,
+        "split around active",
+        config.structure == RailStructure::SplitAroundActive,
+        ConfigAction::SetStructure(RailStructure::SplitAroundActive),
+    );
+    push_option(
+        lines,
+        hit_regions,
+        cols,
+        "box per tab",
+        config.structure == RailStructure::BoxPerTab,
+        ConfigAction::SetStructure(RailStructure::BoxPerTab),
+    );
+    push_plain(lines, cols, "");
+    push_plain(lines, cols, "grouping");
+    push_option(
+        lines,
+        hit_regions,
+        cols,
+        "ungrouped",
+        config.grouping == RailGroupingMode::None,
+        ConfigAction::SetGrouping(RailGroupingMode::None),
+    );
+    push_option(
+        lines,
+        hit_regions,
+        cols,
+        "directory",
+        config.grouping == RailGroupingMode::Directory,
+        ConfigAction::SetGrouping(RailGroupingMode::Directory),
+    );
+    push_plain(lines, cols, "");
+    push_plain(lines, cols, "view");
+    push_option(
+        lines,
+        hit_regions,
+        cols,
+        "normal",
+        config.view == RailViewMode::Normal,
+        ConfigAction::SetView(RailViewMode::Normal),
+    );
+    push_option(
+        lines,
+        hit_regions,
+        cols,
+        "metadata",
+        config.view == RailViewMode::Metadata,
+        ConfigAction::SetView(RailViewMode::Metadata),
+    );
+    push_plain(lines, cols, "");
+    push_plain(lines, cols, "sizing");
+    push_option(
+        lines,
+        hit_regions,
+        cols,
+        "compact",
+        config.sizing == RailSizingPreset::Compact,
+        ConfigAction::SetSizing(RailSizingPreset::Compact),
+    );
+    push_option(
+        lines,
+        hit_regions,
+        cols,
+        "large",
+        config.sizing == RailSizingPreset::Large,
+        ConfigAction::SetSizing(RailSizingPreset::Large),
+    );
+    push_option(
+        lines,
+        hit_regions,
+        cols,
+        "active large",
+        config.sizing == RailSizingPreset::ActiveLarge,
+        ConfigAction::SetSizing(RailSizingPreset::ActiveLarge),
+    );
+    push_option(
+        lines,
+        hit_regions,
+        cols,
+        "pinned large",
+        config.sizing == RailSizingPreset::PinnedLarge,
+        ConfigAction::SetSizing(RailSizingPreset::PinnedLarge),
+    );
+    push_plain(lines, cols, "");
+    push_cwd_metadata(lines, cols, model);
+    push_plain(lines, cols, "");
+    push_plain(lines, cols, "click to apply");
+}
+
+fn push_templates_page(lines: &mut Vec<String>, cols: usize, model: Option<&ControllerViewModel>) {
+    push_plain(lines, cols, "templates");
+    let Some(model) = model else {
+        push_plain(lines, cols, "no controller state yet");
+        return;
+    };
+    let diagnostics = &model.template_config;
+    push_plain(
+        lines,
+        cols,
+        &format!("state: {}", template_config_state_text(diagnostics.state)),
+    );
+    push_plain(
+        lines,
+        cols,
+        &format!(
+            "path: {}",
+            diagnostics.path.as_deref().unwrap_or("<not configured>")
+        ),
+    );
+    push_plain(
+        lines,
+        cols,
+        &format!("template count: {}", diagnostics.template_count),
+    );
+    if !diagnostics.template_names.is_empty() {
+        push_plain(lines, cols, "template names");
+        for name in &diagnostics.template_names {
+            push_plain(lines, cols, &format!("  {name}"));
+        }
+    }
+    if let Some(error) = diagnostics.last_error.as_ref() {
+        push_plain(lines, cols, "last error");
+        push_plain(lines, cols, &format!("  {error}"));
+    }
+    push_plain(lines, cols, "");
+    push_plain(lines, cols, "resolved slots");
+    for row in &model.rows {
+        match row {
+            tabs_shared::RailRow::GroupHeader {
+                label, templates, ..
+            } => {
+                if let Some(slot) = templates.group_header.as_ref() {
+                    push_plain(
+                        lines,
+                        cols,
+                        &format!("group {label}: {}", format_resolved_slot(slot)),
+                    );
+                }
+            }
+            tabs_shared::RailRow::Tab { tab, .. } => {
+                push_tab_template_slot(
+                    lines,
+                    cols,
+                    &tab.name,
+                    "title",
+                    tab.templates.tab_title.as_ref(),
+                );
+                push_tab_template_slot(
+                    lines,
+                    cols,
+                    &tab.name,
+                    "status",
+                    tab.templates.tab_status.as_ref(),
+                );
+            }
+        }
+    }
+}
+
+fn push_tab_template_slot(
+    lines: &mut Vec<String>,
+    cols: usize,
+    tab_name: &str,
+    slot_name: &str,
+    slot: Option<&tabs_shared::ResolvedTemplateSlot>,
+) {
+    if let Some(slot) = slot {
+        push_plain(
+            lines,
+            cols,
+            &format!("tab {tab_name} {slot_name}: {}", format_resolved_slot(slot)),
+        );
+    }
+}
+
+fn format_resolved_slot(slot: &tabs_shared::ResolvedTemplateSlot) -> String {
+    let fields = slot
+        .fields
+        .iter()
+        .map(|field| format!("{}({})", field.text, field.priority))
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        slot.template_name.clone()
+    } else {
+        format!("{} [{}]", slot.template_name, fields.join(", "))
+    }
+}
+
+fn template_config_state_text(state: tabs_shared::TemplateConfigState) -> &'static str {
+    match state {
+        tabs_shared::TemplateConfigState::NotConfigured => "not configured",
+        tabs_shared::TemplateConfigState::PendingPermission => "pending permission",
+        tabs_shared::TemplateConfigState::Loaded => "loaded",
+        tabs_shared::TemplateConfigState::Error => "error",
+    }
+}
+
+fn push_tab_row(
+    lines: &mut Vec<String>,
+    hit_regions: &mut Vec<HitRegion>,
+    cols: usize,
+    page: ConfigPage,
+) {
+    let row = lines.len();
+    let settings = if page == ConfigPage::Settings {
+        "[settings]"
+    } else {
+        " settings "
+    };
+    let templates = if page == ConfigPage::Templates {
+        "[templates]"
+    } else {
+        " templates "
+    };
+    let text = format!("{settings} {templates}");
+    lines.push(pad_to_width(&truncate_to_width(&text, cols), cols));
+    hit_regions.push(HitRegion {
+        row,
+        col_start: 0,
+        col_end: settings.width().saturating_sub(1),
+        action: ConfigAction::SetPage(ConfigPage::Settings),
+    });
+    hit_regions.push(HitRegion {
+        row,
+        col_start: settings.width().saturating_add(1),
+        col_end: settings
+            .width()
+            .saturating_add(templates.width())
+            .saturating_add(1),
+        action: ConfigAction::SetPage(ConfigPage::Templates),
+    });
+}
+
+#[cfg(target_family = "wasm")]
+fn render_tab_ribbons(page: ConfigPage, _cols: usize) {
+    let mut settings = Text::new("settings");
+    let mut templates = Text::new("templates");
+    if page == ConfigPage::Settings {
+        settings = settings.selected();
+    }
+    if page == ConfigPage::Templates {
+        templates = templates.selected();
+    }
+    print_ribbon_with_coordinates(settings, 0, 0, None, None);
+    print_ribbon_with_coordinates(templates, 12, 0, None, None);
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn render_tab_ribbons(_page: ConfigPage, _cols: usize) {}
 
 fn push_cwd_metadata(lines: &mut Vec<String>, cols: usize, model: Option<&ControllerViewModel>) {
     push_plain(lines, cols, "cwd metadata");
@@ -433,6 +630,7 @@ mod tests {
                 view: RailViewMode::Normal,
             },
             None,
+            ConfigPage::Settings,
             22,
             30,
         );
@@ -450,7 +648,7 @@ mod tests {
 
     #[test]
     fn maps_click_rows_to_config_actions() {
-        let rendered = render_config(RailConfig::default(), None, 22, 30);
+        let rendered = render_config(RailConfig::default(), None, ConfigPage::Settings, 22, 30);
 
         assert!(rendered
             .hit_regions
@@ -500,7 +698,7 @@ mod tests {
 
     #[test]
     fn renders_view_options() {
-        let rendered = render_config(RailConfig::default(), None, 22, 30);
+        let rendered = render_config(RailConfig::default(), None, ConfigPage::Settings, 22, 30);
 
         assert!(rendered.lines.iter().any(|line| line.contains("view")));
         assert!(rendered.lines.iter().any(|line| line.contains("metadata")));
@@ -511,10 +709,51 @@ mod tests {
     }
 
     #[test]
+    fn renders_template_page_diagnostics() {
+        let model = ControllerViewModel {
+            sort_mode: SortMode::Position,
+            config: RailConfig::default(),
+            template_config: tabs_shared::TemplateConfigDiagnostics {
+                path: Some("/host/tmp/andamento.kdl".to_owned()),
+                state: tabs_shared::TemplateConfigState::Loaded,
+                template_count: 1,
+                template_names: vec!["andamento.git.group-header".to_owned()],
+                last_error: None,
+            },
+            tabs: vec![],
+            rows: vec![],
+            resolved_metadata: vec![],
+            observed_identities: vec![],
+        };
+
+        let rendered = render_config(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Templates,
+            16,
+            80,
+        );
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("state: loaded")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("/host/tmp/andamento.kdl")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("andamento.git.group-header")));
+    }
+
+    #[test]
     fn renders_collected_cwd_metadata_from_model() {
         let model = ControllerViewModel {
             sort_mode: SortMode::Position,
             config: RailConfig::default(),
+            template_config: tabs_shared::TemplateConfigDiagnostics::default(),
             tabs: vec![
                 TabCard {
                     tab_id: 1,
@@ -550,7 +789,13 @@ mod tests {
             observed_identities: vec![],
         };
 
-        let rendered = render_config(RailConfig::default(), Some(&model), 24, 40);
+        let rendered = render_config(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Settings,
+            24,
+            40,
+        );
 
         assert!(rendered
             .lines

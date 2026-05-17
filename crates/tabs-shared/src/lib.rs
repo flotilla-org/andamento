@@ -312,6 +312,30 @@ pub struct ResolvedTemplateField {
     pub priority: i64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateConfigDiagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub state: TemplateConfigState,
+    #[serde(default)]
+    pub template_count: usize,
+    #[serde(default)]
+    pub template_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TemplateConfigState {
+    #[default]
+    NotConfigured,
+    PendingPermission,
+    Loaded,
+    Error,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RailConfig {
     #[serde(default)]
@@ -339,6 +363,8 @@ impl Default for RailConfig {
 pub struct ControllerViewModel {
     pub sort_mode: SortMode,
     pub config: RailConfig,
+    #[serde(default)]
+    pub template_config: TemplateConfigDiagnostics,
     pub tabs: Vec<TabCard>,
     #[serde(default)]
     pub rows: Vec<RailRow>,
@@ -381,6 +407,7 @@ mod tests {
         let model = ControllerViewModel {
             sort_mode: SortMode::Controller,
             config: RailConfig::default(),
+            template_config: TemplateConfigDiagnostics::default(),
             tabs: vec![TabCard {
                 tab_id: 10,
                 position: 0,
@@ -449,6 +476,7 @@ mod tests {
                 grouping: RailGroupingMode::Directory,
                 view: RailViewMode::Normal,
             },
+            template_config: TemplateConfigDiagnostics::default(),
             tabs: vec![TabCard {
                 tab_id: 1,
                 position: 0,

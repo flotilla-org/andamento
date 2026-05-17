@@ -449,15 +449,16 @@ fn group_metadata_block(group: &RenderGroup) -> MetadataBlock {
         "group",
         metadata_text(&group.metadata, "group.label").unwrap_or(&group.label),
     );
+    push_metadata_section_header(&mut lines, 2, "metadata");
     push_metadata_text_line(
         &mut lines,
-        2,
+        4,
         "group.full_label",
         metadata_text(&group.metadata, "group.full_label").unwrap_or(&group.full_label),
     );
     push_metadata_text_line(
         &mut lines,
-        2,
+        4,
         "group.tab_count",
         &metadata_display_value(&group.metadata, "group.tab_count")
             .unwrap_or_else(|| group.tab_count.to_string()),
@@ -466,12 +467,13 @@ fn group_metadata_block(group: &RenderGroup) -> MetadataBlock {
         .into_iter()
         .chain(group.path.0.iter().map(|segment| segment.key.as_str()))
         .collect::<Vec<_>>();
-    push_additional_metadata_lines(&mut lines, 2, &group.metadata, &excluded_keys);
+    push_additional_metadata_lines(&mut lines, 4, &group.metadata, &excluded_keys);
     push_metadata_source_detail_lines(&mut lines, 2, &group.metadata_sources);
     push_reachable_identity_lines(&mut lines, 2, &group.reachable_identities);
+    push_metadata_section_header(&mut lines, 2, "templates");
     push_template_or_builtin_diagnostic_line(
         &mut lines,
-        2,
+        4,
         "template.group_header",
         group.templates.group_header.as_ref(),
         TemplateRenderContext {
@@ -482,7 +484,8 @@ fn group_metadata_block(group: &RenderGroup) -> MetadataBlock {
             active_tab_name: active_tab_name(&group.children),
         },
     );
-    push_group_path_metadata(&mut lines, 2, &group.path);
+    push_metadata_section_header(&mut lines, 2, "group_path");
+    push_group_path_metadata(&mut lines, 4, &group.path);
     MetadataBlock { lines, hit: None }
 }
 
@@ -496,37 +499,38 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
         "tab",
         metadata_text(&card.metadata, "zellij.tab.name").unwrap_or(&card.name),
     );
+    push_metadata_section_header(&mut lines, indent + 2, "metadata");
     push_metadata_text_line(
         &mut lines,
-        indent + 2,
+        indent + 4,
         "zellij.tab.id",
         &metadata_display_value(&card.metadata, "zellij.tab.id")
             .unwrap_or_else(|| card.tab_id.to_string()),
     );
     push_metadata_text_line(
         &mut lines,
-        indent + 2,
+        indent + 4,
         "zellij.tab.position",
         &metadata_display_value(&card.metadata, "zellij.tab.position")
             .unwrap_or_else(|| card.position.to_string()),
     );
     push_metadata_text_line(
         &mut lines,
-        indent + 2,
+        indent + 4,
         "zellij.tab.active",
         &metadata_display_value(&card.metadata, "zellij.tab.active")
             .unwrap_or_else(|| bool_text(card.active).to_owned()),
     );
     push_metadata_text_line(
         &mut lines,
-        indent + 2,
+        indent + 4,
         "rail.tab.pinned",
         &metadata_display_value(&card.metadata, "rail.tab.pinned")
             .unwrap_or_else(|| bool_text(card.pinned).to_owned()),
     );
     push_additional_metadata_lines(
         &mut lines,
-        indent + 2,
+        indent + 4,
         &card.metadata,
         &[
             "zellij.tab.id",
@@ -544,9 +548,10 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
     );
     push_metadata_source_detail_lines(&mut lines, indent + 2, &card.metadata_sources);
     push_reachable_identity_lines(&mut lines, indent + 2, &card.reachable_identities);
+    push_metadata_section_header(&mut lines, indent + 2, "templates");
     push_template_or_builtin_diagnostic_line(
         &mut lines,
-        indent + 2,
+        indent + 4,
         "template.tab_title",
         card.templates.tab_title.as_ref(),
         TemplateRenderContext {
@@ -558,35 +563,37 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
         },
     );
     if let Some(grouping) = tab.grouping.as_ref() {
-        push_metadata_text_line(&mut lines, indent + 2, "group.label", &grouping.label);
+        push_metadata_section_header(&mut lines, indent + 2, "grouping");
+        push_metadata_text_line(&mut lines, indent + 4, "group.label", &grouping.label);
         push_metadata_text_line(
             &mut lines,
-            indent + 2,
+            indent + 4,
             "group.full_label",
             &grouping.full_label,
         );
-        push_group_path_metadata(&mut lines, indent + 2, &grouping.path);
+        push_group_path_metadata(&mut lines, indent + 4, &grouping.path);
     }
     if let Some(status) = card.status.as_ref() {
+        push_metadata_section_header(&mut lines, indent + 2, "status");
         push_metadata_text_line(
             &mut lines,
-            indent + 2,
+            indent + 4,
             "status.priority",
             &format!("{:?}", status.priority).to_ascii_lowercase(),
         );
-        push_metadata_text_line(&mut lines, indent + 2, "status.title", &status.title);
+        push_metadata_text_line(&mut lines, indent + 4, "status.title", &status.title);
         if let Some(detail) = status.detail.as_ref() {
-            push_metadata_text_line(&mut lines, indent + 2, "status.detail", detail);
+            push_metadata_text_line(&mut lines, indent + 4, "status.detail", detail);
         }
         push_metadata_text_line(
             &mut lines,
-            indent + 2,
+            indent + 4,
             "status.source_pane",
             &format_pane_target(status.source_pane),
         );
         push_template_or_builtin_diagnostic_line(
             &mut lines,
-            indent + 2,
+            indent + 4,
             "template.tab_status",
             card.templates.tab_status.as_ref(),
             TemplateRenderContext {
@@ -638,11 +645,15 @@ fn push_metadata_source_detail_lines(
     indent: usize,
     source_entries: &RenderMetadataSources,
 ) {
+    if source_entries.values().all(Vec::is_empty) {
+        return;
+    }
+    push_metadata_section_header(lines, indent, "sources");
     for (key, entries) in source_entries {
         if entries.is_empty() {
             continue;
         }
-        push_metadata_text_line(lines, indent, "sources", key);
+        push_metadata_text_line(lines, indent + 2, "key", key);
         push_metadata_source_table(lines, indent + 2, entries);
     }
 }
@@ -676,14 +687,14 @@ fn push_metadata_source_table(
         .max("value".len());
 
     lines.push(format!(
-        "{}{:<source_width$}  {:<value_width$}  updated_at  ttl_ms  precedence  ordinal",
+        "{}{:<source_width$}  {:<value_width$}  updated  ttl  prec  ord",
         " ".repeat(indent),
-        "source",
+        "src",
         "value",
     ));
     for (source_id, value, entry) in rows {
         lines.push(format!(
-            "{}{source_id:<source_width$}  {value:<value_width$}  {:>10}  {:>6}  {:>10}  {:>7}",
+            "{}{source_id:<source_width$}  {value:<value_width$}  {:>7}  {:>3}  {:>4}  {:>3}",
             " ".repeat(indent),
             entry.entry.updated_at,
             entry
@@ -702,10 +713,14 @@ fn push_reachable_identity_lines(
     indent: usize,
     reachable_identities: &[ReachableMetadataIdentity],
 ) {
+    if reachable_identities.is_empty() {
+        return;
+    }
+    push_metadata_section_header(lines, indent, "reachable_identities");
     for reachable in reachable_identities {
         push_metadata_text_line(
             lines,
-            indent,
+            indent + 2,
             &format!("identity.{}", reachable.identity.key),
             &format!(
                 "{} distance={}",
@@ -718,6 +733,10 @@ fn push_reachable_identity_lines(
 
 fn push_metadata_text_line(lines: &mut Vec<String>, indent: usize, key: &str, value: &str) {
     lines.push(format!("{}{}: {}", " ".repeat(indent), key, value));
+}
+
+fn push_metadata_section_header(lines: &mut Vec<String>, indent: usize, label: &str) {
+    lines.push(format!("{}[{}]", " ".repeat(indent), label));
 }
 
 fn clamp_scroll_offset(offset: usize, content_rows: usize, available_rows: usize) -> usize {
@@ -3212,6 +3231,7 @@ mod tests {
         ControllerViewModel {
             sort_mode: SortMode::PinnedFirst,
             config: RailConfig::default(),
+            template_config: tabs_shared::TemplateConfigDiagnostics::default(),
             tabs: vec![
                 TabCard {
                     tab_id: 2,
@@ -3278,6 +3298,7 @@ mod tests {
                 sizing: RailSizingPreset::Compact,
                 ..RailConfig::default()
             },
+            template_config: tabs_shared::TemplateConfigDiagnostics::default(),
             tabs: vec![tab_one.clone(), tab_two.clone()],
             rows: vec![
                 RailRow::GroupHeader {
@@ -3311,6 +3332,7 @@ mod tests {
                 sizing: RailSizingPreset::Compact,
                 view: RailViewMode::Normal,
             },
+            template_config: tabs_shared::TemplateConfigDiagnostics::default(),
             tabs: vec![],
             rows: vec![],
             resolved_metadata: vec![],
@@ -4220,7 +4242,7 @@ mod tests {
         let mut model = grouped_model();
         model.config.view = RailViewMode::Metadata;
 
-        let rendered = render_lines(Some(&model), &[], 28, 64, true);
+        let rendered = render_lines(Some(&model), &[], 52, 64, true);
 
         assert!(rendered
             .lines
@@ -4259,7 +4281,7 @@ mod tests {
             tab.status = model.tabs[1].status.clone();
         }
 
-        let rendered = render_lines(Some(&model), &[], 40, 180, true);
+        let rendered = render_lines(Some(&model), &[], 80, 180, true);
 
         assert!(rendered
             .lines
@@ -4377,16 +4399,16 @@ mod tests {
             reachable_identities: vec![],
         }];
 
-        let rendered = render_lines(Some(&model), &[], 20, 120, true);
+        let rendered = render_lines(Some(&model), &[], 36, 120, true);
         let source_header_line = rendered
             .lines
             .iter()
-            .find(|line| line.contains("sources: tab.subject"))
+            .find(|line| line.contains("key: tab.subject"))
             .expect("source key line");
         let table_header_line = rendered
             .lines
             .iter()
-            .find(|line| line.contains("source") && line.contains("updated_at"))
+            .find(|line| line.contains("src") && line.contains("updated"))
             .expect("source table header");
         let source_value_line = rendered
             .lines
@@ -4395,9 +4417,9 @@ mod tests {
             .expect("source value line");
 
         assert!(source_header_line.contains("tab.subject"));
-        assert!(table_header_line.contains("ttl_ms"));
-        assert!(table_header_line.contains("precedence"));
-        assert!(table_header_line.contains("ordinal"));
+        assert!(table_header_line.contains("ttl"));
+        assert!(table_header_line.contains("prec"));
+        assert!(table_header_line.contains("ord"));
         assert!(source_value_line.contains("12"));
         assert!(source_value_line.contains("100"));
         assert!(source_value_line.contains("4"));
@@ -4896,7 +4918,7 @@ mod tests {
         let top =
             render_lines_with_theme_and_cell_size(Some(&model), &[], 5, 64, true, None, 0, None);
         let scrolled =
-            render_lines_with_theme_and_cell_size(Some(&model), &[], 5, 64, true, None, 2, None);
+            render_lines_with_theme_and_cell_size(Some(&model), &[], 5, 64, true, None, 3, None);
         let overscrolled =
             render_lines_with_theme_and_cell_size(Some(&model), &[], 5, 64, true, None, 999, None);
 

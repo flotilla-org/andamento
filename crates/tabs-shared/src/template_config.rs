@@ -152,6 +152,21 @@ impl TemplateConfigCatalog {
         })
     }
 
+    pub fn len(&self) -> usize {
+        self.templates.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.templates.is_empty()
+    }
+
+    pub fn template_names(&self) -> Vec<String> {
+        self.templates
+            .iter()
+            .map(|template| template.name.clone())
+            .collect()
+    }
+
     fn matching_candidates(
         &self,
         context: TemplateConfigMatchContext<'_>,

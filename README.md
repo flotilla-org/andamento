@@ -88,6 +88,8 @@ plugin location="tabs-controller" {
 }
 ```
 
+Because the example uses an absolute host path under `/host`, the controller requests `FullHdAccess` and sets its plugin host folder to `/`. Template load status, errors, and resolved slots are visible in the config plugin's `templates` tab.
+
 Example template:
 
 ```kdl
