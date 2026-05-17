@@ -15,6 +15,7 @@ pub const MSG_CLEAR_PANE_STATUS: &str = "tabs-clear-pane-status";
 pub const MSG_APPLY_METADATA_PATCH: &str = "tabs-apply-metadata-patch";
 pub const MSG_CONTROLLER_BOOTSTRAP_REQUEST: &str = "tabs-controller-bootstrap-request";
 pub const MSG_CONTROLLER_BOOTSTRAP_STATE: &str = "tabs-controller-bootstrap-state";
+pub const MSG_OBSERVED_IDENTITIES: &str = "andamento-observed-identities";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

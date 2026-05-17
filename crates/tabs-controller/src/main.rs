@@ -12,8 +12,8 @@ use tabs_shared::{
     ControllerBootstrapSnapshot, ExternalMessage, RailConfig, RailGroupingMode, RailSizingPreset,
     RailStructure, RailViewMode, RendererHello, SortMode, MSG_APPLY_METADATA_PATCH,
     MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO, MSG_CONTROLLER_BOOTSTRAP_REQUEST,
-    MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_SET_PANE_STATUS,
-    MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_TOGGLE_PIN,
+    MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
+    MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_TOGGLE_PIN,
 };
 use zellij_tile::prelude::*;
 
@@ -105,6 +105,10 @@ impl ZellijPlugin for PluginState {
                 self.send_bootstrap_snapshot_to(requester);
             }
         }
+        if let Some(output) = result.cli_pipe_output.as_ref() {
+            cli_pipe_output(&output.pipe_id, &output.output);
+            unblock_cli_pipe_input(&output.pipe_id);
+        }
         if result.state_changed {
             self.push_view_model_to_rails();
         }
@@ -167,6 +171,13 @@ impl PluginState {
 struct HandlePipeResult {
     state_changed: bool,
     bootstrap_request: Option<RendererHello>,
+    cli_pipe_output: Option<CliPipeOutput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CliPipeOutput {
+    pipe_id: String,
+    output: String,
 }
 
 fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -> HandlePipeResult {
@@ -176,6 +187,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             HandlePipeResult {
                 state_changed: true,
                 bootstrap_request: None,
+                cli_pipe_output: None,
             }
         }
         Ok(Some(ControllerMessage::External(ExternalMessage::ClearPaneStatus { pane_id }))) => {
@@ -183,6 +195,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             HandlePipeResult {
                 state_changed: true,
                 bootstrap_request: None,
+                cli_pipe_output: None,
             }
         }
         Ok(Some(ControllerMessage::External(ExternalMessage::MetadataPatch(patch)))) => {
@@ -190,6 +203,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             HandlePipeResult {
                 state_changed: true,
                 bootstrap_request: None,
+                cli_pipe_output: None,
             }
         }
         Ok(Some(ControllerMessage::RendererHello(hello))) => {
@@ -197,6 +211,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             HandlePipeResult {
                 state_changed: true,
                 bootstrap_request: None,
+                cli_pipe_output: None,
             }
         }
         Ok(Some(ControllerMessage::ConfigEditorHello(hello))) => {
@@ -204,6 +219,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             HandlePipeResult {
                 state_changed: true,
                 bootstrap_request: None,
+                cli_pipe_output: None,
             }
         }
         Ok(Some(ControllerMessage::TogglePin(tab_id))) => {
@@ -211,6 +227,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             HandlePipeResult {
                 state_changed: true,
                 bootstrap_request: None,
+                cli_pipe_output: None,
             }
         }
         Ok(Some(ControllerMessage::SetSortMode(sort_mode))) => {
@@ -218,6 +235,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             HandlePipeResult {
                 state_changed: true,
                 bootstrap_request: None,
+                cli_pipe_output: None,
             }
         }
         Ok(Some(ControllerMessage::SetRailConfig(config))) => {
@@ -225,21 +243,34 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             HandlePipeResult {
                 state_changed: true,
                 bootstrap_request: None,
+                cli_pipe_output: None,
             }
         }
         Ok(Some(ControllerMessage::RequestState)) => HandlePipeResult {
             state_changed: true,
             bootstrap_request: None,
+            cli_pipe_output: None,
         },
         Ok(Some(ControllerMessage::BootstrapRequest(requester))) => HandlePipeResult {
             state_changed: false,
             bootstrap_request: Some(requester),
+            cli_pipe_output: None,
         },
         Ok(Some(ControllerMessage::BootstrapState(snapshot))) => {
             state.apply_bootstrap_snapshot(snapshot);
             HandlePipeResult {
                 state_changed: true,
                 bootstrap_request: None,
+                cli_pipe_output: None,
+            }
+        }
+        Ok(Some(ControllerMessage::ObservedIdentitiesRequest(pipe_id))) => {
+            let output = serde_json::to_string(&state.view_model().observed_identities)
+                .unwrap_or_else(|_| "[]".to_owned());
+            HandlePipeResult {
+                state_changed: false,
+                bootstrap_request: None,
+                cli_pipe_output: Some(CliPipeOutput { pipe_id, output }),
             }
         }
         Ok(None) => HandlePipeResult::default(),
@@ -319,6 +350,7 @@ enum ControllerMessage {
     RequestState,
     BootstrapRequest(RendererHello),
     BootstrapState(ControllerBootstrapSnapshot),
+    ObservedIdentitiesRequest(String),
 }
 
 fn parse_controller_message(
@@ -387,6 +419,12 @@ fn parse_controller_message(
             .map(ControllerMessage::SetRailConfig)
             .map(Some),
         MSG_REQUEST_STATE => Ok(Some(ControllerMessage::RequestState)),
+        MSG_OBSERVED_IDENTITIES => match &pipe_message.source {
+            PipeSource::Cli(pipe_id) => Ok(Some(ControllerMessage::ObservedIdentitiesRequest(
+                pipe_id.clone(),
+            ))),
+            _ => Err("observed identities request requires a CLI pipe source".to_owned()),
+        },
         MSG_CONTROLLER_BOOTSTRAP_REQUEST => {
             let payload = pipe_message
                 .payload
@@ -422,6 +460,16 @@ mod tests {
             name: name.to_owned(),
             payload,
             args,
+            is_private: false,
+        }
+    }
+
+    fn cli_pipe(name: &str, payload: Option<String>, pipe_id: &str) -> PipeMessage {
+        PipeMessage {
+            source: PipeSource::Cli(pipe_id.to_owned()),
+            name: name.to_owned(),
+            payload,
+            args: BTreeMap::new(),
             is_private: false,
         }
     }
@@ -627,6 +675,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_observed_identities_cli_request() {
+        let parsed =
+            parse_controller_message(&cli_pipe(MSG_OBSERVED_IDENTITIES, None, "pipe-1")).unwrap();
+
+        assert_eq!(
+            parsed,
+            Some(ControllerMessage::ObservedIdentitiesRequest(
+                "pipe-1".to_owned()
+            ))
+        );
+    }
+
+    #[test]
     fn set_rail_config_message_updates_controller_state() {
         let config = RailConfig {
             structure: RailStructure::BoxPerTab,
@@ -698,6 +759,42 @@ mod tests {
                 .map(|entry| entry.source_id.as_str()),
             Some("test")
         );
+    }
+
+    #[test]
+    fn observed_identities_cli_request_returns_json_output() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![state::ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "repo".to_owned(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
+        let cwd = "/Users/robert/dev/katzensteg".to_owned();
+        state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
+
+        let result = handle_pipe_message(
+            &mut state,
+            cli_pipe(MSG_OBSERVED_IDENTITIES, None, "pipe-1"),
+        );
+        let output = result.cli_pipe_output.expect("cli pipe output");
+        let observed: Vec<tabs_shared::ObservedMetadataIdentity> =
+            serde_json::from_str(&output.output).unwrap();
+
+        assert!(!result.state_changed);
+        assert_eq!(output.pipe_id, "pipe-1");
+        assert!(observed.iter().any(|identity| {
+            identity.identity
+                == tabs_shared::MetadataIdentity {
+                    key: "zellij.pane.cwd".to_owned(),
+                    value: tabs_shared::MetadataValue::Text(cwd.clone()),
+                }
+        }));
     }
 
     #[test]
