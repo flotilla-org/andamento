@@ -3,9 +3,9 @@ use std::path::Path;
 
 use crate::metadata::{select_primary_value, CandidateEntry, EntityId, MetadataStore};
 use tabs_shared::{
-    ControllerViewModel, MetadataEntry, MetadataValue, PaneTarget, Priority, RailConfig,
-    RailGroupingMode, RailRow, RendererHello, SetPaneStatus, SortMode, TabCard, TabGroupingInfo,
-    TabStatusSummary,
+    ControllerViewModel, GroupPath, GroupSegment, MetadataEntry, MetadataValue, PaneTarget,
+    Priority, RailConfig, RailGroupingMode, RailRow, RendererHello, SetPaneStatus, SortMode,
+    TabCard, TabGroupingInfo, TabStatusSummary,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -311,13 +311,13 @@ impl ControllerState {
     }
 
     fn directory_group_rows(&self, tabs: &[TabCard]) -> Vec<RailRow> {
-        let mut key_to_tabs: BTreeMap<String, Vec<TabCard>> = BTreeMap::new();
-        let mut grouping_by_key: BTreeMap<String, TabGroupingInfo> = BTreeMap::new();
+        let mut path_to_tabs: BTreeMap<GroupPath, Vec<TabCard>> = BTreeMap::new();
+        let mut grouping_by_path: BTreeMap<GroupPath, TabGroupingInfo> = BTreeMap::new();
         for tab in tabs {
             if let Some(grouping) = tab.grouping.clone() {
-                grouping_by_key.insert(grouping.key.clone(), grouping.clone());
-                key_to_tabs
-                    .entry(grouping.key.clone())
+                grouping_by_path.insert(grouping.path.clone(), grouping.clone());
+                path_to_tabs
+                    .entry(grouping.path.clone())
                     .or_default()
                     .push(tab.clone());
             }
@@ -332,16 +332,20 @@ impl ControllerState {
                 });
                 continue;
             };
-            if !emitted_groups.insert(grouping.key.clone()) {
+            if !emitted_groups.insert(grouping.path.clone()) {
                 continue;
             }
-            let grouped_tabs = key_to_tabs.get(&grouping.key).cloned().unwrap_or_default();
-            let grouping = grouping_by_key
-                .get(&grouping.key)
+            let grouped_tabs = path_to_tabs
+                .get(&grouping.path)
+                .cloned()
+                .unwrap_or_default();
+            let grouping = grouping_by_path
+                .get(&grouping.path)
                 .cloned()
                 .unwrap_or_else(|| grouping.clone());
             rows.push(RailRow::GroupHeader {
                 group_id: grouping.key,
+                path: grouping.path,
                 label: grouping.label,
                 full_label: grouping.full_label,
                 tab_count: grouped_tabs.len(),
@@ -379,6 +383,7 @@ impl ControllerState {
                     tab_id,
                     TabGroupingInfo {
                         key: format!("cwd:{cwd}"),
+                        path: cwd_group_path(&cwd),
                         label,
                         full_label: cwd,
                     },
@@ -498,6 +503,13 @@ impl ControllerState {
     }
 }
 
+fn cwd_group_path(cwd: &str) -> GroupPath {
+    GroupPath(vec![GroupSegment {
+        key: KEY_PANE_CWD.to_owned(),
+        value: MetadataValue::Text(cwd.to_owned()),
+    }])
+}
+
 fn format_pane_id(pane_id: PaneTarget) -> String {
     match pane_id {
         PaneTarget::Terminal(id) => format!("terminal:{id}"),
@@ -508,7 +520,7 @@ fn format_pane_id(pane_id: PaneTarget) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tabs_shared::{RailGroupingMode, RailRow, StatusIcon};
+    use tabs_shared::{GroupPath, GroupSegment, RailGroupingMode, RailRow, StatusIcon};
 
     fn status(
         pane_id: PaneTarget,
@@ -661,6 +673,41 @@ mod tests {
         assert_eq!(grouping.key, "cwd:/repo/a");
         assert_eq!(grouping.label, "a");
         assert_eq!(grouping.full_label, "/repo/a");
+    }
+
+    #[test]
+    fn directory_grouping_uses_cwd_group_path_identity() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "one".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into());
+
+        let model = state.view_model();
+        let expected_path = GroupPath(vec![GroupSegment {
+            key: KEY_PANE_CWD.to_owned(),
+            value: MetadataValue::Text("/repo/a".to_owned()),
+        }]);
+
+        assert_eq!(
+            model.tabs[0]
+                .grouping
+                .as_ref()
+                .map(|grouping| &grouping.path),
+            Some(&expected_path)
+        );
+        assert!(matches!(
+            &model.rows[0],
+            RailRow::GroupHeader { path, .. } if path == &expected_path
+        ));
     }
 
     #[test]

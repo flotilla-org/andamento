@@ -5,7 +5,8 @@ fn main() {}
 use std::collections::BTreeMap;
 
 use tabs_shared::{
-    ControllerViewModel, RailConfig, RailGroupingMode, RailSizingPreset, RailStructure,
+    ControllerViewModel, GroupPath, MetadataValue, RailConfig, RailGroupingMode, RailSizingPreset,
+    RailStructure,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -308,12 +309,44 @@ fn push_cwd_metadata(lines: &mut Vec<String>, cols: usize, model: Option<&Contro
         return;
     }
     for tab in &model.tabs {
-        let cwd = tab
-            .grouping
-            .as_ref()
-            .map(|grouping| grouping.full_label.as_str())
-            .unwrap_or("<none>");
-        push_plain(lines, cols, &format!("{}: zellij.pane.cwd={cwd}", tab.name));
+        let Some(grouping) = tab.grouping.as_ref() else {
+            push_plain(
+                lines,
+                cols,
+                &format!("{}: zellij.pane.cwd=<none>", tab.name),
+            );
+            continue;
+        };
+        push_plain(
+            lines,
+            cols,
+            &format!(
+                "{}: {} {}",
+                tab.name,
+                grouping.label,
+                format_group_path(&grouping.path)
+            ),
+        );
+    }
+}
+
+fn format_group_path(path: &GroupPath) -> String {
+    if path.0.is_empty() {
+        return "<none>".to_owned();
+    }
+    path.0
+        .iter()
+        .map(|segment| format!("{}={}", segment.key, format_metadata_value(&segment.value)))
+        .collect::<Vec<_>>()
+        .join(" > ")
+}
+
+fn format_metadata_value(value: &MetadataValue) -> String {
+    match value {
+        MetadataValue::Text(value) => value.clone(),
+        MetadataValue::Bool(value) => value.to_string(),
+        MetadataValue::Integer(value) => value.to_string(),
+        MetadataValue::StringList(values) => values.join(","),
     }
 }
 
@@ -362,7 +395,7 @@ fn pad_to_width(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tabs_shared::{SortMode, TabCard, TabGroupingInfo};
+    use tabs_shared::{GroupPath, GroupSegment, MetadataValue, SortMode, TabCard, TabGroupingInfo};
 
     #[test]
     fn renders_selected_config() {
@@ -443,6 +476,10 @@ mod tests {
                     status: None,
                     grouping: Some(TabGroupingInfo {
                         key: "cwd:/repo/app".to_owned(),
+                        path: GroupPath(vec![GroupSegment {
+                            key: "zellij.pane.cwd".to_owned(),
+                            value: MetadataValue::Text("/repo/app".to_owned()),
+                        }]),
                         label: "app".to_owned(),
                         full_label: "/repo/app".to_owned(),
                     }),
@@ -469,7 +506,7 @@ mod tests {
         assert!(rendered
             .lines
             .iter()
-            .any(|line| line.trim() == "server: zellij.pane.cwd=/repo/app"));
+            .any(|line| line.trim() == "server: app zellij.pane.cwd=/repo/app"));
         assert!(rendered
             .lines
             .iter()

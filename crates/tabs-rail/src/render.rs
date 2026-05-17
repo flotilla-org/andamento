@@ -1174,8 +1174,8 @@ fn blank(cols: usize) -> String {
 mod tests {
     use super::*;
     use tabs_shared::{
-        PaneTarget, RailConfig, RailGroupingMode, RailRow, RailSizingPreset, RailStructure,
-        SortMode, StatusIcon,
+        GroupPath, PaneTarget, RailConfig, RailGroupingMode, RailRow, RailSizingPreset,
+        RailStructure, SortMode, StatusIcon,
     };
 
     fn local_tab(tab_id: u64, position: usize, active: bool) -> LocalTab {
@@ -1251,6 +1251,7 @@ mod tests {
             rows: vec![
                 RailRow::GroupHeader {
                     group_id: "cwd:/Users/robert/dev/zellij".to_owned(),
+                    path: GroupPath::default(),
                     label: "zellij".to_owned(),
                     full_label: "/Users/robert/dev/zellij".to_owned(),
                     tab_count: 2,

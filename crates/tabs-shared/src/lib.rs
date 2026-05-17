@@ -84,6 +84,8 @@ pub struct TabCard {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabGroupingInfo {
     pub key: String,
+    #[serde(default)]
+    pub path: GroupPath,
     pub label: String,
     pub full_label: String,
 }
@@ -141,6 +143,15 @@ pub enum MetadataValue {
     StringList(Vec<String>),
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct GroupPath(pub Vec<GroupSegment>);
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct GroupSegment {
+    pub key: String,
+    pub value: MetadataValue,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetadataEntry {
     pub value: MetadataValue,
@@ -168,6 +179,8 @@ impl Default for RailGroupingMode {
 pub enum RailRow {
     GroupHeader {
         group_id: String,
+        #[serde(default)]
+        path: GroupPath,
         label: String,
         full_label: String,
         tab_count: usize,
@@ -279,6 +292,10 @@ mod tests {
 
     #[test]
     fn controller_view_model_with_group_rows_round_trips_json() {
+        let group_path = GroupPath(vec![GroupSegment {
+            key: "zellij.pane.cwd".to_owned(),
+            value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
+        }]);
         let model = ControllerViewModel {
             sort_mode: SortMode::Position,
             config: RailConfig {
@@ -295,6 +312,7 @@ mod tests {
                 status: None,
                 grouping: Some(TabGroupingInfo {
                     key: "cwd:/Users/robert/dev/zellij".to_owned(),
+                    path: group_path.clone(),
                     label: "zellij".to_owned(),
                     full_label: "/Users/robert/dev/zellij".to_owned(),
                 }),
@@ -302,6 +320,7 @@ mod tests {
             rows: vec![
                 RailRow::GroupHeader {
                     group_id: "cwd:/Users/robert/dev/zellij".to_owned(),
+                    path: group_path.clone(),
                     label: "zellij".to_owned(),
                     full_label: "/Users/robert/dev/zellij".to_owned(),
                     tab_count: 1,
@@ -316,6 +335,7 @@ mod tests {
                         status: None,
                         grouping: Some(TabGroupingInfo {
                             key: "cwd:/Users/robert/dev/zellij".to_owned(),
+                            path: group_path,
                             label: "zellij".to_owned(),
                             full_label: "/Users/robert/dev/zellij".to_owned(),
                         }),
@@ -329,6 +349,25 @@ mod tests {
         let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, model);
+    }
+
+    #[test]
+    fn group_path_round_trips_json() {
+        let path = GroupPath(vec![
+            GroupSegment {
+                key: "project.name".to_owned(),
+                value: MetadataValue::Text("zellij".to_owned()),
+            },
+            GroupSegment {
+                key: "zellij.pane.cwd".to_owned(),
+                value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
+            },
+        ]);
+
+        let encoded = serde_json::to_string(&path).unwrap();
+        let decoded: GroupPath = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, path);
     }
 
     #[test]
