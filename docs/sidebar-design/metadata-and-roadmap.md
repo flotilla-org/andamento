@@ -340,7 +340,7 @@ The order should be:
 
 7. **Add external templates last.**
    External config should target stable concepts: node type, metadata predicates, field lists, truncation/coalescing rules, and sizing hints. It should not expose temporary compatibility structs or assumptions about exactly two hierarchy levels.
-   Status: started parser-only. The rail crate now has a JSON template config schema and validator covering template names, node kind, slot, predicates, field specs, value sources, conditions, and sizing hints. Parsed config can be normalized into a catalog that resolves the highest-specificity template and reports matching candidates against metadata. This is not wired into rendering or file loading yet.
+   Status: started parser-only. The rail crate now has a JSON template config schema and validator covering template names, node kind, slot, predicates, field specs, value sources, conditions, and sizing hints. Parsed config can be normalized into a catalog that resolves the highest-specificity template, reports matching candidates against metadata, and renders field specs into classified text fields. This is not wired into rendering or file loading yet.
 
 The key dependency is: metadata-backed fields first, recursive nodes second, configurable templates last. That avoids the pointless loop of generic metadata being projected into `TabStatusSummary` and then mapped back into generic template fields.
 

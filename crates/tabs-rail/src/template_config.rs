@@ -115,6 +115,8 @@ pub struct TemplateConfigMatchContext<'a> {
     pub slot: TemplateConfigSlot,
     pub node_kind: TemplateConfigNodeKind,
     pub metadata: &'a BTreeMap<String, MetadataValue>,
+    pub collapsed: bool,
+    pub active_tab_name: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +130,12 @@ pub struct TemplateConfigResolved<'a> {
 pub struct TemplateConfigCandidate {
     pub name: String,
     pub specificity: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateConfigRenderedField {
+    pub class: TemplateConfigFieldClass,
+    pub value: String,
 }
 
 fn default_template_config_version() -> u32 {
@@ -148,6 +156,16 @@ pub struct TemplateConfigDefinition {
 }
 
 impl TemplateConfigDefinition {
+    pub fn render_fields(
+        &self,
+        context: TemplateConfigMatchContext<'_>,
+    ) -> Vec<TemplateConfigRenderedField> {
+        self.fields
+            .iter()
+            .filter_map(|field| field.render(context))
+            .collect()
+    }
+
     fn matches(&self, context: TemplateConfigMatchContext<'_>) -> bool {
         self.slot == context.slot
             && self.node_kind == context.node_kind
@@ -227,6 +245,19 @@ fn metadata_text<'a>(metadata: &'a BTreeMap<String, MetadataValue>, key: &str) -
     }
 }
 
+fn metadata_display_value(metadata: &BTreeMap<String, MetadataValue>, key: &str) -> Option<String> {
+    metadata.get(key).map(format_metadata_value)
+}
+
+fn format_metadata_value(value: &MetadataValue) -> String {
+    match value {
+        MetadataValue::Text(value) => value.clone(),
+        MetadataValue::Bool(value) => value.to_string(),
+        MetadataValue::Integer(value) => value.to_string(),
+        MetadataValue::StringList(values) => values.join(", "),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct TemplateConfigFieldSpec {
@@ -238,6 +269,26 @@ pub struct TemplateConfigFieldSpec {
     pub suffix: String,
     #[serde(default)]
     pub condition: TemplateConfigFieldCondition,
+}
+
+impl TemplateConfigFieldSpec {
+    fn render(
+        &self,
+        context: TemplateConfigMatchContext<'_>,
+    ) -> Option<TemplateConfigRenderedField> {
+        if !self.condition.matches(context) {
+            return None;
+        }
+        let value = self
+            .sources
+            .iter()
+            .find_map(|source| source.resolve(context))?;
+        let value = format!("{}{}{}", self.prefix, value, self.suffix);
+        Some(TemplateConfigRenderedField {
+            class: self.class,
+            value,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -256,6 +307,15 @@ pub enum TemplateConfigFieldCondition {
     Collapsed,
 }
 
+impl TemplateConfigFieldCondition {
+    fn matches(&self, context: TemplateConfigMatchContext<'_>) -> bool {
+        match self {
+            TemplateConfigFieldCondition::Always => true,
+            TemplateConfigFieldCondition::Collapsed => context.collapsed,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum TemplateConfigValueSource {
@@ -265,6 +325,40 @@ pub enum TemplateConfigValueSource {
     TabNumberFromPosition,
     ActiveTabName,
     CollapsedToggle { collapsed: String, expanded: String },
+}
+
+impl TemplateConfigValueSource {
+    fn resolve(&self, context: TemplateConfigMatchContext<'_>) -> Option<String> {
+        let value = match self {
+            TemplateConfigValueSource::Literal { value } => value.clone(),
+            TemplateConfigValueSource::MetadataText { key } => {
+                metadata_text(context.metadata, key)?.to_owned()
+            }
+            TemplateConfigValueSource::MetadataDisplay { key } => {
+                metadata_display_value(context.metadata, key)?
+            }
+            TemplateConfigValueSource::TabNumberFromPosition => {
+                let MetadataValue::Integer(position) =
+                    context.metadata.get("zellij.tab.position")?
+                else {
+                    return None;
+                };
+                format!("Tab {}", position + 1)
+            }
+            TemplateConfigValueSource::ActiveTabName => context.active_tab_name?.to_owned(),
+            TemplateConfigValueSource::CollapsedToggle {
+                collapsed,
+                expanded,
+            } => {
+                if context.collapsed {
+                    collapsed.clone()
+                } else {
+                    expanded.clone()
+                }
+            }
+        };
+        (!value.is_empty()).then_some(value)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -417,6 +511,8 @@ mod tests {
                 slot: TemplateConfigSlot::TabStatus,
                 node_kind: TemplateConfigNodeKind::Tab,
                 metadata: &metadata,
+                collapsed: false,
+                active_tab_name: None,
             })
             .expect("matching template");
 
@@ -432,6 +528,76 @@ mod tests {
                 TemplateConfigCandidate {
                     name: "waiting-status".to_owned(),
                     specificity: 4,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn catalog_renders_field_specs_from_resolved_template() {
+        let config = parse_template_config_json(
+            r#"
+            {
+              "templates": [
+                {
+                  "name": "status",
+                  "slot": "tab-status",
+                  "node-kind": "tab",
+                  "predicates": [
+                    { "kind": "exists", "key": "status.title" }
+                  ],
+                  "fields": [
+                    {
+                      "class": "required",
+                      "sources": [{ "kind": "metadata-text", "key": "status.title" }]
+                    },
+                    {
+                      "class": "priority",
+                      "prefix": ": ",
+                      "sources": [{ "kind": "metadata-text", "key": "status.detail" }]
+                    }
+                  ]
+                }
+              ]
+            }
+            "#,
+        )
+        .expect("valid template config");
+        let catalog = TemplateConfigCatalog::from_config(config);
+        let metadata = BTreeMap::from([
+            (
+                "status.title".to_owned(),
+                MetadataValue::Text("waiting".to_owned()),
+            ),
+            (
+                "status.detail".to_owned(),
+                MetadataValue::Text("input".to_owned()),
+            ),
+        ]);
+        let context = TemplateConfigMatchContext {
+            slot: TemplateConfigSlot::TabStatus,
+            node_kind: TemplateConfigNodeKind::Tab,
+            metadata: &metadata,
+            collapsed: false,
+            active_tab_name: None,
+        };
+
+        let rendered = catalog
+            .resolve(context)
+            .expect("matching template")
+            .template
+            .render_fields(context);
+
+        assert_eq!(
+            rendered,
+            vec![
+                TemplateConfigRenderedField {
+                    class: TemplateConfigFieldClass::Required,
+                    value: "waiting".to_owned(),
+                },
+                TemplateConfigRenderedField {
+                    class: TemplateConfigFieldClass::Priority,
+                    value: ": input".to_owned(),
                 },
             ]
         );
