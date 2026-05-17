@@ -207,6 +207,14 @@ pub struct ResolvedMetadata {
     pub target: MetadataTarget,
     #[serde(default)]
     pub values: BTreeMap<String, MetadataEntry>,
+    #[serde(default)]
+    pub source_entries: BTreeMap<String, Vec<MetadataSourceEntry>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataSourceEntry {
+    pub source_id: String,
+    pub entry: MetadataEntry,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

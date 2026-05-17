@@ -6,9 +6,10 @@ use crate::template_config::{
 };
 use ansi_term::{Color, Style};
 use tabs_shared::{
-    ControllerViewModel, GroupPath, GroupSegment, MetadataEntry, MetadataTarget, MetadataValue,
-    PaneTarget, Priority, RailConfig, RailRow, RailSizingPreset, RailStructure, RailViewMode,
-    ResolvedMetadata, StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
+    ControllerViewModel, GroupPath, GroupSegment, MetadataEntry, MetadataSourceEntry,
+    MetadataTarget, MetadataValue, PaneTarget, Priority, RailConfig, RailRow, RailSizingPreset,
+    RailStructure, RailViewMode, ResolvedMetadata, StatusIcon, TabCard, TabGroupingInfo,
+    TabStatusSummary,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::{PaletteColor, SizeInPixels, Styling};
@@ -17,6 +18,7 @@ const ACTIVE_CELL_HEIGHT: usize = 5;
 const COMPACT_CELL_HEIGHT: usize = 2;
 
 type RenderMetadata = BTreeMap<String, MetadataValue>;
+type RenderMetadataSources = BTreeMap<String, Vec<MetadataSourceEntry>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalTab {
@@ -103,6 +105,7 @@ struct RenderCard {
     pinned: bool,
     status: Option<TabStatusSummary>,
     metadata: RenderMetadata,
+    metadata_sources: RenderMetadataSources,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +123,7 @@ struct RenderGroup {
     collapsed: bool,
     indent: usize,
     metadata: RenderMetadata,
+    metadata_sources: RenderMetadataSources,
     children: Vec<RenderNode>,
 }
 
@@ -428,6 +432,7 @@ fn group_metadata_block(group: &RenderGroup) -> MetadataBlock {
         .chain(group.path.0.iter().map(|segment| segment.key.as_str()))
         .collect::<Vec<_>>();
     push_additional_metadata_lines(&mut lines, 2, &group.metadata, &excluded_keys);
+    push_metadata_source_detail_lines(&mut lines, 2, &group.metadata_sources);
     push_template_diagnostic_line(
         &mut lines,
         2,
@@ -500,6 +505,7 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
             "status.source_pane",
         ],
     );
+    push_metadata_source_detail_lines(&mut lines, indent + 2, &card.metadata_sources);
     push_template_diagnostic_line(
         &mut lines,
         indent + 2,
@@ -584,6 +590,50 @@ fn push_additional_metadata_lines(
             continue;
         }
         push_metadata_text_line(lines, indent, key, &format_metadata_value(value));
+    }
+}
+
+fn push_metadata_source_detail_lines(
+    lines: &mut Vec<String>,
+    indent: usize,
+    source_entries: &RenderMetadataSources,
+) {
+    for (key, entries) in source_entries {
+        for entry in entries {
+            let prefix = format!("{key}.source.{}", entry.source_id);
+            push_metadata_text_line(
+                lines,
+                indent,
+                &prefix,
+                &format_metadata_value(&entry.entry.value),
+            );
+            push_metadata_text_line(
+                lines,
+                indent,
+                &format!("{prefix}.updated_at"),
+                &entry.entry.updated_at.to_string(),
+            );
+            if let Some(ttl_ms) = entry.entry.ttl_ms {
+                push_metadata_text_line(
+                    lines,
+                    indent,
+                    &format!("{prefix}.ttl_ms"),
+                    &ttl_ms.to_string(),
+                );
+            }
+            push_metadata_text_line(
+                lines,
+                indent,
+                &format!("{prefix}.precedence"),
+                &entry.entry.precedence.to_string(),
+            );
+            push_metadata_text_line(
+                lines,
+                indent,
+                &format!("{prefix}.ordinal"),
+                &entry.entry.ordinal.to_string(),
+            );
+        }
     }
 }
 
@@ -1485,6 +1535,7 @@ fn nodes_to_render(
                         pinned: false,
                         status: None,
                         metadata,
+                        metadata_sources: RenderMetadataSources::new(),
                     },
                     indent: 0,
                     grouping: None,
@@ -1594,6 +1645,7 @@ fn ensure_group_path<'a>(
                 let collapsed = collapsed_groups.iter().any(|collapsed| collapsed == path);
                 nodes.push(RenderNode::Group(RenderGroup {
                     metadata: metadata_for_group_header(path, leaf_label, leaf_full_label, 0),
+                    metadata_sources: RenderMetadataSources::new(),
                     path: path.clone(),
                     label: leaf_label.to_owned(),
                     full_label: leaf_full_label.to_owned(),
@@ -1655,6 +1707,7 @@ fn ensure_group_path_at<'a>(
                 .any(|collapsed| collapsed == &prefix);
             nodes.push(RenderNode::Group(RenderGroup {
                 metadata: metadata_for_group_header(&prefix, &label, &full_label, 0),
+                metadata_sources: RenderMetadataSources::new(),
                 path: prefix.clone(),
                 label: label.clone(),
                 full_label: full_label.clone(),
@@ -1722,25 +1775,42 @@ fn merge_resolved_metadata(nodes: &mut [RenderNode], resolved_metadata: &[Resolv
             )
         })
         .collect::<HashMap<_, _>>();
-    merge_resolved_metadata_into_nodes(nodes, &by_target);
+    let sources_by_target = resolved_metadata
+        .iter()
+        .map(|metadata| (metadata.target.clone(), metadata.source_entries.clone()))
+        .collect::<HashMap<_, _>>();
+    merge_resolved_metadata_into_nodes(nodes, &by_target, &sources_by_target);
 }
 
 fn merge_resolved_metadata_into_nodes(
     nodes: &mut [RenderNode],
     by_target: &HashMap<MetadataTarget, RenderMetadata>,
+    sources_by_target: &HashMap<MetadataTarget, RenderMetadataSources>,
 ) {
     for node in nodes {
         match node {
             RenderNode::Tab(tab) => {
-                if let Some(metadata) = by_target.get(&MetadataTarget::Tab(tab.card.tab_id)) {
+                let target = MetadataTarget::Tab(tab.card.tab_id);
+                if let Some(metadata) = by_target.get(&target) {
                     tab.card.metadata.extend(metadata.clone());
+                }
+                if let Some(metadata_sources) = sources_by_target.get(&target) {
+                    tab.card.metadata_sources.extend(metadata_sources.clone());
                 }
             }
             RenderNode::Group(group) => {
-                if let Some(metadata) = by_target.get(&MetadataTarget::Group(group.path.clone())) {
+                let target = MetadataTarget::Group(group.path.clone());
+                if let Some(metadata) = by_target.get(&target) {
                     group.metadata.extend(metadata.clone());
                 }
-                merge_resolved_metadata_into_nodes(&mut group.children, by_target);
+                if let Some(metadata_sources) = sources_by_target.get(&target) {
+                    group.metadata_sources.extend(metadata_sources.clone());
+                }
+                merge_resolved_metadata_into_nodes(
+                    &mut group.children,
+                    by_target,
+                    sources_by_target,
+                );
             }
         }
     }
@@ -1794,6 +1864,7 @@ fn render_card_from_model(card: &TabCard, local_by_id: &HashMap<u64, &LocalTab>)
         pinned: card.pinned,
         status,
         metadata: metadata_for_tab_card(card, position, &name, active),
+        metadata_sources: RenderMetadataSources::new(),
     }
 }
 
@@ -3081,6 +3152,7 @@ mod tests {
             collapsed: false,
             indent: 0,
             metadata: metadata_for_group_header(&GroupPath::default(), "parent", "parent", 1),
+            metadata_sources: RenderMetadataSources::new(),
             children: vec![RenderNode::Group(RenderGroup {
                 path: GroupPath::default(),
                 label: "typed-child".to_owned(),
@@ -3089,6 +3161,7 @@ mod tests {
                 collapsed: false,
                 indent: 0,
                 metadata: metadata_for_group_header(&GroupPath::default(), "child", "child", 1),
+                metadata_sources: RenderMetadataSources::new(),
                 children: vec![RenderNode::Tab(RenderTab {
                     card: RenderCard {
                         tab_id: 42,
@@ -3103,6 +3176,7 @@ mod tests {
                             name: "leaf".to_owned(),
                             active: true,
                         }),
+                        metadata_sources: RenderMetadataSources::new(),
                     },
                     indent: 4,
                     grouping: None,
@@ -3603,6 +3677,7 @@ mod tests {
             collapsed: false,
             indent: 0,
             metadata,
+            metadata_sources: RenderMetadataSources::new(),
             children: vec![],
         };
         let mut lines = vec![];
@@ -3658,6 +3733,7 @@ mod tests {
             pinned: false,
             status: None,
             metadata,
+            metadata_sources: RenderMetadataSources::new(),
         };
 
         assert_eq!(
@@ -3847,6 +3923,7 @@ mod tests {
                     ordinal: 0,
                 },
             )]),
+            source_entries: BTreeMap::new(),
         }];
 
         let rendered = render_lines(Some(&model), &[], 14, 48, true);
@@ -3855,6 +3932,57 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.contains("tab.subject: checkout")));
+    }
+
+    #[test]
+    fn metadata_view_renders_resolved_metadata_source_details() {
+        let mut model = model();
+        model.config.view = RailViewMode::Metadata;
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Tab(2),
+            values: BTreeMap::from([(
+                "tab.subject".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("checkout".to_owned()),
+                    updated_at: 12,
+                    ttl_ms: Some(100),
+                    precedence: 4,
+                    ordinal: 2,
+                },
+            )]),
+            source_entries: BTreeMap::from([(
+                "tab.subject".to_owned(),
+                vec![tabs_shared::MetadataSourceEntry {
+                    source_id: "flotilla".to_owned(),
+                    entry: MetadataEntry {
+                        value: MetadataValue::Text("checkout".to_owned()),
+                        updated_at: 12,
+                        ttl_ms: Some(100),
+                        precedence: 4,
+                        ordinal: 2,
+                    },
+                }],
+            )]),
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 20, 80, true);
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("tab.subject.source.flotilla: checkout")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("tab.subject.source.flotilla.ttl_ms: 100")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("tab.subject.source.flotilla.precedence: 4")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("tab.subject.source.flotilla.ordinal: 2")));
     }
 
     #[test]
@@ -3877,6 +4005,7 @@ mod tests {
                     ordinal: 0,
                 },
             )]),
+            source_entries: BTreeMap::new(),
         }];
 
         let rendered = render_lines(Some(&model), &[], 14, 48, true);

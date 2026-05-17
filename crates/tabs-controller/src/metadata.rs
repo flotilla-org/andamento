@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use tabs_shared::{
-    MetadataEntry, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate,
+    MetadataEntry, MetadataPatch, MetadataSourceEntry, MetadataTarget, MetadataValue,
+    MetadataValueUpdate,
 };
 
 pub type EntityId = MetadataTarget;
@@ -106,6 +107,32 @@ impl MetadataStore {
                     .filter_map(|(key, _)| {
                         select_primary_entry(&self.entries_for(entity_id, key, now))
                             .map(|candidate| (key.clone(), candidate.entry))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn source_entries_for(
+        &self,
+        entity_id: &EntityId,
+        now: u64,
+    ) -> BTreeMap<String, Vec<MetadataSourceEntry>> {
+        self.entries
+            .get(entity_id)
+            .map(|entity_entries| {
+                entity_entries
+                    .iter()
+                    .filter_map(|(key, _)| {
+                        let entries = self
+                            .entries_for(entity_id, key, now)
+                            .into_iter()
+                            .map(|candidate| MetadataSourceEntry {
+                                source_id: candidate.source_id,
+                                entry: candidate.entry,
+                            })
+                            .collect::<Vec<_>>();
+                        (!entries.is_empty()).then_some((key.clone(), entries))
                     })
                     .collect()
             })

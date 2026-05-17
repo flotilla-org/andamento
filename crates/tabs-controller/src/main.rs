@@ -690,6 +690,14 @@ mod tests {
                 .map(|entry| &entry.value),
             Some(&tabs_shared::MetadataValue::Text("checkout".to_owned()))
         );
+        assert_eq!(
+            tab_metadata
+                .source_entries
+                .get("tab.subject")
+                .and_then(|entries| entries.first())
+                .map(|entry| entry.source_id.as_str()),
+            Some("test")
+        );
     }
 
     #[test]

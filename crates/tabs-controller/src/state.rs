@@ -6,8 +6,9 @@ use crate::metadata::{
 };
 use tabs_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataEntry,
-    MetadataValue, PaneTarget, Priority, RailConfig, RailGroupingMode, RailRow, RendererHello,
-    ResolvedMetadata, SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
+    MetadataSourceEntry, MetadataValue, PaneTarget, Priority, RailConfig, RailGroupingMode,
+    RailRow, RendererHello, ResolvedMetadata, SetPaneStatus, SortMode, TabCard, TabGroupingInfo,
+    TabStatusSummary,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -526,12 +527,21 @@ impl ControllerState {
 
     fn resolved_metadata_for_tabs(&self, tabs: &[TabCard]) -> Vec<ResolvedMetadata> {
         let mut by_target: BTreeMap<EntityId, BTreeMap<String, MetadataEntry>> = BTreeMap::new();
+        let mut sources_by_target: BTreeMap<EntityId, BTreeMap<String, Vec<MetadataSourceEntry>>> =
+            BTreeMap::new();
         for tab in tabs {
             let tab_target = EntityId::Tab(tab.tab_id);
             by_target.entry(tab_target.clone()).or_default().extend(
                 self.metadata
                     .resolved_entries_for(&tab_target, self.receive_counter),
             );
+            sources_by_target
+                .entry(tab_target.clone())
+                .or_default()
+                .extend(
+                    self.metadata
+                        .source_entries_for(&tab_target, self.receive_counter),
+                );
             if let Some(entry) = self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD) {
                 by_target
                     .entry(tab_target)
@@ -543,6 +553,13 @@ impl ControllerState {
                         self.metadata
                             .resolved_entries_for(&group_target, self.receive_counter),
                     );
+                    sources_by_target
+                        .entry(group_target.clone())
+                        .or_default()
+                        .extend(
+                            self.metadata
+                                .source_entries_for(&group_target, self.receive_counter),
+                        );
                     by_target
                         .entry(group_target)
                         .or_default()
@@ -552,7 +569,11 @@ impl ControllerState {
         }
         by_target
             .into_iter()
-            .map(|(target, values)| ResolvedMetadata { target, values })
+            .map(|(target, values)| ResolvedMetadata {
+                source_entries: sources_by_target.remove(&target).unwrap_or_default(),
+                target,
+                values,
+            })
             .collect()
     }
 

@@ -692,4 +692,6 @@ The next slice should:
 
 Status: landed. `ControllerViewModel` now carries resolved metadata entries keyed by group/tab targets. The controller populates cwd-derived tab and group entries from the current metadata store, and the rail renderer merges those entries into render-node metadata so metadata view can show generic resolved keys alongside compatibility fields.
 
+Raw-source inspection follow-up status: started. Resolved metadata entries now also carry live per-source entries, including source id, updated time, ttl, precedence, ordinal, and value. Metadata rail view renders those details inline in expanded metadata mode. A later interaction pass can hide/show these details per key.
+
 After this lands, the next best slice is explicit tab subject/scope. Rendering polish such as collapse, group borders, and templates will be cleaner once group metadata and tab subjects have stable semantic identities.
