@@ -1727,16 +1727,13 @@ fn format_status(card: &RenderCard) -> String {
 }
 
 fn status_template_fields(metadata: &RenderMetadata) -> Vec<TemplateField> {
-    let Some(title) = metadata_text(metadata, "status.title") else {
-        return vec![];
-    };
-    let mut fields = vec![TemplateField::Required(title.to_owned())];
-    if let Some(detail) =
-        metadata_text(metadata, "status.detail").filter(|detail| !detail.is_empty())
-    {
-        fields.push(TemplateField::Priority(format!(": {detail}")));
-    }
-    fields
+    template_fields_for(TemplateRenderContext {
+        slot: TemplateSlot::TabStatus,
+        node_kind: RenderNodeKind::Tab,
+        metadata,
+        collapsed: false,
+        active_tab_name: None,
+    })
 }
 
 fn status_metadata(status: &TabStatusSummary) -> RenderMetadata {
@@ -1778,20 +1775,13 @@ fn tab_title(card: &RenderCard) -> String {
 }
 
 fn tab_title_template_fields(metadata: &RenderMetadata) -> Vec<TemplateField> {
-    let title = metadata_text(metadata, "zellij.tab.name")
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            metadata.get("zellij.tab.position").and_then(|position| {
-                if let MetadataValue::Integer(position) = position {
-                    Some(format!("Tab {}", position + 1))
-                } else {
-                    None
-                }
-            })
-        })
-        .unwrap_or_else(|| "Tab".to_owned());
-    vec![TemplateField::Required(title)]
+    template_fields_for(TemplateRenderContext {
+        slot: TemplateSlot::TabTitle,
+        node_kind: RenderNodeKind::Tab,
+        metadata,
+        collapsed: false,
+        active_tab_name: None,
+    })
 }
 
 fn body_lines(
@@ -2002,22 +1992,204 @@ enum TemplateField {
     Priority(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderNodeKind {
+    Group,
+    Tab,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateSlot {
+    GroupHeader,
+    TabTitle,
+    TabStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetadataPredicate {
+    Exists(&'static str),
+    TextEquals {
+        key: &'static str,
+        value: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TemplateDefinition<'a> {
+    slot: TemplateSlot,
+    node_kind: RenderNodeKind,
+    predicates: &'a [MetadataPredicate],
+    build: fn(&TemplateRenderContext<'_>) -> Vec<TemplateField>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TemplateRenderContext<'a> {
+    slot: TemplateSlot,
+    node_kind: RenderNodeKind,
+    metadata: &'a RenderMetadata,
+    collapsed: bool,
+    active_tab_name: Option<&'a str>,
+}
+
+const STATUS_TEMPLATE_PREDICATES: &[MetadataPredicate] =
+    &[MetadataPredicate::Exists("status.title")];
+const WAITING_STATUS_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
+    MetadataPredicate::Exists("status.title"),
+    MetadataPredicate::TextEquals {
+        key: "status.priority",
+        value: "waiting",
+    },
+];
+
+const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
+    TemplateDefinition {
+        slot: TemplateSlot::GroupHeader,
+        node_kind: RenderNodeKind::Group,
+        predicates: &[],
+        build: build_group_header_template_fields,
+    },
+    TemplateDefinition {
+        slot: TemplateSlot::TabTitle,
+        node_kind: RenderNodeKind::Tab,
+        predicates: &[],
+        build: build_tab_title_template_fields,
+    },
+    TemplateDefinition {
+        slot: TemplateSlot::TabStatus,
+        node_kind: RenderNodeKind::Tab,
+        predicates: STATUS_TEMPLATE_PREDICATES,
+        build: build_status_template_fields,
+    },
+    TemplateDefinition {
+        slot: TemplateSlot::TabStatus,
+        node_kind: RenderNodeKind::Tab,
+        predicates: WAITING_STATUS_TEMPLATE_PREDICATES,
+        build: build_status_template_fields,
+    },
+];
+
+fn template_fields_for(context: TemplateRenderContext<'_>) -> Vec<TemplateField> {
+    resolve_template(BUILTIN_TEMPLATES, &context)
+        .map(|template| (template.build)(&context))
+        .unwrap_or_default()
+}
+
+fn resolve_template<'a>(
+    templates: &'a [TemplateDefinition<'a>],
+    context: &TemplateRenderContext<'_>,
+) -> Option<&'a TemplateDefinition<'a>> {
+    let mut best: Option<(&TemplateDefinition<'a>, usize)> = None;
+    for template in templates {
+        if !template.matches(context) {
+            continue;
+        }
+        let specificity = template.specificity();
+        if best.is_none_or(|(_, best_specificity)| specificity > best_specificity) {
+            best = Some((template, specificity));
+        }
+    }
+    best.map(|(template, _)| template)
+}
+
+impl TemplateDefinition<'_> {
+    fn matches(&self, context: &TemplateRenderContext<'_>) -> bool {
+        self.slot == context.slot
+            && self.node_kind == context.node_kind
+            && self
+                .predicates
+                .iter()
+                .all(|predicate| predicate.matches(context.metadata))
+    }
+
+    fn specificity(&self) -> usize {
+        self.predicates
+            .iter()
+            .map(MetadataPredicate::specificity)
+            .sum()
+    }
+}
+
+impl MetadataPredicate {
+    fn matches(&self, metadata: &RenderMetadata) -> bool {
+        match self {
+            MetadataPredicate::Exists(key) => metadata.contains_key(*key),
+            MetadataPredicate::TextEquals { key, value } => {
+                metadata_text(metadata, key) == Some(*value)
+            }
+        }
+    }
+
+    fn specificity(&self) -> usize {
+        match self {
+            MetadataPredicate::Exists(_) => 1,
+            MetadataPredicate::TextEquals { .. } => 2,
+        }
+    }
+}
+
 fn group_header_template_fields(
     metadata: &RenderMetadata,
     collapsed: bool,
     active_tab_name: Option<&str>,
 ) -> Vec<TemplateField> {
+    template_fields_for(TemplateRenderContext {
+        slot: TemplateSlot::GroupHeader,
+        node_kind: RenderNodeKind::Group,
+        metadata,
+        collapsed,
+        active_tab_name,
+    })
+}
+
+fn build_group_header_template_fields(context: &TemplateRenderContext<'_>) -> Vec<TemplateField> {
+    let metadata = context.metadata;
     let label = metadata_text(metadata, "group.label").unwrap_or("group");
     let tab_count = metadata_display_value(metadata, "group.tab_count").unwrap_or_default();
     let mut fields = vec![
-        TemplateField::Required(if collapsed { "▶" } else { "▼" }.to_owned()),
+        TemplateField::Required(if context.collapsed { "▶" } else { "▼" }.to_owned()),
         TemplateField::Required(label.to_owned()),
     ];
     if !tab_count.is_empty() {
         fields.push(TemplateField::Optional(format!("({tab_count})")));
     }
-    if let Some(active_tab_name) = collapsed.then_some(active_tab_name).flatten() {
+    if let Some(active_tab_name) = context
+        .collapsed
+        .then_some(context.active_tab_name)
+        .flatten()
+    {
         fields.push(TemplateField::Priority(format!(": {active_tab_name}")));
+    }
+    fields
+}
+
+fn build_tab_title_template_fields(context: &TemplateRenderContext<'_>) -> Vec<TemplateField> {
+    let metadata = context.metadata;
+    let title = metadata_text(metadata, "zellij.tab.name")
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            metadata.get("zellij.tab.position").and_then(|position| {
+                if let MetadataValue::Integer(position) = position {
+                    Some(format!("Tab {}", position + 1))
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| "Tab".to_owned());
+    vec![TemplateField::Required(title)]
+}
+
+fn build_status_template_fields(context: &TemplateRenderContext<'_>) -> Vec<TemplateField> {
+    let metadata = context.metadata;
+    let Some(title) = metadata_text(metadata, "status.title") else {
+        return vec![];
+    };
+    let mut fields = vec![TemplateField::Required(title.to_owned())];
+    if let Some(detail) =
+        metadata_text(metadata, "status.detail").filter(|detail| !detail.is_empty())
+    {
+        fields.push(TemplateField::Priority(format!(": {detail}")));
     }
     fields
 }
@@ -2661,6 +2833,83 @@ mod tests {
                 TemplateField::Required("zellij".to_owned()),
                 TemplateField::Optional("(2)".to_owned()),
                 TemplateField::Priority(": tests".to_owned()),
+            ]
+        );
+    }
+
+    fn generic_test_template_fields(_: &TemplateRenderContext<'_>) -> Vec<TemplateField> {
+        vec![TemplateField::Required("generic".to_owned())]
+    }
+
+    fn specific_test_template_fields(_: &TemplateRenderContext<'_>) -> Vec<TemplateField> {
+        vec![TemplateField::Required("specific".to_owned())]
+    }
+
+    #[test]
+    fn template_matcher_prefers_more_specific_metadata_match() {
+        let templates = [
+            TemplateDefinition {
+                slot: TemplateSlot::TabStatus,
+                node_kind: RenderNodeKind::Tab,
+                predicates: &[],
+                build: generic_test_template_fields,
+            },
+            TemplateDefinition {
+                slot: TemplateSlot::TabStatus,
+                node_kind: RenderNodeKind::Tab,
+                predicates: &[MetadataPredicate::TextEquals {
+                    key: "status.priority",
+                    value: "waiting",
+                }],
+                build: specific_test_template_fields,
+            },
+        ];
+        let mut metadata = RenderMetadata::new();
+        metadata.insert(
+            "status.priority".to_owned(),
+            MetadataValue::Text("waiting".to_owned()),
+        );
+        let context = TemplateRenderContext {
+            slot: TemplateSlot::TabStatus,
+            node_kind: RenderNodeKind::Tab,
+            metadata: &metadata,
+            collapsed: false,
+            active_tab_name: None,
+        };
+
+        let template = resolve_template(&templates, &context).expect("matching template");
+
+        assert_eq!(
+            (template.build)(&context),
+            vec![TemplateField::Required("specific".to_owned())]
+        );
+    }
+
+    #[test]
+    fn tab_status_fields_are_resolved_through_builtin_template() {
+        let mut metadata = RenderMetadata::new();
+        metadata.insert(
+            "status.title".to_owned(),
+            MetadataValue::Text("waiting".to_owned()),
+        );
+        metadata.insert(
+            "status.detail".to_owned(),
+            MetadataValue::Text("input".to_owned()),
+        );
+
+        let fields = template_fields_for(TemplateRenderContext {
+            slot: TemplateSlot::TabStatus,
+            node_kind: RenderNodeKind::Tab,
+            metadata: &metadata,
+            collapsed: false,
+            active_tab_name: None,
+        });
+
+        assert_eq!(
+            fields,
+            vec![
+                TemplateField::Required("waiting".to_owned()),
+                TemplateField::Priority(": input".to_owned()),
             ]
         );
     }
