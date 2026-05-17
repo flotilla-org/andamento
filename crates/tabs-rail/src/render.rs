@@ -632,41 +632,61 @@ fn push_metadata_source_detail_lines(
     source_entries: &RenderMetadataSources,
 ) {
     for (key, entries) in source_entries {
-        for entry in entries {
-            let prefix = format!("{key}.source.{}", entry.source_id);
-            push_metadata_text_line(
-                lines,
-                indent,
-                &prefix,
-                &format_metadata_value(&entry.entry.value),
-            );
-            push_metadata_text_line(
-                lines,
-                indent,
-                &format!("{prefix}.updated_at"),
-                &entry.entry.updated_at.to_string(),
-            );
-            if let Some(ttl_ms) = entry.entry.ttl_ms {
-                push_metadata_text_line(
-                    lines,
-                    indent,
-                    &format!("{prefix}.ttl_ms"),
-                    &ttl_ms.to_string(),
-                );
-            }
-            push_metadata_text_line(
-                lines,
-                indent,
-                &format!("{prefix}.precedence"),
-                &entry.entry.precedence.to_string(),
-            );
-            push_metadata_text_line(
-                lines,
-                indent,
-                &format!("{prefix}.ordinal"),
-                &entry.entry.ordinal.to_string(),
-            );
+        if entries.is_empty() {
+            continue;
         }
+        push_metadata_text_line(lines, indent, "sources", key);
+        push_metadata_source_table(lines, indent + 2, entries);
+    }
+}
+
+fn push_metadata_source_table(
+    lines: &mut Vec<String>,
+    indent: usize,
+    entries: &[MetadataSourceEntry],
+) {
+    let rows = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.source_id.as_str(),
+                format_metadata_value(&entry.entry.value),
+                entry,
+            )
+        })
+        .collect::<Vec<_>>();
+    let source_width = rows
+        .iter()
+        .map(|(source_id, _, _)| source_id.len())
+        .max()
+        .unwrap_or(0)
+        .max("source".len());
+    let value_width = rows
+        .iter()
+        .map(|(_, value, _)| value.len())
+        .max()
+        .unwrap_or(0)
+        .max("value".len());
+
+    lines.push(format!(
+        "{}{:<source_width$}  {:<value_width$}  updated_at  ttl_ms  precedence  ordinal",
+        " ".repeat(indent),
+        "source",
+        "value",
+    ));
+    for (source_id, value, entry) in rows {
+        lines.push(format!(
+            "{}{source_id:<source_width$}  {value:<value_width$}  {:>10}  {:>6}  {:>10}  {:>7}",
+            " ".repeat(indent),
+            entry.entry.updated_at,
+            entry
+                .entry
+                .ttl_ms
+                .map(|ttl_ms| ttl_ms.to_string())
+                .unwrap_or_else(|| "-".to_owned()),
+            entry.entry.precedence,
+            entry.entry.ordinal,
+        ));
     }
 }
 
@@ -4057,24 +4077,35 @@ mod tests {
             reachable_identities: vec![],
         }];
 
-        let rendered = render_lines(Some(&model), &[], 20, 80, true);
+        let rendered = render_lines(Some(&model), &[], 20, 120, true);
+        let source_header_line = rendered
+            .lines
+            .iter()
+            .find(|line| line.contains("sources: tab.subject"))
+            .expect("source key line");
+        let table_header_line = rendered
+            .lines
+            .iter()
+            .find(|line| line.contains("source") && line.contains("updated_at"))
+            .expect("source table header");
+        let source_value_line = rendered
+            .lines
+            .iter()
+            .find(|line| line.contains("flotilla") && line.contains("checkout"))
+            .expect("source value line");
 
-        assert!(rendered
+        assert!(source_header_line.contains("tab.subject"));
+        assert!(table_header_line.contains("ttl_ms"));
+        assert!(table_header_line.contains("precedence"));
+        assert!(table_header_line.contains("ordinal"));
+        assert!(source_value_line.contains("12"));
+        assert!(source_value_line.contains("100"));
+        assert!(source_value_line.contains("4"));
+        assert!(source_value_line.contains("2"));
+        assert!(!rendered
             .lines
             .iter()
-            .any(|line| line.contains("tab.subject.source.flotilla: checkout")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("tab.subject.source.flotilla.ttl_ms: 100")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("tab.subject.source.flotilla.precedence: 4")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("tab.subject.source.flotilla.ordinal: 2")));
+            .any(|line| line.contains("tab.subject.source.flotilla")));
     }
 
     #[test]
