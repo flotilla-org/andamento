@@ -4,6 +4,7 @@ plugins {
         rail_sizing "active-large"
         rail_grouping "directory"
         template_config_path "/host/Users/robert/dev/zellij-scratch/templates/andamento-git.kdl"
+        grouping_config_path "/host/Users/robert/dev/zellij-scratch/templates/andamento-git.kdl"
     }
     tabs-rail location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-rail.wasm" {
         controller_plugin_url "tabs-controller"

@@ -31,11 +31,14 @@ fn main() {}
 struct PluginState {
     state: ControllerState,
     template_config_path: Option<String>,
+    grouping_config_path: Option<String>,
     permissions_granted: bool,
     own_identity: Option<RendererHello>,
     bootstrap_requested: bool,
     template_reload_pending: bool,
     template_reload_attempts: u8,
+    grouping_rule_count: usize,
+    grouping_config_error: Option<String>,
 }
 
 #[cfg(target_family = "wasm")]
@@ -52,6 +55,7 @@ impl ZellijPlugin for PluginState {
         self.state
             .set_rail_config(parse_rail_config(&configuration));
         self.template_config_path = template_config_path_from_configuration(&configuration);
+        self.grouping_config_path = grouping_config_path_from_configuration(&configuration);
         self.state
             .set_template_config_diagnostics(initial_template_config_diagnostics(
                 self.template_config_path.clone(),
@@ -180,6 +184,16 @@ impl ZellijPlugin for PluginState {
             ),
             format!("template count: {}", diagnostics.template_count),
         ];
+        lines.push(format!(
+            "grouping config path: {}",
+            self.grouping_config_path
+                .as_deref()
+                .unwrap_or("<not configured>")
+        ));
+        lines.push(format!("grouping rule count: {}", self.grouping_rule_count));
+        if let Some(error) = self.grouping_config_error.as_ref() {
+            lines.push(format!("grouping config error: {error}"));
+        }
         if !diagnostics.template_names.is_empty() {
             lines.push(format!(
                 "template names: {}",
@@ -200,8 +214,9 @@ impl ZellijPlugin for PluginState {
 #[cfg(target_family = "wasm")]
 impl PluginState {
     fn schedule_template_reload(&mut self) {
-        if self.template_config_path.is_none() {
+        if self.template_config_path.is_none() && self.grouping_config_path.is_none() {
             self.reload_template_catalog();
+            self.reload_grouping_catalog();
             self.push_view_model_to_rails();
             return;
         }
@@ -217,7 +232,7 @@ impl PluginState {
 
     fn retry_template_catalog_reload(&mut self) -> bool {
         self.template_reload_attempts = self.template_reload_attempts.saturating_add(1);
-        let loaded = self.reload_template_catalog();
+        let loaded = self.reload_template_catalog() & self.reload_grouping_catalog();
         self.template_reload_pending =
             should_retry_template_load(self.template_reload_attempts, loaded);
         if self.template_reload_pending {
@@ -254,6 +269,30 @@ impl PluginState {
                         Some(path.to_owned()),
                         error.to_string(),
                     ));
+                false
+            }
+        }
+    }
+
+    fn reload_grouping_catalog(&mut self) -> bool {
+        let Some(path) = self.grouping_config_path.as_deref() else {
+            self.state.set_grouping_catalog(None);
+            self.grouping_rule_count = 0;
+            self.grouping_config_error = None;
+            return true;
+        };
+        match tabs_shared::grouping_config::load_grouping_catalog_from_file(path) {
+            Ok(catalog) => {
+                self.grouping_rule_count = catalog.rules.len();
+                self.grouping_config_error = None;
+                self.state.set_grouping_catalog(Some(catalog));
+                true
+            }
+            Err(error) => {
+                eprintln!("tabs-controller: failed to load grouping config: {error}");
+                self.grouping_rule_count = 0;
+                self.grouping_config_error = Some(error.to_string());
+                self.state.set_grouping_catalog(None);
                 false
             }
         }
@@ -446,8 +485,18 @@ fn parse_rail_config(configuration: &BTreeMap<String, String>) -> RailConfig {
 fn template_config_path_from_configuration(
     configuration: &BTreeMap<String, String>,
 ) -> Option<String> {
+    path_from_configuration(configuration, "template_config_path")
+}
+
+fn grouping_config_path_from_configuration(
+    configuration: &BTreeMap<String, String>,
+) -> Option<String> {
+    path_from_configuration(configuration, "grouping_config_path")
+}
+
+fn path_from_configuration(configuration: &BTreeMap<String, String>, key: &str) -> Option<String> {
     configuration
-        .get("template_config_path")
+        .get(key)
         .map(String::as_str)
         .map(str::trim)
         .filter(|path| !path.is_empty())
@@ -823,6 +872,19 @@ mod tests {
         let path = template_config_path_from_configuration(&configuration);
 
         assert_eq!(path.as_deref(), Some("/host/tmp/andamento.kdl"));
+    }
+
+    #[test]
+    fn parses_grouping_config_path_from_plugin_configuration() {
+        let mut configuration = BTreeMap::new();
+        configuration.insert(
+            "grouping_config_path".to_owned(),
+            " /host/tmp/andamento-groups.kdl ".to_owned(),
+        );
+
+        let path = grouping_config_path_from_configuration(&configuration);
+
+        assert_eq!(path.as_deref(), Some("/host/tmp/andamento-groups.kdl"));
     }
 
     #[test]

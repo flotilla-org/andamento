@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod grouping_config;
 pub mod template_config;
 
 pub const MSG_RENDERER_HELLO: &str = "tabs-renderer-hello";
@@ -166,10 +167,41 @@ pub enum MetadataValue {
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct GroupPath(pub Vec<GroupSegment>);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupSegment {
     pub key: String,
     pub value: MetadataValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl PartialEq for GroupSegment {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.value == other.value
+    }
+}
+
+impl Eq for GroupSegment {}
+
+impl PartialOrd for GroupSegment {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for GroupSegment {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key
+            .cmp(&other.key)
+            .then_with(|| self.value.cmp(&other.value))
+    }
+}
+
+impl std::hash::Hash for GroupSegment {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+        self.value.hash(state);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -467,6 +499,7 @@ mod tests {
         let group_path = GroupPath(vec![GroupSegment {
             key: "zellij.pane.cwd".to_owned(),
             value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
+            label: None,
         }]);
         let model = ControllerViewModel {
             sort_mode: SortMode::Position,
@@ -536,10 +569,12 @@ mod tests {
             GroupSegment {
                 key: "project.name".to_owned(),
                 value: MetadataValue::Text("zellij".to_owned()),
+                label: None,
             },
             GroupSegment {
                 key: "zellij.pane.cwd".to_owned(),
                 value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
+                label: None,
             },
         ]);
 
@@ -550,10 +585,27 @@ mod tests {
     }
 
     #[test]
+    fn group_path_identity_ignores_display_labels() {
+        let identity = GroupPath(vec![GroupSegment {
+            key: "git.repo".to_owned(),
+            value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+            label: None,
+        }]);
+        let labelled = GroupPath(vec![GroupSegment {
+            key: "git.repo".to_owned(),
+            value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+            label: Some("zellij".to_owned()),
+        }]);
+
+        assert_eq!(identity, labelled);
+    }
+
+    #[test]
     fn metadata_target_group_round_trips_json() {
         let target = MetadataTarget::Group(GroupPath(vec![GroupSegment {
             key: "project.name".to_owned(),
             value: MetadataValue::Text("zellij".to_owned()),
+            label: None,
         }]));
 
         let encoded = serde_json::to_string(&target).unwrap();
@@ -581,6 +633,7 @@ mod tests {
             target: MetadataTarget::Group(GroupPath(vec![GroupSegment {
                 key: "project.name".to_owned(),
                 value: MetadataValue::Text("zellij".to_owned()),
+                label: None,
             }])),
             source_id: "flotilla".to_owned(),
             set: std::collections::BTreeMap::from([(
@@ -623,6 +676,39 @@ mod tests {
         let decoded: ExternalMessage = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, ExternalMessage::MetadataPatch(patch));
+    }
+
+    #[test]
+    fn parses_hierarchical_grouping_rules_from_kdl() {
+        let config = crate::grouping_config::parse_grouping_config_kdl(
+            r#"
+            version 1
+
+            grouping "proj-repo-branch" {
+              priority 100
+              level key="andamento.project" optional=true
+              level key="git.repo" label-key="repo.name"
+              level key="git.branch"
+            }
+
+            grouping "directory" priority=10 {
+              level key="zellij.pane.cwd"
+            }
+            "#,
+        )
+        .expect("grouping config parses");
+
+        assert_eq!(config.rules.len(), 2);
+        assert_eq!(config.rules[0].name, "proj-repo-branch");
+        assert_eq!(config.rules[0].priority, 100);
+        assert_eq!(config.rules[0].levels[0].key, "andamento.project");
+        assert!(config.rules[0].levels[0].optional);
+        assert_eq!(
+            config.rules[0].levels[1].label_key.as_deref(),
+            Some("repo.name")
+        );
+        assert_eq!(config.rules[1].name, "directory");
+        assert_eq!(config.rules[1].priority, 10);
     }
 
     #[test]

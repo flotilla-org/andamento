@@ -78,6 +78,29 @@ plugin location="tabs-controller" {
 }
 ```
 
+## External Grouping Rules
+
+The controller can also load grouping rules from a real filesystem path exposed to the plugin. Rules are tried by priority and project a tab's resolved metadata into a hierarchical `GroupPath`; if a rule cannot produce any segment, the next rule is tried. The local example points both config loaders at one KDL file:
+
+```kdl
+plugin location="tabs-controller" {
+    grouping_config_path "/host/Users/robert/dev/zellij-scratch/templates/andamento-git.kdl"
+}
+```
+
+Example grouping rules:
+
+```kdl
+grouping "proj-repo-branch" {
+    priority 100
+    level key="andamento.project" optional=true
+    level key="git.repo" label-key="repo.name"
+    level key="git.branch"
+}
+```
+
+Missing optional levels are skipped. Missing later required levels stop at the deepest known level once a rule has produced a segment. If no external rule matches, `rail_grouping "directory"` still falls back to the built-in exact-cwd grouping. Use `rail_grouping "none"` or omit the setting for the flat tab rail.
+
 ## External Rail Templates
 
 The controller can load a KDL template config from a real filesystem path exposed to the plugin, resolve templates against metadata, and send resolved fields to each rail:
@@ -88,7 +111,7 @@ plugin location="tabs-controller" {
 }
 ```
 
-Because the example uses an absolute host path under `/host`, the controller requests `FullHdAccess` and sets its plugin host folder to `/`. Template load status, errors, and resolved slots are visible in the config plugin's `templates` tab.
+Because the examples use absolute host paths under `/host`, the controller requests `FullHdAccess` and sets its plugin host folder to `/`. Template load status, errors, and resolved slots are visible in the config plugin's `templates` tab. Grouping load status is shown in the controller pane.
 
 Example template:
 
@@ -105,8 +128,6 @@ template "git.group-header" slot="group-header" node-kind="group" {
 ```
 
 Templates are matched by `slot`, `node-kind`, and `when` predicates. Field order is the render order; numeric `priority` controls which fields are dropped first when the sidebar is narrow. A `key=` value reads metadata and renders it by value type.
-
-Use `rail_grouping "none"` or omit the setting for the flat tab rail.
 
 Switch the rail into the generic metadata inspection projection:
 

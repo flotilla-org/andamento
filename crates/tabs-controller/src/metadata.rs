@@ -348,6 +348,7 @@ mod tests {
         let group = GroupPath(vec![GroupSegment {
             key: "project.name".to_owned(),
             value: MetadataValue::Text("zellij".to_owned()),
+            label: None,
         }]);
         store.set(
             EntityId::Group(group.clone()),
@@ -371,6 +372,7 @@ mod tests {
         let target = EntityId::Group(GroupPath(vec![GroupSegment {
             key: "project.name".to_owned(),
             value: MetadataValue::Text("zellij".to_owned()),
+            label: None,
         }]));
         store.apply_patch(
             MetadataPatch {

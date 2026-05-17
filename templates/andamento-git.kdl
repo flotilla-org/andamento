@@ -1,5 +1,12 @@
 version 1
 
+grouping "proj-repo-branch" {
+  priority 100
+  level key="andamento.project" optional=true
+  level key="git.repo" label-key="repo.name"
+  level key="git.branch"
+}
+
 template "andamento.git.group-header" slot="group-header" node-kind="group" {
   when exists="git.repo"
 

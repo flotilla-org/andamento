@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::metadata::{
     select_primary_entry, select_primary_value, CandidateEntry, EntityId, MetadataStore,
 };
+use tabs_shared::grouping_config::{GroupingConfigCatalog, GroupingRule};
 use tabs_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataEntry,
     MetadataIdentity, MetadataSourceEntry, MetadataValue, ObservedMetadataIdentity, PaneTarget,
@@ -56,6 +57,7 @@ pub struct ControllerState {
     known_config_editors: BTreeMap<u32, RendererHello>,
     sort_mode: SortMode,
     rail_config: RailConfig,
+    grouping_catalog: Option<GroupingConfigCatalog>,
     template_catalog: Option<tabs_shared::template_config::TemplateConfigCatalog>,
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
@@ -249,6 +251,10 @@ impl ControllerState {
         catalog: Option<tabs_shared::template_config::TemplateConfigCatalog>,
     ) {
         self.template_catalog = catalog;
+    }
+
+    pub fn set_grouping_catalog(&mut self, catalog: Option<GroupingConfigCatalog>) {
+        self.grouping_catalog = catalog;
     }
 
     pub fn set_template_config_diagnostics(&mut self, diagnostics: TemplateConfigDiagnostics) {
@@ -543,10 +549,26 @@ impl ControllerState {
                     .map(|grouping| (tab.tab_id, grouping))
             })
             .collect();
+        let tab_configured_groupings: HashMap<u64, TabGroupingInfo> = self
+            .grouping_catalog
+            .as_ref()
+            .filter(|catalog| !catalog.is_empty())
+            .map(|catalog| {
+                self.tabs
+                    .iter()
+                    .filter(|tab| !tab_subjects.contains_key(&tab.tab_id))
+                    .filter_map(|tab| {
+                        self.tab_rule_grouping(tab.tab_id, catalog)
+                            .map(|grouping| (tab.tab_id, grouping))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let tab_cwds: HashMap<u64, String> = self
             .tabs
             .iter()
             .filter(|tab| !tab_subjects.contains_key(&tab.tab_id))
+            .filter(|tab| !tab_configured_groupings.contains_key(&tab.tab_id))
             .filter_map(|tab| {
                 self.tab_primary_cwd(tab.tab_id)
                     .map(|cwd| (tab.tab_id, cwd))
@@ -574,8 +596,86 @@ impl ControllerState {
                 )
             })
             .collect();
+        groupings.extend(tab_configured_groupings);
         groupings.extend(tab_subjects);
         groupings
+    }
+
+    fn tab_rule_grouping(
+        &self,
+        tab_id: u64,
+        catalog: &GroupingConfigCatalog,
+    ) -> Option<TabGroupingInfo> {
+        let metadata = self.tab_resolved_metadata_values(tab_id);
+        catalog
+            .rules
+            .iter()
+            .find_map(|rule| self.tab_grouping_for_rule(rule, &metadata))
+    }
+
+    fn tab_grouping_for_rule(
+        &self,
+        rule: &GroupingRule,
+        metadata: &BTreeMap<String, MetadataValue>,
+    ) -> Option<TabGroupingInfo> {
+        let mut segments = vec![];
+        let mut labels = vec![];
+        for level in &rule.levels {
+            let Some(value) = metadata.get(&level.key).cloned() else {
+                if level.optional {
+                    continue;
+                }
+                if segments.is_empty() {
+                    return None;
+                }
+                break;
+            };
+            let label = level
+                .label_key
+                .as_ref()
+                .and_then(|key| metadata.get(key))
+                .map(metadata_value_display)
+                .unwrap_or_else(|| metadata_value_display(&value));
+            segments.push(GroupSegment {
+                key: level.key.clone(),
+                value,
+                label: level.label_key.as_ref().map(|_| label.clone()),
+            });
+            labels.push(label);
+        }
+        if segments.is_empty() {
+            return None;
+        }
+        let key = format!(
+            "{}:{}",
+            rule.name,
+            segments
+                .iter()
+                .map(|segment| format!(
+                    "{}={}",
+                    segment.key,
+                    metadata_value_display(&segment.value)
+                ))
+                .collect::<Vec<_>>()
+                .join("/")
+        );
+        let label = labels.last().cloned().unwrap_or_else(|| key.clone());
+        Some(TabGroupingInfo {
+            key,
+            path: GroupPath(segments),
+            label,
+            full_label: labels.join(" / "),
+        })
+    }
+
+    fn tab_resolved_metadata_values(&self, tab_id: u64) -> BTreeMap<String, MetadataValue> {
+        let target = EntityId::Tab(tab_id);
+        let seed_values = self.tab_seed_metadata_entries(tab_id);
+        let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
+        values
+            .into_iter()
+            .map(|(key, entry)| (key, entry.value))
+            .collect()
     }
 
     fn tab_explicit_subject_grouping(&self, tab_id: u64) -> Option<TabGroupingInfo> {
@@ -591,6 +691,7 @@ impl ControllerState {
             path: GroupPath(vec![GroupSegment {
                 key: key.to_owned(),
                 value: MetadataValue::Text(value.clone()),
+                label: None,
             }]),
             label: value.clone(),
             full_label: value,
@@ -886,6 +987,7 @@ fn cwd_group_path(cwd: &str) -> GroupPath {
     GroupPath(vec![GroupSegment {
         key: KEY_PANE_CWD.to_owned(),
         value: MetadataValue::Text(cwd.to_owned()),
+        label: None,
     }])
 }
 
@@ -981,6 +1083,15 @@ fn resolved_metadata_values(
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn metadata_value_display(value: &MetadataValue) -> String {
+    match value {
+        MetadataValue::Text(value) => value.clone(),
+        MetadataValue::Bool(value) => value.to_string(),
+        MetadataValue::Integer(value) => value.to_string(),
+        MetadataValue::StringList(values) => values.join(", "),
+    }
 }
 
 fn observed_metadata_identities(
@@ -1213,6 +1324,7 @@ mod tests {
         let expected_path = GroupPath(vec![GroupSegment {
             key: KEY_PANE_CWD.to_owned(),
             value: MetadataValue::Text("/repo/a".to_owned()),
+            label: None,
         }]);
 
         assert_eq!(
@@ -1226,6 +1338,165 @@ mod tests {
             &model.rows[0],
             RailRow::GroupHeader { path, .. } if path == &expected_path
         ));
+    }
+
+    #[test]
+    fn configured_grouping_rule_uses_resolved_identity_metadata_before_directory_fallback() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.set_grouping_catalog(Some(
+            tabs_shared::grouping_config::GroupingConfigCatalog::from_config(
+                tabs_shared::grouping_config::ExternalGroupingConfig {
+                    version: 1,
+                    rules: vec![
+                        tabs_shared::grouping_config::GroupingRule {
+                            name: "proj-repo-branch".to_owned(),
+                            priority: 100,
+                            levels: vec![
+                                tabs_shared::grouping_config::GroupingLevel {
+                                    key: "andamento.project".to_owned(),
+                                    optional: true,
+                                    label_key: None,
+                                },
+                                tabs_shared::grouping_config::GroupingLevel {
+                                    key: "git.repo".to_owned(),
+                                    optional: false,
+                                    label_key: Some("repo.name".to_owned()),
+                                },
+                                tabs_shared::grouping_config::GroupingLevel {
+                                    key: "git.branch".to_owned(),
+                                    optional: false,
+                                    label_key: None,
+                                },
+                            ],
+                        },
+                        tabs_shared::grouping_config::GroupingRule {
+                            name: "directory".to_owned(),
+                            priority: 10,
+                            levels: vec![tabs_shared::grouping_config::GroupingLevel {
+                                key: KEY_PANE_CWD.to_owned(),
+                                optional: false,
+                                label_key: None,
+                            }],
+                        },
+                    ],
+                },
+            ),
+        ));
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "repo".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_pane_cwd(PaneTarget::Terminal(10), "/Users/robert/dev/zellij".into());
+        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+            target: EntityId::Identity(tabs_shared::MetadataIdentity {
+                key: KEY_PANE_CWD.to_owned(),
+                value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
+            }),
+            source_id: "git-watcher".to_owned(),
+            set: BTreeMap::from([
+                (
+                    "git.repo".to_owned(),
+                    tabs_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "repo.name".to_owned(),
+                    tabs_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("zellij".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "git.branch".to_owned(),
+                    tabs_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("feat/kitty-image-plumbing".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+            ]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let grouping = model.tabs[0].grouping.as_ref().expect("tab grouping");
+
+        assert_eq!(
+            grouping.key,
+            "proj-repo-branch:git.repo=zellij-org/zellij/git.branch=feat/kitty-image-plumbing"
+        );
+        assert_eq!(grouping.label, "feat/kitty-image-plumbing");
+        assert_eq!(grouping.full_label, "zellij / feat/kitty-image-plumbing");
+        assert_eq!(grouping.path.0[0].label.as_deref(), Some("zellij"));
+        assert_eq!(
+            grouping.path,
+            GroupPath(vec![
+                GroupSegment {
+                    key: "git.repo".to_owned(),
+                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    label: Some("zellij".to_owned()),
+                },
+                GroupSegment {
+                    key: "git.branch".to_owned(),
+                    value: MetadataValue::Text("feat/kitty-image-plumbing".to_owned()),
+                    label: None,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn configured_grouping_rules_fall_back_to_builtin_directory_grouping() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.set_grouping_catalog(Some(
+            tabs_shared::grouping_config::GroupingConfigCatalog::from_config(
+                tabs_shared::grouping_config::ExternalGroupingConfig {
+                    version: 1,
+                    rules: vec![tabs_shared::grouping_config::GroupingRule {
+                        name: "repo".to_owned(),
+                        priority: 100,
+                        levels: vec![tabs_shared::grouping_config::GroupingLevel {
+                            key: "git.repo".to_owned(),
+                            optional: false,
+                            label_key: None,
+                        }],
+                    }],
+                },
+            ),
+        ));
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "repo".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_pane_cwd(PaneTarget::Terminal(10), "/Users/robert/dev/zellij".into());
+
+        let model = state.view_model();
+        let grouping = model.tabs[0].grouping.as_ref().expect("tab grouping");
+
+        assert_eq!(grouping.key, "cwd:/Users/robert/dev/zellij");
+        assert_eq!(grouping.label, "zellij");
+        assert_eq!(grouping.full_label, "/Users/robert/dev/zellij");
     }
 
     #[test]
@@ -1313,6 +1584,7 @@ mod tests {
             GroupPath(vec![GroupSegment {
                 key: "tab.subject".to_owned(),
                 value: MetadataValue::Text("project:zellij".to_owned()),
+                label: None,
             }])
         );
         assert!(matches!(
@@ -1337,6 +1609,7 @@ mod tests {
         let group_path = GroupPath(vec![GroupSegment {
             key: KEY_TAB_SUBJECT.to_owned(),
             value: MetadataValue::Text("project:zellij".to_owned()),
+            label: None,
         }]);
         state.apply_metadata_patch(tabs_shared::MetadataPatch {
             target: EntityId::Tab(1),

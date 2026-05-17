@@ -767,6 +767,7 @@ mod tests {
                         path: GroupPath(vec![GroupSegment {
                             key: "zellij.pane.cwd".to_owned(),
                             value: MetadataValue::Text("/repo/app".to_owned()),
+                            label: None,
                         }]),
                         label: "app".to_owned(),
                         full_label: "/repo/app".to_owned(),

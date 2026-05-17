@@ -495,7 +495,7 @@ Scope:
 - optional max group label width.
 - optional hidden `Other` group behavior.
 
-Status: partially implemented. The config editor can now switch between ungrouped and directory grouping. Richer grouping criteria can now build on structured `GroupPath` identity.
+Status: partially implemented. The config editor can now switch between ungrouped and directory grouping. The controller can also load external grouping rules from `grouping_config_path`; rules project resolved metadata into structured group paths, while `rail_grouping "none"` remains the flat rendering switch.
 
 ### 4. Hierarchical Group Identity
 
@@ -512,6 +512,34 @@ Scope:
 - keep the existing `rail_grouping "directory"` user-facing behavior unchanged.
 
 Status: implemented. Directory grouping now uses structured `GroupPath` identity while keeping labels separate from identity and preserving the existing `rail_grouping "directory"` behavior.
+
+### 4a. Configurable Hierarchical Grouping
+
+Treat grouping as a projection from resolved metadata to an optional `GroupPath`, not as cwd-specific controller logic.
+
+Scope:
+
+- load grouping rules from KDL/JSON through `grouping_config_path`.
+- try rules by priority, preserving file order as the tie-break.
+- let each rule define ordered metadata levels.
+- allow optional levels, especially higher-level project/workspace labels.
+- when a later required level is missing, use the deepest known prefix once at least one segment has been produced.
+- keep different rules independent; they do not mingle into one hierarchy.
+- keep segment identity as `key=value`, with an optional display label such as `repo.name`.
+- retain the built-in directory fallback when no external grouping rule applies.
+
+Example:
+
+```kdl
+grouping "proj-repo-branch" {
+  priority 100
+  level key="andamento.project" optional=true
+  level key="git.repo" label-key="repo.name"
+  level key="git.branch"
+}
+```
+
+Status: started. The shared crate parses grouping rules, the controller evaluates them against resolved tab metadata, identity-enriched cwd facts can now produce repo/branch hierarchies, and group segments can carry display labels without changing their identity.
 
 ### 5. Group Metadata Targets
 

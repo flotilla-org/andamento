@@ -1884,7 +1884,10 @@ fn ensure_group_path_at<'a>(
 }
 
 fn group_segment_label(segment: &GroupSegment) -> String {
-    format_metadata_value(&segment.value)
+    segment
+        .label
+        .clone()
+        .unwrap_or_else(|| format_metadata_value(&segment.value))
 }
 
 fn refresh_group_tab_counts(nodes: &mut [RenderNode]) -> usize {
@@ -3272,6 +3275,7 @@ mod tests {
         let group_path = GroupPath(vec![GroupSegment {
             key: "zellij.pane.cwd".to_owned(),
             value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
+            label: None,
         }]);
         let tab_one = TabCard {
             tab_id: 1,
@@ -3345,10 +3349,12 @@ mod tests {
                 GroupSegment {
                     key: "project".to_owned(),
                     value: MetadataValue::Text("project-a".to_owned()),
+                    label: None,
                 },
                 GroupSegment {
                     key: "worktree".to_owned(),
                     value: MetadataValue::Text(worktree.to_owned()),
+                    label: None,
                 },
             ]);
             let tab = TabCard {
@@ -4161,6 +4167,7 @@ mod tests {
         let group_path = GroupPath(vec![GroupSegment {
             key: "zellij.pane.cwd".to_owned(),
             value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
+            label: None,
         }]);
         model.resolved_metadata = vec![ResolvedMetadata {
             target: MetadataTarget::Group(group_path),
@@ -4516,6 +4523,7 @@ mod tests {
         let group_path = GroupPath(vec![GroupSegment {
             key: "zellij.pane.cwd".to_owned(),
             value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
+            label: None,
         }]);
         model.resolved_metadata = vec![ResolvedMetadata {
             target: MetadataTarget::Group(group_path),
