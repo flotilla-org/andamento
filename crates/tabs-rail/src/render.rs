@@ -1458,10 +1458,15 @@ fn cell_height(card: &RenderCard, sizing: RailSizingPreset, joined_cell: bool) -
 }
 
 fn format_status(status: &TabStatusSummary) -> String {
-    match &status.detail {
-        Some(detail) if !detail.is_empty() => format!("{}: {}", status.title, detail),
-        _ => status.title.clone(),
+    join_template_fields(&status_template_fields(status), true)
+}
+
+fn status_template_fields(status: &TabStatusSummary) -> Vec<TemplateField> {
+    let mut fields = vec![TemplateField::Required(status.title.clone())];
+    if let Some(detail) = status.detail.as_ref().filter(|detail| !detail.is_empty()) {
+        fields.push(TemplateField::Priority(format!(": {detail}")));
     }
+    fields
 }
 
 fn tab_title(card: &RenderCard) -> String {
@@ -2144,6 +2149,25 @@ mod tests {
         assert_eq!(
             tab_title_template_fields(&card),
             vec![TemplateField::Required("agent".to_owned())]
+        );
+    }
+
+    #[test]
+    fn status_template_fields_use_title_and_detail() {
+        let status = TabStatusSummary {
+            priority: Priority::Waiting,
+            title: "waiting".to_owned(),
+            detail: Some("input".to_owned()),
+            icon: None,
+            source_pane: PaneTarget::Terminal(9),
+        };
+
+        assert_eq!(
+            status_template_fields(&status),
+            vec![
+                TemplateField::Required("waiting".to_owned()),
+                TemplateField::Priority(": input".to_owned()),
+            ]
         );
     }
 
