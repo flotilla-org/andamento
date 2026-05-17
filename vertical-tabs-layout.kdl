@@ -1,0 +1,29 @@
+layout {
+    default_tab_template {
+        pane split_direction="vertical" {
+            pane size=20 borderless=true {
+                plugin location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/vertical-tabs.wasm"
+            }
+            children
+        }
+        pane size=2 borderless=true {
+            plugin location="status-bar"
+        }
+    }
+
+    new_tab_template {
+        pane split_direction="vertical" {
+            pane size=20 borderless=true {
+                plugin location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/vertical-tabs.wasm"
+            }
+            pane
+        }
+        pane size=2 borderless=true {
+            plugin location="status-bar"
+        }
+    }
+
+    tab {
+        pane
+    }
+}

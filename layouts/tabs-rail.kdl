@@ -1,0 +1,45 @@
+plugins {
+    tabs-controller location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-controller.wasm" {
+        rail_structure "joined-cells"
+        rail_sizing "active-large"
+    }
+    tabs-rail location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-rail.wasm" {
+        controller_plugin_url "tabs-controller"
+        config_plugin_url "tabs-rail-config"
+    }
+    tabs-rail-config location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-rail-config.wasm"
+}
+
+load_plugins {
+    tabs-controller
+}
+
+layout {
+    default_tab_template {
+        pane split_direction="vertical" {
+            pane size=28 borderless=true {
+                plugin location="tabs-rail"
+            }
+            children
+        }
+        pane size=2 borderless=true {
+            plugin location="status-bar"
+        }
+    }
+
+    new_tab_template {
+        pane split_direction="vertical" {
+            pane size=28 borderless=true {
+                plugin location="tabs-rail"
+            }
+            pane
+        }
+        pane size=2 borderless=true {
+            plugin location="status-bar"
+        }
+    }
+
+    tab name="main" {
+        pane
+    }
+}

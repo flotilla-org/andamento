@@ -1,0 +1,11 @@
+layout {
+    pane size=1 borderless=true {
+        plugin location="zellij:tab-bar"
+    }
+    pane borderless=true {
+        plugin location="file:/Users/robert/dev/zellij-scratch/probe-plugin/target/wasm32-wasip1/debug/probe-plugin.wasm"
+    }
+    pane size=1 borderless=true {
+        plugin location="zellij:status-bar"
+    }
+}

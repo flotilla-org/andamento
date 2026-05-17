@@ -1,0 +1,1654 @@
+use std::collections::HashMap;
+
+use ansi_term::{Color, Style};
+use tabs_shared::{
+    ControllerViewModel, Priority, RailConfig, RailRow, RailSizingPreset, RailStructure,
+    StatusIcon, TabCard, TabStatusSummary,
+};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use zellij_tile::prelude::{PaletteColor, SizeInPixels, Styling};
+
+const ACTIVE_CELL_HEIGHT: usize = 5;
+const COMPACT_CELL_HEIGHT: usize = 2;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalTab {
+    pub tab_id: u64,
+    pub position: usize,
+    pub name: String,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitAction {
+    SwitchTab,
+    TogglePin,
+    OpenConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HitRegion {
+    pub row_start: usize,
+    pub row_end: usize,
+    pub col_start: usize,
+    pub col_end: usize,
+    pub tab_id: u64,
+    pub tab_position: usize,
+    pub action: HitAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedRail {
+    pub lines: Vec<String>,
+    pub hit_regions: Vec<HitRegion>,
+    pub visible_cards: Vec<VisibleCard>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleCard {
+    pub tab_id: u64,
+    pub tab_position: usize,
+    pub row_start: usize,
+    pub status_row: Option<usize>,
+    pub status_icon_rect: Option<VisibleIconRect>,
+    pub status_priority: Option<Priority>,
+    pub status_icon: Option<StatusIcon>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisibleIconRect {
+    pub x: usize,
+    pub y: usize,
+    pub columns: usize,
+    pub rows: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RenderTheme {
+    pub active_border: PaletteColor,
+    pub inactive_border: PaletteColor,
+    pub body_foreground: PaletteColor,
+}
+
+impl From<Styling> for RenderTheme {
+    fn from(colors: Styling) -> Self {
+        Self {
+            // Match the normal tab bar's selected/unselected foreground choices,
+            // but do not paint a background over the terminal default.
+            active_border: colors.ribbon_selected.background,
+            inactive_border: colors.ribbon_unselected.background,
+            body_foreground: colors.text_unselected.base,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderCard {
+    tab_id: u64,
+    position: usize,
+    name: String,
+    active: bool,
+    pinned: bool,
+    status: Option<TabStatusSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RenderRow {
+    GroupHeader {
+        label: String,
+        full_label: String,
+        tab_count: usize,
+    },
+    Card {
+        card: RenderCard,
+        indent: usize,
+    },
+}
+
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub fn render_lines(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    rows: usize,
+    cols: usize,
+    controller_available: bool,
+) -> RenderedRail {
+    render_lines_with_theme(model, tabs, rows, cols, controller_available, None)
+}
+
+pub fn render_lines_with_theme(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    rows: usize,
+    cols: usize,
+    controller_available: bool,
+    theme: Option<RenderTheme>,
+) -> RenderedRail {
+    render_lines_with_theme_and_cell_size(
+        model,
+        tabs,
+        rows,
+        cols,
+        controller_available,
+        theme,
+        None,
+    )
+}
+
+pub fn render_lines_with_theme_and_cell_size(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    rows: usize,
+    cols: usize,
+    controller_available: bool,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+) -> RenderedRail {
+    if rows == 0 || cols == 0 {
+        return RenderedRail {
+            lines: vec![],
+            hit_regions: vec![],
+            visible_cards: vec![],
+        };
+    }
+
+    let footer_rows = 1.min(rows);
+    let card_rows_available = rows.saturating_sub(footer_rows);
+    let mut lines = vec![blank(cols); rows];
+    let mut hit_regions = vec![];
+    let mut visible_cards = vec![];
+    let cards = cards_to_render(model, tabs);
+    let config = model.map(|model| model.config).unwrap_or_default();
+    if cards.is_empty() {
+        lines[0] = pad_to_width("tabs: waiting for tab state", cols);
+    } else {
+        if let Some(rows_to_render) = rows_to_render(model, tabs) {
+            render_projection_rows(
+                &mut lines,
+                &mut hit_regions,
+                &mut visible_cards,
+                &rows_to_render,
+                card_rows_available,
+                cols,
+                controller_available,
+                config,
+                theme,
+                terminal_cell_size,
+            );
+        } else {
+            render_cards(
+                &mut lines,
+                &mut hit_regions,
+                &mut visible_cards,
+                &cards,
+                card_rows_available,
+                cols,
+                controller_available,
+                config,
+                theme,
+                terminal_cell_size,
+            );
+        }
+    }
+
+    if controller_available {
+        lines[rows - 1] = settings_line(cols, theme);
+        hit_regions.push(HitRegion {
+            row_start: rows - 1,
+            row_end: rows - 1,
+            col_start: 0,
+            col_end: cols.saturating_sub(1),
+            tab_id: 0,
+            tab_position: 0,
+            action: HitAction::OpenConfig,
+        });
+    } else {
+        lines[rows - 1] = style_body_text(
+            pad_to_width(&truncate_to_width("controller unavailable", cols), cols),
+            theme,
+        );
+    }
+
+    RenderedRail {
+        lines,
+        hit_regions,
+        visible_cards,
+    }
+}
+
+fn style_body_text(line: String, theme: Option<RenderTheme>) -> String {
+    let Some(theme) = theme else {
+        return line;
+    };
+    foreground_style(theme.body_foreground)
+        .paint(line)
+        .to_string()
+}
+
+fn style_border_text(line: String, active: bool, theme: Option<RenderTheme>) -> String {
+    let Some(theme) = theme else {
+        return line;
+    };
+    foreground_style(if active {
+        theme.active_border
+    } else {
+        theme.inactive_border
+    })
+    .bold()
+    .paint(line)
+    .to_string()
+}
+
+fn style_title_text(line: String, active: bool, theme: Option<RenderTheme>) -> String {
+    let Some(theme) = theme else {
+        return line;
+    };
+    foreground_style(if active {
+        theme.active_border
+    } else {
+        theme.inactive_border
+    })
+    .bold()
+    .paint(line)
+    .to_string()
+}
+
+fn foreground_style(color: PaletteColor) -> Style {
+    Style::new().fg(match color {
+        PaletteColor::Rgb((r, g, b)) => Color::RGB(r, g, b),
+        PaletteColor::EightBit(color) => Color::Fixed(color),
+    })
+}
+
+pub fn hit_at(hit_regions: &[HitRegion], row: usize, col: usize) -> Option<HitRegion> {
+    hit_regions.iter().rev().copied().find(|region| {
+        row >= region.row_start
+            && row <= region.row_end
+            && col >= region.col_start
+            && col <= region.col_end
+    })
+}
+
+fn render_cards(
+    lines: &mut [String],
+    hit_regions: &mut Vec<HitRegion>,
+    visible_cards: &mut Vec<VisibleCard>,
+    cards: &[RenderCard],
+    available_rows: usize,
+    cols: usize,
+    controller_available: bool,
+    config: RailConfig,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+) {
+    match config.structure {
+        RailStructure::JoinedCells => render_joined_cells(
+            lines,
+            hit_regions,
+            visible_cards,
+            cards,
+            available_rows,
+            cols,
+            controller_available,
+            config.sizing,
+            theme,
+            terminal_cell_size,
+        ),
+        RailStructure::SplitAroundActive => render_split_around_active(
+            lines,
+            hit_regions,
+            visible_cards,
+            cards,
+            available_rows,
+            cols,
+            controller_available,
+            config.sizing,
+            theme,
+            terminal_cell_size,
+        ),
+        RailStructure::BoxPerTab => render_box_per_tab(
+            lines,
+            hit_regions,
+            visible_cards,
+            cards,
+            available_rows,
+            cols,
+            controller_available,
+            config.sizing,
+            theme,
+            terminal_cell_size,
+        ),
+    }
+}
+
+fn render_projection_rows(
+    lines: &mut [String],
+    hit_regions: &mut Vec<HitRegion>,
+    visible_cards: &mut Vec<VisibleCard>,
+    rows: &[RenderRow],
+    available_rows: usize,
+    cols: usize,
+    controller_available: bool,
+    config: RailConfig,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+) {
+    if rows.is_empty() || available_rows == 0 {
+        return;
+    }
+    let row_height = |row: &RenderRow| match row {
+        RenderRow::GroupHeader { .. } => 1,
+        RenderRow::Card { card, .. } => cell_height(card, config.sizing, false).max(2),
+    };
+    let visible = visible_projection_rows(rows, available_rows, row_height);
+    let mut output_row = 0;
+    for (row_index, height) in visible {
+        match &rows[row_index] {
+            RenderRow::GroupHeader {
+                label, tab_count, ..
+            } => {
+                if let Some(line) = lines.get_mut(output_row) {
+                    *line = group_header_line(label, *tab_count, cols, theme);
+                }
+                output_row += height;
+            }
+            RenderRow::Card { card, indent } => {
+                output_row = render_indented_box(
+                    lines,
+                    hit_regions,
+                    visible_cards,
+                    card,
+                    output_row,
+                    height,
+                    cols,
+                    *indent,
+                    controller_available,
+                    theme,
+                    terminal_cell_size,
+                );
+            }
+        }
+    }
+}
+
+fn visible_projection_rows<F>(
+    rows: &[RenderRow],
+    available_rows: usize,
+    row_height: F,
+) -> Vec<(usize, usize)>
+where
+    F: Fn(&RenderRow) -> usize,
+{
+    let active_index = rows
+        .iter()
+        .position(|row| matches!(row, RenderRow::Card { card, .. } if card.active))
+        .unwrap_or(0);
+    let active_height = row_height(&rows[active_index]);
+    if active_height > available_rows {
+        return vec![];
+    }
+    let mut selected = vec![(active_index, active_height)];
+    let mut used_rows = active_height;
+    let mut before = active_index;
+    let mut after = active_index + 1;
+    loop {
+        let before_height = before
+            .checked_sub(1)
+            .map(|index| (index, row_height(&rows[index])));
+        let after_height = (after < rows.len()).then(|| (after, row_height(&rows[after])));
+        match (before_height, after_height) {
+            (Some((index, height)), _) if used_rows + height <= available_rows => {
+                selected.insert(0, (index, height));
+                used_rows += height;
+                before = index;
+            }
+            (_, Some((index, height))) if used_rows + height <= available_rows => {
+                selected.push((index, height));
+                used_rows += height;
+                after = index + 1;
+            }
+            _ => break,
+        }
+    }
+    selected
+}
+
+fn render_indented_box(
+    lines: &mut [String],
+    hit_regions: &mut Vec<HitRegion>,
+    visible_cards: &mut Vec<VisibleCard>,
+    card: &RenderCard,
+    row: usize,
+    box_height: usize,
+    cols: usize,
+    indent: usize,
+    controller_available: bool,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+) -> usize {
+    let indent = indent.min(cols.saturating_sub(1));
+    let inner_cols = cols.saturating_sub(indent);
+    let mut local_lines = vec![blank(inner_cols); box_height];
+    let mut local_hits = vec![];
+    let mut local_cards = vec![];
+    render_standalone_box(
+        &mut local_lines,
+        &mut local_hits,
+        &mut local_cards,
+        card,
+        0,
+        box_height,
+        inner_cols,
+        controller_available,
+        theme,
+        terminal_cell_size,
+    );
+    for (line_offset, local_line) in local_lines.into_iter().enumerate() {
+        if let Some(line) = lines.get_mut(row + line_offset) {
+            *line = format!("{}{}", " ".repeat(indent), local_line);
+        }
+    }
+    hit_regions.extend(local_hits.into_iter().map(|mut hit| {
+        hit.row_start += row;
+        hit.row_end += row;
+        hit.col_start += indent;
+        hit.col_end += indent;
+        hit
+    }));
+    visible_cards.extend(local_cards.into_iter().map(|mut visible_card| {
+        visible_card.row_start += row;
+        visible_card.status_row = visible_card.status_row.map(|status_row| status_row + row);
+        if let Some(rect) = visible_card.status_icon_rect.as_mut() {
+            rect.x += indent;
+            rect.y += row;
+        }
+        visible_card
+    }));
+    row + box_height
+}
+
+fn render_joined_cells(
+    lines: &mut [String],
+    hit_regions: &mut Vec<HitRegion>,
+    visible_cards: &mut Vec<VisibleCard>,
+    cards: &[RenderCard],
+    available_rows: usize,
+    cols: usize,
+    controller_available: bool,
+    sizing: RailSizingPreset,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+) {
+    let visible = visible_cells(cards, available_rows, sizing);
+    for (visible_index, (card_index, cell_height)) in visible.iter().copied().enumerate() {
+        let card = &cards[card_index];
+        let row = visible
+            .iter()
+            .take(visible_index)
+            .map(|(_, height)| *height)
+            .sum();
+        lines[row] = title_border_line(
+            &tab_title(card),
+            cols,
+            visible_index == 0,
+            card.active,
+            theme,
+        );
+        render_card_body(
+            lines,
+            hit_regions,
+            visible_cards,
+            card,
+            row,
+            cell_height,
+            cols,
+            controller_available,
+            theme,
+            terminal_cell_size,
+        );
+    }
+    if let Some(last_line) = lines.get_mut(visible.iter().map(|(_, height)| *height).sum::<usize>())
+    {
+        let bottom_border_active = visible
+            .last()
+            .map(|(card_index, _)| cards[*card_index].active)
+            .unwrap_or(false);
+        *last_line = bottom_border_line(cols, bottom_border_active, theme);
+    }
+}
+
+fn render_split_around_active(
+    lines: &mut [String],
+    hit_regions: &mut Vec<HitRegion>,
+    visible_cards: &mut Vec<VisibleCard>,
+    cards: &[RenderCard],
+    available_rows: usize,
+    cols: usize,
+    controller_available: bool,
+    sizing: RailSizingPreset,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+) {
+    let Some(active_index) = cards.iter().position(|card| card.active) else {
+        return render_joined_cells(
+            lines,
+            hit_regions,
+            visible_cards,
+            cards,
+            available_rows,
+            cols,
+            controller_available,
+            sizing,
+            theme,
+            terminal_cell_size,
+        );
+    };
+    let visible = visible_cells(cards, available_rows, sizing);
+    let mut row = 0;
+    for (visible_index, (card_index, cell_height)) in visible.iter().copied().enumerate() {
+        let card = &cards[card_index];
+        if row >= lines.len() {
+            break;
+        }
+        if card_index == active_index {
+            row = render_standalone_box(
+                lines,
+                hit_regions,
+                visible_cards,
+                card,
+                row,
+                cell_height + 1,
+                cols,
+                controller_available,
+                theme,
+                terminal_cell_size,
+            );
+            continue;
+        }
+
+        let first_in_run = visible_index == 0
+            || visible
+                .get(visible_index.saturating_sub(1))
+                .map(|(previous_card_index, _)| *previous_card_index == active_index)
+                .unwrap_or(false);
+        lines[row] = title_border_line(&tab_title(card), cols, first_in_run, false, theme);
+        render_card_body(
+            lines,
+            hit_regions,
+            visible_cards,
+            card,
+            row,
+            cell_height,
+            cols,
+            controller_available,
+            theme,
+            terminal_cell_size,
+        );
+        row += cell_height;
+        let run_ends = visible
+            .get(visible_index + 1)
+            .map(|(next_card_index, _)| *next_card_index == active_index)
+            .unwrap_or(true);
+        if run_ends {
+            if let Some(last_line) = lines.get_mut(row) {
+                *last_line = bottom_border_line(cols, false, theme);
+            }
+            row += 1;
+        }
+    }
+}
+
+fn render_box_per_tab(
+    lines: &mut [String],
+    hit_regions: &mut Vec<HitRegion>,
+    visible_cards: &mut Vec<VisibleCard>,
+    cards: &[RenderCard],
+    available_rows: usize,
+    cols: usize,
+    controller_available: bool,
+    sizing: RailSizingPreset,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+) {
+    let visible = visible_boxes(cards, available_rows, sizing);
+    let mut row = 0;
+    for (card_index, box_height) in visible {
+        row = render_standalone_box(
+            lines,
+            hit_regions,
+            visible_cards,
+            &cards[card_index],
+            row,
+            box_height,
+            cols,
+            controller_available,
+            theme,
+            terminal_cell_size,
+        );
+    }
+}
+
+fn render_standalone_box(
+    lines: &mut [String],
+    hit_regions: &mut Vec<HitRegion>,
+    visible_cards: &mut Vec<VisibleCard>,
+    card: &RenderCard,
+    row: usize,
+    box_height: usize,
+    cols: usize,
+    controller_available: bool,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+) -> usize {
+    if row >= lines.len() || box_height < 2 {
+        return row;
+    }
+    lines[row] = title_border_line(&tab_title(card), cols, true, card.active, theme);
+    let body_rows = box_height.saturating_sub(2);
+    let body_lines = body_lines(card, row, body_rows, cols, terminal_cell_size);
+    for body_index in 0..body_rows {
+        if let Some(line) = lines.get_mut(row + 1 + body_index) {
+            *line = body_line(
+                body_lines
+                    .get(body_index)
+                    .map(String::as_str)
+                    .unwrap_or_default(),
+                cols,
+                card.active,
+                theme,
+            );
+        }
+    }
+    if let Some(line) = lines.get_mut(row + box_height - 1) {
+        *line = bottom_border_line(cols, card.active, theme);
+    }
+    add_card_metadata(
+        hit_regions,
+        visible_cards,
+        card,
+        row,
+        box_height,
+        cols,
+        controller_available,
+        body_rows,
+        terminal_cell_size,
+    );
+    row + box_height
+}
+
+fn render_card_body(
+    lines: &mut [String],
+    hit_regions: &mut Vec<HitRegion>,
+    visible_cards: &mut Vec<VisibleCard>,
+    card: &RenderCard,
+    row: usize,
+    cell_height: usize,
+    cols: usize,
+    controller_available: bool,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+) {
+    let body_rows = cell_height.saturating_sub(1);
+    let body_lines = body_lines(card, row, body_rows, cols, terminal_cell_size);
+    for body_index in 0..body_rows {
+        if let Some(line) = lines.get_mut(row + 1 + body_index) {
+            *line = body_line(
+                body_lines
+                    .get(body_index)
+                    .map(String::as_str)
+                    .unwrap_or_default(),
+                cols,
+                card.active,
+                theme,
+            );
+        }
+    }
+    add_card_metadata(
+        hit_regions,
+        visible_cards,
+        card,
+        row,
+        cell_height,
+        cols,
+        controller_available,
+        body_rows,
+        terminal_cell_size,
+    );
+}
+
+fn add_card_metadata(
+    hit_regions: &mut Vec<HitRegion>,
+    visible_cards: &mut Vec<VisibleCard>,
+    card: &RenderCard,
+    row: usize,
+    height: usize,
+    cols: usize,
+    controller_available: bool,
+    body_rows: usize,
+    terminal_cell_size: Option<SizeInPixels>,
+) {
+    hit_regions.push(HitRegion {
+        row_start: row,
+        row_end: row + height.saturating_sub(1),
+        col_start: 0,
+        col_end: cols.saturating_sub(1),
+        tab_id: card.tab_id,
+        tab_position: card.position,
+        action: HitAction::SwitchTab,
+    });
+    if controller_available {
+        hit_regions.push(HitRegion {
+            row_start: row + 1,
+            row_end: row + 1,
+            col_start: 2,
+            col_end: 7.min(cols.saturating_sub(1)),
+            tab_id: card.tab_id,
+            tab_position: card.position,
+            action: HitAction::TogglePin,
+        });
+    }
+
+    let status_row = card
+        .status
+        .as_ref()
+        .and_then(|_| (body_rows > 0).then_some(row + 1));
+    let status_icon_rect = card
+        .status
+        .as_ref()
+        .and_then(|status| status_icon_rect(status, row, body_rows, cols, terminal_cell_size));
+    visible_cards.push(VisibleCard {
+        tab_id: card.tab_id,
+        tab_position: card.position,
+        row_start: row,
+        status_row,
+        status_icon_rect,
+        status_priority: card.status.as_ref().map(|status| status.priority),
+        status_icon: card.status.as_ref().and_then(|status| status.icon.clone()),
+    });
+}
+
+fn cards_to_render(model: Option<&ControllerViewModel>, tabs: &[LocalTab]) -> Vec<RenderCard> {
+    let local_by_id: HashMap<u64, &LocalTab> = tabs.iter().map(|tab| (tab.tab_id, tab)).collect();
+    if let Some(model) = model {
+        model
+            .tabs
+            .iter()
+            .map(|card| render_card_from_model(card, &local_by_id))
+            .collect()
+    } else {
+        let mut tabs = tabs.to_vec();
+        tabs.sort_by_key(|tab| tab.position);
+        tabs.into_iter()
+            .map(|tab| RenderCard {
+                tab_id: tab.tab_id,
+                position: tab.position,
+                name: tab.name,
+                active: tab.active,
+                pinned: false,
+                status: None,
+            })
+            .collect()
+    }
+}
+
+fn rows_to_render(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+) -> Option<Vec<RenderRow>> {
+    let model = model?;
+    if model.rows.is_empty() {
+        return None;
+    }
+    let local_by_id: HashMap<u64, &LocalTab> = tabs.iter().map(|tab| (tab.tab_id, tab)).collect();
+    Some(
+        model
+            .rows
+            .iter()
+            .map(|row| match row {
+                RailRow::GroupHeader {
+                    label,
+                    full_label,
+                    tab_count,
+                    ..
+                } => RenderRow::GroupHeader {
+                    label: label.clone(),
+                    full_label: full_label.clone(),
+                    tab_count: *tab_count,
+                },
+                RailRow::Tab { tab, indent } => RenderRow::Card {
+                    card: render_card_from_model(tab, &local_by_id),
+                    indent: *indent,
+                },
+            })
+            .collect(),
+    )
+}
+
+fn render_card_from_model(card: &TabCard, local_by_id: &HashMap<u64, &LocalTab>) -> RenderCard {
+    let local = local_by_id.get(&card.tab_id).copied();
+    RenderCard {
+        tab_id: card.tab_id,
+        position: local.map(|tab| tab.position).unwrap_or(card.position),
+        name: local
+            .map(|tab| tab.name.clone())
+            .unwrap_or_else(|| card.name.clone()),
+        active: card.active,
+        pinned: card.pinned,
+        status: card.status.clone(),
+    }
+}
+
+fn visible_cells(
+    cards: &[RenderCard],
+    available_rows: usize,
+    sizing: RailSizingPreset,
+) -> Vec<(usize, usize)> {
+    if cards.is_empty() || available_rows < COMPACT_CELL_HEIGHT + 1 {
+        return vec![];
+    }
+    let active_index = cards.iter().position(|card| card.active).unwrap_or(0);
+    let cell_height = |card: &RenderCard| cell_height(card, sizing, true);
+    let all_rows = cards.iter().map(cell_height).sum::<usize>() + 1;
+    if all_rows <= available_rows {
+        return cards
+            .iter()
+            .enumerate()
+            .map(|(index, card)| (index, cell_height(card)))
+            .collect();
+    }
+
+    let mut selected = vec![(active_index, cell_height(&cards[active_index]))];
+    let mut used_rows = selected[0].1 + 1;
+    let mut before = active_index;
+    let mut after = active_index + 1;
+    loop {
+        let before_height = before
+            .checked_sub(1)
+            .map(|index| (index, cell_height(&cards[index])));
+        let after_height = (after < cards.len()).then(|| (after, cell_height(&cards[after])));
+        match (before_height, after_height) {
+            (Some((index, height)), _) if used_rows + height <= available_rows => {
+                selected.insert(0, (index, height));
+                used_rows += height;
+                before = index;
+            }
+            (_, Some((index, height))) if used_rows + height <= available_rows => {
+                selected.push((index, height));
+                used_rows += height;
+                after = index + 1;
+            }
+            _ => break,
+        }
+    }
+    selected
+}
+
+fn visible_boxes(
+    cards: &[RenderCard],
+    available_rows: usize,
+    sizing: RailSizingPreset,
+) -> Vec<(usize, usize)> {
+    if cards.is_empty() || available_rows < COMPACT_CELL_HEIGHT + 1 {
+        return vec![];
+    }
+    let active_index = cards.iter().position(|card| card.active).unwrap_or(0);
+    let box_height = |card: &RenderCard| cell_height(card, sizing, false).max(2);
+    let mut selected = vec![(active_index, box_height(&cards[active_index]))];
+    let mut used_rows = selected[0].1;
+    let mut before = active_index;
+    let mut after = active_index + 1;
+    loop {
+        let before_height = before
+            .checked_sub(1)
+            .map(|index| (index, box_height(&cards[index])));
+        let after_height = (after < cards.len()).then(|| (after, box_height(&cards[after])));
+        match (before_height, after_height) {
+            (Some((index, height)), _) if used_rows + height <= available_rows => {
+                selected.insert(0, (index, height));
+                used_rows += height;
+                before = index;
+            }
+            (_, Some((index, height))) if used_rows + height <= available_rows => {
+                selected.push((index, height));
+                used_rows += height;
+                after = index + 1;
+            }
+            _ => break,
+        }
+    }
+    selected
+}
+
+fn cell_height(card: &RenderCard, sizing: RailSizingPreset, joined_cell: bool) -> usize {
+    let compact = if joined_cell {
+        COMPACT_CELL_HEIGHT
+    } else {
+        COMPACT_CELL_HEIGHT + 1
+    };
+    match sizing {
+        RailSizingPreset::Compact => compact,
+        RailSizingPreset::Large => ACTIVE_CELL_HEIGHT,
+        RailSizingPreset::ActiveLarge if card.active => ACTIVE_CELL_HEIGHT,
+        RailSizingPreset::PinnedLarge if card.active || card.pinned => ACTIVE_CELL_HEIGHT,
+        RailSizingPreset::ActiveLarge | RailSizingPreset::PinnedLarge => compact,
+    }
+}
+
+fn format_status(status: &TabStatusSummary) -> String {
+    match &status.detail {
+        Some(detail) if !detail.is_empty() => format!("{}: {}", status.title, detail),
+        _ => status.title.clone(),
+    }
+}
+
+fn tab_title(card: &RenderCard) -> String {
+    if card.name.is_empty() {
+        format!("Tab {}", card.position + 1)
+    } else {
+        card.name.clone()
+    }
+}
+
+fn body_lines(
+    card: &RenderCard,
+    row: usize,
+    body_rows: usize,
+    cols: usize,
+    terminal_cell_size: Option<SizeInPixels>,
+) -> Vec<String> {
+    let mut lines = vec![String::new(); body_rows];
+    let Some(status) = &card.status else {
+        return lines;
+    };
+    let inner_width = cols.saturating_sub(2);
+    if body_rows == 0 || inner_width == 0 {
+        return lines;
+    }
+    let icon_reserve = status_icon_rect(status, row, body_rows, cols, terminal_cell_size)
+        .map(|rect| rect.columns + 1)
+        .unwrap_or(0);
+    let text_width = inner_width.saturating_sub(icon_reserve);
+    let text_lines = wrap_to_width(&format_status(status), text_width, body_rows);
+    for (line, text_line) in lines.iter_mut().zip(text_lines) {
+        if icon_reserve > 0 {
+            line.push_str(&" ".repeat(icon_reserve));
+        }
+        line.push_str(&text_line);
+    }
+    lines
+}
+
+fn status_icon_rect(
+    status: &TabStatusSummary,
+    card_row: usize,
+    body_rows: usize,
+    cols: usize,
+    terminal_cell_size: Option<SizeInPixels>,
+) -> Option<VisibleIconRect> {
+    let icon_columns = square_columns_for_rows(body_rows, terminal_cell_size);
+    if body_rows == 0
+        || cols.saturating_sub(2) < icon_columns
+        || !status.icon.as_ref().is_some_and(status_icon_is_renderable)
+    {
+        return None;
+    }
+    Some(VisibleIconRect {
+        x: 1,
+        y: card_row + 1,
+        columns: icon_columns,
+        rows: body_rows,
+    })
+}
+
+fn square_columns_for_rows(rows: usize, terminal_cell_size: Option<SizeInPixels>) -> usize {
+    let Some(cell_size) = terminal_cell_size else {
+        return rows;
+    };
+    if cell_size.width == 0 || cell_size.height == 0 {
+        return rows;
+    }
+    (((rows as u64) * (cell_size.height as u64) + (cell_size.width as u64) - 1)
+        / (cell_size.width as u64)) as usize
+}
+
+pub fn status_icon_is_renderable(icon: &StatusIcon) -> bool {
+    matches!(icon, StatusIcon::PngFile(_))
+}
+
+fn title_border_line(
+    title: &str,
+    width: usize,
+    first_cell: bool,
+    active: bool,
+    theme: Option<RenderTheme>,
+) -> String {
+    let left = if first_cell { "┌" } else { "├" };
+    let right = if first_cell { "┐" } else { "┤" };
+    border_line(left, right, &format!(" {title} "), width, active, theme)
+}
+
+fn bottom_border_line(width: usize, active: bool, theme: Option<RenderTheme>) -> String {
+    border_line("└", "┘", "", width, active, theme)
+}
+
+fn border_line(
+    left: &str,
+    right: &str,
+    label: &str,
+    width: usize,
+    active: bool,
+    theme: Option<RenderTheme>,
+) -> String {
+    match width {
+        0 => String::new(),
+        1 => style_border_text(left.to_owned(), active, theme),
+        _ => {
+            let inner_width = width - 2;
+            let label = truncate_to_width(label, inner_width);
+            let fill_width = inner_width.saturating_sub(label.width());
+            format!(
+                "{}{}{}{}",
+                style_border_text(left.to_owned(), active, theme),
+                style_title_text(label, active, theme),
+                style_border_text("─".repeat(fill_width), active, theme),
+                style_border_text(right.to_owned(), active, theme)
+            )
+        }
+    }
+}
+
+fn body_line(text: &str, width: usize, active: bool, theme: Option<RenderTheme>) -> String {
+    match width {
+        0 => String::new(),
+        1 => style_border_text("│".to_owned(), active, theme),
+        _ => {
+            let inner_width = width - 2;
+            let text = truncate_to_width(text, inner_width);
+            format!(
+                "{}{}{}",
+                style_border_text("│".to_owned(), active, theme),
+                style_body_text(pad_to_width(&text, inner_width), theme),
+                style_border_text("│".to_owned(), active, theme)
+            )
+        }
+    }
+}
+
+fn settings_line(width: usize, theme: Option<RenderTheme>) -> String {
+    style_body_text(pad_to_width("settings", width), theme)
+}
+
+fn group_header_line(
+    label: &str,
+    tab_count: usize,
+    width: usize,
+    theme: Option<RenderTheme>,
+) -> String {
+    let count_label = format!("{label} ({tab_count})");
+    let text = if count_label.width() <= width {
+        count_label
+    } else {
+        label.to_owned()
+    };
+    style_body_text(pad_to_width(&truncate_to_width(&text, width), width), theme)
+}
+
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    if text.width() <= max_width {
+        return text.to_owned();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width <= 3 {
+        return ".".repeat(max_width);
+    }
+
+    let mut current_width = 0;
+    let mut out = String::new();
+    for ch in text.chars() {
+        let ch_width = ch.width().unwrap_or(0);
+        if current_width + ch_width + 3 > max_width {
+            break;
+        }
+        out.push(ch);
+        current_width += ch_width;
+    }
+    out.push_str("...");
+    out
+}
+
+fn pad_to_width(text: &str, width: usize) -> String {
+    let text_width = text.width();
+    if text_width >= width {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len() + (width - text_width));
+    out.push_str(text);
+    out.push_str(&" ".repeat(width - text_width));
+    out
+}
+
+fn wrap_to_width(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+    let mut lines = Vec::with_capacity(max_lines);
+    if max_lines == 0 {
+        return lines;
+    }
+    if width == 0 {
+        lines.resize(max_lines, String::new());
+        return lines;
+    }
+
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let word = if word.width() > width {
+            truncate_to_width(word, width)
+        } else {
+            word.to_owned()
+        };
+        let separator_width = usize::from(!current.is_empty());
+        if !current.is_empty() && current.width() + separator_width + word.width() > width {
+            lines.push(current);
+            current = String::new();
+            if lines.len() == max_lines {
+                return lines;
+            }
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(&word);
+    }
+    if !current.is_empty() && lines.len() < max_lines {
+        lines.push(current);
+    }
+    lines.resize(max_lines, String::new());
+    lines
+}
+
+fn blank(cols: usize) -> String {
+    " ".repeat(cols)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tabs_shared::{
+        PaneTarget, RailConfig, RailGroupingMode, RailRow, RailSizingPreset, RailStructure,
+        SortMode, StatusIcon,
+    };
+
+    fn local_tab(tab_id: u64, position: usize, active: bool) -> LocalTab {
+        LocalTab {
+            tab_id,
+            position,
+            name: format!("tab-{tab_id}"),
+            active,
+        }
+    }
+
+    fn model() -> ControllerViewModel {
+        ControllerViewModel {
+            sort_mode: SortMode::PinnedFirst,
+            config: RailConfig::default(),
+            tabs: vec![
+                TabCard {
+                    tab_id: 2,
+                    position: 1,
+                    name: "tab-2".to_owned(),
+                    active: true,
+                    pinned: true,
+                    status: Some(TabStatusSummary {
+                        priority: Priority::Waiting,
+                        title: "waiting".to_owned(),
+                        detail: Some("input".to_owned()),
+                        icon: None,
+                        source_pane: PaneTarget::Terminal(9),
+                    }),
+                },
+                TabCard {
+                    tab_id: 1,
+                    position: 0,
+                    name: "tab-1".to_owned(),
+                    active: false,
+                    pinned: false,
+                    status: None,
+                },
+            ],
+            rows: vec![],
+        }
+    }
+
+    fn grouped_model() -> ControllerViewModel {
+        let tab_one = TabCard {
+            tab_id: 1,
+            position: 0,
+            name: "server".to_owned(),
+            active: false,
+            pinned: false,
+            status: None,
+        };
+        let tab_two = TabCard {
+            tab_id: 2,
+            position: 1,
+            name: "tests".to_owned(),
+            active: true,
+            pinned: false,
+            status: None,
+        };
+        ControllerViewModel {
+            sort_mode: SortMode::Position,
+            config: RailConfig {
+                grouping: RailGroupingMode::Directory,
+                sizing: RailSizingPreset::Compact,
+                ..RailConfig::default()
+            },
+            tabs: vec![tab_one.clone(), tab_two.clone()],
+            rows: vec![
+                RailRow::GroupHeader {
+                    group_id: "cwd:/Users/robert/dev/zellij".to_owned(),
+                    label: "zellij".to_owned(),
+                    full_label: "/Users/robert/dev/zellij".to_owned(),
+                    tab_count: 2,
+                },
+                RailRow::Tab {
+                    tab: tab_one,
+                    indent: 2,
+                },
+                RailRow::Tab {
+                    tab: tab_two,
+                    indent: 2,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn grouped_rendering_draws_non_clickable_group_header() {
+        let rendered = render_lines(Some(&grouped_model()), &[], 8, 24, true);
+
+        assert!(rendered.lines[0].contains("zellij"));
+        assert_eq!(hit_at(&rendered.hit_regions, 0, 2), None);
+    }
+
+    #[test]
+    fn grouped_child_tabs_remain_clickable_and_indented() {
+        let rendered = render_lines(Some(&grouped_model()), &[], 8, 24, true);
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.starts_with("  ┌ tests") || line.starts_with("  ├ tests")));
+        assert_eq!(
+            hit_at(&rendered.hit_regions, 3, 4).map(|hit| hit.action),
+            Some(HitAction::SwitchTab)
+        );
+    }
+
+    #[test]
+    fn grouped_rendering_preserves_active_visible_card_metadata() {
+        let rendered = render_lines(Some(&grouped_model()), &[], 8, 24, true);
+
+        assert!(rendered.visible_cards.iter().any(|card| card.tab_id == 2));
+    }
+
+    #[test]
+    fn active_tab_title_is_embedded_in_border_without_marker() {
+        let rendered = render_lines(
+            Some(&model()),
+            &[local_tab(1, 0, false), local_tab(2, 1, true)],
+            4,
+            20,
+            true,
+        );
+
+        assert!(rendered.lines[0].starts_with("┌ tab-2"));
+        assert!(!rendered.lines[0].contains("*"));
+    }
+
+    #[test]
+    fn pin_state_is_not_rendered_as_text() {
+        let rendered = render_lines(
+            Some(&model()),
+            &[local_tab(1, 0, false), local_tab(2, 1, true)],
+            9,
+            24,
+            true,
+        );
+
+        assert!(!rendered.lines.iter().any(|line| line.contains("pin:")));
+    }
+
+    #[test]
+    fn themed_output_does_not_paint_background_colors() {
+        let rendered = render_lines_with_theme(
+            Some(&model()),
+            &[local_tab(1, 0, false), local_tab(2, 1, true)],
+            9,
+            24,
+            true,
+            Some(RenderTheme {
+                active_border: PaletteColor::EightBit(2),
+                inactive_border: PaletteColor::EightBit(8),
+                body_foreground: PaletteColor::EightBit(7),
+            }),
+        );
+
+        assert!(!rendered.lines.iter().any(|line| line.contains("[48;")));
+    }
+
+    #[test]
+    fn themed_output_styles_body_borders_separately_from_body_text() {
+        let rendered = render_lines_with_theme(
+            Some(&model()),
+            &[local_tab(1, 0, false), local_tab(2, 1, true)],
+            9,
+            24,
+            true,
+            Some(RenderTheme {
+                active_border: PaletteColor::EightBit(2),
+                inactive_border: PaletteColor::EightBit(8),
+                body_foreground: PaletteColor::EightBit(7),
+            }),
+        );
+
+        assert!(
+            rendered.lines[1].starts_with("\u{1b}[1;38;5;2m│"),
+            "active body side border should use active border color: {:?}",
+            rendered.lines[1]
+        );
+        assert!(
+            rendered.lines[1].contains("\u{1b}[38;5;7mwaiting: input"),
+            "active body text should use body text color: {:?}",
+            rendered.lines[1]
+        );
+    }
+
+    #[test]
+    fn status_icon_reserves_image_space_without_rendering_as_text() {
+        let mut model = model();
+        model.tabs[0].status.as_mut().unwrap().icon =
+            Some(StatusIcon::PngFile("/tmp/waiting.png".into()));
+
+        let rendered = render_lines(Some(&model), &[], 9, 24, true);
+
+        assert!(rendered.lines[1].contains("  waiting: input"));
+        assert!(!rendered.lines[1].contains("Builtin"));
+        assert!(!rendered.lines[1].contains("waiting waiting"));
+
+        let active_card = rendered
+            .visible_cards
+            .iter()
+            .find(|card| card.tab_id == 2)
+            .expect("active card should be visible");
+        assert_eq!(active_card.status_row, Some(1));
+        assert_eq!(
+            active_card.status_icon_rect,
+            Some(VisibleIconRect {
+                x: 1,
+                y: 1,
+                columns: 4,
+                rows: 4,
+            })
+        );
+        assert_eq!(
+            active_card.status_icon,
+            Some(StatusIcon::PngFile("/tmp/waiting.png".into()))
+        );
+    }
+
+    #[test]
+    fn status_text_wraps_next_to_full_height_icon() {
+        let mut model = model();
+        let status = model.tabs[0].status.as_mut().unwrap();
+        status.title = "Claude waiting".to_owned();
+        status.detail = Some("needs a fairly long approval before continuing".to_owned());
+        status.icon = Some(StatusIcon::PngFile("/tmp/waiting.png".into()));
+
+        let rendered = render_lines(Some(&model), &[], 9, 24, true);
+
+        assert!(rendered.lines[1].contains("     Claude waiting:"));
+        assert!(rendered.lines[2].contains("     needs a fairly"));
+        assert!(rendered.lines[3].contains("     long approval"));
+        assert!(rendered.lines[4].contains("     before continuing"));
+    }
+
+    #[test]
+    fn builtin_icon_key_does_not_reserve_space_until_an_asset_exists() {
+        let mut model = model();
+        model.tabs[0].status.as_mut().unwrap().icon =
+            Some(StatusIcon::Builtin("waiting".to_owned()));
+
+        let rendered = render_lines(Some(&model), &[], 9, 24, true);
+
+        assert!(rendered.lines[1].contains("waiting: input"));
+        assert!(!rendered.lines[1].contains("  waiting: input"));
+    }
+
+    #[test]
+    fn status_icon_slot_uses_terminal_cell_aspect_ratio() {
+        let mut model = model();
+        model.tabs[0].status.as_mut().unwrap().icon =
+            Some(StatusIcon::PngFile("/tmp/waiting.png".into()));
+
+        let rendered = render_lines_with_theme_and_cell_size(
+            Some(&model),
+            &[],
+            9,
+            24,
+            true,
+            None,
+            Some(SizeInPixels {
+                width: 9,
+                height: 18,
+            }),
+        );
+
+        let active_card = rendered
+            .visible_cards
+            .iter()
+            .find(|card| card.tab_id == 2)
+            .expect("active card should be visible");
+        assert_eq!(
+            active_card.status_icon_rect,
+            Some(VisibleIconRect {
+                x: 1,
+                y: 1,
+                columns: 8,
+                rows: 4,
+            })
+        );
+        assert!(rendered.lines[1].contains("         waiting"));
+    }
+
+    #[test]
+    fn themed_output_uses_active_border_on_active_cell_edges() {
+        let rendered = render_lines_with_theme(
+            Some(&model()),
+            &[local_tab(1, 0, false), local_tab(2, 1, true)],
+            9,
+            24,
+            true,
+            Some(RenderTheme {
+                active_border: PaletteColor::EightBit(2),
+                inactive_border: PaletteColor::EightBit(8),
+                body_foreground: PaletteColor::EightBit(7),
+            }),
+        );
+
+        assert!(
+            rendered.lines[0].starts_with("\u{1b}[1;38;5;2m┌"),
+            "active top border should use active border color: {:?}",
+            rendered.lines[0]
+        );
+    }
+
+    #[test]
+    fn joined_separator_below_active_uses_cell_below_color() {
+        let rendered = render_lines_with_theme(
+            Some(&model()),
+            &[local_tab(1, 0, false), local_tab(2, 1, true)],
+            9,
+            24,
+            true,
+            Some(RenderTheme {
+                active_border: PaletteColor::EightBit(2),
+                inactive_border: PaletteColor::EightBit(8),
+                body_foreground: PaletteColor::EightBit(7),
+            }),
+        );
+
+        assert!(
+            rendered.lines[5].starts_with("\u{1b}[1;38;5;8m├"),
+            "separator introducing inactive cell should use inactive border color: {:?}",
+            rendered.lines[5]
+        );
+        assert!(
+            rendered.lines[5].contains("\u{1b}[1;38;5;8m tab-1 "),
+            "title embedded in inactive separator should match inactive border color: {:?}",
+            rendered.lines[5]
+        );
+    }
+
+    #[test]
+    fn split_around_active_omits_empty_runs_and_isolates_active_box() {
+        let mut model = model();
+        model.config.structure = RailStructure::SplitAroundActive;
+
+        let rendered = render_lines(Some(&model), &[], 9, 24, true);
+
+        assert!(rendered.lines[0].starts_with("┌ tab-2"));
+        assert!(rendered.lines[5].starts_with("└"));
+        assert!(rendered.lines[6].starts_with("┌ tab-1"));
+    }
+
+    #[test]
+    fn box_per_tab_draws_a_complete_box_for_each_visible_tab() {
+        let mut model = model();
+        model.config.structure = RailStructure::BoxPerTab;
+        model.config.sizing = RailSizingPreset::Compact;
+
+        let rendered = render_lines(Some(&model), &[], 7, 24, true);
+
+        assert!(rendered.lines[0].starts_with("┌ tab-2"));
+        assert!(rendered.lines[2].starts_with("└"));
+        assert!(rendered.lines[3].starts_with("┌ tab-1"));
+        assert!(rendered.lines[5].starts_with("└"));
+    }
+
+    #[test]
+    fn rail_uses_joined_pane_border_topology() {
+        let rendered = render_lines(
+            Some(&model()),
+            &[local_tab(1, 0, false), local_tab(2, 1, true)],
+            9,
+            20,
+            true,
+        );
+
+        assert!(rendered.lines[0].starts_with("┌"));
+        assert!(rendered.lines.iter().any(|line| line.starts_with("├")));
+        assert!(rendered.lines.iter().any(|line| line.starts_with("└")));
+    }
+
+    #[test]
+    fn active_tab_gets_expanded_cell_when_space_allows() {
+        let rendered = render_lines(
+            Some(&model()),
+            &[local_tab(1, 0, false), local_tab(2, 1, true)],
+            9,
+            24,
+            true,
+        );
+
+        let active_card = rendered
+            .visible_cards
+            .iter()
+            .find(|card| card.tab_id == 2)
+            .expect("active card should be visible");
+        let next_card = rendered
+            .visible_cards
+            .iter()
+            .find(|card| card.tab_id == 1)
+            .expect("inactive card should be visible");
+
+        assert_eq!(next_card.row_start - active_card.row_start, 5);
+    }
+
+    #[test]
+    fn controller_model_active_state_drives_rendering() {
+        let rendered = render_lines(Some(&model()), &[], 9, 24, true);
+
+        let active_card = rendered
+            .visible_cards
+            .iter()
+            .find(|card| card.tab_id == 2)
+            .expect("controller active card should be visible");
+        let next_card = rendered
+            .visible_cards
+            .iter()
+            .find(|card| card.tab_id == 1)
+            .expect("inactive card should be visible");
+
+        assert_eq!(next_card.row_start - active_card.row_start, 5);
+    }
+
+    #[test]
+    fn fallback_warning_uses_final_row() {
+        let rendered = render_lines(None, &[local_tab(1, 0, true)], 3, 24, false);
+
+        assert_eq!(
+            rendered.lines.last().unwrap().trim(),
+            "controller unavailable"
+        );
+    }
+
+    #[test]
+    fn truncation_does_not_exceed_width() {
+        let rendered = render_lines(
+            None,
+            &[LocalTab {
+                tab_id: 1,
+                position: 0,
+                name: "a very very very long tab name".to_owned(),
+                active: true,
+            }],
+            2,
+            10,
+            false,
+        );
+
+        assert!(rendered.lines.iter().all(|line| line.width() <= 10));
+    }
+
+    #[test]
+    fn hit_regions_map_rows_to_actions() {
+        let rendered = render_lines(
+            Some(&model()),
+            &[local_tab(1, 0, false), local_tab(2, 1, true)],
+            4,
+            20,
+            true,
+        );
+
+        assert_eq!(
+            hit_at(&rendered.hit_regions, 1, 2).map(|hit| hit.action),
+            Some(HitAction::TogglePin)
+        );
+        assert_eq!(
+            hit_at(&rendered.hit_regions, 0, 8).map(|hit| hit.action),
+            Some(HitAction::SwitchTab)
+        );
+    }
+
+    #[test]
+    fn final_row_opens_config() {
+        let rendered = render_lines(Some(&model()), &[], 9, 24, true);
+
+        assert_eq!(
+            hit_at(&rendered.hit_regions, 8, 2).map(|hit| hit.action),
+            Some(HitAction::OpenConfig)
+        );
+        assert_eq!(rendered.lines[8].trim(), "settings");
+    }
+}

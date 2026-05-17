@@ -1,0 +1,6 @@
+layout {
+    pane split_direction="horizontal" {
+        plugin location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/vertical-tabs.wasm" width=18
+        children
+    }
+}

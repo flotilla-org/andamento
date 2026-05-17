@@ -1,0 +1,327 @@
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+pub const MSG_RENDERER_HELLO: &str = "tabs-renderer-hello";
+pub const MSG_CONFIG_EDITOR_HELLO: &str = "tabs-config-editor-hello";
+pub const MSG_REQUEST_STATE: &str = "tabs-request-state";
+pub const MSG_VIEW_MODEL: &str = "tabs-view-model";
+pub const MSG_TOGGLE_PIN: &str = "tabs-toggle-pin";
+pub const MSG_SET_SORT_MODE: &str = "tabs-set-sort-mode";
+pub const MSG_SET_RAIL_CONFIG: &str = "tabs-set-rail-config";
+pub const MSG_SET_PANE_STATUS: &str = "tabs-set-pane-status";
+pub const MSG_CLEAR_PANE_STATUS: &str = "tabs-clear-pane-status";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Priority {
+    Idle,
+    Info,
+    Success,
+    Waiting,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "kebab-case")]
+pub enum PaneTarget {
+    Terminal(u32),
+    Plugin(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetPaneStatus {
+    pub pane_id: PaneTarget,
+    pub priority: Priority,
+    pub title: String,
+    pub detail: Option<String>,
+    pub icon: Option<StatusIcon>,
+    pub timestamp_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum ExternalMessage {
+    SetPaneStatus(SetPaneStatus),
+    ClearPaneStatus { pane_id: PaneTarget },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RendererHello {
+    pub plugin_id: u32,
+    pub client_id: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabStatusSummary {
+    pub priority: Priority,
+    pub title: String,
+    pub detail: Option<String>,
+    pub icon: Option<StatusIcon>,
+    pub source_pane: PaneTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
+pub enum StatusIcon {
+    Builtin(String),
+    PngFile(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabCard {
+    pub tab_id: u64,
+    pub position: usize,
+    pub name: String,
+    pub active: bool,
+    pub pinned: bool,
+    pub status: Option<TabStatusSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SortMode {
+    Controller,
+    Position,
+    PinnedFirst,
+    LatestStatus,
+}
+
+impl Default for SortMode {
+    fn default() -> Self {
+        Self::Position
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RailStructure {
+    JoinedCells,
+    SplitAroundActive,
+    BoxPerTab,
+}
+
+impl Default for RailStructure {
+    fn default() -> Self {
+        Self::JoinedCells
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RailSizingPreset {
+    Compact,
+    Large,
+    ActiveLarge,
+    PinnedLarge,
+}
+
+impl Default for RailSizingPreset {
+    fn default() -> Self {
+        Self::ActiveLarge
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "kebab-case")]
+pub enum MetadataValue {
+    Text(String),
+    Bool(bool),
+    Integer(i64),
+    StringList(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataEntry {
+    pub value: MetadataValue,
+    pub updated_at: u64,
+    pub ttl_ms: Option<u64>,
+    pub precedence: i64,
+    pub ordinal: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RailGroupingMode {
+    None,
+    Directory,
+}
+
+impl Default for RailGroupingMode {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum RailRow {
+    GroupHeader {
+        group_id: String,
+        label: String,
+        full_label: String,
+        tab_count: usize,
+    },
+    Tab {
+        tab: TabCard,
+        indent: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RailConfig {
+    #[serde(default)]
+    pub structure: RailStructure,
+    #[serde(default)]
+    pub sizing: RailSizingPreset,
+    #[serde(default)]
+    pub grouping: RailGroupingMode,
+}
+
+impl Default for RailConfig {
+    fn default() -> Self {
+        Self {
+            structure: RailStructure::default(),
+            sizing: RailSizingPreset::default(),
+            grouping: RailGroupingMode::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControllerViewModel {
+    pub sort_mode: SortMode,
+    pub config: RailConfig,
+    pub tabs: Vec<TabCard>,
+    #[serde(default)]
+    pub rows: Vec<RailRow>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn priority_orders_status_importance() {
+        assert!(Priority::Error > Priority::Warning);
+        assert!(Priority::Warning > Priority::Waiting);
+        assert!(Priority::Waiting > Priority::Info);
+        assert!(Priority::Info > Priority::Idle);
+    }
+
+    #[test]
+    fn external_set_pane_status_round_trips_json() {
+        let message = ExternalMessage::SetPaneStatus(SetPaneStatus {
+            pane_id: PaneTarget::Terminal(7),
+            priority: Priority::Waiting,
+            title: "Claude waiting".to_owned(),
+            detail: Some("Needs approval".to_owned()),
+            icon: Some(StatusIcon::PngFile(PathBuf::from("/tmp/waiting.png"))),
+            timestamp_ms: Some(42),
+        });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert!(encoded.contains(r#""icon":{"kind":"png-file","value":"/tmp/waiting.png"}"#));
+        let decoded: ExternalMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn controller_view_model_round_trips_json() {
+        let model = ControllerViewModel {
+            sort_mode: SortMode::Controller,
+            config: RailConfig::default(),
+            tabs: vec![TabCard {
+                tab_id: 10,
+                position: 0,
+                name: "work".to_owned(),
+                active: true,
+                pinned: true,
+                status: Some(TabStatusSummary {
+                    priority: Priority::Error,
+                    title: "Tests failed".to_owned(),
+                    detail: None,
+                    icon: Some(StatusIcon::PngFile(PathBuf::from("/tmp/error.png"))),
+                    source_pane: PaneTarget::Terminal(3),
+                }),
+            }],
+            rows: vec![],
+        };
+        let encoded = serde_json::to_string(&model).unwrap();
+        let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, model);
+    }
+
+    #[test]
+    fn rail_config_defaults_to_joined_active_large() {
+        let config = RailConfig::default();
+
+        assert_eq!(config.structure, RailStructure::JoinedCells);
+        assert_eq!(config.sizing, RailSizingPreset::ActiveLarge);
+    }
+
+    #[test]
+    fn rail_config_defaults_to_directory_grouping_off() {
+        let config = RailConfig::default();
+
+        assert_eq!(config.grouping, RailGroupingMode::None);
+    }
+
+    #[test]
+    fn controller_view_model_with_group_rows_round_trips_json() {
+        let model = ControllerViewModel {
+            sort_mode: SortMode::Position,
+            config: RailConfig {
+                structure: RailStructure::JoinedCells,
+                sizing: RailSizingPreset::Compact,
+                grouping: RailGroupingMode::Directory,
+            },
+            tabs: vec![TabCard {
+                tab_id: 1,
+                position: 0,
+                name: "server".to_owned(),
+                active: true,
+                pinned: false,
+                status: None,
+            }],
+            rows: vec![
+                RailRow::GroupHeader {
+                    group_id: "cwd:/Users/robert/dev/zellij".to_owned(),
+                    label: "zellij".to_owned(),
+                    full_label: "/Users/robert/dev/zellij".to_owned(),
+                    tab_count: 1,
+                },
+                RailRow::Tab {
+                    tab: TabCard {
+                        tab_id: 1,
+                        position: 0,
+                        name: "server".to_owned(),
+                        active: true,
+                        pinned: false,
+                        status: None,
+                    },
+                    indent: 2,
+                },
+            ],
+        };
+
+        let encoded = serde_json::to_string(&model).unwrap();
+        let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, model);
+    }
+
+    #[test]
+    fn rail_config_round_trips_json() {
+        let config = RailConfig {
+            structure: RailStructure::BoxPerTab,
+            sizing: RailSizingPreset::Compact,
+            grouping: RailGroupingMode::None,
+        };
+
+        let encoded = serde_json::to_string(&config).unwrap();
+        let decoded: RailConfig = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, config);
+    }
+}

@@ -1,0 +1,33 @@
+[package]
+name = "vertical-tabs"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ansi_term = "0.12"
+unicode-width = "0.1.14"
+zellij-tile = { path = "../zellij/zellij-tile" }
+zellij-tile-utils = { path = "../zellij/zellij-tile-utils" }
+
+[workspace]
+members = [
+    "crates/tabs-shared",
+    "crates/tabs-controller",
+    "crates/tabs-rail",
+    "crates/tabs-rail-config",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+ansi_term = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-width = "0.1.14"
+zellij-tile = { path = "../zellij/zellij-tile" }
+zellij-tile-utils = { path = "../zellij/zellij-tile-utils" }
+tabs-shared = { path = "crates/tabs-shared" }
