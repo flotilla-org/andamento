@@ -1,11 +1,27 @@
 mod render;
 pub mod template_config;
 
+const CONFIG_TEMPLATE_CONFIG_PATH: &str = "template_config_path";
+
 #[cfg(not(target_family = "wasm"))]
 fn main() {}
 
 fn should_sync_graphics(controller_available: bool) -> bool {
     controller_available
+}
+
+fn template_catalog_from_configuration(
+    configuration: &std::collections::BTreeMap<String, String>,
+) -> Result<Option<template_config::TemplateConfigCatalog>, template_config::TemplateConfigError> {
+    let Some(path) = configuration
+        .get(CONFIG_TEMPLATE_CONFIG_PATH)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    else {
+        return Ok(None);
+    };
+    template_config::load_template_catalog_from_json_file(path).map(Some)
 }
 
 #[cfg(target_family = "wasm")]
@@ -47,6 +63,7 @@ pub struct PluginState {
     next_icon_asset_id: u32,
     metadata_scroll_offset: usize,
     collapsed_groups: BTreeSet<GroupPath>,
+    template_catalog: Option<template_config::TemplateConfigCatalog>,
 }
 
 #[cfg(target_family = "wasm")]
@@ -66,6 +83,15 @@ impl ZellijPlugin for PluginState {
             .get(CONFIG_CONFIG_PLUGIN_URL)
             .cloned()
             .unwrap_or_else(|| "tabs-rail-config".to_owned());
+        match template_catalog_from_configuration(&configuration) {
+            Ok(catalog) => {
+                self.template_catalog = catalog;
+            }
+            Err(error) => {
+                eprintln!("tabs-rail: failed to load template config: {error}");
+                self.template_catalog = None;
+            }
+        }
 
         request_permission(&[
             PermissionType::ReadApplicationState,
@@ -155,7 +181,7 @@ impl ZellijPlugin for PluginState {
             self.metadata_scroll_offset,
             terminal_pixel_cell_size(),
             &collapsed_groups,
-            None,
+            self.template_catalog.as_ref(),
         );
         self.metadata_scroll_offset = rendered.metadata_scroll_offset;
         if should_sync_graphics(controller_available) {
@@ -169,11 +195,60 @@ impl ZellijPlugin for PluginState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tabs_shared::MetadataValue;
 
     #[test]
     fn graphics_sync_waits_for_controller_model() {
         assert!(!should_sync_graphics(false));
         assert!(should_sync_graphics(true));
+    }
+
+    #[test]
+    fn loads_template_catalog_from_plugin_configuration_path() {
+        let path = std::env::temp_dir().join(format!(
+            "tabs-rail-plugin-template-config-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"
+            {
+              "templates": [
+                {
+                  "name": "configured-tab-title",
+                  "slot": "tab-title",
+                  "node-kind": "tab",
+                  "fields": [
+                    { "class": "required", "sources": [{ "kind": "literal", "value": "Configured" }] }
+                  ]
+                }
+              ]
+            }
+            "#,
+        )
+        .expect("write template config");
+        let configuration = std::collections::BTreeMap::from([(
+            CONFIG_TEMPLATE_CONFIG_PATH.to_owned(),
+            path.to_string_lossy().into_owned(),
+        )]);
+
+        let catalog = template_catalog_from_configuration(&configuration)
+            .expect("load catalog")
+            .expect("configured catalog");
+        let metadata = std::collections::BTreeMap::<String, MetadataValue>::new();
+
+        let resolved = catalog
+            .resolve(template_config::TemplateConfigMatchContext {
+                slot: template_config::TemplateConfigSlot::TabTitle,
+                node_kind: template_config::TemplateConfigNodeKind::Tab,
+                metadata: &metadata,
+                collapsed: false,
+                active_tab_name: None,
+            })
+            .expect("matching template");
+
+        assert_eq!(resolved.template.name, "configured-tab-title");
+        let _ = std::fs::remove_file(path);
     }
 }
 

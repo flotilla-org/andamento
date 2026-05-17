@@ -78,6 +78,16 @@ plugin location="tabs-controller" {
 }
 ```
 
+## External Rail Templates
+
+The rail can load a JSON template config from a real filesystem path exposed to the plugin:
+
+```kdl
+plugin location="tabs-rail" {
+    template_config_path "/host/Users/robert/.config/tabs-rail/templates.json"
+}
+```
+
 Use `rail_grouping "none"` or omit the setting for the flat tab rail.
 
 Switch the rail into the generic metadata inspection projection:
