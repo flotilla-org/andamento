@@ -201,6 +201,7 @@ impl ControllerState {
             .panes
             .values()
             .filter(|pane| pane.is_selectable)
+            .filter(|pane| pane.cwd.is_none())
             .filter_map(|pane| match pane.pane_id {
                 PaneTarget::Terminal(id) => Some(id),
                 PaneTarget::Plugin(_) => None,
@@ -1319,6 +1320,18 @@ mod tests {
 
         assert!(!state.update_panes_from_manifest(manifest));
         assert_eq!(state.receive_counter, receive_counter);
+    }
+
+    #[test]
+    fn cwd_refresh_only_requests_selectable_terminals_with_unknown_cwd() {
+        let mut state = ControllerState::default();
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_test_pane(PaneTarget::Terminal(11), 1, true, false, 1);
+        state.set_test_pane(PaneTarget::Terminal(12), 1, false, false, 2);
+        state.set_test_pane(PaneTarget::Plugin(20), 1, true, false, 3);
+        state.set_pane_cwd(PaneTarget::Terminal(11), "/repo/known".into());
+
+        assert_eq!(state.terminal_panes_for_cwd_refresh(), vec![10]);
     }
 
     #[test]

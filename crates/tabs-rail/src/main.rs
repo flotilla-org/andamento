@@ -48,15 +48,41 @@ fn graphics_signature_needs_sync(
         .unwrap_or(true)
 }
 
+#[cfg(any(test, target_family = "wasm"))]
+fn local_tabs_from_zellij(tabs: &[TabInfo]) -> Vec<LocalTab> {
+    tabs.iter()
+        .map(|tab| LocalTab {
+            tab_id: tab.tab_id as u64,
+            position: tab.position,
+            name: if tab.name.is_empty() {
+                format!("Tab {}", tab.position + 1)
+            } else {
+                tab.name.clone()
+            },
+            active: tab.active,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn local_tabs_need_render(current: &[LocalTab], zellij_tabs: &[TabInfo]) -> bool {
+    current != local_tabs_from_zellij(zellij_tabs).as_slice()
+}
+
+#[cfg(any(test, target_family = "wasm"))]
+fn mode_info_needs_render(current: Option<&ModeInfo>, next: &ModeInfo) -> bool {
+    current != Some(next)
+}
+
 #[cfg(target_family = "wasm")]
 use std::cmp::{max, min};
 #[cfg(target_family = "wasm")]
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[cfg(target_family = "wasm")]
-use render::{hit_at, HitAction, HitRegion, LocalTab};
+use render::{hit_at, HitAction, HitRegion};
 #[cfg(any(test, target_family = "wasm"))]
-use render::{status_icon_is_renderable, VisibleCard, VisibleIconRect};
+use render::{status_icon_is_renderable, LocalTab, VisibleCard, VisibleIconRect};
 #[cfg(any(test, target_family = "wasm"))]
 use tabs_shared::StatusIcon;
 #[cfg(target_family = "wasm")]
@@ -66,6 +92,8 @@ use tabs_shared::{
 };
 #[cfg(target_family = "wasm")]
 use zellij_tile::prelude::*;
+#[cfg(test)]
+use zellij_tile::prelude::{ModeInfo, TabInfo};
 
 #[cfg(target_family = "wasm")]
 const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
@@ -142,25 +170,20 @@ impl ZellijPlugin for PluginState {
                 true
             }
             Event::ModeUpdate(mode_info) => {
-                self.mode_info = Some(mode_info);
-                true
+                if !mode_info_needs_render(self.mode_info.as_ref(), &mode_info) {
+                    false
+                } else {
+                    self.mode_info = Some(mode_info);
+                    true
+                }
             }
             Event::TabUpdate(tabs) => {
+                let local_tabs = local_tabs_from_zellij(&tabs);
+                if self.local_tabs == local_tabs {
+                    return false;
+                }
                 self.tabs = tabs;
-                self.local_tabs = self
-                    .tabs
-                    .iter()
-                    .map(|tab| LocalTab {
-                        tab_id: tab.tab_id as u64,
-                        position: tab.position,
-                        name: if tab.name.is_empty() {
-                            format!("Tab {}", tab.position + 1)
-                        } else {
-                            tab.name.clone()
-                        },
-                        active: tab.active,
-                    })
-                    .collect();
+                self.local_tabs = local_tabs;
                 true
             }
             Event::Mouse(mouse) => self.handle_mouse(mouse),
@@ -216,6 +239,30 @@ mod tests {
     use super::*;
     use render::{VisibleCard, VisibleIconRect};
 
+    fn tab_info(tab_id: usize, position: usize, name: &str, active: bool) -> TabInfo {
+        TabInfo {
+            position,
+            name: name.to_owned(),
+            active,
+            panes_to_hide: 0,
+            is_fullscreen_active: false,
+            is_sync_panes_active: false,
+            are_floating_panes_visible: false,
+            other_focused_clients: vec![],
+            active_swap_layout_name: None,
+            is_swap_layout_dirty: false,
+            viewport_rows: 0,
+            viewport_columns: 0,
+            display_area_rows: 0,
+            display_area_columns: 0,
+            selectable_tiled_panes_count: 0,
+            selectable_floating_panes_count: 0,
+            tab_id,
+            has_bell_notification: false,
+            is_flashing_bell: false,
+        }
+    }
+
     #[test]
     fn graphics_sync_waits_for_controller_model() {
         assert!(!should_sync_graphics(false));
@@ -244,6 +291,26 @@ mod tests {
             Some(signature.as_slice()),
             &visible_cards
         ));
+    }
+
+    #[test]
+    fn unchanged_local_tab_projection_does_not_need_render() {
+        let current = vec![LocalTab {
+            tab_id: 1,
+            position: 0,
+            name: "work".to_owned(),
+            active: true,
+        }];
+        let zellij_tabs = vec![tab_info(1, 0, "work", true)];
+
+        assert!(!local_tabs_need_render(&current, &zellij_tabs));
+    }
+
+    #[test]
+    fn unchanged_mode_info_does_not_need_render() {
+        let mode_info = ModeInfo::default();
+
+        assert!(!mode_info_needs_render(Some(&mode_info), &mode_info));
     }
 }
 
