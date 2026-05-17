@@ -545,6 +545,9 @@ fn push_template_diagnostic_line(
     if let Some(name) = matched_template_name(context) {
         push_metadata_text_line(lines, indent, key, name);
     }
+    if let Some(sizing) = matched_template_sizing(context) {
+        push_metadata_text_line(lines, indent, &format!("{key}.sizing"), sizing.as_text());
+    }
 }
 
 fn bool_text(value: bool) -> &'static str {
@@ -2075,6 +2078,11 @@ struct TemplateFieldSpec {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateSizingHint {
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RenderNodeKind {
     Group,
     Tab,
@@ -2107,6 +2115,7 @@ struct TemplateDefinition<'a> {
     node_kind: RenderNodeKind,
     predicates: &'a [MetadataPredicate],
     fields: &'a [TemplateFieldSpec],
+    sizing: TemplateSizingHint,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2205,6 +2214,7 @@ const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
         node_kind: RenderNodeKind::Group,
         predicates: &[],
         fields: GROUP_HEADER_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
     },
     TemplateDefinition {
         name: "builtin.tab-title",
@@ -2212,6 +2222,7 @@ const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
         node_kind: RenderNodeKind::Tab,
         predicates: &[],
         fields: TAB_TITLE_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
     },
     TemplateDefinition {
         name: "builtin.tab-status",
@@ -2219,6 +2230,7 @@ const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
         node_kind: RenderNodeKind::Tab,
         predicates: STATUS_TEMPLATE_PREDICATES,
         fields: STATUS_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
     },
     TemplateDefinition {
         name: "builtin.tab-status.waiting",
@@ -2226,6 +2238,7 @@ const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
         node_kind: RenderNodeKind::Tab,
         predicates: WAITING_STATUS_TEMPLATE_PREDICATES,
         fields: STATUS_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
     },
     TemplateDefinition {
         name: "builtin.tab-status.terminal-source",
@@ -2233,6 +2246,7 @@ const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
         node_kind: RenderNodeKind::Tab,
         predicates: TERMINAL_STATUS_TEMPLATE_PREDICATES,
         fields: STATUS_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
     },
 ];
 
@@ -2244,6 +2258,10 @@ fn template_fields_for(context: TemplateRenderContext<'_>) -> Vec<TemplateField>
 
 fn matched_template_name(context: TemplateRenderContext<'_>) -> Option<&'static str> {
     resolve_template(BUILTIN_TEMPLATES, &context).map(|template| template.name)
+}
+
+fn matched_template_sizing(context: TemplateRenderContext<'_>) -> Option<TemplateSizingHint> {
+    resolve_template(BUILTIN_TEMPLATES, &context).map(|template| template.sizing)
 }
 
 fn resolve_template<'a>(
@@ -2351,6 +2369,14 @@ impl TemplateFieldClass {
             TemplateFieldClass::Required => TemplateField::Required(value),
             TemplateFieldClass::Optional => TemplateField::Optional(value),
             TemplateFieldClass::Priority => TemplateField::Priority(value),
+        }
+    }
+}
+
+impl TemplateSizingHint {
+    fn as_text(&self) -> &'static str {
+        match self {
+            TemplateSizingHint::Auto => "auto",
         }
     }
 }
@@ -3057,6 +3083,7 @@ mod tests {
                 node_kind: RenderNodeKind::Tab,
                 predicates: &[],
                 fields: GENERIC_FIELDS,
+                sizing: TemplateSizingHint::Auto,
             },
             TemplateDefinition {
                 name: "test.specific",
@@ -3067,6 +3094,7 @@ mod tests {
                     value: "waiting",
                 }],
                 fields: SPECIFIC_FIELDS,
+                sizing: TemplateSizingHint::Auto,
             },
         ];
         let mut metadata = RenderMetadata::new();
@@ -3113,6 +3141,7 @@ mod tests {
                 node_kind: RenderNodeKind::Tab,
                 predicates: &[],
                 fields: GENERIC_FIELDS,
+                sizing: TemplateSizingHint::Auto,
             },
             TemplateDefinition {
                 name: "test.specific",
@@ -3123,6 +3152,7 @@ mod tests {
                     prefix: "terminal:",
                 }],
                 fields: SPECIFIC_FIELDS,
+                sizing: TemplateSizingHint::Auto,
             },
         ];
         let mut metadata = RenderMetadata::new();
@@ -3172,6 +3202,13 @@ mod tests {
             spec.render(&context),
             Some(TemplateField::Optional("[Tab 7]".to_owned()))
         );
+    }
+
+    #[test]
+    fn builtin_templates_carry_auto_sizing_hints() {
+        assert!(BUILTIN_TEMPLATES
+            .iter()
+            .all(|template| template.sizing == TemplateSizingHint::Auto));
     }
 
     #[test]
@@ -3362,7 +3399,7 @@ mod tests {
             tab.status = model.tabs[1].status.clone();
         }
 
-        let rendered = render_lines(Some(&model), &[], 24, 64, true);
+        let rendered = render_lines(Some(&model), &[], 32, 64, true);
 
         assert!(rendered
             .lines
@@ -3376,6 +3413,10 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.contains("template.tab_status: builtin.tab-status.waiting")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("template.tab_status.sizing: auto")));
     }
 
     #[test]
