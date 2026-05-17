@@ -20,6 +20,9 @@ use tabs_shared::{
 use tabs_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use zellij_tile::prelude::*;
 
+const TEMPLATE_RELOAD_RETRY_SECS: f64 = 0.25;
+const MAX_TEMPLATE_RELOAD_ATTEMPTS: u8 = 20;
+
 #[cfg(not(target_family = "wasm"))]
 fn main() {}
 
@@ -31,6 +34,8 @@ struct PluginState {
     permissions_granted: bool,
     own_identity: Option<RendererHello>,
     bootstrap_requested: bool,
+    template_reload_pending: bool,
+    template_reload_attempts: u8,
 }
 
 #[cfg(target_family = "wasm")]
@@ -65,6 +70,7 @@ impl ZellijPlugin for PluginState {
             EventType::CwdChanged,
             EventType::PermissionRequestResult,
             EventType::FailedToChangeHostFolder,
+            EventType::Timer,
         ]);
     }
 
@@ -74,12 +80,13 @@ impl ZellijPlugin for PluginState {
                 self.permissions_granted = matches!(status, PermissionStatus::Granted);
                 if self.permissions_granted {
                     change_host_folder(PathBuf::from("/"));
-                    self.reload_template_catalog();
-                    self.push_view_model_to_rails();
+                    self.schedule_template_reload();
                 }
                 self.request_bootstrap_snapshot();
+                return true;
             }
             Event::FailedToChangeHostFolder(error) => {
+                self.template_reload_pending = false;
                 self.state
                     .set_template_config_diagnostics(template_config_error_diagnostics(
                         self.template_config_path.clone(),
@@ -89,6 +96,14 @@ impl ZellijPlugin for PluginState {
                         ),
                     ));
                 self.push_view_model_to_rails();
+                return true;
+            }
+            Event::Timer(_) => {
+                if self.template_reload_pending {
+                    let loaded = self.retry_template_catalog_reload();
+                    self.push_view_model_to_rails();
+                    return loaded || self.template_reload_pending;
+                }
             }
             Event::TabUpdate(tabs) => {
                 self.state.update_tabs_from_zellij(tabs);
@@ -184,12 +199,39 @@ impl ZellijPlugin for PluginState {
 
 #[cfg(target_family = "wasm")]
 impl PluginState {
-    fn reload_template_catalog(&mut self) {
+    fn schedule_template_reload(&mut self) {
+        if self.template_config_path.is_none() {
+            self.reload_template_catalog();
+            self.push_view_model_to_rails();
+            return;
+        }
+        self.template_reload_pending = true;
+        self.template_reload_attempts = 0;
+        self.state
+            .set_template_config_diagnostics(initial_template_config_diagnostics(
+                self.template_config_path.clone(),
+            ));
+        set_timeout(TEMPLATE_RELOAD_RETRY_SECS);
+        self.push_view_model_to_rails();
+    }
+
+    fn retry_template_catalog_reload(&mut self) -> bool {
+        self.template_reload_attempts = self.template_reload_attempts.saturating_add(1);
+        let loaded = self.reload_template_catalog();
+        self.template_reload_pending =
+            should_retry_template_load(self.template_reload_attempts, loaded);
+        if self.template_reload_pending {
+            set_timeout(TEMPLATE_RELOAD_RETRY_SECS);
+        }
+        loaded
+    }
+
+    fn reload_template_catalog(&mut self) -> bool {
         let Some(path) = self.template_config_path.as_deref() else {
             self.state.set_template_catalog(None);
             self.state
                 .set_template_config_diagnostics(TemplateConfigDiagnostics::default());
-            return;
+            return true;
         };
         match tabs_shared::template_config::load_template_catalog_from_file(path) {
             Ok(catalog) => {
@@ -202,6 +244,7 @@ impl PluginState {
                 };
                 self.state.set_template_catalog(Some(catalog));
                 self.state.set_template_config_diagnostics(diagnostics);
+                true
             }
             Err(error) => {
                 eprintln!("tabs-controller: failed to load template config: {error}");
@@ -211,6 +254,7 @@ impl PluginState {
                         Some(path.to_owned()),
                         error.to_string(),
                     ));
+                false
             }
         }
     }
@@ -435,6 +479,10 @@ fn template_config_error_diagnostics(
         template_names: vec![],
         last_error: Some(error),
     }
+}
+
+fn should_retry_template_load(attempts: u8, loaded: bool) -> bool {
+    !loaded && attempts < MAX_TEMPLATE_RELOAD_ATTEMPTS
 }
 
 fn template_config_state_text(state: TemplateConfigState) -> &'static str {
@@ -988,5 +1036,19 @@ mod tests {
 
         assert!(!result.state_changed);
         assert_eq!(result.bootstrap_request, Some(requester));
+    }
+
+    #[test]
+    fn template_load_retries_until_loaded_or_attempt_limit() {
+        assert!(should_retry_template_load(1, false));
+        assert!(should_retry_template_load(
+            MAX_TEMPLATE_RELOAD_ATTEMPTS - 1,
+            false
+        ));
+        assert!(!should_retry_template_load(
+            MAX_TEMPLATE_RELOAD_ATTEMPTS,
+            false
+        ));
+        assert!(!should_retry_template_load(1, true));
     }
 }
