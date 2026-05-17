@@ -513,6 +513,8 @@ This is where most rendering/layout improvements should land. It should consume 
 
 Add a way to change sidebar width as grouped and detailed rendering becomes denser.
 
+Current layout note: native Zellij mouse resizing works for the rail when the pane has a flexible size, including `size="23%" borderless=true`. A fixed pane such as `size=28` is treated as a fixed layout constraint and does not resize by mouse. The borderless rail can still use Zellij's native edge hit testing, so the sidebar does not need plugin-side drag handling for the first version.
+
 Scope:
 
 - drag resize affordance on the sidebar boundary.
