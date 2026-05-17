@@ -531,6 +531,8 @@ Scope:
 
 This unlocks project overview tabs, worktree tabs, convoy tabs, and better grouping for tabs whose panes are not enough to infer intent.
 
+Status: started. The controller now recognizes direct tab metadata keys `tab.scope` and `tab.subject` as explicit grouping identities, with `tab.scope` taking precedence over `tab.subject` and both taking precedence over pane-derived cwd. The first supported value shape is text, projected as a single-segment `GroupPath`; richer group-path-valued metadata remains future work. Resolved metadata view shows these keys because it now renders generic resolved tab/group values.
+
 ### 7. Render Nodes, Collapse, And Templates
 
 Move from a flat row projection to first-class render nodes.

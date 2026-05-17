@@ -13,6 +13,8 @@ use zellij_tile::prelude::{PaneManifest, TabInfo};
 
 const SOURCE_ZELLIJ: &str = "zellij";
 const KEY_PANE_CWD: &str = "zellij.pane.cwd";
+const KEY_TAB_SCOPE: &str = "tab.scope";
+const KEY_TAB_SUBJECT: &str = "tab.subject";
 const FOCUSED_CWD_PRECEDENCE: i64 = 100;
 const NORMAL_CWD_PRECEDENCE: i64 = 0;
 
@@ -408,9 +410,18 @@ impl ControllerState {
     }
 
     fn tab_grouping_infos(&self) -> HashMap<u64, TabGroupingInfo> {
+        let tab_subjects: HashMap<u64, TabGroupingInfo> = self
+            .tabs
+            .iter()
+            .filter_map(|tab| {
+                self.tab_explicit_subject_grouping(tab.tab_id)
+                    .map(|grouping| (tab.tab_id, grouping))
+            })
+            .collect();
         let tab_cwds: HashMap<u64, String> = self
             .tabs
             .iter()
+            .filter(|tab| !tab_subjects.contains_key(&tab.tab_id))
             .filter_map(|tab| {
                 self.tab_primary_cwd(tab.tab_id)
                     .map(|cwd| (tab.tab_id, cwd))
@@ -423,7 +434,7 @@ impl ControllerState {
             .into_iter()
             .collect();
 
-        tab_cwds
+        let mut groupings: HashMap<u64, TabGroupingInfo> = tab_cwds
             .into_iter()
             .map(|(tab_id, cwd)| {
                 let label = self.group_label_for_cwd(&cwd, &all_group_cwds);
@@ -437,7 +448,41 @@ impl ControllerState {
                     },
                 )
             })
-            .collect()
+            .collect();
+        groupings.extend(tab_subjects);
+        groupings
+    }
+
+    fn tab_explicit_subject_grouping(&self, tab_id: u64) -> Option<TabGroupingInfo> {
+        let (key, value) = self
+            .tab_primary_text_metadata(tab_id, KEY_TAB_SCOPE)
+            .map(|value| (KEY_TAB_SCOPE, value))
+            .or_else(|| {
+                self.tab_primary_text_metadata(tab_id, KEY_TAB_SUBJECT)
+                    .map(|value| (KEY_TAB_SUBJECT, value))
+            })?;
+        Some(TabGroupingInfo {
+            key: format!("{key}:{value}"),
+            path: GroupPath(vec![GroupSegment {
+                key: key.to_owned(),
+                value: MetadataValue::Text(value.clone()),
+            }]),
+            label: value.clone(),
+            full_label: value,
+        })
+    }
+
+    fn tab_primary_text_metadata(&self, tab_id: u64, key: &str) -> Option<String> {
+        let target = EntityId::Tab(tab_id);
+        match self
+            .metadata
+            .resolved_entries_for(&target, self.receive_counter)
+            .remove(key)?
+            .value
+        {
+            MetadataValue::Text(value) => Some(value),
+            _ => None,
+        }
     }
 
     fn tab_primary_cwd(&self, tab_id: u64) -> Option<String> {
@@ -867,6 +912,53 @@ mod tests {
                 .map(|entry| &entry.value),
             Some(&MetadataValue::Text("/repo/a".to_owned()))
         );
+    }
+
+    #[test]
+    fn explicit_tab_subject_metadata_overrides_cwd_grouping_identity() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "overview".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/zellij".into());
+        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+            target: EntityId::Tab(1),
+            source_id: "test".to_owned(),
+            set: BTreeMap::from([(
+                "tab.subject".to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("project:zellij".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let grouping = model.tabs[0].grouping.as_ref().expect("tab grouping");
+
+        assert_eq!(grouping.label, "project:zellij");
+        assert_eq!(
+            grouping.path,
+            GroupPath(vec![GroupSegment {
+                key: "tab.subject".to_owned(),
+                value: MetadataValue::Text("project:zellij".to_owned()),
+            }])
+        );
+        assert!(matches!(
+            &model.rows[0],
+            RailRow::GroupHeader { path, .. } if path == &grouping.path
+        ));
     }
 
     #[test]
