@@ -65,8 +65,8 @@ pub struct ControllerState {
 
 impl ControllerState {
     #[allow(dead_code)]
-    pub fn update_tabs_from_zellij(&mut self, tabs: Vec<TabInfo>) {
-        self.tabs = tabs
+    pub fn update_tabs_from_zellij(&mut self, tabs: Vec<TabInfo>) -> bool {
+        let mut next_tabs: Vec<ControllerTab> = tabs
             .into_iter()
             .map(|tab| ControllerTab {
                 tab_id: tab.tab_id as u64,
@@ -79,7 +79,11 @@ impl ControllerState {
                 active: tab.active,
             })
             .collect();
-        self.tabs.sort_by_key(|tab| tab.position);
+        next_tabs.sort_by_key(|tab| tab.position);
+        if self.tabs == next_tabs {
+            return false;
+        }
+        self.tabs = next_tabs;
 
         let live_tab_ids: HashSet<u64> = self.tabs.iter().map(|tab| tab.tab_id).collect();
         self.pinned_tabs
@@ -94,6 +98,7 @@ impl ControllerState {
                 .map(|tab_id| live_tab_ids.contains(tab_id))
                 .unwrap_or(true)
         });
+        true
     }
 
     #[cfg(test)]
@@ -103,13 +108,14 @@ impl ControllerState {
     }
 
     #[allow(dead_code)]
-    pub fn update_panes_from_manifest(&mut self, pane_manifest: PaneManifest) {
+    pub fn update_panes_from_manifest(&mut self, pane_manifest: PaneManifest) -> bool {
         let position_to_tab_id: HashMap<usize, u64> = self
             .tabs
             .iter()
             .map(|tab| (tab.position, tab.tab_id))
             .collect();
         let mut live_panes = HashSet::new();
+        let previous_pane_to_tab = self.pane_to_tab.clone();
         self.pane_to_tab.clear();
         let previous_panes = self.panes.clone();
         self.panes.clear();
@@ -143,10 +149,14 @@ impl ControllerState {
         }
 
         self.retain_panes(live_panes);
+        let pane_topology_changed =
+            self.pane_to_tab != previous_pane_to_tab || self.panes != previous_panes;
         let pane_ids: Vec<PaneTarget> = self.panes.keys().copied().collect();
+        let mut metadata_changed = false;
         for pane_id in pane_ids {
-            self.refresh_pane_cwd_metadata(pane_id);
+            metadata_changed |= self.refresh_pane_cwd_metadata(pane_id);
         }
+        pane_topology_changed || metadata_changed
     }
 
     #[cfg(test)]
@@ -178,11 +188,11 @@ impl ControllerState {
     }
 
     #[allow(dead_code)]
-    pub fn set_pane_cwd(&mut self, pane_id: PaneTarget, cwd: String) {
+    pub fn set_pane_cwd(&mut self, pane_id: PaneTarget, cwd: String) -> bool {
         if let Some(pane) = self.panes.get_mut(&pane_id) {
             pane.cwd = Some(cwd);
         }
-        self.refresh_pane_cwd_metadata(pane_id);
+        self.refresh_pane_cwd_metadata(pane_id)
     }
 
     #[allow(dead_code)]
@@ -302,8 +312,12 @@ impl ControllerState {
     }
 
     #[allow(dead_code)]
-    pub fn register_rail(&mut self, hello: RendererHello) {
+    pub fn register_rail(&mut self, hello: RendererHello) -> bool {
+        if self.known_rails.get(&hello.plugin_id) == Some(&hello) {
+            return false;
+        }
         self.known_rails.insert(hello.plugin_id, hello);
+        true
     }
 
     #[allow(dead_code)]
@@ -333,8 +347,12 @@ impl ControllerState {
     }
 
     #[allow(dead_code)]
-    pub fn register_config_editor(&mut self, hello: RendererHello) {
+    pub fn register_config_editor(&mut self, hello: RendererHello) -> bool {
+        if self.known_config_editors.get(&hello.plugin_id) == Some(&hello) {
+            return false;
+        }
         self.known_config_editors.insert(hello.plugin_id, hello);
+        true
     }
 
     pub fn view_model(&self) -> ControllerViewModel {
@@ -920,34 +938,72 @@ impl ControllerState {
             .unwrap_or_else(|| cwd.to_owned())
     }
 
-    fn refresh_pane_cwd_metadata(&mut self, pane_id: PaneTarget) {
+    fn refresh_pane_cwd_metadata(&mut self, pane_id: PaneTarget) -> bool {
         let entity_id = EntityId::Pane(pane_id);
         let Some(pane) = self.panes.get(&pane_id) else {
+            let changed = self
+                .metadata
+                .source_entry(
+                    &entity_id,
+                    KEY_PANE_CWD,
+                    SOURCE_ZELLIJ,
+                    self.receive_counter,
+                )
+                .is_some();
             self.metadata.unset(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ);
-            return;
+            return changed;
         };
         let should_emit = matches!(pane_id, PaneTarget::Terminal(_)) && pane.is_selectable;
         let Some(cwd) = pane.cwd.clone().filter(|_| should_emit) else {
+            let changed = self
+                .metadata
+                .source_entry(
+                    &entity_id,
+                    KEY_PANE_CWD,
+                    SOURCE_ZELLIJ,
+                    self.receive_counter,
+                )
+                .is_some();
             self.metadata.unset(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ);
-            return;
+            return changed;
         };
+        let value = MetadataValue::Text(cwd);
+        let precedence = if pane.is_focused {
+            FOCUSED_CWD_PRECEDENCE
+        } else {
+            NORMAL_CWD_PRECEDENCE
+        };
+        if self
+            .metadata
+            .source_entry(
+                &entity_id,
+                KEY_PANE_CWD,
+                SOURCE_ZELLIJ,
+                self.receive_counter,
+            )
+            .is_some_and(|entry| {
+                entry.value == value
+                    && entry.ttl_ms.is_none()
+                    && entry.precedence == precedence
+                    && entry.ordinal == pane.ordinal
+            })
+        {
+            return false;
+        }
         self.receive_counter = self.receive_counter.saturating_add(1);
         self.metadata.set(
             entity_id,
             KEY_PANE_CWD,
             SOURCE_ZELLIJ,
             MetadataEntry {
-                value: MetadataValue::Text(cwd),
+                value,
                 updated_at: self.receive_counter,
                 ttl_ms: None,
-                precedence: if pane.is_focused {
-                    FOCUSED_CWD_PRECEDENCE
-                } else {
-                    NORMAL_CWD_PRECEDENCE
-                },
+                precedence,
                 ordinal: pane.ordinal,
             },
         );
+        true
     }
 
     fn status_for_tab(&self, tab_id: u64) -> Option<TabStatusSummary> {
@@ -1193,6 +1249,76 @@ mod tests {
             &model.rows[0],
             RailRow::GroupHeader { full_label, .. } if full_label == "/repo/focused"
         ));
+    }
+
+    #[test]
+    fn unchanged_tab_update_is_not_a_controller_change() {
+        let mut state = ControllerState::default();
+        let tabs = vec![tab_info(1, 0, "work", true), tab_info(2, 1, "logs", false)];
+
+        assert!(state.update_tabs_from_zellij(tabs.clone()));
+        assert!(!state.update_tabs_from_zellij(tabs));
+    }
+
+    #[test]
+    fn tab_update_change_is_a_controller_change() {
+        let mut state = ControllerState::default();
+        state.update_tabs_from_zellij(vec![
+            tab_info(1, 0, "work", true),
+            tab_info(2, 1, "logs", false),
+        ]);
+
+        assert!(state.update_tabs_from_zellij(vec![
+            tab_info(1, 0, "work", false),
+            tab_info(2, 1, "logs", true),
+        ]));
+    }
+
+    #[test]
+    fn setting_same_pane_cwd_is_not_a_metadata_change() {
+        let mut state = ControllerState::default();
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "work".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+
+        assert!(state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into()));
+        let receive_counter = state.receive_counter;
+
+        assert!(!state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into()));
+        assert_eq!(state.receive_counter, receive_counter);
+    }
+
+    #[test]
+    fn unchanged_pane_manifest_is_not_a_controller_change() {
+        let mut state = ControllerState::default();
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "work".into(),
+            active: true,
+        }]);
+        let manifest = PaneManifest {
+            panes: HashMap::from([(
+                0,
+                vec![zellij_tile::prelude::PaneInfo {
+                    id: 10,
+                    is_plugin: false,
+                    is_selectable: true,
+                    ..Default::default()
+                }],
+            )]),
+        };
+
+        assert!(state.update_panes_from_manifest(manifest.clone()));
+        state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into());
+        let receive_counter = state.receive_counter;
+
+        assert!(!state.update_panes_from_manifest(manifest));
+        assert_eq!(state.receive_counter, receive_counter);
     }
 
     #[test]

@@ -59,6 +59,17 @@ impl MetadataStore {
         }
     }
 
+    pub fn source_entry(
+        &self,
+        entity_id: &EntityId,
+        key: &str,
+        source_id: &str,
+        now: u64,
+    ) -> Option<&MetadataEntry> {
+        let entry = self.entries.get(entity_id)?.get(key)?.get(source_id)?;
+        entry_is_live(entry, now).then_some(entry)
+    }
+
     #[allow(dead_code)]
     pub fn apply_patch(&mut self, patch: MetadataPatch, now: u64) {
         for key in patch.unset {

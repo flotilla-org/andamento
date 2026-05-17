@@ -7,16 +7,61 @@ fn should_sync_graphics(controller_available: bool) -> bool {
     controller_available
 }
 
+#[cfg(any(test, target_family = "wasm"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GraphicsSignatureEntry {
+    placement_id: u32,
+    rect: VisibleIconRect,
+    icon: StatusIcon,
+}
+
+#[cfg(any(test, target_family = "wasm"))]
+fn visible_graphics_signature(visible_cards: &[VisibleCard]) -> Vec<GraphicsSignatureEntry> {
+    visible_cards
+        .iter()
+        .enumerate()
+        .filter_map(|(index, card)| {
+            let (Some(rect), Some(icon)) = (card.status_icon_rect, card.status_icon.as_ref())
+            else {
+                return None;
+            };
+            if !status_icon_is_renderable(icon) {
+                return None;
+            }
+            Some(GraphicsSignatureEntry {
+                placement_id: 10_000 + index as u32,
+                rect,
+                icon: icon.clone(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn graphics_signature_needs_sync(
+    previous: Option<&[GraphicsSignatureEntry]>,
+    visible_cards: &[VisibleCard],
+) -> bool {
+    let current = visible_graphics_signature(visible_cards);
+    previous
+        .map(|previous| previous != current.as_slice())
+        .unwrap_or(true)
+}
+
 #[cfg(target_family = "wasm")]
 use std::cmp::{max, min};
 #[cfg(target_family = "wasm")]
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[cfg(target_family = "wasm")]
-use render::{hit_at, status_icon_is_renderable, HitAction, HitRegion, LocalTab, VisibleCard};
+use render::{hit_at, HitAction, HitRegion, LocalTab};
+#[cfg(any(test, target_family = "wasm"))]
+use render::{status_icon_is_renderable, VisibleCard, VisibleIconRect};
+#[cfg(any(test, target_family = "wasm"))]
+use tabs_shared::StatusIcon;
 #[cfg(target_family = "wasm")]
 use tabs_shared::{
-    ControllerViewModel, GroupPath, RailViewMode, RendererHello, StatusIcon, MSG_RENDERER_HELLO,
+    ControllerViewModel, GroupPath, RailViewMode, RendererHello, MSG_RENDERER_HELLO,
     MSG_REQUEST_STATE, MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
 };
 #[cfg(target_family = "wasm")]
@@ -44,6 +89,7 @@ pub struct PluginState {
     mode_info: Option<ModeInfo>,
     icon_asset_ids: HashMap<StatusIcon, u32>,
     next_icon_asset_id: u32,
+    last_graphics_signature: Option<Vec<GraphicsSignatureEntry>>,
     metadata_scroll_offset: usize,
     collapsed_groups: BTreeSet<GroupPath>,
 }
@@ -168,10 +214,36 @@ impl ZellijPlugin for PluginState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use render::{VisibleCard, VisibleIconRect};
+
     #[test]
     fn graphics_sync_waits_for_controller_model() {
         assert!(!should_sync_graphics(false));
         assert!(should_sync_graphics(true));
+    }
+
+    #[test]
+    fn unchanged_graphics_signature_does_not_need_sync() {
+        let visible_cards = vec![VisibleCard {
+            tab_id: 1,
+            tab_position: 0,
+            row_start: 0,
+            status_row: Some(1),
+            status_icon_rect: Some(VisibleIconRect {
+                x: 2,
+                y: 1,
+                columns: 1,
+                rows: 1,
+            }),
+            status_priority: None,
+            status_icon: Some(StatusIcon::PngFile("/tmp/icon.png".into())),
+        }];
+        let signature = visible_graphics_signature(&visible_cards);
+
+        assert!(!graphics_signature_needs_sync(
+            Some(signature.as_slice()),
+            &visible_cards
+        ));
     }
 }
 
@@ -335,30 +407,33 @@ impl PluginState {
     }
 
     fn sync_graphics(&mut self, visible_cards: &[VisibleCard]) {
+        let signature = visible_graphics_signature(visible_cards);
+        if self
+            .last_graphics_signature
+            .as_deref()
+            .map(|previous| previous == signature.as_slice())
+            .unwrap_or(false)
+        {
+            return;
+        }
         let mut ops = vec![PluginGraphicsOp::ClearPlacements];
-        for (index, card) in visible_cards.iter().enumerate() {
-            let (Some(rect), Some(icon)) = (card.status_icon_rect, card.status_icon.as_ref())
-            else {
-                continue;
-            };
-            if !status_icon_is_renderable(icon) {
-                continue;
-            }
-            let asset_id = self.asset_id_for_icon(icon, &mut ops);
+        for entry in &signature {
+            let asset_id = self.asset_id_for_icon(&entry.icon, &mut ops);
             ops.push(PluginGraphicsOp::PlaceImage {
-                placement_id: 10_000 + index as u32,
+                placement_id: entry.placement_id,
                 asset_id,
                 destination: PluginCellRect {
-                    x: rect.x as u32,
-                    y: rect.y as u32,
+                    x: entry.rect.x as u32,
+                    y: entry.rect.y as u32,
                     columns: None,
-                    rows: Some(rect.rows as u32),
+                    rows: Some(entry.rect.rows as u32),
                 },
                 source: None,
                 z_index: 1,
             });
         }
         apply_graphics_update(ops);
+        self.last_graphics_signature = Some(signature);
     }
 
     fn asset_id_for_icon(&mut self, icon: &StatusIcon, ops: &mut Vec<PluginGraphicsOp>) -> u32 {

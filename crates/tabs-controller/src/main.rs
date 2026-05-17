@@ -110,8 +110,9 @@ impl ZellijPlugin for PluginState {
                 }
             }
             Event::TabUpdate(tabs) => {
-                self.state.update_tabs_from_zellij(tabs);
-                self.push_view_model_to_rails();
+                if self.state.update_tabs_from_zellij(tabs) {
+                    self.push_view_model_to_rails();
+                }
             }
             Event::PaneUpdate(pane_manifest) => {
                 let live_plugin_ids = pane_manifest
@@ -122,23 +123,29 @@ impl ZellijPlugin for PluginState {
                     .map(|pane| pane.id)
                     .collect();
                 self.state.retain_rails(&live_plugin_ids);
-                self.state.update_panes_from_manifest(pane_manifest);
+                let mut state_changed = self.state.update_panes_from_manifest(pane_manifest);
                 for terminal_id in self.state.terminal_panes_for_cwd_refresh() {
                     if let Ok(cwd) = get_pane_cwd(PaneId::Terminal(terminal_id)) {
-                        self.state.set_pane_cwd(
+                        state_changed |= self.state.set_pane_cwd(
                             PaneTarget::Terminal(terminal_id),
                             cwd.display().to_string(),
                         );
                     }
                 }
-                self.push_view_model_to_rails();
+                if state_changed {
+                    self.push_view_model_to_rails();
+                }
             }
             Event::CwdChanged(pane_id, cwd, _) => {
-                if let PaneId::Terminal(id) = pane_id {
+                let state_changed = if let PaneId::Terminal(id) = pane_id {
                     self.state
-                        .set_pane_cwd(PaneTarget::Terminal(id), cwd.display().to_string());
+                        .set_pane_cwd(PaneTarget::Terminal(id), cwd.display().to_string())
+                } else {
+                    false
+                };
+                if state_changed {
+                    self.push_view_model_to_rails();
                 }
-                self.push_view_model_to_rails();
             }
             _ => {}
         }
@@ -387,17 +394,17 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             }
         }
         Ok(Some(ControllerMessage::RendererHello(hello))) => {
-            state.register_rail(hello);
+            let state_changed = state.register_rail(hello);
             HandlePipeResult {
-                state_changed: true,
+                state_changed,
                 bootstrap_request: None,
                 cli_pipe_output: None,
             }
         }
         Ok(Some(ControllerMessage::ConfigEditorHello(hello))) => {
-            state.register_config_editor(hello);
+            let state_changed = state.register_config_editor(hello);
             HandlePipeResult {
-                state_changed: true,
+                state_changed,
                 bootstrap_request: None,
                 cli_pipe_output: None,
             }
@@ -1098,6 +1105,28 @@ mod tests {
 
         assert!(!result.state_changed);
         assert_eq!(result.bootstrap_request, Some(requester));
+    }
+
+    #[test]
+    fn duplicate_renderer_hello_does_not_request_state_broadcast() {
+        let mut state = ControllerState::default();
+        let hello = RendererHello {
+            plugin_id: 9,
+            client_id: 1,
+        };
+        let payload = serde_json::to_string(&hello).unwrap();
+
+        let first = handle_pipe_message(
+            &mut state,
+            pipe(MSG_RENDERER_HELLO, Some(payload.clone()), BTreeMap::new()),
+        );
+        let second = handle_pipe_message(
+            &mut state,
+            pipe(MSG_RENDERER_HELLO, Some(payload), BTreeMap::new()),
+        );
+
+        assert!(first.state_changed);
+        assert!(!second.state_changed);
     }
 
     #[test]
