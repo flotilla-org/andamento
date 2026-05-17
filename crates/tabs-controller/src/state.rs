@@ -260,6 +260,7 @@ impl ControllerState {
             config: self.rail_config,
             pinned_tabs,
             pane_statuses,
+            metadata_patches: self.metadata.snapshot_patches(self.receive_counter),
         }
     }
 
@@ -269,6 +270,9 @@ impl ControllerState {
         self.pinned_tabs.extend(snapshot.pinned_tabs);
         for status in snapshot.pane_statuses {
             self.set_status(status);
+        }
+        for patch in snapshot.metadata_patches {
+            self.apply_metadata_patch(patch);
         }
     }
 
@@ -1048,6 +1052,51 @@ mod tests {
         assert_eq!(target_snapshot.pinned_tabs, vec![7]);
         assert_eq!(target_snapshot.pane_statuses.len(), 1);
         assert_eq!(target_snapshot.pane_statuses[0].title, "waiting");
+    }
+
+    #[test]
+    fn bootstrap_snapshot_carries_metadata_patches() {
+        let mut source = ControllerState::default();
+        source.apply_metadata_patch(tabs_shared::MetadataPatch {
+            target: EntityId::Tab(7),
+            source_id: "test".to_owned(),
+            set: BTreeMap::from([(
+                KEY_TAB_SUBJECT.to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("project:zellij".to_owned()),
+                    ttl_ms: None,
+                    precedence: Some(4),
+                    ordinal: Some(2),
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let snapshot = source.bootstrap_snapshot();
+        let mut target = ControllerState::default();
+        target.apply_bootstrap_snapshot(snapshot);
+        target.update_tabs(vec![ControllerTab {
+            tab_id: 7,
+            position: 0,
+            name: "overview".into(),
+            active: true,
+        }]);
+
+        let model = target.view_model();
+        let metadata = model
+            .resolved_metadata
+            .iter()
+            .find(|metadata| metadata.target == EntityId::Tab(7))
+            .expect("tab metadata");
+
+        assert_eq!(
+            metadata.values.get(KEY_TAB_SUBJECT).map(|entry| (
+                &entry.value,
+                entry.precedence,
+                entry.ordinal
+            )),
+            Some((&MetadataValue::Text("project:zellij".to_owned()), 4, 2))
+        );
     }
 
     #[test]

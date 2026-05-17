@@ -612,6 +612,7 @@ mod tests {
                 icon: None,
                 timestamp_ms: Some(10),
             }],
+            metadata_patches: vec![],
         };
         let payload = serde_json::to_string(&snapshot).unwrap();
 

@@ -64,6 +64,8 @@ pub struct ControllerBootstrapSnapshot {
     pub config: RailConfig,
     pub pinned_tabs: Vec<u64>,
     pub pane_statuses: Vec<SetPaneStatus>,
+    #[serde(default)]
+    pub metadata_patches: Vec<MetadataPatch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

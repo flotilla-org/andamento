@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
-use tabs_shared::{MetadataEntry, MetadataPatch, MetadataTarget, MetadataValue};
+use tabs_shared::{
+    MetadataEntry, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate,
+};
 
 pub type EntityId = MetadataTarget;
 
@@ -108,6 +110,41 @@ impl MetadataStore {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub fn snapshot_patches(&self, now: u64) -> Vec<MetadataPatch> {
+        let mut patches: BTreeMap<(EntityId, String), BTreeMap<String, MetadataValueUpdate>> =
+            BTreeMap::new();
+        for (target, target_entries) in &self.entries {
+            for (key, source_entries) in target_entries {
+                for (source_id, entry) in source_entries {
+                    if !entry_is_live(entry, now) {
+                        continue;
+                    }
+                    patches
+                        .entry((target.clone(), source_id.clone()))
+                        .or_default()
+                        .insert(
+                            key.clone(),
+                            MetadataValueUpdate {
+                                value: entry.value.clone(),
+                                ttl_ms: entry.ttl_ms,
+                                precedence: Some(entry.precedence),
+                                ordinal: Some(entry.ordinal),
+                            },
+                        );
+                }
+            }
+        }
+        patches
+            .into_iter()
+            .map(|((target, source_id), set)| MetadataPatch {
+                target,
+                source_id,
+                set,
+                unset: vec![],
+            })
+            .collect()
     }
 }
 
