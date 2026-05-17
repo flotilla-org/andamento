@@ -542,11 +542,26 @@ fn push_template_diagnostic_line(
     key: &str,
     context: TemplateRenderContext<'_>,
 ) {
-    if let Some(name) = matched_template_name(context) {
-        push_metadata_text_line(lines, indent, key, name);
-    }
-    if let Some(sizing) = matched_template_sizing(context) {
-        push_metadata_text_line(lines, indent, &format!("{key}.sizing"), sizing.as_text());
+    if let Some(template) = matched_template(context) {
+        push_metadata_text_line(lines, indent, key, template.name);
+        push_metadata_text_line(
+            lines,
+            indent,
+            &format!("{key}.sizing"),
+            template.sizing.as_text(),
+        );
+        push_metadata_text_line(
+            lines,
+            indent,
+            &format!("{key}.specificity"),
+            &template.specificity().to_string(),
+        );
+        push_metadata_text_line(
+            lines,
+            indent,
+            &format!("{key}.predicates"),
+            &template.predicates_text(),
+        );
     }
 }
 
@@ -2256,12 +2271,10 @@ fn template_fields_for(context: TemplateRenderContext<'_>) -> Vec<TemplateField>
         .unwrap_or_default()
 }
 
-fn matched_template_name(context: TemplateRenderContext<'_>) -> Option<&'static str> {
-    resolve_template(BUILTIN_TEMPLATES, &context).map(|template| template.name)
-}
-
-fn matched_template_sizing(context: TemplateRenderContext<'_>) -> Option<TemplateSizingHint> {
-    resolve_template(BUILTIN_TEMPLATES, &context).map(|template| template.sizing)
+fn matched_template(
+    context: TemplateRenderContext<'_>,
+) -> Option<&'static TemplateDefinition<'static>> {
+    resolve_template(BUILTIN_TEMPLATES, &context)
 }
 
 fn resolve_template<'a>(
@@ -2303,6 +2316,17 @@ impl TemplateDefinition<'_> {
             .iter()
             .map(MetadataPredicate::specificity)
             .sum()
+    }
+
+    fn predicates_text(&self) -> String {
+        if self.predicates.is_empty() {
+            return "none".to_owned();
+        }
+        self.predicates
+            .iter()
+            .map(MetadataPredicate::as_text)
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -2399,6 +2423,14 @@ impl MetadataPredicate {
             MetadataPredicate::Exists(_) => 1,
             MetadataPredicate::TextPrefix { .. } => 2,
             MetadataPredicate::TextEquals { .. } => 3,
+        }
+    }
+
+    fn as_text(&self) -> String {
+        match self {
+            MetadataPredicate::Exists(key) => format!("exists({key})"),
+            MetadataPredicate::TextEquals { key, value } => format!("{key} == {value}"),
+            MetadataPredicate::TextPrefix { key, prefix } => format!("{key} starts_with {prefix}"),
         }
     }
 }
@@ -3360,7 +3392,7 @@ mod tests {
         let mut model = grouped_model();
         model.config.view = RailViewMode::Metadata;
 
-        let rendered = render_lines(Some(&model), &[], 18, 64, true);
+        let rendered = render_lines(Some(&model), &[], 28, 64, true);
 
         assert!(rendered
             .lines
@@ -3399,7 +3431,7 @@ mod tests {
             tab.status = model.tabs[1].status.clone();
         }
 
-        let rendered = render_lines(Some(&model), &[], 32, 64, true);
+        let rendered = render_lines(Some(&model), &[], 40, 120, true);
 
         assert!(rendered
             .lines
@@ -3417,6 +3449,13 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.contains("template.tab_status.sizing: auto")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("template.tab_status.specificity: 4")));
+        assert!(rendered.lines.iter().any(|line| line.contains(
+            "template.tab_status.predicates: exists(status.title), status.priority == waiting"
+        )));
     }
 
     #[test]
