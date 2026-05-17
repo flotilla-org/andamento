@@ -562,6 +562,12 @@ fn push_template_diagnostic_line(
             &format!("{key}.predicates"),
             &template.predicates_text(),
         );
+        push_metadata_text_line(
+            lines,
+            indent,
+            &format!("{key}.candidates"),
+            &matched_template_candidates_text(context),
+        );
     }
 }
 
@@ -2277,6 +2283,18 @@ fn matched_template(
     resolve_template(BUILTIN_TEMPLATES, &context)
 }
 
+fn matched_template_candidates_text(context: TemplateRenderContext<'_>) -> String {
+    let candidates = matching_templates(BUILTIN_TEMPLATES, &context)
+        .into_iter()
+        .map(|template| format!("{}({})", template.name, template.specificity()))
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        "none".to_owned()
+    } else {
+        candidates.join(", ")
+    }
+}
+
 fn resolve_template<'a>(
     templates: &'a [TemplateDefinition<'a>],
     context: &TemplateRenderContext<'_>,
@@ -2292,6 +2310,16 @@ fn resolve_template<'a>(
         }
     }
     best.map(|(template, _)| template)
+}
+
+fn matching_templates<'a>(
+    templates: &'a [TemplateDefinition<'a>],
+    context: &TemplateRenderContext<'_>,
+) -> Vec<&'a TemplateDefinition<'a>> {
+    templates
+        .iter()
+        .filter(|template| template.matches(context))
+        .collect()
 }
 
 impl TemplateDefinition<'_> {
@@ -3431,7 +3459,7 @@ mod tests {
             tab.status = model.tabs[1].status.clone();
         }
 
-        let rendered = render_lines(Some(&model), &[], 40, 120, true);
+        let rendered = render_lines(Some(&model), &[], 40, 180, true);
 
         assert!(rendered
             .lines
@@ -3455,6 +3483,9 @@ mod tests {
             .any(|line| line.contains("template.tab_status.specificity: 4")));
         assert!(rendered.lines.iter().any(|line| line.contains(
             "template.tab_status.predicates: exists(status.title), status.priority == waiting"
+        )));
+        assert!(rendered.lines.iter().any(|line| line.contains(
+            "template.tab_status.candidates: builtin.tab-status(1), builtin.tab-status.waiting(4), builtin.tab-status.terminal-source(3)"
         )));
     }
 
