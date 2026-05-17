@@ -24,12 +24,13 @@ pub struct LocalTab {
 pub enum HitAction {
     SwitchTab,
     TogglePin,
+    ToggleGroup,
     OpenConfig,
     ScrollMetadataUp,
     ScrollMetadataDown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HitRegion {
     pub row_start: usize,
     pub row_end: usize,
@@ -37,6 +38,7 @@ pub struct HitRegion {
     pub col_end: usize,
     pub tab_id: u64,
     pub tab_position: usize,
+    pub group_path: Option<GroupPath>,
     pub action: HitAction,
 }
 
@@ -108,6 +110,7 @@ struct RenderGroup {
     label: String,
     full_label: String,
     tab_count: usize,
+    collapsed: bool,
     children: Vec<RenderTab>,
 }
 
@@ -160,6 +163,28 @@ pub fn render_lines_with_theme(
     )
 }
 
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub fn render_lines_with_collapsed_groups(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    rows: usize,
+    cols: usize,
+    controller_available: bool,
+    collapsed_groups: &[GroupPath],
+) -> RenderedRail {
+    render_lines_with_options(
+        model,
+        tabs,
+        rows,
+        cols,
+        controller_available,
+        None,
+        0,
+        None,
+        collapsed_groups,
+    )
+}
+
 pub fn render_lines_with_theme_and_cell_size(
     model: Option<&ControllerViewModel>,
     tabs: &[LocalTab],
@@ -169,6 +194,30 @@ pub fn render_lines_with_theme_and_cell_size(
     theme: Option<RenderTheme>,
     metadata_scroll_offset: usize,
     terminal_cell_size: Option<SizeInPixels>,
+) -> RenderedRail {
+    render_lines_with_options(
+        model,
+        tabs,
+        rows,
+        cols,
+        controller_available,
+        theme,
+        metadata_scroll_offset,
+        terminal_cell_size,
+        &[],
+    )
+}
+
+pub fn render_lines_with_options(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    rows: usize,
+    cols: usize,
+    controller_available: bool,
+    theme: Option<RenderTheme>,
+    metadata_scroll_offset: usize,
+    terminal_cell_size: Option<SizeInPixels>,
+    collapsed_groups: &[GroupPath],
 ) -> RenderedRail {
     if rows == 0 || cols == 0 {
         return RenderedRail {
@@ -184,7 +233,7 @@ pub fn render_lines_with_theme_and_cell_size(
     let mut lines = vec![blank(cols); rows];
     let mut hit_regions = vec![];
     let mut visible_cards = vec![];
-    let nodes = nodes_to_render(model, tabs);
+    let nodes = nodes_to_render(model, tabs, collapsed_groups);
     let config = model.map(|model| model.config).unwrap_or_default();
     let mut effective_metadata_scroll_offset = 0;
     if config.view == RailViewMode::Metadata {
@@ -274,6 +323,7 @@ fn render_metadata_projection(
                     col_end: cols.saturating_sub(1),
                     tab_id: hit.tab_id,
                     tab_position: hit.tab_position,
+                    group_path: None,
                     action: HitAction::SwitchTab,
                 });
             }
@@ -478,12 +528,16 @@ fn foreground_style(color: PaletteColor) -> Style {
 }
 
 pub fn hit_at(hit_regions: &[HitRegion], row: usize, col: usize) -> Option<HitRegion> {
-    hit_regions.iter().rev().copied().find(|region| {
-        row >= region.row_start
-            && row <= region.row_end
-            && col >= region.col_start
-            && col <= region.col_end
-    })
+    hit_regions
+        .iter()
+        .rev()
+        .find(|region| {
+            row >= region.row_start
+                && row <= region.row_end
+                && col >= region.col_start
+                && col <= region.col_end
+        })
+        .cloned()
 }
 
 fn render_cards(
@@ -633,23 +687,20 @@ fn render_nodes_to_buffer(
                     terminal_cell_size,
                 );
                 pending_tabs.clear();
-                lines.push(group_header_line(
-                    &group.label,
-                    group.tab_count,
-                    cols,
-                    theme,
-                ));
-                append_tab_run(
-                    lines,
-                    hit_regions,
-                    visible_cards,
-                    &group.children,
-                    cols,
-                    controller_available,
-                    config,
-                    theme,
-                    terminal_cell_size,
-                );
+                append_group_header(lines, hit_regions, group, cols, theme);
+                if !group.collapsed {
+                    append_tab_run(
+                        lines,
+                        hit_regions,
+                        visible_cards,
+                        &group.children,
+                        cols,
+                        controller_available,
+                        config,
+                        theme,
+                        terminal_cell_size,
+                    );
+                }
             }
         }
     }
@@ -664,6 +715,33 @@ fn render_nodes_to_buffer(
         theme,
         terminal_cell_size,
     );
+}
+
+fn append_group_header(
+    lines: &mut Vec<String>,
+    hit_regions: &mut Vec<HitRegion>,
+    group: &RenderGroup,
+    cols: usize,
+    theme: Option<RenderTheme>,
+) {
+    let row = lines.len();
+    lines.push(group_header_line(
+        &group.label,
+        group.tab_count,
+        group.collapsed,
+        cols,
+        theme,
+    ));
+    hit_regions.push(HitRegion {
+        row_start: row,
+        row_end: row,
+        col_start: 0,
+        col_end: cols.saturating_sub(1),
+        tab_id: 0,
+        tab_position: 0,
+        group_path: Some(group.path.clone()),
+        action: HitAction::ToggleGroup,
+    });
 }
 
 fn append_tab_run(
@@ -1093,6 +1171,7 @@ fn add_card_metadata(
         col_end: cols.saturating_sub(1),
         tab_id: card.tab_id,
         tab_position: card.position,
+        group_path: None,
         action: HitAction::SwitchTab,
     });
     if controller_available {
@@ -1103,6 +1182,7 @@ fn add_card_metadata(
             col_end: 7.min(cols.saturating_sub(1)),
             tab_id: card.tab_id,
             tab_position: card.position,
+            group_path: None,
             action: HitAction::TogglePin,
         });
     }
@@ -1126,7 +1206,11 @@ fn add_card_metadata(
     });
 }
 
-fn nodes_to_render(model: Option<&ControllerViewModel>, tabs: &[LocalTab]) -> Vec<RenderNode> {
+fn nodes_to_render(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    collapsed_groups: &[GroupPath],
+) -> Vec<RenderNode> {
     let local_by_id: HashMap<u64, &LocalTab> = tabs.iter().map(|tab| (tab.tab_id, tab)).collect();
     let Some(model) = model else {
         let mut tabs = tabs.to_vec();
@@ -1188,10 +1272,13 @@ fn nodes_to_render(model: Option<&ControllerViewModel>, tabs: &[LocalTab]) -> Ve
             })
             .collect()
     };
-    pending_nodes_to_render_nodes(pending_rows)
+    pending_nodes_to_render_nodes(pending_rows, collapsed_groups)
 }
 
-fn pending_nodes_to_render_nodes(pending_rows: Vec<PendingRenderNode>) -> Vec<RenderNode> {
+fn pending_nodes_to_render_nodes(
+    pending_rows: Vec<PendingRenderNode>,
+    collapsed_groups: &[GroupPath],
+) -> Vec<RenderNode> {
     let mut nodes = vec![];
     let mut pending_group: Option<RenderGroup> = None;
     for pending in pending_rows {
@@ -1205,11 +1292,13 @@ fn pending_nodes_to_render_nodes(pending_rows: Vec<PendingRenderNode>) -> Vec<Re
                 if let Some(group) = pending_group.take() {
                     nodes.push(RenderNode::Group(group));
                 }
+                let collapsed = collapsed_groups.iter().any(|collapsed| collapsed == &path);
                 pending_group = Some(RenderGroup {
                     path,
                     label,
                     full_label,
                     tab_count,
+                    collapsed,
                     children: vec![],
                 });
             }
@@ -1508,6 +1597,7 @@ fn render_footer(
         col_end: 0,
         tab_id: 0,
         tab_position: 0,
+        group_path: None,
         action: HitAction::OpenConfig,
     });
     if width >= 2 {
@@ -1518,6 +1608,7 @@ fn render_footer(
             col_end: width - 2,
             tab_id: 0,
             tab_position: 0,
+            group_path: None,
             action: HitAction::ScrollMetadataUp,
         });
         hit_regions.push(HitRegion {
@@ -1527,6 +1618,7 @@ fn render_footer(
             col_end: width - 1,
             tab_id: 0,
             tab_position: 0,
+            group_path: None,
             action: HitAction::ScrollMetadataDown,
         });
     }
@@ -1535,14 +1627,16 @@ fn render_footer(
 fn group_header_line(
     label: &str,
     tab_count: usize,
+    collapsed: bool,
     width: usize,
     theme: Option<RenderTheme>,
 ) -> String {
-    let count_label = format!("{label} ({tab_count})");
+    let marker = if collapsed { "▸" } else { "▾" };
+    let count_label = format!("{marker} {label} ({tab_count})");
     let text = if count_label.width() <= width {
         count_label
     } else {
-        label.to_owned()
+        format!("{marker} {label}")
     };
     style_body_text(pad_to_width(&truncate_to_width(&text, width), width), theme)
 }
@@ -1763,11 +1857,13 @@ mod tests {
     }
 
     #[test]
-    fn grouped_rendering_draws_non_clickable_group_header() {
+    fn grouped_rendering_draws_clickable_group_header() {
         let rendered = render_lines(Some(&grouped_model()), &[], 8, 24, true);
 
         assert!(rendered.lines[0].contains("zellij"));
-        assert_eq!(hit_at(&rendered.hit_regions, 0, 2), None);
+        let hit = hit_at(&rendered.hit_regions, 0, 2).expect("group header should be clickable");
+        assert_eq!(hit.action, HitAction::ToggleGroup);
+        assert!(hit.group_path.is_some());
     }
 
     #[test]
@@ -1828,6 +1924,26 @@ mod tests {
         let rendered = render_lines(Some(&grouped_model()), &[], 8, 24, true);
 
         assert!(rendered.visible_cards.iter().any(|card| card.tab_id == 2));
+    }
+
+    #[test]
+    fn collapsed_group_hides_child_tabs_but_keeps_toggle_header() {
+        let model = grouped_model();
+        let group_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("expected first row to be a group header"),
+        };
+
+        let rendered =
+            render_lines_with_collapsed_groups(Some(&model), &[], 8, 24, true, &[group_path]);
+
+        assert!(rendered.lines[0].contains("zellij"));
+        assert!(!rendered.lines.iter().any(|line| line.contains("server")));
+        assert!(!rendered.lines.iter().any(|line| line.contains("tests")));
+        assert_eq!(
+            hit_at(&rendered.hit_regions, 0, 2).map(|hit| hit.action),
+            Some(HitAction::ToggleGroup)
+        );
     }
 
     #[test]

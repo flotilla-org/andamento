@@ -10,13 +10,13 @@ fn should_sync_graphics(controller_available: bool) -> bool {
 #[cfg(target_family = "wasm")]
 use std::cmp::{max, min};
 #[cfg(target_family = "wasm")]
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[cfg(target_family = "wasm")]
 use render::{hit_at, status_icon_is_renderable, HitAction, HitRegion, LocalTab, VisibleCard};
 #[cfg(target_family = "wasm")]
 use tabs_shared::{
-    ControllerViewModel, RailViewMode, RendererHello, StatusIcon, MSG_RENDERER_HELLO,
+    ControllerViewModel, GroupPath, RailViewMode, RendererHello, StatusIcon, MSG_RENDERER_HELLO,
     MSG_REQUEST_STATE, MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
 };
 #[cfg(target_family = "wasm")]
@@ -45,6 +45,7 @@ pub struct PluginState {
     icon_asset_ids: HashMap<StatusIcon, u32>,
     next_icon_asset_id: u32,
     metadata_scroll_offset: usize,
+    collapsed_groups: BTreeSet<GroupPath>,
 }
 
 #[cfg(target_family = "wasm")]
@@ -140,7 +141,8 @@ impl ZellijPlugin for PluginState {
 
     fn render(&mut self, rows: usize, cols: usize) {
         let controller_available = self.controller_model.is_some();
-        let rendered = render::render_lines_with_theme_and_cell_size(
+        let collapsed_groups = self.collapsed_groups.iter().cloned().collect::<Vec<_>>();
+        let rendered = render::render_lines_with_options(
             self.controller_model.as_ref(),
             &self.local_tabs,
             rows,
@@ -151,6 +153,7 @@ impl ZellijPlugin for PluginState {
                 .map(|mode_info| mode_info.style.colors.into()),
             self.metadata_scroll_offset,
             terminal_pixel_cell_size(),
+            &collapsed_groups,
         );
         self.metadata_scroll_offset = rendered.metadata_scroll_offset;
         if should_sync_graphics(controller_available) {
@@ -212,6 +215,14 @@ impl PluginState {
                     HitAction::TogglePin => {
                         self.toggle_pin(hit.tab_id);
                         false
+                    }
+                    HitAction::ToggleGroup => {
+                        if let Some(group_path) = hit.group_path {
+                            self.toggle_group(group_path);
+                            true
+                        } else {
+                            false
+                        }
                     }
                     HitAction::OpenConfig => {
                         self.open_config_pane();
@@ -280,6 +291,12 @@ impl PluginState {
                 .with_destination_client_id(client_id)
                 .with_args(args),
         );
+    }
+
+    fn toggle_group(&mut self, group_path: GroupPath) {
+        if !self.collapsed_groups.insert(group_path.clone()) {
+            self.collapsed_groups.remove(&group_path);
+        }
     }
 
     fn open_config_pane(&self) {

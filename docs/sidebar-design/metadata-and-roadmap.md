@@ -271,6 +271,8 @@ This model supports:
 
 The renderer can still project these nodes into simple rows for the sidebar. The important change is that row layout becomes one projection of a richer tree, not the primary model.
 
+Status: started in the rail plugin. Normal rendering now uses local render nodes for groups and tabs, and groups can be collapsed/expanded locally in the rail by clicking the group header. Collapse state is default-expanded and client-local for now; persisted/shared collapse state can be added once sidebar UI state has a durable home.
+
 ### Metadata Inspection Mode Should Arrive Early
 
 The rail should have a metadata inspection projection before the final template system is ready. This is not just a config-panel debug screen; it is a mode of the actual sidebar so the user can inspect the data plane in the same hierarchy and spatial context that normal rendering uses.
