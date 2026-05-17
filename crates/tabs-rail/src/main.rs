@@ -3,6 +3,10 @@ mod render;
 #[cfg(not(target_family = "wasm"))]
 fn main() {}
 
+fn should_sync_graphics(controller_available: bool) -> bool {
+    controller_available
+}
+
 #[cfg(target_family = "wasm")]
 use std::cmp::{max, min};
 #[cfg(target_family = "wasm")]
@@ -149,9 +153,22 @@ impl ZellijPlugin for PluginState {
                 .map(|mode_info| mode_info.style.colors.into()),
             terminal_pixel_cell_size(),
         );
-        self.sync_graphics(&rendered.visible_cards);
+        if should_sync_graphics(controller_available) {
+            self.sync_graphics(&rendered.visible_cards);
+        }
         self.hit_regions = rendered.hit_regions;
         print!("{}", rendered.lines.join("\n"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graphics_sync_waits_for_controller_model() {
+        assert!(!should_sync_graphics(false));
+        assert!(should_sync_graphics(true));
     }
 }
 
@@ -171,11 +188,13 @@ impl PluginState {
         pipe_message_to_plugin(
             MessageToPlugin::new(MSG_RENDERER_HELLO)
                 .with_plugin_url(self.controller_plugin_url.clone())
+                .with_destination_client_id(client_id)
                 .with_payload(payload),
         );
         pipe_message_to_plugin(
             MessageToPlugin::new(MSG_REQUEST_STATE)
-                .with_plugin_url(self.controller_plugin_url.clone()),
+                .with_plugin_url(self.controller_plugin_url.clone())
+                .with_destination_client_id(client_id),
         );
     }
 
@@ -215,6 +234,9 @@ impl PluginState {
     }
 
     fn toggle_pin(&self, tab_id: u64) {
+        let Some(client_id) = self.own_client_id else {
+            return;
+        };
         if self.controller_model.is_none() {
             return;
         }
@@ -223,11 +245,15 @@ impl PluginState {
         pipe_message_to_plugin(
             MessageToPlugin::new(MSG_TOGGLE_PIN)
                 .with_plugin_url(self.controller_plugin_url.clone())
+                .with_destination_client_id(client_id)
                 .with_args(args),
         );
     }
 
     fn open_config_pane(&self) {
+        let Some(client_id) = self.own_client_id else {
+            return;
+        };
         let mut configuration = BTreeMap::new();
         configuration.insert(
             CONFIG_CONTROLLER_PLUGIN_URL.to_owned(),
@@ -237,6 +263,7 @@ impl PluginState {
         pipe_message_to_plugin(
             MessageToPlugin::new(MSG_REQUEST_STATE)
                 .with_plugin_url(self.config_plugin_url.clone())
+                .with_destination_client_id(client_id)
                 .with_plugin_config(configuration)
                 .new_plugin_instance_should_float(true)
                 .new_plugin_instance_should_be_focused(),

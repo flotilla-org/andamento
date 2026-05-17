@@ -799,6 +799,13 @@ fn rows_to_render(
     if model.rows.is_empty() {
         return None;
     }
+    if model
+        .rows
+        .iter()
+        .all(|row| matches!(row, RailRow::Tab { indent: 0, .. }))
+    {
+        return None;
+    }
     let local_by_id: HashMap<u64, &LocalTab> = tabs.iter().map(|tab| (tab.tab_id, tab)).collect();
     Some(
         model
@@ -832,7 +839,7 @@ fn render_card_from_model(card: &TabCard, local_by_id: &HashMap<u64, &LocalTab>)
         name: local
             .map(|tab| tab.name.clone())
             .unwrap_or_else(|| card.name.clone()),
-        active: card.active,
+        active: local.map(|tab| tab.active).unwrap_or(card.active),
         pinned: card.pinned,
         status: card.status.clone(),
     }
@@ -1268,6 +1275,42 @@ mod tests {
         }
     }
 
+    fn flat_rows_model() -> ControllerViewModel {
+        let mut model = model();
+        model.config.structure = RailStructure::JoinedCells;
+        model.config.sizing = RailSizingPreset::Compact;
+        model.rows = model
+            .tabs
+            .iter()
+            .cloned()
+            .map(|tab| RailRow::Tab { tab, indent: 0 })
+            .collect();
+        model
+    }
+
+    #[test]
+    fn flat_controller_rows_still_honor_joined_cells_structure() {
+        let rendered = render_lines(Some(&flat_rows_model()), &[], 7, 24, true);
+
+        assert!(rendered.lines[0].starts_with("┌ tab-2"));
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.starts_with("├ tab-1")),
+            "flat controller rows should render joined separators, not standalone boxes: {:?}",
+            rendered.lines
+        );
+        assert!(
+            !rendered
+                .lines
+                .iter()
+                .any(|line| line.starts_with("┌ tab-1")),
+            "inactive tab should not start a standalone box when structure is joined-cells: {:?}",
+            rendered.lines
+        );
+    }
+
     #[test]
     fn grouped_rendering_draws_non_clickable_group_header() {
         let rendered = render_lines(Some(&grouped_model()), &[], 8, 24, true);
@@ -1596,6 +1639,35 @@ mod tests {
             .expect("inactive card should be visible");
 
         assert_eq!(next_card.row_start - active_card.row_start, 5);
+    }
+
+    #[test]
+    fn local_active_state_overrides_controller_model_active_state() {
+        let mut model = model();
+        model.tabs.swap(0, 1);
+        let rendered = render_lines(
+            Some(&model),
+            &[local_tab(1, 0, true), local_tab(2, 1, false)],
+            9,
+            24,
+            true,
+        );
+
+        let local_active_card = rendered
+            .visible_cards
+            .iter()
+            .find(|card| card.tab_id == 1)
+            .expect("local active card should be visible");
+        let controller_active_card = rendered
+            .visible_cards
+            .iter()
+            .find(|card| card.tab_id == 2)
+            .expect("controller active card should be visible");
+
+        assert_eq!(
+            controller_active_card.row_start - local_active_card.row_start,
+            5
+        );
     }
 
     #[test]

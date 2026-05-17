@@ -11,6 +11,8 @@ pub const MSG_SET_SORT_MODE: &str = "tabs-set-sort-mode";
 pub const MSG_SET_RAIL_CONFIG: &str = "tabs-set-rail-config";
 pub const MSG_SET_PANE_STATUS: &str = "tabs-set-pane-status";
 pub const MSG_CLEAR_PANE_STATUS: &str = "tabs-clear-pane-status";
+pub const MSG_CONTROLLER_BOOTSTRAP_REQUEST: &str = "tabs-controller-bootstrap-request";
+pub const MSG_CONTROLLER_BOOTSTRAP_STATE: &str = "tabs-controller-bootstrap-state";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -51,6 +53,14 @@ pub enum ExternalMessage {
 pub struct RendererHello {
     pub plugin_id: u32,
     pub client_id: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControllerBootstrapSnapshot {
+    pub sort_mode: SortMode,
+    pub config: RailConfig,
+    pub pinned_tabs: Vec<u64>,
+    pub pane_statuses: Vec<SetPaneStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -144,11 +144,13 @@ impl PluginState {
         pipe_message_to_plugin(
             MessageToPlugin::new(MSG_CONFIG_EDITOR_HELLO)
                 .with_plugin_url(self.controller_plugin_url.clone())
+                .with_destination_client_id(client_id)
                 .with_payload(payload),
         );
         pipe_message_to_plugin(
             MessageToPlugin::new(MSG_REQUEST_STATE)
-                .with_plugin_url(self.controller_plugin_url.clone()),
+                .with_plugin_url(self.controller_plugin_url.clone())
+                .with_destination_client_id(client_id),
         );
     }
 
@@ -169,9 +171,13 @@ impl PluginState {
         let Ok(payload) = serde_json::to_string(&config) else {
             return true;
         };
+        let Some(client_id) = self.own_client_id else {
+            return true;
+        };
         pipe_message_to_plugin(
             MessageToPlugin::new(MSG_SET_RAIL_CONFIG)
                 .with_plugin_url(self.controller_plugin_url.clone())
+                .with_destination_client_id(client_id)
                 .with_payload(payload),
         );
         true

@@ -3,9 +3,9 @@ use std::path::Path;
 
 use crate::metadata::{select_primary_value, CandidateEntry, EntityId, MetadataStore};
 use tabs_shared::{
-    ControllerViewModel, GroupPath, GroupSegment, MetadataEntry, MetadataValue, PaneTarget,
-    Priority, RailConfig, RailGroupingMode, RailRow, RendererHello, SetPaneStatus, SortMode,
-    TabCard, TabGroupingInfo, TabStatusSummary,
+    ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataEntry,
+    MetadataValue, PaneTarget, Priority, RailConfig, RailGroupingMode, RailRow, RendererHello,
+    SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -232,6 +232,33 @@ impl ControllerState {
         self.rail_config = rail_config;
     }
 
+    pub fn bootstrap_snapshot(&self) -> ControllerBootstrapSnapshot {
+        let mut pinned_tabs: Vec<u64> = self.pinned_tabs.iter().copied().collect();
+        pinned_tabs.sort_unstable();
+        let mut pane_statuses: Vec<SetPaneStatus> = self
+            .pane_statuses
+            .values()
+            .map(|stored| stored.status.clone())
+            .collect();
+        pane_statuses.sort_by_key(|status| status.timestamp_ms.unwrap_or(0));
+
+        ControllerBootstrapSnapshot {
+            sort_mode: self.sort_mode,
+            config: self.rail_config,
+            pinned_tabs,
+            pane_statuses,
+        }
+    }
+
+    pub fn apply_bootstrap_snapshot(&mut self, snapshot: ControllerBootstrapSnapshot) {
+        self.sort_mode = snapshot.sort_mode;
+        self.rail_config = snapshot.config;
+        self.pinned_tabs.extend(snapshot.pinned_tabs);
+        for status in snapshot.pane_statuses {
+            self.set_status(status);
+        }
+    }
+
     #[allow(dead_code)]
     pub fn register_rail(&mut self, hello: RendererHello) {
         self.known_rails.insert(hello.plugin_id, hello);
@@ -251,6 +278,15 @@ impl ControllerState {
             .keys()
             .chain(self.known_config_editors.keys())
             .copied()
+            .collect()
+    }
+
+    #[allow(dead_code)]
+    pub fn rail_plugin_targets(&self) -> Vec<RendererHello> {
+        self.known_rails
+            .values()
+            .chain(self.known_config_editors.values())
+            .cloned()
             .collect()
     }
 
@@ -520,7 +556,10 @@ fn format_pane_id(pane_id: PaneTarget) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tabs_shared::{GroupPath, GroupSegment, RailGroupingMode, RailRow, StatusIcon};
+    use tabs_shared::{
+        GroupPath, GroupSegment, RailGroupingMode, RailRow, RailSizingPreset, RailStructure,
+        StatusIcon,
+    };
 
     fn status(
         pane_id: PaneTarget,
@@ -767,6 +806,35 @@ mod tests {
                 .and_then(|status| status.icon.as_ref()),
             Some(&StatusIcon::Builtin("waiting".to_owned()))
         );
+    }
+
+    #[test]
+    fn bootstrap_snapshot_carries_external_state_without_zellij_tabs() {
+        let mut source = ControllerState::default();
+        source.set_sort_mode(SortMode::PinnedFirst);
+        source.set_rail_config(RailConfig {
+            structure: RailStructure::BoxPerTab,
+            sizing: RailSizingPreset::Compact,
+            grouping: RailGroupingMode::Directory,
+        });
+        source.toggle_pin(7);
+        source.set_status(status(
+            PaneTarget::Terminal(10),
+            Priority::Waiting,
+            "waiting",
+            10,
+        ));
+
+        let snapshot = source.bootstrap_snapshot();
+        let mut target = ControllerState::default();
+        target.apply_bootstrap_snapshot(snapshot);
+
+        let target_snapshot = target.bootstrap_snapshot();
+        assert_eq!(target_snapshot.sort_mode, SortMode::PinnedFirst);
+        assert_eq!(target_snapshot.config.structure, RailStructure::BoxPerTab);
+        assert_eq!(target_snapshot.pinned_tabs, vec![7]);
+        assert_eq!(target_snapshot.pane_statuses.len(), 1);
+        assert_eq!(target_snapshot.pane_statuses[0].title, "waiting");
     }
 
     #[test]

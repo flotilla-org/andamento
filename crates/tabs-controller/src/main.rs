@@ -9,8 +9,9 @@ use tabs_shared::PaneTarget;
 #[cfg(target_family = "wasm")]
 use tabs_shared::MSG_VIEW_MODEL;
 use tabs_shared::{
-    ExternalMessage, RailConfig, RailGroupingMode, RailSizingPreset, RailStructure, RendererHello,
-    SortMode, MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO, MSG_RENDERER_HELLO,
+    ControllerBootstrapSnapshot, ExternalMessage, RailConfig, RailGroupingMode, RailSizingPreset,
+    RailStructure, RendererHello, SortMode, MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO,
+    MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_RENDERER_HELLO,
     MSG_REQUEST_STATE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_TOGGLE_PIN,
 };
 use zellij_tile::prelude::*;
@@ -23,6 +24,8 @@ fn main() {}
 struct PluginState {
     state: ControllerState,
     permissions_granted: bool,
+    own_identity: Option<RendererHello>,
+    bootstrap_requested: bool,
 }
 
 #[cfg(target_family = "wasm")]
@@ -31,6 +34,11 @@ register_plugin!(PluginState);
 #[cfg(target_family = "wasm")]
 impl ZellijPlugin for PluginState {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
+        let ids = get_plugin_ids();
+        self.own_identity = Some(RendererHello {
+            plugin_id: ids.plugin_id,
+            client_id: ids.client_id,
+        });
         self.state
             .set_rail_config(parse_rail_config(&configuration));
         request_permission(&[
@@ -51,6 +59,7 @@ impl ZellijPlugin for PluginState {
         match event {
             Event::PermissionRequestResult(status) => {
                 self.permissions_granted = matches!(status, PermissionStatus::Granted);
+                self.request_bootstrap_snapshot();
             }
             Event::TabUpdate(tabs) => {
                 self.state.update_tabs_from_zellij(tabs);
@@ -89,7 +98,13 @@ impl ZellijPlugin for PluginState {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
-        if handle_pipe_message(&mut self.state, pipe_message) {
+        let result = handle_pipe_message(&mut self.state, pipe_message);
+        if let Some(requester) = result.bootstrap_request {
+            if self.own_identity.as_ref() != Some(&requester) {
+                self.send_bootstrap_snapshot_to(requester);
+            }
+        }
+        if result.state_changed {
             self.push_view_model_to_rails();
         }
         false
@@ -98,6 +113,37 @@ impl ZellijPlugin for PluginState {
 
 #[cfg(target_family = "wasm")]
 impl PluginState {
+    fn request_bootstrap_snapshot(&mut self) {
+        if !self.permissions_granted || self.bootstrap_requested {
+            return;
+        }
+        let Some(identity) = self.own_identity.as_ref() else {
+            return;
+        };
+        let Ok(payload) = serde_json::to_string(identity) else {
+            return;
+        };
+        self.bootstrap_requested = true;
+        pipe_message_to_plugin(
+            MessageToPlugin::new(MSG_CONTROLLER_BOOTSTRAP_REQUEST).with_payload(payload),
+        );
+    }
+
+    fn send_bootstrap_snapshot_to(&self, requester: RendererHello) {
+        if !self.permissions_granted {
+            return;
+        }
+        let Ok(payload) = serde_json::to_string(&self.state.bootstrap_snapshot()) else {
+            return;
+        };
+        pipe_message_to_plugin(
+            MessageToPlugin::new(MSG_CONTROLLER_BOOTSTRAP_STATE)
+                .with_destination_plugin_id(requester.plugin_id)
+                .with_destination_client_id(requester.client_id)
+                .with_payload(payload),
+        );
+    }
+
     fn push_view_model_to_rails(&self) {
         if !self.permissions_granted {
             return;
@@ -105,51 +151,93 @@ impl PluginState {
         let Ok(payload) = serde_json::to_string(&self.state.view_model()) else {
             return;
         };
-        for rail_id in self.state.rail_plugin_ids() {
+        for rail in self.state.rail_plugin_targets() {
             pipe_message_to_plugin(
                 MessageToPlugin::new(MSG_VIEW_MODEL)
-                    .with_destination_plugin_id(rail_id)
+                    .with_destination_plugin_id(rail.plugin_id)
+                    .with_destination_client_id(rail.client_id)
                     .with_payload(payload.clone()),
             );
         }
     }
 }
 
-fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -> bool {
+#[derive(Debug, Default, PartialEq, Eq)]
+struct HandlePipeResult {
+    state_changed: bool,
+    bootstrap_request: Option<RendererHello>,
+}
+
+fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -> HandlePipeResult {
     match parse_controller_message(&pipe_message) {
         Ok(Some(ControllerMessage::External(ExternalMessage::SetPaneStatus(status)))) => {
             state.set_status(status);
-            true
+            HandlePipeResult {
+                state_changed: true,
+                bootstrap_request: None,
+            }
         }
         Ok(Some(ControllerMessage::External(ExternalMessage::ClearPaneStatus { pane_id }))) => {
             state.clear_status(pane_id);
-            true
+            HandlePipeResult {
+                state_changed: true,
+                bootstrap_request: None,
+            }
         }
         Ok(Some(ControllerMessage::RendererHello(hello))) => {
             state.register_rail(hello);
-            true
+            HandlePipeResult {
+                state_changed: true,
+                bootstrap_request: None,
+            }
         }
         Ok(Some(ControllerMessage::ConfigEditorHello(hello))) => {
             state.register_config_editor(hello);
-            true
+            HandlePipeResult {
+                state_changed: true,
+                bootstrap_request: None,
+            }
         }
         Ok(Some(ControllerMessage::TogglePin(tab_id))) => {
             state.toggle_pin(tab_id);
-            true
+            HandlePipeResult {
+                state_changed: true,
+                bootstrap_request: None,
+            }
         }
         Ok(Some(ControllerMessage::SetSortMode(sort_mode))) => {
             state.set_sort_mode(sort_mode);
-            true
+            HandlePipeResult {
+                state_changed: true,
+                bootstrap_request: None,
+            }
         }
         Ok(Some(ControllerMessage::SetRailConfig(config))) => {
             state.set_rail_config(config);
-            true
+            HandlePipeResult {
+                state_changed: true,
+                bootstrap_request: None,
+            }
         }
-        Ok(Some(ControllerMessage::RequestState)) => true,
-        Ok(None) => false,
+        Ok(Some(ControllerMessage::RequestState)) => HandlePipeResult {
+            state_changed: true,
+            bootstrap_request: None,
+        },
+        Ok(Some(ControllerMessage::BootstrapRequest(requester))) => HandlePipeResult {
+            state_changed: false,
+            bootstrap_request: Some(requester),
+        },
+        Ok(Some(ControllerMessage::BootstrapState(snapshot))) => {
+            state.apply_bootstrap_snapshot(snapshot);
+            HandlePipeResult {
+                state_changed: true,
+                bootstrap_request: None,
+            }
+        }
+        Ok(None) => HandlePipeResult::default(),
         Err(error) => {
             eprintln!("tabs-controller: {error}");
-            false
+            HandlePipeResult::default()
         }
     }
 }
@@ -209,6 +297,8 @@ enum ControllerMessage {
     SetSortMode(SortMode),
     SetRailConfig(RailConfig),
     RequestState,
+    BootstrapRequest(RendererHello),
+    BootstrapState(ControllerBootstrapSnapshot),
 }
 
 fn parse_controller_message(
@@ -277,6 +367,26 @@ fn parse_controller_message(
             .map(ControllerMessage::SetRailConfig)
             .map(Some),
         MSG_REQUEST_STATE => Ok(Some(ControllerMessage::RequestState)),
+        MSG_CONTROLLER_BOOTSTRAP_REQUEST => {
+            let payload = pipe_message
+                .payload
+                .as_deref()
+                .ok_or_else(|| "bootstrap request requires payload".to_owned())?;
+            serde_json::from_str::<RendererHello>(payload)
+                .map(ControllerMessage::BootstrapRequest)
+                .map(Some)
+                .map_err(|e| format!("failed to parse bootstrap request: {e}"))
+        }
+        MSG_CONTROLLER_BOOTSTRAP_STATE => {
+            let payload = pipe_message
+                .payload
+                .as_deref()
+                .ok_or_else(|| "bootstrap state requires payload".to_owned())?;
+            serde_json::from_str::<ControllerBootstrapSnapshot>(payload)
+                .map(ControllerMessage::BootstrapState)
+                .map(Some)
+                .map_err(|e| format!("failed to parse bootstrap state: {e}"))
+        }
         _ => Ok(None),
     }
 }
@@ -435,6 +545,55 @@ mod tests {
     }
 
     #[test]
+    fn parses_controller_bootstrap_request() {
+        let requester = RendererHello {
+            plugin_id: 21,
+            client_id: 2,
+        };
+        let payload = serde_json::to_string(&requester).unwrap();
+
+        let parsed = parse_controller_message(&pipe(
+            MSG_CONTROLLER_BOOTSTRAP_REQUEST,
+            Some(payload),
+            BTreeMap::new(),
+        ))
+        .unwrap();
+
+        assert_eq!(parsed, Some(ControllerMessage::BootstrapRequest(requester)));
+    }
+
+    #[test]
+    fn parses_controller_bootstrap_state() {
+        let snapshot = ControllerBootstrapSnapshot {
+            sort_mode: SortMode::PinnedFirst,
+            config: RailConfig {
+                structure: RailStructure::BoxPerTab,
+                sizing: RailSizingPreset::Compact,
+                grouping: RailGroupingMode::Directory,
+            },
+            pinned_tabs: vec![7],
+            pane_statuses: vec![SetPaneStatus {
+                pane_id: PaneTarget::Terminal(1),
+                priority: Priority::Waiting,
+                title: "waiting".to_owned(),
+                detail: None,
+                icon: None,
+                timestamp_ms: Some(10),
+            }],
+        };
+        let payload = serde_json::to_string(&snapshot).unwrap();
+
+        let parsed = parse_controller_message(&pipe(
+            MSG_CONTROLLER_BOOTSTRAP_STATE,
+            Some(payload),
+            BTreeMap::new(),
+        ))
+        .unwrap();
+
+        assert_eq!(parsed, Some(ControllerMessage::BootstrapState(snapshot)));
+    }
+
+    #[test]
     fn set_rail_config_message_updates_controller_state() {
         let config = RailConfig {
             structure: RailStructure::BoxPerTab,
@@ -449,7 +608,29 @@ mod tests {
             pipe(MSG_SET_RAIL_CONFIG, Some(payload), BTreeMap::new()),
         );
 
-        assert!(changed);
+        assert!(changed.state_changed);
         assert_eq!(state.view_model().config, config);
+    }
+
+    #[test]
+    fn bootstrap_request_does_not_mutate_controller_state() {
+        let requester = RendererHello {
+            plugin_id: 21,
+            client_id: 2,
+        };
+        let payload = serde_json::to_string(&requester).unwrap();
+        let mut state = ControllerState::default();
+
+        let result = handle_pipe_message(
+            &mut state,
+            pipe(
+                MSG_CONTROLLER_BOOTSTRAP_REQUEST,
+                Some(payload),
+                BTreeMap::new(),
+            ),
+        );
+
+        assert!(!result.state_changed);
+        assert_eq!(result.bootstrap_request, Some(requester));
     }
 }
