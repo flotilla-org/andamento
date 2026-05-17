@@ -542,24 +542,29 @@ impl ControllerState {
                     self.metadata
                         .source_entries_for(&tab_target, self.receive_counter),
                 );
+            let group_target = tab
+                .grouping
+                .as_ref()
+                .map(|grouping| EntityId::Group(grouping.path.clone()));
+            if let Some(group_target) = group_target.as_ref() {
+                by_target.entry(group_target.clone()).or_default().extend(
+                    self.metadata
+                        .resolved_entries_for(group_target, self.receive_counter),
+                );
+                sources_by_target
+                    .entry(group_target.clone())
+                    .or_default()
+                    .extend(
+                        self.metadata
+                            .source_entries_for(group_target, self.receive_counter),
+                    );
+            }
             if let Some(entry) = self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD) {
                 by_target
                     .entry(tab_target)
                     .or_default()
                     .insert(KEY_PANE_CWD.to_owned(), entry.clone());
-                if let Some(grouping) = tab.grouping.as_ref() {
-                    let group_target = EntityId::Group(grouping.path.clone());
-                    by_target.entry(group_target.clone()).or_default().extend(
-                        self.metadata
-                            .resolved_entries_for(&group_target, self.receive_counter),
-                    );
-                    sources_by_target
-                        .entry(group_target.clone())
-                        .or_default()
-                        .extend(
-                            self.metadata
-                                .source_entries_for(&group_target, self.receive_counter),
-                        );
+                if let Some(group_target) = group_target {
                     by_target
                         .entry(group_target)
                         .or_default()
@@ -984,6 +989,68 @@ mod tests {
             &model.rows[0],
             RailRow::GroupHeader { path, .. } if path == &grouping.path
         ));
+    }
+
+    #[test]
+    fn explicit_group_metadata_resolves_for_subject_group_without_cwd() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "overview".into(),
+            active: true,
+        }]);
+        let group_path = GroupPath(vec![GroupSegment {
+            key: KEY_TAB_SUBJECT.to_owned(),
+            value: MetadataValue::Text("project:zellij".to_owned()),
+        }]);
+        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+            target: EntityId::Tab(1),
+            source_id: "test".to_owned(),
+            set: BTreeMap::from([(
+                KEY_TAB_SUBJECT.to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("project:zellij".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+            target: EntityId::Group(group_path.clone()),
+            source_id: "flotilla".to_owned(),
+            set: BTreeMap::from([(
+                "group.summary".to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("build running".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let group_metadata = model
+            .resolved_metadata
+            .iter()
+            .find(|metadata| metadata.target == EntityId::Group(group_path.clone()))
+            .expect("group metadata");
+
+        assert_eq!(
+            group_metadata
+                .values
+                .get("group.summary")
+                .map(|entry| &entry.value),
+            Some(&MetadataValue::Text("build running".to_owned()))
+        );
     }
 
     #[test]

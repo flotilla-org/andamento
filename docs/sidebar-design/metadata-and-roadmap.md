@@ -515,7 +515,7 @@ Scope:
 - define merge behavior between direct group metadata and rollups from child panes/tabs.
 - add debug rendering for direct group values versus rolled-up values.
 
-Status: started. The shared model now has `MetadataTarget::{Pane, Tab, Group}` and `MetadataPatch`/`MetadataValueUpdate`, and the controller metadata store can apply collaborative source-scoped patches internally. External patch input now feeds the same store and resolved metadata can surface tab/group values. Rollup/direct merge behavior and raw-source diagnostics are still future work.
+Status: started. The shared model now has `MetadataTarget::{Pane, Tab, Group}` and `MetadataPatch`/`MetadataValueUpdate`, and the controller metadata store can apply collaborative source-scoped patches internally. External patch input now feeds the same store and resolved metadata can surface tab/group values. Direct group metadata resolves for groups created by either cwd fallback or explicit tab subject/scope. Rollup/direct merge behavior and richer raw-source interaction are still future work.
 
 ### 6. Explicit Tab Subject/Scope
 
