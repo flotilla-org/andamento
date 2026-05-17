@@ -40,7 +40,16 @@ layout {
         }
     }
 
-    tab name="main" {
+    tab name="main" hide_floating_panes=true {
         pane
+        floating_panes {
+            pane command="/Users/robert/dev/zellij-scratch/scripts/andamento-git-watcher.py" cwd="/Users/robert/dev/zellij-scratch" {
+                args "--interval" "5"
+                width 80
+                height 12
+                x 10
+                y 5
+            }
+        }
     }
 }
