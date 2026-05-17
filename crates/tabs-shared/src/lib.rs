@@ -216,12 +216,20 @@ pub struct ResolvedMetadata {
     pub values: BTreeMap<String, MetadataEntry>,
     #[serde(default)]
     pub source_entries: BTreeMap<String, Vec<MetadataSourceEntry>>,
+    #[serde(default)]
+    pub reachable_identities: Vec<ReachableMetadataIdentity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetadataSourceEntry {
     pub source_id: String,
     pub entry: MetadataEntry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReachableMetadataIdentity {
+    pub identity: MetadataIdentity,
+    pub distance: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

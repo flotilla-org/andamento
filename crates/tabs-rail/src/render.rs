@@ -8,8 +8,8 @@ use ansi_term::{Color, Style};
 use tabs_shared::{
     ControllerViewModel, GroupPath, GroupSegment, MetadataEntry, MetadataSourceEntry,
     MetadataTarget, MetadataValue, PaneTarget, Priority, RailConfig, RailRow, RailSizingPreset,
-    RailStructure, RailViewMode, ResolvedMetadata, StatusIcon, TabCard, TabGroupingInfo,
-    TabStatusSummary,
+    RailStructure, RailViewMode, ReachableMetadataIdentity, ResolvedMetadata, StatusIcon, TabCard,
+    TabGroupingInfo, TabStatusSummary,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::{PaletteColor, SizeInPixels, Styling};
@@ -19,6 +19,7 @@ const COMPACT_CELL_HEIGHT: usize = 2;
 
 type RenderMetadata = BTreeMap<String, MetadataValue>;
 type RenderMetadataSources = BTreeMap<String, Vec<MetadataSourceEntry>>;
+type RenderReachableIdentities = Vec<ReachableMetadataIdentity>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalTab {
@@ -106,6 +107,7 @@ struct RenderCard {
     status: Option<TabStatusSummary>,
     metadata: RenderMetadata,
     metadata_sources: RenderMetadataSources,
+    reachable_identities: RenderReachableIdentities,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +126,7 @@ struct RenderGroup {
     indent: usize,
     metadata: RenderMetadata,
     metadata_sources: RenderMetadataSources,
+    reachable_identities: RenderReachableIdentities,
     children: Vec<RenderNode>,
 }
 
@@ -433,6 +436,7 @@ fn group_metadata_block(group: &RenderGroup) -> MetadataBlock {
         .collect::<Vec<_>>();
     push_additional_metadata_lines(&mut lines, 2, &group.metadata, &excluded_keys);
     push_metadata_source_detail_lines(&mut lines, 2, &group.metadata_sources);
+    push_reachable_identity_lines(&mut lines, 2, &group.reachable_identities);
     push_template_diagnostic_line(
         &mut lines,
         2,
@@ -506,6 +510,7 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
         ],
     );
     push_metadata_source_detail_lines(&mut lines, indent + 2, &card.metadata_sources);
+    push_reachable_identity_lines(&mut lines, indent + 2, &card.reachable_identities);
     push_template_diagnostic_line(
         &mut lines,
         indent + 2,
@@ -634,6 +639,25 @@ fn push_metadata_source_detail_lines(
                 &entry.entry.ordinal.to_string(),
             );
         }
+    }
+}
+
+fn push_reachable_identity_lines(
+    lines: &mut Vec<String>,
+    indent: usize,
+    reachable_identities: &[ReachableMetadataIdentity],
+) {
+    for reachable in reachable_identities {
+        push_metadata_text_line(
+            lines,
+            indent,
+            &format!("identity.{}", reachable.identity.key),
+            &format!(
+                "{} distance={}",
+                format_metadata_value(&reachable.identity.value),
+                reachable.distance
+            ),
+        );
     }
 }
 
@@ -1536,6 +1560,7 @@ fn nodes_to_render(
                         status: None,
                         metadata,
                         metadata_sources: RenderMetadataSources::new(),
+                        reachable_identities: RenderReachableIdentities::new(),
                     },
                     indent: 0,
                     grouping: None,
@@ -1646,6 +1671,7 @@ fn ensure_group_path<'a>(
                 nodes.push(RenderNode::Group(RenderGroup {
                     metadata: metadata_for_group_header(path, leaf_label, leaf_full_label, 0),
                     metadata_sources: RenderMetadataSources::new(),
+                    reachable_identities: RenderReachableIdentities::new(),
                     path: path.clone(),
                     label: leaf_label.to_owned(),
                     full_label: leaf_full_label.to_owned(),
@@ -1708,6 +1734,7 @@ fn ensure_group_path_at<'a>(
             nodes.push(RenderNode::Group(RenderGroup {
                 metadata: metadata_for_group_header(&prefix, &label, &full_label, 0),
                 metadata_sources: RenderMetadataSources::new(),
+                reachable_identities: RenderReachableIdentities::new(),
                 path: prefix.clone(),
                 label: label.clone(),
                 full_label: full_label.clone(),
@@ -1779,13 +1806,28 @@ fn merge_resolved_metadata(nodes: &mut [RenderNode], resolved_metadata: &[Resolv
         .iter()
         .map(|metadata| (metadata.target.clone(), metadata.source_entries.clone()))
         .collect::<HashMap<_, _>>();
-    merge_resolved_metadata_into_nodes(nodes, &by_target, &sources_by_target);
+    let identities_by_target = resolved_metadata
+        .iter()
+        .map(|metadata| {
+            (
+                metadata.target.clone(),
+                metadata.reachable_identities.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    merge_resolved_metadata_into_nodes(
+        nodes,
+        &by_target,
+        &sources_by_target,
+        &identities_by_target,
+    );
 }
 
 fn merge_resolved_metadata_into_nodes(
     nodes: &mut [RenderNode],
     by_target: &HashMap<MetadataTarget, RenderMetadata>,
     sources_by_target: &HashMap<MetadataTarget, RenderMetadataSources>,
+    identities_by_target: &HashMap<MetadataTarget, RenderReachableIdentities>,
 ) {
     for node in nodes {
         match node {
@@ -1797,6 +1839,11 @@ fn merge_resolved_metadata_into_nodes(
                 if let Some(metadata_sources) = sources_by_target.get(&target) {
                     tab.card.metadata_sources.extend(metadata_sources.clone());
                 }
+                if let Some(reachable_identities) = identities_by_target.get(&target) {
+                    tab.card
+                        .reachable_identities
+                        .extend(reachable_identities.clone());
+                }
             }
             RenderNode::Group(group) => {
                 let target = MetadataTarget::Group(group.path.clone());
@@ -1806,10 +1853,16 @@ fn merge_resolved_metadata_into_nodes(
                 if let Some(metadata_sources) = sources_by_target.get(&target) {
                     group.metadata_sources.extend(metadata_sources.clone());
                 }
+                if let Some(reachable_identities) = identities_by_target.get(&target) {
+                    group
+                        .reachable_identities
+                        .extend(reachable_identities.clone());
+                }
                 merge_resolved_metadata_into_nodes(
                     &mut group.children,
                     by_target,
                     sources_by_target,
+                    identities_by_target,
                 );
             }
         }
@@ -1865,6 +1918,7 @@ fn render_card_from_model(card: &TabCard, local_by_id: &HashMap<u64, &LocalTab>)
         status,
         metadata: metadata_for_tab_card(card, position, &name, active),
         metadata_sources: RenderMetadataSources::new(),
+        reachable_identities: RenderReachableIdentities::new(),
     }
 }
 
@@ -3153,6 +3207,7 @@ mod tests {
             indent: 0,
             metadata: metadata_for_group_header(&GroupPath::default(), "parent", "parent", 1),
             metadata_sources: RenderMetadataSources::new(),
+            reachable_identities: RenderReachableIdentities::new(),
             children: vec![RenderNode::Group(RenderGroup {
                 path: GroupPath::default(),
                 label: "typed-child".to_owned(),
@@ -3162,6 +3217,7 @@ mod tests {
                 indent: 0,
                 metadata: metadata_for_group_header(&GroupPath::default(), "child", "child", 1),
                 metadata_sources: RenderMetadataSources::new(),
+                reachable_identities: RenderReachableIdentities::new(),
                 children: vec![RenderNode::Tab(RenderTab {
                     card: RenderCard {
                         tab_id: 42,
@@ -3177,6 +3233,7 @@ mod tests {
                             active: true,
                         }),
                         metadata_sources: RenderMetadataSources::new(),
+                        reachable_identities: RenderReachableIdentities::new(),
                     },
                     indent: 4,
                     grouping: None,
@@ -3678,6 +3735,7 @@ mod tests {
             indent: 0,
             metadata,
             metadata_sources: RenderMetadataSources::new(),
+            reachable_identities: RenderReachableIdentities::new(),
             children: vec![],
         };
         let mut lines = vec![];
@@ -3734,6 +3792,7 @@ mod tests {
             status: None,
             metadata,
             metadata_sources: RenderMetadataSources::new(),
+            reachable_identities: RenderReachableIdentities::new(),
         };
 
         assert_eq!(
@@ -3924,6 +3983,7 @@ mod tests {
                 },
             )]),
             source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
         }];
 
         let rendered = render_lines(Some(&model), &[], 14, 48, true);
@@ -3963,6 +4023,7 @@ mod tests {
                     },
                 }],
             )]),
+            reachable_identities: vec![],
         }];
 
         let rendered = render_lines(Some(&model), &[], 20, 80, true);
@@ -3986,6 +4047,31 @@ mod tests {
     }
 
     #[test]
+    fn metadata_view_renders_reachable_identity_details() {
+        let mut model = model();
+        model.config.view = RailViewMode::Metadata;
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Tab(2),
+            values: BTreeMap::new(),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![tabs_shared::ReachableMetadataIdentity {
+                identity: tabs_shared::MetadataIdentity {
+                    key: "git.repo".to_owned(),
+                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                },
+                distance: 1,
+            }],
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 12, 80, true);
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("identity.git.repo: rjwittams/katzensteg distance=1")));
+    }
+
+    #[test]
     fn metadata_view_renders_resolved_group_metadata_values() {
         let mut model = grouped_model();
         model.config.view = RailViewMode::Metadata;
@@ -4006,6 +4092,7 @@ mod tests {
                 },
             )]),
             source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
         }];
 
         let rendered = render_lines(Some(&model), &[], 14, 48, true);

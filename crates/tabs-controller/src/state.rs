@@ -7,8 +7,8 @@ use crate::metadata::{
 use tabs_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataEntry,
     MetadataIdentity, MetadataSourceEntry, MetadataValue, PaneTarget, Priority, RailConfig,
-    RailGroupingMode, RailRow, RendererHello, ResolvedMetadata, SetPaneStatus, SortMode, TabCard,
-    TabGroupingInfo, TabStatusSummary,
+    RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello, ResolvedMetadata,
+    SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -529,9 +529,12 @@ impl ControllerState {
         let mut by_target: BTreeMap<EntityId, BTreeMap<String, MetadataEntry>> = BTreeMap::new();
         let mut sources_by_target: BTreeMap<EntityId, BTreeMap<String, Vec<MetadataSourceEntry>>> =
             BTreeMap::new();
+        let mut identities_by_target: BTreeMap<EntityId, Vec<ReachableMetadataIdentity>> =
+            BTreeMap::new();
         for tab in tabs {
             let tab_target = EntityId::Tab(tab.tab_id);
-            let (tab_values, tab_sources) = self.resolve_target_metadata(&tab_target);
+            let (tab_values, tab_sources, tab_identities) =
+                self.resolve_target_metadata(&tab_target);
             by_target
                 .entry(tab_target.clone())
                 .or_default()
@@ -540,12 +543,17 @@ impl ControllerState {
                 .entry(tab_target.clone())
                 .or_default()
                 .extend(tab_sources);
+            identities_by_target
+                .entry(tab_target.clone())
+                .or_default()
+                .extend(tab_identities);
             let group_target = tab
                 .grouping
                 .as_ref()
                 .map(|grouping| EntityId::Group(grouping.path.clone()));
             if let Some(group_target) = group_target.as_ref() {
-                let (group_values, group_sources) = self.resolve_target_metadata(group_target);
+                let (group_values, group_sources, group_identities) =
+                    self.resolve_target_metadata(group_target);
                 by_target
                     .entry(group_target.clone())
                     .or_default()
@@ -554,6 +562,10 @@ impl ControllerState {
                     .entry(group_target.clone())
                     .or_default()
                     .extend(group_sources);
+                identities_by_target
+                    .entry(group_target.clone())
+                    .or_default()
+                    .extend(group_identities);
             }
             if let Some(entry) = self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD) {
                 by_target
@@ -572,6 +584,7 @@ impl ControllerState {
             .into_iter()
             .map(|(target, values)| ResolvedMetadata {
                 source_entries: sources_by_target.remove(&target).unwrap_or_default(),
+                reachable_identities: identities_by_target.remove(&target).unwrap_or_default(),
                 target,
                 values,
             })
@@ -584,15 +597,23 @@ impl ControllerState {
     ) -> (
         BTreeMap<String, MetadataEntry>,
         BTreeMap<String, Vec<MetadataSourceEntry>>,
+        Vec<ReachableMetadataIdentity>,
     ) {
         let mut values = BTreeMap::new();
         let mut source_entries = BTreeMap::<String, Vec<MetadataSourceEntry>>::new();
+        let mut reachable_identities = vec![];
         let mut visited = BTreeSet::new();
-        let mut queue = VecDeque::from([target.clone()]);
+        let mut queue = VecDeque::from([(target.clone(), 0usize)]);
 
-        while let Some(current) = queue.pop_front() {
+        while let Some((current, distance)) = queue.pop_front() {
             if !visited.insert(current.clone()) {
                 continue;
+            }
+            if let EntityId::Identity(identity) = &current {
+                reachable_identities.push(ReachableMetadataIdentity {
+                    identity: identity.clone(),
+                    distance,
+                });
             }
             let current_values = self
                 .metadata
@@ -604,7 +625,7 @@ impl ControllerState {
                 });
                 values.entry(key).or_insert(entry);
                 if !visited.contains(&identity) {
-                    queue.push_back(identity);
+                    queue.push_back((identity, distance + 1));
                 }
             }
             for (key, entries) in self
@@ -615,7 +636,7 @@ impl ControllerState {
             }
         }
 
-        (values, source_entries)
+        (values, source_entries, reachable_identities)
     }
 
     fn group_label_for_cwd(&self, cwd: &str, all_group_cwds: &[String]) -> String {
@@ -1171,6 +1192,32 @@ mod tests {
                 .get("ci.status")
                 .map(|entry| &entry.value),
             Some(&MetadataValue::Text("failing".to_owned()))
+        );
+        assert_eq!(
+            tab_metadata.reachable_identities,
+            vec![
+                ReachableMetadataIdentity {
+                    identity: MetadataIdentity {
+                        key: "git.repo".to_owned(),
+                        value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                    },
+                    distance: 1,
+                },
+                ReachableMetadataIdentity {
+                    identity: MetadataIdentity {
+                        key: "vcs.pr".to_owned(),
+                        value: MetadataValue::Text("#45".to_owned()),
+                    },
+                    distance: 2,
+                },
+                ReachableMetadataIdentity {
+                    identity: MetadataIdentity {
+                        key: "ci.status".to_owned(),
+                        value: MetadataValue::Text("failing".to_owned()),
+                    },
+                    distance: 3,
+                },
+            ]
         );
     }
 
