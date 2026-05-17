@@ -168,11 +168,18 @@ pub struct GroupSegment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct MetadataIdentity {
+    pub key: String,
+    pub value: MetadataValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
 pub enum MetadataTarget {
     Pane(PaneTarget),
     Tab(u64),
     Group(GroupPath),
+    Identity(MetadataIdentity),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -460,6 +467,19 @@ mod tests {
             key: "project.name".to_owned(),
             value: MetadataValue::Text("zellij".to_owned()),
         }]));
+
+        let encoded = serde_json::to_string(&target).unwrap();
+        let decoded: MetadataTarget = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, target);
+    }
+
+    #[test]
+    fn metadata_target_identity_round_trips_json() {
+        let target = MetadataTarget::Identity(MetadataIdentity {
+            key: "git.repo".to_owned(),
+            value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+        });
 
         let encoded = serde_json::to_string(&target).unwrap();
         let decoded: MetadataTarget = serde_json::from_str(&encoded).unwrap();

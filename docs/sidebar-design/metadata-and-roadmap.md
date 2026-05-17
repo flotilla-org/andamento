@@ -174,6 +174,16 @@ Grouping should eventually prefer explicit subject/scope metadata when present a
 
 The raw store should keep per-source assertions. Rendering and grouping should use a resolved view.
 
+Metadata facts can also imply semantic identities. A render target should not eagerly copy every repo/PR/build fact onto every group or tab. Instead, the controller should resolve a target once by walking identities implied by its resolved facts, cache that per-target view, and let templates read from the resulting map. For example:
+
+```text
+tab -> git.repo=rjwittams/katzensteg
+git.repo=rjwittams/katzensteg -> vcs.pr=#45
+vcs.pr=#45 -> ci.status=failing
+```
+
+The bad lazy model is one graph search per template key. The intended model is one bounded traversal per target/generation, producing a resolved map plus provenance/source candidates. Union-find may still help with strict equivalence classes, but implication and nearby semantic facts need graph traversal with distance/provenance.
+
 The eventual resolver should support per-key configuration. Good defaults:
 
 - default: last write wins across sources.
@@ -693,5 +703,7 @@ The next slice should:
 Status: landed. `ControllerViewModel` now carries resolved metadata entries keyed by group/tab targets. The controller populates cwd-derived tab and group entries from the current metadata store, and the rail renderer merges those entries into render-node metadata so metadata view can show generic resolved keys alongside compatibility fields.
 
 Raw-source inspection follow-up status: started. Resolved metadata entries now also carry live per-source entries, including source id, updated time, ttl, precedence, ordinal, and value. Metadata rail view renders those details inline in expanded metadata mode. A later interaction pass can hide/show these details per key.
+
+Identity graph status: started. The shared model now supports `MetadataTarget::Identity(key,value)`. The controller resolves a tab/group target by traversing identities implied by resolved facts, so facts can live on their natural identity, such as `git.repo` or `vcs.pr`, while the render target sees the transitive resolved view.
 
 After this lands, the next best slice is explicit tab subject/scope. Rendering polish such as collapse, group borders, and templates will be cleaner once group metadata and tab subjects have stable semantic identities.

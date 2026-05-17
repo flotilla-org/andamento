@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 use crate::metadata::{
@@ -6,9 +6,9 @@ use crate::metadata::{
 };
 use tabs_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataEntry,
-    MetadataSourceEntry, MetadataValue, PaneTarget, Priority, RailConfig, RailGroupingMode,
-    RailRow, RendererHello, ResolvedMetadata, SetPaneStatus, SortMode, TabCard, TabGroupingInfo,
-    TabStatusSummary,
+    MetadataIdentity, MetadataSourceEntry, MetadataValue, PaneTarget, Priority, RailConfig,
+    RailGroupingMode, RailRow, RendererHello, ResolvedMetadata, SetPaneStatus, SortMode, TabCard,
+    TabGroupingInfo, TabStatusSummary,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -531,33 +531,29 @@ impl ControllerState {
             BTreeMap::new();
         for tab in tabs {
             let tab_target = EntityId::Tab(tab.tab_id);
-            by_target.entry(tab_target.clone()).or_default().extend(
-                self.metadata
-                    .resolved_entries_for(&tab_target, self.receive_counter),
-            );
+            let (tab_values, tab_sources) = self.resolve_target_metadata(&tab_target);
+            by_target
+                .entry(tab_target.clone())
+                .or_default()
+                .extend(tab_values);
             sources_by_target
                 .entry(tab_target.clone())
                 .or_default()
-                .extend(
-                    self.metadata
-                        .source_entries_for(&tab_target, self.receive_counter),
-                );
+                .extend(tab_sources);
             let group_target = tab
                 .grouping
                 .as_ref()
                 .map(|grouping| EntityId::Group(grouping.path.clone()));
             if let Some(group_target) = group_target.as_ref() {
-                by_target.entry(group_target.clone()).or_default().extend(
-                    self.metadata
-                        .resolved_entries_for(group_target, self.receive_counter),
-                );
+                let (group_values, group_sources) = self.resolve_target_metadata(group_target);
+                by_target
+                    .entry(group_target.clone())
+                    .or_default()
+                    .extend(group_values);
                 sources_by_target
                     .entry(group_target.clone())
                     .or_default()
-                    .extend(
-                        self.metadata
-                            .source_entries_for(group_target, self.receive_counter),
-                    );
+                    .extend(group_sources);
             }
             if let Some(entry) = self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD) {
                 by_target
@@ -580,6 +576,46 @@ impl ControllerState {
                 values,
             })
             .collect()
+    }
+
+    fn resolve_target_metadata(
+        &self,
+        target: &EntityId,
+    ) -> (
+        BTreeMap<String, MetadataEntry>,
+        BTreeMap<String, Vec<MetadataSourceEntry>>,
+    ) {
+        let mut values = BTreeMap::new();
+        let mut source_entries = BTreeMap::<String, Vec<MetadataSourceEntry>>::new();
+        let mut visited = BTreeSet::new();
+        let mut queue = VecDeque::from([target.clone()]);
+
+        while let Some(current) = queue.pop_front() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            let current_values = self
+                .metadata
+                .resolved_entries_for(&current, self.receive_counter);
+            for (key, entry) in current_values {
+                let identity = EntityId::Identity(MetadataIdentity {
+                    key: key.clone(),
+                    value: entry.value.clone(),
+                });
+                values.entry(key).or_insert(entry);
+                if !visited.contains(&identity) {
+                    queue.push_back(identity);
+                }
+            }
+            for (key, entries) in self
+                .metadata
+                .source_entries_for(&current, self.receive_counter)
+            {
+                source_entries.entry(key).or_default().extend(entries);
+            }
+        }
+
+        (values, source_entries)
     }
 
     fn group_label_for_cwd(&self, cwd: &str, all_group_cwds: &[String]) -> String {
@@ -1050,6 +1086,91 @@ mod tests {
                 .get("group.summary")
                 .map(|entry| &entry.value),
             Some(&MetadataValue::Text("build running".to_owned()))
+        );
+    }
+
+    #[test]
+    fn resolved_tab_metadata_follows_transitive_identity_facts() {
+        let mut state = ControllerState::default();
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "repo".into(),
+            active: true,
+        }]);
+        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+            target: EntityId::Tab(1),
+            source_id: "dir-watcher".to_owned(),
+            set: BTreeMap::from([(
+                "git.repo".to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+            target: EntityId::Identity(tabs_shared::MetadataIdentity {
+                key: "git.repo".to_owned(),
+                value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+            }),
+            source_id: "gh".to_owned(),
+            set: BTreeMap::from([(
+                "vcs.pr".to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("#45".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+            target: EntityId::Identity(tabs_shared::MetadataIdentity {
+                key: "vcs.pr".to_owned(),
+                value: MetadataValue::Text("#45".to_owned()),
+            }),
+            source_id: "ci".to_owned(),
+            set: BTreeMap::from([(
+                "ci.status".to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("failing".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let tab_metadata = model
+            .resolved_metadata
+            .iter()
+            .find(|metadata| metadata.target == EntityId::Tab(1))
+            .expect("tab metadata");
+
+        assert_eq!(
+            tab_metadata
+                .values
+                .get("git.repo")
+                .map(|entry| &entry.value),
+            Some(&MetadataValue::Text("rjwittams/katzensteg".to_owned()))
+        );
+        assert_eq!(
+            tab_metadata.values.get("vcs.pr").map(|entry| &entry.value),
+            Some(&MetadataValue::Text("#45".to_owned()))
+        );
+        assert_eq!(
+            tab_metadata
+                .values
+                .get("ci.status")
+                .map(|entry| &entry.value),
+            Some(&MetadataValue::Text("failing".to_owned()))
         );
     }
 
