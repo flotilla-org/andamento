@@ -275,6 +275,8 @@ The renderer can still project these nodes into simple rows for the sidebar. The
 
 The rail should have a metadata inspection projection before the final template system is ready. This is not just a config-panel debug screen; it is a mode of the actual sidebar so the user can inspect the data plane in the same hierarchy and spatial context that normal rendering uses.
 
+Status: partially implemented. The metadata rail view now consumes the same local render-node projection as normal rendering, so local tab overrides and grouped hierarchy are shared. It still renders unframed `key: value` lines rather than full dynamic tiles, and it does not yet expose raw per-source resolution detail.
+
 Early behavior:
 
 - every node expands to the biggest size it needs, ignoring compact card sizing.

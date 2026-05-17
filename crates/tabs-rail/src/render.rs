@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use ansi_term::{Color, Style};
 use tabs_shared::{
     ControllerViewModel, GroupPath, MetadataValue, PaneTarget, Priority, RailConfig, RailRow,
-    RailSizingPreset, RailStructure, RailViewMode, StatusIcon, TabCard, TabStatusSummary,
+    RailSizingPreset, RailStructure, RailViewMode, StatusIcon, TabCard, TabGroupingInfo,
+    TabStatusSummary,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::{PaletteColor, SizeInPixels, Styling};
@@ -103,7 +104,9 @@ enum RenderNode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RenderGroup {
+    path: GroupPath,
     label: String,
+    full_label: String,
     tab_count: usize,
     children: Vec<RenderTab>,
 }
@@ -112,11 +115,17 @@ struct RenderGroup {
 struct RenderTab {
     card: RenderCard,
     indent: usize,
+    grouping: Option<TabGroupingInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PendingRenderNode {
-    GroupHeader { label: String, tab_count: usize },
+    GroupHeader {
+        path: GroupPath,
+        label: String,
+        full_label: String,
+        tab_count: usize,
+    },
     Tab(RenderTab),
 }
 
@@ -178,12 +187,11 @@ pub fn render_lines_with_theme_and_cell_size(
     let nodes = nodes_to_render(model, tabs);
     let config = model.map(|model| model.config).unwrap_or_default();
     let mut effective_metadata_scroll_offset = 0;
-    if let Some(model) = model.filter(|model| model.config.view == RailViewMode::Metadata) {
+    if config.view == RailViewMode::Metadata {
         effective_metadata_scroll_offset = render_metadata_projection(
             &mut lines,
             &mut hit_regions,
-            model,
-            tabs,
+            &nodes,
             card_rows_available,
             cols,
             theme,
@@ -226,25 +234,17 @@ pub fn render_lines_with_theme_and_cell_size(
 fn render_metadata_projection(
     lines: &mut [String],
     hit_regions: &mut Vec<HitRegion>,
-    model: &ControllerViewModel,
-    tabs: &[LocalTab],
+    nodes: &[RenderNode],
     available_rows: usize,
     cols: usize,
     theme: Option<RenderTheme>,
     metadata_scroll_offset: usize,
 ) -> usize {
-    let local_by_id: HashMap<u64, &LocalTab> = tabs.iter().map(|tab| (tab.tab_id, tab)).collect();
-    let rows: Vec<RailRow> = if model.rows.is_empty() {
-        model
-            .tabs
-            .iter()
-            .cloned()
-            .map(|tab| RailRow::Tab { tab, indent: 0 })
-            .collect()
-    } else {
-        model.rows.clone()
-    };
-    let content_lines = metadata_projection_lines(model, tabs, &rows, &local_by_id);
+    let blocks = metadata_projection_blocks(nodes);
+    let content_lines = blocks
+        .iter()
+        .flat_map(|block| block.lines.iter().cloned())
+        .collect::<Vec<_>>();
     let scroll_offset =
         clamp_scroll_offset(metadata_scroll_offset, content_lines.len(), available_rows);
     for (output_row, line) in content_lines
@@ -257,123 +257,137 @@ fn render_metadata_projection(
             style_body_text(pad_to_width(&truncate_to_width(line, cols), cols), theme);
     }
     let mut source_row = 0;
-    for row in rows {
+    for block in blocks {
         if source_row >= scroll_offset.saturating_add(available_rows) {
             break;
         }
-        match row {
-            RailRow::GroupHeader { path, .. } => {
-                source_row += group_metadata_line_count(&path);
-            }
-            RailRow::Tab { tab, indent } => {
-                let block_start = source_row;
-                let block_len = tab_metadata_line_count(&tab);
-                source_row += block_len;
-                let visible_start = block_start.max(scroll_offset);
-                let visible_end = source_row.min(scroll_offset.saturating_add(available_rows));
-                if visible_start < visible_end {
-                    hit_regions.push(HitRegion {
-                        row_start: visible_start - scroll_offset,
-                        row_end: visible_end - scroll_offset - 1,
-                        col_start: indent.min(cols.saturating_sub(1)),
-                        col_end: cols.saturating_sub(1),
-                        tab_id: tab.tab_id,
-                        tab_position: tab.position,
-                        action: HitAction::SwitchTab,
-                    });
-                }
+        let block_start = source_row;
+        source_row += block.lines.len();
+        if let Some(hit) = block.hit {
+            let visible_start = block_start.max(scroll_offset);
+            let visible_end = source_row.min(scroll_offset.saturating_add(available_rows));
+            if visible_start < visible_end {
+                hit_regions.push(HitRegion {
+                    row_start: visible_start - scroll_offset,
+                    row_end: visible_end - scroll_offset - 1,
+                    col_start: hit.indent.min(cols.saturating_sub(1)),
+                    col_end: cols.saturating_sub(1),
+                    tab_id: hit.tab_id,
+                    tab_position: hit.tab_position,
+                    action: HitAction::SwitchTab,
+                });
             }
         }
     }
     scroll_offset
 }
 
-fn metadata_projection_lines(
-    model: &ControllerViewModel,
-    tabs: &[LocalTab],
-    rows: &[RailRow],
-    local_by_id: &HashMap<u64, &LocalTab>,
-) -> Vec<String> {
-    let mut lines = vec![];
-    for row in rows {
-        match row {
-            RailRow::GroupHeader {
-                path,
-                label,
-                full_label,
-                tab_count,
-                ..
-            } => {
-                push_metadata_text_line(&mut lines, 0, "group", label);
-                push_metadata_text_line(&mut lines, 2, "group.full_label", full_label);
-                push_metadata_text_line(&mut lines, 2, "group.tab_count", &tab_count.to_string());
-                push_group_path_metadata(&mut lines, 2, path);
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MetadataBlock {
+    lines: Vec<String>,
+    hit: Option<MetadataHit>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MetadataHit {
+    tab_id: u64,
+    tab_position: usize,
+    indent: usize,
+}
+
+fn metadata_projection_blocks(nodes: &[RenderNode]) -> Vec<MetadataBlock> {
+    let mut blocks = vec![];
+    for node in nodes {
+        match node {
+            RenderNode::Group(group) => {
+                blocks.push(group_metadata_block(group));
+                blocks.extend(group.children.iter().map(tab_metadata_block));
             }
-            RailRow::Tab { tab, indent } => {
-                let active = local_by_id
-                    .get(&tab.tab_id)
-                    .map(|local| local.active)
-                    .unwrap_or(tab.active);
-                push_metadata_text_line(&mut lines, *indent, "tab", &tab.name);
-                push_metadata_text_line(
-                    &mut lines,
-                    indent + 2,
-                    "zellij.tab.id",
-                    &tab.tab_id.to_string(),
-                );
-                push_metadata_text_line(
-                    &mut lines,
-                    indent + 2,
-                    "zellij.tab.position",
-                    &tab.position.to_string(),
-                );
-                push_metadata_text_line(
-                    &mut lines,
-                    indent + 2,
-                    "zellij.tab.active",
-                    bool_text(active),
-                );
-                push_metadata_text_line(
-                    &mut lines,
-                    indent + 2,
-                    "rail.tab.pinned",
-                    bool_text(tab.pinned),
-                );
-                if let Some(grouping) = tab.grouping.as_ref() {
-                    push_metadata_text_line(&mut lines, indent + 2, "group.label", &grouping.label);
-                    push_metadata_text_line(
-                        &mut lines,
-                        indent + 2,
-                        "group.full_label",
-                        &grouping.full_label,
-                    );
-                    push_group_path_metadata(&mut lines, indent + 2, &grouping.path);
-                }
-                if let Some(status) = tab.status.as_ref() {
-                    push_metadata_text_line(
-                        &mut lines,
-                        indent + 2,
-                        "status.priority",
-                        &format!("{:?}", status.priority).to_ascii_lowercase(),
-                    );
-                    push_metadata_text_line(&mut lines, indent + 2, "status.title", &status.title);
-                    if let Some(detail) = status.detail.as_ref() {
-                        push_metadata_text_line(&mut lines, indent + 2, "status.detail", detail);
-                    }
-                    push_metadata_text_line(
-                        &mut lines,
-                        indent + 2,
-                        "status.source_pane",
-                        &format_pane_target(status.source_pane),
-                    );
-                }
-            }
+            RenderNode::Tab(tab) => blocks.push(tab_metadata_block(tab)),
         }
     }
-    if lines.is_empty() && !model.tabs.is_empty() && !tabs.is_empty() {
-        push_metadata_text_line(&mut lines, 0, "metadata", "no projected rows");
+    blocks
+}
+
+fn group_metadata_block(group: &RenderGroup) -> MetadataBlock {
+    let mut lines = vec![];
+    push_metadata_text_line(&mut lines, 0, "group", &group.label);
+    push_metadata_text_line(&mut lines, 2, "group.full_label", &group.full_label);
+    push_metadata_text_line(
+        &mut lines,
+        2,
+        "group.tab_count",
+        &group.tab_count.to_string(),
+    );
+    push_group_path_metadata(&mut lines, 2, &group.path);
+    MetadataBlock { lines, hit: None }
+}
+
+fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
+    let mut lines = vec![];
+    let indent = tab.indent;
+    let card = &tab.card;
+    push_metadata_text_line(&mut lines, indent, "tab", &card.name);
+    push_metadata_text_line(
+        &mut lines,
+        indent + 2,
+        "zellij.tab.id",
+        &card.tab_id.to_string(),
+    );
+    push_metadata_text_line(
+        &mut lines,
+        indent + 2,
+        "zellij.tab.position",
+        &card.position.to_string(),
+    );
+    push_metadata_text_line(
+        &mut lines,
+        indent + 2,
+        "zellij.tab.active",
+        bool_text(card.active),
+    );
+    push_metadata_text_line(
+        &mut lines,
+        indent + 2,
+        "rail.tab.pinned",
+        bool_text(card.pinned),
+    );
+    if let Some(grouping) = tab.grouping.as_ref() {
+        push_metadata_text_line(&mut lines, indent + 2, "group.label", &grouping.label);
+        push_metadata_text_line(
+            &mut lines,
+            indent + 2,
+            "group.full_label",
+            &grouping.full_label,
+        );
+        push_group_path_metadata(&mut lines, indent + 2, &grouping.path);
     }
-    lines
+    if let Some(status) = card.status.as_ref() {
+        push_metadata_text_line(
+            &mut lines,
+            indent + 2,
+            "status.priority",
+            &format!("{:?}", status.priority).to_ascii_lowercase(),
+        );
+        push_metadata_text_line(&mut lines, indent + 2, "status.title", &status.title);
+        if let Some(detail) = status.detail.as_ref() {
+            push_metadata_text_line(&mut lines, indent + 2, "status.detail", detail);
+        }
+        push_metadata_text_line(
+            &mut lines,
+            indent + 2,
+            "status.source_pane",
+            &format_pane_target(status.source_pane),
+        );
+    }
+    MetadataBlock {
+        lines,
+        hit: Some(MetadataHit {
+            tab_id: card.tab_id,
+            tab_position: card.position,
+            indent,
+        }),
+    }
 }
 
 fn push_group_path_metadata(lines: &mut Vec<String>, indent: usize, path: &GroupPath) {
@@ -389,24 +403,6 @@ fn push_group_path_metadata(lines: &mut Vec<String>, indent: usize, path: &Group
 
 fn push_metadata_text_line(lines: &mut Vec<String>, indent: usize, key: &str, value: &str) {
     lines.push(format!("{}{}: {}", " ".repeat(indent), key, value));
-}
-
-fn group_metadata_line_count(path: &GroupPath) -> usize {
-    3 + path.0.len()
-}
-
-fn tab_metadata_line_count(tab: &TabCard) -> usize {
-    let grouping_lines = tab
-        .grouping
-        .as_ref()
-        .map(|grouping| 2 + grouping.path.0.len())
-        .unwrap_or(0);
-    let status_lines = tab
-        .status
-        .as_ref()
-        .map(|status| 3 + usize::from(status.detail.is_some()))
-        .unwrap_or(0);
-    5 + grouping_lines + status_lines
 }
 
 fn clamp_scroll_offset(offset: usize, content_rows: usize, available_rows: usize) -> usize {
@@ -1148,6 +1144,7 @@ fn nodes_to_render(model: Option<&ControllerViewModel>, tabs: &[LocalTab]) -> Ve
                         status: None,
                     },
                     indent: 0,
+                    grouping: None,
                 })
             })
             .collect();
@@ -1162,6 +1159,7 @@ fn nodes_to_render(model: Option<&ControllerViewModel>, tabs: &[LocalTab]) -> Ve
                 PendingRenderNode::Tab(RenderTab {
                     card: render_card_from_model(&tab, &local_by_id),
                     indent: 0,
+                    grouping: tab.grouping,
                 })
             })
             .collect()
@@ -1171,14 +1169,21 @@ fn nodes_to_render(model: Option<&ControllerViewModel>, tabs: &[LocalTab]) -> Ve
             .iter()
             .map(|row| match row {
                 RailRow::GroupHeader {
-                    label, tab_count, ..
+                    path,
+                    label,
+                    full_label,
+                    tab_count,
+                    ..
                 } => PendingRenderNode::GroupHeader {
+                    path: path.clone(),
                     label: label.clone(),
+                    full_label: full_label.clone(),
                     tab_count: *tab_count,
                 },
                 RailRow::Tab { tab, indent } => PendingRenderNode::Tab(RenderTab {
                     card: render_card_from_model(tab, &local_by_id),
                     indent: *indent,
+                    grouping: tab.grouping.clone(),
                 }),
             })
             .collect()
@@ -1191,12 +1196,19 @@ fn pending_nodes_to_render_nodes(pending_rows: Vec<PendingRenderNode>) -> Vec<Re
     let mut pending_group: Option<RenderGroup> = None;
     for pending in pending_rows {
         match pending {
-            PendingRenderNode::GroupHeader { label, tab_count } => {
+            PendingRenderNode::GroupHeader {
+                path,
+                label,
+                full_label,
+                tab_count,
+            } => {
                 if let Some(group) = pending_group.take() {
                     nodes.push(RenderNode::Group(group));
                 }
                 pending_group = Some(RenderGroup {
+                    path,
                     label,
+                    full_label,
                     tab_count,
                     children: vec![],
                 });
@@ -1845,6 +1857,34 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.starts_with("┌ tests")));
+    }
+
+    #[test]
+    fn metadata_view_uses_local_tab_name_over_controller_name() {
+        let mut model = model();
+        model.config.view = RailViewMode::Metadata;
+
+        let rendered = render_lines(
+            Some(&model),
+            &[LocalTab {
+                tab_id: 2,
+                position: 1,
+                name: "local-title".to_owned(),
+                active: true,
+            }],
+            10,
+            40,
+            true,
+        );
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("tab: local-title")));
+        assert!(!rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("tab: tab-2")));
     }
 
     #[test]
