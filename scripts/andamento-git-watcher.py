@@ -50,12 +50,16 @@ def metadata_patch(target_key, target_value, facts):
 
 def observed_text_identities(observed_identities, key):
     values = []
+    seen = set()
     for observed in observed_identities:
         identity = observed.get("identity", {})
         value = identity.get("value", {})
         if identity.get("key") == key and value.get("type") == "text":
-            values.append(value.get("value", ""))
-    return [value for value in values if value]
+            text = value.get("value", "")
+            if text and text not in seen:
+                seen.add(text)
+                values.append(text)
+    return values
 
 
 def parse_repo(remote_url):
@@ -101,7 +105,23 @@ def git_facts(cwd):
 
 def get_observed_identities():
     output = run_text(["zellij", "pipe", "--name", OBSERVED_IDENTITIES_PIPE])
-    return json.loads(output or "[]")
+    return parse_observed_identities_output(output)
+
+
+def parse_observed_identities_output(output):
+    decoder = json.JSONDecoder()
+    identities = []
+    index = 0
+    output = output or ""
+    while index < len(output):
+        while index < len(output) and output[index].isspace():
+            index += 1
+        if index >= len(output):
+            break
+        value, index = decoder.raw_decode(output, index)
+        if isinstance(value, list):
+            identities.extend(value)
+    return identities
 
 
 def publish_patch(patch, dry_run):
@@ -149,10 +169,20 @@ class WatcherTests(unittest.TestCase):
     def test_observed_text_identities_filters_by_key_and_type(self):
         observed = [
             {"identity": {"key": "zellij.pane.cwd", "value": text_value("/repo")}},
+            {"identity": {"key": "zellij.pane.cwd", "value": text_value("/repo")}},
             {"identity": {"key": "git.repo", "value": text_value("rjwittams/katzensteg")}},
             {"identity": {"key": "zellij.pane.cwd", "value": {"type": "integer", "value": 1}}},
         ]
         self.assertEqual(observed_text_identities(observed, "zellij.pane.cwd"), ["/repo"])
+
+    def test_parse_observed_identities_output_merges_multiple_pipe_responses(self):
+        first = [{"identity": {"key": "zellij.pane.cwd", "value": text_value("/repo-a")}}]
+        second = [{"identity": {"key": "zellij.pane.cwd", "value": text_value("/repo-b")}}]
+        output = json.dumps(first) + "\n" + json.dumps(second)
+
+        observed = parse_observed_identities_output(output)
+
+        self.assertEqual(observed_text_identities(observed, "zellij.pane.cwd"), ["/repo-a", "/repo-b"])
 
     def test_metadata_patch_shape(self):
         patch = metadata_patch("zellij.pane.cwd", "/repo", {"git.repo": "rjwittams/katzensteg"})
