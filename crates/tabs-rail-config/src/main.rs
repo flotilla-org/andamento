@@ -544,6 +544,7 @@ mod tests {
                 },
             ],
             rows: vec![],
+            resolved_metadata: vec![],
         };
 
         let rendered = render_config(RailConfig::default(), Some(&model), 24, 40);

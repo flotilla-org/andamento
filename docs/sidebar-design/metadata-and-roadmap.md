@@ -686,4 +686,6 @@ The next slice should:
 - keep raw source-entry drill-in as the follow-up after resolved entries are visible.
 - keep external pipe input for arbitrary metadata separate until the inspection projection can show what arrived.
 
+Status: landed. `ControllerViewModel` now carries resolved metadata entries keyed by group/tab targets. The controller populates cwd-derived tab and group entries from the current metadata store, and the rail renderer merges those entries into render-node metadata so metadata view can show generic resolved keys alongside compatibility fields.
+
 After this lands, the next best slice is explicit tab subject/scope. Rendering polish such as collapse, group borders, and templates will be cleaner once group metadata and tab subjects have stable semantic identities.

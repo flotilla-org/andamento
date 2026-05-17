@@ -6,9 +6,9 @@ use crate::template_config::{
 };
 use ansi_term::{Color, Style};
 use tabs_shared::{
-    ControllerViewModel, GroupPath, GroupSegment, MetadataValue, PaneTarget, Priority, RailConfig,
-    RailRow, RailSizingPreset, RailStructure, RailViewMode, StatusIcon, TabCard, TabGroupingInfo,
-    TabStatusSummary,
+    ControllerViewModel, GroupPath, GroupSegment, MetadataEntry, MetadataTarget, MetadataValue,
+    PaneTarget, Priority, RailConfig, RailRow, RailSizingPreset, RailStructure, RailViewMode,
+    ResolvedMetadata, StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::{PaletteColor, SizeInPixels, Styling};
@@ -423,6 +423,11 @@ fn group_metadata_block(group: &RenderGroup) -> MetadataBlock {
         &metadata_display_value(&group.metadata, "group.tab_count")
             .unwrap_or_else(|| group.tab_count.to_string()),
     );
+    let excluded_keys = ["group.label", "group.full_label", "group.tab_count"]
+        .into_iter()
+        .chain(group.path.0.iter().map(|segment| segment.key.as_str()))
+        .collect::<Vec<_>>();
+    push_additional_metadata_lines(&mut lines, 2, &group.metadata, &excluded_keys);
     push_template_diagnostic_line(
         &mut lines,
         2,
@@ -476,6 +481,24 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
         "rail.tab.pinned",
         &metadata_display_value(&card.metadata, "rail.tab.pinned")
             .unwrap_or_else(|| bool_text(card.pinned).to_owned()),
+    );
+    push_additional_metadata_lines(
+        &mut lines,
+        indent + 2,
+        &card.metadata,
+        &[
+            "zellij.tab.id",
+            "zellij.tab.position",
+            "zellij.tab.name",
+            "zellij.tab.active",
+            "rail.tab.pinned",
+            "group.label",
+            "group.full_label",
+            "status.priority",
+            "status.title",
+            "status.detail",
+            "status.source_pane",
+        ],
     );
     push_template_diagnostic_line(
         &mut lines,
@@ -547,6 +570,20 @@ fn push_group_path_metadata(lines: &mut Vec<String>, indent: usize, path: &Group
             &segment.key,
             &format_metadata_value(&segment.value),
         );
+    }
+}
+
+fn push_additional_metadata_lines(
+    lines: &mut Vec<String>,
+    indent: usize,
+    metadata: &RenderMetadata,
+    excluded_keys: &[&str],
+) {
+    for (key, value) in metadata {
+        if excluded_keys.contains(&key.as_str()) {
+            continue;
+        }
+        push_metadata_text_line(lines, indent, key, &format_metadata_value(value));
     }
 }
 
@@ -1494,7 +1531,9 @@ fn nodes_to_render(
             })
             .collect()
     };
-    pending_nodes_to_render_nodes(pending_rows, collapsed_groups)
+    let mut nodes = pending_nodes_to_render_nodes(pending_rows, collapsed_groups);
+    merge_resolved_metadata(&mut nodes, &model.resolved_metadata);
+    nodes
 }
 
 fn pending_nodes_to_render_nodes(
@@ -1671,6 +1710,47 @@ fn refresh_group_tab_counts(nodes: &mut [RenderNode]) -> usize {
                 }
             }
     })
+}
+
+fn merge_resolved_metadata(nodes: &mut [RenderNode], resolved_metadata: &[ResolvedMetadata]) {
+    let by_target = resolved_metadata
+        .iter()
+        .map(|metadata| {
+            (
+                metadata.target.clone(),
+                render_metadata_from_entries(&metadata.values),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    merge_resolved_metadata_into_nodes(nodes, &by_target);
+}
+
+fn merge_resolved_metadata_into_nodes(
+    nodes: &mut [RenderNode],
+    by_target: &HashMap<MetadataTarget, RenderMetadata>,
+) {
+    for node in nodes {
+        match node {
+            RenderNode::Tab(tab) => {
+                if let Some(metadata) = by_target.get(&MetadataTarget::Tab(tab.card.tab_id)) {
+                    tab.card.metadata.extend(metadata.clone());
+                }
+            }
+            RenderNode::Group(group) => {
+                if let Some(metadata) = by_target.get(&MetadataTarget::Group(group.path.clone())) {
+                    group.metadata.extend(metadata.clone());
+                }
+                merge_resolved_metadata_into_nodes(&mut group.children, by_target);
+            }
+        }
+    }
+}
+
+fn render_metadata_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> RenderMetadata {
+    entries
+        .iter()
+        .map(|(key, entry)| (key.clone(), entry.value.clone()))
+        .collect()
 }
 
 fn metadata_for_group_header(
@@ -2790,8 +2870,9 @@ fn blank(cols: usize) -> String {
 mod tests {
     use super::*;
     use tabs_shared::{
-        GroupPath, GroupSegment, MetadataValue, PaneTarget, RailConfig, RailGroupingMode, RailRow,
-        RailSizingPreset, RailStructure, RailViewMode, SortMode, StatusIcon,
+        GroupPath, GroupSegment, MetadataEntry, MetadataTarget, MetadataValue, PaneTarget,
+        RailConfig, RailGroupingMode, RailRow, RailSizingPreset, RailStructure, RailViewMode,
+        ResolvedMetadata, SortMode, StatusIcon,
     };
 
     fn local_tab(tab_id: u64, position: usize, active: bool) -> LocalTab {
@@ -2834,6 +2915,7 @@ mod tests {
                 },
             ],
             rows: vec![],
+            resolved_metadata: vec![],
         }
     }
 
@@ -2885,6 +2967,7 @@ mod tests {
                     indent: 2,
                 },
             ],
+            resolved_metadata: vec![],
         }
     }
 
@@ -2899,6 +2982,7 @@ mod tests {
             },
             tabs: vec![],
             rows: vec![],
+            resolved_metadata: vec![],
         };
         for (tab_id, worktree) in [(1, "worktree-a"), (2, "worktree-b")] {
             let path = GroupPath(vec![
@@ -3745,6 +3829,62 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.contains("tab: tab-2")));
+    }
+
+    #[test]
+    fn metadata_view_renders_resolved_model_metadata_values() {
+        let mut model = model();
+        model.config.view = RailViewMode::Metadata;
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Tab(2),
+            values: BTreeMap::from([(
+                "tab.subject".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("checkout".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 14, 48, true);
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("tab.subject: checkout")));
+    }
+
+    #[test]
+    fn metadata_view_renders_resolved_group_metadata_values() {
+        let mut model = grouped_model();
+        model.config.view = RailViewMode::Metadata;
+        let group_path = GroupPath(vec![GroupSegment {
+            key: "zellij.pane.cwd".to_owned(),
+            value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
+        }]);
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Group(group_path),
+            values: BTreeMap::from([(
+                "group.summary".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("running tests".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 14, 48, true);
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("group.summary: running tests")));
     }
 
     #[test]

@@ -198,6 +198,13 @@ pub struct MetadataEntry {
     pub ordinal: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedMetadata {
+    pub target: MetadataTarget,
+    #[serde(default)]
+    pub values: BTreeMap<String, MetadataEntry>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RailGroupingMode {
@@ -271,6 +278,8 @@ pub struct ControllerViewModel {
     pub tabs: Vec<TabCard>,
     #[serde(default)]
     pub rows: Vec<RailRow>,
+    #[serde(default)]
+    pub resolved_metadata: Vec<ResolvedMetadata>,
 }
 
 #[cfg(test)]
@@ -322,6 +331,7 @@ mod tests {
                 grouping: None,
             }],
             rows: vec![],
+            resolved_metadata: vec![],
         };
         let encoded = serde_json::to_string(&model).unwrap();
         let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
@@ -404,6 +414,7 @@ mod tests {
                     indent: 2,
                 },
             ],
+            resolved_metadata: vec![],
         };
 
         let encoded = serde_json::to_string(&model).unwrap();

@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
-use crate::metadata::{select_primary_value, CandidateEntry, EntityId, MetadataStore};
+use crate::metadata::{
+    select_primary_entry, select_primary_value, CandidateEntry, EntityId, MetadataStore,
+};
 use tabs_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataEntry,
     MetadataValue, PaneTarget, Priority, RailConfig, RailGroupingMode, RailRow, RendererHello,
-    SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
+    ResolvedMetadata, SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -334,6 +336,7 @@ impl ControllerState {
         ControllerViewModel {
             sort_mode: self.sort_mode,
             config: self.rail_config,
+            resolved_metadata: self.resolved_metadata_for_tabs(&tabs),
             rows: self.rows_for_tabs(&tabs),
             tabs,
         }
@@ -452,6 +455,41 @@ impl ControllerState {
             Some(MetadataValue::Text(cwd)) => Some(cwd),
             _ => None,
         }
+    }
+
+    fn tab_primary_metadata_entry(&self, tab_id: u64, key: &str) -> Option<MetadataEntry> {
+        let entries: Vec<CandidateEntry> = self
+            .panes
+            .values()
+            .filter(|pane| pane.tab_id == tab_id)
+            .flat_map(|pane| {
+                self.metadata
+                    .entries_for(&EntityId::Pane(pane.pane_id), key, self.receive_counter)
+            })
+            .collect();
+        select_primary_entry(&entries).map(|candidate| candidate.entry)
+    }
+
+    fn resolved_metadata_for_tabs(&self, tabs: &[TabCard]) -> Vec<ResolvedMetadata> {
+        let mut by_target: BTreeMap<EntityId, BTreeMap<String, MetadataEntry>> = BTreeMap::new();
+        for tab in tabs {
+            if let Some(entry) = self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD) {
+                by_target
+                    .entry(EntityId::Tab(tab.tab_id))
+                    .or_default()
+                    .insert(KEY_PANE_CWD.to_owned(), entry.clone());
+                if let Some(grouping) = tab.grouping.as_ref() {
+                    by_target
+                        .entry(EntityId::Group(grouping.path.clone()))
+                        .or_default()
+                        .insert(KEY_PANE_CWD.to_owned(), entry);
+                }
+            }
+        }
+        by_target
+            .into_iter()
+            .map(|(target, values)| ResolvedMetadata { target, values })
+            .collect()
     }
 
     fn group_label_for_cwd(&self, cwd: &str, all_group_cwds: &[String]) -> String {
@@ -768,6 +806,52 @@ mod tests {
             &model.rows[0],
             RailRow::GroupHeader { path, .. } if path == &expected_path
         ));
+    }
+
+    #[test]
+    fn view_model_exposes_resolved_cwd_metadata_for_tab_and_group_targets() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "one".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into());
+
+        let model = state.view_model();
+        let group_path = cwd_group_path("/repo/a");
+
+        let tab_metadata = model
+            .resolved_metadata
+            .iter()
+            .find(|metadata| metadata.target == EntityId::Tab(1))
+            .expect("tab metadata");
+        assert_eq!(
+            tab_metadata
+                .values
+                .get(KEY_PANE_CWD)
+                .map(|entry| &entry.value),
+            Some(&MetadataValue::Text("/repo/a".to_owned()))
+        );
+
+        let group_metadata = model
+            .resolved_metadata
+            .iter()
+            .find(|metadata| metadata.target == EntityId::Group(group_path.clone()))
+            .expect("group metadata");
+        assert_eq!(
+            group_metadata
+                .values
+                .get(KEY_PANE_CWD)
+                .map(|entry| &entry.value),
+            Some(&MetadataValue::Text("/repo/a".to_owned()))
+        );
     }
 
     #[test]

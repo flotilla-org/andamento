@@ -100,6 +100,10 @@ fn entry_is_live(entry: &MetadataEntry, now: u64) -> bool {
 }
 
 pub fn select_primary_value(entries: &[CandidateEntry]) -> Option<MetadataValue> {
+    select_primary_entry(entries).map(|candidate| candidate.entry.value)
+}
+
+pub fn select_primary_entry(entries: &[CandidateEntry]) -> Option<CandidateEntry> {
     let max_precedence = entries
         .iter()
         .map(|candidate| candidate.entry.precedence)
@@ -128,7 +132,20 @@ pub fn select_primary_value(entries: &[CandidateEntry]) -> Option<MetadataValue>
             let right = (right_key.0, std::cmp::Reverse(right_key.1), right_value);
             left.cmp(&right)
         })
-        .map(|(value, _)| value)
+        .and_then(|(value, _)| {
+            entries
+                .iter()
+                .filter(|candidate| candidate.entry.precedence == max_precedence)
+                .filter(|candidate| candidate.entry.value == value)
+                .min_by_key(|candidate| {
+                    (
+                        candidate.entry.ordinal,
+                        candidate.source_id.as_str(),
+                        candidate.entry.updated_at,
+                    )
+                })
+                .cloned()
+        })
 }
 
 #[cfg(test)]
