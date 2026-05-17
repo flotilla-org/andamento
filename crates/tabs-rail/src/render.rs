@@ -1633,10 +1633,19 @@ fn group_header_line(
 ) -> String {
     let marker = if collapsed { "▶" } else { "▼" };
     let count_label = format!("{marker} {label} ({tab_count})");
-    let text = if count_label.width() <= width {
+    let compact_label = format!("{marker} {label}");
+    let label = if count_label.width() <= width {
         count_label
+    } else if compact_label.width() <= width {
+        compact_label
     } else {
-        format!("{marker} {label}")
+        truncate_to_width(&compact_label, width)
+    };
+    let remaining = width.saturating_sub(label.width());
+    let text = if remaining >= 2 {
+        format!("{label} {}", "─".repeat(remaining - 1))
+    } else {
+        label
     };
     style_body_text(pad_to_width(&truncate_to_width(&text, width), width), theme)
 }
@@ -1861,6 +1870,11 @@ mod tests {
         let rendered = render_lines(Some(&grouped_model()), &[], 8, 24, true);
 
         assert!(rendered.lines[0].contains("zellij"));
+        assert!(
+            rendered.lines[0].contains("──"),
+            "group header should read as a section divider: {:?}",
+            rendered.lines[0]
+        );
         let hit = hit_at(&rendered.hit_regions, 0, 0).expect("group toggle should be clickable");
         assert_eq!(hit.action, HitAction::ToggleGroup);
         assert!(hit.group_path.is_some());
@@ -1938,7 +1952,12 @@ mod tests {
         let rendered =
             render_lines_with_collapsed_groups(Some(&model), &[], 8, 24, true, &[group_path]);
 
-        assert!(rendered.lines[0].contains("zellij"));
+        assert!(rendered.lines[0].starts_with("▶ zellij (2)"));
+        assert!(
+            rendered.lines[0].contains("──"),
+            "collapsed group header should keep the same section treatment: {:?}",
+            rendered.lines[0]
+        );
         assert!(!rendered.lines.iter().any(|line| line.contains("server")));
         assert!(!rendered.lines.iter().any(|line| line.contains("tests")));
         assert_eq!(
