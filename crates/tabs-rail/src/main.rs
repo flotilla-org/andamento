@@ -155,6 +155,7 @@ impl ZellijPlugin for PluginState {
             self.metadata_scroll_offset,
             terminal_pixel_cell_size(),
             &collapsed_groups,
+            None,
         );
         self.metadata_scroll_offset = rendered.metadata_scroll_offset;
         if should_sync_graphics(controller_available) {

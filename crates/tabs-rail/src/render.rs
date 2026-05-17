@@ -1,5 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 
+use crate::template_config::{
+    TemplateConfigCatalog, TemplateConfigFieldClass, TemplateConfigMatchContext,
+    TemplateConfigNodeKind, TemplateConfigSlot,
+};
 use ansi_term::{Color, Style};
 use tabs_shared::{
     ControllerViewModel, GroupPath, GroupSegment, MetadataValue, PaneTarget, Priority, RailConfig,
@@ -194,6 +198,30 @@ pub fn render_lines_with_collapsed_groups(
         0,
         None,
         collapsed_groups,
+        None,
+    )
+}
+
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub fn render_lines_with_template_catalog(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    rows: usize,
+    cols: usize,
+    controller_available: bool,
+    template_catalog: Option<&TemplateConfigCatalog>,
+) -> RenderedRail {
+    render_lines_with_options(
+        model,
+        tabs,
+        rows,
+        cols,
+        controller_available,
+        None,
+        0,
+        None,
+        &[],
+        template_catalog,
     )
 }
 
@@ -217,6 +245,7 @@ pub fn render_lines_with_theme_and_cell_size(
         metadata_scroll_offset,
         terminal_cell_size,
         &[],
+        None,
     )
 }
 
@@ -230,6 +259,7 @@ pub fn render_lines_with_options(
     metadata_scroll_offset: usize,
     terminal_cell_size: Option<SizeInPixels>,
     collapsed_groups: &[GroupPath],
+    template_catalog: Option<&TemplateConfigCatalog>,
 ) -> RenderedRail {
     if rows == 0 || cols == 0 {
         return RenderedRail {
@@ -272,6 +302,7 @@ pub fn render_lines_with_options(
             config,
             theme,
             terminal_cell_size,
+            template_catalog,
         );
     }
 
@@ -674,6 +705,7 @@ fn render_cards(
     config: RailConfig,
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
+    template_catalog: Option<&TemplateConfigCatalog>,
 ) {
     match config.structure {
         RailStructure::JoinedCells => render_joined_cells(
@@ -687,6 +719,7 @@ fn render_cards(
             config.sizing,
             theme,
             terminal_cell_size,
+            template_catalog,
         ),
         RailStructure::SplitAroundActive => render_split_around_active(
             lines,
@@ -699,6 +732,7 @@ fn render_cards(
             config.sizing,
             theme,
             terminal_cell_size,
+            template_catalog,
         ),
         RailStructure::BoxPerTab => render_box_per_tab(
             lines,
@@ -711,6 +745,7 @@ fn render_cards(
             config.sizing,
             theme,
             terminal_cell_size,
+            template_catalog,
         ),
     }
 }
@@ -726,6 +761,7 @@ fn render_nodes(
     config: RailConfig,
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
+    template_catalog: Option<&TemplateConfigCatalog>,
 ) {
     if nodes.is_empty() || available_rows == 0 {
         return;
@@ -743,6 +779,7 @@ fn render_nodes(
             config,
             theme,
             terminal_cell_size,
+            template_catalog,
         );
     }
 
@@ -759,6 +796,7 @@ fn render_nodes(
         config,
         theme,
         terminal_cell_size,
+        template_catalog,
     );
     copy_visible_buffer(
         lines,
@@ -792,6 +830,7 @@ fn render_nodes_to_buffer(
     config: RailConfig,
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
+    template_catalog: Option<&TemplateConfigCatalog>,
 ) {
     let mut pending_tabs = vec![];
     for node in nodes {
@@ -808,9 +847,10 @@ fn render_nodes_to_buffer(
                     config,
                     theme,
                     terminal_cell_size,
+                    template_catalog,
                 );
                 pending_tabs.clear();
-                append_group_header(lines, hit_regions, group, cols, theme);
+                append_group_header(lines, hit_regions, group, cols, theme, template_catalog);
                 if !group.collapsed {
                     render_nodes_to_buffer(
                         lines,
@@ -822,6 +862,7 @@ fn render_nodes_to_buffer(
                         config,
                         theme,
                         terminal_cell_size,
+                        template_catalog,
                     );
                 }
             }
@@ -837,6 +878,7 @@ fn render_nodes_to_buffer(
         config,
         theme,
         terminal_cell_size,
+        template_catalog,
     );
 }
 
@@ -846,6 +888,7 @@ fn append_group_header(
     group: &RenderGroup,
     cols: usize,
     theme: Option<RenderTheme>,
+    template_catalog: Option<&TemplateConfigCatalog>,
 ) {
     let row = lines.len();
     let indent = group.indent.min(cols);
@@ -858,6 +901,7 @@ fn append_group_header(
         active_tab_name(&group.children),
         inner_width,
         theme,
+        template_catalog,
     ));
     lines.push(line);
     hit_regions.push(HitRegion {
@@ -882,6 +926,7 @@ fn append_tab_run(
     config: RailConfig,
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
+    template_catalog: Option<&TemplateConfigCatalog>,
 ) {
     if tabs.is_empty() {
         return;
@@ -909,6 +954,7 @@ fn append_tab_run(
         config,
         theme,
         terminal_cell_size,
+        template_catalog,
     );
     let used_rows = local_lines
         .iter()
@@ -1053,6 +1099,7 @@ fn render_joined_cells(
     sizing: RailSizingPreset,
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
+    template_catalog: Option<&TemplateConfigCatalog>,
 ) {
     let visible = visible_cells(cards, available_rows, sizing);
     for (visible_index, (card_index, cell_height)) in visible.iter().copied().enumerate() {
@@ -1063,7 +1110,7 @@ fn render_joined_cells(
             .map(|(_, height)| *height)
             .sum();
         lines[row] = title_border_line(
-            &tab_title(card),
+            &tab_title_with_template_catalog(card, template_catalog),
             cols,
             visible_index == 0,
             card.active,
@@ -1080,6 +1127,7 @@ fn render_joined_cells(
             controller_available,
             theme,
             terminal_cell_size,
+            template_catalog,
         );
     }
     if let Some(last_line) = lines.get_mut(visible.iter().map(|(_, height)| *height).sum::<usize>())
@@ -1103,6 +1151,7 @@ fn render_split_around_active(
     sizing: RailSizingPreset,
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
+    template_catalog: Option<&TemplateConfigCatalog>,
 ) {
     let Some(active_index) = cards.iter().position(|card| card.active) else {
         return render_joined_cells(
@@ -1116,6 +1165,7 @@ fn render_split_around_active(
             sizing,
             theme,
             terminal_cell_size,
+            template_catalog,
         );
     };
     let visible = visible_cells(cards, available_rows, sizing);
@@ -1137,6 +1187,7 @@ fn render_split_around_active(
                 controller_available,
                 theme,
                 terminal_cell_size,
+                template_catalog,
             );
             continue;
         }
@@ -1146,7 +1197,13 @@ fn render_split_around_active(
                 .get(visible_index.saturating_sub(1))
                 .map(|(previous_card_index, _)| *previous_card_index == active_index)
                 .unwrap_or(false);
-        lines[row] = title_border_line(&tab_title(card), cols, first_in_run, false, theme);
+        lines[row] = title_border_line(
+            &tab_title_with_template_catalog(card, template_catalog),
+            cols,
+            first_in_run,
+            false,
+            theme,
+        );
         render_card_body(
             lines,
             hit_regions,
@@ -1158,6 +1215,7 @@ fn render_split_around_active(
             controller_available,
             theme,
             terminal_cell_size,
+            template_catalog,
         );
         row += cell_height;
         let run_ends = visible
@@ -1184,6 +1242,7 @@ fn render_box_per_tab(
     sizing: RailSizingPreset,
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
+    template_catalog: Option<&TemplateConfigCatalog>,
 ) {
     let visible = visible_boxes(cards, available_rows, sizing);
     let mut row = 0;
@@ -1199,6 +1258,7 @@ fn render_box_per_tab(
             controller_available,
             theme,
             terminal_cell_size,
+            template_catalog,
         );
     }
 }
@@ -1214,13 +1274,27 @@ fn render_standalone_box(
     controller_available: bool,
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
+    template_catalog: Option<&TemplateConfigCatalog>,
 ) -> usize {
     if row >= lines.len() || box_height < 2 {
         return row;
     }
-    lines[row] = title_border_line(&tab_title(card), cols, true, card.active, theme);
+    lines[row] = title_border_line(
+        &tab_title_with_template_catalog(card, template_catalog),
+        cols,
+        true,
+        card.active,
+        theme,
+    );
     let body_rows = box_height.saturating_sub(2);
-    let body_lines = body_lines(card, row, body_rows, cols, terminal_cell_size);
+    let body_lines = body_lines(
+        card,
+        row,
+        body_rows,
+        cols,
+        terminal_cell_size,
+        template_catalog,
+    );
     for body_index in 0..body_rows {
         if let Some(line) = lines.get_mut(row + 1 + body_index) {
             *line = body_line(
@@ -1262,9 +1336,17 @@ fn render_card_body(
     controller_available: bool,
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
+    template_catalog: Option<&TemplateConfigCatalog>,
 ) {
     let body_rows = cell_height.saturating_sub(1);
-    let body_lines = body_lines(card, row, body_rows, cols, terminal_cell_size);
+    let body_lines = body_lines(
+        card,
+        row,
+        body_rows,
+        cols,
+        terminal_cell_size,
+        template_catalog,
+    );
     for body_index in 0..body_rows {
         if let Some(line) = lines.get_mut(row + 1 + body_index) {
             *line = body_line(
@@ -1793,11 +1875,35 @@ fn cell_height(card: &RenderCard, sizing: RailSizingPreset, joined_cell: bool) -
     }
 }
 
-fn format_status(card: &RenderCard) -> String {
-    join_template_fields(&status_template_fields(&card.metadata), true)
+fn format_status_with_template_catalog(
+    card: &RenderCard,
+    template_catalog: Option<&TemplateConfigCatalog>,
+) -> String {
+    join_template_fields(
+        &status_template_fields_with_template_catalog(&card.metadata, template_catalog),
+        true,
+    )
 }
 
+#[cfg(test)]
 fn status_template_fields(metadata: &RenderMetadata) -> Vec<TemplateField> {
+    status_template_fields_with_template_catalog(metadata, None)
+}
+
+fn status_template_fields_with_template_catalog(
+    metadata: &RenderMetadata,
+    template_catalog: Option<&TemplateConfigCatalog>,
+) -> Vec<TemplateField> {
+    let context = TemplateRenderContext {
+        slot: TemplateSlot::TabStatus,
+        node_kind: RenderNodeKind::Tab,
+        metadata,
+        collapsed: false,
+        active_tab_name: None,
+    };
+    if let Some(fields) = external_template_fields(template_catalog, context) {
+        return fields;
+    }
     template_fields_for(TemplateRenderContext {
         slot: TemplateSlot::TabStatus,
         node_kind: RenderNodeKind::Tab,
@@ -1841,11 +1947,35 @@ fn metadata_display_value(metadata: &RenderMetadata, key: &str) -> Option<String
     metadata.get(key).map(format_metadata_value)
 }
 
-fn tab_title(card: &RenderCard) -> String {
-    join_template_fields(&tab_title_template_fields(&card.metadata), true)
+fn tab_title_with_template_catalog(
+    card: &RenderCard,
+    template_catalog: Option<&TemplateConfigCatalog>,
+) -> String {
+    join_template_fields(
+        &tab_title_template_fields_with_template_catalog(&card.metadata, template_catalog),
+        true,
+    )
 }
 
+#[cfg(test)]
 fn tab_title_template_fields(metadata: &RenderMetadata) -> Vec<TemplateField> {
+    tab_title_template_fields_with_template_catalog(metadata, None)
+}
+
+fn tab_title_template_fields_with_template_catalog(
+    metadata: &RenderMetadata,
+    template_catalog: Option<&TemplateConfigCatalog>,
+) -> Vec<TemplateField> {
+    let context = TemplateRenderContext {
+        slot: TemplateSlot::TabTitle,
+        node_kind: RenderNodeKind::Tab,
+        metadata,
+        collapsed: false,
+        active_tab_name: None,
+    };
+    if let Some(fields) = external_template_fields(template_catalog, context) {
+        return fields;
+    }
     template_fields_for(TemplateRenderContext {
         slot: TemplateSlot::TabTitle,
         node_kind: RenderNodeKind::Tab,
@@ -1861,6 +1991,7 @@ fn body_lines(
     body_rows: usize,
     cols: usize,
     terminal_cell_size: Option<SizeInPixels>,
+    template_catalog: Option<&TemplateConfigCatalog>,
 ) -> Vec<String> {
     let mut lines = vec![String::new(); body_rows];
     let Some(status) = &card.status else {
@@ -1874,7 +2005,11 @@ fn body_lines(
         .map(|rect| rect.columns + 1)
         .unwrap_or(0);
     let text_width = inner_width.saturating_sub(icon_reserve);
-    let text_lines = wrap_to_width(&format_status(card), text_width, body_rows);
+    let text_lines = wrap_to_width(
+        &format_status_with_template_catalog(card, template_catalog),
+        text_width,
+        body_rows,
+    );
     for (line, text_line) in lines.iter_mut().zip(text_lines) {
         if icon_reserve > 0 {
             line.push_str(&" ".repeat(icon_reserve));
@@ -2040,8 +2175,14 @@ fn group_header_line(
     active_tab_name: Option<&str>,
     width: usize,
     theme: Option<RenderTheme>,
+    template_catalog: Option<&TemplateConfigCatalog>,
 ) -> String {
-    let fields = group_header_template_fields(metadata, collapsed, active_tab_name);
+    let fields = group_header_template_fields_with_template_catalog(
+        metadata,
+        collapsed,
+        active_tab_name,
+        template_catalog,
+    );
     let label = render_template_fields(&fields, width);
     let remaining = width.saturating_sub(label.width());
     let text = if remaining >= 2 {
@@ -2277,6 +2418,47 @@ fn template_fields_for(context: TemplateRenderContext<'_>) -> Vec<TemplateField>
         .unwrap_or_default()
 }
 
+fn external_template_fields(
+    catalog: Option<&TemplateConfigCatalog>,
+    context: TemplateRenderContext<'_>,
+) -> Option<Vec<TemplateField>> {
+    let catalog = catalog?;
+    let context = TemplateConfigMatchContext {
+        slot: template_config_slot(context.slot),
+        node_kind: template_config_node_kind(context.node_kind),
+        metadata: context.metadata,
+        collapsed: context.collapsed,
+        active_tab_name: context.active_tab_name,
+    };
+    let resolved = catalog.resolve(context)?;
+    let fields = resolved
+        .template
+        .render_fields(context)
+        .into_iter()
+        .map(|field| match field.class {
+            TemplateConfigFieldClass::Required => TemplateField::Required(field.value),
+            TemplateConfigFieldClass::Optional => TemplateField::Optional(field.value),
+            TemplateConfigFieldClass::Priority => TemplateField::Priority(field.value),
+        })
+        .collect::<Vec<_>>();
+    (!fields.is_empty()).then_some(fields)
+}
+
+fn template_config_slot(slot: TemplateSlot) -> TemplateConfigSlot {
+    match slot {
+        TemplateSlot::GroupHeader => TemplateConfigSlot::GroupHeader,
+        TemplateSlot::TabTitle => TemplateConfigSlot::TabTitle,
+        TemplateSlot::TabStatus => TemplateConfigSlot::TabStatus,
+    }
+}
+
+fn template_config_node_kind(node_kind: RenderNodeKind) -> TemplateConfigNodeKind {
+    match node_kind {
+        RenderNodeKind::Group => TemplateConfigNodeKind::Group,
+        RenderNodeKind::Tab => TemplateConfigNodeKind::Tab,
+    }
+}
+
 fn matched_template(
     context: TemplateRenderContext<'_>,
 ) -> Option<&'static TemplateDefinition<'static>> {
@@ -2463,11 +2645,31 @@ impl MetadataPredicate {
     }
 }
 
+#[cfg(test)]
 fn group_header_template_fields(
     metadata: &RenderMetadata,
     collapsed: bool,
     active_tab_name: Option<&str>,
 ) -> Vec<TemplateField> {
+    group_header_template_fields_with_template_catalog(metadata, collapsed, active_tab_name, None)
+}
+
+fn group_header_template_fields_with_template_catalog(
+    metadata: &RenderMetadata,
+    collapsed: bool,
+    active_tab_name: Option<&str>,
+    template_catalog: Option<&TemplateConfigCatalog>,
+) -> Vec<TemplateField> {
+    let context = TemplateRenderContext {
+        slot: TemplateSlot::GroupHeader,
+        node_kind: RenderNodeKind::Group,
+        metadata,
+        collapsed,
+        active_tab_name,
+    };
+    if let Some(fields) = external_template_fields(template_catalog, context) {
+        return fields;
+    }
     template_fields_for(TemplateRenderContext {
         slot: TemplateSlot::GroupHeader,
         node_kind: RenderNodeKind::Group,
@@ -2836,6 +3038,7 @@ mod tests {
             32,
             true,
             config,
+            None,
             None,
             None,
         );
@@ -3321,7 +3524,7 @@ mod tests {
         let mut lines = vec![];
         let mut hit_regions = vec![];
 
-        append_group_header(&mut lines, &mut hit_regions, &group, 32, None);
+        append_group_header(&mut lines, &mut hit_regions, &group, 32, None, None);
 
         assert!(
             lines[0].starts_with("▼ metadata-label (3)"),
@@ -3377,6 +3580,33 @@ mod tests {
             tab_title_template_fields(&card.metadata),
             vec![TemplateField::Required("metadata-agent".to_owned())]
         );
+    }
+
+    #[test]
+    fn external_template_catalog_can_override_tab_title_rendering() {
+        let config = crate::template_config::parse_template_config_json(
+            r#"
+            {
+              "templates": [
+                {
+                  "name": "custom.tab-title",
+                  "slot": "tab-title",
+                  "node-kind": "tab",
+                  "fields": [
+                    { "class": "required", "sources": [{ "kind": "literal", "value": "External" }] }
+                  ]
+                }
+              ]
+            }
+            "#,
+        )
+        .expect("valid template config");
+        let catalog = crate::template_config::TemplateConfigCatalog::from_config(config);
+
+        let rendered =
+            render_lines_with_template_catalog(Some(&model()), &[], 7, 24, true, Some(&catalog));
+
+        assert!(rendered.lines[0].starts_with("┌ External"));
     }
 
     #[test]
