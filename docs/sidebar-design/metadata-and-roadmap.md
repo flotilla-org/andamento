@@ -311,6 +311,35 @@ Tile size should start as automatic squash-down based on available space. Templa
 
 Status: started internally. The renderer now has generic ordered template fields with required, optional, and priority classes. Group headers, tab titles, and tab status text are the first callers, so narrow collapsed groups can drop the count before dropping active-tab context while tab text composition uses the same field path. This is still hard-coded Rust, not external template config, and should be extended to nested groups before adding user-authored templates.
 
+### Sensible Order For Templates And Deep Hierarchy
+
+Do not let templating grow around the current two-level `group -> tab` shape. The current rail implementation is useful as a compatibility step, but arbitrary-depth grouping needs the renderer to become recursive and metadata-driven before templates become user-authored configuration.
+
+The order should be:
+
+1. **Make render-node metadata the template input.**
+   Every render node should expose a generic metadata map. The initial adapter can populate that map from the existing `TabCard`, `TabGroupingInfo`, and `TabStatusSummary` fields, but templates should read only metadata keys such as `zellij.tab.name`, `rail.tab.pinned`, `status.title`, `status.detail`, `status.priority`, `group.label`, and `group.tab_count`. `TabStatusSummary` should remain only a temporary compatibility input from the current view model, not an intermediate template model.
+
+2. **Move current hard-coded field builders to metadata lookups.**
+   Keep the existing visual output, but make group headers, tab titles, and status text call helpers that select `TemplateField`s from node metadata. This removes the typed-struct dependency without taking on external config yet.
+
+3. **Make render nodes recursive before adding more hierarchy features.**
+   Replace the local `RenderGroup { children: Vec<RenderTab> }` shape with a node that can contain `Vec<RenderNode>`. The renderer should walk children generically with a depth/indent context. A tab is then just a leaf node, not the only possible child of a group.
+
+4. **Build arbitrary-depth groups from `GroupPath`.**
+   Convert a multi-segment `GroupPath` into nested group nodes. The first implementation can still use one-segment cwd groups, but the projection builder should not assume there is only one group level. Tabs without a path still render as top-level leaves.
+
+5. **Keep layout policies separate from tree shape.**
+   Joined cells, boxes, collapsed groups, horizontal sub-tab bars, and expanded overview modes should be projections over the recursive tree. Do not encode "children of groups are tab rows" into the data model.
+
+6. **Add template matching only after metadata and recursion are stable.**
+   Start with hard-coded template definitions over node type plus metadata predicates. A template should produce ordered fields and sizing hints. Only after this is proven should the config file expose user-authored templates and reload diagnostics.
+
+7. **Add external templates last.**
+   External config should target stable concepts: node type, metadata predicates, field lists, truncation/coalescing rules, and sizing hints. It should not expose temporary compatibility structs or assumptions about exactly two hierarchy levels.
+
+The key dependency is: metadata-backed fields first, recursive nodes second, configurable templates last. That avoids the pointless loop of generic metadata being projected into `TabStatusSummary` and then mapped back into generic template fields.
+
 ### Latent Tabs Are Materializable Nodes
 
 A latent tab is a sidebar node for work that is not currently a Zellij tab. On activation, it can be materialized by sending a Zellij action or plugin message that creates the real tab/panes.
@@ -504,7 +533,9 @@ Move from a flat row projection to first-class render nodes.
 
 Scope:
 
-- group, tab, and future latent node types.
+- recursive group, tab, and future latent node types.
+- group children represented as `Vec<RenderNode>`, not `Vec<Tab>`.
+- metadata maps on every render node as the template input.
 - collapsed/expanded state.
 - group-level borders and status/progress rollups.
 - label templates using resolved metadata.
@@ -513,7 +544,7 @@ Scope:
 - metadata inspection projection that renders all resolved metadata generically.
 - template match diagnostics for authoring.
 
-This is where most rendering/layout improvements should land. It should consume the group path and metadata model rather than inventing a renderer-only hierarchy.
+This is where most rendering/layout improvements should land. It should consume the group path and metadata model rather than inventing a renderer-only hierarchy. The next implementation slices should remove the current local two-level assumptions before adding more visual behavior.
 
 ### 8. Resizable Sidebar Width
 
