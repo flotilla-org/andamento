@@ -515,7 +515,7 @@ Scope:
 - define merge behavior between direct group metadata and rollups from child panes/tabs.
 - add debug rendering for direct group values versus rolled-up values.
 
-Status: started. The shared model now has `MetadataTarget::{Pane, Tab, Group}` and `MetadataPatch`/`MetadataValueUpdate`, and the controller metadata store can apply collaborative source-scoped patches internally. External patch input, resolved group views, and rollup/direct merge behavior are still future work.
+Status: started. The shared model now has `MetadataTarget::{Pane, Tab, Group}` and `MetadataPatch`/`MetadataValueUpdate`, and the controller metadata store can apply collaborative source-scoped patches internally. External patch input now feeds the same store and resolved metadata can surface tab/group values. Rollup/direct merge behavior and raw-source diagnostics are still future work.
 
 ### 6. Explicit Tab Subject/Scope
 
@@ -592,6 +592,8 @@ Scope:
 - expose values through the same resolver.
 
 This unlocks shell integrations, build/test progress, PR state, ports, and workflow-specific annotations.
+
+Status: started. Producers can send `ExternalMessage::MetadataPatch` through `tabs-apply-metadata-patch`; the controller applies set/unset updates with source ids, precedence, ordinal, and ttl through the shared metadata store, and resolved entries are exposed through the view model.
 
 ### 11. Aggregation And Profiles
 

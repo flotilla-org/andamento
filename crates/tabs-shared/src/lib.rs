@@ -12,6 +12,7 @@ pub const MSG_SET_SORT_MODE: &str = "tabs-set-sort-mode";
 pub const MSG_SET_RAIL_CONFIG: &str = "tabs-set-rail-config";
 pub const MSG_SET_PANE_STATUS: &str = "tabs-set-pane-status";
 pub const MSG_CLEAR_PANE_STATUS: &str = "tabs-clear-pane-status";
+pub const MSG_APPLY_METADATA_PATCH: &str = "tabs-apply-metadata-patch";
 pub const MSG_CONTROLLER_BOOTSTRAP_REQUEST: &str = "tabs-controller-bootstrap-request";
 pub const MSG_CONTROLLER_BOOTSTRAP_STATE: &str = "tabs-controller-bootstrap-state";
 
@@ -48,6 +49,7 @@ pub struct SetPaneStatus {
 pub enum ExternalMessage {
     SetPaneStatus(SetPaneStatus),
     ClearPaneStatus { pane_id: PaneTarget },
+    MetadataPatch(MetadataPatch),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -479,6 +481,30 @@ mod tests {
         let decoded: MetadataPatch = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, patch);
+    }
+
+    #[test]
+    fn external_metadata_patch_message_round_trips_json() {
+        let patch = MetadataPatch {
+            target: MetadataTarget::Tab(7),
+            source_id: "flotilla".to_owned(),
+            set: std::collections::BTreeMap::from([(
+                "tab.subject".to_owned(),
+                MetadataValueUpdate {
+                    value: MetadataValue::Text("checkout".to_owned()),
+                    ttl_ms: None,
+                    precedence: Some(1),
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        };
+        let message = ExternalMessage::MetadataPatch(patch.clone());
+
+        let encoded = serde_json::to_string(&message).unwrap();
+        let decoded: ExternalMessage = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, ExternalMessage::MetadataPatch(patch));
     }
 
     #[test]

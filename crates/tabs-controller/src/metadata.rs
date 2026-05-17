@@ -90,6 +90,25 @@ impl MetadataStore {
             })
             .unwrap_or_default()
     }
+
+    pub fn resolved_entries_for(
+        &self,
+        entity_id: &EntityId,
+        now: u64,
+    ) -> BTreeMap<String, MetadataEntry> {
+        self.entries
+            .get(entity_id)
+            .map(|entity_entries| {
+                entity_entries
+                    .iter()
+                    .filter_map(|(key, _)| {
+                        select_primary_entry(&self.entries_for(entity_id, key, now))
+                            .map(|candidate| (key.clone(), candidate.entry))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 fn entry_is_live(entry: &MetadataEntry, now: u64) -> bool {

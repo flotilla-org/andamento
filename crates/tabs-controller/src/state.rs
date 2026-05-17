@@ -238,6 +238,11 @@ impl ControllerState {
         self.rail_config = rail_config;
     }
 
+    pub fn apply_metadata_patch(&mut self, patch: tabs_shared::MetadataPatch) {
+        self.receive_counter = self.receive_counter.saturating_add(1);
+        self.metadata.apply_patch(patch, self.receive_counter);
+    }
+
     pub fn bootstrap_snapshot(&self) -> ControllerBootstrapSnapshot {
         let mut pinned_tabs: Vec<u64> = self.pinned_tabs.iter().copied().collect();
         pinned_tabs.sort_unstable();
@@ -473,14 +478,24 @@ impl ControllerState {
     fn resolved_metadata_for_tabs(&self, tabs: &[TabCard]) -> Vec<ResolvedMetadata> {
         let mut by_target: BTreeMap<EntityId, BTreeMap<String, MetadataEntry>> = BTreeMap::new();
         for tab in tabs {
+            let tab_target = EntityId::Tab(tab.tab_id);
+            by_target.entry(tab_target.clone()).or_default().extend(
+                self.metadata
+                    .resolved_entries_for(&tab_target, self.receive_counter),
+            );
             if let Some(entry) = self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD) {
                 by_target
-                    .entry(EntityId::Tab(tab.tab_id))
+                    .entry(tab_target)
                     .or_default()
                     .insert(KEY_PANE_CWD.to_owned(), entry.clone());
                 if let Some(grouping) = tab.grouping.as_ref() {
+                    let group_target = EntityId::Group(grouping.path.clone());
+                    by_target.entry(group_target.clone()).or_default().extend(
+                        self.metadata
+                            .resolved_entries_for(&group_target, self.receive_counter),
+                    );
                     by_target
-                        .entry(EntityId::Group(grouping.path.clone()))
+                        .entry(group_target)
                         .or_default()
                         .insert(KEY_PANE_CWD.to_owned(), entry);
                 }

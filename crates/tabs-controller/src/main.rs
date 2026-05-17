@@ -10,10 +10,10 @@ use tabs_shared::PaneTarget;
 use tabs_shared::MSG_VIEW_MODEL;
 use tabs_shared::{
     ControllerBootstrapSnapshot, ExternalMessage, RailConfig, RailGroupingMode, RailSizingPreset,
-    RailStructure, RailViewMode, RendererHello, SortMode, MSG_CLEAR_PANE_STATUS,
-    MSG_CONFIG_EDITOR_HELLO, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE,
-    MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG,
-    MSG_SET_SORT_MODE, MSG_TOGGLE_PIN,
+    RailStructure, RailViewMode, RendererHello, SortMode, MSG_APPLY_METADATA_PATCH,
+    MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO, MSG_CONTROLLER_BOOTSTRAP_REQUEST,
+    MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_SET_PANE_STATUS,
+    MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_TOGGLE_PIN,
 };
 use zellij_tile::prelude::*;
 
@@ -185,6 +185,13 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
                 bootstrap_request: None,
             }
         }
+        Ok(Some(ControllerMessage::External(ExternalMessage::MetadataPatch(patch)))) => {
+            state.apply_metadata_patch(patch);
+            HandlePipeResult {
+                state_changed: true,
+                bootstrap_request: None,
+            }
+        }
         Ok(Some(ControllerMessage::RendererHello(hello))) => {
             state.register_rail(hello);
             HandlePipeResult {
@@ -318,7 +325,7 @@ fn parse_controller_message(
     pipe_message: &PipeMessage,
 ) -> Result<Option<ControllerMessage>, String> {
     match pipe_message.name.as_str() {
-        MSG_SET_PANE_STATUS | MSG_CLEAR_PANE_STATUS => {
+        MSG_SET_PANE_STATUS | MSG_CLEAR_PANE_STATUS | MSG_APPLY_METADATA_PATCH => {
             let payload = pipe_message
                 .payload
                 .as_deref()
@@ -636,6 +643,52 @@ mod tests {
 
         assert!(changed.state_changed);
         assert_eq!(state.view_model().config, config);
+    }
+
+    #[test]
+    fn metadata_patch_message_updates_resolved_tab_metadata() {
+        let mut state = ControllerState::default();
+        state.update_tabs(vec![state::ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "main".to_owned(),
+            active: true,
+        }]);
+        let patch = tabs_shared::MetadataPatch {
+            target: tabs_shared::MetadataTarget::Tab(1),
+            source_id: "test".to_owned(),
+            set: BTreeMap::from([(
+                "tab.subject".to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: tabs_shared::MetadataValue::Text("checkout".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        };
+        let payload = serde_json::to_string(&ExternalMessage::MetadataPatch(patch)).unwrap();
+
+        let result = handle_pipe_message(
+            &mut state,
+            pipe(MSG_APPLY_METADATA_PATCH, Some(payload), BTreeMap::new()),
+        );
+
+        let model = state.view_model();
+        let tab_metadata = model
+            .resolved_metadata
+            .iter()
+            .find(|metadata| metadata.target == tabs_shared::MetadataTarget::Tab(1))
+            .expect("tab metadata");
+        assert!(result.state_changed);
+        assert_eq!(
+            tab_metadata
+                .values
+                .get("tab.subject")
+                .map(|entry| &entry.value),
+            Some(&tabs_shared::MetadataValue::Text("checkout".to_owned()))
+        );
     }
 
     #[test]
