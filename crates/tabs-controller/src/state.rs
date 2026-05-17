@@ -78,8 +78,12 @@ impl ControllerState {
             .retain(|_, tab_id| live_tab_ids.contains(tab_id));
         self.panes
             .retain(|_, pane| live_tab_ids.contains(&pane.tab_id));
-        self.pane_statuses
-            .retain(|pane_id, _| self.pane_to_tab.contains_key(pane_id));
+        self.pane_statuses.retain(|pane_id, _| {
+            self.pane_to_tab
+                .get(pane_id)
+                .map(|tab_id| live_tab_ids.contains(tab_id))
+                .unwrap_or(true)
+        });
     }
 
     #[cfg(test)]
@@ -577,6 +581,30 @@ mod tests {
         }
     }
 
+    fn tab_info(tab_id: usize, position: usize, name: &str, active: bool) -> TabInfo {
+        TabInfo {
+            position,
+            name: name.to_owned(),
+            active,
+            panes_to_hide: 0,
+            is_fullscreen_active: false,
+            is_sync_panes_active: false,
+            are_floating_panes_visible: false,
+            other_focused_clients: vec![],
+            active_swap_layout_name: None,
+            is_swap_layout_dirty: false,
+            viewport_rows: 0,
+            viewport_columns: 0,
+            display_area_rows: 0,
+            display_area_columns: 0,
+            selectable_tiled_panes_count: 0,
+            selectable_floating_panes_count: 0,
+            tab_id,
+            has_bell_notification: false,
+            is_flashing_bell: false,
+        }
+    }
+
     #[test]
     fn focused_pane_cwd_beats_more_common_cwd_for_tab_grouping() {
         let mut state = ControllerState::default();
@@ -835,6 +863,25 @@ mod tests {
         assert_eq!(target_snapshot.pinned_tabs, vec![7]);
         assert_eq!(target_snapshot.pane_statuses.len(), 1);
         assert_eq!(target_snapshot.pane_statuses[0].title, "waiting");
+    }
+
+    #[test]
+    fn tab_update_does_not_drop_bootstrapped_status_before_pane_manifest() {
+        let mut source = ControllerState::default();
+        source.set_status(status(
+            PaneTarget::Terminal(10),
+            Priority::Waiting,
+            "waiting",
+            10,
+        ));
+
+        let mut target = ControllerState::default();
+        target.apply_bootstrap_snapshot(source.bootstrap_snapshot());
+        target.update_tabs_from_zellij(vec![tab_info(1, 0, "main", true)]);
+        target.set_pane_tab(PaneTarget::Terminal(10), 1);
+
+        let model = target.view_model();
+        assert_eq!(model.tabs[0].status.as_ref().unwrap().title, "waiting");
     }
 
     #[test]
