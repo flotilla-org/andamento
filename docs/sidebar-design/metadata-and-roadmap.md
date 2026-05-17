@@ -309,7 +309,7 @@ General shape:
 
 Tile size should start as automatic squash-down based on available space. Templates can later add sizing hints such as minimum useful size, preferred size, compact variant, and expanded variant.
 
-Status: started internally for group headers. The renderer now builds group headers from ordered fields with required, optional, and priority classes, so narrow collapsed groups can drop the count before dropping active-tab context. This is still hard-coded Rust, not external template config.
+Status: started internally. The renderer now has generic ordered template fields with required, optional, and priority classes. Group headers are the first caller, so narrow collapsed groups can drop the count before dropping active-tab context. This is still hard-coded Rust, not external template config, and should be extended to tabs/nested groups before adding user-authored templates.
 
 ### Latent Tabs Are Materializable Nodes
 

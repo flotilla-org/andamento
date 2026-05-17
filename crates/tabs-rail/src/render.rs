@@ -1660,7 +1660,7 @@ fn group_header_line(
     theme: Option<RenderTheme>,
 ) -> String {
     let fields = group_header_template_fields(label, tab_count, collapsed, active_tab_name);
-    let label = render_group_header_fields(&fields, width);
+    let label = render_template_fields(&fields, width);
     let remaining = width.saturating_sub(label.width());
     let text = if remaining >= 2 {
         format!("{label} {}", "─".repeat(remaining - 1))
@@ -1675,7 +1675,7 @@ fn group_header_line(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum GroupHeaderField {
+enum TemplateField {
     Required(String),
     Optional(String),
     Priority(String),
@@ -1686,37 +1686,37 @@ fn group_header_template_fields(
     tab_count: usize,
     collapsed: bool,
     active_tab_name: Option<&str>,
-) -> Vec<GroupHeaderField> {
+) -> Vec<TemplateField> {
     let mut fields = vec![
-        GroupHeaderField::Required(if collapsed { "▶" } else { "▼" }.to_owned()),
-        GroupHeaderField::Required(label.to_owned()),
-        GroupHeaderField::Optional(format!("({tab_count})")),
+        TemplateField::Required(if collapsed { "▶" } else { "▼" }.to_owned()),
+        TemplateField::Required(label.to_owned()),
+        TemplateField::Optional(format!("({tab_count})")),
     ];
     if let Some(active_tab_name) = collapsed.then_some(active_tab_name).flatten() {
-        fields.push(GroupHeaderField::Priority(format!(": {active_tab_name}")));
+        fields.push(TemplateField::Priority(format!(": {active_tab_name}")));
     }
     fields
 }
 
-fn render_group_header_fields(fields: &[GroupHeaderField], width: usize) -> String {
-    let full = join_group_header_fields(fields, true);
+fn render_template_fields(fields: &[TemplateField], width: usize) -> String {
+    let full = join_template_fields(fields, true);
     if full.width() <= width {
         return full;
     }
-    let without_optional = join_group_header_fields(fields, false);
+    let without_optional = join_template_fields(fields, false);
     if without_optional.width() <= width {
         return without_optional;
     }
     truncate_to_width(&without_optional, width)
 }
 
-fn join_group_header_fields(fields: &[GroupHeaderField], include_optional: bool) -> String {
+fn join_template_fields(fields: &[TemplateField], include_optional: bool) -> String {
     let mut output = String::new();
     for field in fields {
         let value = match field {
-            GroupHeaderField::Required(value) | GroupHeaderField::Priority(value) => value,
-            GroupHeaderField::Optional(value) if include_optional => value,
-            GroupHeaderField::Optional(_) => continue,
+            TemplateField::Required(value) | TemplateField::Priority(value) => value,
+            TemplateField::Optional(value) if include_optional => value,
+            TemplateField::Optional(_) => continue,
         };
         if output.is_empty() || value.starts_with(':') {
             output.push_str(value);
@@ -2105,12 +2105,24 @@ mod tests {
         assert_eq!(
             fields,
             vec![
-                GroupHeaderField::Required("▶".to_owned()),
-                GroupHeaderField::Required("zellij".to_owned()),
-                GroupHeaderField::Optional("(2)".to_owned()),
-                GroupHeaderField::Priority(": tests".to_owned()),
+                TemplateField::Required("▶".to_owned()),
+                TemplateField::Required("zellij".to_owned()),
+                TemplateField::Optional("(2)".to_owned()),
+                TemplateField::Priority(": tests".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn template_fields_drop_optional_before_priority_when_narrow() {
+        let fields = vec![
+            TemplateField::Required("▶".to_owned()),
+            TemplateField::Required("zellij".to_owned()),
+            TemplateField::Optional("(2)".to_owned()),
+            TemplateField::Priority(": tests".to_owned()),
+        ];
+
+        assert_eq!(render_template_fields(&fields, 17), "▶ zellij: tests");
     }
 
     #[test]
