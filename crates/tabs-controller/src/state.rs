@@ -555,7 +555,7 @@ mod tests {
     use super::*;
     use tabs_shared::{
         GroupPath, GroupSegment, RailGroupingMode, RailRow, RailSizingPreset, RailStructure,
-        StatusIcon,
+        RailViewMode, StatusIcon,
     };
 
     fn status(
@@ -837,6 +837,7 @@ mod tests {
             structure: RailStructure::BoxPerTab,
             sizing: RailSizingPreset::Compact,
             grouping: RailGroupingMode::Directory,
+            view: RailViewMode::Normal,
         });
         source.toggle_pin(7);
         source.set_status(status(

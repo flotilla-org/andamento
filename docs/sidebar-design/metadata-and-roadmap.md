@@ -633,14 +633,14 @@ This should not require a new data model. It should consume the same metadata st
 
 ## Recommended Next Step
 
-Build the first metadata inspection path.
+Extend metadata inspection from derived display facts to resolved metadata entries.
 
 The next slice should:
 
-- define a resolved metadata debug view that can expose keys for a group/tab target without committing to final template rendering.
-- add enough controller view-model data for the rail to render a generic `key: value` metadata projection.
-- start with the current directory group metadata and any directly targeted group metadata available internally.
-- keep raw source-entry drill-in as the next follow-up after the generic resolved view is visible.
+- add a resolved metadata view shape to the controller view model for group/tab targets.
+- populate it from the current metadata store for cwd-derived groups and tabs.
+- show those resolved entries in metadata rail view instead of only deriving display lines from existing tab/group fields.
+- keep raw source-entry drill-in as the follow-up after resolved entries are visible.
 - keep external pipe input for arbitrary metadata separate until the inspection projection can show what arrived.
 
 After this lands, the next best slice is explicit tab subject/scope. Rendering polish such as collapse, group borders, and templates will be cleaner once group metadata and tab subjects have stable semantic identities.

@@ -10,9 +10,10 @@ use tabs_shared::PaneTarget;
 use tabs_shared::MSG_VIEW_MODEL;
 use tabs_shared::{
     ControllerBootstrapSnapshot, ExternalMessage, RailConfig, RailGroupingMode, RailSizingPreset,
-    RailStructure, RendererHello, SortMode, MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO,
-    MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_RENDERER_HELLO,
-    MSG_REQUEST_STATE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_TOGGLE_PIN,
+    RailStructure, RailViewMode, RendererHello, SortMode, MSG_CLEAR_PANE_STATUS,
+    MSG_CONFIG_EDITOR_HELLO, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE,
+    MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG,
+    MSG_SET_SORT_MODE, MSG_TOGGLE_PIN,
 };
 use zellij_tile::prelude::*;
 
@@ -256,6 +257,10 @@ fn parse_rail_config(configuration: &BTreeMap<String, String>) -> RailConfig {
             .get("rail_grouping")
             .and_then(|value| parse_rail_grouping(value))
             .unwrap_or_default(),
+        view: configuration
+            .get("rail_view")
+            .and_then(|value| parse_rail_view(value))
+            .unwrap_or_default(),
     }
 }
 
@@ -284,6 +289,14 @@ fn parse_rail_grouping(value: &str) -> Option<RailGroupingMode> {
     match value {
         "none" | "off" | "false" => Some(RailGroupingMode::None),
         "directory" | "cwd" | "pane-cwd" | "pane_cwd" => Some(RailGroupingMode::Directory),
+        _ => None,
+    }
+}
+
+fn parse_rail_view(value: &str) -> Option<RailViewMode> {
+    match value {
+        "normal" | "default" => Some(RailViewMode::Normal),
+        "metadata" | "debug" | "inspect" => Some(RailViewMode::Metadata),
         _ => None,
     }
 }
@@ -529,11 +542,22 @@ mod tests {
     }
 
     #[test]
+    fn parses_metadata_view_from_plugin_configuration() {
+        let mut configuration = BTreeMap::new();
+        configuration.insert("rail_view".to_owned(), "metadata".to_owned());
+
+        let config = parse_rail_config(&configuration);
+
+        assert_eq!(config.view, RailViewMode::Metadata);
+    }
+
+    #[test]
     fn parses_set_rail_config_payload() {
         let config = RailConfig {
             structure: RailStructure::SplitAroundActive,
             sizing: RailSizingPreset::PinnedLarge,
             grouping: RailGroupingMode::None,
+            view: RailViewMode::Normal,
         };
         let payload = serde_json::to_string(&config).unwrap();
 
@@ -570,6 +594,7 @@ mod tests {
                 structure: RailStructure::BoxPerTab,
                 sizing: RailSizingPreset::Compact,
                 grouping: RailGroupingMode::Directory,
+                view: RailViewMode::Metadata,
             },
             pinned_tabs: vec![7],
             pane_statuses: vec![SetPaneStatus {
@@ -599,6 +624,7 @@ mod tests {
             structure: RailStructure::BoxPerTab,
             sizing: RailSizingPreset::Compact,
             grouping: RailGroupingMode::None,
+            view: RailViewMode::Normal,
         };
         let payload = serde_json::to_string(&config).unwrap();
         let mut state = ControllerState::default();

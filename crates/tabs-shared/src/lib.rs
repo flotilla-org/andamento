@@ -211,6 +211,19 @@ impl Default for RailGroupingMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RailViewMode {
+    Normal,
+    Metadata,
+}
+
+impl Default for RailViewMode {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum RailRow {
@@ -236,6 +249,8 @@ pub struct RailConfig {
     pub sizing: RailSizingPreset,
     #[serde(default)]
     pub grouping: RailGroupingMode,
+    #[serde(default)]
+    pub view: RailViewMode,
 }
 
 impl Default for RailConfig {
@@ -244,6 +259,7 @@ impl Default for RailConfig {
             structure: RailStructure::default(),
             sizing: RailSizingPreset::default(),
             grouping: RailGroupingMode::default(),
+            view: RailViewMode::default(),
         }
     }
 }
@@ -328,6 +344,13 @@ mod tests {
     }
 
     #[test]
+    fn rail_config_defaults_to_normal_view() {
+        let config = RailConfig::default();
+
+        assert_eq!(config.view, RailViewMode::Normal);
+    }
+
+    #[test]
     fn controller_view_model_with_group_rows_round_trips_json() {
         let group_path = GroupPath(vec![GroupSegment {
             key: "zellij.pane.cwd".to_owned(),
@@ -339,6 +362,7 @@ mod tests {
                 structure: RailStructure::JoinedCells,
                 sizing: RailSizingPreset::Compact,
                 grouping: RailGroupingMode::Directory,
+                view: RailViewMode::Normal,
             },
             tabs: vec![TabCard {
                 tab_id: 1,
@@ -452,6 +476,7 @@ mod tests {
             structure: RailStructure::BoxPerTab,
             sizing: RailSizingPreset::Compact,
             grouping: RailGroupingMode::None,
+            view: RailViewMode::Metadata,
         };
 
         let encoded = serde_json::to_string(&config).unwrap();

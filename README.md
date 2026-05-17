@@ -80,6 +80,16 @@ plugin location="tabs-controller" {
 
 Use `rail_grouping "none"` or omit the setting for the flat tab rail.
 
+Switch the rail into the generic metadata inspection projection:
+
+```kdl
+plugin location="tabs-controller" {
+    rail_view "metadata"
+}
+```
+
+Use `rail_view "normal"` or omit the setting for the compact navigation rail.
+
 Set a pane status:
 
 ```sh

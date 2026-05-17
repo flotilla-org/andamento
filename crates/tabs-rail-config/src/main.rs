@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use tabs_shared::{
     ControllerViewModel, GroupPath, MetadataValue, RailConfig, RailGroupingMode, RailSizingPreset,
-    RailStructure,
+    RailStructure, RailViewMode,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -25,6 +25,7 @@ enum ConfigAction {
     SetStructure(RailStructure),
     SetSizing(RailSizingPreset),
     SetGrouping(RailGroupingMode),
+    SetView(RailViewMode),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +190,7 @@ fn apply_config_action(mut config: RailConfig, action: ConfigAction) -> RailConf
         ConfigAction::SetStructure(structure) => config.structure = structure,
         ConfigAction::SetSizing(sizing) => config.sizing = sizing,
         ConfigAction::SetGrouping(grouping) => config.grouping = grouping,
+        ConfigAction::SetView(view) => config.view = view,
     }
     config
 }
@@ -255,6 +257,24 @@ fn render_config(
         "directory",
         config.grouping == RailGroupingMode::Directory,
         ConfigAction::SetGrouping(RailGroupingMode::Directory),
+    );
+    push_plain(&mut lines, cols, "");
+    push_plain(&mut lines, cols, "view");
+    push_option(
+        &mut lines,
+        &mut hit_regions,
+        cols,
+        "normal",
+        config.view == RailViewMode::Normal,
+        ConfigAction::SetView(RailViewMode::Normal),
+    );
+    push_option(
+        &mut lines,
+        &mut hit_regions,
+        cols,
+        "metadata",
+        config.view == RailViewMode::Metadata,
+        ConfigAction::SetView(RailViewMode::Metadata),
     );
     push_plain(&mut lines, cols, "");
     push_plain(&mut lines, cols, "sizing");
@@ -410,6 +430,7 @@ mod tests {
                 structure: RailStructure::BoxPerTab,
                 sizing: RailSizingPreset::Compact,
                 grouping: RailGroupingMode::Directory,
+                view: RailViewMode::Normal,
             },
             None,
             22,
@@ -465,6 +486,28 @@ mod tests {
         );
 
         assert_eq!(updated.grouping, RailGroupingMode::Directory);
+    }
+
+    #[test]
+    fn view_click_action_updates_config_locally() {
+        let updated = apply_config_action(
+            RailConfig::default(),
+            ConfigAction::SetView(RailViewMode::Metadata),
+        );
+
+        assert_eq!(updated.view, RailViewMode::Metadata);
+    }
+
+    #[test]
+    fn renders_view_options() {
+        let rendered = render_config(RailConfig::default(), None, 22, 30);
+
+        assert!(rendered.lines.iter().any(|line| line.contains("view")));
+        assert!(rendered.lines.iter().any(|line| line.contains("metadata")));
+        assert!(rendered
+            .hit_regions
+            .iter()
+            .any(|hit| hit.action == ConfigAction::SetView(RailViewMode::Metadata)));
     }
 
     #[test]
