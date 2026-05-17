@@ -2,6 +2,7 @@ plugins {
     tabs-controller location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-controller.wasm" {
         rail_structure "joined-cells"
         rail_sizing "active-large"
+        rail_grouping "directory"
     }
     tabs-rail location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-rail.wasm" {
         controller_plugin_url "tabs-controller"

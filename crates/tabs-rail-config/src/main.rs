@@ -4,13 +4,14 @@ fn main() {}
 #[cfg(target_family = "wasm")]
 use std::collections::BTreeMap;
 
-use tabs_shared::{RailConfig, RailSizingPreset, RailStructure};
+use tabs_shared::{
+    ControllerViewModel, RailConfig, RailGroupingMode, RailSizingPreset, RailStructure,
+};
 use unicode_width::UnicodeWidthStr;
 
 #[cfg(target_family = "wasm")]
 use tabs_shared::{
-    ControllerViewModel, RendererHello, MSG_CONFIG_EDITOR_HELLO, MSG_REQUEST_STATE,
-    MSG_SET_RAIL_CONFIG, MSG_VIEW_MODEL,
+    RendererHello, MSG_CONFIG_EDITOR_HELLO, MSG_REQUEST_STATE, MSG_SET_RAIL_CONFIG, MSG_VIEW_MODEL,
 };
 #[cfg(target_family = "wasm")]
 use zellij_tile::prelude::*;
@@ -22,6 +23,7 @@ const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
 enum ConfigAction {
     SetStructure(RailStructure),
     SetSizing(RailSizingPreset),
+    SetGrouping(RailGroupingMode),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,7 +121,7 @@ impl ZellijPlugin for PluginState {
             .pending_config
             .or_else(|| self.model.as_ref().map(|model| model.config))
             .unwrap_or_default();
-        let rendered = render_config(config, rows, cols);
+        let rendered = render_config(config, self.model.as_ref(), rows, cols);
         self.hit_regions = rendered.hit_regions;
         print!("{}", rendered.lines.join("\n"));
     }
@@ -179,6 +181,7 @@ fn apply_config_action(mut config: RailConfig, action: ConfigAction) -> RailConf
     match action {
         ConfigAction::SetStructure(structure) => config.structure = structure,
         ConfigAction::SetSizing(sizing) => config.sizing = sizing,
+        ConfigAction::SetGrouping(grouping) => config.grouping = grouping,
     }
     config
 }
@@ -187,7 +190,12 @@ fn permission_result_should_resync(granted: bool) -> bool {
     granted
 }
 
-fn render_config(config: RailConfig, rows: usize, cols: usize) -> RenderedConfig {
+fn render_config(
+    config: RailConfig,
+    model: Option<&ControllerViewModel>,
+    rows: usize,
+    cols: usize,
+) -> RenderedConfig {
     if rows == 0 || cols == 0 {
         return RenderedConfig {
             lines: vec![],
@@ -224,6 +232,24 @@ fn render_config(config: RailConfig, rows: usize, cols: usize) -> RenderedConfig
         ConfigAction::SetStructure(RailStructure::BoxPerTab),
     );
     push_plain(&mut lines, cols, "");
+    push_plain(&mut lines, cols, "grouping");
+    push_option(
+        &mut lines,
+        &mut hit_regions,
+        cols,
+        "ungrouped",
+        config.grouping == RailGroupingMode::None,
+        ConfigAction::SetGrouping(RailGroupingMode::None),
+    );
+    push_option(
+        &mut lines,
+        &mut hit_regions,
+        cols,
+        "directory",
+        config.grouping == RailGroupingMode::Directory,
+        ConfigAction::SetGrouping(RailGroupingMode::Directory),
+    );
+    push_plain(&mut lines, cols, "");
     push_plain(&mut lines, cols, "sizing");
     push_option(
         &mut lines,
@@ -258,6 +284,8 @@ fn render_config(config: RailConfig, rows: usize, cols: usize) -> RenderedConfig
         ConfigAction::SetSizing(RailSizingPreset::PinnedLarge),
     );
     push_plain(&mut lines, cols, "");
+    push_cwd_metadata(&mut lines, cols, model);
+    push_plain(&mut lines, cols, "");
     push_plain(&mut lines, cols, "click to apply");
 
     lines.truncate(rows);
@@ -267,6 +295,26 @@ fn render_config(config: RailConfig, rows: usize, cols: usize) -> RenderedConfig
     }
 
     RenderedConfig { lines, hit_regions }
+}
+
+fn push_cwd_metadata(lines: &mut Vec<String>, cols: usize, model: Option<&ControllerViewModel>) {
+    push_plain(lines, cols, "cwd metadata");
+    let Some(model) = model else {
+        push_plain(lines, cols, "no controller state yet");
+        return;
+    };
+    if model.tabs.is_empty() {
+        push_plain(lines, cols, "no tabs");
+        return;
+    }
+    for tab in &model.tabs {
+        let cwd = tab
+            .grouping
+            .as_ref()
+            .map(|grouping| grouping.full_label.as_str())
+            .unwrap_or("<none>");
+        push_plain(lines, cols, &format!("{}: zellij.pane.cwd={cwd}", tab.name));
+    }
 }
 
 fn push_plain(lines: &mut Vec<String>, cols: usize, text: &str) {
@@ -314,6 +362,7 @@ fn pad_to_width(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tabs_shared::{SortMode, TabCard, TabGroupingInfo};
 
     #[test]
     fn renders_selected_config() {
@@ -321,8 +370,10 @@ mod tests {
             RailConfig {
                 structure: RailStructure::BoxPerTab,
                 sizing: RailSizingPreset::Compact,
+                grouping: RailGroupingMode::Directory,
             },
-            16,
+            None,
+            22,
             30,
         );
 
@@ -331,11 +382,15 @@ mod tests {
             .iter()
             .any(|line| line.trim() == "> box per tab"));
         assert!(rendered.lines.iter().any(|line| line.trim() == "> compact"));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim() == "> directory"));
     }
 
     #[test]
     fn maps_click_rows_to_config_actions() {
-        let rendered = render_config(RailConfig::default(), 16, 30);
+        let rendered = render_config(RailConfig::default(), None, 22, 30);
 
         assert!(rendered
             .hit_regions
@@ -345,6 +400,10 @@ mod tests {
             .hit_regions
             .iter()
             .any(|hit| hit.action == ConfigAction::SetSizing(RailSizingPreset::PinnedLarge)));
+        assert!(rendered
+            .hit_regions
+            .iter()
+            .any(|hit| hit.action == ConfigAction::SetGrouping(RailGroupingMode::Directory)));
     }
 
     #[test]
@@ -356,6 +415,65 @@ mod tests {
 
         assert_eq!(updated.structure, RailStructure::BoxPerTab);
         assert_eq!(updated.sizing, RailSizingPreset::ActiveLarge);
+        assert_eq!(updated.grouping, RailGroupingMode::None);
+    }
+
+    #[test]
+    fn grouping_click_action_updates_config_locally() {
+        let updated = apply_config_action(
+            RailConfig::default(),
+            ConfigAction::SetGrouping(RailGroupingMode::Directory),
+        );
+
+        assert_eq!(updated.grouping, RailGroupingMode::Directory);
+    }
+
+    #[test]
+    fn renders_collected_cwd_metadata_from_model() {
+        let model = ControllerViewModel {
+            sort_mode: SortMode::Position,
+            config: RailConfig::default(),
+            tabs: vec![
+                TabCard {
+                    tab_id: 1,
+                    position: 0,
+                    name: "server".to_owned(),
+                    active: true,
+                    pinned: false,
+                    status: None,
+                    grouping: Some(TabGroupingInfo {
+                        key: "cwd:/repo/app".to_owned(),
+                        label: "app".to_owned(),
+                        full_label: "/repo/app".to_owned(),
+                    }),
+                },
+                TabCard {
+                    tab_id: 2,
+                    position: 1,
+                    name: "scratch".to_owned(),
+                    active: false,
+                    pinned: false,
+                    status: None,
+                    grouping: None,
+                },
+            ],
+            rows: vec![],
+        };
+
+        let rendered = render_config(RailConfig::default(), Some(&model), 24, 40);
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim() == "cwd metadata"));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim() == "server: zellij.pane.cwd=/repo/app"));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim() == "scratch: zellij.pane.cwd=<none>"));
     }
 
     #[test]

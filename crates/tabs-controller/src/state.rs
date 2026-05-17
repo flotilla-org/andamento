@@ -1,10 +1,11 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use crate::metadata::{select_primary_value, CandidateEntry, EntityId, MetadataStore};
 use tabs_shared::{
     ControllerViewModel, MetadataEntry, MetadataValue, PaneTarget, Priority, RailConfig,
-    RailGroupingMode, RailRow, RendererHello, SetPaneStatus, SortMode, TabCard, TabStatusSummary,
+    RailGroupingMode, RailRow, RendererHello, SetPaneStatus, SortMode, TabCard, TabGroupingInfo,
+    TabStatusSummary,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -259,6 +260,7 @@ impl ControllerState {
     }
 
     pub fn view_model(&self) -> ControllerViewModel {
+        let grouping_by_tab = self.tab_grouping_infos();
         let mut tabs: Vec<TabCard> = self
             .tabs
             .iter()
@@ -269,6 +271,7 @@ impl ControllerState {
                 active: tab.active,
                 pinned: self.pinned_tabs.contains(&tab.tab_id),
                 status: self.status_for_tab(tab.tab_id),
+                grouping: grouping_by_tab.get(&tab.tab_id).cloned(),
             })
             .collect();
 
@@ -308,40 +311,39 @@ impl ControllerState {
     }
 
     fn directory_group_rows(&self, tabs: &[TabCard]) -> Vec<RailRow> {
-        let mut tab_cwds: HashMap<u64, String> = HashMap::new();
+        let mut key_to_tabs: BTreeMap<String, Vec<TabCard>> = BTreeMap::new();
+        let mut grouping_by_key: BTreeMap<String, TabGroupingInfo> = BTreeMap::new();
         for tab in tabs {
-            if let Some(cwd) = self.tab_primary_cwd(tab.tab_id) {
-                tab_cwds.insert(tab.tab_id, cwd);
-            }
-        }
-        let mut cwd_to_tabs: BTreeMap<String, Vec<TabCard>> = BTreeMap::new();
-        for tab in tabs {
-            if let Some(cwd) = tab_cwds.get(&tab.tab_id) {
-                cwd_to_tabs
-                    .entry(cwd.clone())
+            if let Some(grouping) = tab.grouping.clone() {
+                grouping_by_key.insert(grouping.key.clone(), grouping.clone());
+                key_to_tabs
+                    .entry(grouping.key.clone())
                     .or_default()
                     .push(tab.clone());
             }
         }
-        let group_cwds: Vec<String> = cwd_to_tabs.keys().cloned().collect();
         let mut emitted_groups = HashSet::new();
         let mut rows = vec![];
         for tab in tabs {
-            let Some(cwd) = tab_cwds.get(&tab.tab_id) else {
+            let Some(grouping) = tab.grouping.as_ref() else {
                 rows.push(RailRow::Tab {
                     tab: tab.clone(),
                     indent: 0,
                 });
                 continue;
             };
-            if !emitted_groups.insert(cwd.clone()) {
+            if !emitted_groups.insert(grouping.key.clone()) {
                 continue;
             }
-            let grouped_tabs = cwd_to_tabs.get(cwd).cloned().unwrap_or_default();
+            let grouped_tabs = key_to_tabs.get(&grouping.key).cloned().unwrap_or_default();
+            let grouping = grouping_by_key
+                .get(&grouping.key)
+                .cloned()
+                .unwrap_or_else(|| grouping.clone());
             rows.push(RailRow::GroupHeader {
-                group_id: format!("cwd:{cwd}"),
-                label: self.group_label_for_cwd(cwd, &group_cwds),
-                full_label: cwd.clone(),
+                group_id: grouping.key,
+                label: grouping.label,
+                full_label: grouping.full_label,
                 tab_count: grouped_tabs.len(),
             });
             rows.extend(
@@ -351,6 +353,38 @@ impl ControllerState {
             );
         }
         rows
+    }
+
+    fn tab_grouping_infos(&self) -> HashMap<u64, TabGroupingInfo> {
+        let tab_cwds: HashMap<u64, String> = self
+            .tabs
+            .iter()
+            .filter_map(|tab| {
+                self.tab_primary_cwd(tab.tab_id)
+                    .map(|cwd| (tab.tab_id, cwd))
+            })
+            .collect();
+        let all_group_cwds: Vec<String> = tab_cwds
+            .values()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+
+        tab_cwds
+            .into_iter()
+            .map(|(tab_id, cwd)| {
+                let label = self.group_label_for_cwd(&cwd, &all_group_cwds);
+                (
+                    tab_id,
+                    TabGroupingInfo {
+                        key: format!("cwd:{cwd}"),
+                        label,
+                        full_label: cwd,
+                    },
+                )
+            })
+            .collect()
     }
 
     fn tab_primary_cwd(&self, tab_id: u64) -> Option<String> {
@@ -606,6 +640,27 @@ mod tests {
 
         assert_eq!(model.rows.len(), 1);
         assert!(matches!(&model.rows[0], RailRow::Tab { tab, indent: 0 } if tab.tab_id == 1));
+    }
+
+    #[test]
+    fn tab_cards_include_selected_cwd_grouping_metadata_even_when_ungrouped() {
+        let mut state = ControllerState::default();
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "one".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into());
+
+        let model = state.view_model();
+        let grouping = model.tabs[0].grouping.as_ref().unwrap();
+
+        assert_eq!(model.config.grouping, RailGroupingMode::None);
+        assert_eq!(grouping.key, "cwd:/repo/a");
+        assert_eq!(grouping.label, "a");
+        assert_eq!(grouping.full_label, "/repo/a");
     }
 
     #[test]

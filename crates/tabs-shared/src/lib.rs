@@ -77,6 +77,15 @@ pub struct TabCard {
     pub active: bool,
     pub pinned: bool,
     pub status: Option<TabStatusSummary>,
+    #[serde(default)]
+    pub grouping: Option<TabGroupingInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabGroupingInfo {
+    pub key: String,
+    pub label: String,
+    pub full_label: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,6 +253,7 @@ mod tests {
                     icon: Some(StatusIcon::PngFile(PathBuf::from("/tmp/error.png"))),
                     source_pane: PaneTarget::Terminal(3),
                 }),
+                grouping: None,
             }],
             rows: vec![],
         };
@@ -283,6 +293,11 @@ mod tests {
                 active: true,
                 pinned: false,
                 status: None,
+                grouping: Some(TabGroupingInfo {
+                    key: "cwd:/Users/robert/dev/zellij".to_owned(),
+                    label: "zellij".to_owned(),
+                    full_label: "/Users/robert/dev/zellij".to_owned(),
+                }),
             }],
             rows: vec![
                 RailRow::GroupHeader {
@@ -299,6 +314,11 @@ mod tests {
                         active: true,
                         pinned: false,
                         status: None,
+                        grouping: Some(TabGroupingInfo {
+                            key: "cwd:/Users/robert/dev/zellij".to_owned(),
+                            label: "zellij".to_owned(),
+                            full_label: "/Users/robert/dev/zellij".to_owned(),
+                        }),
                     },
                     indent: 2,
                 },

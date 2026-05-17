@@ -1205,6 +1205,7 @@ mod tests {
                         icon: None,
                         source_pane: PaneTarget::Terminal(9),
                     }),
+                    grouping: None,
                 },
                 TabCard {
                     tab_id: 1,
@@ -1213,6 +1214,7 @@ mod tests {
                     active: false,
                     pinned: false,
                     status: None,
+                    grouping: None,
                 },
             ],
             rows: vec![],
@@ -1227,6 +1229,7 @@ mod tests {
             active: false,
             pinned: false,
             status: None,
+            grouping: None,
         };
         let tab_two = TabCard {
             tab_id: 2,
@@ -1235,6 +1238,7 @@ mod tests {
             active: true,
             pinned: false,
             status: None,
+            grouping: None,
         };
         ControllerViewModel {
             sort_mode: SortMode::Position,
