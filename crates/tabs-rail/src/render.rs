@@ -520,6 +520,26 @@ fn style_title_text(line: String, active: bool, theme: Option<RenderTheme>) -> S
     .to_string()
 }
 
+fn style_group_header_text(
+    line: String,
+    contains_active_tab: bool,
+    theme: Option<RenderTheme>,
+) -> String {
+    let Some(theme) = theme else {
+        return line;
+    };
+    if contains_active_tab {
+        foreground_style(theme.active_border)
+            .bold()
+            .paint(line)
+            .to_string()
+    } else {
+        foreground_style(theme.body_foreground)
+            .paint(line)
+            .to_string()
+    }
+}
+
 fn foreground_style(color: PaletteColor) -> Style {
     Style::new().fg(match color {
         PaletteColor::Rgb((r, g, b)) => Color::RGB(r, g, b),
@@ -729,6 +749,7 @@ fn append_group_header(
         &group.label,
         group.tab_count,
         group.collapsed,
+        group.children.iter().any(|tab| tab.card.active),
         cols,
         theme,
     ));
@@ -1628,6 +1649,7 @@ fn group_header_line(
     label: &str,
     tab_count: usize,
     collapsed: bool,
+    contains_active_tab: bool,
     width: usize,
     theme: Option<RenderTheme>,
 ) -> String {
@@ -1647,7 +1669,11 @@ fn group_header_line(
     } else {
         label
     };
-    style_body_text(pad_to_width(&truncate_to_width(&text, width), width), theme)
+    style_group_header_text(
+        pad_to_width(&truncate_to_width(&text, width), width),
+        contains_active_tab,
+        theme,
+    )
 }
 
 fn truncate_to_width(text: &str, max_width: usize) -> String {
@@ -1879,6 +1905,28 @@ mod tests {
         assert_eq!(hit.action, HitAction::ToggleGroup);
         assert!(hit.group_path.is_some());
         assert_eq!(hit_at(&rendered.hit_regions, 0, 2), None);
+    }
+
+    #[test]
+    fn group_header_containing_active_tab_uses_active_style() {
+        let rendered = render_lines_with_theme(
+            Some(&grouped_model()),
+            &[],
+            8,
+            24,
+            true,
+            Some(RenderTheme {
+                active_border: PaletteColor::EightBit(2),
+                inactive_border: PaletteColor::EightBit(8),
+                body_foreground: PaletteColor::EightBit(7),
+            }),
+        );
+
+        assert!(
+            rendered.lines[0].starts_with("\u{1b}[1;38;5;2m▼"),
+            "group containing the active tab should use active styling: {:?}",
+            rendered.lines[0]
+        );
     }
 
     #[test]
