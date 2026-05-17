@@ -2012,6 +2012,10 @@ enum MetadataPredicate {
         key: &'static str,
         value: &'static str,
     },
+    TextPrefix {
+        key: &'static str,
+        prefix: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2040,6 +2044,13 @@ const WAITING_STATUS_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
         value: "waiting",
     },
 ];
+const TERMINAL_STATUS_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
+    MetadataPredicate::Exists("status.title"),
+    MetadataPredicate::TextPrefix {
+        key: "status.source_pane",
+        prefix: "terminal:",
+    },
+];
 
 const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
     TemplateDefinition {
@@ -2064,6 +2075,12 @@ const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
         slot: TemplateSlot::TabStatus,
         node_kind: RenderNodeKind::Tab,
         predicates: WAITING_STATUS_TEMPLATE_PREDICATES,
+        build: build_status_template_fields,
+    },
+    TemplateDefinition {
+        slot: TemplateSlot::TabStatus,
+        node_kind: RenderNodeKind::Tab,
+        predicates: TERMINAL_STATUS_TEMPLATE_PREDICATES,
         build: build_status_template_fields,
     },
 ];
@@ -2116,13 +2133,17 @@ impl MetadataPredicate {
             MetadataPredicate::TextEquals { key, value } => {
                 metadata_text(metadata, key) == Some(*value)
             }
+            MetadataPredicate::TextPrefix { key, prefix } => {
+                metadata_text(metadata, key).is_some_and(|value| value.starts_with(prefix))
+            }
         }
     }
 
     fn specificity(&self) -> usize {
         match self {
             MetadataPredicate::Exists(_) => 1,
-            MetadataPredicate::TextEquals { .. } => 2,
+            MetadataPredicate::TextPrefix { .. } => 2,
+            MetadataPredicate::TextEquals { .. } => 3,
         }
     }
 }
@@ -2868,6 +2889,46 @@ mod tests {
         metadata.insert(
             "status.priority".to_owned(),
             MetadataValue::Text("waiting".to_owned()),
+        );
+        let context = TemplateRenderContext {
+            slot: TemplateSlot::TabStatus,
+            node_kind: RenderNodeKind::Tab,
+            metadata: &metadata,
+            collapsed: false,
+            active_tab_name: None,
+        };
+
+        let template = resolve_template(&templates, &context).expect("matching template");
+
+        assert_eq!(
+            (template.build)(&context),
+            vec![TemplateField::Required("specific".to_owned())]
+        );
+    }
+
+    #[test]
+    fn template_matcher_supports_text_prefix_predicates() {
+        let templates = [
+            TemplateDefinition {
+                slot: TemplateSlot::TabStatus,
+                node_kind: RenderNodeKind::Tab,
+                predicates: &[],
+                build: generic_test_template_fields,
+            },
+            TemplateDefinition {
+                slot: TemplateSlot::TabStatus,
+                node_kind: RenderNodeKind::Tab,
+                predicates: &[MetadataPredicate::TextPrefix {
+                    key: "status.source_pane",
+                    prefix: "terminal:",
+                }],
+                build: specific_test_template_fields,
+            },
+        ];
+        let mut metadata = RenderMetadata::new();
+        metadata.insert(
+            "status.source_pane".to_owned(),
+            MetadataValue::Text("terminal:42".to_owned()),
         );
         let context = TemplateRenderContext {
             slot: TemplateSlot::TabStatus,

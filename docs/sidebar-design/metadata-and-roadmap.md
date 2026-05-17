@@ -336,7 +336,7 @@ The order should be:
 
 6. **Add template matching only after metadata and recursion are stable.**
    Start with hard-coded template definitions over node type plus metadata predicates. A template should produce ordered fields and sizing hints. Only after this is proven should the config file expose user-authored templates and reload diagnostics.
-   Status: started. The renderer now has an internal template resolver keyed by node kind, template slot, and metadata predicates. Built-in group header, tab title, and tab status templates route through it, with the highest-specificity metadata match winning while preserving the current visible output. This still uses Rust builders rather than external template field specs.
+   Status: started. The renderer now has an internal template resolver keyed by node kind, template slot, and metadata predicates. Built-in group header, tab title, and tab status templates route through it, with the highest-specificity metadata match winning while preserving the current visible output. Predicate support currently covers existence, exact text, and text-prefix matches. This still uses Rust builders rather than external template field specs.
 
 7. **Add external templates last.**
    External config should target stable concepts: node type, metadata predicates, field lists, truncation/coalescing rules, and sizing hints. It should not expose temporary compatibility structs or assumptions about exactly two hierarchy levels.
