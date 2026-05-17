@@ -2440,6 +2440,72 @@ mod tests {
     }
 
     #[test]
+    fn nested_group_toggle_hit_region_uses_group_indent() {
+        let rendered = render_lines(Some(&nested_group_model()), &[], 12, 36, true);
+
+        assert_eq!(hit_at(&rendered.hit_regions, 1, 0), None);
+        let hit = hit_at(&rendered.hit_regions, 1, 2).expect("nested group toggle");
+        assert_eq!(hit.action, HitAction::ToggleGroup);
+        assert_eq!(
+            hit.group_path,
+            match &nested_group_model().rows[0] {
+                RailRow::GroupHeader { path, .. } => Some(path.clone()),
+                _ => None,
+            }
+        );
+    }
+
+    #[test]
+    fn collapsing_nested_leaf_group_hides_only_that_subtree() {
+        let model = nested_group_model();
+        let leaf_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("expected first row to be a group header"),
+        };
+
+        let rendered =
+            render_lines_with_collapsed_groups(Some(&model), &[], 12, 36, true, &[leaf_path]);
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.starts_with("  ▶ worktree-a (1)")));
+        assert!(!rendered.lines.iter().any(|line| line.contains("agent-1")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("worktree-b")));
+        assert!(rendered.lines.iter().any(|line| line.contains("agent-2")));
+    }
+
+    #[test]
+    fn collapsing_nested_parent_group_hides_all_descendants() {
+        let model = nested_group_model();
+        let parent_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => GroupPath(path.0[..1].to_vec()),
+            _ => panic!("expected first row to be a group header"),
+        };
+
+        let rendered =
+            render_lines_with_collapsed_groups(Some(&model), &[], 12, 36, true, &[parent_path]);
+
+        assert!(rendered.lines[0].starts_with("▶ project-a (2): agent-2"));
+        assert!(!rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("worktree-a")));
+        assert!(!rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("worktree-b")));
+        assert!(!rendered.lines.iter().any(|line| line.contains("agent-1")));
+        assert!(!rendered
+            .lines
+            .iter()
+            .any(|line| line.starts_with("    ┌ agent-2") || line.starts_with("    ├ agent-2")));
+    }
+
+    #[test]
     fn group_header_containing_active_tab_uses_active_style() {
         let rendered = render_lines_with_theme(
             Some(&grouped_model()),
