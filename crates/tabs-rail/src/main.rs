@@ -91,8 +91,75 @@ fn pane_dimension_constraint_from_rail_size(size: RailSize) -> PaneDimensionCons
 }
 
 #[cfg(any(test, target_family = "wasm"))]
-fn rail_resize_boundary() -> Direction {
-    Direction::Right
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RailPlacement {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+#[cfg(any(test, target_family = "wasm"))]
+impl Default for RailPlacement {
+    fn default() -> Self {
+        Self::Left
+    }
+}
+
+#[cfg(target_family = "wasm")]
+impl RailPlacement {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+}
+
+#[cfg(any(test, target_family = "wasm"))]
+fn parse_rail_placement(value: &str) -> Option<RailPlacement> {
+    match value {
+        "left" => Some(RailPlacement::Left),
+        "right" => Some(RailPlacement::Right),
+        "top" => Some(RailPlacement::Top),
+        "bottom" => Some(RailPlacement::Bottom),
+        _ => None,
+    }
+}
+
+#[cfg(any(test, target_family = "wasm"))]
+fn rail_resize_boundary(placement: RailPlacement) -> Direction {
+    match placement {
+        RailPlacement::Left => Direction::Right,
+        RailPlacement::Right => Direction::Left,
+        RailPlacement::Top => Direction::Down,
+        RailPlacement::Bottom => Direction::Up,
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn direction_name(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Left => "left",
+        Direction::Right => "right",
+        Direction::Up => "up",
+        Direction::Down => "down",
+    }
+}
+
+#[cfg(any(test, target_family = "wasm"))]
+fn rail_size_from_constraints(
+    placement: RailPlacement,
+    rows: Option<PaneDimensionConstraint>,
+    columns: Option<PaneDimensionConstraint>,
+) -> Option<RailSize> {
+    let constraint = match placement {
+        RailPlacement::Left | RailPlacement::Right => columns,
+        RailPlacement::Top | RailPlacement::Bottom => rows,
+    }?;
+    Some(rail_size_from_constraint(constraint))
 }
 
 #[cfg(any(test, target_family = "wasm"))]
@@ -143,6 +210,8 @@ const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
 const CONFIG_CONFIG_PLUGIN_URL: &str = "config_plugin_url";
 #[cfg(target_family = "wasm")]
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
+#[cfg(target_family = "wasm")]
+const CONFIG_RAIL_PLACEMENT: &str = "rail_placement";
 
 #[cfg(target_family = "wasm")]
 #[derive(Default)]
@@ -163,6 +232,7 @@ pub struct PluginState {
     metadata_scroll_offset: usize,
     collapsed_groups: BTreeSet<GroupPath>,
     stats: PluginStatsRecorder,
+    rail_placement: RailPlacement,
     observed_rail_size: Option<RailSize>,
     latest_rail_size_target: Option<RailSizeTarget>,
     applied_rail_size_version: u64,
@@ -185,6 +255,10 @@ impl ZellijPlugin for PluginState {
             .get(CONFIG_CONFIG_PLUGIN_URL)
             .cloned()
             .unwrap_or_else(|| "tabs-rail-config".to_owned());
+        self.rail_placement = configuration
+            .get(CONFIG_RAIL_PLACEMENT)
+            .and_then(|value| parse_rail_placement(value))
+            .unwrap_or_default();
 
         request_permission(&[
             PermissionType::ReadApplicationState,
@@ -449,8 +523,35 @@ mod tests {
     }
 
     #[test]
-    fn current_rail_resize_boundary_is_the_right_edge() {
-        assert_eq!(rail_resize_boundary(), Direction::Right);
+    fn parses_rail_placement_from_plugin_configuration() {
+        assert_eq!(parse_rail_placement("left"), Some(RailPlacement::Left));
+        assert_eq!(parse_rail_placement("right"), Some(RailPlacement::Right));
+        assert_eq!(parse_rail_placement("top"), Some(RailPlacement::Top));
+        assert_eq!(parse_rail_placement("bottom"), Some(RailPlacement::Bottom));
+        assert_eq!(parse_rail_placement("sideways"), None);
+    }
+
+    #[test]
+    fn rail_placement_maps_to_resized_boundary() {
+        assert_eq!(rail_resize_boundary(RailPlacement::Left), Direction::Right);
+        assert_eq!(rail_resize_boundary(RailPlacement::Right), Direction::Left);
+        assert_eq!(rail_resize_boundary(RailPlacement::Top), Direction::Down);
+        assert_eq!(rail_resize_boundary(RailPlacement::Bottom), Direction::Up);
+    }
+
+    #[test]
+    fn rail_placement_selects_the_observed_size_axis() {
+        let rows = Some(PaneDimensionConstraint::Percent(12.5));
+        let columns = Some(PaneDimensionConstraint::Percent(25.0));
+
+        assert_eq!(
+            rail_size_from_constraints(RailPlacement::Left, rows, columns),
+            Some(RailSize::Percent(25.0))
+        );
+        assert_eq!(
+            rail_size_from_constraints(RailPlacement::Top, rows, columns),
+            Some(RailSize::Percent(12.5))
+        );
     }
 }
 
@@ -484,7 +585,7 @@ impl PluginState {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
             return;
         };
-        let snapshot = self.stats.snapshot(
+        let mut snapshot = self.stats.snapshot(
             collection_id,
             RendererHello {
                 plugin_id,
@@ -492,6 +593,32 @@ impl PluginState {
             },
             "rail",
         );
+        snapshot.counters.insert(
+            format!("rail.placement.{}", self.rail_placement.as_str()),
+            1,
+        );
+        snapshot.counters.insert(
+            format!(
+                "rail.boundary.{}",
+                direction_name(rail_resize_boundary(self.rail_placement))
+            ),
+            1,
+        );
+        if let Some(size) = self.observed_rail_size {
+            match size {
+                RailSize::Fixed(cells) => {
+                    snapshot
+                        .counters
+                        .insert("rail.size.fixed-cells".to_owned(), cells as u64);
+                }
+                RailSize::Percent(percent) => {
+                    snapshot.counters.insert(
+                        "rail.size.percent-x1000".to_owned(),
+                        (percent * 1000.0).round() as u64,
+                    );
+                }
+            }
+        }
         let Ok(payload) = serde_json::to_string(&snapshot) else {
             return;
         };
@@ -512,8 +639,13 @@ impl PluginState {
             .values()
             .flat_map(|panes| panes.iter())
             .find(|pane| pane.is_plugin && pane.id == plugin_id)
-            .and_then(|pane| pane.pane_columns_constraint)
-            .map(rail_size_from_constraint)
+            .and_then(|pane| {
+                rail_size_from_constraints(
+                    self.rail_placement,
+                    pane.pane_rows_constraint,
+                    pane.pane_columns_constraint,
+                )
+            })
         else {
             return;
         };
@@ -584,7 +716,7 @@ impl PluginState {
         }
         resize_pane_with_id_to(
             PaneId::Plugin(plugin_id),
-            rail_resize_boundary(),
+            rail_resize_boundary(self.rail_placement),
             pane_dimension_constraint_from_rail_size(target.size),
         );
         self.applied_rail_size_version = target.version;

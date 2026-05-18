@@ -9,6 +9,7 @@ plugins {
     tabs-rail location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-rail.wasm" {
         controller_plugin_url "tabs-controller"
         config_plugin_url "tabs-rail-config"
+        rail_placement "left"
     }
     tabs-rail-config location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-rail-config.wasm"
 }

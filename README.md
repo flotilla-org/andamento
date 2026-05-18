@@ -139,6 +139,18 @@ plugin location="tabs-controller" {
 
 Use `rail_view "normal"` or omit the setting for the compact navigation rail.
 
+## Rail Placement
+
+The visible rail plugin reads its physical placement from its own layout config. This is separate from controller config because placement belongs to the pane instance:
+
+```kdl
+tabs-rail location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-rail.wasm" {
+    rail_placement "left"
+}
+```
+
+Supported values are `left`, `right`, `top`, and `bottom`; omitted placement defaults to `left`. The placement chooses which boundary is moved when rail widths are synchronized.
+
 Set a pane status:
 
 ```sh
