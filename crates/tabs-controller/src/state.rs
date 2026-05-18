@@ -352,6 +352,16 @@ impl ControllerState {
     }
 
     #[allow(dead_code)]
+    pub fn known_rail_count(&self) -> usize {
+        self.known_rails.len()
+    }
+
+    #[allow(dead_code)]
+    pub fn known_config_editor_count(&self) -> usize {
+        self.known_config_editors.len()
+    }
+
+    #[allow(dead_code)]
     pub fn register_config_editor(&mut self, hello: RendererHello) -> bool {
         if self.known_config_editors.get(&hello.plugin_id) == Some(&hello) {
             return false;
@@ -413,8 +423,10 @@ impl ControllerState {
         match self.rail_config.grouping {
             RailGroupingMode::None => tabs
                 .iter()
-                .cloned()
-                .map(|tab| RailRow::Tab { tab, indent: 0 })
+                .map(|tab| RailRow::Tab {
+                    tab_id: tab.tab_id,
+                    indent: 0,
+                })
                 .collect(),
             RailGroupingMode::Directory => self.directory_group_rows(tabs),
         }
@@ -437,7 +449,7 @@ impl ControllerState {
         for tab in tabs {
             let Some(grouping) = tab.grouping.as_ref() else {
                 rows.push(RailRow::Tab {
-                    tab: tab.clone(),
+                    tab_id: tab.tab_id,
                     indent: 0,
                 });
                 continue;
@@ -461,11 +473,10 @@ impl ControllerState {
                 tab_count: grouped_tabs.len(),
                 templates: ResolvedTemplateSlots::default(),
             });
-            rows.extend(
-                grouped_tabs
-                    .into_iter()
-                    .map(|tab| RailRow::Tab { tab, indent: 2 }),
-            );
+            rows.extend(grouped_tabs.into_iter().map(|tab| RailRow::Tab {
+                tab_id: tab.tab_id,
+                indent: 2,
+            }));
         }
         rows
     }
@@ -506,7 +517,7 @@ impl ControllerState {
                         templates,
                     }
                 }
-                RailRow::Tab { tab, indent } => RailRow::Tab { tab, indent },
+                RailRow::Tab { tab_id, indent } => RailRow::Tab { tab_id, indent },
             })
             .collect()
     }
@@ -1453,9 +1464,27 @@ mod tests {
             &model.rows[0],
             RailRow::GroupHeader { tab_count: 2, .. }
         ));
-        assert!(matches!(&model.rows[1], RailRow::Tab { tab, indent: 2 } if tab.tab_id == 1));
-        assert!(matches!(&model.rows[2], RailRow::Tab { tab, indent: 2 } if tab.tab_id == 3));
-        assert!(matches!(&model.rows[3], RailRow::Tab { tab, indent: 0 } if tab.tab_id == 2));
+        assert!(matches!(
+            &model.rows[1],
+            RailRow::Tab {
+                tab_id: 1,
+                indent: 2
+            }
+        ));
+        assert!(matches!(
+            &model.rows[2],
+            RailRow::Tab {
+                tab_id: 3,
+                indent: 2
+            }
+        ));
+        assert!(matches!(
+            &model.rows[3],
+            RailRow::Tab {
+                tab_id: 2,
+                indent: 0
+            }
+        ));
     }
 
     #[test]
@@ -1471,7 +1500,13 @@ mod tests {
         let model = state.view_model();
 
         assert_eq!(model.rows.len(), 1);
-        assert!(matches!(&model.rows[0], RailRow::Tab { tab, indent: 0 } if tab.tab_id == 1));
+        assert!(matches!(
+            &model.rows[0],
+            RailRow::Tab {
+                tab_id: 1,
+                indent: 0
+            }
+        ));
     }
 
     #[test]
@@ -2422,6 +2457,8 @@ mod tests {
 
         state.retain_rails(&[8].into_iter().collect());
 
+        assert_eq!(state.known_rail_count(), 1);
+        assert_eq!(state.known_config_editor_count(), 0);
         assert_eq!(state.rail_plugin_ids(), vec![8]);
     }
 }

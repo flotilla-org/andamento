@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +20,11 @@ pub const MSG_APPLY_METADATA_PATCH: &str = "tabs-apply-metadata-patch";
 pub const MSG_CONTROLLER_BOOTSTRAP_REQUEST: &str = "tabs-controller-bootstrap-request";
 pub const MSG_CONTROLLER_BOOTSTRAP_STATE: &str = "tabs-controller-bootstrap-state";
 pub const MSG_OBSERVED_IDENTITIES: &str = "andamento-observed-identities";
+pub const MSG_STATS_COLLECT: &str = "andamento-stats-collect";
+pub const MSG_STATS_REQUEST: &str = "andamento-stats-request";
+pub const MSG_STATS_REPORT: &str = "andamento-stats-report";
+pub const MSG_RAIL_SIZE_OBSERVED: &str = "andamento-rail-size-observed";
+pub const MSG_RAIL_SIZE_TARGET: &str = "andamento-rail-size-target";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -60,6 +66,54 @@ pub enum ExternalMessage {
 pub struct RendererHello {
     pub plugin_id: u32,
     pub client_id: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
+pub enum RailSize {
+    Fixed(usize),
+    Percent(f64),
+}
+
+impl RailSize {
+    pub fn within_tolerance(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Fixed(left), Self::Fixed(right)) => left.abs_diff(right) <= 1,
+            (Self::Percent(left), Self::Percent(right)) => (left - right).abs() < 0.001,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RailSizeObserved {
+    pub rail: RendererHello,
+    pub size: RailSize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RailSizeTarget {
+    pub client_id: u16,
+    pub size: RailSize,
+    pub version: u64,
+}
+
+#[cfg(test)]
+mod rail_size_tests {
+    use super::RailSize;
+
+    #[test]
+    fn rail_size_tolerance_accepts_nearby_values_of_the_same_kind() {
+        assert!(RailSize::Fixed(20).within_tolerance(RailSize::Fixed(21)));
+        assert!(RailSize::Percent(18.75).within_tolerance(RailSize::Percent(18.7505)));
+    }
+
+    #[test]
+    fn rail_size_tolerance_rejects_different_kinds_and_meaningful_changes() {
+        assert!(!RailSize::Fixed(20).within_tolerance(RailSize::Percent(20.0)));
+        assert!(!RailSize::Fixed(20).within_tolerance(RailSize::Fixed(22)));
+        assert!(!RailSize::Percent(18.75).within_tolerance(RailSize::Percent(18.752)));
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,7 +370,7 @@ pub enum RailRow {
         templates: ResolvedTemplateSlots,
     },
     Tab {
-        tab: TabCard,
+        tab_id: u64,
         indent: usize,
     },
 }
@@ -404,6 +458,97 @@ pub struct ControllerViewModel {
     pub resolved_metadata: Vec<ResolvedMetadata>,
     #[serde(default)]
     pub observed_identities: Vec<ObservedMetadataIdentity>,
+}
+
+impl ControllerViewModel {
+    pub fn tab_by_id(&self, tab_id: u64) -> Option<&TabCard> {
+        self.tabs.iter().find(|tab| tab.tab_id == tab_id)
+    }
+
+    pub fn tab_for_row(&self, row: &RailRow) -> Option<&TabCard> {
+        match row {
+            RailRow::Tab { tab_id, .. } => self.tab_by_id(*tab_id),
+            RailRow::GroupHeader { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatsCollectRequest {
+    pub requester: RendererHello,
+    pub collection_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginStatsSpan {
+    pub name: String,
+    pub count: u64,
+    pub total_us: u64,
+    pub max_us: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginStatsSnapshot {
+    pub collection_id: u64,
+    pub plugin_id: u32,
+    pub client_id: u16,
+    pub plugin_kind: String,
+    #[serde(default)]
+    pub counters: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub spans: Vec<PluginStatsSpan>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PluginStatsRecorder {
+    counters: BTreeMap<String, u64>,
+    spans: BTreeMap<String, PluginStatsSpan>,
+}
+
+impl PluginStatsRecorder {
+    pub fn increment(&mut self, name: impl Into<String>) {
+        let name = name.into();
+        *self.counters.entry(name).or_insert(0) += 1;
+    }
+
+    pub fn add(&mut self, name: impl Into<String>, value: u64) {
+        let name = name.into();
+        let counter = self.counters.entry(name).or_insert(0);
+        *counter = counter.saturating_add(value);
+    }
+
+    pub fn record_span_elapsed(&mut self, name: impl Into<String>, started_at: Instant) {
+        self.record_span_us(name, started_at.elapsed().as_micros() as u64);
+    }
+
+    pub fn record_span_us(&mut self, name: impl Into<String>, elapsed_us: u64) {
+        let name = name.into();
+        let entry = self.spans.entry(name.clone()).or_insert(PluginStatsSpan {
+            name,
+            count: 0,
+            total_us: 0,
+            max_us: 0,
+        });
+        entry.count = entry.count.saturating_add(1);
+        entry.total_us = entry.total_us.saturating_add(elapsed_us);
+        entry.max_us = entry.max_us.max(elapsed_us);
+    }
+
+    pub fn snapshot(
+        &self,
+        collection_id: u64,
+        identity: RendererHello,
+        plugin_kind: impl Into<String>,
+    ) -> PluginStatsSnapshot {
+        PluginStatsSnapshot {
+            collection_id,
+            plugin_id: identity.plugin_id,
+            client_id: identity.client_id,
+            plugin_kind: plugin_kind.into(),
+            counters: self.counters.clone(),
+            spans: self.spans.values().cloned().collect(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -495,6 +640,74 @@ mod tests {
     }
 
     #[test]
+    fn plugin_stats_snapshot_round_trips_json() {
+        let mut counters = BTreeMap::new();
+        counters.insert("pipe.view-model".to_owned(), 3);
+        let snapshot = PluginStatsSnapshot {
+            collection_id: 9,
+            plugin_id: 4,
+            client_id: 2,
+            plugin_kind: "rail".to_owned(),
+            counters,
+            spans: vec![PluginStatsSpan {
+                name: "decode.view-model".to_owned(),
+                count: 3,
+                total_us: 120,
+                max_us: 70,
+            }],
+        };
+
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        let decoded: PluginStatsSnapshot = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn stats_collect_request_round_trips_json() {
+        let request = StatsCollectRequest {
+            requester: RendererHello {
+                plugin_id: 10,
+                client_id: 1,
+            },
+            collection_id: 11,
+        };
+
+        let encoded = serde_json::to_string(&request).unwrap();
+        let decoded: StatsCollectRequest = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn stats_recorder_accumulates_counters_and_spans() {
+        let mut recorder = PluginStatsRecorder::default();
+
+        recorder.increment("pipe.view-model");
+        recorder.increment("pipe.view-model");
+        recorder.add("view-model.payload-bytes", 100);
+        recorder.add("view-model.payload-bytes", 250);
+        recorder.record_span_us("decode.view-model", 10);
+        recorder.record_span_us("decode.view-model", 25);
+
+        let snapshot = recorder.snapshot(
+            1,
+            RendererHello {
+                plugin_id: 2,
+                client_id: 3,
+            },
+            "rail",
+        );
+
+        assert_eq!(snapshot.counters["pipe.view-model"], 2);
+        assert_eq!(snapshot.counters["view-model.payload-bytes"], 350);
+        assert_eq!(snapshot.spans[0].name, "decode.view-model");
+        assert_eq!(snapshot.spans[0].count, 2);
+        assert_eq!(snapshot.spans[0].total_us, 35);
+        assert_eq!(snapshot.spans[0].max_us, 25);
+    }
+
+    #[test]
     fn controller_view_model_with_group_rows_round_trips_json() {
         let group_path = GroupPath(vec![GroupSegment {
             key: "zellij.pane.cwd".to_owned(),
@@ -535,21 +748,7 @@ mod tests {
                     templates: ResolvedTemplateSlots::default(),
                 },
                 RailRow::Tab {
-                    tab: TabCard {
-                        tab_id: 1,
-                        position: 0,
-                        name: "server".to_owned(),
-                        active: true,
-                        pinned: false,
-                        status: None,
-                        grouping: Some(TabGroupingInfo {
-                            key: "cwd:/Users/robert/dev/zellij".to_owned(),
-                            path: group_path,
-                            label: "zellij".to_owned(),
-                            full_label: "/Users/robert/dev/zellij".to_owned(),
-                        }),
-                        templates: ResolvedTemplateSlots::default(),
-                    },
+                    tab_id: 1,
                     indent: 2,
                 },
             ],
@@ -561,6 +760,12 @@ mod tests {
         let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, model);
+        assert_eq!(
+            decoded
+                .tab_for_row(&decoded.rows[1])
+                .map(|tab| tab.name.as_str()),
+            Some("server")
+        );
     }
 
     #[test]

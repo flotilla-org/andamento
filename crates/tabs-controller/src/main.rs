@@ -4,23 +4,37 @@ mod state;
 use std::collections::BTreeMap;
 #[cfg(target_family = "wasm")]
 use std::path::PathBuf;
+#[cfg(target_family = "wasm")]
+use std::time::Instant;
 
 use state::ControllerState;
 #[cfg(target_family = "wasm")]
 use tabs_shared::PaneTarget;
 #[cfg(target_family = "wasm")]
+use tabs_shared::PluginStatsRecorder;
+#[cfg(target_family = "wasm")]
+use tabs_shared::MSG_RAIL_SIZE_TARGET;
+#[cfg(target_family = "wasm")]
 use tabs_shared::MSG_VIEW_MODEL;
 use tabs_shared::{
-    ControllerBootstrapSnapshot, ExternalMessage, RailConfig, RailGroupingMode, RailSizingPreset,
-    RailStructure, RailViewMode, RendererHello, SortMode, MSG_APPLY_METADATA_PATCH,
-    MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO, MSG_CONTROLLER_BOOTSTRAP_REQUEST,
-    MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
-    MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_TOGGLE_PIN,
+    ControllerBootstrapSnapshot, ExternalMessage, RailConfig, RailGroupingMode, RailSize,
+    RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RailViewMode, RendererHello,
+    SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS,
+    MSG_CONFIG_EDITOR_HELLO, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE,
+    MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
+    MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
 use tabs_shared::{TemplateConfigDiagnostics, TemplateConfigState};
+#[cfg(target_family = "wasm")]
+use tabs_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
 use zellij_tile::prelude::*;
 
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
 const TEMPLATE_RELOAD_RETRY_SECS: f64 = 0.25;
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+const RAIL_SIZE_SYNC_DEBOUNCE_SECS: f64 = 0.05;
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+const VIEW_MODEL_PUSH_COALESCE_SECS: f64 = 0.01;
 const MAX_TEMPLATE_RELOAD_ATTEMPTS: u8 = 20;
 
 #[cfg(not(target_family = "wasm"))]
@@ -39,6 +53,9 @@ struct PluginState {
     template_reload_attempts: u8,
     grouping_rule_count: usize,
     grouping_config_error: Option<String>,
+    stats: PluginStatsRecorder,
+    pending_view_model_push: PendingViewModelPush,
+    pending_rail_size_sync: PendingRailSizeSync,
 }
 
 #[cfg(target_family = "wasm")]
@@ -79,8 +96,10 @@ impl ZellijPlugin for PluginState {
     }
 
     fn update(&mut self, event: Event) -> bool {
+        self.stats.increment("update.total");
         match event {
             Event::PermissionRequestResult(status) => {
+                self.stats.increment("update.permission-result");
                 self.permissions_granted = matches!(status, PermissionStatus::Granted);
                 if self.permissions_granted {
                     change_host_folder(PathBuf::from("/"));
@@ -90,6 +109,7 @@ impl ZellijPlugin for PluginState {
                 return true;
             }
             Event::FailedToChangeHostFolder(error) => {
+                self.stats.increment("update.failed-host-folder");
                 self.template_reload_pending = false;
                 self.state
                     .set_template_config_diagnostics(template_config_error_diagnostics(
@@ -99,22 +119,38 @@ impl ZellijPlugin for PluginState {
                             error.unwrap_or_else(|| "unknown error".to_owned())
                         ),
                     ));
-                self.push_view_model_to_rails();
+                self.push_view_model_to_rails_with_pending(ViewModelPushReason::UpdateHostFolder);
                 return true;
             }
-            Event::Timer(_) => {
+            Event::Timer(seconds) => {
+                self.stats.increment("update.timer");
+                self.stats
+                    .add("update.timer.elapsed-ms", (seconds * 1000.0) as u64);
+                let mut should_render = false;
+                // Timer events carry elapsed wall time, not the requested timeout,
+                // so route them by pending controller state instead of by value.
                 if self.template_reload_pending {
                     let loaded = self.retry_template_catalog_reload();
-                    self.push_view_model_to_rails();
-                    return loaded || self.template_reload_pending;
+                    self.push_view_model_to_rails_with_pending(ViewModelPushReason::UpdateTemplate);
+                    should_render |= loaded || self.template_reload_pending;
                 }
+                if self.pending_view_model_push.is_pending() {
+                    self.flush_pending_view_model_push();
+                    should_render = true;
+                }
+                if self.pending_rail_size_sync.is_pending() {
+                    self.flush_pending_rail_size_sync();
+                }
+                return should_render;
             }
             Event::TabUpdate(tabs) => {
+                self.stats.increment("update.tab");
                 if self.state.update_tabs_from_zellij(tabs) {
-                    self.push_view_model_to_rails();
+                    self.queue_view_model_push(ViewModelPushReason::UpdateTab);
                 }
             }
             Event::PaneUpdate(pane_manifest) => {
+                self.stats.increment("update.pane");
                 let live_plugin_ids = pane_manifest
                     .panes
                     .values()
@@ -122,7 +158,23 @@ impl ZellijPlugin for PluginState {
                     .filter(|pane| pane.is_plugin)
                     .map(|pane| pane.id)
                     .collect();
+                let rails_before_retain = self.state.known_rail_count();
+                let config_editors_before_retain = self.state.known_config_editor_count();
                 self.state.retain_rails(&live_plugin_ids);
+                self.stats
+                    .add("retain-rails.rails-before", rails_before_retain as u64);
+                self.stats.add(
+                    "retain-rails.config-editors-before",
+                    config_editors_before_retain as u64,
+                );
+                self.stats.add(
+                    "retain-rails.rails-after",
+                    self.state.known_rail_count() as u64,
+                );
+                self.stats.add(
+                    "retain-rails.config-editors-after",
+                    self.state.known_config_editor_count() as u64,
+                );
                 let mut state_changed = self.state.update_panes_from_manifest(pane_manifest);
                 for terminal_id in self.state.terminal_panes_for_cwd_refresh() {
                     if let Ok(cwd) = get_pane_cwd(PaneId::Terminal(terminal_id)) {
@@ -133,10 +185,11 @@ impl ZellijPlugin for PluginState {
                     }
                 }
                 if state_changed {
-                    self.push_view_model_to_rails();
+                    self.queue_view_model_push(ViewModelPushReason::UpdatePane);
                 }
             }
             Event::CwdChanged(pane_id, cwd, _) => {
+                self.stats.increment("update.cwd");
                 let state_changed = if let PaneId::Terminal(id) = pane_id {
                     self.state
                         .set_pane_cwd(PaneTarget::Terminal(id), cwd.display().to_string())
@@ -144,7 +197,7 @@ impl ZellijPlugin for PluginState {
                     false
                 };
                 if state_changed {
-                    self.push_view_model_to_rails();
+                    self.queue_view_model_push(ViewModelPushReason::UpdateCwd);
                 }
             }
             _ => {}
@@ -153,23 +206,40 @@ impl ZellijPlugin for PluginState {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        self.stats.increment(format!("pipe.{}", pipe_message.name));
+        let started_at = Instant::now();
         let result = handle_pipe_message(&mut self.state, pipe_message);
+        self.stats
+            .record_span_elapsed("pipe.handle-message", started_at);
         if let Some(requester) = result.bootstrap_request {
             if self.own_identity.as_ref() != Some(&requester) {
                 self.send_bootstrap_snapshot_to(requester);
             }
+        }
+        if let Some(request) = result.stats_collect_request {
+            self.send_stats_report_to(request.requester.clone(), request.collection_id);
+            self.request_stats_from_plugins(request);
+        }
+        if let Some(observed) = result.rail_size_observed {
+            self.queue_rail_size_sync(observed);
         }
         if let Some(output) = result.cli_pipe_output.as_ref() {
             cli_pipe_output(&output.pipe_id, &output.output);
             unblock_cli_pipe_input(&output.pipe_id);
         }
         if result.state_changed {
-            self.push_view_model_to_rails();
+            self.push_view_model_to_rails_with_pending(
+                result
+                    .view_model_push_reason
+                    .unwrap_or(ViewModelPushReason::PipeUnknown),
+            );
         }
         false
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        self.stats.increment("render.total");
+        let started_at = Instant::now();
         let diagnostics = self.state.template_config_diagnostics();
         let mut lines = vec![
             "andamento controller".to_owned(),
@@ -215,6 +285,8 @@ impl ZellijPlugin for PluginState {
             lines.push(String::new());
         }
         print!("{}", render_plain_lines(&lines, cols).join("\n"));
+        self.stats
+            .record_span_elapsed("render.controller-pane", started_at);
     }
 }
 
@@ -224,7 +296,7 @@ impl PluginState {
         if self.template_config_path.is_none() && self.grouping_config_path.is_none() {
             self.reload_template_catalog();
             self.reload_grouping_catalog();
-            self.push_view_model_to_rails();
+            self.push_view_model_to_rails_with_pending(ViewModelPushReason::UpdateTemplate);
             return;
         }
         self.template_reload_pending = true;
@@ -234,7 +306,7 @@ impl PluginState {
                 self.template_config_path.clone(),
             ));
         set_timeout(TEMPLATE_RELOAD_RETRY_SECS);
-        self.push_view_model_to_rails();
+        self.push_view_model_to_rails_with_pending(ViewModelPushReason::UpdateTemplate);
     }
 
     fn retry_template_catalog_reload(&mut self) -> bool {
@@ -321,13 +393,16 @@ impl PluginState {
         );
     }
 
-    fn send_bootstrap_snapshot_to(&self, requester: RendererHello) {
+    fn send_bootstrap_snapshot_to(&mut self, requester: RendererHello) {
         if !self.permissions_granted {
             return;
         }
+        let started_at = Instant::now();
         let Ok(payload) = serde_json::to_string(&self.state.bootstrap_snapshot()) else {
             return;
         };
+        self.stats
+            .record_span_elapsed("json.encode-bootstrap-snapshot", started_at);
         pipe_message_to_plugin(
             MessageToPlugin::new(MSG_CONTROLLER_BOOTSTRAP_STATE)
                 .with_destination_plugin_id(requester.plugin_id)
@@ -336,14 +411,66 @@ impl PluginState {
         );
     }
 
-    fn push_view_model_to_rails(&self) {
-        if !self.permissions_granted {
+    fn queue_view_model_push(&mut self, reason: ViewModelPushReason) {
+        if self.template_reload_pending {
+            self.push_view_model_to_rails_with_pending(reason);
             return;
         }
+        self.stats.increment("view-model.push.queued");
+        if self.pending_view_model_push.queue(reason) {
+            set_timeout(VIEW_MODEL_PUSH_COALESCE_SECS);
+        }
+    }
+
+    fn flush_pending_view_model_push(&mut self) {
+        let reasons = self.pending_view_model_push.take();
+        self.push_view_model_to_rails(reasons);
+    }
+
+    fn push_view_model_to_rails_with_pending(&mut self, reason: ViewModelPushReason) {
+        let mut reasons = self.pending_view_model_push.take();
+        if !reasons.contains(&reason) {
+            reasons.push(reason);
+        }
+        self.push_view_model_to_rails(reasons);
+    }
+
+    fn push_view_model_to_rails(&mut self, reasons: Vec<ViewModelPushReason>) {
+        if reasons.is_empty() {
+            return;
+        }
+        if !self.permissions_granted {
+            self.stats
+                .increment("view-model.push.skipped.no-permission");
+            return;
+        }
+        let rail_target_count = self.state.known_rail_count();
+        let config_editor_target_count = self.state.known_config_editor_count();
+        let targets = self.state.rail_plugin_targets();
+        if targets.is_empty() {
+            self.stats.increment("view-model.push.skipped.no-targets");
+            return;
+        }
+        let started_at = Instant::now();
         let Ok(payload) = serde_json::to_string(&self.state.view_model()) else {
             return;
         };
-        for rail in self.state.rail_plugin_targets() {
+        self.stats
+            .record_span_elapsed("json.encode-view-model", started_at);
+        self.stats.increment("view-model.push.sent");
+        for reason in reasons {
+            self.stats.increment(reason.counter_name());
+        }
+        self.stats.add("view-model.targets", targets.len() as u64);
+        self.stats
+            .add("view-model.targets.rails", rail_target_count as u64);
+        self.stats.add(
+            "view-model.targets.config-editors",
+            config_editor_target_count as u64,
+        );
+        self.stats
+            .add("view-model.payload-bytes", payload.len() as u64);
+        for rail in targets {
             pipe_message_to_plugin(
                 MessageToPlugin::new(MSG_VIEW_MODEL)
                     .with_destination_plugin_id(rail.plugin_id)
@@ -352,13 +479,211 @@ impl PluginState {
             );
         }
     }
+
+    fn queue_rail_size_sync(&mut self, observed: RailSizeObserved) {
+        if self.pending_rail_size_sync.queue(observed) {
+            set_timeout(RAIL_SIZE_SYNC_DEBOUNCE_SECS);
+        }
+    }
+
+    fn flush_pending_rail_size_sync(&mut self) {
+        let targets = self.pending_rail_size_sync.take_targets();
+        for target in targets {
+            self.send_rail_size_target_to_rails(target);
+        }
+    }
+
+    fn send_rail_size_target_to_rails(&self, target: RailSizeTarget) {
+        let Ok(payload) = serde_json::to_string(&target) else {
+            return;
+        };
+        for rail in self
+            .state
+            .rail_plugin_targets()
+            .into_iter()
+            .filter(|rail| rail.client_id == target.client_id)
+        {
+            pipe_message_to_plugin(
+                MessageToPlugin::new(MSG_RAIL_SIZE_TARGET)
+                    .with_destination_plugin_id(rail.plugin_id)
+                    .with_destination_client_id(rail.client_id)
+                    .with_payload(payload.clone()),
+            );
+        }
+    }
+
+    fn send_stats_report_to(&self, requester: RendererHello, collection_id: u64) {
+        let Some(identity) = self.own_identity.as_ref() else {
+            return;
+        };
+        let snapshot = self
+            .stats
+            .snapshot(collection_id, identity.clone(), "controller");
+        let Ok(payload) = serde_json::to_string(&snapshot) else {
+            return;
+        };
+        pipe_message_to_plugin(
+            MessageToPlugin::new(MSG_STATS_REPORT)
+                .with_destination_plugin_id(requester.plugin_id)
+                .with_destination_client_id(requester.client_id)
+                .with_payload(payload),
+        );
+    }
+
+    fn request_stats_from_plugins(&self, request: StatsCollectRequest) {
+        let Ok(payload) = serde_json::to_string(&request) else {
+            return;
+        };
+        for target in self.state.rail_plugin_targets() {
+            pipe_message_to_plugin(
+                MessageToPlugin::new(MSG_STATS_REQUEST)
+                    .with_destination_plugin_id(target.plugin_id)
+                    .with_destination_client_id(target.client_id)
+                    .with_payload(payload.clone()),
+            );
+        }
+    }
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq)]
 struct HandlePipeResult {
     state_changed: bool,
+    view_model_push_reason: Option<ViewModelPushReason>,
     bootstrap_request: Option<RendererHello>,
     cli_pipe_output: Option<CliPipeOutput>,
+    stats_collect_request: Option<StatsCollectRequest>,
+    rail_size_observed: Option<RailSizeObserved>,
+}
+
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewModelPushReason {
+    UpdateTab,
+    UpdatePane,
+    UpdateCwd,
+    UpdateTemplate,
+    UpdateHostFolder,
+    PipeStatus,
+    PipeMetadata,
+    PipeRendererHello,
+    PipeConfigEditorHello,
+    PipeTogglePin,
+    PipeConfig,
+    PipeRequestState,
+    PipeBootstrap,
+    PipeUnknown,
+}
+
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+impl ViewModelPushReason {
+    fn counter_name(self) -> &'static str {
+        match self {
+            Self::UpdateTab => "view-model.push.reason.tab",
+            Self::UpdatePane => "view-model.push.reason.pane",
+            Self::UpdateCwd => "view-model.push.reason.cwd",
+            Self::UpdateTemplate => "view-model.push.reason.template",
+            Self::UpdateHostFolder => "view-model.push.reason.host-folder",
+            Self::PipeStatus => "view-model.push.reason.pipe.status",
+            Self::PipeMetadata => "view-model.push.reason.pipe.metadata",
+            Self::PipeRendererHello => "view-model.push.reason.pipe.renderer-hello",
+            Self::PipeConfigEditorHello => "view-model.push.reason.pipe.config-editor-hello",
+            Self::PipeTogglePin => "view-model.push.reason.pipe.toggle-pin",
+            Self::PipeConfig => "view-model.push.reason.pipe.config",
+            Self::PipeRequestState => "view-model.push.reason.pipe.request-state",
+            Self::PipeBootstrap => "view-model.push.reason.pipe.bootstrap",
+            Self::PipeUnknown => "view-model.push.reason.pipe.unknown",
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct PendingViewModelPush {
+    scheduled: bool,
+    reasons: Vec<ViewModelPushReason>,
+}
+
+impl PendingViewModelPush {
+    fn queue(&mut self, reason: ViewModelPushReason) -> bool {
+        let should_schedule = !self.scheduled;
+        self.scheduled = true;
+        if !self.reasons.contains(&reason) {
+            self.reasons.push(reason);
+        }
+        should_schedule
+    }
+
+    fn take(&mut self) -> Vec<ViewModelPushReason> {
+        self.scheduled = false;
+        std::mem::take(&mut self.reasons)
+    }
+
+    fn is_pending(&self) -> bool {
+        self.scheduled
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+struct PendingRailSizeSync {
+    scheduled: bool,
+    pending_by_client: BTreeMap<u16, RailSize>,
+    target_by_client: BTreeMap<u16, RailSizeTarget>,
+}
+
+impl PendingRailSizeSync {
+    fn queue(&mut self, observed: RailSizeObserved) -> bool {
+        if self
+            .target_by_client
+            .get(&observed.rail.client_id)
+            .map(|target| target.size.within_tolerance(observed.size))
+            .unwrap_or(false)
+            || self
+                .pending_by_client
+                .get(&observed.rail.client_id)
+                .map(|pending| pending.within_tolerance(observed.size))
+                .unwrap_or(false)
+        {
+            return false;
+        }
+        let should_schedule = !self.scheduled;
+        self.scheduled = true;
+        self.pending_by_client
+            .insert(observed.rail.client_id, observed.size);
+        should_schedule
+    }
+
+    fn take_targets(&mut self) -> Vec<RailSizeTarget> {
+        self.scheduled = false;
+        let pending = std::mem::take(&mut self.pending_by_client);
+        pending
+            .into_iter()
+            .filter_map(|(client_id, size)| {
+                if self
+                    .target_by_client
+                    .get(&client_id)
+                    .map(|target| target.size.within_tolerance(size))
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                let version = self
+                    .target_by_client
+                    .get(&client_id)
+                    .map(|target| target.version.saturating_add(1))
+                    .unwrap_or(1);
+                let target = RailSizeTarget {
+                    client_id,
+                    size,
+                    version,
+                };
+                self.target_by_client.insert(client_id, target.clone());
+                Some(target)
+            })
+            .collect()
+    }
+
+    fn is_pending(&self) -> bool {
+        self.scheduled
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,93 +698,101 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             state.set_status(status);
             HandlePipeResult {
                 state_changed: true,
-                bootstrap_request: None,
-                cli_pipe_output: None,
+                view_model_push_reason: Some(ViewModelPushReason::PipeStatus),
+                ..HandlePipeResult::default()
             }
         }
         Ok(Some(ControllerMessage::External(ExternalMessage::ClearPaneStatus { pane_id }))) => {
             state.clear_status(pane_id);
             HandlePipeResult {
                 state_changed: true,
-                bootstrap_request: None,
-                cli_pipe_output: None,
+                view_model_push_reason: Some(ViewModelPushReason::PipeStatus),
+                ..HandlePipeResult::default()
             }
         }
         Ok(Some(ControllerMessage::External(ExternalMessage::MetadataPatch(patch)))) => {
             let state_changed = state.apply_metadata_patch(patch);
             HandlePipeResult {
                 state_changed,
-                bootstrap_request: None,
-                cli_pipe_output: None,
+                view_model_push_reason: state_changed.then_some(ViewModelPushReason::PipeMetadata),
+                ..HandlePipeResult::default()
             }
         }
         Ok(Some(ControllerMessage::RendererHello(hello))) => {
             let state_changed = state.register_rail(hello);
             HandlePipeResult {
                 state_changed,
-                bootstrap_request: None,
-                cli_pipe_output: None,
+                view_model_push_reason: state_changed
+                    .then_some(ViewModelPushReason::PipeRendererHello),
+                ..HandlePipeResult::default()
             }
         }
         Ok(Some(ControllerMessage::ConfigEditorHello(hello))) => {
             let state_changed = state.register_config_editor(hello);
             HandlePipeResult {
                 state_changed,
-                bootstrap_request: None,
-                cli_pipe_output: None,
+                view_model_push_reason: state_changed
+                    .then_some(ViewModelPushReason::PipeConfigEditorHello),
+                ..HandlePipeResult::default()
             }
         }
         Ok(Some(ControllerMessage::TogglePin(tab_id))) => {
             state.toggle_pin(tab_id);
             HandlePipeResult {
                 state_changed: true,
-                bootstrap_request: None,
-                cli_pipe_output: None,
+                view_model_push_reason: Some(ViewModelPushReason::PipeTogglePin),
+                ..HandlePipeResult::default()
             }
         }
         Ok(Some(ControllerMessage::SetSortMode(sort_mode))) => {
             state.set_sort_mode(sort_mode);
             HandlePipeResult {
                 state_changed: true,
-                bootstrap_request: None,
-                cli_pipe_output: None,
+                view_model_push_reason: Some(ViewModelPushReason::PipeConfig),
+                ..HandlePipeResult::default()
             }
         }
         Ok(Some(ControllerMessage::SetRailConfig(config))) => {
             state.set_rail_config(config);
             HandlePipeResult {
                 state_changed: true,
-                bootstrap_request: None,
-                cli_pipe_output: None,
+                view_model_push_reason: Some(ViewModelPushReason::PipeConfig),
+                ..HandlePipeResult::default()
             }
         }
         Ok(Some(ControllerMessage::RequestState)) => HandlePipeResult {
             state_changed: true,
-            bootstrap_request: None,
-            cli_pipe_output: None,
+            view_model_push_reason: Some(ViewModelPushReason::PipeRequestState),
+            ..HandlePipeResult::default()
         },
         Ok(Some(ControllerMessage::BootstrapRequest(requester))) => HandlePipeResult {
-            state_changed: false,
             bootstrap_request: Some(requester),
-            cli_pipe_output: None,
+            ..HandlePipeResult::default()
         },
         Ok(Some(ControllerMessage::BootstrapState(snapshot))) => {
             state.apply_bootstrap_snapshot(snapshot);
             HandlePipeResult {
                 state_changed: true,
-                bootstrap_request: None,
-                cli_pipe_output: None,
+                view_model_push_reason: Some(ViewModelPushReason::PipeBootstrap),
+                ..HandlePipeResult::default()
             }
         }
         Ok(Some(ControllerMessage::ObservedIdentitiesRequest(pipe_id))) => {
             let output = serde_json::to_string(&state.view_model().observed_identities)
                 .unwrap_or_else(|_| "[]".to_owned());
             HandlePipeResult {
-                state_changed: false,
-                bootstrap_request: None,
                 cli_pipe_output: Some(CliPipeOutput { pipe_id, output }),
+                ..HandlePipeResult::default()
             }
         }
+        Ok(Some(ControllerMessage::StatsCollect(request))) => HandlePipeResult {
+            stats_collect_request: Some(request),
+            ..HandlePipeResult::default()
+        },
+        Ok(Some(ControllerMessage::RailSizeObserved(observed))) => HandlePipeResult {
+            rail_size_observed: Some(observed),
+            ..HandlePipeResult::default()
+        },
         Ok(None) => HandlePipeResult::default(),
         Err(error) => {
             eprintln!("tabs-controller: {error}");
@@ -601,7 +934,7 @@ fn parse_rail_view(value: &str) -> Option<RailViewMode> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum ControllerMessage {
     External(ExternalMessage),
     RendererHello(RendererHello),
@@ -613,6 +946,8 @@ enum ControllerMessage {
     BootstrapRequest(RendererHello),
     BootstrapState(ControllerBootstrapSnapshot),
     ObservedIdentitiesRequest(String),
+    StatsCollect(StatsCollectRequest),
+    RailSizeObserved(RailSizeObserved),
 }
 
 fn parse_controller_message(
@@ -687,6 +1022,26 @@ fn parse_controller_message(
             ))),
             _ => Err("observed identities request requires a CLI pipe source".to_owned()),
         },
+        MSG_STATS_COLLECT => {
+            let payload = pipe_message
+                .payload
+                .as_deref()
+                .ok_or_else(|| "stats collect requires payload".to_owned())?;
+            serde_json::from_str::<StatsCollectRequest>(payload)
+                .map(ControllerMessage::StatsCollect)
+                .map(Some)
+                .map_err(|e| format!("failed to parse stats collect request: {e}"))
+        }
+        MSG_RAIL_SIZE_OBSERVED => {
+            let payload = pipe_message
+                .payload
+                .as_deref()
+                .ok_or_else(|| "rail size observed requires payload".to_owned())?;
+            serde_json::from_str::<RailSizeObserved>(payload)
+                .map(ControllerMessage::RailSizeObserved)
+                .map(Some)
+                .map_err(|e| format!("failed to parse rail size observation: {e}"))
+        }
         MSG_CONTROLLER_BOOTSTRAP_REQUEST => {
             let payload = pipe_message
                 .payload
@@ -976,6 +1331,45 @@ mod tests {
     }
 
     #[test]
+    fn parses_stats_collect_request() {
+        let request = StatsCollectRequest {
+            requester: RendererHello {
+                plugin_id: 22,
+                client_id: 3,
+            },
+            collection_id: 44,
+        };
+        let payload = serde_json::to_string(&request).unwrap();
+
+        let parsed =
+            parse_controller_message(&pipe(MSG_STATS_COLLECT, Some(payload), BTreeMap::new()))
+                .unwrap();
+
+        assert_eq!(parsed, Some(ControllerMessage::StatsCollect(request)));
+    }
+
+    #[test]
+    fn parses_rail_size_observed() {
+        let observed = RailSizeObserved {
+            rail: RendererHello {
+                plugin_id: 33,
+                client_id: 4,
+            },
+            size: RailSize::Percent(18.75),
+        };
+        let payload = serde_json::to_string(&observed).unwrap();
+
+        let parsed = parse_controller_message(&pipe(
+            MSG_RAIL_SIZE_OBSERVED,
+            Some(payload),
+            BTreeMap::new(),
+        ))
+        .unwrap();
+
+        assert_eq!(parsed, Some(ControllerMessage::RailSizeObserved(observed)));
+    }
+
+    #[test]
     fn set_rail_config_message_updates_controller_state() {
         let config = RailConfig {
             structure: RailStructure::BoxPerTab,
@@ -992,6 +1386,10 @@ mod tests {
         );
 
         assert!(changed.state_changed);
+        assert_eq!(
+            changed.view_model_push_reason,
+            Some(ViewModelPushReason::PipeConfig)
+        );
         assert_eq!(state.view_model().config, config);
     }
 
@@ -1032,6 +1430,10 @@ mod tests {
             .find(|metadata| metadata.target == tabs_shared::MetadataTarget::Tab(1))
             .expect("tab metadata");
         assert!(result.state_changed);
+        assert_eq!(
+            result.view_model_push_reason,
+            Some(ViewModelPushReason::PipeMetadata)
+        );
         assert_eq!(
             tab_metadata
                 .values
@@ -1177,5 +1579,87 @@ mod tests {
             false
         ));
         assert!(!should_retry_template_load(1, true));
+    }
+
+    #[test]
+    fn pending_view_model_push_coalesces_unique_reasons() {
+        let mut pending = PendingViewModelPush::default();
+
+        assert!(pending.queue(ViewModelPushReason::UpdateTab));
+        assert!(!pending.queue(ViewModelPushReason::UpdatePane));
+        assert!(!pending.queue(ViewModelPushReason::UpdateTab));
+
+        assert_eq!(
+            pending.take(),
+            vec![
+                ViewModelPushReason::UpdateTab,
+                ViewModelPushReason::UpdatePane
+            ]
+        );
+        assert!(!pending.is_pending());
+        assert!(pending.queue(ViewModelPushReason::UpdateCwd));
+    }
+
+    #[test]
+    fn pending_rail_size_sync_debounces_per_client_targets() {
+        let mut pending = PendingRailSizeSync::default();
+        let rail = RendererHello {
+            plugin_id: 9,
+            client_id: 1,
+        };
+
+        assert!(pending.queue(RailSizeObserved {
+            rail: rail.clone(),
+            size: RailSize::Percent(20.0),
+        }));
+        assert!(!pending.queue(RailSizeObserved {
+            rail: rail.clone(),
+            size: RailSize::Percent(20.0005),
+        }));
+
+        let targets = pending.take_targets();
+        assert_eq!(
+            targets,
+            vec![RailSizeTarget {
+                client_id: 1,
+                size: RailSize::Percent(20.0),
+                version: 1,
+            }]
+        );
+        assert!(!pending.is_pending());
+        assert!(!pending.queue(RailSizeObserved {
+            rail,
+            size: RailSize::Percent(20.0005),
+        }));
+        assert!(pending.queue(RailSizeObserved {
+            rail: RendererHello {
+                plugin_id: 11,
+                client_id: 1,
+            },
+            size: RailSize::Percent(25.0),
+        }));
+        assert!(!pending.queue(RailSizeObserved {
+            rail: RendererHello {
+                plugin_id: 12,
+                client_id: 2,
+            },
+            size: RailSize::Fixed(30),
+        }));
+
+        assert_eq!(
+            pending.take_targets(),
+            vec![
+                RailSizeTarget {
+                    client_id: 1,
+                    size: RailSize::Percent(25.0),
+                    version: 2,
+                },
+                RailSizeTarget {
+                    client_id: 2,
+                    size: RailSize::Fixed(30),
+                    version: 1,
+                },
+            ]
+        );
     }
 }

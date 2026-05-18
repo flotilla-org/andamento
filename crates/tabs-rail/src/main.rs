@@ -74,10 +74,48 @@ fn mode_info_needs_render(current: Option<&ModeInfo>, next: &ModeInfo) -> bool {
     current != Some(next)
 }
 
+#[cfg(any(test, target_family = "wasm"))]
+fn rail_size_from_constraint(constraint: PaneDimensionConstraint) -> RailSize {
+    match constraint {
+        PaneDimensionConstraint::Fixed(size) => RailSize::Fixed(size),
+        PaneDimensionConstraint::Percent(percent) => RailSize::Percent(percent),
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn pane_dimension_constraint_from_rail_size(size: RailSize) -> PaneDimensionConstraint {
+    match size {
+        RailSize::Fixed(size) => PaneDimensionConstraint::Fixed(size),
+        RailSize::Percent(percent) => PaneDimensionConstraint::Percent(percent),
+    }
+}
+
+#[cfg(any(test, target_family = "wasm"))]
+fn rail_resize_boundary() -> Direction {
+    Direction::Right
+}
+
+#[cfg(any(test, target_family = "wasm"))]
+fn rail_size_target_should_apply(
+    target: &RailSizeTarget,
+    own_client_id: Option<u16>,
+    current_size: Option<RailSize>,
+    applied_version: u64,
+) -> bool {
+    if own_client_id != Some(target.client_id) || target.version <= applied_version {
+        return false;
+    }
+    !current_size
+        .map(|current| current.within_tolerance(target.size))
+        .unwrap_or(false)
+}
+
 #[cfg(target_family = "wasm")]
 use std::cmp::{max, min};
 #[cfg(target_family = "wasm")]
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+#[cfg(target_family = "wasm")]
+use std::time::Instant;
 
 #[cfg(target_family = "wasm")]
 use render::{hit_at, HitAction, HitRegion};
@@ -87,13 +125,17 @@ use render::{status_icon_is_renderable, LocalTab, VisibleCard, VisibleIconRect};
 use tabs_shared::StatusIcon;
 #[cfg(target_family = "wasm")]
 use tabs_shared::{
-    ControllerViewModel, GroupPath, RailViewMode, RendererHello, MSG_RENDERER_HELLO,
-    MSG_REQUEST_STATE, MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
+    ControllerViewModel, GroupPath, PluginStatsRecorder, RailSizeObserved, RailViewMode,
+    RendererHello, StatsCollectRequest, MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_SIZE_TARGET,
+    MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_PIN,
+    MSG_VIEW_MODEL,
 };
+#[cfg(any(test, target_family = "wasm"))]
+use tabs_shared::{RailSize, RailSizeTarget};
 #[cfg(target_family = "wasm")]
 use zellij_tile::prelude::*;
 #[cfg(test)]
-use zellij_tile::prelude::{ModeInfo, TabInfo};
+use zellij_tile::prelude::{Direction, ModeInfo, PaneDimensionConstraint, TabInfo};
 
 #[cfg(target_family = "wasm")]
 const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
@@ -120,6 +162,10 @@ pub struct PluginState {
     last_graphics_signature: Option<Vec<GraphicsSignatureEntry>>,
     metadata_scroll_offset: usize,
     collapsed_groups: BTreeSet<GroupPath>,
+    stats: PluginStatsRecorder,
+    observed_rail_size: Option<RailSize>,
+    latest_rail_size_target: Option<RailSizeTarget>,
+    applied_rail_size_version: u64,
 }
 
 #[cfg(target_family = "wasm")]
@@ -153,15 +199,19 @@ impl ZellijPlugin for PluginState {
         subscribe(&[
             EventType::TabUpdate,
             EventType::ModeUpdate,
+            EventType::PaneUpdate,
             EventType::Mouse,
+            EventType::Visible,
             EventType::PermissionRequestResult,
         ]);
         self.send_renderer_hello();
     }
 
     fn update(&mut self, event: Event) -> bool {
+        self.stats.increment("update.total");
         match event {
             Event::PermissionRequestResult(status) => {
+                self.stats.increment("update.permission-result");
                 self.permissions_granted = matches!(status, PermissionStatus::Granted);
                 if self.permissions_granted {
                     set_selectable(false);
@@ -170,6 +220,7 @@ impl ZellijPlugin for PluginState {
                 true
             }
             Event::ModeUpdate(mode_info) => {
+                self.stats.increment("update.mode");
                 if !mode_info_needs_render(self.mode_info.as_ref(), &mode_info) {
                     false
                 } else {
@@ -178,6 +229,7 @@ impl ZellijPlugin for PluginState {
                 }
             }
             Event::TabUpdate(tabs) => {
+                self.stats.increment("update.tab");
                 let local_tabs = local_tabs_from_zellij(&tabs);
                 if self.local_tabs == local_tabs {
                     return false;
@@ -186,16 +238,33 @@ impl ZellijPlugin for PluginState {
                 self.local_tabs = local_tabs;
                 true
             }
-            Event::Mouse(mouse) => self.handle_mouse(mouse),
+            Event::PaneUpdate(pane_manifest) => {
+                self.stats.increment("update.pane");
+                self.observe_own_rail_size(pane_manifest);
+                false
+            }
+            Event::Visible(true) => {
+                self.stats.increment("update.visible");
+                self.reconcile_rail_size_target();
+                false
+            }
+            Event::Mouse(mouse) => {
+                self.stats.increment("update.mouse");
+                self.handle_mouse(mouse)
+            }
             _ => false,
         }
     }
 
     fn pipe(&mut self, message: PipeMessage) -> bool {
+        self.stats.increment(format!("pipe.{}", message.name));
         if message.name == MSG_VIEW_MODEL {
-            if let Some(payload) = message.payload {
-                match serde_json::from_str::<ControllerViewModel>(&payload) {
+            if let Some(payload) = message.payload.as_deref() {
+                let started_at = Instant::now();
+                match serde_json::from_str::<ControllerViewModel>(payload) {
                     Ok(model) => {
+                        self.stats
+                            .record_span_elapsed("json.decode-view-model", started_at);
                         self.controller_model = Some(model);
                         return true;
                     }
@@ -205,10 +274,29 @@ impl ZellijPlugin for PluginState {
                 }
             }
         }
+        if message.name == MSG_STATS_REQUEST {
+            if let Some(payload) = message.payload.as_deref() {
+                if let Ok(request) = serde_json::from_str::<StatsCollectRequest>(payload) {
+                    self.send_stats_report_to(request.requester, request.collection_id);
+                    return false;
+                }
+            }
+        }
+        if message.name == MSG_RAIL_SIZE_TARGET {
+            if let Some(payload) = message.payload.as_deref() {
+                match serde_json::from_str::<RailSizeTarget>(payload) {
+                    Ok(target) => self.handle_rail_size_target(target),
+                    Err(error) => eprintln!("tabs-rail: failed to parse rail size target: {error}"),
+                }
+            }
+            return false;
+        }
         false
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        self.stats.increment("render.total");
+        let started_at = Instant::now();
         let controller_available = self.controller_model.is_some();
         let collapsed_groups = self.collapsed_groups.iter().cloned().collect::<Vec<_>>();
         let rendered = render::render_lines_with_options(
@@ -231,6 +319,7 @@ impl ZellijPlugin for PluginState {
         }
         self.hit_regions = rendered.hit_regions;
         print!("{}", rendered.lines.join("\n"));
+        self.stats.record_span_elapsed("render.rail", started_at);
     }
 }
 
@@ -312,6 +401,57 @@ mod tests {
 
         assert!(!mode_info_needs_render(Some(&mode_info), &mode_info));
     }
+
+    #[test]
+    fn converts_pane_dimension_constraint_to_shared_rail_size() {
+        assert_eq!(
+            rail_size_from_constraint(PaneDimensionConstraint::Fixed(24)),
+            RailSize::Fixed(24)
+        );
+        assert_eq!(
+            rail_size_from_constraint(PaneDimensionConstraint::Percent(18.75)),
+            RailSize::Percent(18.75)
+        );
+    }
+
+    #[test]
+    fn rail_size_target_applies_only_for_new_different_same_client_target() {
+        let target = RailSizeTarget {
+            client_id: 7,
+            size: RailSize::Percent(22.0),
+            version: 3,
+        };
+
+        assert!(rail_size_target_should_apply(
+            &target,
+            Some(7),
+            Some(RailSize::Percent(18.0)),
+            2
+        ));
+        assert!(!rail_size_target_should_apply(
+            &target,
+            Some(8),
+            Some(RailSize::Percent(18.0)),
+            2
+        ));
+        assert!(!rail_size_target_should_apply(
+            &target,
+            Some(7),
+            Some(RailSize::Percent(18.0)),
+            3
+        ));
+        assert!(!rail_size_target_should_apply(
+            &target,
+            Some(7),
+            Some(RailSize::Percent(22.0005)),
+            2
+        ));
+    }
+
+    #[test]
+    fn current_rail_resize_boundary_is_the_right_edge() {
+        assert_eq!(rail_resize_boundary(), Direction::Right);
+    }
 }
 
 #[cfg(target_family = "wasm")]
@@ -338,6 +478,116 @@ impl PluginState {
                 .with_plugin_url(self.controller_plugin_url.clone())
                 .with_destination_client_id(client_id),
         );
+    }
+
+    fn send_stats_report_to(&self, requester: RendererHello, collection_id: u64) {
+        let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
+            return;
+        };
+        let snapshot = self.stats.snapshot(
+            collection_id,
+            RendererHello {
+                plugin_id,
+                client_id,
+            },
+            "rail",
+        );
+        let Ok(payload) = serde_json::to_string(&snapshot) else {
+            return;
+        };
+        pipe_message_to_plugin(
+            MessageToPlugin::new(MSG_STATS_REPORT)
+                .with_destination_plugin_id(requester.plugin_id)
+                .with_destination_client_id(requester.client_id)
+                .with_payload(payload),
+        );
+    }
+
+    fn observe_own_rail_size(&mut self, pane_manifest: PaneManifest) {
+        let Some(plugin_id) = self.own_plugin_id else {
+            return;
+        };
+        let Some(size) = pane_manifest
+            .panes
+            .values()
+            .flat_map(|panes| panes.iter())
+            .find(|pane| pane.is_plugin && pane.id == plugin_id)
+            .and_then(|pane| pane.pane_columns_constraint)
+            .map(rail_size_from_constraint)
+        else {
+            return;
+        };
+        if self
+            .observed_rail_size
+            .map(|current| current.within_tolerance(size))
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.observed_rail_size = Some(size);
+        self.send_rail_size_observed(size);
+        self.reconcile_rail_size_target();
+    }
+
+    fn send_rail_size_observed(&self, size: RailSize) {
+        let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
+            return;
+        };
+        let observed = RailSizeObserved {
+            rail: RendererHello {
+                plugin_id,
+                client_id,
+            },
+            size,
+        };
+        let Ok(payload) = serde_json::to_string(&observed) else {
+            return;
+        };
+        pipe_message_to_plugin(
+            MessageToPlugin::new(MSG_RAIL_SIZE_OBSERVED)
+                .with_plugin_url(self.controller_plugin_url.clone())
+                .with_destination_client_id(client_id)
+                .with_payload(payload),
+        );
+    }
+
+    fn handle_rail_size_target(&mut self, target: RailSizeTarget) {
+        if self.own_client_id != Some(target.client_id) {
+            return;
+        }
+        if self
+            .latest_rail_size_target
+            .as_ref()
+            .map(|current| current.version < target.version)
+            .unwrap_or(true)
+        {
+            self.latest_rail_size_target = Some(target);
+        }
+        self.reconcile_rail_size_target();
+    }
+
+    fn reconcile_rail_size_target(&mut self) {
+        let Some(target) = self.latest_rail_size_target.clone() else {
+            return;
+        };
+        let Some(plugin_id) = self.own_plugin_id else {
+            return;
+        };
+        if !rail_size_target_should_apply(
+            &target,
+            self.own_client_id,
+            self.observed_rail_size,
+            self.applied_rail_size_version,
+        ) {
+            self.applied_rail_size_version = self.applied_rail_size_version.max(target.version);
+            return;
+        }
+        resize_pane_with_id_to(
+            PaneId::Plugin(plugin_id),
+            rail_resize_boundary(),
+            pane_dimension_constraint_from_rail_size(target.size),
+        );
+        self.applied_rail_size_version = target.version;
     }
 
     fn handle_mouse(&mut self, mouse: Mouse) -> bool {

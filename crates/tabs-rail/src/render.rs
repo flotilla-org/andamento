@@ -1676,7 +1676,7 @@ fn nodes_to_render(
         model
             .rows
             .iter()
-            .map(|row| match row {
+            .filter_map(|row| match row {
                 RailRow::GroupHeader {
                     path,
                     label,
@@ -1684,17 +1684,19 @@ fn nodes_to_render(
                     tab_count,
                     templates,
                     ..
-                } => PendingRenderNode::GroupHeader {
+                } => Some(PendingRenderNode::GroupHeader {
                     path: path.clone(),
                     label: label.clone(),
                     full_label: full_label.clone(),
                     tab_count: *tab_count,
                     templates: templates.clone(),
-                },
-                RailRow::Tab { tab, indent } => PendingRenderNode::Tab(RenderTab {
-                    card: render_card_from_model(tab, &local_by_id),
-                    indent: *indent,
-                    grouping: tab.grouping.clone(),
+                }),
+                RailRow::Tab { indent, .. } => model.tab_for_row(row).map(|tab| {
+                    PendingRenderNode::Tab(RenderTab {
+                        card: render_card_from_model(tab, &local_by_id),
+                        indent: *indent,
+                        grouping: tab.grouping.clone(),
+                    })
                 }),
             })
             .collect()
@@ -3316,11 +3318,11 @@ mod tests {
                     templates: ResolvedTemplateSlots::default(),
                 },
                 RailRow::Tab {
-                    tab: tab_one,
+                    tab_id: tab_one.tab_id,
                     indent: 2,
                 },
                 RailRow::Tab {
-                    tab: tab_two,
+                    tab_id: tab_two.tab_id,
                     indent: 2,
                 },
             ],
@@ -3375,7 +3377,9 @@ mod tests {
                 tab_count: 1,
                 templates: ResolvedTemplateSlots::default(),
             });
-            model.rows.push(RailRow::Tab { tab, indent: 2 });
+            let tab_id = tab.tab_id;
+            model.tabs.push(tab);
+            model.rows.push(RailRow::Tab { tab_id, indent: 2 });
         }
         model
     }
@@ -3387,8 +3391,10 @@ mod tests {
         model.rows = model
             .tabs
             .iter()
-            .cloned()
-            .map(|tab| RailRow::Tab { tab, indent: 0 })
+            .map(|tab| RailRow::Tab {
+                tab_id: tab.tab_id,
+                indent: 0,
+            })
             .collect();
         model
     }
@@ -4286,9 +4292,6 @@ mod tests {
             icon: None,
             source_pane: PaneTarget::Terminal(9),
         });
-        if let RailRow::Tab { tab, .. } = &mut model.rows[2] {
-            tab.status = model.tabs[1].status.clone();
-        }
 
         let rendered = render_lines(Some(&model), &[], 80, 180, true);
 
