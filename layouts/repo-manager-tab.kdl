@@ -1,0 +1,20 @@
+layout {
+    tab {
+        pane split_direction="vertical" {
+            pane size="23%" borderless=true {
+                plugin location="andamento-rail"
+            }
+            pane split_direction="horizontal" {
+                pane command="/bin/zsh" {
+                    args "-lc" "git status --short --branch; exec ${SHELL:-/bin/zsh} -l"
+                }
+                pane command="/bin/zsh" {
+                    args "-lc" "git log --oneline --decorate -20; exec ${SHELL:-/bin/zsh} -l"
+                }
+            }
+        }
+        pane size=2 borderless=true {
+            plugin location="status-bar"
+        }
+    }
+}
