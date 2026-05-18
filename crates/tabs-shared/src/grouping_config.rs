@@ -87,7 +87,7 @@ pub fn parse_grouping_config_json(
 pub fn load_grouping_catalog_from_file(
     path: impl AsRef<Path>,
 ) -> Result<GroupingConfigCatalog, GroupingConfigError> {
-    let content = std::fs::read_to_string(path.as_ref()).map_err(|source| {
+    let content = std::fs::read_to_string(zellij_tile::vfs::translate_plugin_path(path.as_ref())).map_err(|source| {
         GroupingConfigError::Io(format!(
             "failed to read {}: {source}",
             path.as_ref().display()

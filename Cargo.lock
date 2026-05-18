@@ -1976,6 +1976,7 @@ dependencies = [
  "kdl",
  "serde",
  "serde_json",
+ "zellij-tile",
 ]
 
 [[package]]

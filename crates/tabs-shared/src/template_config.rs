@@ -42,7 +42,7 @@ pub fn parse_template_config_kdl(
 pub fn load_template_catalog_from_json_file(
     path: impl AsRef<Path>,
 ) -> Result<TemplateConfigCatalog, TemplateConfigError> {
-    let content = std::fs::read_to_string(path.as_ref()).map_err(|source| {
+    let content = std::fs::read_to_string(zellij_tile::vfs::translate_plugin_path(path.as_ref())).map_err(|source| {
         TemplateConfigError::Io(format!(
             "failed to read {}: {source}",
             path.as_ref().display()
@@ -54,7 +54,7 @@ pub fn load_template_catalog_from_json_file(
 pub fn load_template_catalog_from_file(
     path: impl AsRef<Path>,
 ) -> Result<TemplateConfigCatalog, TemplateConfigError> {
-    let content = std::fs::read_to_string(path.as_ref()).map_err(|source| {
+    let content = std::fs::read_to_string(zellij_tile::vfs::translate_plugin_path(path.as_ref())).map_err(|source| {
         TemplateConfigError::Io(format!(
             "failed to read {}: {source}",
             path.as_ref().display()
