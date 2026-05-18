@@ -1,9 +1,7 @@
 #[cfg(not(target_family = "wasm"))]
 fn main() {}
 
-#[cfg(target_family = "wasm")]
 use std::collections::BTreeMap;
-#[cfg(target_family = "wasm")]
 use std::time::Instant;
 
 use tabs_shared::{
@@ -12,17 +10,14 @@ use tabs_shared::{
 };
 use unicode_width::UnicodeWidthStr;
 
-#[cfg(target_family = "wasm")]
 use tabs_shared::StatsCollectRequest;
-#[cfg(target_family = "wasm")]
 use tabs_shared::{
     PluginStatsRecorder, RendererHello, MSG_CONFIG_EDITOR_HELLO, MSG_REQUEST_STATE,
     MSG_SET_RAIL_CONFIG, MSG_STATS_COLLECT, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_VIEW_MODEL,
 };
-#[cfg(target_family = "wasm")]
+use zellij_tile::output::print;
 use zellij_tile::prelude::*;
 
-#[cfg(target_family = "wasm")]
 const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +58,6 @@ struct RenderedConfig {
     stats_scroll_offset: usize,
 }
 
-#[cfg(target_family = "wasm")]
 #[derive(Default)]
 struct PluginState {
     controller_plugin_url: String,
@@ -81,10 +75,8 @@ struct PluginState {
     stats_scroll_offset: usize,
 }
 
-#[cfg(target_family = "wasm")]
 register_plugin!(PluginState);
 
-#[cfg(target_family = "wasm")]
 impl ZellijPlugin for PluginState {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         let ids = get_plugin_ids();
@@ -228,7 +220,6 @@ impl ZellijPlugin for PluginState {
     }
 }
 
-#[cfg(target_family = "wasm")]
 impl PluginState {
     fn send_hello(&self) {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {

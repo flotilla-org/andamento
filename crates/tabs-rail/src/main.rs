@@ -7,7 +7,6 @@ fn should_sync_graphics(controller_available: bool) -> bool {
     controller_available
 }
 
-#[cfg(any(test, target_family = "wasm"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GraphicsSignatureEntry {
     placement_id: u32,
@@ -15,7 +14,6 @@ struct GraphicsSignatureEntry {
     icon: StatusIcon,
 }
 
-#[cfg(any(test, target_family = "wasm"))]
 fn visible_graphics_signature(visible_cards: &[VisibleCard]) -> Vec<GraphicsSignatureEntry> {
     visible_cards
         .iter()
@@ -48,7 +46,6 @@ fn graphics_signature_needs_sync(
         .unwrap_or(true)
 }
 
-#[cfg(any(test, target_family = "wasm"))]
 fn local_tabs_from_zellij(tabs: &[TabInfo]) -> Vec<LocalTab> {
     tabs.iter()
         .map(|tab| LocalTab {
@@ -69,12 +66,10 @@ fn local_tabs_need_render(current: &[LocalTab], zellij_tabs: &[TabInfo]) -> bool
     current != local_tabs_from_zellij(zellij_tabs).as_slice()
 }
 
-#[cfg(any(test, target_family = "wasm"))]
 fn mode_info_needs_render(current: Option<&ModeInfo>, next: &ModeInfo) -> bool {
     current != Some(next)
 }
 
-#[cfg(any(test, target_family = "wasm"))]
 fn rail_size_from_constraint(constraint: PaneDimensionConstraint) -> RailSize {
     match constraint {
         PaneDimensionConstraint::Fixed(size) => RailSize::Fixed(size),
@@ -82,7 +77,6 @@ fn rail_size_from_constraint(constraint: PaneDimensionConstraint) -> RailSize {
     }
 }
 
-#[cfg(target_family = "wasm")]
 fn pane_dimension_constraint_from_rail_size(size: RailSize) -> PaneDimensionConstraint {
     match size {
         RailSize::Fixed(size) => PaneDimensionConstraint::Fixed(size),
@@ -90,7 +84,6 @@ fn pane_dimension_constraint_from_rail_size(size: RailSize) -> PaneDimensionCons
     }
 }
 
-#[cfg(any(test, target_family = "wasm"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RailPlacement {
     Left,
@@ -99,14 +92,12 @@ enum RailPlacement {
     Bottom,
 }
 
-#[cfg(any(test, target_family = "wasm"))]
 impl Default for RailPlacement {
     fn default() -> Self {
         Self::Left
     }
 }
 
-#[cfg(target_family = "wasm")]
 impl RailPlacement {
     fn as_str(self) -> &'static str {
         match self {
@@ -118,7 +109,6 @@ impl RailPlacement {
     }
 }
 
-#[cfg(any(test, target_family = "wasm"))]
 fn parse_rail_placement(value: &str) -> Option<RailPlacement> {
     match value {
         "left" => Some(RailPlacement::Left),
@@ -129,7 +119,6 @@ fn parse_rail_placement(value: &str) -> Option<RailPlacement> {
     }
 }
 
-#[cfg(any(test, target_family = "wasm"))]
 fn rail_resize_boundary(placement: RailPlacement) -> Direction {
     match placement {
         RailPlacement::Left => Direction::Right,
@@ -139,7 +128,6 @@ fn rail_resize_boundary(placement: RailPlacement) -> Direction {
     }
 }
 
-#[cfg(target_family = "wasm")]
 fn direction_name(direction: Direction) -> &'static str {
     match direction {
         Direction::Left => "left",
@@ -149,7 +137,6 @@ fn direction_name(direction: Direction) -> &'static str {
     }
 }
 
-#[cfg(any(test, target_family = "wasm"))]
 fn rail_size_from_constraints(
     placement: RailPlacement,
     rows: Option<PaneDimensionConstraint>,
@@ -162,7 +149,6 @@ fn rail_size_from_constraints(
     Some(rail_size_from_constraint(constraint))
 }
 
-#[cfg(any(test, target_family = "wasm"))]
 fn rail_size_target_should_apply(
     target: &RailSizeTarget,
     own_client_id: Option<u16>,
@@ -177,43 +163,30 @@ fn rail_size_target_should_apply(
         .unwrap_or(false)
 }
 
-#[cfg(target_family = "wasm")]
 use std::cmp::{max, min};
-#[cfg(target_family = "wasm")]
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-#[cfg(target_family = "wasm")]
 use std::time::Instant;
 
-#[cfg(target_family = "wasm")]
 use render::{hit_at, HitAction, HitRegion};
-#[cfg(any(test, target_family = "wasm"))]
 use render::{status_icon_is_renderable, LocalTab, VisibleCard, VisibleIconRect};
-#[cfg(any(test, target_family = "wasm"))]
 use tabs_shared::StatusIcon;
-#[cfg(target_family = "wasm")]
 use tabs_shared::{
     ControllerViewModel, GroupPath, PluginStatsRecorder, RailSizeObserved, RailViewMode,
     RendererHello, StatsCollectRequest, MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_SIZE_TARGET,
     MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_PIN,
     MSG_VIEW_MODEL,
 };
-#[cfg(any(test, target_family = "wasm"))]
 use tabs_shared::{RailSize, RailSizeTarget};
-#[cfg(target_family = "wasm")]
+use zellij_tile::output::print;
 use zellij_tile::prelude::*;
 #[cfg(test)]
 use zellij_tile::prelude::{Direction, ModeInfo, PaneDimensionConstraint, TabInfo};
 
-#[cfg(target_family = "wasm")]
 const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
-#[cfg(target_family = "wasm")]
 const CONFIG_CONFIG_PLUGIN_URL: &str = "config_plugin_url";
-#[cfg(target_family = "wasm")]
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
-#[cfg(target_family = "wasm")]
 const CONFIG_RAIL_PLACEMENT: &str = "rail_placement";
 
-#[cfg(target_family = "wasm")]
 #[derive(Default)]
 pub struct PluginState {
     tabs: Vec<TabInfo>,
@@ -238,10 +211,8 @@ pub struct PluginState {
     applied_rail_size_version: u64,
 }
 
-#[cfg(target_family = "wasm")]
 register_plugin!(PluginState);
 
-#[cfg(target_family = "wasm")]
 impl ZellijPlugin for PluginState {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         let ids = get_plugin_ids();
@@ -555,7 +526,6 @@ mod tests {
     }
 }
 
-#[cfg(target_family = "wasm")]
 impl PluginState {
     fn send_renderer_hello(&self) {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {

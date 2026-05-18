@@ -2,19 +2,13 @@ mod metadata;
 mod state;
 
 use std::collections::BTreeMap;
-#[cfg(target_family = "wasm")]
 use std::path::PathBuf;
-#[cfg(target_family = "wasm")]
 use std::time::Instant;
 
 use state::ControllerState;
-#[cfg(target_family = "wasm")]
 use tabs_shared::PaneTarget;
-#[cfg(target_family = "wasm")]
 use tabs_shared::PluginStatsRecorder;
-#[cfg(target_family = "wasm")]
 use tabs_shared::MSG_RAIL_SIZE_TARGET;
-#[cfg(target_family = "wasm")]
 use tabs_shared::MSG_VIEW_MODEL;
 use tabs_shared::{
     ControllerBootstrapSnapshot, ExternalMessage, RailConfig, RailGroupingMode, RailSize,
@@ -25,8 +19,8 @@ use tabs_shared::{
     MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
 use tabs_shared::{TemplateConfigDiagnostics, TemplateConfigState};
-#[cfg(target_family = "wasm")]
 use tabs_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
+use zellij_tile::output::print;
 use zellij_tile::prelude::*;
 
 #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
@@ -40,9 +34,8 @@ const MAX_TEMPLATE_RELOAD_ATTEMPTS: u8 = 20;
 #[cfg(not(target_family = "wasm"))]
 fn main() {}
 
-#[cfg(target_family = "wasm")]
 #[derive(Default)]
-struct PluginState {
+pub struct PluginState {
     state: ControllerState,
     template_config_path: Option<String>,
     grouping_config_path: Option<String>,
@@ -58,10 +51,8 @@ struct PluginState {
     pending_rail_size_sync: PendingRailSizeSync,
 }
 
-#[cfg(target_family = "wasm")]
 register_plugin!(PluginState);
 
-#[cfg(target_family = "wasm")]
 impl ZellijPlugin for PluginState {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         let ids = get_plugin_ids();
@@ -290,7 +281,6 @@ impl ZellijPlugin for PluginState {
     }
 }
 
-#[cfg(target_family = "wasm")]
 impl PluginState {
     fn schedule_template_reload(&mut self) {
         if self.template_config_path.is_none() && self.grouping_config_path.is_none() {
