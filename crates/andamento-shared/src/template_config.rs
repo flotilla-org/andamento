@@ -6,7 +6,7 @@ use std::path::Path;
 use kdl::{KdlDocument, KdlNode, KdlValue};
 use serde::Deserialize;
 
-use crate::MetadataValue;
+use crate::{MetadataValue, ResolvedTemplateFieldSource};
 
 pub fn parse_template_config_json(
     input: &str,
@@ -209,6 +209,7 @@ pub struct TemplateConfigRenderedField {
     pub class: TemplateConfigFieldClass,
     pub priority: Option<i64>,
     pub value: String,
+    pub source: Option<ResolvedTemplateFieldSource>,
 }
 
 fn default_template_config_version() -> u32 {
@@ -318,16 +319,22 @@ fn metadata_text<'a>(metadata: &'a BTreeMap<String, MetadataValue>, key: &str) -
     }
 }
 
-fn metadata_display_value(metadata: &BTreeMap<String, MetadataValue>, key: &str) -> Option<String> {
-    metadata.get(key).map(format_metadata_value)
-}
-
 fn format_metadata_value(value: &MetadataValue) -> String {
     match value {
         MetadataValue::Text(value) => value.clone(),
         MetadataValue::Bool(value) => value.to_string(),
         MetadataValue::Integer(value) => value.to_string(),
         MetadataValue::StringList(values) => values.join(", "),
+        MetadataValue::GroupPath(segments) => segments
+            .iter()
+            .map(|segment| {
+                segment
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| segment.value.display())
+            })
+            .collect::<Vec<_>>()
+            .join(" / "),
     }
 }
 
@@ -354,15 +361,16 @@ impl TemplateConfigFieldSpec {
         if !self.condition.matches(context) {
             return None;
         }
-        let value = self
+        let resolved = self
             .sources
             .iter()
             .find_map(|source| source.resolve(context))?;
-        let value = format!("{}{}{}", self.prefix, value, self.suffix);
+        let value = format!("{}{}{}", self.prefix, resolved.value, self.suffix);
         Some(TemplateConfigRenderedField {
             class: self.class,
             priority: self.priority,
             value,
+            source: resolved.source,
         })
     }
 }
@@ -404,14 +412,31 @@ pub enum TemplateConfigValueSource {
 }
 
 impl TemplateConfigValueSource {
-    fn resolve(&self, context: TemplateConfigMatchContext<'_>) -> Option<String> {
+    fn resolve(
+        &self,
+        context: TemplateConfigMatchContext<'_>,
+    ) -> Option<TemplateConfigResolvedValue> {
         let value = match self {
             TemplateConfigValueSource::Literal { value } => value.clone(),
             TemplateConfigValueSource::MetadataText { key } => {
-                metadata_text(context.metadata, key)?.to_owned()
+                let value = MetadataValue::Text(metadata_text(context.metadata, key)?.to_owned());
+                return Some(TemplateConfigResolvedValue {
+                    value: format_metadata_value(&value),
+                    source: Some(ResolvedTemplateFieldSource {
+                        key: key.clone(),
+                        value,
+                    }),
+                });
             }
             TemplateConfigValueSource::MetadataDisplay { key } => {
-                metadata_display_value(context.metadata, key)?
+                let value = context.metadata.get(key)?.clone();
+                return Some(TemplateConfigResolvedValue {
+                    value: format_metadata_value(&value),
+                    source: Some(ResolvedTemplateFieldSource {
+                        key: key.clone(),
+                        value,
+                    }),
+                });
             }
             TemplateConfigValueSource::TabNumberFromPosition => {
                 let MetadataValue::Integer(position) =
@@ -433,8 +458,17 @@ impl TemplateConfigValueSource {
                 }
             }
         };
-        (!value.is_empty()).then_some(value)
+        (!value.is_empty()).then_some(TemplateConfigResolvedValue {
+            value,
+            source: None,
+        })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TemplateConfigResolvedValue {
+    value: String,
+    source: Option<ResolvedTemplateFieldSource>,
 }
 
 fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, TemplateConfigError> {
@@ -954,11 +988,19 @@ mod tests {
                     class: TemplateConfigFieldClass::Required,
                     priority: None,
                     value: "waiting".to_owned(),
+                    source: Some(ResolvedTemplateFieldSource {
+                        key: "status.title".to_owned(),
+                        value: MetadataValue::Text("waiting".to_owned()),
+                    }),
                 },
                 TemplateConfigRenderedField {
                     class: TemplateConfigFieldClass::Priority,
                     priority: None,
                     value: ": input".to_owned(),
+                    source: Some(ResolvedTemplateFieldSource {
+                        key: "status.detail".to_owned(),
+                        value: MetadataValue::Text("input".to_owned()),
+                    }),
                 },
             ]
         );

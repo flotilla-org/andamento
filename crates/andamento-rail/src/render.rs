@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ansi_term::{Color, Style};
 use andamento_shared::template_config::{
@@ -9,8 +9,8 @@ use andamento_shared::{
     ControllerViewModel, GroupPath, GroupSegment, MetadataEntry, MetadataSourceEntry,
     MetadataTarget, MetadataValue, ObservedMetadataIdentity, PaneTarget, Priority, RailConfig,
     RailRow, RailSizingPreset, RailStructure, RailViewMode, ReachableMetadataIdentity,
-    ResolvedMetadata, ResolvedTemplateSlot, ResolvedTemplateSlots, StatusIcon, TabCard,
-    TabGroupingInfo, TabStatusSummary,
+    ResolvedMetadata, ResolvedTemplateFieldSource, ResolvedTemplateSlot, ResolvedTemplateSlots,
+    StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::{PaletteColor, SizeInPixels, Styling};
@@ -138,6 +138,7 @@ struct RenderTab {
     card: RenderCard,
     indent: usize,
     grouping: Option<TabGroupingInfo>,
+    parent_path: Option<GroupPath>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -750,6 +751,16 @@ fn format_metadata_value(value: &MetadataValue) -> String {
         MetadataValue::Bool(value) => bool_text(*value).to_owned(),
         MetadataValue::Integer(value) => value.to_string(),
         MetadataValue::StringList(values) => values.join(", "),
+        MetadataValue::GroupPath(segments) => segments
+            .iter()
+            .map(|segment| {
+                segment
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| segment.value.display())
+            })
+            .collect::<Vec<_>>()
+            .join(" / "),
     }
 }
 
@@ -996,6 +1007,7 @@ fn render_nodes(
         theme,
         terminal_cell_size,
         template_catalog,
+        &BTreeSet::new(),
     );
     copy_visible_buffer(
         lines,
@@ -1030,6 +1042,7 @@ fn render_nodes_to_buffer(
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
+    ancestor_template_fields: &BTreeSet<ResolvedTemplateFieldSource>,
 ) {
     let mut pending_tabs = vec![];
     for node in nodes {
@@ -1049,8 +1062,18 @@ fn render_nodes_to_buffer(
                     template_catalog,
                 );
                 pending_tabs.clear();
-                append_group_header(lines, hit_regions, group, cols, theme, template_catalog);
+                let visible_header_sources = append_group_header(
+                    lines,
+                    hit_regions,
+                    group,
+                    cols,
+                    theme,
+                    template_catalog,
+                    ancestor_template_fields,
+                );
                 if !group.collapsed {
+                    let mut child_ancestor_template_fields = ancestor_template_fields.clone();
+                    child_ancestor_template_fields.extend(visible_header_sources);
                     render_nodes_to_buffer(
                         lines,
                         hit_regions,
@@ -1062,6 +1085,7 @@ fn render_nodes_to_buffer(
                         theme,
                         terminal_cell_size,
                         template_catalog,
+                        &child_ancestor_template_fields,
                     );
                 }
             }
@@ -1088,12 +1112,13 @@ fn append_group_header(
     cols: usize,
     theme: Option<RenderTheme>,
     template_catalog: Option<&TemplateConfigCatalog>,
-) {
+    ancestor_template_fields: &BTreeSet<ResolvedTemplateFieldSource>,
+) -> BTreeSet<ResolvedTemplateFieldSource> {
     let row = lines.len();
     let indent = group.indent.min(cols);
     let inner_width = cols.saturating_sub(indent);
     let mut line = " ".repeat(indent);
-    line.push_str(&group_header_line(
+    let rendered = group_header_line(
         &group.metadata,
         group.collapsed,
         contains_active_tab(&group.children),
@@ -1102,7 +1127,9 @@ fn append_group_header(
         inner_width,
         theme,
         template_catalog,
-    ));
+        ancestor_template_fields,
+    );
+    line.push_str(&rendered.text);
     lines.push(line);
     hit_regions.push(HitRegion {
         row_start: row,
@@ -1114,6 +1141,7 @@ fn append_group_header(
         group_path: Some(group.path.clone()),
         action: HitAction::ToggleGroup,
     });
+    rendered.visible_sources
 }
 
 fn append_tab_run(
@@ -1654,6 +1682,7 @@ fn nodes_to_render(
                     },
                     indent: 0,
                     grouping: None,
+                    parent_path: None,
                 })
             })
             .collect();
@@ -1669,6 +1698,7 @@ fn nodes_to_render(
                     card: render_card_from_model(&tab, &local_by_id),
                     indent: 0,
                     grouping: tab.grouping,
+                    parent_path: None,
                 })
             })
             .collect()
@@ -1691,11 +1721,16 @@ fn nodes_to_render(
                     tab_count: *tab_count,
                     templates: templates.clone(),
                 }),
-                RailRow::Tab { indent, .. } => model.tab_for_row(row).map(|tab| {
+                RailRow::Tab {
+                    indent,
+                    parent_path,
+                    ..
+                } => model.tab_for_row(row).map(|tab| {
                     PendingRenderNode::Tab(RenderTab {
                         card: render_card_from_model(tab, &local_by_id),
                         indent: *indent,
                         grouping: tab.grouping.clone(),
+                        parent_path: parent_path.clone(),
                     })
                 }),
             })
@@ -1728,6 +1763,7 @@ fn pending_nodes_to_render_nodes(
                     &full_label,
                     &templates,
                     collapsed_groups,
+                    true,
                 );
                 current_group = Some(CurrentGroupHeader {
                     path,
@@ -1736,8 +1772,47 @@ fn pending_nodes_to_render_nodes(
                     templates,
                 });
             }
+            PendingRenderNode::Tab(mut tab) if tab.parent_path.is_some() => {
+                let parent_path = tab.parent_path.clone().expect("checked above");
+                let (label, full_label, templates) = current_group
+                    .as_ref()
+                    .filter(|group_header| group_header.path == parent_path)
+                    .map(|group_header| {
+                        (
+                            group_header.label.clone(),
+                            group_header.full_label.clone(),
+                            group_header.templates.clone(),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        let label = parent_path
+                            .0
+                            .last()
+                            .map(group_segment_label)
+                            .unwrap_or_default();
+                        let full_label = parent_path
+                            .0
+                            .iter()
+                            .map(group_segment_label)
+                            .collect::<Vec<_>>()
+                            .join("/");
+                        (label, full_label, ResolvedTemplateSlots::default())
+                    });
+                tab.indent = parent_path.0.len() * 2;
+                let group = ensure_group_path(
+                    &mut nodes,
+                    &parent_path,
+                    &label,
+                    &full_label,
+                    &templates,
+                    collapsed_groups,
+                    false,
+                );
+                group.children.push(RenderNode::Tab(tab));
+            }
             PendingRenderNode::Tab(mut tab) if current_group.is_some() && tab.indent > 0 => {
                 let group_header = current_group.as_ref().expect("checked above");
+                tab.parent_path = Some(group_header.path.clone());
                 tab.indent = group_header.path.0.len() * 2;
                 let group = ensure_group_path(
                     &mut nodes,
@@ -1746,6 +1821,7 @@ fn pending_nodes_to_render_nodes(
                     &group_header.full_label,
                     &group_header.templates,
                     collapsed_groups,
+                    false,
                 );
                 group.children.push(RenderNode::Tab(tab));
             }
@@ -1766,6 +1842,7 @@ fn ensure_group_path<'a>(
     leaf_full_label: &str,
     templates: &ResolvedTemplateSlots,
     collapsed_groups: &[GroupPath],
+    update_existing_leaf: bool,
 ) -> &'a mut RenderGroup {
     if path.0.is_empty() {
         let group_index = nodes
@@ -1801,6 +1878,7 @@ fn ensure_group_path<'a>(
         leaf_full_label,
         templates,
         collapsed_groups,
+        update_existing_leaf,
     )
 }
 
@@ -1812,6 +1890,7 @@ fn ensure_group_path_at<'a>(
     leaf_full_label: &str,
     templates: &ResolvedTemplateSlots,
     collapsed_groups: &[GroupPath],
+    update_existing_leaf: bool,
 ) -> &'a mut RenderGroup {
     let segment = &path.0[depth - 1];
     let prefix = GroupPath(path.0[..depth].to_vec());
@@ -1862,6 +1941,9 @@ fn ensure_group_path_at<'a>(
         unreachable!("group index should point at a group");
     };
     if is_leaf {
+        if !update_existing_leaf {
+            return group;
+        }
         group.label = label;
         group.full_label = full_label;
         group.templates = templates.clone();
@@ -1881,6 +1963,7 @@ fn ensure_group_path_at<'a>(
             leaf_full_label,
             templates,
             collapsed_groups,
+            update_existing_leaf,
         )
     }
 }
@@ -2511,7 +2594,8 @@ fn group_header_line(
     width: usize,
     theme: Option<RenderTheme>,
     template_catalog: Option<&TemplateConfigCatalog>,
-) -> String {
+    ancestor_template_fields: &BTreeSet<ResolvedTemplateFieldSource>,
+) -> RenderedTemplateLine {
     let fields = match resolved_slot {
         Some(slot) => group_header_fields_from_resolved_slot(slot, collapsed, active_tab_name),
         None => group_header_template_fields_with_template_catalog(
@@ -2521,18 +2605,30 @@ fn group_header_line(
             template_catalog,
         ),
     };
-    let label = render_template_fields(&fields, width);
+    let rendered_fields =
+        render_template_fields_with_suppression(&fields, width, ancestor_template_fields);
+    let label = rendered_fields.text;
     let remaining = width.saturating_sub(label.width());
     let text = if remaining >= 2 {
         format!("{label} {}", "─".repeat(remaining - 1))
     } else {
         label
     };
-    style_group_header_text(
+    let text = style_group_header_text(
         pad_to_width(&truncate_to_width(&text, width), width),
         contains_active_tab,
         theme,
-    )
+    );
+    RenderedTemplateLine {
+        text,
+        visible_sources: rendered_fields.visible_sources,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderedTemplateLine {
+    text: String,
+    visible_sources: BTreeSet<ResolvedTemplateFieldSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2540,7 +2636,11 @@ enum TemplateField {
     Required(String),
     Optional(String),
     Priority(String),
-    Prioritized { value: String, priority: i64 },
+    Prioritized {
+        value: String,
+        priority: i64,
+        source: Option<ResolvedTemplateFieldSource>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2778,6 +2878,7 @@ fn external_template_fields(
             _ if field.priority.is_some() => TemplateField::Prioritized {
                 value: field.value,
                 priority: field.priority.unwrap_or(100),
+                source: field.source,
             },
             TemplateConfigFieldClass::Required => TemplateField::Required(field.value),
             TemplateConfigFieldClass::Optional => TemplateField::Optional(field.value),
@@ -3033,12 +3134,14 @@ fn group_header_fields_from_resolved_slot(
     fields.extend(slot.fields.iter().map(|field| TemplateField::Prioritized {
         value: field.text.clone(),
         priority: field.priority,
+        source: field.source.clone(),
     }));
     if collapsed {
         if let Some(active_tab_name) = active_tab_name {
             fields.push(TemplateField::Prioritized {
                 value: format!(": {active_tab_name}"),
                 priority: 80,
+                source: None,
             });
         }
     }
@@ -3051,40 +3154,80 @@ fn template_fields_from_resolved_slot(slot: &ResolvedTemplateSlot) -> Vec<Templa
         .map(|field| TemplateField::Prioritized {
             value: field.text.clone(),
             priority: field.priority,
+            source: field.source.clone(),
         })
         .collect()
 }
 
+#[cfg(test)]
 fn render_template_fields(fields: &[TemplateField], width: usize) -> String {
+    render_template_fields_with_suppression(fields, width, &BTreeSet::new()).text
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderedTemplateFields {
+    text: String,
+    visible_sources: BTreeSet<ResolvedTemplateFieldSource>,
+}
+
+fn render_template_fields_with_suppression(
+    fields: &[TemplateField],
+    width: usize,
+    suppressed_sources: &BTreeSet<ResolvedTemplateFieldSource>,
+) -> RenderedTemplateFields {
+    let fields = fields
+        .iter()
+        .filter(|field| {
+            template_field_source(field).is_none_or(|source| !suppressed_sources.contains(source))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let selected_fields = select_template_fields_for_width(&fields, width);
+    let text = join_template_fields_by(&selected_fields, |_| true);
+    let text = if text.width() <= width {
+        text
+    } else {
+        truncate_to_width(&text, width)
+    };
+    let visible_sources = selected_fields
+        .iter()
+        .filter_map(template_field_source)
+        .cloned()
+        .collect();
+    RenderedTemplateFields {
+        text,
+        visible_sources,
+    }
+}
+
+fn select_template_fields_for_width(fields: &[TemplateField], width: usize) -> Vec<TemplateField> {
     let full = join_template_fields(fields, true);
     if full.width() <= width {
-        return full;
+        return fields.to_vec();
     }
     for threshold in droppable_template_field_priorities(fields) {
-        let candidate = join_template_fields_above_priority(fields, threshold);
-        if candidate.width() <= width {
-            return candidate;
+        let selected = fields
+            .iter()
+            .filter(|field| template_field_priority(field) > threshold)
+            .cloned()
+            .collect::<Vec<_>>();
+        if join_template_fields_by(&selected, |_| true).width() <= width {
+            return selected;
         }
     }
-    truncate_to_width(&join_highest_priority_template_fields(fields), width)
+    let Some(highest_priority) = fields.iter().map(template_field_priority).max() else {
+        return vec![];
+    };
+    fields
+        .iter()
+        .filter(|field| template_field_priority(field) == highest_priority)
+        .cloned()
+        .collect()
 }
 
 fn join_template_fields(fields: &[TemplateField], include_optional: bool) -> String {
     join_template_fields_by(fields, |field| {
         include_optional || !matches!(field, TemplateField::Optional(_))
-    })
-}
-
-fn join_template_fields_above_priority(fields: &[TemplateField], threshold: i64) -> String {
-    join_template_fields_by(fields, |field| template_field_priority(field) > threshold)
-}
-
-fn join_highest_priority_template_fields(fields: &[TemplateField]) -> String {
-    let Some(highest_priority) = fields.iter().map(template_field_priority).max() else {
-        return String::new();
-    };
-    join_template_fields_by(fields, |field| {
-        template_field_priority(field) == highest_priority
     })
 }
 
@@ -3136,6 +3279,15 @@ fn template_field_priority(field: &TemplateField) -> i64 {
         TemplateField::Optional(_) => 0,
         TemplateField::Required(_) | TemplateField::Priority(_) => 100,
         TemplateField::Prioritized { priority, .. } => *priority,
+    }
+}
+
+fn template_field_source(field: &TemplateField) -> Option<&ResolvedTemplateFieldSource> {
+    match field {
+        TemplateField::Prioritized { source, .. } => source.as_ref(),
+        TemplateField::Required(_) | TemplateField::Optional(_) | TemplateField::Priority(_) => {
+            None
+        }
     }
 }
 
@@ -3311,7 +3463,7 @@ mod tests {
             rows: vec![
                 RailRow::GroupHeader {
                     group_id: "cwd:/Users/robert/dev/zellij".to_owned(),
-                    path: group_path,
+                    path: group_path.clone(),
                     label: "zellij".to_owned(),
                     full_label: "/Users/robert/dev/zellij".to_owned(),
                     tab_count: 2,
@@ -3320,10 +3472,12 @@ mod tests {
                 RailRow::Tab {
                     tab_id: tab_one.tab_id,
                     indent: 2,
+                    parent_path: Some(group_path.clone()),
                 },
                 RailRow::Tab {
                     tab_id: tab_two.tab_id,
                     indent: 2,
+                    parent_path: Some(group_path),
                 },
             ],
             resolved_metadata: vec![],
@@ -3371,7 +3525,7 @@ mod tests {
             };
             model.rows.push(RailRow::GroupHeader {
                 group_id: format!("project-a/{worktree}"),
-                path,
+                path: path.clone(),
                 label: worktree.to_owned(),
                 full_label: format!("project-a/{worktree}"),
                 tab_count: 1,
@@ -3379,9 +3533,91 @@ mod tests {
             });
             let tab_id = tab.tab_id;
             model.tabs.push(tab);
-            model.rows.push(RailRow::Tab { tab_id, indent: 2 });
+            model.rows.push(RailRow::Tab {
+                tab_id,
+                indent: 2,
+                parent_path: Some(path),
+            });
         }
         model
+    }
+
+    fn mixed_child_group_model() -> ControllerViewModel {
+        let parent_path = GroupPath(vec![GroupSegment {
+            key: "git.repo".to_owned(),
+            value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+            label: Some("zellij".to_owned()),
+        }]);
+        let child_path = GroupPath(vec![
+            parent_path.0[0].clone(),
+            GroupSegment {
+                key: "git.branch".to_owned(),
+                value: MetadataValue::Text("feat/kitty-image-plumbing".to_owned()),
+                label: None,
+            },
+        ]);
+        ControllerViewModel {
+            sort_mode: SortMode::Position,
+            config: RailConfig {
+                grouping: RailGroupingMode::Directory,
+                structure: RailStructure::JoinedCells,
+                sizing: RailSizingPreset::Compact,
+                view: RailViewMode::Normal,
+            },
+            template_config: tabs_shared::TemplateConfigDiagnostics::default(),
+            tabs: vec![
+                TabCard {
+                    tab_id: 1,
+                    position: 0,
+                    name: "branch-agent".to_owned(),
+                    active: false,
+                    pinned: false,
+                    status: None,
+                    grouping: None,
+                    templates: ResolvedTemplateSlots::default(),
+                },
+                TabCard {
+                    tab_id: 2,
+                    position: 1,
+                    name: "repo-overview".to_owned(),
+                    active: true,
+                    pinned: false,
+                    status: None,
+                    grouping: None,
+                    templates: ResolvedTemplateSlots::default(),
+                },
+            ],
+            rows: vec![
+                RailRow::GroupHeader {
+                    group_id: "git.repo:zellij-org/zellij".to_owned(),
+                    path: parent_path.clone(),
+                    label: "zellij".to_owned(),
+                    full_label: "zellij".to_owned(),
+                    tab_count: 2,
+                    templates: ResolvedTemplateSlots::default(),
+                },
+                RailRow::GroupHeader {
+                    group_id: "git.repo:zellij-org/zellij/git.branch:feat".to_owned(),
+                    path: child_path.clone(),
+                    label: "feat/kitty-image-plumbing".to_owned(),
+                    full_label: "zellij / feat/kitty-image-plumbing".to_owned(),
+                    tab_count: 1,
+                    templates: ResolvedTemplateSlots::default(),
+                },
+                RailRow::Tab {
+                    tab_id: 1,
+                    indent: 4,
+                    parent_path: Some(child_path),
+                },
+                RailRow::Tab {
+                    tab_id: 2,
+                    indent: 2,
+                    parent_path: Some(parent_path),
+                },
+            ],
+            resolved_metadata: vec![],
+            observed_identities: vec![],
+        }
     }
 
     fn flat_rows_model() -> ControllerViewModel {
@@ -3394,6 +3630,7 @@ mod tests {
             .map(|tab| RailRow::Tab {
                 tab_id: tab.tab_id,
                 indent: 0,
+                parent_path: None,
             })
             .collect();
         model
@@ -3485,6 +3722,7 @@ mod tests {
                     },
                     indent: 4,
                     grouping: None,
+                    parent_path: None,
                 })],
             })],
         })];
@@ -3536,6 +3774,103 @@ mod tests {
                 .iter()
                 .any(|line| line.starts_with("    ├ agent-1") || line.starts_with("    ┌ agent-1")),
             "tab should be indented under the leaf group: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
+    fn group_can_contain_tabs_and_child_groups() {
+        let model = mixed_child_group_model();
+
+        let nodes = nodes_to_render(Some(&model), &[], &[]);
+
+        let [RenderNode::Group(parent)] = nodes.as_slice() else {
+            panic!("expected one parent group, got {nodes:?}");
+        };
+        assert_eq!(parent.label, "zellij");
+        assert!(parent
+            .children
+            .iter()
+            .any(|node| matches!(node, RenderNode::Tab(tab) if tab.card.name == "repo-overview")));
+        let child = parent
+            .children
+            .iter()
+            .find_map(|node| match node {
+                RenderNode::Group(group) if group.label == "feat/kitty-image-plumbing" => {
+                    Some(group)
+                }
+                _ => None,
+            })
+            .expect("child group");
+        assert!(child
+            .children
+            .iter()
+            .any(|node| matches!(node, RenderNode::Tab(tab) if tab.card.name == "branch-agent")));
+    }
+
+    #[test]
+    fn descendant_group_header_elides_metadata_field_rendered_by_ancestor() {
+        let mut model = mixed_child_group_model();
+        let repo_source = ResolvedTemplateFieldSource {
+            key: "git.repo".to_owned(),
+            value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+        };
+        let branch_source = ResolvedTemplateFieldSource {
+            key: "git.branch".to_owned(),
+            value: MetadataValue::Text("feat/kitty-image-plumbing".to_owned()),
+        };
+        if let RailRow::GroupHeader { templates, .. } = &mut model.rows[0] {
+            templates.group_header = Some(ResolvedTemplateSlot {
+                template_name: "repo.group-header".to_owned(),
+                fields: vec![tabs_shared::ResolvedTemplateField {
+                    text: "zellij-org/zellij".to_owned(),
+                    priority: 100,
+                    source: Some(repo_source.clone()),
+                }],
+            });
+        }
+        if let RailRow::GroupHeader { templates, .. } = &mut model.rows[1] {
+            templates.group_header = Some(ResolvedTemplateSlot {
+                template_name: "branch.group-header".to_owned(),
+                fields: vec![
+                    tabs_shared::ResolvedTemplateField {
+                        text: "zellij-org/zellij".to_owned(),
+                        priority: 100,
+                        source: Some(repo_source),
+                    },
+                    tabs_shared::ResolvedTemplateField {
+                        text: "feat/kitty-image-plumbing".to_owned(),
+                        priority: 100,
+                        source: Some(branch_source),
+                    },
+                ],
+            });
+        }
+
+        let rendered = render_lines(Some(&model), &[], 10, 80, true);
+
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.contains("▼ zellij-org/zellij")),
+            "{:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.contains("  ▼ feat/kitty-image-plumbing")),
+            "{:?}",
+            rendered.lines
+        );
+        assert!(
+            !rendered
+                .lines
+                .iter()
+                .any(|line| line.contains("  ▼ zellij-org/zellij feat/kitty-image-plumbing")),
+            "{:?}",
             rendered.lines
         );
     }
@@ -3792,14 +4127,17 @@ mod tests {
             TemplateField::Prioritized {
                 value: "repo".to_owned(),
                 priority: 100,
+                source: None,
             },
             TemplateField::Prioritized {
                 value: "main".to_owned(),
                 priority: 10,
+                source: None,
             },
             TemplateField::Prioritized {
                 value: ": tests".to_owned(),
                 priority: 80,
+                source: None,
             },
         ];
 
@@ -4010,7 +4348,15 @@ mod tests {
         let mut lines = vec![];
         let mut hit_regions = vec![];
 
-        append_group_header(&mut lines, &mut hit_regions, &group, 32, None, None);
+        append_group_header(
+            &mut lines,
+            &mut hit_regions,
+            &group,
+            32,
+            None,
+            None,
+            &BTreeSet::new(),
+        );
 
         assert!(
             lines[0].starts_with("▼ metadata-label (3)"),
@@ -4139,14 +4485,23 @@ mod tests {
                 TemplateField::Prioritized {
                     value: "▼".to_owned(),
                     priority: 100,
+                    source: None,
                 },
                 TemplateField::Prioritized {
                     value: "rjwittams/zellij-scratch".to_owned(),
                     priority: 100,
+                    source: Some(ResolvedTemplateFieldSource {
+                        key: "git.repo".to_owned(),
+                        value: MetadataValue::Text("rjwittams/zellij-scratch".to_owned()),
+                    }),
                 },
                 TemplateField::Prioritized {
                     value: "main".to_owned(),
                     priority: 10,
+                    source: Some(ResolvedTemplateFieldSource {
+                        key: "git.branch".to_owned(),
+                        value: MetadataValue::Text("main".to_owned()),
+                    }),
                 },
             ]
         );
@@ -4334,10 +4689,12 @@ mod tests {
                     andamento_shared::ResolvedTemplateField {
                         text: "zellij-org/zellij".to_owned(),
                         priority: 100,
+                        source: None,
                     },
                     andamento_shared::ResolvedTemplateField {
                         text: " feat/kitty-image-plumbing".to_owned(),
                         priority: 60,
+                        source: None,
                     },
                 ],
             });

@@ -536,6 +536,15 @@ mod tests {
 }
 
 impl PluginState {
+    fn controller_message(&self, name: &str) -> MessageToPlugin {
+        let message = MessageToPlugin::new(name);
+        if self.controller_plugin_url.trim().is_empty() {
+            message
+        } else {
+            message.with_plugin_url(self.controller_plugin_url.clone())
+        }
+    }
+
     fn send_renderer_hello(&self) {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
             log::info!("andamento-rail: send_renderer_hello SKIPPED (own_plugin_id={:?}, own_client_id={:?})", self.own_plugin_id, self.own_client_id);
@@ -550,14 +559,12 @@ impl PluginState {
             return;
         };
         pipe_message_to_plugin(
-            MessageToPlugin::new(MSG_RENDERER_HELLO)
-                .with_plugin_url(self.controller_plugin_url.clone())
+            self.controller_message(MSG_RENDERER_HELLO)
                 .with_destination_client_id(client_id)
                 .with_payload(payload),
         );
         pipe_message_to_plugin(
-            MessageToPlugin::new(MSG_REQUEST_STATE)
-                .with_plugin_url(self.controller_plugin_url.clone())
+            self.controller_message(MSG_REQUEST_STATE)
                 .with_destination_client_id(client_id),
         );
     }
@@ -657,8 +664,7 @@ impl PluginState {
             return;
         };
         pipe_message_to_plugin(
-            MessageToPlugin::new(MSG_RAIL_SIZE_OBSERVED)
-                .with_plugin_url(self.controller_plugin_url.clone())
+            self.controller_message(MSG_RAIL_SIZE_OBSERVED)
                 .with_destination_client_id(client_id)
                 .with_payload(payload),
         );
@@ -788,8 +794,7 @@ impl PluginState {
         let mut args = BTreeMap::new();
         args.insert("tab_id".to_owned(), tab_id.to_string());
         pipe_message_to_plugin(
-            MessageToPlugin::new(MSG_TOGGLE_PIN)
-                .with_plugin_url(self.controller_plugin_url.clone())
+            self.controller_message(MSG_TOGGLE_PIN)
                 .with_destination_client_id(client_id)
                 .with_args(args),
         );

@@ -221,6 +221,15 @@ impl ZellijPlugin for PluginState {
 }
 
 impl PluginState {
+    fn controller_message(&self, name: &str) -> MessageToPlugin {
+        let message = MessageToPlugin::new(name);
+        if self.controller_plugin_url.trim().is_empty() {
+            message
+        } else {
+            message.with_plugin_url(self.controller_plugin_url.clone())
+        }
+    }
+
     fn send_hello(&self) {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
             return;
@@ -233,14 +242,12 @@ impl PluginState {
             return;
         };
         pipe_message_to_plugin(
-            MessageToPlugin::new(MSG_CONFIG_EDITOR_HELLO)
-                .with_plugin_url(self.controller_plugin_url.clone())
+            self.controller_message(MSG_CONFIG_EDITOR_HELLO)
                 .with_destination_client_id(client_id)
                 .with_payload(payload),
         );
         pipe_message_to_plugin(
-            MessageToPlugin::new(MSG_REQUEST_STATE)
-                .with_plugin_url(self.controller_plugin_url.clone())
+            self.controller_message(MSG_REQUEST_STATE)
                 .with_destination_client_id(client_id),
         );
     }
@@ -274,8 +281,7 @@ impl PluginState {
             return true;
         };
         pipe_message_to_plugin(
-            MessageToPlugin::new(MSG_SET_RAIL_CONFIG)
-                .with_plugin_url(self.controller_plugin_url.clone())
+            self.controller_message(MSG_SET_RAIL_CONFIG)
                 .with_destination_client_id(client_id)
                 .with_payload(payload),
         );
@@ -301,8 +307,7 @@ impl PluginState {
             return;
         };
         pipe_message_to_plugin(
-            MessageToPlugin::new(MSG_STATS_COLLECT)
-                .with_plugin_url(self.controller_plugin_url.clone())
+            self.controller_message(MSG_STATS_COLLECT)
                 .with_destination_client_id(client_id)
                 .with_payload(payload),
         );
@@ -780,6 +785,16 @@ fn format_metadata_value(value: &MetadataValue) -> String {
         MetadataValue::Bool(value) => value.to_string(),
         MetadataValue::Integer(value) => value.to_string(),
         MetadataValue::StringList(values) => values.join(","),
+        MetadataValue::GroupPath(segments) => segments
+            .iter()
+            .map(|segment| {
+                segment
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| segment.value.display())
+            })
+            .collect::<Vec<_>>()
+            .join(" / "),
     }
 }
 

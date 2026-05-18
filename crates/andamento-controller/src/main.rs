@@ -229,7 +229,9 @@ impl ZellijPlugin for PluginState {
         }
         if let Some(output) = result.cli_pipe_output.as_ref() {
             cli_pipe_output(&output.pipe_id, &output.output);
-            unblock_cli_pipe_input(&output.pipe_id);
+        }
+        if let Some(pipe_id) = result.cli_pipe_unblock.as_ref() {
+            unblock_cli_pipe_input(pipe_id);
         }
         if result.state_changed {
             self.push_view_model_to_rails_with_pending(
@@ -554,6 +556,7 @@ struct HandlePipeResult {
     view_model_push_reason: Option<ViewModelPushReason>,
     bootstrap_request: Option<RendererHello>,
     cli_pipe_output: Option<CliPipeOutput>,
+    cli_pipe_unblock: Option<String>,
     stats_collect_request: Option<StatsCollectRequest>,
     rail_size_observed: Option<RailSizeObserved>,
 }
@@ -696,7 +699,11 @@ struct CliPipeOutput {
 }
 
 fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -> HandlePipeResult {
-    match parse_controller_message(&pipe_message) {
+    let cli_pipe_unblock = match &pipe_message.source {
+        PipeSource::Cli(pipe_id) => Some(pipe_id.clone()),
+        PipeSource::Plugin(_) | PipeSource::Keybind => None,
+    };
+    let mut result = match parse_controller_message(&pipe_message) {
         Ok(Some(ControllerMessage::External(ExternalMessage::SetPaneStatus(status)))) => {
             state.set_status(status);
             HandlePipeResult {
@@ -814,7 +821,9 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             eprintln!("andamento-controller: {error}");
             HandlePipeResult::default()
         }
-    }
+    };
+    result.cli_pipe_unblock = cli_pipe_unblock;
+    result
 }
 
 fn parse_rail_config(configuration: &BTreeMap<String, String>) -> RailConfig {
@@ -1468,6 +1477,41 @@ mod tests {
     }
 
     #[test]
+    fn metadata_patch_cli_pipe_is_unblocked_without_output() {
+        let mut state = ControllerState::default();
+        state.update_tabs(vec![state::ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "main".to_owned(),
+            active: true,
+        }]);
+        let patch = tabs_shared::MetadataPatch {
+            target: tabs_shared::MetadataTarget::Tab(1),
+            source_id: "test".to_owned(),
+            set: BTreeMap::from([(
+                "tab.subject".to_owned(),
+                tabs_shared::MetadataValueUpdate {
+                    value: tabs_shared::MetadataValue::Text("checkout".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        };
+        let payload = serde_json::to_string(&ExternalMessage::MetadataPatch(patch)).unwrap();
+
+        let result = handle_pipe_message(
+            &mut state,
+            cli_pipe(MSG_APPLY_METADATA_PATCH, Some(payload), "pipe-42"),
+        );
+
+        assert!(result.state_changed);
+        assert_eq!(result.cli_pipe_output, None);
+        assert_eq!(result.cli_pipe_unblock, Some("pipe-42".to_owned()));
+    }
+
+    #[test]
     fn duplicate_metadata_patch_message_does_not_request_state_broadcast() {
         let mut state = ControllerState::default();
         let patch = andamento_shared::MetadataPatch {
@@ -1530,6 +1574,7 @@ mod tests {
 
         assert!(!result.state_changed);
         assert_eq!(output.pipe_id, "pipe-1");
+        assert_eq!(result.cli_pipe_unblock, Some("pipe-1".to_owned()));
         assert!(observed.iter().any(|identity| {
             identity.identity
                 == andamento_shared::MetadataIdentity {

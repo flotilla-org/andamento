@@ -735,9 +735,9 @@ Scope:
 
 This unlocks shell integrations, build/test progress, PR state, ports, and workflow-specific annotations.
 
-Status: started. Producers can send `ExternalMessage::MetadataPatch` through `andamento-apply-metadata-patch`; the controller applies set/unset updates with source ids, precedence, ordinal, and ttl through the shared metadata store, and resolved entries are exposed through the view model. Controller bootstrap snapshots now carry live metadata patches so newly attached clients can recover current external metadata.
+Status: started. Producers can send `ExternalMessage::MetadataPatch` through `tabs-apply-metadata-patch`; the controller applies set/unset updates with source ids, precedence, ordinal, and ttl through the shared metadata store, and resolved entries are exposed through the view model. Controller bootstrap snapshots now carry live metadata patches so newly attached clients can recover current external metadata.
 
-Watcher discovery should also be pipe-first. A simple daemon can run in a pane, periodically call `zellij pipe --name andamento-observed-identities`, read the JSON list of observed identities from stdout, enrich the identities it understands, and publish facts back through `andamento-apply-metadata-patch`. For example, [scripts/andamento-git-watcher.py](../../scripts/andamento-git-watcher.py) looks for `zellij.pane.cwd` identities, discovers repository root/branch/remote with local git commands, then patches facts onto `MetadataTarget::Identity(zellij.pane.cwd=<cwd>)`. A later flotilla connector can use the same protocol but maintain richer state and scheduling.
+Watcher discovery should also be pipe-first. A simple daemon can run in a pane, periodically call `zellij pipe --name andamento-observed-identities`, read the JSON list of observed identities from stdout, enrich the identities it understands, and publish facts back through `tabs-apply-metadata-patch`. For example, [scripts/andamento-git-watcher.py](../../scripts/andamento-git-watcher.py) looks for `zellij.pane.cwd` identities, discovers repository root/branch/remote with local git commands, then patches facts onto `MetadataTarget::Identity(zellij.pane.cwd=<cwd>)`. A later flotilla connector can use the same protocol but maintain richer state and scheduling.
 
 The same script now has an opt-in factory spike. With `--factory-repo-manager`, it dedupes by tab name, calls `zellij action new-tab --layout <repo-manager-layout> --cwd <git-root>`, reads the tab id lines printed by the CLI, and patches each created tab with durable tab metadata:
 
@@ -809,18 +809,18 @@ This should wait until group paths, group metadata targets, and render nodes are
 
 ### 13a. Rename And Publish As Andamento
 
-Status: the local prototype has now been hard-renamed to the Andamento namespace. Publication remains future work.
+The prototype should be renamed comprehensively once the current feature work is committed.
 
 Scope:
 
-- workspace/package/crate names use `andamento-*`.
-- wasm artifacts and Zellij plugin aliases use `andamento-controller`, `andamento-rail`, and `andamento-config`.
-- pipe names use the `andamento-*` namespace.
-- scripts, layouts, README, and docs use the Andamento names.
-- old compatibility names are intentionally not maintained.
-- the repository is prepared for eventual publication at `flotilla-org/andamento`.
+- rename workspace/package/crate names from `vertical-tabs` and `tabs-*` to `andamento-*`.
+- rename wasm artifacts and Zellij plugin aliases to `andamento-controller`, `andamento-rail`, and `andamento-config`.
+- rename pipe names to the `andamento-*` namespace.
+- update scripts, layouts, README, and docs.
+- remove old compatibility names rather than maintaining aliases.
+- prepare the repository for eventual publication at `flotilla-org/andamento`.
 
-This was kept as a mechanical slice after the previous stabilization checkpoint, because mixing rename churn with behavior changes would have made review and rollback unnecessarily hard.
+This should be its own mechanical slice after the current work is stable, because mixing rename churn with behavior changes will make review and rollback unnecessarily hard.
 
 ### 14. Expanded Overview Mode
 
@@ -853,7 +853,20 @@ This should not require a new data model. It should consume the same metadata st
 
 ## Recommended Next Step
 
-The next feature slice should probably be render/layout work, not more metadata
-plumbing: spindly hierarchy conflation, body slots, inherited node settings, and
-richer child layouts are all on the direct path to making the existing metadata
-useful on screen.
+Stabilize the current feature work, then do the comprehensive rename to Andamento as its own slice.
+
+The stabilization checkpoint should:
+
+- commit the current controller/rail/config feature set.
+- keep the Zellij fork exit-path fix as a separate commit in the Zellij repository.
+- preserve the current scratch layout as the runnable demo.
+- record that `flotilla-org/andamento` is the intended publication target.
+
+After that, the rename slice should hard-cut old names rather than adding compatibility aliases:
+
+- workspace/package/crate names to `andamento-*`.
+- wasm artifacts and plugin aliases to `andamento-controller`, `andamento-rail`, and `andamento-config`.
+- pipe names to the `andamento-*` namespace.
+- launcher scripts, layouts, README, and docs.
+
+The next feature slice after rename should probably be render/layout work, not more metadata plumbing: spindly hierarchy conflation, body slots, inherited node settings, and richer child layouts are all on the direct path to making the existing metadata useful on screen.

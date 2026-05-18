@@ -216,6 +216,61 @@ pub enum MetadataValue {
     Bool(bool),
     Integer(i64),
     StringList(Vec<String>),
+    GroupPath(Vec<MetadataPathSegmentValue>),
+}
+
+#[derive(Debug, Clone, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct MetadataPathSegmentValue {
+    pub key: String,
+    pub value: MetadataPathValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl PartialEq for MetadataPathSegmentValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.value == other.value
+    }
+}
+
+impl Eq for MetadataPathSegmentValue {}
+
+impl std::hash::Hash for MetadataPathSegmentValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+        self.value.hash(state);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "kebab-case")]
+pub enum MetadataPathValue {
+    Text(String),
+    Bool(bool),
+    Integer(i64),
+    StringList(Vec<String>),
+}
+
+impl From<MetadataPathValue> for MetadataValue {
+    fn from(value: MetadataPathValue) -> Self {
+        match value {
+            MetadataPathValue::Text(value) => MetadataValue::Text(value),
+            MetadataPathValue::Bool(value) => MetadataValue::Bool(value),
+            MetadataPathValue::Integer(value) => MetadataValue::Integer(value),
+            MetadataPathValue::StringList(values) => MetadataValue::StringList(values),
+        }
+    }
+}
+
+impl MetadataPathValue {
+    pub fn display(&self) -> String {
+        match self {
+            MetadataPathValue::Text(value) => value.clone(),
+            MetadataPathValue::Bool(value) => value.to_string(),
+            MetadataPathValue::Integer(value) => value.to_string(),
+            MetadataPathValue::StringList(values) => values.join(", "),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -372,6 +427,8 @@ pub enum RailRow {
     Tab {
         tab_id: u64,
         indent: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_path: Option<GroupPath>,
     },
 }
 
@@ -396,6 +453,14 @@ pub struct ResolvedTemplateSlot {
 pub struct ResolvedTemplateField {
     pub text: String,
     pub priority: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ResolvedTemplateFieldSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ResolvedTemplateFieldSource {
+    pub key: String,
+    pub value: MetadataValue,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -750,6 +815,7 @@ mod tests {
                 RailRow::Tab {
                     tab_id: 1,
                     indent: 2,
+                    parent_path: Some(group_path.clone()),
                 },
             ],
             resolved_metadata: vec![],
@@ -803,6 +869,24 @@ mod tests {
         }]);
 
         assert_eq!(identity, labelled);
+    }
+
+    #[test]
+    fn metadata_value_group_path_round_trips_json() {
+        let value = MetadataValue::GroupPath(vec![MetadataPathSegmentValue {
+            key: "git.repo".to_owned(),
+            value: MetadataPathValue::Text("flotilla-org/flotilla".to_owned()),
+            label: Some("flotilla".to_owned()),
+        }]);
+
+        let encoded = serde_json::to_string(&value).unwrap();
+        let decoded: MetadataValue = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, value);
+        assert_eq!(
+            encoded,
+            r#"{"type":"group-path","value":[{"key":"git.repo","value":{"type":"text","value":"flotilla-org/flotilla"},"label":"flotilla"}]}"#
+        );
     }
 
     #[test]

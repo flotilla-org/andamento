@@ -17,7 +17,6 @@ use zellij_tile::prelude::{PaneManifest, TabInfo};
 const SOURCE_ZELLIJ: &str = "zellij";
 const KEY_PANE_CWD: &str = "zellij.pane.cwd";
 const KEY_TAB_SCOPE: &str = "tab.scope";
-const KEY_TAB_SUBJECT: &str = "tab.subject";
 const FOCUSED_CWD_PRECEDENCE: i64 = 100;
 const NORMAL_CWD_PRECEDENCE: i64 = 0;
 
@@ -426,6 +425,7 @@ impl ControllerState {
                 .map(|tab| RailRow::Tab {
                     tab_id: tab.tab_id,
                     indent: 0,
+                    parent_path: None,
                 })
                 .collect(),
             RailGroupingMode::Directory => self.directory_group_rows(tabs),
@@ -444,17 +444,25 @@ impl ControllerState {
                     .push(tab.clone());
             }
         }
+        let mut tab_count_by_prefix: BTreeMap<GroupPath, usize> = BTreeMap::new();
+        for (path, grouped_tabs) in &path_to_tabs {
+            for prefix in group_path_prefixes(path) {
+                *tab_count_by_prefix.entry(prefix).or_default() += grouped_tabs.len();
+            }
+        }
         let mut emitted_groups = HashSet::new();
+        let mut emitted_leaf_groups = HashSet::new();
         let mut rows = vec![];
         for tab in tabs {
             let Some(grouping) = tab.grouping.as_ref() else {
                 rows.push(RailRow::Tab {
                     tab_id: tab.tab_id,
                     indent: 0,
+                    parent_path: None,
                 });
                 continue;
             };
-            if !emitted_groups.insert(grouping.path.clone()) {
+            if !emitted_leaf_groups.insert(grouping.path.clone()) {
                 continue;
             }
             let grouped_tabs = path_to_tabs
@@ -465,17 +473,33 @@ impl ControllerState {
                 .get(&grouping.path)
                 .cloned()
                 .unwrap_or_else(|| grouping.clone());
-            rows.push(RailRow::GroupHeader {
-                group_id: grouping.key,
-                path: grouping.path,
-                label: grouping.label,
-                full_label: grouping.full_label,
-                tab_count: grouped_tabs.len(),
-                templates: ResolvedTemplateSlots::default(),
-            });
+            for prefix in group_path_prefixes(&grouping.path) {
+                if !emitted_groups.insert(prefix.clone()) {
+                    continue;
+                }
+                let (group_id, label, full_label) = group_header_identity_for_prefix(
+                    &prefix,
+                    &grouping.path,
+                    &grouping.key,
+                    &grouping.label,
+                    &grouping.full_label,
+                );
+                rows.push(RailRow::GroupHeader {
+                    group_id,
+                    path: prefix.clone(),
+                    label,
+                    full_label,
+                    tab_count: tab_count_by_prefix
+                        .get(&prefix)
+                        .copied()
+                        .unwrap_or(grouped_tabs.len()),
+                    templates: ResolvedTemplateSlots::default(),
+                });
+            }
             rows.extend(grouped_tabs.into_iter().map(|tab| RailRow::Tab {
                 tab_id: tab.tab_id,
-                indent: 2,
+                indent: grouping.path.0.len() * 2,
+                parent_path: Some(grouping.path.clone()),
             }));
         }
         rows
@@ -517,7 +541,15 @@ impl ControllerState {
                         templates,
                     }
                 }
-                RailRow::Tab { tab_id, indent } => RailRow::Tab { tab_id, indent },
+                RailRow::Tab {
+                    tab_id,
+                    indent,
+                    parent_path,
+                } => RailRow::Tab {
+                    tab_id,
+                    indent,
+                    parent_path,
+                },
             })
             .collect()
     }
@@ -566,6 +598,7 @@ impl ControllerState {
                     andamento_shared::template_config::TemplateConfigFieldClass::Required
                     | andamento_shared::template_config::TemplateConfigFieldClass::Priority => 100,
                 }),
+                source: field.source,
             })
             .collect::<Vec<_>>();
         (!fields.is_empty()).then_some(ResolvedTemplateSlot {
@@ -575,11 +608,11 @@ impl ControllerState {
     }
 
     fn tab_grouping_infos(&self) -> HashMap<u64, TabGroupingInfo> {
-        let tab_subjects: HashMap<u64, TabGroupingInfo> = self
+        let tab_scopes: HashMap<u64, TabGroupingInfo> = self
             .tabs
             .iter()
             .filter_map(|tab| {
-                self.tab_explicit_subject_grouping(tab.tab_id)
+                self.tab_explicit_scope_grouping(tab.tab_id)
                     .map(|grouping| (tab.tab_id, grouping))
             })
             .collect();
@@ -590,7 +623,7 @@ impl ControllerState {
             .map(|catalog| {
                 self.tabs
                     .iter()
-                    .filter(|tab| !tab_subjects.contains_key(&tab.tab_id))
+                    .filter(|tab| !tab_scopes.contains_key(&tab.tab_id))
                     .filter_map(|tab| {
                         self.tab_rule_grouping(tab.tab_id, catalog)
                             .map(|grouping| (tab.tab_id, grouping))
@@ -601,7 +634,7 @@ impl ControllerState {
         let tab_cwds: HashMap<u64, String> = self
             .tabs
             .iter()
-            .filter(|tab| !tab_subjects.contains_key(&tab.tab_id))
+            .filter(|tab| !tab_scopes.contains_key(&tab.tab_id))
             .filter(|tab| !tab_configured_groupings.contains_key(&tab.tab_id))
             .filter_map(|tab| {
                 self.tab_primary_cwd(tab.tab_id)
@@ -631,7 +664,7 @@ impl ControllerState {
             })
             .collect();
         groupings.extend(tab_configured_groupings);
-        groupings.extend(tab_subjects);
+        groupings.extend(tab_scopes);
         groupings
     }
 
@@ -712,37 +745,17 @@ impl ControllerState {
             .collect()
     }
 
-    fn tab_explicit_subject_grouping(&self, tab_id: u64) -> Option<TabGroupingInfo> {
-        let (key, value) = self
-            .tab_primary_text_metadata(tab_id, KEY_TAB_SCOPE)
-            .map(|value| (KEY_TAB_SCOPE, value))
-            .or_else(|| {
-                self.tab_primary_text_metadata(tab_id, KEY_TAB_SUBJECT)
-                    .map(|value| (KEY_TAB_SUBJECT, value))
-            })?;
-        Some(TabGroupingInfo {
-            key: format!("{key}:{value}"),
-            path: GroupPath(vec![GroupSegment {
-                key: key.to_owned(),
-                value: MetadataValue::Text(value.clone()),
-                label: None,
-            }]),
-            label: value.clone(),
-            full_label: value,
-        })
-    }
-
-    fn tab_primary_text_metadata(&self, tab_id: u64, key: &str) -> Option<String> {
-        let target = EntityId::Tab(tab_id);
-        match self
+    fn tab_explicit_scope_grouping(&self, tab_id: u64) -> Option<TabGroupingInfo> {
+        let path = match self
             .metadata
-            .resolved_entries_for(&target, self.receive_counter)
-            .remove(key)?
+            .resolved_entries_for(&EntityId::Tab(tab_id), self.receive_counter)
+            .remove(KEY_TAB_SCOPE)?
             .value
         {
-            MetadataValue::Text(value) => Some(value),
-            _ => None,
-        }
+            MetadataValue::GroupPath(segments) => metadata_path_segments_to_group_path(segments),
+            _ => return None,
+        };
+        tab_grouping_info_for_explicit_scope(path)
     }
 
     fn tab_primary_cwd(&self, tab_id: u64) -> Option<String> {
@@ -786,6 +799,7 @@ impl ControllerState {
             BTreeMap::new();
         let mut identities_by_target: BTreeMap<EntityId, Vec<ReachableMetadataIdentity>> =
             BTreeMap::new();
+        let mut group_paths = BTreeSet::new();
         for tab in tabs {
             let tab_target = EntityId::Tab(tab.tab_id);
             let tab_seed_values = self.tab_seed_metadata_entries(tab.tab_id);
@@ -803,30 +817,27 @@ impl ControllerState {
                 .entry(tab_target.clone())
                 .or_default()
                 .extend(tab_identities);
-            let group_target = tab
-                .grouping
-                .as_ref()
-                .map(|grouping| EntityId::Group(grouping.path.clone()));
-            if let Some(group_target) = group_target.as_ref() {
-                let group_seed_values = match group_target {
-                    EntityId::Group(path) => self.group_path_seed_metadata_entries(path),
-                    _ => BTreeMap::new(),
-                };
-                let (group_values, group_sources, group_identities) =
-                    self.resolve_target_metadata(group_target, group_seed_values);
-                by_target
-                    .entry(group_target.clone())
-                    .or_default()
-                    .extend(group_values);
-                sources_by_target
-                    .entry(group_target.clone())
-                    .or_default()
-                    .extend(group_sources);
-                identities_by_target
-                    .entry(group_target.clone())
-                    .or_default()
-                    .extend(group_identities);
+            if let Some(grouping) = tab.grouping.as_ref() {
+                group_paths.extend(group_path_prefixes(&grouping.path));
             }
+        }
+        for path in group_paths {
+            let group_target = EntityId::Group(path.clone());
+            let group_seed_values = self.group_path_seed_metadata_entries(&path);
+            let (group_values, group_sources, group_identities) =
+                self.resolve_target_metadata(&group_target, group_seed_values);
+            by_target
+                .entry(group_target.clone())
+                .or_default()
+                .extend(group_values);
+            sources_by_target
+                .entry(group_target.clone())
+                .or_default()
+                .extend(group_sources);
+            identities_by_target
+                .entry(group_target)
+                .or_default()
+                .extend(group_identities);
         }
         by_target
             .into_iter()
@@ -1063,6 +1074,84 @@ fn cwd_group_path(cwd: &str) -> GroupPath {
     }])
 }
 
+fn metadata_path_segments_to_group_path(
+    segments: Vec<andamento_shared::MetadataPathSegmentValue>,
+) -> GroupPath {
+    GroupPath(
+        segments
+            .into_iter()
+            .map(|segment| GroupSegment {
+                key: segment.key,
+                value: segment.value.into(),
+                label: segment.label,
+            })
+            .collect(),
+    )
+}
+
+fn tab_grouping_info_for_explicit_scope(path: GroupPath) -> Option<TabGroupingInfo> {
+    if path.0.is_empty() {
+        return None;
+    }
+    let labels = path.0.iter().map(group_segment_label).collect::<Vec<_>>();
+    let key = format!(
+        "tab.scope:{}",
+        path.0
+            .iter()
+            .map(|segment| format!("{}={}", segment.key, metadata_value_display(&segment.value)))
+            .collect::<Vec<_>>()
+            .join("/")
+    );
+    Some(TabGroupingInfo {
+        key,
+        path,
+        label: labels.last().cloned().unwrap_or_default(),
+        full_label: labels.join(" / "),
+    })
+}
+
+fn group_path_prefixes(path: &GroupPath) -> Vec<GroupPath> {
+    (1..=path.0.len())
+        .map(|depth| GroupPath(path.0[..depth].to_vec()))
+        .collect()
+}
+
+fn group_header_identity_for_prefix(
+    prefix: &GroupPath,
+    leaf_path: &GroupPath,
+    leaf_key: &str,
+    leaf_label: &str,
+    leaf_full_label: &str,
+) -> (String, String, String) {
+    if prefix == leaf_path {
+        return (
+            leaf_key.to_owned(),
+            leaf_label.to_owned(),
+            leaf_full_label.to_owned(),
+        );
+    }
+    let labels = prefix.0.iter().map(group_segment_label).collect::<Vec<_>>();
+    let key = format!(
+        "group:{}",
+        prefix
+            .0
+            .iter()
+            .map(|segment| format!("{}={}", segment.key, metadata_value_display(&segment.value)))
+            .collect::<Vec<_>>()
+            .join("/")
+    );
+    let label = labels.last().cloned().unwrap_or_else(|| key.clone());
+    let full_label = labels.join(" / ");
+    (key, label, full_label)
+}
+
+fn group_segment_label(segment: &GroupSegment) -> String {
+    segment
+        .label
+        .clone()
+        .unwrap_or_else(|| metadata_value_display(&segment.value))
+}
+
 fn group_template_metadata(
     path: &GroupPath,
     label: &str,
@@ -1163,6 +1252,16 @@ fn metadata_value_display(value: &MetadataValue) -> String {
         MetadataValue::Bool(value) => value.to_string(),
         MetadataValue::Integer(value) => value.to_string(),
         MetadataValue::StringList(values) => values.join(", "),
+        MetadataValue::GroupPath(segments) => segments
+            .iter()
+            .map(|segment| {
+                segment
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| segment.value.display())
+            })
+            .collect::<Vec<_>>()
+            .join(" / "),
     }
 }
 
@@ -1468,21 +1567,24 @@ mod tests {
             &model.rows[1],
             RailRow::Tab {
                 tab_id: 1,
-                indent: 2
+                indent: 2,
+                ..
             }
         ));
         assert!(matches!(
             &model.rows[2],
             RailRow::Tab {
                 tab_id: 3,
-                indent: 2
+                indent: 2,
+                ..
             }
         ));
         assert!(matches!(
             &model.rows[3],
             RailRow::Tab {
                 tab_id: 2,
-                indent: 0
+                indent: 0,
+                ..
             }
         ));
     }
@@ -1504,7 +1606,8 @@ mod tests {
             &model.rows[0],
             RailRow::Tab {
                 tab_id: 1,
-                indent: 0
+                indent: 0,
+                ..
             }
         ));
     }
@@ -1772,7 +1875,60 @@ mod tests {
     }
 
     #[test]
-    fn explicit_tab_subject_metadata_overrides_cwd_grouping_identity() {
+    fn explicit_tab_scope_group_path_overrides_cwd_grouping_identity() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "overview".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/zellij".into());
+        let scope = vec![andamento_shared::MetadataPathSegmentValue {
+            key: "git.repo".to_owned(),
+            value: andamento_shared::MetadataPathValue::Text("zellij-org/zellij".to_owned()),
+            label: Some("zellij".to_owned()),
+        }];
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Tab(1),
+            source_id: "test".to_owned(),
+            set: BTreeMap::from([(
+                KEY_TAB_SCOPE.to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::GroupPath(scope),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let grouping = model.tabs[0].grouping.as_ref().expect("tab grouping");
+
+        assert_eq!(grouping.label, "zellij");
+        assert_eq!(
+            grouping.path,
+            GroupPath(vec![GroupSegment {
+                key: "git.repo".to_owned(),
+                value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                label: Some("zellij".to_owned()),
+            }])
+        );
+        assert!(matches!(
+            &model.rows[0],
+            RailRow::GroupHeader { path, .. } if path == &grouping.path
+        ));
+    }
+
+    #[test]
+    fn text_tab_scope_metadata_does_not_override_grouping() {
         let mut state = ControllerState::default();
         state.set_rail_config(RailConfig {
             grouping: RailGroupingMode::Directory,
@@ -1790,7 +1946,7 @@ mod tests {
             target: EntityId::Tab(1),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
-                "tab.subject".to_owned(),
+                KEY_TAB_SCOPE.to_owned(),
                 andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("project:zellij".to_owned()),
                     ttl_ms: None,
@@ -1804,23 +1960,12 @@ mod tests {
         let model = state.view_model();
         let grouping = model.tabs[0].grouping.as_ref().expect("tab grouping");
 
-        assert_eq!(grouping.label, "project:zellij");
-        assert_eq!(
-            grouping.path,
-            GroupPath(vec![GroupSegment {
-                key: "tab.subject".to_owned(),
-                value: MetadataValue::Text("project:zellij".to_owned()),
-                label: None,
-            }])
-        );
-        assert!(matches!(
-            &model.rows[0],
-            RailRow::GroupHeader { path, .. } if path == &grouping.path
-        ));
+        assert_eq!(grouping.key, "cwd:/repo/zellij");
+        assert_eq!(grouping.path, cwd_group_path("/repo/zellij"));
     }
 
     #[test]
-    fn explicit_group_metadata_resolves_for_subject_group_without_cwd() {
+    fn explicit_group_metadata_resolves_for_scope_group_without_cwd() {
         let mut state = ControllerState::default();
         state.set_rail_config(RailConfig {
             grouping: RailGroupingMode::Directory,
@@ -1833,17 +1978,25 @@ mod tests {
             active: true,
         }]);
         let group_path = GroupPath(vec![GroupSegment {
-            key: KEY_TAB_SUBJECT.to_owned(),
-            value: MetadataValue::Text("project:zellij".to_owned()),
-            label: None,
+            key: "git.repo".to_owned(),
+            value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+            label: Some("zellij".to_owned()),
         }]);
         state.apply_metadata_patch(andamento_shared::MetadataPatch {
             target: EntityId::Tab(1),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
-                KEY_TAB_SUBJECT.to_owned(),
+                KEY_TAB_SCOPE.to_owned(),
                 andamento_shared::MetadataValueUpdate {
-                    value: MetadataValue::Text("project:zellij".to_owned()),
+                    value: MetadataValue::GroupPath(vec![
+                        andamento_shared::MetadataPathSegmentValue {
+                            key: "git.repo".to_owned(),
+                            value: andamento_shared::MetadataPathValue::Text(
+                                "zellij-org/zellij".to_owned(),
+                            ),
+                            label: Some("zellij".to_owned()),
+                        },
+                    ]),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: None,
@@ -2191,6 +2344,299 @@ mod tests {
     }
 
     #[test]
+    fn view_model_resolves_metadata_and_templates_for_each_group_path_prefix() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.set_grouping_catalog(Some(
+            andamento_shared::grouping_config::GroupingConfigCatalog::from_config(
+                andamento_shared::grouping_config::ExternalGroupingConfig {
+                    version: 1,
+                    rules: vec![andamento_shared::grouping_config::GroupingRule {
+                        name: "project-repo-branch".to_owned(),
+                        priority: 100,
+                        levels: vec![
+                            andamento_shared::grouping_config::GroupingLevel {
+                                key: "andamento.project".to_owned(),
+                                optional: false,
+                                label_key: None,
+                            },
+                            andamento_shared::grouping_config::GroupingLevel {
+                                key: "git.repo".to_owned(),
+                                optional: false,
+                                label_key: Some("repo.name".to_owned()),
+                            },
+                            andamento_shared::grouping_config::GroupingLevel {
+                                key: "git.branch".to_owned(),
+                                optional: false,
+                                label_key: None,
+                            },
+                        ],
+                    }],
+                },
+            ),
+        ));
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(
+                andamento_shared::template_config::parse_template_config_kdl(
+                    r#"
+                    template "project.group-header" slot="group-header" node-kind="group" {
+                      when exists="andamento.project"
+                      field key="andamento.project" priority=100
+                    }
+                    template "repo.group-header" slot="group-header" node-kind="group" {
+                      when exists="git.repo"
+                      when exists="andamento.project"
+                      field key="git.repo" priority=100
+                    }
+                    template "branch.group-header" slot="group-header" node-kind="group" {
+                      when exists="git.repo"
+                      when exists="andamento.project"
+                      when exists="git.branch"
+                      field key="git.branch" priority=100
+                    }
+                    "#,
+                )
+                .expect("valid template config"),
+            ),
+        ));
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "repo".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
+        let cwd = "/Users/robert/dev/zellij".to_owned();
+        state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Identity(MetadataIdentity {
+                key: KEY_PANE_CWD.to_owned(),
+                value: MetadataValue::Text(cwd),
+            }),
+            source_id: "git-watcher".to_owned(),
+            set: BTreeMap::from([
+                (
+                    "andamento.project".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("zellij".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "git.repo".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "repo.name".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("zellij".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "git.branch".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("feat/kitty-image-plumbing".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+            ]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let group_headers = model
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                RailRow::GroupHeader {
+                    path, templates, ..
+                } => Some((path, templates.group_header.as_ref())),
+                RailRow::Tab { .. } => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(group_headers.len(), 3);
+        assert_eq!(
+            group_headers
+                .iter()
+                .map(|(path, _)| path.0.len())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            group_headers
+                .iter()
+                .map(|(_, slot)| slot
+                    .expect("resolved group template")
+                    .template_name
+                    .as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "project.group-header",
+                "repo.group-header",
+                "branch.group-header"
+            ]
+        );
+        for (path, _) in group_headers {
+            assert!(model
+                .resolved_metadata
+                .iter()
+                .any(|metadata| metadata.target == EntityId::Group(path.clone())));
+        }
+    }
+
+    #[test]
+    fn grouped_rows_anchor_tabs_to_their_exact_group_path() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.set_grouping_catalog(Some(
+            andamento_shared::grouping_config::GroupingConfigCatalog::from_config(
+                andamento_shared::grouping_config::ExternalGroupingConfig {
+                    version: 1,
+                    rules: vec![andamento_shared::grouping_config::GroupingRule {
+                        name: "repo-branch".to_owned(),
+                        priority: 100,
+                        levels: vec![
+                            andamento_shared::grouping_config::GroupingLevel {
+                                key: "git.repo".to_owned(),
+                                optional: false,
+                                label_key: None,
+                            },
+                            andamento_shared::grouping_config::GroupingLevel {
+                                key: "git.branch".to_owned(),
+                                optional: true,
+                                label_key: None,
+                            },
+                        ],
+                    }],
+                },
+            ),
+        ));
+        state.update_tabs(vec![
+            ControllerTab {
+                tab_id: 1,
+                position: 0,
+                name: "repo-overview".into(),
+                active: true,
+            },
+            ControllerTab {
+                tab_id: 2,
+                position: 1,
+                name: "branch-agent".into(),
+                active: false,
+            },
+        ]);
+        for (pane_id, tab_id, cwd, branch) in [
+            (
+                PaneTarget::Terminal(10),
+                1,
+                "/Users/robert/dev/zellij",
+                None,
+            ),
+            (
+                PaneTarget::Terminal(20),
+                2,
+                "/Users/robert/dev/zellij-feature",
+                Some("feat/kitty-image-plumbing"),
+            ),
+        ] {
+            state.set_test_pane(pane_id, tab_id, true, tab_id == 1, 0);
+            state.set_pane_cwd(pane_id, cwd.to_owned());
+            let mut set = BTreeMap::from([(
+                "git.repo".to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]);
+            if let Some(branch) = branch {
+                set.insert(
+                    "git.branch".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text(branch.to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                );
+            }
+            state.apply_metadata_patch(andamento_shared::MetadataPatch {
+                target: EntityId::Identity(MetadataIdentity {
+                    key: KEY_PANE_CWD.to_owned(),
+                    value: MetadataValue::Text(cwd.to_owned()),
+                }),
+                source_id: "git-watcher".to_owned(),
+                set,
+                unset: vec![],
+            });
+        }
+
+        let model = state.view_model();
+        let repo_path = GroupPath(vec![GroupSegment {
+            key: "git.repo".to_owned(),
+            value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+            label: None,
+        }]);
+        let branch_path = GroupPath(vec![
+            repo_path.0[0].clone(),
+            GroupSegment {
+                key: "git.branch".to_owned(),
+                value: MetadataValue::Text("feat/kitty-image-plumbing".to_owned()),
+                label: None,
+            },
+        ]);
+
+        assert!(model
+            .rows
+            .iter()
+            .any(|row| matches!(row, RailRow::GroupHeader { path, .. } if path == &repo_path)));
+        assert!(model
+            .rows
+            .iter()
+            .any(|row| matches!(row, RailRow::GroupHeader { path, .. } if path == &branch_path)));
+        assert!(model.rows.iter().any(|row| {
+            matches!(
+                row,
+                RailRow::Tab {
+                    tab_id: 1,
+                    parent_path: Some(parent_path),
+                    ..
+                } if parent_path == &repo_path
+            )
+        }));
+        assert!(model.rows.iter().any(|row| {
+            matches!(
+                row,
+                RailRow::Tab {
+                    tab_id: 2,
+                    parent_path: Some(parent_path),
+                    ..
+                } if parent_path == &branch_path
+            )
+        }));
+    }
+
+    #[test]
     fn view_model_exposes_observed_metadata_identity_index() {
         let mut state = ControllerState::default();
         state.set_rail_config(RailConfig {
@@ -2342,7 +2788,7 @@ mod tests {
             target: EntityId::Tab(7),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
-                KEY_TAB_SUBJECT.to_owned(),
+                KEY_TAB_SCOPE.to_owned(),
                 andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("project:zellij".to_owned()),
                     ttl_ms: None,
@@ -2371,7 +2817,7 @@ mod tests {
             .expect("tab metadata");
 
         assert_eq!(
-            metadata.values.get(KEY_TAB_SUBJECT).map(|entry| (
+            metadata.values.get(KEY_TAB_SCOPE).map(|entry| (
                 &entry.value,
                 entry.precedence,
                 entry.ordinal
