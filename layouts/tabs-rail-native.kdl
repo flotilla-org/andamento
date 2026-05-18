@@ -1,0 +1,61 @@
+// Same as tabs-rail.kdl but with all three tabs plugins loaded as
+// native (Rust-linked) rather than WASM. Requires zellij built with
+// --features native-tabs-all.
+plugins {
+    tabs-controller location="native:tabs-controller" {
+        rail_structure "joined-cells"
+        rail_sizing "active-large"
+        rail_grouping "directory"
+        template_config_path "/host/Users/robert/dev/zellij-scratch/templates/andamento-git.kdl"
+        grouping_config_path "/host/Users/robert/dev/zellij-scratch/templates/andamento-git.kdl"
+    }
+    tabs-rail location="native:tabs-rail" {
+        controller_plugin_url "tabs-controller"
+        config_plugin_url "tabs-rail-config"
+        rail_placement "left"
+    }
+    tabs-rail-config location="native:tabs-rail-config"
+}
+
+load_plugins {
+    tabs-controller
+}
+
+layout {
+    default_tab_template {
+        pane split_direction="vertical" {
+            pane size="23%" borderless=true {
+                plugin location="tabs-rail"
+            }
+            children
+        }
+        pane size=2 borderless=true {
+            plugin location="status-bar"
+        }
+    }
+
+    new_tab_template {
+        pane split_direction="vertical" {
+            pane size="23%" borderless=true {
+                plugin location="tabs-rail"
+            }
+            pane
+        }
+        pane size=2 borderless=true {
+            plugin location="status-bar"
+        }
+    }
+
+    tab name="main" hide_floating_panes=true {
+        pane
+        floating_panes {
+            pane command="/Users/robert/dev/zellij-scratch/scripts/andamento-git-watcher.py" cwd="/Users/robert/dev/zellij-scratch" {
+                args "--interval" "5"
+                width 80
+                height 12
+                x 10
+                y 5
+            }
+        }
+    }
+}
