@@ -148,8 +148,11 @@ def git_facts(cwd):
     return facts
 
 
-def get_observed_identities(verbose=False, zellij_bin="zellij"):
-    output = run_text([zellij_bin, "pipe", "--name", OBSERVED_IDENTITIES_PIPE])
+def get_observed_identities(verbose=False, zellij_bin="zellij", plugin_url=None):
+    args = [zellij_bin, "pipe", "--name", OBSERVED_IDENTITIES_PIPE]
+    if plugin_url:
+        args += ["--plugin", plugin_url]
+    output = run_text(args)
     if verbose:
         log(f"observed identity pipe returned {len(output)} bytes")
     return parse_observed_identities_output(output)
@@ -171,15 +174,16 @@ def parse_observed_identities_output(output):
     return identities
 
 
-def publish_patch(patch, dry_run, zellij_bin="zellij"):
+def publish_patch(patch, dry_run, zellij_bin="zellij", plugin_url=None):
     payload = json.dumps(patch, separators=(",", ":"))
     if dry_run:
         log(f"dry-run patch {payload}")
         return
-    subprocess.run(
-        [zellij_bin, "pipe", "--name", METADATA_PATCH_PIPE, "--", payload],
-        check=True,
-    )
+    args = [zellij_bin, "pipe", "--name", METADATA_PATCH_PIPE]
+    if plugin_url:
+        args += ["--plugin", plugin_url]
+    args += ["--", payload]
+    subprocess.run(args, check=True)
 
 
 def parse_tab_ids(output):
@@ -359,8 +363,9 @@ def run_once(
     factory_repo_manager=False,
     factory_layout=DEFAULT_FACTORY_LAYOUT,
     created_repos=None,
+    plugin_url=None,
 ):
-    observed = get_observed_identities(verbose=verbose, zellij_bin=zellij_bin)
+    observed = get_observed_identities(verbose=verbose, zellij_bin=zellij_bin, plugin_url=plugin_url)
     cwds = observed_text_identities(observed, "zellij.pane.cwd")
     if verbose:
         log(f"observed {len(observed)} identities; {len(cwds)} cwd identities")
@@ -373,7 +378,7 @@ def run_once(
         if facts:
             if verbose:
                 log(f"publishing {len(facts)} git facts for {cwd}: {', '.join(sorted(facts))}")
-            publish_patch(metadata_patch("zellij.pane.cwd", cwd, facts), dry_run, zellij_bin=zellij_bin)
+            publish_patch(metadata_patch("zellij.pane.cwd", cwd, facts), dry_run, zellij_bin=zellij_bin, plugin_url=plugin_url)
             if factory_repo_manager:
                 ensure_repo_manager_tab(
                     facts,
@@ -402,6 +407,12 @@ def main(argv):
     parser.add_argument("--scope-value", default="control")
     parser.add_argument("--scope-label", default="andamento")
     parser.add_argument("--scope-pane-id")
+    parser.add_argument(
+        "--plugin-url",
+        default=None,
+        help="Restrict pipe delivery to a specific plugin (passed to `zellij pipe --plugin`). "
+             "Useful when multiple controllers are loaded; without this the pipe broadcasts.",
+    )
     args = parser.parse_args(argv)
     if args.test:
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(WatcherTests)
@@ -433,6 +444,7 @@ def main(argv):
             factory_repo_manager=args.factory_repo_manager,
             factory_layout=args.factory_layout,
             created_repos=created_repos,
+            plugin_url=args.plugin_url,
         )
         if args.once:
             if verbose:
