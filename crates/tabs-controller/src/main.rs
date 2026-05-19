@@ -830,7 +830,7 @@ fn path_from_configuration(configuration: &BTreeMap<String, String>, key: &str) 
         .map(String::as_str)
         .map(str::trim)
         .filter(|path| !path.is_empty())
-        .map(str::to_owned)
+        .map(zellij_tile::vfs::expand_env)
 }
 
 fn initial_template_config_diagnostics(path: Option<String>) -> TemplateConfigDiagnostics {
