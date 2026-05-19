@@ -1,22 +1,19 @@
 [package]
-name = "tabs-rail"
+name = "andamento-config"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "tabs_rail"
+name = "andamento_config"
 path = "src/main.rs"
 
 [[bin]]
-name = "tabs-rail"
+name = "andamento-config"
 path = "src/main.rs"
 
 [dependencies]
-ansi_term.workspace = true
-log = "0.4"
 serde_json.workspace = true
-tabs-shared.workspace = true
+andamento-shared.workspace = true
 unicode-width.workspace = true
 zellij-tile.workspace = true
-zellij-tile-utils.workspace = true

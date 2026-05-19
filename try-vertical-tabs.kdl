@@ -1,5 +1,0 @@
-plugins {
-    status-bar location="zellij:status-bar"
-}
-
-default_layout "/Users/robert/dev/zellij-scratch/vertical-tabs-layout.kdl"

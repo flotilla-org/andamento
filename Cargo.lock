@@ -18,6 +18,60 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "andamento"
+version = "0.1.0"
+dependencies = [
+ "ansi_term",
+ "unicode-width",
+ "zellij-tile",
+ "zellij-tile-utils",
+]
+
+[[package]]
+name = "andamento-config"
+version = "0.1.0"
+dependencies = [
+ "andamento-shared",
+ "serde_json",
+ "unicode-width",
+ "zellij-tile",
+]
+
+[[package]]
+name = "andamento-controller"
+version = "0.1.0"
+dependencies = [
+ "andamento-shared",
+ "log",
+ "serde",
+ "serde_json",
+ "zellij-tile",
+]
+
+[[package]]
+name = "andamento-rail"
+version = "0.1.0"
+dependencies = [
+ "andamento-shared",
+ "ansi_term",
+ "log",
+ "serde_json",
+ "unicode-width",
+ "zellij-tile",
+ "zellij-tile-utils",
+]
+
+[[package]]
+name = "andamento-shared"
+version = "0.1.0"
+dependencies = [
+ "kdl",
+ "serde",
+ "serde_json",
+ "zellij-tile",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1938,50 +1992,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tabs-controller"
-version = "0.1.0"
-dependencies = [
- "log",
- "serde",
- "serde_json",
- "tabs-shared",
- "zellij-tile",
-]
-
-[[package]]
-name = "tabs-rail"
-version = "0.1.0"
-dependencies = [
- "ansi_term",
- "log",
- "serde_json",
- "tabs-shared",
- "unicode-width",
- "zellij-tile",
- "zellij-tile-utils",
-]
-
-[[package]]
-name = "tabs-rail-config"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tabs-shared",
- "unicode-width",
- "zellij-tile",
-]
-
-[[package]]
-name = "tabs-shared"
-version = "0.1.0"
-dependencies = [
- "kdl",
- "serde",
- "serde_json",
- "zellij-tile",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2267,16 +2277,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vertical-tabs"
-version = "0.1.0"
-dependencies = [
- "ansi_term",
- "unicode-width",
- "zellij-tile",
- "zellij-tile-utils",
-]
 
 [[package]]
 name = "vte"

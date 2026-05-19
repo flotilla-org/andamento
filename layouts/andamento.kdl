@@ -1,28 +1,28 @@
 plugins {
-    tabs-controller location="file:$ANDAMENTO_ROOT/target/wasm32-wasip1/release/tabs-controller.wasm" {
+    andamento-controller location="file:$ANDAMENTO_ROOT/target/wasm32-wasip1/release/andamento-controller.wasm" {
         rail_structure "joined-cells"
         rail_sizing "active-large"
         rail_grouping "directory"
         template_config_path "/host/Users/robert/dev/zellij-scratch.native-tabs/templates/andamento-git.kdl"
         grouping_config_path "/host/Users/robert/dev/zellij-scratch.native-tabs/templates/andamento-git.kdl"
     }
-    tabs-rail location="file:$ANDAMENTO_ROOT/target/wasm32-wasip1/release/tabs-rail.wasm" {
-        controller_plugin_url "tabs-controller"
-        config_plugin_url "tabs-rail-config"
+    andamento-rail location="file:$ANDAMENTO_ROOT/target/wasm32-wasip1/release/andamento-rail.wasm" {
+        controller_plugin_url "andamento-controller"
+        config_plugin_url "andamento-config"
         rail_placement "left"
     }
-    tabs-rail-config location="file:$ANDAMENTO_ROOT/target/wasm32-wasip1/release/tabs-rail-config.wasm"
+    andamento-config location="file:$ANDAMENTO_ROOT/target/wasm32-wasip1/release/andamento-config.wasm"
 }
 
 load_plugins {
-    tabs-controller
+    andamento-controller
 }
 
 layout {
     default_tab_template {
         pane split_direction="vertical" {
             pane size="23%" borderless=true {
-                plugin location="tabs-rail"
+                plugin location="andamento-rail"
             }
             children
         }
@@ -34,7 +34,7 @@ layout {
     new_tab_template {
         pane split_direction="vertical" {
             pane size="23%" borderless=true {
-                plugin location="tabs-rail"
+                plugin location="andamento-rail"
             }
             pane
         }

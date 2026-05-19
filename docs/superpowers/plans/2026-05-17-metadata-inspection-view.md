@@ -15,9 +15,9 @@
 ### Task 1: Add `RailViewMode`
 
 **Files:**
-- Modify: `crates/tabs-shared/src/lib.rs`
-- Modify: `crates/tabs-controller/src/main.rs`
-- Modify: `crates/tabs-rail-config/src/main.rs`
+- Modify: `crates/andamento-shared/src/lib.rs`
+- Modify: `crates/andamento-controller/src/main.rs`
+- Modify: `crates/andamento-config/src/main.rs`
 
 - [x] **Step 1: Write failing tests**
 
@@ -25,7 +25,7 @@ Add tests for default normal view, parsing `rail_view "metadata"`, and config ed
 
 - [x] **Step 2: Verify failure**
 
-Run focused tests for `tabs-shared`, `tabs-controller`, and `tabs-rail-config`.
+Run focused tests for `andamento-shared`, `andamento-controller`, and `andamento-config`.
 
 Expected: fail because `RailViewMode` and `RailConfig.view` do not exist.
 
@@ -42,7 +42,7 @@ Expected: pass.
 ### Task 2: Render Metadata Projection
 
 **Files:**
-- Modify: `crates/tabs-rail/src/render.rs`
+- Modify: `crates/andamento-rail/src/render.rs`
 
 - [x] **Step 1: Write failing renderer test**
 
@@ -50,7 +50,7 @@ Add a test proving metadata view renders group and tab key/value lines instead o
 
 - [x] **Step 2: Verify failure**
 
-Run: `cargo test -p tabs-rail metadata_view_renders_group_and_tab_key_values --target aarch64-apple-darwin`
+Run: `cargo test -p andamento-rail metadata_view_renders_group_and_tab_key_values --target aarch64-apple-darwin`
 
 Expected: fail because metadata view still uses normal rendering.
 
@@ -60,7 +60,7 @@ Render group path segments, group labels/counts, tab ids/names/position/active/p
 
 - [x] **Step 4: Verify focused test passes**
 
-Run: `cargo test -p tabs-rail metadata_view_renders_group_and_tab_key_values --target aarch64-apple-darwin`
+Run: `cargo test -p andamento-rail metadata_view_renders_group_and_tab_key_values --target aarch64-apple-darwin`
 
 Expected: pass.
 
@@ -69,11 +69,11 @@ Expected: pass.
 **Files:**
 - Modify: `docs/sidebar-design/metadata-and-roadmap.md`
 - Modify: `docs/superpowers/plans/2026-05-17-metadata-inspection-view.md`
-- Modify: `crates/tabs-shared/src/lib.rs`
-- Modify: `crates/tabs-controller/src/main.rs`
-- Modify: `crates/tabs-controller/src/state.rs`
-- Modify: `crates/tabs-rail-config/src/main.rs`
-- Modify: `crates/tabs-rail/src/render.rs`
+- Modify: `crates/andamento-shared/src/lib.rs`
+- Modify: `crates/andamento-controller/src/main.rs`
+- Modify: `crates/andamento-controller/src/state.rs`
+- Modify: `crates/andamento-config/src/main.rs`
+- Modify: `crates/andamento-rail/src/render.rs`
 
 - [x] **Step 1: Format**
 
@@ -81,7 +81,7 @@ Run: `cargo fmt`
 
 - [x] **Step 2: Run native tests**
 
-Run: `cargo test -p tabs-shared -p tabs-controller -p tabs-rail -p tabs-rail-config --target aarch64-apple-darwin`
+Run: `cargo test -p andamento-shared -p andamento-controller -p andamento-rail -p andamento-config --target aarch64-apple-darwin`
 
 Expected: pass.
 
@@ -96,6 +96,6 @@ Expected: pass.
 Run:
 
 ```bash
-git add docs/sidebar-design/metadata-and-roadmap.md docs/superpowers/plans/2026-05-17-metadata-inspection-view.md crates/tabs-shared/src/lib.rs crates/tabs-controller/src/main.rs crates/tabs-controller/src/state.rs crates/tabs-rail-config/src/main.rs crates/tabs-rail/src/render.rs
+git add docs/sidebar-design/metadata-and-roadmap.md docs/superpowers/plans/2026-05-17-metadata-inspection-view.md crates/andamento-shared/src/lib.rs crates/andamento-controller/src/main.rs crates/andamento-controller/src/state.rs crates/andamento-config/src/main.rs crates/andamento-rail/src/render.rs
 git commit -m "feat: add metadata inspection rail view"
 ```

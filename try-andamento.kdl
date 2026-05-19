@@ -1,0 +1,5 @@
+plugins {
+    status-bar location="zellij:status-bar"
+}
+
+default_layout "/Users/robert/dev/zellij-scratch/andamento-legacy-layout.kdl"

@@ -1,31 +1,31 @@
-// Same as tabs-rail.kdl but with all three tabs plugins loaded as
+// Same as andamento-rail.kdl but with all three tabs plugins loaded as
 // native (Rust-linked) rather than WASM. Requires zellij built with
 // --features native-tabs-all.
 plugins {
-    tabs-controller location="native:tabs-controller" {
+    andamento-controller location="native:andamento-controller" {
         rail_structure "joined-cells"
         rail_sizing "active-large"
         rail_grouping "directory"
         template_config_path "/host$ANDAMENTO_ROOT/templates/andamento-git.kdl"
         grouping_config_path "/host$ANDAMENTO_ROOT/templates/andamento-git.kdl"
     }
-    tabs-rail location="native:tabs-rail" {
-        controller_plugin_url "tabs-controller"
-        config_plugin_url "tabs-rail-config"
+    andamento-rail location="native:andamento-rail" {
+        controller_plugin_url "andamento-controller"
+        config_plugin_url "andamento-config"
         rail_placement "left"
     }
-    tabs-rail-config location="native:tabs-rail-config"
+    andamento-config location="native:andamento-config"
 }
 
 load_plugins {
-    tabs-controller
+    andamento-controller
 }
 
 layout {
     default_tab_template {
         pane split_direction="vertical" {
             pane size="23%" borderless=true {
-                plugin location="tabs-rail"
+                plugin location="andamento-rail"
             }
             children
         }
@@ -37,7 +37,7 @@ layout {
     new_tab_template {
         pane split_direction="vertical" {
             pane size="23%" borderless=true {
-                plugin location="tabs-rail"
+                plugin location="andamento-rail"
             }
             pane
         }
@@ -50,7 +50,7 @@ layout {
         pane
         floating_panes {
             pane command="$ANDAMENTO_ROOT/scripts/andamento-git-watcher.py" cwd="$ANDAMENTO_ROOT" {
-                args "--interval" "5" "--plugin-url" "tabs-controller"
+                args "--interval" "5" "--plugin-url" "andamento-controller"
                 width 80
                 height 12
                 x 10

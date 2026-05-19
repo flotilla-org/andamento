@@ -71,15 +71,15 @@ impl ZellijPlugin for State {
         }
         if !self.permissions_granted {
             let message = match self.permission_status {
-                Some(PermissionStatus::Denied) => "vertical-tabs: permissions denied",
-                Some(PermissionStatus::Granted) => "vertical-tabs: waiting for tab state",
-                None => "vertical-tabs: waiting for permissions",
+                Some(PermissionStatus::Denied) => "andamento: permissions denied",
+                Some(PermissionStatus::Granted) => "andamento: waiting for tab state",
+                None => "andamento: waiting for permissions",
             };
             self.render_message(message, rows, cols);
             return;
         }
         if self.tabs.is_empty() {
-            self.render_message("vertical-tabs: waiting for tabs", rows, cols);
+            self.render_message("andamento: waiting for tabs", rows, cols);
             return;
         }
 

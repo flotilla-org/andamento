@@ -15,7 +15,7 @@
 ### Task 1: Shared Patch Types
 
 **Files:**
-- Modify: `crates/tabs-shared/src/lib.rs`
+- Modify: `crates/andamento-shared/src/lib.rs`
 
 - [x] **Step 1: Write failing shared serialization test**
 
@@ -40,7 +40,7 @@ MetadataPatch {
 
 - [x] **Step 2: Run focused test and verify failure**
 
-Run: `cargo test -p tabs-shared metadata_patch_round_trips_json --target aarch64-apple-darwin`
+Run: `cargo test -p andamento-shared metadata_patch_round_trips_json --target aarch64-apple-darwin`
 
 Expected: compile failure because `MetadataPatch` and `MetadataValueUpdate` do not exist.
 
@@ -70,14 +70,14 @@ Use `BTreeMap` for deterministic serialization and test output.
 
 - [x] **Step 4: Verify focused test passes**
 
-Run: `cargo test -p tabs-shared metadata_patch_round_trips_json --target aarch64-apple-darwin`
+Run: `cargo test -p andamento-shared metadata_patch_round_trips_json --target aarch64-apple-darwin`
 
 Expected: pass.
 
 ### Task 2: MetadataStore Patch Application
 
 **Files:**
-- Modify: `crates/tabs-controller/src/metadata.rs`
+- Modify: `crates/andamento-controller/src/metadata.rs`
 
 - [x] **Step 1: Write failing store tests**
 
@@ -91,7 +91,7 @@ Add tests proving:
 
 - [x] **Step 2: Run focused tests and verify failure**
 
-Run: `cargo test -p tabs-controller metadata_patch --target aarch64-apple-darwin`
+Run: `cargo test -p andamento-controller metadata_patch --target aarch64-apple-darwin`
 
 Expected: compile failure because `MetadataStore::apply_patch` does not exist.
 
@@ -123,7 +123,7 @@ pub fn apply_patch(&mut self, patch: MetadataPatch, now: u64) {
 
 - [x] **Step 4: Verify focused tests pass**
 
-Run: `cargo test -p tabs-controller metadata_patch --target aarch64-apple-darwin`
+Run: `cargo test -p andamento-controller metadata_patch --target aarch64-apple-darwin`
 
 Expected: pass.
 
@@ -132,8 +132,8 @@ Expected: pass.
 **Files:**
 - Modify: `docs/sidebar-design/metadata-and-roadmap.md`
 - Modify: `docs/superpowers/plans/2026-05-17-metadata-patch-semantics.md`
-- Modify: `crates/tabs-shared/src/lib.rs`
-- Modify: `crates/tabs-controller/src/metadata.rs`
+- Modify: `crates/andamento-shared/src/lib.rs`
+- Modify: `crates/andamento-controller/src/metadata.rs`
 
 - [x] **Step 1: Format**
 
@@ -141,7 +141,7 @@ Run: `cargo fmt`
 
 - [x] **Step 2: Run native tests**
 
-Run: `cargo test -p tabs-shared -p tabs-controller -p tabs-rail -p tabs-rail-config --target aarch64-apple-darwin`
+Run: `cargo test -p andamento-shared -p andamento-controller -p andamento-rail -p andamento-config --target aarch64-apple-darwin`
 
 Expected: pass.
 
@@ -156,6 +156,6 @@ Expected: pass.
 Run:
 
 ```bash
-git add docs/sidebar-design/metadata-and-roadmap.md docs/superpowers/plans/2026-05-17-metadata-patch-semantics.md crates/tabs-shared/src/lib.rs crates/tabs-controller/src/metadata.rs
+git add docs/sidebar-design/metadata-and-roadmap.md docs/superpowers/plans/2026-05-17-metadata-patch-semantics.md crates/andamento-shared/src/lib.rs crates/andamento-controller/src/metadata.rs
 git commit -m "feat: add metadata patch semantics"
 ```

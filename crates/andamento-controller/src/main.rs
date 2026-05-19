@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use state::ControllerState;
-use tabs_shared::PaneTarget;
-use tabs_shared::PluginStatsRecorder;
-use tabs_shared::MSG_RAIL_SIZE_TARGET;
-use tabs_shared::MSG_VIEW_MODEL;
-use tabs_shared::{
+use andamento_shared::PaneTarget;
+use andamento_shared::PluginStatsRecorder;
+use andamento_shared::MSG_RAIL_SIZE_TARGET;
+use andamento_shared::MSG_VIEW_MODEL;
+use andamento_shared::{
     ControllerBootstrapSnapshot, ExternalMessage, RailConfig, RailGroupingMode, RailSize,
     RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RailViewMode, RendererHello,
     SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS,
@@ -18,8 +18,8 @@ use tabs_shared::{
     MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
     MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
-use tabs_shared::{TemplateConfigDiagnostics, TemplateConfigState};
-use tabs_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
+use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
+use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
 use zellij_tile::output::print;
 use zellij_tile::prelude::*;
 
@@ -157,7 +157,7 @@ impl ZellijPlugin for PluginState {
                     .collect();
                 let inst = (&self.state as *const _) as usize & 0xFFFFFF;
                 log::info!(
-                    "tabs-controller[inst {inst:x}]: PaneUpdate — known_rails={:?}, live_plugin_ids={:?}, all_panes(id,is_plugin)={:?}",
+                    "andamento-controller[inst {inst:x}]: PaneUpdate — known_rails={:?}, live_plugin_ids={:?}, all_panes(id,is_plugin)={:?}",
                     self.state.rail_plugin_targets().iter().map(|r| r.plugin_id).collect::<Vec<_>>(),
                     live_plugin_ids,
                     all_pane_ids,
@@ -330,7 +330,7 @@ impl PluginState {
                 .set_template_config_diagnostics(TemplateConfigDiagnostics::default());
             return true;
         };
-        match tabs_shared::template_config::load_template_catalog_from_file(path) {
+        match andamento_shared::template_config::load_template_catalog_from_file(path) {
             Ok(catalog) => {
                 let diagnostics = TemplateConfigDiagnostics {
                     path: Some(path.to_owned()),
@@ -344,7 +344,7 @@ impl PluginState {
                 true
             }
             Err(error) => {
-                eprintln!("tabs-controller: failed to load template config: {error}");
+                eprintln!("andamento-controller: failed to load template config: {error}");
                 self.state.set_template_catalog(None);
                 self.state
                     .set_template_config_diagnostics(template_config_error_diagnostics(
@@ -363,7 +363,7 @@ impl PluginState {
             self.grouping_config_error = None;
             return true;
         };
-        match tabs_shared::grouping_config::load_grouping_catalog_from_file(path) {
+        match andamento_shared::grouping_config::load_grouping_catalog_from_file(path) {
             Ok(catalog) => {
                 self.grouping_rule_count = catalog.rules.len();
                 self.grouping_config_error = None;
@@ -371,7 +371,7 @@ impl PluginState {
                 true
             }
             Err(error) => {
-                eprintln!("tabs-controller: failed to load grouping config: {error}");
+                eprintln!("andamento-controller: failed to load grouping config: {error}");
                 self.grouping_rule_count = 0;
                 self.grouping_config_error = Some(error.to_string());
                 self.state.set_grouping_catalog(None);
@@ -726,14 +726,14 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             // instances exist (e.g. per client_id from multi-client cloning).
             let inst = (state as *const _) as usize & 0xFFFFFF;
             log::info!(
-                "tabs-controller[inst {inst:x}]: RendererHello from plugin_id={} client_id={} (known rails before: {})",
+                "andamento-controller[inst {inst:x}]: RendererHello from plugin_id={} client_id={} (known rails before: {})",
                 hello.plugin_id,
                 hello.client_id,
                 state.known_rail_count()
             );
             let state_changed = state.register_rail(hello);
             log::info!(
-                "tabs-controller[inst {inst:x}]: register_rail state_changed={state_changed} (known rails after: {})",
+                "andamento-controller[inst {inst:x}]: register_rail state_changed={state_changed} (known rails after: {})",
                 state.known_rail_count()
             );
             HandlePipeResult {
@@ -811,7 +811,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
         },
         Ok(None) => HandlePipeResult::default(),
         Err(error) => {
-            eprintln!("tabs-controller: {error}");
+            eprintln!("andamento-controller: {error}");
             HandlePipeResult::default()
         }
     }
@@ -1085,7 +1085,7 @@ fn parse_controller_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tabs_shared::{PaneTarget, Priority, SetPaneStatus};
+    use andamento_shared::{PaneTarget, Priority, SetPaneStatus};
 
     fn pipe(name: &str, payload: Option<String>, args: BTreeMap<String, String>) -> PipeMessage {
         PipeMessage {
@@ -1418,13 +1418,13 @@ mod tests {
             name: "main".to_owned(),
             active: true,
         }]);
-        let patch = tabs_shared::MetadataPatch {
-            target: tabs_shared::MetadataTarget::Tab(1),
+        let patch = andamento_shared::MetadataPatch {
+            target: andamento_shared::MetadataTarget::Tab(1),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 "tab.subject".to_owned(),
-                tabs_shared::MetadataValueUpdate {
-                    value: tabs_shared::MetadataValue::Text("checkout".to_owned()),
+                andamento_shared::MetadataValueUpdate {
+                    value: andamento_shared::MetadataValue::Text("checkout".to_owned()),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: None,
@@ -1443,7 +1443,7 @@ mod tests {
         let tab_metadata = model
             .resolved_metadata
             .iter()
-            .find(|metadata| metadata.target == tabs_shared::MetadataTarget::Tab(1))
+            .find(|metadata| metadata.target == andamento_shared::MetadataTarget::Tab(1))
             .expect("tab metadata");
         assert!(result.state_changed);
         assert_eq!(
@@ -1455,7 +1455,7 @@ mod tests {
                 .values
                 .get("tab.subject")
                 .map(|entry| &entry.value),
-            Some(&tabs_shared::MetadataValue::Text("checkout".to_owned()))
+            Some(&andamento_shared::MetadataValue::Text("checkout".to_owned()))
         );
         assert_eq!(
             tab_metadata
@@ -1470,13 +1470,13 @@ mod tests {
     #[test]
     fn duplicate_metadata_patch_message_does_not_request_state_broadcast() {
         let mut state = ControllerState::default();
-        let patch = tabs_shared::MetadataPatch {
-            target: tabs_shared::MetadataTarget::Tab(1),
+        let patch = andamento_shared::MetadataPatch {
+            target: andamento_shared::MetadataTarget::Tab(1),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
-                tabs_shared::MetadataValueUpdate {
-                    value: tabs_shared::MetadataValue::Text("zellij-org/zellij".to_owned()),
+                andamento_shared::MetadataValueUpdate {
+                    value: andamento_shared::MetadataValue::Text("zellij-org/zellij".to_owned()),
                     ttl_ms: Some(10_000),
                     precedence: None,
                     ordinal: None,
@@ -1525,16 +1525,16 @@ mod tests {
             cli_pipe(MSG_OBSERVED_IDENTITIES, None, "pipe-1"),
         );
         let output = result.cli_pipe_output.expect("cli pipe output");
-        let observed: Vec<tabs_shared::ObservedMetadataIdentity> =
+        let observed: Vec<andamento_shared::ObservedMetadataIdentity> =
             serde_json::from_str(&output.output).unwrap();
 
         assert!(!result.state_changed);
         assert_eq!(output.pipe_id, "pipe-1");
         assert!(observed.iter().any(|identity| {
             identity.identity
-                == tabs_shared::MetadataIdentity {
+                == andamento_shared::MetadataIdentity {
                     key: "zellij.pane.cwd".to_owned(),
-                    value: tabs_shared::MetadataValue::Text(cwd.clone()),
+                    value: andamento_shared::MetadataValue::Text(cwd.clone()),
                 }
         }));
     }

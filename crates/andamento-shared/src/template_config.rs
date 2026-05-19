@@ -967,7 +967,7 @@ mod tests {
     #[test]
     fn loads_template_catalog_from_json_file() {
         let path = std::env::temp_dir().join(format!(
-            "tabs-rail-template-config-{}.json",
+            "andamento-rail-template-config-{}.json",
             std::process::id()
         ));
         std::fs::write(

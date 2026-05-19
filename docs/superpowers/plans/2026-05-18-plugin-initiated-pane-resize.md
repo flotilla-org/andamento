@@ -189,10 +189,10 @@ Expected: existing resize tests pass and new resize-to tests pass.
 ### Task 5: Capture local rail size intent
 
 **Files:**
-- Modify: `/Users/robert/dev/zellij-scratch/crates/tabs-shared/src/lib.rs`
-- Modify: `/Users/robert/dev/zellij-scratch/crates/tabs-controller/src/state.rs`
-- Modify: `/Users/robert/dev/zellij-scratch/crates/tabs-controller/src/main.rs`
-- Modify: `/Users/robert/dev/zellij-scratch/crates/tabs-rail/src/main.rs`
+- Modify: `/Users/robert/dev/zellij-scratch/crates/andamento-shared/src/lib.rs`
+- Modify: `/Users/robert/dev/zellij-scratch/crates/andamento-controller/src/state.rs`
+- Modify: `/Users/robert/dev/zellij-scratch/crates/andamento-controller/src/main.rs`
+- Modify: `/Users/robert/dev/zellij-scratch/crates/andamento-rail/src/main.rs`
 - Test: shared/controller unit tests where present.
 
 - [ ] Add shared message for rail size observation:
@@ -217,7 +217,7 @@ RailSizeObserved {
 ### Task 6: Apply debounced desired size without waiting for visibility
 
 **Files:**
-- Modify: `/Users/robert/dev/zellij-scratch/crates/tabs-rail/src/main.rs`
+- Modify: `/Users/robert/dev/zellij-scratch/crates/andamento-rail/src/main.rs`
 - Test: rail state tests if present; otherwise add small pure helper tests.
 
 - [ ] Rail stores latest desired size from controller.
@@ -258,8 +258,8 @@ cargo test -p zellij-server resize_pane
 
 ```bash
 cd /Users/robert/dev/zellij-scratch
-cargo test --target aarch64-apple-darwin -p tabs-shared -p tabs-controller -p tabs-rail -p tabs-rail-config
-cargo build --release -p tabs-controller -p tabs-rail -p tabs-rail-config
+cargo test --target aarch64-apple-darwin -p andamento-shared -p andamento-controller -p andamento-rail -p andamento-config
+cargo build --release -p andamento-controller -p andamento-rail -p andamento-config
 ```
 
 - [ ] Manual check:

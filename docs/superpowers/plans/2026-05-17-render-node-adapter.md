@@ -4,9 +4,9 @@
 
 **Goal:** Normalize tab rail rendering through local render nodes so grouped and ungrouped views share one projection model before richer hierarchy work.
 
-**Architecture:** Keep the shared `RailRow` view model unchanged. Add an internal `RenderNode` adapter in `crates/tabs-rail/src/render.rs` that converts fallback tabs, flat controller rows, and grouped controller rows into a single local node list consumed by normal rendering. Preserve current visual behavior while making the next collapse/template/group-border slices land on one hierarchy.
+**Architecture:** Keep the shared `RailRow` view model unchanged. Add an internal `RenderNode` adapter in `crates/andamento-rail/src/render.rs` that converts fallback tabs, flat controller rows, and grouped controller rows into a single local node list consumed by normal rendering. Preserve current visual behavior while making the next collapse/template/group-border slices land on one hierarchy.
 
-**Tech Stack:** Rust, existing `tabs-rail` renderer tests, `cargo test -p tabs-rail --target aarch64-apple-darwin`.
+**Tech Stack:** Rust, existing `andamento-rail` renderer tests, `cargo test -p andamento-rail --target aarch64-apple-darwin`.
 
 ---
 
@@ -15,7 +15,7 @@
 ### Task 1: Characterize Current Structure Behavior
 
 **Files:**
-- Modify/test: `crates/tabs-rail/src/render.rs`
+- Modify/test: `crates/andamento-rail/src/render.rs`
 
 - [x] **Step 1: Write failing tests**
 
@@ -23,7 +23,7 @@ Add focused tests showing grouped rendering does not collapse all `rail_structur
 
 - [x] **Step 2: Run focused tests to verify red**
 
-Run: `cargo test -p tabs-rail --target aarch64-apple-darwin grouped_child -- --nocapture`
+Run: `cargo test -p andamento-rail --target aarch64-apple-darwin grouped_child -- --nocapture`
 
 Expected: the new joined-cells grouped test fails against the current projection renderer.
 
@@ -37,12 +37,12 @@ When a node list has only top-level tabs, pass the cards directly to `render_car
 
 - [x] **Step 5: Run focused tests to verify green**
 
-Run: `cargo test -p tabs-rail --target aarch64-apple-darwin grouped_child flat_controller_rows -- --nocapture`
+Run: `cargo test -p andamento-rail --target aarch64-apple-darwin grouped_child flat_controller_rows -- --nocapture`
 
 Expected: all focused renderer tests pass.
 
 - [x] **Step 6: Run broader verification**
 
-Run: `cargo test -p tabs-rail --target aarch64-apple-darwin`
+Run: `cargo test -p andamento-rail --target aarch64-apple-darwin`
 
-Expected: all `tabs-rail` tests pass.
+Expected: all `andamento-rail` tests pass.

@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
 
 use ansi_term::{Color, Style};
-use tabs_shared::template_config::{
+use andamento_shared::template_config::{
     TemplateConfigCatalog, TemplateConfigFieldClass, TemplateConfigMatchContext,
     TemplateConfigNodeKind, TemplateConfigSlot,
 };
-use tabs_shared::{
+use andamento_shared::{
     ControllerViewModel, GroupPath, GroupSegment, MetadataEntry, MetadataSourceEntry,
     MetadataTarget, MetadataValue, ObservedMetadataIdentity, PaneTarget, Priority, RailConfig,
     RailRow, RailSizingPreset, RailStructure, RailViewMode, ReachableMetadataIdentity,
@@ -3219,7 +3219,7 @@ fn blank(cols: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tabs_shared::{
+    use andamento_shared::{
         GroupPath, GroupSegment, MetadataEntry, MetadataTarget, MetadataValue, PaneTarget,
         RailConfig, RailGroupingMode, RailRow, RailSizingPreset, RailStructure, RailViewMode,
         ResolvedMetadata, SortMode, StatusIcon,
@@ -3238,7 +3238,7 @@ mod tests {
         ControllerViewModel {
             sort_mode: SortMode::PinnedFirst,
             config: RailConfig::default(),
-            template_config: tabs_shared::TemplateConfigDiagnostics::default(),
+            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
             tabs: vec![
                 TabCard {
                     tab_id: 2,
@@ -3306,7 +3306,7 @@ mod tests {
                 sizing: RailSizingPreset::Compact,
                 ..RailConfig::default()
             },
-            template_config: tabs_shared::TemplateConfigDiagnostics::default(),
+            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
             tabs: vec![tab_one.clone(), tab_two.clone()],
             rows: vec![
                 RailRow::GroupHeader {
@@ -3340,7 +3340,7 @@ mod tests {
                 sizing: RailSizingPreset::Compact,
                 view: RailViewMode::Normal,
             },
-            template_config: tabs_shared::TemplateConfigDiagnostics::default(),
+            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
             tabs: vec![],
             rows: vec![],
             resolved_metadata: vec![],
@@ -4073,7 +4073,7 @@ mod tests {
 
     #[test]
     fn external_template_catalog_can_override_tab_title_rendering() {
-        let config = tabs_shared::template_config::parse_template_config_json(
+        let config = andamento_shared::template_config::parse_template_config_json(
             r#"
             {
               "templates": [
@@ -4090,7 +4090,7 @@ mod tests {
             "#,
         )
         .expect("valid template config");
-        let catalog = tabs_shared::template_config::TemplateConfigCatalog::from_config(config);
+        let catalog = andamento_shared::template_config::TemplateConfigCatalog::from_config(config);
 
         let rendered =
             render_lines_with_template_catalog(Some(&model()), &[], 7, 24, true, Some(&catalog));
@@ -4100,7 +4100,7 @@ mod tests {
 
     #[test]
     fn external_kdl_template_catalog_can_render_numeric_priority_fields() {
-        let config = tabs_shared::template_config::parse_template_config_kdl(
+        let config = andamento_shared::template_config::parse_template_config_kdl(
             r#"
             template "git.group-header" slot="group-header" node-kind="group" {
               when exists="git.repo"
@@ -4114,7 +4114,7 @@ mod tests {
             "#,
         )
         .expect("valid template config");
-        let catalog = tabs_shared::template_config::TemplateConfigCatalog::from_config(config);
+        let catalog = andamento_shared::template_config::TemplateConfigCatalog::from_config(config);
         let metadata = RenderMetadata::from([
             (
                 "git.repo".to_owned(),
@@ -4154,7 +4154,7 @@ mod tests {
 
     #[test]
     fn external_kdl_group_header_template_uses_resolved_group_metadata() {
-        let config = tabs_shared::template_config::parse_template_config_kdl(
+        let config = andamento_shared::template_config::parse_template_config_kdl(
             r#"
             template "git.group-header" slot="group-header" node-kind="group" {
               when exists="git.repo"
@@ -4168,7 +4168,7 @@ mod tests {
             "#,
         )
         .expect("valid template config");
-        let catalog = tabs_shared::template_config::TemplateConfigCatalog::from_config(config);
+        let catalog = andamento_shared::template_config::TemplateConfigCatalog::from_config(config);
         let mut model = grouped_model();
         let group_path = GroupPath(vec![GroupSegment {
             key: "zellij.pane.cwd".to_owned(),
@@ -4331,11 +4331,11 @@ mod tests {
             templates.group_header = Some(ResolvedTemplateSlot {
                 template_name: "andamento.git.group-header".to_owned(),
                 fields: vec![
-                    tabs_shared::ResolvedTemplateField {
+                    andamento_shared::ResolvedTemplateField {
                         text: "zellij-org/zellij".to_owned(),
                         priority: 100,
                     },
-                    tabs_shared::ResolvedTemplateField {
+                    andamento_shared::ResolvedTemplateField {
                         text: " feat/kitty-image-plumbing".to_owned(),
                         priority: 60,
                     },
@@ -4429,7 +4429,7 @@ mod tests {
             )]),
             source_entries: BTreeMap::from([(
                 "tab.subject".to_owned(),
-                vec![tabs_shared::MetadataSourceEntry {
+                vec![andamento_shared::MetadataSourceEntry {
                     source_id: "flotilla".to_owned(),
                     entry: MetadataEntry {
                         value: MetadataValue::Text("checkout".to_owned()),
@@ -4482,8 +4482,8 @@ mod tests {
             target: MetadataTarget::Tab(2),
             values: BTreeMap::new(),
             source_entries: BTreeMap::new(),
-            reachable_identities: vec![tabs_shared::ReachableMetadataIdentity {
-                identity: tabs_shared::MetadataIdentity {
+            reachable_identities: vec![andamento_shared::ReachableMetadataIdentity {
+                identity: andamento_shared::MetadataIdentity {
                     key: "git.repo".to_owned(),
                     value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
                 },
@@ -4503,8 +4503,8 @@ mod tests {
     fn metadata_view_renders_observed_identity_index() {
         let mut model = model();
         model.config.view = RailViewMode::Metadata;
-        model.observed_identities = vec![tabs_shared::ObservedMetadataIdentity {
-            identity: tabs_shared::MetadataIdentity {
+        model.observed_identities = vec![andamento_shared::ObservedMetadataIdentity {
+            identity: andamento_shared::MetadataIdentity {
                 key: "git.repo".to_owned(),
                 value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
             },

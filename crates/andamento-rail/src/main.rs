@@ -169,14 +169,14 @@ use std::time::Instant;
 
 use render::{hit_at, HitAction, HitRegion};
 use render::{status_icon_is_renderable, LocalTab, VisibleCard, VisibleIconRect};
-use tabs_shared::StatusIcon;
-use tabs_shared::{
+use andamento_shared::StatusIcon;
+use andamento_shared::{
     ControllerViewModel, GroupPath, PluginStatsRecorder, RailSizeObserved, RailViewMode,
     RendererHello, StatsCollectRequest, MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_SIZE_TARGET,
     MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_PIN,
     MSG_VIEW_MODEL,
 };
-use tabs_shared::{RailSize, RailSizeTarget};
+use andamento_shared::{RailSize, RailSizeTarget};
 use zellij_tile::output::print;
 use zellij_tile::prelude::*;
 #[cfg(test)]
@@ -221,11 +221,11 @@ impl ZellijPlugin for PluginState {
         self.controller_plugin_url = configuration
             .get(CONFIG_CONTROLLER_PLUGIN_URL)
             .cloned()
-            .unwrap_or_else(|| "tabs-controller".to_owned());
+            .unwrap_or_else(|| "andamento-controller".to_owned());
         self.config_plugin_url = configuration
             .get(CONFIG_CONFIG_PLUGIN_URL)
             .cloned()
-            .unwrap_or_else(|| "tabs-rail-config".to_owned());
+            .unwrap_or_else(|| "andamento-config".to_owned());
         self.rail_placement = configuration
             .get(CONFIG_RAIL_PLACEMENT)
             .and_then(|value| parse_rail_placement(value))
@@ -314,7 +314,7 @@ impl ZellijPlugin for PluginState {
                         return true;
                     }
                     Err(error) => {
-                        eprintln!("tabs-rail: failed to parse view model: {error}");
+                        eprintln!("andamento-rail: failed to parse view model: {error}");
                     }
                 }
             }
@@ -331,7 +331,7 @@ impl ZellijPlugin for PluginState {
             if let Some(payload) = message.payload.as_deref() {
                 match serde_json::from_str::<RailSizeTarget>(payload) {
                     Ok(target) => self.handle_rail_size_target(target),
-                    Err(error) => eprintln!("tabs-rail: failed to parse rail size target: {error}"),
+                    Err(error) => eprintln!("andamento-rail: failed to parse rail size target: {error}"),
                 }
             }
             return false;
@@ -538,10 +538,10 @@ mod tests {
 impl PluginState {
     fn send_renderer_hello(&self) {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
-            log::info!("tabs-rail: send_renderer_hello SKIPPED (own_plugin_id={:?}, own_client_id={:?})", self.own_plugin_id, self.own_client_id);
+            log::info!("andamento-rail: send_renderer_hello SKIPPED (own_plugin_id={:?}, own_client_id={:?})", self.own_plugin_id, self.own_client_id);
             return;
         };
-        log::info!("tabs-rail: send_renderer_hello plugin_id={plugin_id} client_id={client_id} → controller={:?}", self.controller_plugin_url);
+        log::info!("andamento-rail: send_renderer_hello plugin_id={plugin_id} client_id={client_id} → controller={:?}", self.controller_plugin_url);
         let hello = RendererHello {
             plugin_id,
             client_id,

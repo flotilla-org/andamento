@@ -4,8 +4,8 @@ use std::path::Path;
 use crate::metadata::{
     select_primary_entry, select_primary_value, CandidateEntry, EntityId, MetadataStore,
 };
-use tabs_shared::grouping_config::{GroupingConfigCatalog, GroupingRule};
-use tabs_shared::{
+use andamento_shared::grouping_config::{GroupingConfigCatalog, GroupingRule};
+use andamento_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataEntry,
     MetadataIdentity, MetadataSourceEntry, MetadataValue, ObservedMetadataIdentity, PaneTarget,
     Priority, RailConfig, RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello,
@@ -58,7 +58,7 @@ pub struct ControllerState {
     sort_mode: SortMode,
     rail_config: RailConfig,
     grouping_catalog: Option<GroupingConfigCatalog>,
-    template_catalog: Option<tabs_shared::template_config::TemplateConfigCatalog>,
+    template_catalog: Option<andamento_shared::template_config::TemplateConfigCatalog>,
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
 }
@@ -259,7 +259,7 @@ impl ControllerState {
 
     pub fn set_template_catalog(
         &mut self,
-        catalog: Option<tabs_shared::template_config::TemplateConfigCatalog>,
+        catalog: Option<andamento_shared::template_config::TemplateConfigCatalog>,
     ) {
         self.template_catalog = catalog;
     }
@@ -276,7 +276,7 @@ impl ControllerState {
         &self.template_config
     }
 
-    pub fn apply_metadata_patch(&mut self, patch: tabs_shared::MetadataPatch) -> bool {
+    pub fn apply_metadata_patch(&mut self, patch: andamento_shared::MetadataPatch) -> bool {
         let next_receive_counter = self.receive_counter.saturating_add(1);
         let outcome = self.metadata.apply_patch(patch, next_receive_counter);
         if outcome.touched {
@@ -504,8 +504,8 @@ impl ControllerState {
                         resolved_metadata,
                     );
                     templates.group_header = self.resolve_template_slot(
-                        tabs_shared::template_config::TemplateConfigSlot::GroupHeader,
-                        tabs_shared::template_config::TemplateConfigNodeKind::Group,
+                        andamento_shared::template_config::TemplateConfigSlot::GroupHeader,
+                        andamento_shared::template_config::TemplateConfigNodeKind::Group,
                         &metadata,
                     );
                     RailRow::GroupHeader {
@@ -526,14 +526,14 @@ impl ControllerState {
         for tab in tabs {
             let metadata = tab_template_metadata(tab, resolved_metadata);
             tab.templates.tab_title = self.resolve_template_slot(
-                tabs_shared::template_config::TemplateConfigSlot::TabTitle,
-                tabs_shared::template_config::TemplateConfigNodeKind::Tab,
+                andamento_shared::template_config::TemplateConfigSlot::TabTitle,
+                andamento_shared::template_config::TemplateConfigNodeKind::Tab,
                 &metadata,
             );
             if tab.status.is_some() {
                 tab.templates.tab_status = self.resolve_template_slot(
-                    tabs_shared::template_config::TemplateConfigSlot::TabStatus,
-                    tabs_shared::template_config::TemplateConfigNodeKind::Tab,
+                    andamento_shared::template_config::TemplateConfigSlot::TabStatus,
+                    andamento_shared::template_config::TemplateConfigNodeKind::Tab,
                     &metadata,
                 );
             }
@@ -542,12 +542,12 @@ impl ControllerState {
 
     fn resolve_template_slot(
         &self,
-        slot: tabs_shared::template_config::TemplateConfigSlot,
-        node_kind: tabs_shared::template_config::TemplateConfigNodeKind,
+        slot: andamento_shared::template_config::TemplateConfigSlot,
+        node_kind: andamento_shared::template_config::TemplateConfigNodeKind,
         metadata: &BTreeMap<String, MetadataValue>,
     ) -> Option<ResolvedTemplateSlot> {
         let catalog = self.template_catalog.as_ref()?;
-        let context = tabs_shared::template_config::TemplateConfigMatchContext {
+        let context = andamento_shared::template_config::TemplateConfigMatchContext {
             slot,
             node_kind,
             metadata,
@@ -562,9 +562,9 @@ impl ControllerState {
             .map(|field| ResolvedTemplateField {
                 text: field.value,
                 priority: field.priority.unwrap_or(match field.class {
-                    tabs_shared::template_config::TemplateConfigFieldClass::Optional => 0,
-                    tabs_shared::template_config::TemplateConfigFieldClass::Required
-                    | tabs_shared::template_config::TemplateConfigFieldClass::Priority => 100,
+                    andamento_shared::template_config::TemplateConfigFieldClass::Optional => 0,
+                    andamento_shared::template_config::TemplateConfigFieldClass::Required
+                    | andamento_shared::template_config::TemplateConfigFieldClass::Priority => 100,
                 }),
             })
             .collect::<Vec<_>>();
@@ -1194,7 +1194,7 @@ fn observed_metadata_identities(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tabs_shared::{
+    use andamento_shared::{
         GroupPath, GroupSegment, RailGroupingMode, RailRow, RailSizingPreset, RailStructure,
         RailViewMode, StatusIcon,
     };
@@ -1311,12 +1311,12 @@ mod tests {
     #[test]
     fn duplicate_metadata_patch_is_not_a_model_change() {
         let mut state = ControllerState::default();
-        let patch = tabs_shared::MetadataPatch {
-            target: tabs_shared::MetadataTarget::Tab(1),
+        let patch = andamento_shared::MetadataPatch {
+            target: andamento_shared::MetadataTarget::Tab(1),
             source_id: "watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
-                tabs_shared::MetadataValueUpdate {
+                andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("zellij-org/zellij".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -1335,12 +1335,12 @@ mod tests {
     #[test]
     fn duplicate_ttl_metadata_patch_refreshes_without_model_change() {
         let mut state = ControllerState::default();
-        let patch = tabs_shared::MetadataPatch {
-            target: tabs_shared::MetadataTarget::Tab(1),
+        let patch = andamento_shared::MetadataPatch {
+            target: andamento_shared::MetadataTarget::Tab(1),
             source_id: "watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
-                tabs_shared::MetadataValueUpdate {
+                andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("zellij-org/zellij".to_owned()),
                     ttl_ms: Some(10_000),
                     precedence: None,
@@ -1574,35 +1574,35 @@ mod tests {
             ..RailConfig::default()
         });
         state.set_grouping_catalog(Some(
-            tabs_shared::grouping_config::GroupingConfigCatalog::from_config(
-                tabs_shared::grouping_config::ExternalGroupingConfig {
+            andamento_shared::grouping_config::GroupingConfigCatalog::from_config(
+                andamento_shared::grouping_config::ExternalGroupingConfig {
                     version: 1,
                     rules: vec![
-                        tabs_shared::grouping_config::GroupingRule {
+                        andamento_shared::grouping_config::GroupingRule {
                             name: "proj-repo-branch".to_owned(),
                             priority: 100,
                             levels: vec![
-                                tabs_shared::grouping_config::GroupingLevel {
+                                andamento_shared::grouping_config::GroupingLevel {
                                     key: "andamento.project".to_owned(),
                                     optional: true,
                                     label_key: None,
                                 },
-                                tabs_shared::grouping_config::GroupingLevel {
+                                andamento_shared::grouping_config::GroupingLevel {
                                     key: "git.repo".to_owned(),
                                     optional: false,
                                     label_key: Some("repo.name".to_owned()),
                                 },
-                                tabs_shared::grouping_config::GroupingLevel {
+                                andamento_shared::grouping_config::GroupingLevel {
                                     key: "git.branch".to_owned(),
                                     optional: false,
                                     label_key: None,
                                 },
                             ],
                         },
-                        tabs_shared::grouping_config::GroupingRule {
+                        andamento_shared::grouping_config::GroupingRule {
                             name: "directory".to_owned(),
                             priority: 10,
-                            levels: vec![tabs_shared::grouping_config::GroupingLevel {
+                            levels: vec![andamento_shared::grouping_config::GroupingLevel {
                                 key: KEY_PANE_CWD.to_owned(),
                                 optional: false,
                                 label_key: None,
@@ -1620,8 +1620,8 @@ mod tests {
         }]);
         state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
         state.set_pane_cwd(PaneTarget::Terminal(10), "/Users/robert/dev/zellij".into());
-        state.apply_metadata_patch(tabs_shared::MetadataPatch {
-            target: EntityId::Identity(tabs_shared::MetadataIdentity {
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Identity(andamento_shared::MetadataIdentity {
                 key: KEY_PANE_CWD.to_owned(),
                 value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
             }),
@@ -1629,7 +1629,7 @@ mod tests {
             set: BTreeMap::from([
                 (
                     "git.repo".to_owned(),
-                    tabs_shared::MetadataValueUpdate {
+                    andamento_shared::MetadataValueUpdate {
                         value: MetadataValue::Text("zellij-org/zellij".to_owned()),
                         ttl_ms: None,
                         precedence: None,
@@ -1638,7 +1638,7 @@ mod tests {
                 ),
                 (
                     "repo.name".to_owned(),
-                    tabs_shared::MetadataValueUpdate {
+                    andamento_shared::MetadataValueUpdate {
                         value: MetadataValue::Text("zellij".to_owned()),
                         ttl_ms: None,
                         precedence: None,
@@ -1647,7 +1647,7 @@ mod tests {
                 ),
                 (
                     "git.branch".to_owned(),
-                    tabs_shared::MetadataValueUpdate {
+                    andamento_shared::MetadataValueUpdate {
                         value: MetadataValue::Text("feat/kitty-image-plumbing".to_owned()),
                         ttl_ms: None,
                         precedence: None,
@@ -1693,13 +1693,13 @@ mod tests {
             ..RailConfig::default()
         });
         state.set_grouping_catalog(Some(
-            tabs_shared::grouping_config::GroupingConfigCatalog::from_config(
-                tabs_shared::grouping_config::ExternalGroupingConfig {
+            andamento_shared::grouping_config::GroupingConfigCatalog::from_config(
+                andamento_shared::grouping_config::ExternalGroupingConfig {
                     version: 1,
-                    rules: vec![tabs_shared::grouping_config::GroupingRule {
+                    rules: vec![andamento_shared::grouping_config::GroupingRule {
                         name: "repo".to_owned(),
                         priority: 100,
-                        levels: vec![tabs_shared::grouping_config::GroupingLevel {
+                        levels: vec![andamento_shared::grouping_config::GroupingLevel {
                             key: "git.repo".to_owned(),
                             optional: false,
                             label_key: None,
@@ -1786,12 +1786,12 @@ mod tests {
         }]);
         state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
         state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/zellij".into());
-        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
             target: EntityId::Tab(1),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 "tab.subject".to_owned(),
-                tabs_shared::MetadataValueUpdate {
+                andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("project:zellij".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -1837,12 +1837,12 @@ mod tests {
             value: MetadataValue::Text("project:zellij".to_owned()),
             label: None,
         }]);
-        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
             target: EntityId::Tab(1),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 KEY_TAB_SUBJECT.to_owned(),
-                tabs_shared::MetadataValueUpdate {
+                andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("project:zellij".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -1851,12 +1851,12 @@ mod tests {
             )]),
             unset: vec![],
         });
-        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
             target: EntityId::Group(group_path.clone()),
             source_id: "flotilla".to_owned(),
             set: BTreeMap::from([(
                 "group.summary".to_owned(),
-                tabs_shared::MetadataValueUpdate {
+                andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("build running".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -1891,12 +1891,12 @@ mod tests {
             name: "repo".into(),
             active: true,
         }]);
-        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
             target: EntityId::Tab(1),
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
-                tabs_shared::MetadataValueUpdate {
+                andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -1905,15 +1905,15 @@ mod tests {
             )]),
             unset: vec![],
         });
-        state.apply_metadata_patch(tabs_shared::MetadataPatch {
-            target: EntityId::Identity(tabs_shared::MetadataIdentity {
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Identity(andamento_shared::MetadataIdentity {
                 key: "git.repo".to_owned(),
                 value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
             }),
             source_id: "gh".to_owned(),
             set: BTreeMap::from([(
                 "vcs.pr".to_owned(),
-                tabs_shared::MetadataValueUpdate {
+                andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("#45".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -1922,15 +1922,15 @@ mod tests {
             )]),
             unset: vec![],
         });
-        state.apply_metadata_patch(tabs_shared::MetadataPatch {
-            target: EntityId::Identity(tabs_shared::MetadataIdentity {
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Identity(andamento_shared::MetadataIdentity {
                 key: "vcs.pr".to_owned(),
                 value: MetadataValue::Text("#45".to_owned()),
             }),
             source_id: "ci".to_owned(),
             set: BTreeMap::from([(
                 "ci.status".to_owned(),
-                tabs_shared::MetadataValueUpdate {
+                andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("failing".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -2007,7 +2007,7 @@ mod tests {
             PaneTarget::Terminal(1),
             "/Users/robert/dev/katzensteg".to_owned(),
         );
-        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
             target: EntityId::Identity(MetadataIdentity {
                 key: KEY_PANE_CWD.to_owned(),
                 value: MetadataValue::Text("/Users/robert/dev/katzensteg".to_owned()),
@@ -2015,7 +2015,7 @@ mod tests {
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
-                tabs_shared::MetadataValueUpdate {
+                andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -2066,7 +2066,7 @@ mod tests {
         state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
         let cwd = "/Users/robert/dev/katzensteg".to_owned();
         state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
-        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
             target: EntityId::Identity(MetadataIdentity {
                 key: KEY_PANE_CWD.to_owned(),
                 value: MetadataValue::Text(cwd.clone()),
@@ -2074,7 +2074,7 @@ mod tests {
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
-                tabs_shared::MetadataValueUpdate {
+                andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -2118,8 +2118,8 @@ mod tests {
             ..RailConfig::default()
         });
         state.set_template_catalog(Some(
-            tabs_shared::template_config::TemplateConfigCatalog::from_config(
-                tabs_shared::template_config::parse_template_config_kdl(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(
+                andamento_shared::template_config::parse_template_config_kdl(
                     r#"
                     template "git.group-header" slot="group-header" node-kind="group" {
                       when exists="git.repo"
@@ -2140,7 +2140,7 @@ mod tests {
         state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
         let cwd = "/Users/robert/dev/katzensteg".to_owned();
         state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
-        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
             target: EntityId::Identity(MetadataIdentity {
                 key: KEY_PANE_CWD.to_owned(),
                 value: MetadataValue::Text(cwd),
@@ -2149,7 +2149,7 @@ mod tests {
             set: BTreeMap::from([
                 (
                     "git.repo".to_owned(),
-                    tabs_shared::MetadataValueUpdate {
+                    andamento_shared::MetadataValueUpdate {
                         value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
                         ttl_ms: None,
                         precedence: None,
@@ -2158,7 +2158,7 @@ mod tests {
                 ),
                 (
                     "git.branch".to_owned(),
-                    tabs_shared::MetadataValueUpdate {
+                    andamento_shared::MetadataValueUpdate {
                         value: MetadataValue::Text("main".to_owned()),
                         ttl_ms: None,
                         precedence: None,
@@ -2206,7 +2206,7 @@ mod tests {
         state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
         let cwd = "/Users/robert/dev/katzensteg".to_owned();
         state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
-        state.apply_metadata_patch(tabs_shared::MetadataPatch {
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
             target: EntityId::Identity(MetadataIdentity {
                 key: KEY_PANE_CWD.to_owned(),
                 value: MetadataValue::Text(cwd.clone()),
@@ -2214,7 +2214,7 @@ mod tests {
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
-                tabs_shared::MetadataValueUpdate {
+                andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -2338,12 +2338,12 @@ mod tests {
     #[test]
     fn bootstrap_snapshot_carries_metadata_patches() {
         let mut source = ControllerState::default();
-        source.apply_metadata_patch(tabs_shared::MetadataPatch {
+        source.apply_metadata_patch(andamento_shared::MetadataPatch {
             target: EntityId::Tab(7),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 KEY_TAB_SUBJECT.to_owned(),
-                tabs_shared::MetadataValueUpdate {
+                andamento_shared::MetadataValueUpdate {
                     value: MetadataValue::Text("project:zellij".to_owned()),
                     ttl_ms: None,
                     precedence: Some(4),

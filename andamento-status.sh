@@ -4,15 +4,15 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  tabs-status.sh status [--pane terminal:ID] --priority PRIORITY --title TITLE [--detail TEXT] [--icon-png PATH]
-  tabs-status.sh clear [--pane terminal:ID]
+  andamento-status.sh status [--pane terminal:ID] --priority PRIORITY --title TITLE [--detail TEXT] [--icon-png PATH]
+  andamento-status.sh clear [--pane terminal:ID]
 
 Examples:
-  tabs-status.sh status --priority waiting --title "Claude waiting" --detail "needs input" --icon-png ./waiting.png
-  tabs-status.sh status --pane plugin:7 --priority error --title "tests failed" --icon-png ./failed.png
-  tabs-status.sh clear --pane terminal:1
+  andamento-status.sh status --priority waiting --title "Claude waiting" --detail "needs input" --icon-png ./waiting.png
+  andamento-status.sh status --pane plugin:7 --priority error --title "tests failed" --icon-png ./failed.png
+  andamento-status.sh clear --pane terminal:1
 
-If --pane is omitted, tabs-status.sh uses $ZELLIJ_PANE_ID or $ZELLIJ_PANE.
+If --pane is omitted, andamento-status.sh uses $ZELLIJ_PANE_ID or $ZELLIJ_PANE.
 Priorities: idle, info, success, waiting, warning, error
 EOF
 }
@@ -177,7 +177,7 @@ case "$command" in
     if [[ $dry_run -eq 1 ]]; then
       printf '%s\n' "$payload"
     else
-      "$(zellij_bin)" pipe --name tabs-set-pane-status -- "$payload"
+      "$(zellij_bin)" pipe --name andamento-set-pane-status -- "$payload"
     fi
     ;;
   clear)
@@ -185,7 +185,7 @@ case "$command" in
     if [[ $dry_run -eq 1 ]]; then
       printf '%s\n' "$payload"
     else
-      "$(zellij_bin)" pipe --name tabs-clear-pane-status -- "$payload"
+      "$(zellij_bin)" pipe --name andamento-clear-pane-status -- "$payload"
     fi
     ;;
   *)

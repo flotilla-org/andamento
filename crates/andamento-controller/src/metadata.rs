@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use tabs_shared::{
+use andamento_shared::{
     MetadataEntry, MetadataPatch, MetadataSourceEntry, MetadataTarget, MetadataValue,
     MetadataValueUpdate,
 };
@@ -307,7 +307,7 @@ pub fn select_primary_entry(entries: &[CandidateEntry]) -> Option<CandidateEntry
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tabs_shared::{
+    use andamento_shared::{
         GroupPath, GroupSegment, MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate,
         PaneTarget,
     };

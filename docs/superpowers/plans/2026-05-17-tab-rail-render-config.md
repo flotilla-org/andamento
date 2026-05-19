@@ -15,9 +15,9 @@
 ### Task 1: Shared Config Types
 
 **Files:**
-- Modify: `/Users/robert/dev/zellij-scratch/crates/tabs-shared/src/lib.rs`
-- Modify: `/Users/robert/dev/zellij-scratch/crates/tabs-controller/src/state.rs`
-- Modify: `/Users/robert/dev/zellij-scratch/crates/tabs-rail/src/render.rs`
+- Modify: `/Users/robert/dev/zellij-scratch/crates/andamento-shared/src/lib.rs`
+- Modify: `/Users/robert/dev/zellij-scratch/crates/andamento-controller/src/state.rs`
+- Modify: `/Users/robert/dev/zellij-scratch/crates/andamento-rail/src/render.rs`
 
 - [ ] **Step 1: Write failing shared/render tests**
 - [ ] **Step 2: Run focused tests and verify failures**
@@ -29,7 +29,7 @@
 ### Task 2: Structure Modes
 
 **Files:**
-- Modify: `/Users/robert/dev/zellij-scratch/crates/tabs-rail/src/render.rs`
+- Modify: `/Users/robert/dev/zellij-scratch/crates/andamento-rail/src/render.rs`
 
 - [ ] **Step 1: Add tests for `JoinedCells`, `SplitAroundActive`, and `BoxPerTab`**
 - [ ] **Step 2: Run tests and verify failures**
@@ -39,7 +39,7 @@
 ### Task 3: Color Ownership
 
 **Files:**
-- Modify: `/Users/robert/dev/zellij-scratch/crates/tabs-rail/src/render.rs`
+- Modify: `/Users/robert/dev/zellij-scratch/crates/andamento-rail/src/render.rs`
 
 - [ ] **Step 1: Add themed tests for separator/title color ownership**
 - [ ] **Step 2: Run tests and verify failures**

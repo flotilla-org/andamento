@@ -1,6 +1,6 @@
 # Sidebar Metadata And Roadmap
 
-This note captures the design decisions from the sidebar exploration and lays out a sensible order for building andamento, the next version of the Zellij sidebar plugin/system. The immediate goal is to get a useful end-to-end slice working without committing to all of the future machinery.
+This note captures the design decisions from the sidebar exploration and lays out a sensible order for building Andamento, the next version of the Zellij sidebar plugin/system. The immediate goal is to get a useful end-to-end slice working without committing to all of the future machinery. The prototype currently lives in `zellij-scratch`, but the intended published home is `flotilla-org/andamento`.
 
 ## Context
 
@@ -148,19 +148,18 @@ This gives the sidebar:
 
 Display labels must stay separate from identity. A segment value might be a full path, while the displayed label might be `zellij`, `worktree-a`, or a template-rendered string. This avoids baking presentation choices into the data model.
 
-### Tabs Can Have Explicit Subject Or Scope
+### Tabs Can Have Explicit Scope
 
 Pane-derived grouping answers "what does this tab currently contain?" That is useful, but it is not the same as "what is this tab specifically about?"
 
-Later metadata should allow a tab to declare a subject or scope explicitly. Possible well-known keys:
+Metadata should allow a tab to declare its placement explicitly:
 
 ```text
-tab.subject
 tab.scope
 tab.materialized_from
 ```
 
-The value can be a `GroupPath` or a compact representation of one. This lets the sidebar distinguish:
+`tab.scope` must be a typed `MetadataValue::GroupPath`. Text values are just metadata and do not affect grouping. This keeps placement semantics strict and avoids guessing how to parse strings. It lets the sidebar distinguish:
 
 - a tab that happens to have panes in `/repo`.
 - the main overview tab for project `zellij`.
@@ -283,6 +282,49 @@ The renderer can still project these nodes into simple rows for the sidebar. The
 
 Status: started in the rail plugin. Normal rendering now uses local render nodes for groups and tabs, and groups can be collapsed/expanded locally in the rail by clicking the group header. Collapse state is default-expanded and client-local for now; persisted/shared collapse state can be added once sidebar UI state has a durable home.
 
+### Spindly Hierarchies Should Conflate Compatible Levels
+
+Deep grouping rules can produce noisy trees when each parent has exactly one child. For example, `project -> repo -> branch` is useful when a project contains multiple repositories or a repository contains multiple branches, but it is wasteful when a project has one repo and that repo has one visible branch.
+
+The renderer should be able to conflate compatible single-child group chains without losing the underlying identities. Each original group prefix remains addressable for metadata, templates, ordering, toggles, and external facts; the visible node is only a combined presentation of the chain.
+
+Compatibility should start conservative:
+
+- only conflate adjacent groups, never tabs or latent nodes.
+- conflate only when the parent has exactly one group child and no direct tab/latent siblings.
+- preserve all original path prefixes internally.
+- let templates decide how to render the combined label from ancestor metadata.
+- avoid conflating across a group boundary that has an explicit local setting, pin, manual order, attention marker, or body content.
+
+This is likely to become load-bearing as grouping gets richer, because one flexible grouping rule needs to look reasonable across very different workspace shapes.
+
+### Group Prefixes Are First-Class Controller Targets
+
+Hierarchical grouping should not treat only the deepest group as real. Every prefix of a `GroupPath` is a semantic group target:
+
+```text
+[(andamento.project, zellij)]
+[(andamento.project, zellij), (git.repo, zellij-org/zellij)]
+[(andamento.project, zellij), (git.repo, zellij-org/zellij), (git.branch, feat/kitty-image-plumbing)]
+```
+
+The controller should resolve metadata and templates for each prefix and send those resolved states to the rail. The rail should remain mostly dumb: it builds the local recursive render tree, merges resolved metadata/templates by path, applies local layout/collapse/scroll decisions, and draws.
+
+This keeps grouping and template matching controller-centric while preserving room for client-local variants. If templates later need active/inactive, collapsed/expanded, or width-specific fields, the controller can send multiple resolved template states for the same node rather than moving all matching logic into every rail instance.
+
+For now:
+
+- grouping rules project tab metadata into a full `GroupPath`.
+- each prefix of that path becomes an addressable `MetadataTarget::Group`.
+- group seed metadata is the key/value pairs in the prefix.
+- external metadata attached to those group identities participates in normal identity resolution.
+- group-header templates are resolved for each prefix from the controller's resolved metadata.
+- tab rows carry their exact parent group path so a group can contain both direct tabs and child groups without relying on the rail's previous "last group header" state.
+- resolved template fields carry optional metadata key/value provenance. While rendering a hierarchy, a descendant elides any field whose exact metadata key/value was already visibly rendered by an ancestor group, so shared facts such as `git.repo` do not repeat under every branch.
+- collapse toggles and other rail-local affordances stay outside external templates.
+
+This avoids locking the system into the current two-level `group -> tab` display and makes project/repo/branch hierarchies behave like one regular mechanism.
+
 ### Metadata Inspection Mode Should Arrive Early
 
 The rail should have a metadata inspection projection before the final template system is ready. This is not just a config-panel debug screen; it is a mode of the actual sidebar so the user can inspect the data plane in the same hierarchy and spatial context that normal rendering uses.
@@ -321,6 +363,46 @@ Tile size should start as automatic squash-down based on available space. Templa
 
 Status: started internally. The renderer now has generic ordered template fields with required, optional, and priority classes. Render nodes also carry an initial metadata map populated from the current compatibility view model. Group headers, tab titles, and tab status text are the first field callers, and these field builders now read their display values from render metadata. This is still hard-coded Rust, not external template config, and should be extended to nested groups before adding user-authored templates.
 
+### Group And Tab Bodies Need A Real Slot Model
+
+Headers are not enough. Groups, tabs, panes, and latent nodes need a body slot that can render richer content when space allows:
+
+- one or more metadata text lines.
+- status/progress rows.
+- image previews or icons.
+- compact pane/tab summaries.
+- action affordances.
+- expanded debugging/details in metadata view.
+
+The body should be template-driven, but layout policy should stay separate from matching. A template can produce a body tree such as text lines, image slots, counters, or command buttons; the rail decides how much of that body fits in the current projection.
+
+Open layout policies:
+
+- vertical list body under a header.
+- compact one-line body folded into the header.
+- horizontal tab strip for child tabs.
+- responsive wrap/masonry for child nodes in expanded or wider modes.
+- hidden body with only header affordances in compact navigation mode.
+
+This slot model should also handle image asset chrome/buttons. The bottom control row and per-node affordances should eventually be able to use carefully-crafted transparent image assets for gear/chevrons/toggles/status buttons. Text fallback stays useful, but image assets make independent scaling, hover animation, and more polished chrome possible.
+
+Image chrome should be optional and controlled by a visible rail toggle plus config. It depends on the same Zellij image placement machinery as pane images, and assets need to be designed with transparency and terminal cell scaling in mind.
+
+### Node Settings Should Inherit Down The Tree
+
+Many future controls are naturally scoped to a subtree:
+
+- tab/card style.
+- show/hide images.
+- compact versus detailed body.
+- child layout mode: vertical, horizontal strip, masonry, zellij-tabbar-like compact.
+- metadata/debug visibility.
+- factory/latent-node display policy.
+
+The model should support per-node settings/toggles that inherit from the nearest explicitly-set ancestor. A group header can expose small right-aligned toggles for local overrides, while default settings flow from the root or profile.
+
+This keeps configuration ergonomic: a user can say "this repo group shows images" or "this project uses horizontal child tabs" without setting the same value on every child. It also gives templates a stable way to ask for local display policy without hard-coding global modes.
+
 ### Sensible Order For Templates And Deep Hierarchy
 
 Do not let templating grow around the current two-level `group -> tab` shape. The current rail implementation is useful as a compatibility step, but arbitrary-depth grouping needs the renderer to become recursive and metadata-driven before templates become user-authored configuration.
@@ -339,7 +421,7 @@ The order should be:
 
 4. **Build arbitrary-depth groups from `GroupPath`.**
    Convert a multi-segment `GroupPath` into nested group nodes. The first implementation can still use one-segment cwd groups, but the projection builder should not assume there is only one group level. Tabs without a path still render as top-level leaves.
-   Status: multi-segment paths now expand into nested render groups, common prefixes are shared, and nested group/tab indentation is derived from group depth. Existing one-segment directory grouping remains the compatibility baseline.
+   Status: multi-segment paths now expand into nested render groups, common prefixes are shared, and nested group/tab indentation is derived from group depth. Existing one-segment directory grouping remains the compatibility baseline. The next controller slice is to emit and resolve metadata/templates for every group prefix, so intermediate groups are first-class model targets rather than renderer-created placeholders.
 
 5. **Keep layout policies separate from tree shape.**
    Joined cells, boxes, collapsed groups, horizontal sub-tab bars, and expanded overview modes should be projections over the recursive tree. Do not encode "children of groups are tab rows" into the data model.
@@ -358,7 +440,7 @@ The key dependency is: metadata-backed fields first, recursive nodes second, con
 
 A latent tab is a sidebar node for work that is not currently a Zellij tab. On activation, it can be materialized by sending a Zellij action or plugin message that creates the real tab/panes.
 
-This should wait until group identity and render nodes are stable, but it is a natural fit for flotilla. Flotilla can expose desired work items as latent nodes, while running agents appear as materialized tabs/panes under the same group path.
+This should wait until group identity and render nodes are stable, but it is a natural fit for flotilla. Flotilla can expose desired work items as latent nodes, while running agents appear as materialized tabs/panes under the same group path. Watchers can also provide latent tabs directly; for example, a git watcher can discover sibling worktrees in the same repository and offer them as materializable nodes before any Zellij tab exists for them.
 
 Latent nodes should have:
 
@@ -367,6 +449,8 @@ Latent nodes should have:
 - metadata such as status, priority, progress, and owner.
 - an activation/materialization recipe.
 - an optional relation to a materialized tab once created.
+- provider/source id, so duplicates from multiple watchers can be resolved.
+- display caps, filtering, and inline search when a provider exposes many possible nodes.
 
 The sidebar should not need a separate rendering path for latent tabs. They should be another render node with different activation behavior.
 
@@ -393,6 +477,20 @@ Expanded/full-screen mode should eventually show a compact representation of eac
 - image placement thumbnails.
 
 For image support, the ideal future primitive is not raw image bytes. It is a read/render handle: the plugin can inspect pane image placement metadata and ask Zellij to render a new mini placement that references the same Zellij-owned asset. This likely wants a separate permission or at least careful treatment under `ReadPaneContents`.
+
+### Native Plugins And External Processes Are A Major Fork Direction
+
+The current wasm plugin shape is useful, portable, and sandboxed, but it makes profiling hard and forces a lot of host/plugin serialization. There is a native-plugin spike in `~/dev/zellij.native-plugins`; if that direction works, Andamento is a strong candidate for native execution because it has a controller, multiple rails, rich state, and increasingly expensive rendering/projection work.
+
+Native plugins would help with:
+
+- real profiling and flamegraphs.
+- avoiding pointless serialization between tightly-coupled local plugin panes.
+- sharing one controller/runtime across multiple visible panes.
+- richer image asset handling.
+- lower-latency rendering and input feedback.
+
+Longer term, external plugin processes could recover some sandbox properties while keeping native performance. Platform-specific isolation such as chroot, seccomp, or equivalent mechanisms can be explored later. The important design constraint now is to keep controller, renderer, watcher, and transport boundaries clean enough that Andamento can run in wasm, native-plugin, or external-process shapes without rewriting the core model.
 
 ## First Milestone: Group Tabs By Directory
 
@@ -553,23 +651,23 @@ Scope:
 - define merge behavior between direct group metadata and rollups from child panes/tabs.
 - add debug rendering for direct group values versus rolled-up values.
 
-Status: started. The shared model now has `MetadataTarget::{Pane, Tab, Group}` and `MetadataPatch`/`MetadataValueUpdate`, and the controller metadata store can apply collaborative source-scoped patches internally. External patch input now feeds the same store and resolved metadata can surface tab/group values. Direct group metadata resolves for groups created by either cwd fallback or explicit tab subject/scope. Rollup/direct merge behavior and richer raw-source interaction are still future work.
+Status: started. The shared model now has `MetadataTarget::{Pane, Tab, Group}` and `MetadataPatch`/`MetadataValueUpdate`, and the controller metadata store can apply collaborative source-scoped patches internally. External patch input now feeds the same store and resolved metadata can surface tab/group values. Direct group metadata resolves for groups created by either cwd fallback or explicit typed `tab.scope`. Rollup/direct merge behavior and richer raw-source interaction are still future work.
 
-### 6. Explicit Tab Subject/Scope
+### 6. Explicit Tab Scope
 
-Allow tabs to state what they are semantically about.
+Allow tabs to state exactly where they belong in the group hierarchy.
 
 Scope:
 
-- add well-known keys such as `tab.subject` and/or `tab.scope`.
-- let values reference a group path.
-- prefer explicit tab subject/scope for grouping when present.
+- add well-known key `tab.scope`.
+- represent scope as typed `MetadataValue::GroupPath`.
+- prefer explicit typed tab scope for grouping when present.
 - fall back to pane-derived cwd grouping.
-- render subject/scope in debug views.
+- render scope in debug views.
 
 This unlocks project overview tabs, worktree tabs, convoy tabs, and better grouping for tabs whose panes are not enough to infer intent.
 
-Status: started. The controller now recognizes direct tab metadata keys `tab.scope` and `tab.subject` as explicit grouping identities, with `tab.scope` taking precedence over `tab.subject` and both taking precedence over pane-derived cwd. The first supported value shape is text, projected as a single-segment `GroupPath`; richer group-path-valued metadata remains future work. Resolved metadata view shows these keys because it now renders generic resolved tab/group values.
+Status: started. The shared metadata value schema now includes `MetadataValue::GroupPath(Vec<MetadataPathSegmentValue>)`, using scalar path segment values so the type does not recursively contain arbitrary metadata values. The controller recognizes only typed `tab.scope` values as explicit grouping identities, and those take precedence over configured grouping rules and cwd fallback. Text `tab.scope` and `tab.subject` do not affect grouping. Resolved metadata view shows these keys because it renders generic resolved tab/group values.
 
 ### 7. Render Nodes, Collapse, And Templates
 
@@ -580,11 +678,15 @@ Scope:
 - recursive group, tab, and future latent node types.
 - group children represented as `Vec<RenderNode>`, not `Vec<Tab>`.
 - metadata maps on every render node as the template input.
+- optional conflation of compatible single-child group chains.
 - collapsed/expanded state.
 - group-level borders and status/progress rollups.
 - label templates using resolved metadata.
 - string substitution rules for compact labels.
-- optional sub-tab-bar projection for lower levels.
+- body slots for richer group/tab/pane content.
+- inherited per-node settings/toggles.
+- optional sub-tab-bar, horizontal strip, or masonry projection for lower levels.
+- optional image asset chrome/buttons and hover/active animations.
 - metadata inspection projection that renders all resolved metadata generically.
 - template match diagnostics for authoring.
 
@@ -633,9 +735,19 @@ Scope:
 
 This unlocks shell integrations, build/test progress, PR state, ports, and workflow-specific annotations.
 
-Status: started. Producers can send `ExternalMessage::MetadataPatch` through `tabs-apply-metadata-patch`; the controller applies set/unset updates with source ids, precedence, ordinal, and ttl through the shared metadata store, and resolved entries are exposed through the view model. Controller bootstrap snapshots now carry live metadata patches so newly attached clients can recover current external metadata.
+Status: started. Producers can send `ExternalMessage::MetadataPatch` through `andamento-apply-metadata-patch`; the controller applies set/unset updates with source ids, precedence, ordinal, and ttl through the shared metadata store, and resolved entries are exposed through the view model. Controller bootstrap snapshots now carry live metadata patches so newly attached clients can recover current external metadata.
 
-Watcher discovery should also be pipe-first. A simple daemon can run in a floating pane, periodically call `zellij pipe --name andamento-observed-identities`, read the JSON list of observed identities from stdout, enrich the identities it understands, and publish facts back through `tabs-apply-metadata-patch`. For example, [scripts/andamento-git-watcher.py](../../scripts/andamento-git-watcher.py) looks for `zellij.pane.cwd` identities, discovers repository root/branch/remote with local git commands, then patches facts onto `MetadataTarget::Identity(zellij.pane.cwd=<cwd>)`. A later flotilla connector can use the same protocol but maintain richer state and scheduling.
+Watcher discovery should also be pipe-first. A simple daemon can run in a pane, periodically call `zellij pipe --name andamento-observed-identities`, read the JSON list of observed identities from stdout, enrich the identities it understands, and publish facts back through `andamento-apply-metadata-patch`. For example, [scripts/andamento-git-watcher.py](../../scripts/andamento-git-watcher.py) looks for `zellij.pane.cwd` identities, discovers repository root/branch/remote with local git commands, then patches facts onto `MetadataTarget::Identity(zellij.pane.cwd=<cwd>)`. A later flotilla connector can use the same protocol but maintain richer state and scheduling.
+
+The same script now has an opt-in factory spike. With `--factory-repo-manager`, it dedupes by tab name, calls `zellij action new-tab --layout <repo-manager-layout> --cwd <git-root>`, reads the tab id lines printed by the CLI, and patches each created tab with durable tab metadata:
+
+```text
+tab.kind = repo-manager
+tab.scope = GroupPath([{ key = git.repo, value = owner/name, label = name }])
+factory.id = repo-manager:owner/name
+```
+
+This deliberately pushes on the scripting surface rather than controller-owned tab creation. It proves that an external daemon can both materialize a tab from a repeated KDL layout and then target the returned stable tab id with generic metadata. The current example layout embeds the controller and watcher in the initial `andamento` tab, with a short-lived helper command that scopes the control tab itself under an `andamento` path. That helper resolves its own `ZELLIJ_PANE_ID` through `zellij action list-panes --json --all` so it patches the tab containing the helper pane, not whichever tab is currently focused after factory-created tabs appear. The layout also sets `controller_plugin_url ""` on the rail alias so rails broadcast to the embedded controller instead of launching another controller instance by URL. The repeated KDL in [layouts/repo-manager-tab.kdl](../../layouts/repo-manager-tab.kdl) is expected for now because Zellij does not provide a slot-style layout primitive that lets an external tab layout say "use the session tab chrome here".
 
 ### 11. Aggregation And Profiles
 
@@ -690,8 +802,25 @@ Scope:
 - activation behavior that creates a tab/panes or asks another plugin to do so.
 - relation from latent node to materialized tab.
 - flotilla integration for desired work items and convoys.
+- watcher-provided latent nodes, such as sibling git worktrees.
+- caps, filtering, and inline search for large latent sets.
 
 This should wait until group paths, group metadata targets, and render nodes are stable enough that latent nodes do not become a parallel model.
+
+### 13a. Rename And Publish As Andamento
+
+Status: the local prototype has now been hard-renamed to the Andamento namespace. Publication remains future work.
+
+Scope:
+
+- workspace/package/crate names use `andamento-*`.
+- wasm artifacts and Zellij plugin aliases use `andamento-controller`, `andamento-rail`, and `andamento-config`.
+- pipe names use the `andamento-*` namespace.
+- scripts, layouts, README, and docs use the Andamento names.
+- old compatibility names are intentionally not maintained.
+- the repository is prepared for eventual publication at `flotilla-org/andamento`.
+
+This was kept as a mechanical slice after the previous stabilization checkpoint, because mixing rename churn with behavior changes would have made review and rollback unnecessarily hard.
 
 ### 14. Expanded Overview Mode
 
@@ -710,30 +839,21 @@ This should not require a new data model. It should consume the same metadata st
 ## Open Questions
 
 - Should group path values support all `MetadataValue` variants immediately, or only text values until there is a real non-text group segment?
-- Should explicit tab subject/scope be stored as normal metadata values, or should it become a typed top-level tab relation in the shared model?
 - How should group-targeted metadata and rolled-up child metadata resolve when they set the same key?
 - Should group order follow first visible tab occurrence, explicit group metadata, recency/activity, manual order, or a layered policy from the start?
 - What should the first label-template syntax look like, and how much formatting should it support?
 - Where should collapsed state live: transient controller state, plugin config, or the future `/host` config file?
 - What is the minimum materialization recipe shape for latent tabs without coupling too tightly to flotilla?
 - When external metadata arrives, should values be typed JSON-like data, strings only, or a small tagged enum?
+- What exact rules make two single-child group levels compatible for visual conflation?
+- What is the first body-slot schema that can support text, status, buttons, and images without becoming a full UI framework?
+- Which node settings should be inherited first: image visibility, child layout mode, or compact/detailed body mode?
+- How should image chrome assets be packaged, cached, scaled, and toggled?
+- What is the minimum native-plugin API needed for Andamento to avoid the worst wasm serialization costs while preserving the same state boundaries?
 
 ## Recommended Next Step
 
-Extend metadata inspection from derived display facts to resolved metadata entries.
-
-The next slice should:
-
-- add a resolved metadata view shape to the controller view model for group/tab targets.
-- populate it from the current metadata store for cwd-derived groups and tabs.
-- show those resolved entries in metadata rail view instead of only deriving display lines from existing tab/group fields.
-- keep raw source-entry drill-in as the follow-up after resolved entries are visible.
-- keep external pipe input for arbitrary metadata separate until the inspection projection can show what arrived.
-
-Status: landed. `ControllerViewModel` now carries resolved metadata entries keyed by group/tab targets. The controller populates cwd-derived tab and group entries from the current metadata store, and the rail renderer merges those entries into render-node metadata so metadata view can show generic resolved keys alongside compatibility fields.
-
-Raw-source inspection follow-up status: started. Resolved metadata entries now also carry live per-source entries, including source id, updated time, ttl, precedence, ordinal, and value. Metadata rail view renders those details inline in expanded metadata mode. A later interaction pass can hide/show these details per key.
-
-Identity graph status: started. The shared model now supports `MetadataTarget::Identity(key,value)`. The controller resolves a tab/group target by traversing identities implied by resolved facts, so facts can live on their natural identity, such as `git.repo` or `vcs.pr`, while the render target sees the transitive resolved view. Structural facts now seed the same traversal: a group's `GroupPath` segments and a tab's selected `zellij.pane.cwd` can reach identity-targeted facts without copying those facts onto every concrete tab or group. Resolved metadata also carries the identities reached during traversal with their distance from the requested target, and metadata rail view renders those diagnostics as `identity.<key>` lines. `ControllerViewModel` now includes a compact observed-identity index with target count and nearest distance, giving future metadata providers a discovery surface for identities worth enriching. Metadata rail view renders this index as `observed_identity.<key>` lines.
-
-After this lands, the next best slice is deciding how inferred metadata facts are registered and refreshed, so external watchers can attach facts to natural identities without requiring every renderer to repeat the same graph search.
+The next feature slice should probably be render/layout work, not more metadata
+plumbing: spindly hierarchy conflation, body slots, inherited node settings, and
+richer child layouts are all on the direct path to making the existing metadata
+useful on screen.

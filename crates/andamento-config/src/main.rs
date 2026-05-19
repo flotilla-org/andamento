@@ -4,14 +4,14 @@ fn main() {}
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use tabs_shared::{
+use andamento_shared::{
     ControllerViewModel, GroupPath, MetadataValue, PluginStatsSnapshot, RailConfig,
     RailGroupingMode, RailSizingPreset, RailStructure, RailViewMode,
 };
 use unicode_width::UnicodeWidthStr;
 
-use tabs_shared::StatsCollectRequest;
-use tabs_shared::{
+use andamento_shared::StatsCollectRequest;
+use andamento_shared::{
     PluginStatsRecorder, RendererHello, MSG_CONFIG_EDITOR_HELLO, MSG_REQUEST_STATE,
     MSG_SET_RAIL_CONFIG, MSG_STATS_COLLECT, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_VIEW_MODEL,
 };
@@ -85,7 +85,7 @@ impl ZellijPlugin for PluginState {
         self.controller_plugin_url = configuration
             .get(CONFIG_CONTROLLER_PLUGIN_URL)
             .cloned()
-            .unwrap_or_else(|| "tabs-controller".to_owned());
+            .unwrap_or_else(|| "andamento-controller".to_owned());
 
         request_permission(&[
             PermissionType::ChangeApplicationState,
@@ -120,7 +120,7 @@ impl ZellijPlugin for PluginState {
                         return true;
                     }
                     Err(error) => {
-                        eprintln!("tabs-rail-config: failed to parse view model: {error}");
+                        eprintln!("andamento-config: failed to parse view model: {error}");
                     }
                 }
             }
@@ -151,7 +151,7 @@ impl ZellijPlugin for PluginState {
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        eprintln!("tabs-rail-config: failed to parse stats report: {error}");
+                        eprintln!("andamento-config: failed to parse stats report: {error}");
                     }
                 }
             }
@@ -609,7 +609,7 @@ fn push_templates_page(lines: &mut Vec<String>, cols: usize, model: Option<&Cont
     push_plain(lines, cols, "resolved slots");
     for row in &model.rows {
         match row {
-            tabs_shared::RailRow::GroupHeader {
+            andamento_shared::RailRow::GroupHeader {
                 label, templates, ..
             } => {
                 if let Some(slot) = templates.group_header.as_ref() {
@@ -620,7 +620,7 @@ fn push_templates_page(lines: &mut Vec<String>, cols: usize, model: Option<&Cont
                     );
                 }
             }
-            tabs_shared::RailRow::Tab { .. } => {
+            andamento_shared::RailRow::Tab { .. } => {
                 if let Some(tab) = model.tab_for_row(row) {
                     push_tab_template_slot(
                         lines,
@@ -647,7 +647,7 @@ fn push_tab_template_slot(
     cols: usize,
     tab_name: &str,
     slot_name: &str,
-    slot: Option<&tabs_shared::ResolvedTemplateSlot>,
+    slot: Option<&andamento_shared::ResolvedTemplateSlot>,
 ) {
     if let Some(slot) = slot {
         push_plain(
@@ -658,7 +658,7 @@ fn push_tab_template_slot(
     }
 }
 
-fn format_resolved_slot(slot: &tabs_shared::ResolvedTemplateSlot) -> String {
+fn format_resolved_slot(slot: &andamento_shared::ResolvedTemplateSlot) -> String {
     let fields = slot
         .fields
         .iter()
@@ -671,12 +671,12 @@ fn format_resolved_slot(slot: &tabs_shared::ResolvedTemplateSlot) -> String {
     }
 }
 
-fn template_config_state_text(state: tabs_shared::TemplateConfigState) -> &'static str {
+fn template_config_state_text(state: andamento_shared::TemplateConfigState) -> &'static str {
     match state {
-        tabs_shared::TemplateConfigState::NotConfigured => "not configured",
-        tabs_shared::TemplateConfigState::PendingPermission => "pending permission",
-        tabs_shared::TemplateConfigState::Loaded => "loaded",
-        tabs_shared::TemplateConfigState::Error => "error",
+        andamento_shared::TemplateConfigState::NotConfigured => "not configured",
+        andamento_shared::TemplateConfigState::PendingPermission => "pending permission",
+        andamento_shared::TemplateConfigState::Loaded => "loaded",
+        andamento_shared::TemplateConfigState::Error => "error",
     }
 }
 
@@ -828,7 +828,7 @@ fn pad_to_width(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tabs_shared::{GroupPath, GroupSegment, MetadataValue, SortMode, TabCard, TabGroupingInfo};
+    use andamento_shared::{GroupPath, GroupSegment, MetadataValue, SortMode, TabCard, TabGroupingInfo};
 
     #[test]
     fn renders_selected_config() {
@@ -944,9 +944,9 @@ mod tests {
         let model = ControllerViewModel {
             sort_mode: SortMode::Position,
             config: RailConfig::default(),
-            template_config: tabs_shared::TemplateConfigDiagnostics {
+            template_config: andamento_shared::TemplateConfigDiagnostics {
                 path: Some("/host/tmp/andamento.kdl".to_owned()),
-                state: tabs_shared::TemplateConfigState::Loaded,
+                state: andamento_shared::TemplateConfigState::Loaded,
                 template_count: 1,
                 template_names: vec!["andamento.git.group-header".to_owned()],
                 last_error: None,
@@ -1074,7 +1074,7 @@ mod tests {
         let model = ControllerViewModel {
             sort_mode: SortMode::Position,
             config: RailConfig::default(),
-            template_config: tabs_shared::TemplateConfigDiagnostics::default(),
+            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
             tabs: vec![
                 TabCard {
                     tab_id: 1,
@@ -1093,7 +1093,7 @@ mod tests {
                         label: "app".to_owned(),
                         full_label: "/repo/app".to_owned(),
                     }),
-                    templates: tabs_shared::ResolvedTemplateSlots::default(),
+                    templates: andamento_shared::ResolvedTemplateSlots::default(),
                 },
                 TabCard {
                     tab_id: 2,
@@ -1103,7 +1103,7 @@ mod tests {
                     pinned: false,
                     status: None,
                     grouping: None,
-                    templates: tabs_shared::ResolvedTemplateSlots::default(),
+                    templates: andamento_shared::ResolvedTemplateSlots::default(),
                 },
             ],
             rows: vec![],

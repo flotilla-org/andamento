@@ -4,46 +4,46 @@
 
 **Goal:** Add an optional directory-grouped tab projection to the Zellij tabs sidebar, using exact pane cwd metadata as the first end-to-end metadata/grouping slice.
 
-**Architecture:** Keep metadata collection, grouping, ordering, and rendering separate. `tabs-controller` owns Zellij state ingestion, metadata storage, primary cwd selection, and view-model projection; `tabs-rail` renders the projected rows and keeps tab rows clickable. `tabs-shared` carries the wire types so rail renderers do not need controller internals.
+**Architecture:** Keep metadata collection, grouping, ordering, and rendering separate. `andamento-controller` owns Zellij state ingestion, metadata storage, primary cwd selection, and view-model projection; `andamento-rail` renders the projected rows and keeps tab rows clickable. `andamento-shared` carries the wire types so rail renderers do not need controller internals.
 
-**Tech Stack:** Rust 2021, `serde`, `serde_json`, `zellij-tile`, existing workspace crates `tabs-shared`, `tabs-controller`, and `tabs-rail`.
+**Tech Stack:** Rust 2021, `serde`, `serde_json`, `zellij-tile`, existing workspace crates `andamento-shared`, `andamento-controller`, and `andamento-rail`.
 
 ---
 
 ## File Structure
 
-- Modify: `crates/tabs-shared/src/lib.rs`
+- Modify: `crates/andamento-shared/src/lib.rs`
   - Add metadata value/entry types.
   - Add grouping config.
   - Add projection row wire types.
   - Extend `ControllerViewModel`.
 
-- Create: `crates/tabs-controller/src/metadata.rs`
+- Create: `crates/andamento-controller/src/metadata.rs`
   - Generic metadata store.
   - Metadata patch application.
   - Generic `precedence -> count -> ordinal` selector.
   - Unit tests for patch and selection behavior.
 
-- Modify: `crates/tabs-controller/src/state.rs`
+- Modify: `crates/andamento-controller/src/state.rs`
   - Track pane records with tab id, focus/selectability, kind, and ordinal.
   - Store cwd metadata as `zellij.pane.cwd` entries from source `zellij`.
   - Build a grouped/ungrouped projection for the view model.
   - Unit tests for tab primary cwd and grouped projection.
 
-- Modify: `crates/tabs-controller/src/main.rs`
+- Modify: `crates/andamento-controller/src/main.rs`
   - Parse `rail_grouping`.
   - Subscribe to `CwdChanged`.
   - Query initial cwd for terminal panes after `PaneUpdate`.
   - Push updated view models after cwd changes.
 
-- Modify: `crates/tabs-rail/src/render.rs`
+- Modify: `crates/andamento-rail/src/render.rs`
   - Convert `ControllerViewModel.rows` into renderable rows.
   - Render group headers as non-clickable rows.
   - Render grouped child tabs as indented tab cards.
   - Keep ungrouped tabs as normal tab cards.
   - Add tests for header rendering, click behavior, and active-tab visibility.
 
-- Modify: `crates/tabs-rail/src/main.rs`
+- Modify: `crates/andamento-rail/src/main.rs`
   - No major behavior change expected; keep using `rendered.hit_regions` and `visible_cards`.
 
 - Optional modify: `README.md`
@@ -54,7 +54,7 @@
 ### Task 1: Add Metadata And Projection Types
 
 **Files:**
-- Modify: `crates/tabs-shared/src/lib.rs`
+- Modify: `crates/andamento-shared/src/lib.rs`
 
 - [ ] **Step 1: Add failing tests for config and projection JSON**
 
@@ -118,14 +118,14 @@ fn controller_view_model_with_group_rows_round_trips_json() {
 Run:
 
 ```bash
-cargo test -p tabs-shared
+cargo test -p andamento-shared
 ```
 
 Expected: fails because `RailGroupingMode`, `RailRow`, `RailConfig.grouping`, and `ControllerViewModel.rows` do not exist.
 
 - [ ] **Step 3: Add the minimal shared types**
 
-Add these types in `crates/tabs-shared/src/lib.rs`:
+Add these types in `crates/andamento-shared/src/lib.rs`:
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -216,15 +216,15 @@ pub struct ControllerViewModel {
 
 Add `rows: vec![]` to existing literals in:
 
-- `crates/tabs-shared/src/lib.rs`
-- `crates/tabs-rail/src/render.rs`
+- `crates/andamento-shared/src/lib.rs`
+- `crates/andamento-rail/src/render.rs`
 
 - [ ] **Step 5: Run shared crate tests**
 
 Run:
 
 ```bash
-cargo test -p tabs-shared
+cargo test -p andamento-shared
 ```
 
 Expected: pass.
@@ -232,7 +232,7 @@ Expected: pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/tabs-shared/src/lib.rs crates/tabs-rail/src/render.rs
+git add crates/andamento-shared/src/lib.rs crates/andamento-rail/src/render.rs
 git commit -m "feat: add rail grouping view model types"
 ```
 
@@ -241,12 +241,12 @@ git commit -m "feat: add rail grouping view model types"
 ### Task 2: Implement Metadata Store
 
 **Files:**
-- Create: `crates/tabs-controller/src/metadata.rs`
-- Modify: `crates/tabs-controller/src/main.rs`
+- Create: `crates/andamento-controller/src/metadata.rs`
+- Modify: `crates/andamento-controller/src/main.rs`
 
 - [ ] **Step 1: Add module declaration**
 
-In `crates/tabs-controller/src/main.rs`, add:
+In `crates/andamento-controller/src/main.rs`, add:
 
 ```rust
 mod metadata;
@@ -254,13 +254,13 @@ mod metadata;
 
 - [ ] **Step 2: Write metadata tests**
 
-Create `crates/tabs-controller/src/metadata.rs` with tests first:
+Create `crates/andamento-controller/src/metadata.rs` with tests first:
 
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tabs_shared::{MetadataEntry, MetadataValue};
+    use andamento_shared::{MetadataEntry, MetadataValue};
 
     fn entry(value: &str, precedence: i64, ordinal: i64, updated_at: u64) -> MetadataEntry {
         MetadataEntry {
@@ -334,7 +334,7 @@ mod tests {
 Run:
 
 ```bash
-cargo test -p tabs-controller
+cargo test -p andamento-controller
 ```
 
 Expected: fails because metadata types are not implemented.
@@ -346,7 +346,7 @@ Implement:
 ```rust
 use std::collections::{BTreeMap, HashMap};
 
-use tabs_shared::{MetadataEntry, MetadataValue};
+use andamento_shared::{MetadataEntry, MetadataValue};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EntityId {
@@ -400,7 +400,7 @@ entry.ttl_ms
 Run:
 
 ```bash
-cargo test -p tabs-controller
+cargo test -p andamento-controller
 ```
 
 Expected: pass.
@@ -408,7 +408,7 @@ Expected: pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/tabs-controller/src/main.rs crates/tabs-controller/src/metadata.rs
+git add crates/andamento-controller/src/main.rs crates/andamento-controller/src/metadata.rs
 git commit -m "feat: add generic metadata selection"
 ```
 
@@ -417,7 +417,7 @@ git commit -m "feat: add generic metadata selection"
 ### Task 3: Track Pane Cwd Metadata
 
 **Files:**
-- Modify: `crates/tabs-controller/src/state.rs`
+- Modify: `crates/andamento-controller/src/state.rs`
 
 - [ ] **Step 1: Add failing tests for primary cwd selection**
 
@@ -524,7 +524,7 @@ fn grouping_none_returns_flat_rows() {
 Run:
 
 ```bash
-cargo test -p tabs-controller
+cargo test -p andamento-controller
 ```
 
 Expected: fails because pane records, cwd metadata, and projection rows are not implemented.
@@ -612,7 +612,7 @@ For milestone 1, `group_label_for_cwd` can return basename, with parent fallback
 Run:
 
 ```bash
-cargo test -p tabs-controller
+cargo test -p andamento-controller
 ```
 
 Expected: pass.
@@ -620,7 +620,7 @@ Expected: pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/tabs-controller/src/state.rs
+git add crates/andamento-controller/src/state.rs
 git commit -m "feat: project tabs into directory groups"
 ```
 
@@ -629,7 +629,7 @@ git commit -m "feat: project tabs into directory groups"
 ### Task 4: Feed Initial And Live Cwd Into Controller State
 
 **Files:**
-- Modify: `crates/tabs-controller/src/main.rs`
+- Modify: `crates/andamento-controller/src/main.rs`
 
 - [ ] **Step 1: Add parser test for grouping config**
 
@@ -652,7 +652,7 @@ fn parses_directory_grouping_from_plugin_configuration() {
 Run:
 
 ```bash
-cargo test -p tabs-controller
+cargo test -p andamento-controller
 ```
 
 Expected: fails because `parse_rail_config` ignores `rail_grouping`.
@@ -723,7 +723,7 @@ for terminal_id in self.state.terminal_panes_for_cwd_refresh() {
 Run:
 
 ```bash
-cargo test -p tabs-controller
+cargo test -p andamento-controller
 ```
 
 Expected: pass.
@@ -731,7 +731,7 @@ Expected: pass.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/tabs-controller/src/main.rs crates/tabs-controller/src/state.rs
+git add crates/andamento-controller/src/main.rs crates/andamento-controller/src/state.rs
 git commit -m "feat: feed pane cwd into tab grouping"
 ```
 
@@ -740,7 +740,7 @@ git commit -m "feat: feed pane cwd into tab grouping"
 ### Task 5: Render Group Headers And Indented Tabs
 
 **Files:**
-- Modify: `crates/tabs-rail/src/render.rs`
+- Modify: `crates/andamento-rail/src/render.rs`
 
 - [ ] **Step 1: Add grouped rendering tests**
 
@@ -824,7 +824,7 @@ fn grouped_rendering_preserves_active_visible_card_metadata() {
 Run:
 
 ```bash
-cargo test -p tabs-rail
+cargo test -p andamento-rail
 ```
 
 Expected: fails because renderer ignores `model.rows`.
@@ -906,7 +906,7 @@ Rules:
 Run:
 
 ```bash
-cargo test -p tabs-rail
+cargo test -p andamento-rail
 ```
 
 Expected: pass.
@@ -914,7 +914,7 @@ Expected: pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/tabs-rail/src/render.rs
+git add crates/andamento-rail/src/render.rs
 git commit -m "feat: render grouped tab rows"
 ```
 
@@ -935,7 +935,7 @@ Add a short section:
 The controller can group tabs by the exact current working directory of their panes:
 
 ```kdl
-plugin location="tabs-controller" {
+plugin location="andamento-controller" {
     rail_grouping "directory"
 }
 ```
@@ -950,7 +950,7 @@ Adjust the KDL syntax to match the existing layout/config style in this repo.
 Run:
 
 ```bash
-cargo test -p tabs-shared -p tabs-controller -p tabs-rail
+cargo test -p andamento-shared -p andamento-controller -p andamento-rail
 ```
 
 Expected: all pass.
@@ -963,14 +963,14 @@ Run:
 cargo build --workspace --target wasm32-wasip1 --release
 ```
 
-Expected: builds `tabs-controller.wasm` and `tabs-rail.wasm` successfully under `target/wasm32-wasip1/release/`.
+Expected: builds `andamento-controller.wasm` and `andamento-rail.wasm` successfully under `target/wasm32-wasip1/release/`.
 
 - [ ] **Step 4: Manual smoke test in Zellij**
 
 Run with the existing launcher or layout:
 
 ```bash
-/Users/robert/dev/zellij-scratch/run-vertical-tabs.sh
+/Users/robert/dev/zellij-scratch/run-andamento.sh
 ```
 
 Manual checks:
