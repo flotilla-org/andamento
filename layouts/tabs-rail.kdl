@@ -1,17 +1,17 @@
 plugins {
-    tabs-controller location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-controller.wasm" {
+    tabs-controller location="file:$ANDAMENTO_ROOT/target/wasm32-wasip1/release/tabs-controller.wasm" {
         rail_structure "joined-cells"
         rail_sizing "active-large"
         rail_grouping "directory"
-        template_config_path "/host/Users/robert/dev/zellij-scratch/templates/andamento-git.kdl"
-        grouping_config_path "/host/Users/robert/dev/zellij-scratch/templates/andamento-git.kdl"
+        template_config_path "/host/Users/robert/dev/zellij-scratch.native-tabs/templates/andamento-git.kdl"
+        grouping_config_path "/host/Users/robert/dev/zellij-scratch.native-tabs/templates/andamento-git.kdl"
     }
-    tabs-rail location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-rail.wasm" {
+    tabs-rail location="file:$ANDAMENTO_ROOT/target/wasm32-wasip1/release/tabs-rail.wasm" {
         controller_plugin_url "tabs-controller"
         config_plugin_url "tabs-rail-config"
         rail_placement "left"
     }
-    tabs-rail-config location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/tabs-rail-config.wasm"
+    tabs-rail-config location="file:$ANDAMENTO_ROOT/target/wasm32-wasip1/release/tabs-rail-config.wasm"
 }
 
 load_plugins {
@@ -46,7 +46,7 @@ layout {
     tab name="main" hide_floating_panes=true {
         pane
         floating_panes {
-            pane command="/Users/robert/dev/zellij-scratch/scripts/andamento-git-watcher.py" cwd="/Users/robert/dev/zellij-scratch" {
+            pane command="$ANDAMENTO_ROOT/scripts/andamento-git-watcher.py" cwd="$ANDAMENTO_ROOT" {
                 args "--interval" "5"
                 width 80
                 height 12

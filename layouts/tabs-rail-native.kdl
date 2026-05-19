@@ -6,8 +6,8 @@ plugins {
         rail_structure "joined-cells"
         rail_sizing "active-large"
         rail_grouping "directory"
-        template_config_path "/host/Users/robert/dev/zellij-scratch/templates/andamento-git.kdl"
-        grouping_config_path "/host/Users/robert/dev/zellij-scratch/templates/andamento-git.kdl"
+        template_config_path "/host$ANDAMENTO_ROOT/templates/andamento-git.kdl"
+        grouping_config_path "/host$ANDAMENTO_ROOT/templates/andamento-git.kdl"
     }
     tabs-rail location="native:tabs-rail" {
         controller_plugin_url "tabs-controller"
@@ -49,8 +49,8 @@ layout {
     tab name="main" hide_floating_panes=true {
         pane
         floating_panes {
-            pane command="/Users/robert/dev/zellij-scratch/scripts/andamento-git-watcher.py" cwd="/Users/robert/dev/zellij-scratch" {
-                args "--interval" "5"
+            pane command="$ANDAMENTO_ROOT/scripts/andamento-git-watcher.py" cwd="$ANDAMENTO_ROOT" {
+                args "--interval" "5" "--plugin-url" "tabs-controller"
                 width 80
                 height 12
                 x 10
