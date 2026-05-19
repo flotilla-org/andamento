@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 OBSERVED_IDENTITIES_PIPE = "andamento-observed-identities"
-METADATA_PATCH_PIPE = "tabs-apply-metadata-patch"
+METADATA_PATCH_PIPE = "andamento-apply-metadata-patch"
 SOURCE_ID = "andamento-git-watcher"
 DEFAULT_TTL_MS = 10_000
 DEFAULT_FACTORY_LAYOUT = Path(__file__).resolve().parent.parent / "layouts" / "repo-manager-tab.kdl"
