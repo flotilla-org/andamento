@@ -1,9 +1,14 @@
 mod metadata;
 mod state;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Instant;
+
+/// Most recent debug-trace entries the controller will surface in its render
+/// pane. Cheap stand-in for proper logging (zellij's wasm-stderr LoggingPipe
+/// emits at debug level, which the server's default INFO filter drops).
+const RECENT_PIPE_LOG_CAPACITY: usize = 20;
 
 use state::ControllerState;
 use andamento_shared::PaneTarget;
@@ -49,6 +54,7 @@ pub struct PluginState {
     stats: PluginStatsRecorder,
     pending_view_model_push: PendingViewModelPush,
     pending_rail_size_sync: PendingRailSizeSync,
+    recent_pipe_log: VecDeque<String>,
 }
 
 register_plugin!(PluginState);
@@ -211,6 +217,22 @@ impl ZellijPlugin for PluginState {
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
         self.stats.increment(format!("pipe.{}", pipe_message.name));
+        let payload_preview = pipe_message
+            .payload
+            .as_deref()
+            .map(|p| {
+                let truncated = if p.len() > 200 { &p[..200] } else { p };
+                format!("{}...({} bytes)", truncated, p.len())
+            })
+            .unwrap_or_else(|| "<no payload>".to_owned());
+        let entry = format!(
+            "pipe name={:?} src={:?} payload={}",
+            pipe_message.name, pipe_message.source, payload_preview,
+        );
+        if self.recent_pipe_log.len() >= RECENT_PIPE_LOG_CAPACITY {
+            self.recent_pipe_log.pop_front();
+        }
+        self.recent_pipe_log.push_back(entry);
         let started_at = Instant::now();
         let result = handle_pipe_message(&mut self.state, pipe_message);
         self.stats
@@ -285,6 +307,13 @@ impl ZellijPlugin for PluginState {
         }
         if let Some(error) = diagnostics.last_error.as_ref() {
             lines.push(format!("template error: {error}"));
+        }
+        if !self.recent_pipe_log.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("recent pipes ({}):", self.recent_pipe_log.len()));
+            for entry in self.recent_pipe_log.iter().rev() {
+                lines.push(format!("  {entry}"));
+            }
         }
         lines.truncate(rows);
         while lines.len() < rows {
