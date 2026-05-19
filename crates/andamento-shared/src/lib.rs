@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 pub mod grouping_config;
 pub mod template_config;
 
-pub const MSG_RENDERER_HELLO: &str = "tabs-renderer-hello";
-pub const MSG_CONFIG_EDITOR_HELLO: &str = "tabs-config-editor-hello";
-pub const MSG_REQUEST_STATE: &str = "tabs-request-state";
-pub const MSG_VIEW_MODEL: &str = "tabs-view-model";
-pub const MSG_TOGGLE_PIN: &str = "tabs-toggle-pin";
+pub const MSG_RENDERER_HELLO: &str = "andamento-renderer-hello";
+pub const MSG_CONFIG_EDITOR_HELLO: &str = "andamento-config-editor-hello";
+pub const MSG_REQUEST_STATE: &str = "andamento-request-state";
+pub const MSG_VIEW_MODEL: &str = "andamento-view-model";
+pub const MSG_TOGGLE_PIN: &str = "andamento-toggle-pin";
 pub const MSG_SET_SORT_MODE: &str = "andamento-set-sort-mode";
 pub const MSG_SET_RAIL_CONFIG: &str = "andamento-set-rail-config";
 pub const MSG_SET_PANE_STATUS: &str = "andamento-set-pane-status";
@@ -619,6 +619,43 @@ impl PluginStatsRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_message_names_use_andamento_namespace() {
+        let message_names = [
+            MSG_RENDERER_HELLO,
+            MSG_CONFIG_EDITOR_HELLO,
+            MSG_REQUEST_STATE,
+            MSG_VIEW_MODEL,
+            MSG_TOGGLE_PIN,
+            MSG_SET_SORT_MODE,
+            MSG_SET_RAIL_CONFIG,
+            MSG_SET_PANE_STATUS,
+            MSG_CLEAR_PANE_STATUS,
+            MSG_APPLY_METADATA_PATCH,
+            MSG_CONTROLLER_BOOTSTRAP_REQUEST,
+            MSG_CONTROLLER_BOOTSTRAP_STATE,
+            MSG_OBSERVED_IDENTITIES,
+            MSG_STATS_COLLECT,
+            MSG_STATS_REQUEST,
+            MSG_STATS_REPORT,
+            MSG_RAIL_SIZE_OBSERVED,
+            MSG_RAIL_SIZE_TARGET,
+        ];
+
+        let old_prefix = ["ta", "bs-"].concat();
+
+        for message_name in message_names {
+            assert!(
+                message_name.starts_with("andamento-"),
+                "{message_name} should use the andamento namespace"
+            );
+            assert!(
+                !message_name.starts_with(&old_prefix),
+                "{message_name} should not use the old tabs namespace"
+            );
+        }
+    }
 
     #[test]
     fn priority_orders_status_importance() {
