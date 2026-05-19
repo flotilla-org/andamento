@@ -106,8 +106,11 @@ def git_facts(cwd):
     return facts
 
 
-def get_observed_identities(verbose=False):
-    output = run_text(["zellij", "pipe", "--name", OBSERVED_IDENTITIES_PIPE])
+def get_observed_identities(verbose=False, plugin_url=None):
+    args = ["zellij", "pipe", "--name", OBSERVED_IDENTITIES_PIPE]
+    if plugin_url:
+        args += ["--plugin", plugin_url]
+    output = run_text(args)
     if verbose:
         log(f"observed identity pipe returned {len(output)} bytes")
     return parse_observed_identities_output(output)
@@ -129,19 +132,20 @@ def parse_observed_identities_output(output):
     return identities
 
 
-def publish_patch(patch, dry_run):
+def publish_patch(patch, dry_run, plugin_url=None):
     payload = json.dumps(patch, separators=(",", ":"))
     if dry_run:
         log(f"dry-run patch {payload}")
         return
-    subprocess.run(
-        ["zellij", "pipe", "--name", METADATA_PATCH_PIPE, "--", payload],
-        check=True,
-    )
+    args = ["zellij", "pipe", "--name", METADATA_PATCH_PIPE]
+    if plugin_url:
+        args += ["--plugin", plugin_url]
+    args += ["--", payload]
+    subprocess.run(args, check=True)
 
 
-def run_once(dry_run, verbose=False):
-    observed = get_observed_identities(verbose=verbose)
+def run_once(dry_run, verbose=False, plugin_url=None):
+    observed = get_observed_identities(verbose=verbose, plugin_url=plugin_url)
     cwds = observed_text_identities(observed, "zellij.pane.cwd")
     if verbose:
         log(f"observed {len(observed)} identities; {len(cwds)} cwd identities")
@@ -154,7 +158,7 @@ def run_once(dry_run, verbose=False):
         if facts:
             if verbose:
                 log(f"publishing {len(facts)} git facts for {cwd}: {', '.join(sorted(facts))}")
-            publish_patch(metadata_patch("zellij.pane.cwd", cwd, facts), dry_run)
+            publish_patch(metadata_patch("zellij.pane.cwd", cwd, facts), dry_run, plugin_url=plugin_url)
         elif verbose:
             log(f"no git facts for {cwd}")
 
@@ -166,6 +170,12 @@ def main(argv):
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--plugin-url",
+        default=None,
+        help="Restrict pipe delivery to a specific plugin (passed to `zellij pipe --plugin`). "
+             "Useful when multiple controllers are loaded; without this the pipe broadcasts.",
+    )
     args = parser.parse_args(argv)
     if args.test:
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(WatcherTests)
@@ -175,9 +185,10 @@ def main(argv):
     if verbose:
         mode = "dry-run" if args.dry_run else "publish"
         cadence = "once" if args.once else f"every {args.interval:g}s"
-        log(f"starting ({mode}, {cadence})")
+        target = args.plugin_url or "any subscriber"
+        log(f"starting ({mode}, {cadence}, target={target})")
     while True:
-        run_once(args.dry_run, verbose=verbose)
+        run_once(args.dry_run, verbose=verbose, plugin_url=args.plugin_url)
         if args.once:
             if verbose:
                 log("done")
