@@ -142,13 +142,26 @@ impl ZellijPlugin for PluginState {
             }
             Event::PaneUpdate(pane_manifest) => {
                 self.stats.increment("update.pane");
-                let live_plugin_ids = pane_manifest
+                let live_plugin_ids: std::collections::HashSet<u32> = pane_manifest
                     .panes
                     .values()
                     .flat_map(|panes| panes.iter())
                     .filter(|pane| pane.is_plugin)
                     .map(|pane| pane.id)
                     .collect();
+                let all_pane_ids: Vec<(u32, bool)> = pane_manifest
+                    .panes
+                    .values()
+                    .flat_map(|panes| panes.iter())
+                    .map(|p| (p.id, p.is_plugin))
+                    .collect();
+                let inst = (&self.state as *const _) as usize & 0xFFFFFF;
+                log::info!(
+                    "tabs-controller[inst {inst:x}]: PaneUpdate — known_rails={:?}, live_plugin_ids={:?}, all_panes(id,is_plugin)={:?}",
+                    self.state.rail_plugin_targets().iter().map(|r| r.plugin_id).collect::<Vec<_>>(),
+                    live_plugin_ids,
+                    all_pane_ids,
+                );
                 let rails_before_retain = self.state.known_rail_count();
                 let config_editors_before_retain = self.state.known_config_editor_count();
                 self.state.retain_rails(&live_plugin_ids);
@@ -709,7 +722,20 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             }
         }
         Ok(Some(ControllerMessage::RendererHello(hello))) => {
+            // Fingerprint: hash the address of `state` so we can see if multiple controller
+            // instances exist (e.g. per client_id from multi-client cloning).
+            let inst = (state as *const _) as usize & 0xFFFFFF;
+            log::info!(
+                "tabs-controller[inst {inst:x}]: RendererHello from plugin_id={} client_id={} (known rails before: {})",
+                hello.plugin_id,
+                hello.client_id,
+                state.known_rail_count()
+            );
             let state_changed = state.register_rail(hello);
+            log::info!(
+                "tabs-controller[inst {inst:x}]: register_rail state_changed={state_changed} (known rails after: {})",
+                state.known_rail_count()
+            );
             HandlePipeResult {
                 state_changed,
                 view_model_push_reason: state_changed

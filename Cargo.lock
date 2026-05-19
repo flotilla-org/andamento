@@ -1941,6 +1941,7 @@ dependencies = [
 name = "tabs-controller"
 version = "0.1.0"
 dependencies = [
+ "log",
  "serde",
  "serde_json",
  "tabs-shared",
@@ -1952,6 +1953,7 @@ name = "tabs-rail"
 version = "0.1.0"
 dependencies = [
  "ansi_term",
+ "log",
  "serde_json",
  "tabs-shared",
  "unicode-width",
@@ -2794,6 +2796,7 @@ dependencies = [
  "prost",
  "serde",
  "serde_json",
+ "shellexpand",
  "strum",
  "strum_macros",
  "zellij-utils",

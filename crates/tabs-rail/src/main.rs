@@ -364,6 +364,15 @@ impl ZellijPlugin for PluginState {
         }
         self.hit_regions = rendered.hit_regions;
         print!("{}", rendered.lines.join("\n"));
+        // Temporary diagnostic: overlay the rail instance fingerprint at the
+        // bottom-right so we can visually tell rail instances apart.
+        let inst = (self as *const _) as usize & 0xFFFFFF;
+        let label = format!("[{inst:06x}]");
+        let label_len = label.chars().count();
+        if rows >= 1 && cols >= label_len {
+            let col = cols.saturating_sub(label_len) + 1;
+            print!("\x1b[{rows};{col}H\x1b[2m{label}\x1b[0m");
+        }
         self.stats.record_span_elapsed("render.rail", started_at);
     }
 }
@@ -529,8 +538,10 @@ mod tests {
 impl PluginState {
     fn send_renderer_hello(&self) {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
+            log::info!("tabs-rail: send_renderer_hello SKIPPED (own_plugin_id={:?}, own_client_id={:?})", self.own_plugin_id, self.own_client_id);
             return;
         };
+        log::info!("tabs-rail: send_renderer_hello plugin_id={plugin_id} client_id={client_id} → controller={:?}", self.controller_plugin_url);
         let hello = RendererHello {
             plugin_id,
             client_id,
