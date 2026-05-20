@@ -368,12 +368,13 @@ Status: started internally. The renderer now has generic ordered template fields
 
 Headers are not enough. Groups, tabs, panes, and latent nodes need a recursive slot/layout model. The important distinction is:
 
-- `body` is template-owned extra surface for details, actions, previews, summaries, and controls.
-- `content` is the default recursive projection of the node's children: child tabs, child groups, panes, and latent nodes.
+- `body` is the whole main area under a node's header.
+- `content` is the node's own template-produced surface inside that body: details, actions, previews, summaries, controls, and local status.
+- `children` is the recursive projection of descendant tabs, groups, panes, and latent nodes.
 
-The default body for a group can simply include its `content`, but the model should keep these separate. Later a template or policy can compose, reorder, hide, or replace the content projection without pretending child nodes are just body text.
+The default body layout can be thought of as `column(content?, children?)`. The model should keep those parts separate so a template or policy can later compose, reorder, hide, or replace the child projection without pretending child nodes are just body text.
 
-Body/content slots should be able to render richer content when space allows:
+Body layout and content slots should be able to render richer material when space allows:
 
 - one or more metadata text lines.
 - status/progress rows.
@@ -387,19 +388,19 @@ The template result should be a small recursive layout tree rather than a single
 - rows and columns.
 - text nodes with optional metadata/value sources.
 - image nodes backed by the same image-placement machinery as pane/image chrome.
-- references to other slots, including `content`.
+- references to other slots, including `children`.
 - conditional fragments driven by metadata predicates and inherited UI properties.
 - actions on text or images, such as focus, materialize, browser/editor launch, new tab, or floating pane.
 
-Layout policy should stay separate from matching. A template can produce a body tree such as text lines, image slots, counters, content references, or command buttons; the rail decides how much of that tree fits in the current projection.
+Layout policy should stay separate from matching. A template can produce content such as text lines, image slots, counters, child references, or command buttons; the rail decides how much of the resulting body tree fits in the current projection.
 
 Open layout policies:
 
-- vertical list content/body under a header.
+- vertical body under a header, usually content followed by children.
 - compact one-line body folded into the header.
 - horizontal tab strip for child tabs.
 - responsive wrap/masonry for child nodes in expanded or wider modes.
-- hidden body/content with only header affordances in compact navigation mode.
+- hidden body with only header affordances in compact navigation mode.
 
 Template fragments should be able to test both node metadata and inherited UI properties. For example, a group body can appear only when `git.repo` exists and `show-repo-actions` is enabled. This lets bottom-bar toggles, global header/footer controls, and per-node settings drive local template output without hard-coding global modes into every render path.
 
@@ -865,7 +866,7 @@ This should not require a new data model. It should consume the same metadata st
 - What is the minimum materialization recipe shape for latent tabs without coupling too tightly to flotilla?
 - When external metadata arrives, should values be typed JSON-like data, strings only, or a small tagged enum?
 - What exact rules make two single-child group levels compatible for visual conflation?
-- What is the first body/content slot schema that can support rows, columns, text, status, buttons, images, actions, and content references without becoming a full UI framework?
+- What is the first body/content/children slot schema that can support rows, columns, text, status, buttons, images, actions, and child references without becoming a full UI framework?
 - Which node settings should be inherited first: image visibility, child layout mode, or compact/detailed body mode?
 - How should image chrome assets be packaged, cached, scaled, and toggled?
 - What is the minimum native-plugin API needed for Andamento to avoid the worst wasm serialization costs while preserving the same state boundaries?
