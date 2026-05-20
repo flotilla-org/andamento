@@ -3,8 +3,8 @@ plugins {
         rail_structure "joined-cells"
         rail_sizing "active-large"
         rail_grouping "directory"
-        template_config_path "/host/Users/robert/dev/zellij-scratch.native-tabs/templates/andamento-git.kdl"
-        grouping_config_path "/host/Users/robert/dev/zellij-scratch.native-tabs/templates/andamento-git.kdl"
+        template_config_path "/host$ANDAMENTO_ROOT/templates/andamento-git.kdl"
+        grouping_config_path "/host$ANDAMENTO_ROOT/templates/andamento-git.kdl"
     }
     andamento-rail location="file:$ANDAMENTO_ROOT/target/wasm32-wasip1/release/andamento-rail.wasm" {
         controller_plugin_url "andamento-controller"
