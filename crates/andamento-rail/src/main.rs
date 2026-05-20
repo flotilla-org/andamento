@@ -184,6 +184,7 @@ use zellij_tile::prelude::{Direction, ModeInfo, PaneDimensionConstraint, TabInfo
 
 const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
 const CONFIG_CONFIG_PLUGIN_URL: &str = "config_plugin_url";
+const CONFIG_CLOSE_ON_HIDDEN: &str = "close_on_hidden";
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
 const CONFIG_RAIL_PLACEMENT: &str = "rail_placement";
 
@@ -898,6 +899,7 @@ impl PluginState {
             self.controller_plugin_url.clone(),
         );
         configuration.insert(CONFIG_RAIL_SCOPE.to_owned(), self.config_editor_scope());
+        configuration.insert(CONFIG_CLOSE_ON_HIDDEN.to_owned(), "true".to_owned());
         pipe_message_to_plugin(
             MessageToPlugin::new(MSG_REQUEST_STATE)
                 .with_plugin_url(self.config_plugin_url.clone())

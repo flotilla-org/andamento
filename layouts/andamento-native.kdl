@@ -51,7 +51,9 @@ layout {
             pane
             pane split_direction="horizontal" {
                 pane size="45%" {
-                    plugin location="andamento-config"
+                    plugin location="andamento-config" {
+                        close_on_hidden "false"
+                    }
                 }
                 pane command="$ANDAMENTO_ROOT/scripts/andamento-git-watcher.py" cwd="$ANDAMENTO_ROOT" {
                     args "--interval" "5" "--factory-repo-manager"

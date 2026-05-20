@@ -19,6 +19,7 @@ use zellij_tile::output::print;
 use zellij_tile::prelude::*;
 
 const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
+const CONFIG_CLOSE_ON_HIDDEN: &str = "close_on_hidden";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigAction {
@@ -60,6 +61,7 @@ struct RenderedConfig {
 #[derive(Default)]
 struct PluginState {
     controller_plugin_url: String,
+    close_on_hidden: bool,
     own_plugin_id: Option<u32>,
     own_client_id: Option<u16>,
     model: Option<ControllerViewModel>,
@@ -85,6 +87,9 @@ impl ZellijPlugin for PluginState {
             .get(CONFIG_CONTROLLER_PLUGIN_URL)
             .cloned()
             .unwrap_or_else(|| "andamento-controller".to_owned());
+        self.close_on_hidden = configuration
+            .get(CONFIG_CLOSE_ON_HIDDEN)
+            .is_some_and(|value| config_bool(value));
 
         request_permission(&[
             PermissionType::ChangeApplicationState,
@@ -177,7 +182,7 @@ impl ZellijPlugin for PluginState {
             }
             Event::Visible(is_visible) => {
                 self.stats.increment("update.visible");
-                if config_should_close_on_visibility(is_visible) {
+                if config_should_close_on_visibility(is_visible, self.close_on_hidden) {
                     close_self();
                 }
                 false
@@ -351,8 +356,15 @@ fn permission_result_should_resync(granted: bool) -> bool {
     granted
 }
 
-fn config_should_close_on_visibility(is_visible: bool) -> bool {
-    !is_visible
+fn config_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn config_should_close_on_visibility(is_visible: bool, close_on_hidden: bool) -> bool {
+    close_on_hidden && !is_visible
 }
 
 fn render_config(
@@ -1110,8 +1122,23 @@ mod tests {
     }
 
     #[test]
-    fn config_closes_when_it_becomes_invisible() {
-        assert!(config_should_close_on_visibility(false));
-        assert!(!config_should_close_on_visibility(true));
+    fn floating_config_closes_when_it_becomes_invisible() {
+        assert!(config_should_close_on_visibility(false, true));
+        assert!(!config_should_close_on_visibility(true, true));
+    }
+
+    #[test]
+    fn embedded_config_stays_open_when_it_becomes_invisible() {
+        assert!(!config_should_close_on_visibility(false, false));
+        assert!(!config_should_close_on_visibility(true, false));
+    }
+
+    #[test]
+    fn config_bool_accepts_common_true_values() {
+        assert!(config_bool("true"));
+        assert!(config_bool("1"));
+        assert!(config_bool("yes"));
+        assert!(config_bool("on"));
+        assert!(!config_bool("false"));
     }
 }
