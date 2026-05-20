@@ -17,11 +17,12 @@ use andamento_shared::MSG_RAIL_SIZE_TARGET;
 use andamento_shared::MSG_VIEW_MODEL;
 use andamento_shared::{
     ControllerBootstrapSnapshot, ExternalMessage, RailConfig, RailGroupingMode, RailSize,
-    RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RailViewMode, RendererHello,
+    RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RendererHello,
     SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS,
     MSG_CONFIG_EDITOR_HELLO, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE,
     MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
-    MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
+    MSG_CYCLE_METADATA_TRISTATE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE,
+    MSG_STATS_COLLECT, MSG_TOGGLE_METADATA_ROOT, MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
@@ -582,6 +583,7 @@ enum ViewModelPushReason {
     PipeConfig,
     PipeRequestState,
     PipeBootstrap,
+    PipeMetadataControls,
     PipeUnknown,
 }
 
@@ -602,6 +604,7 @@ impl ViewModelPushReason {
             Self::PipeConfig => "view-model.push.reason.pipe.config",
             Self::PipeRequestState => "view-model.push.reason.pipe.request-state",
             Self::PipeBootstrap => "view-model.push.reason.pipe.bootstrap",
+            Self::PipeMetadataControls => "view-model.push.reason.pipe.metadata-controls",
             Self::PipeUnknown => "view-model.push.reason.pipe.unknown",
         }
     }
@@ -821,6 +824,22 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             rail_size_observed: Some(observed),
             ..HandlePipeResult::default()
         },
+        Ok(Some(ControllerMessage::ToggleMetadataRoot)) => {
+            state.toggle_metadata_root();
+            HandlePipeResult {
+                state_changed: true,
+                view_model_push_reason: Some(ViewModelPushReason::PipeMetadataControls),
+                ..HandlePipeResult::default()
+            }
+        }
+        Ok(Some(ControllerMessage::CycleMetadataTriState(key))) => {
+            state.cycle_metadata_tristate(key);
+            HandlePipeResult {
+                state_changed: true,
+                view_model_push_reason: Some(ViewModelPushReason::PipeMetadataControls),
+                ..HandlePipeResult::default()
+            }
+        }
         Ok(None) => HandlePipeResult::default(),
         Err(error) => {
             eprintln!("andamento-controller: {error}");
@@ -844,10 +863,6 @@ fn parse_rail_config(configuration: &BTreeMap<String, String>) -> RailConfig {
         grouping: configuration
             .get("rail_grouping")
             .and_then(|value| parse_rail_grouping(value))
-            .unwrap_or_default(),
-        view: configuration
-            .get("rail_view")
-            .and_then(|value| parse_rail_view(value))
             .unwrap_or_default(),
     }
 }
@@ -956,14 +971,6 @@ fn parse_rail_grouping(value: &str) -> Option<RailGroupingMode> {
     }
 }
 
-fn parse_rail_view(value: &str) -> Option<RailViewMode> {
-    match value {
-        "normal" | "default" => Some(RailViewMode::Normal),
-        "metadata" | "debug" | "inspect" => Some(RailViewMode::Metadata),
-        _ => None,
-    }
-}
-
 #[derive(Debug, PartialEq)]
 enum ControllerMessage {
     External(ExternalMessage),
@@ -978,6 +985,8 @@ enum ControllerMessage {
     ObservedIdentitiesRequest(String),
     StatsCollect(StatsCollectRequest),
     RailSizeObserved(RailSizeObserved),
+    ToggleMetadataRoot,
+    CycleMetadataTriState(andamento_shared::NodeKey),
 }
 
 fn parse_controller_message(
@@ -1044,6 +1053,17 @@ fn parse_controller_message(
                     .map_err(|e| format!("invalid rail config: {e}"))
             })
             .map(ControllerMessage::SetRailConfig)
+            .map(Some),
+        MSG_TOGGLE_METADATA_ROOT => Ok(Some(ControllerMessage::ToggleMetadataRoot)),
+        MSG_CYCLE_METADATA_TRISTATE => pipe_message
+            .payload
+            .as_deref()
+            .ok_or_else(|| "cycle metadata tri-state requires payload".to_owned())
+            .and_then(|payload| {
+                serde_json::from_str::<andamento_shared::NodeKey>(payload)
+                    .map_err(|e| format!("invalid node key: {e}"))
+            })
+            .map(ControllerMessage::CycleMetadataTriState)
             .map(Some),
         MSG_REQUEST_STATE => Ok(Some(ControllerMessage::RequestState)),
         MSG_OBSERVED_IDENTITIES => match &pipe_message.source {
@@ -1244,16 +1264,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_metadata_view_from_plugin_configuration() {
-        let mut configuration = BTreeMap::new();
-        configuration.insert("rail_view".to_owned(), "metadata".to_owned());
-
-        let config = parse_rail_config(&configuration);
-
-        assert_eq!(config.view, RailViewMode::Metadata);
-    }
-
-    #[test]
     fn parses_template_config_path_from_plugin_configuration() {
         let mut configuration = BTreeMap::new();
         configuration.insert(
@@ -1285,7 +1295,6 @@ mod tests {
             structure: RailStructure::SplitAroundActive,
             sizing: RailSizingPreset::PinnedLarge,
             grouping: RailGroupingMode::None,
-            view: RailViewMode::Normal,
         };
         let payload = serde_json::to_string(&config).unwrap();
 
@@ -1322,7 +1331,6 @@ mod tests {
                 structure: RailStructure::BoxPerTab,
                 sizing: RailSizingPreset::Compact,
                 grouping: RailGroupingMode::Directory,
-                view: RailViewMode::Metadata,
             },
             pinned_tabs: vec![7],
             pane_statuses: vec![SetPaneStatus {
@@ -1405,7 +1413,6 @@ mod tests {
             structure: RailStructure::BoxPerTab,
             sizing: RailSizingPreset::Compact,
             grouping: RailGroupingMode::None,
-            view: RailViewMode::Normal,
         };
         let payload = serde_json::to_string(&config).unwrap();
         let mut state = ControllerState::default();

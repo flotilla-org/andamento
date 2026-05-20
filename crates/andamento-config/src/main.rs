@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use andamento_shared::{
     ControllerViewModel, GroupPath, MetadataValue, PluginStatsSnapshot, RailConfig,
-    RailGroupingMode, RailSizingPreset, RailStructure, RailViewMode,
+    RailGroupingMode, RailSizingPreset, RailStructure,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -26,7 +26,6 @@ enum ConfigAction {
     SetStructure(RailStructure),
     SetSizing(RailSizingPreset),
     SetGrouping(RailGroupingMode),
-    SetView(RailViewMode),
     CollectStats,
 }
 
@@ -343,7 +342,6 @@ fn apply_config_action(mut config: RailConfig, action: ConfigAction) -> RailConf
         ConfigAction::SetStructure(structure) => config.structure = structure,
         ConfigAction::SetSizing(sizing) => config.sizing = sizing,
         ConfigAction::SetGrouping(grouping) => config.grouping = grouping,
-        ConfigAction::SetView(view) => config.view = view,
         ConfigAction::CollectStats => {}
     }
     config
@@ -516,24 +514,6 @@ fn push_settings_page(
         "directory",
         config.grouping == RailGroupingMode::Directory,
         ConfigAction::SetGrouping(RailGroupingMode::Directory),
-    );
-    push_plain(lines, cols, "");
-    push_plain(lines, cols, "view");
-    push_option(
-        lines,
-        hit_regions,
-        cols,
-        "normal",
-        config.view == RailViewMode::Normal,
-        ConfigAction::SetView(RailViewMode::Normal),
-    );
-    push_option(
-        lines,
-        hit_regions,
-        cols,
-        "metadata",
-        config.view == RailViewMode::Metadata,
-        ConfigAction::SetView(RailViewMode::Metadata),
     );
     push_plain(lines, cols, "");
     push_plain(lines, cols, "sizing");
@@ -852,7 +832,6 @@ mod tests {
                 structure: RailStructure::BoxPerTab,
                 sizing: RailSizingPreset::Compact,
                 grouping: RailGroupingMode::Directory,
-                view: RailViewMode::Normal,
             },
             None,
             ConfigPage::Settings,
@@ -924,37 +903,6 @@ mod tests {
     }
 
     #[test]
-    fn view_click_action_updates_config_locally() {
-        let updated = apply_config_action(
-            RailConfig::default(),
-            ConfigAction::SetView(RailViewMode::Metadata),
-        );
-
-        assert_eq!(updated.view, RailViewMode::Metadata);
-    }
-
-    #[test]
-    fn renders_view_options() {
-        let rendered = render_config(
-            RailConfig::default(),
-            None,
-            ConfigPage::Settings,
-            22,
-            30,
-            &[],
-            false,
-            0,
-        );
-
-        assert!(rendered.lines.iter().any(|line| line.contains("view")));
-        assert!(rendered.lines.iter().any(|line| line.contains("metadata")));
-        assert!(rendered
-            .hit_regions
-            .iter()
-            .any(|hit| hit.action == ConfigAction::SetView(RailViewMode::Metadata)));
-    }
-
-    #[test]
     fn renders_template_page_diagnostics() {
         let model = ControllerViewModel {
             sort_mode: SortMode::Position,
@@ -970,6 +918,7 @@ mod tests {
             rows: vec![],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            metadata_controls: andamento_shared::MetadataControls::default(),
         };
 
         let rendered = render_config(
@@ -1126,6 +1075,7 @@ mod tests {
             rows: vec![],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            metadata_controls: andamento_shared::MetadataControls::default(),
         };
 
         let rendered = render_config(

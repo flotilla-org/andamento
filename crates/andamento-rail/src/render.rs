@@ -6,9 +6,9 @@ use andamento_shared::template_config::{
     TemplateConfigNodeKind, TemplateConfigSlot,
 };
 use andamento_shared::{
-    ControllerViewModel, GroupPath, GroupSegment, MetadataEntry, MetadataSourceEntry,
-    MetadataTarget, MetadataValue, ObservedMetadataIdentity, PaneTarget, Priority, RailConfig,
-    RailRow, RailSizingPreset, RailStructure, RailViewMode, ReachableMetadataIdentity,
+    ControllerViewModel, GroupPath, GroupSegment, MetadataControls, MetadataEntry,
+    MetadataSourceEntry, MetadataTarget, MetadataTriState, MetadataValue, NodeKey, PaneTarget,
+    Priority, RailConfig, RailRow, RailSizingPreset, RailStructure, ReachableMetadataIdentity,
     ResolvedMetadata, ResolvedTemplateFieldSource, ResolvedTemplateSlot, ResolvedTemplateSlots,
     StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
 };
@@ -36,9 +36,13 @@ pub enum HitAction {
     TogglePin,
     ToggleGroup,
     OpenConfig,
-    ScrollMetadataUp,
-    ScrollMetadataDown,
+    ScrollRailUp,
+    ScrollRailDown,
+    ToggleMetadataRoot,
+    CycleMetadataTriState,
+    CycleRootMetadataTriState,
 }
+
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HitRegion {
@@ -57,7 +61,17 @@ pub struct RenderedRail {
     pub lines: Vec<String>,
     pub hit_regions: Vec<HitRegion>,
     pub visible_cards: Vec<VisibleCard>,
-    pub metadata_scroll_offset: usize,
+    /// Total content height vs the available rows. When > available_rows the
+    /// user can usefully scroll the rail's window; the scroll wheel falls
+    /// back to tab-switching otherwise.
+    pub content_height: usize,
+    pub available_rows: usize,
+}
+
+impl RenderedRail {
+    pub fn can_scroll(&self) -> bool {
+        self.content_height > self.available_rows
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +124,10 @@ struct RenderCard {
     metadata_sources: RenderMetadataSources,
     reachable_identities: RenderReachableIdentities,
     templates: ResolvedTemplateSlots,
+    /// Metadata-panel content rendered inside the card body when set.
+    /// Populated by `append_tab_run`/`render_nodes` based on
+    /// `MetadataControls`; the card grows by `meta_panel.len()` rows.
+    meta_panel: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,14 +198,15 @@ pub fn render_lines_with_theme(
     controller_available: bool,
     theme: Option<RenderTheme>,
 ) -> RenderedRail {
-    render_lines_with_theme_and_cell_size(
+    render_lines_with_options(
         model,
         tabs,
         rows,
         cols,
         controller_available,
         theme,
-        0,
+        None,
+        &[],
         None,
     )
 }
@@ -208,7 +227,6 @@ pub fn render_lines_with_collapsed_groups(
         cols,
         controller_available,
         None,
-        0,
         None,
         collapsed_groups,
         None,
@@ -231,34 +249,9 @@ pub fn render_lines_with_template_catalog(
         cols,
         controller_available,
         None,
-        0,
         None,
         &[],
         template_catalog,
-    )
-}
-
-pub fn render_lines_with_theme_and_cell_size(
-    model: Option<&ControllerViewModel>,
-    tabs: &[LocalTab],
-    rows: usize,
-    cols: usize,
-    controller_available: bool,
-    theme: Option<RenderTheme>,
-    metadata_scroll_offset: usize,
-    terminal_cell_size: Option<SizeInPixels>,
-) -> RenderedRail {
-    render_lines_with_options(
-        model,
-        tabs,
-        rows,
-        cols,
-        controller_available,
-        theme,
-        metadata_scroll_offset,
-        terminal_cell_size,
-        &[],
-        None,
     )
 }
 
@@ -269,17 +262,71 @@ pub fn render_lines_with_options(
     cols: usize,
     controller_available: bool,
     theme: Option<RenderTheme>,
-    metadata_scroll_offset: usize,
     terminal_cell_size: Option<SizeInPixels>,
     collapsed_groups: &[GroupPath],
     template_catalog: Option<&TemplateConfigCatalog>,
+) -> RenderedRail {
+    render_lines_with_metadata_controls(
+        model,
+        tabs,
+        rows,
+        cols,
+        controller_available,
+        theme,
+        terminal_cell_size,
+        collapsed_groups,
+        template_catalog,
+        &MetadataControls::default(),
+    )
+}
+
+pub fn render_lines_with_metadata_controls(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    rows: usize,
+    cols: usize,
+    controller_available: bool,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+    collapsed_groups: &[GroupPath],
+    template_catalog: Option<&TemplateConfigCatalog>,
+    metadata_controls: &MetadataControls,
+) -> RenderedRail {
+    render_lines_with_rail_scroll(
+        model,
+        tabs,
+        rows,
+        cols,
+        controller_available,
+        theme,
+        terminal_cell_size,
+        collapsed_groups,
+        template_catalog,
+        metadata_controls,
+        0,
+    )
+}
+
+pub fn render_lines_with_rail_scroll(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    rows: usize,
+    cols: usize,
+    controller_available: bool,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+    collapsed_groups: &[GroupPath],
+    template_catalog: Option<&TemplateConfigCatalog>,
+    metadata_controls: &MetadataControls,
+    rail_scroll_offset: isize,
 ) -> RenderedRail {
     if rows == 0 || cols == 0 {
         return RenderedRail {
             lines: vec![],
             hit_regions: vec![],
             visible_cards: vec![],
-            metadata_scroll_offset: 0,
+            content_height: 0,
+            available_rows: 0,
         };
     }
 
@@ -290,24 +337,11 @@ pub fn render_lines_with_options(
     let mut visible_cards = vec![];
     let nodes = nodes_to_render(model, tabs, collapsed_groups);
     let config = model.map(|model| model.config).unwrap_or_default();
-    let mut effective_metadata_scroll_offset = 0;
-    if config.view == RailViewMode::Metadata {
-        effective_metadata_scroll_offset = render_metadata_projection(
-            &mut lines,
-            &mut hit_regions,
-            &nodes,
-            model
-                .map(|model| model.observed_identities.as_slice())
-                .unwrap_or(&[]),
-            card_rows_available,
-            cols,
-            theme,
-            metadata_scroll_offset,
-        );
-    } else if nodes.is_empty() {
+    let mut content_height = 0;
+    if nodes.is_empty() {
         lines[0] = pad_to_width("tabs: waiting for tab state", cols);
     } else {
-        render_nodes(
+        content_height = render_nodes(
             &mut lines,
             &mut hit_regions,
             &mut visible_cards,
@@ -319,11 +353,22 @@ pub fn render_lines_with_options(
             theme,
             terminal_cell_size,
             template_catalog,
+            metadata_controls,
+            rail_scroll_offset,
         );
     }
 
+    let rail_can_scroll = content_height > card_rows_available;
     if controller_available {
-        render_footer(&mut lines, &mut hit_regions, rows - 1, cols, theme);
+        render_footer(
+            &mut lines,
+            &mut hit_regions,
+            rows - 1,
+            cols,
+            theme,
+            metadata_controls,
+            rail_can_scroll,
+        );
     } else {
         lines[rows - 1] = style_body_text(
             pad_to_width(&truncate_to_width("controller unavailable", cols), cols),
@@ -335,115 +380,53 @@ pub fn render_lines_with_options(
         lines,
         hit_regions,
         visible_cards,
-        metadata_scroll_offset: effective_metadata_scroll_offset,
+        content_height,
+        available_rows: card_rows_available,
     }
 }
 
-fn render_metadata_projection(
-    lines: &mut [String],
-    hit_regions: &mut Vec<HitRegion>,
-    nodes: &[RenderNode],
-    observed_identities: &[ObservedMetadataIdentity],
-    available_rows: usize,
+
+/// Push N rows to `lines` rendering the meta panel for a node. Each row is:
+/// `<outer_indent spaces><red │><space><content>`. Content is taken from the
+/// supplied panel_lines (typically from `group_metadata_block` or
+/// `tab_metadata_block`).
+fn append_meta_panel(
+    lines: &mut Vec<String>,
+    outer_indent: usize,
     cols: usize,
+    panel_lines: Vec<String>,
     theme: Option<RenderTheme>,
-    metadata_scroll_offset: usize,
-) -> usize {
-    let mut blocks = observed_identity_metadata_blocks(observed_identities);
-    blocks.extend(metadata_projection_blocks(nodes));
-    let content_lines = blocks
-        .iter()
-        .flat_map(|block| block.lines.iter().cloned())
-        .collect::<Vec<_>>();
-    let scroll_offset =
-        clamp_scroll_offset(metadata_scroll_offset, content_lines.len(), available_rows);
-    for (output_row, line) in content_lines
-        .iter()
-        .skip(scroll_offset)
-        .take(available_rows)
-        .enumerate()
-    {
-        lines[output_row] =
-            style_body_text(pad_to_width(&truncate_to_width(line, cols), cols), theme);
-    }
-    let mut source_row = 0;
-    for block in blocks {
-        if source_row >= scroll_offset.saturating_add(available_rows) {
-            break;
+) {
+    let outer_indent = outer_indent.min(cols);
+    let bar_col = outer_indent;
+    let content_col = (outer_indent + 2).min(cols);
+    let content_width = cols.saturating_sub(content_col);
+    for content in panel_lines {
+        if content_width == 0 {
+            continue;
         }
-        let block_start = source_row;
-        source_row += block.lines.len();
-        if let Some(hit) = block.hit {
-            let visible_start = block_start.max(scroll_offset);
-            let visible_end = source_row.min(scroll_offset.saturating_add(available_rows));
-            if visible_start < visible_end {
-                hit_regions.push(HitRegion {
-                    row_start: visible_start - scroll_offset,
-                    row_end: visible_end - scroll_offset - 1,
-                    col_start: hit.indent.min(cols.saturating_sub(1)),
-                    col_end: cols.saturating_sub(1),
-                    tab_id: hit.tab_id,
-                    tab_position: hit.tab_position,
-                    group_path: None,
-                    action: HitAction::SwitchTab,
-                });
-            }
-        }
+        let mut line = " ".repeat(bar_col);
+        line.push_str(&style_meta_panel_bar(theme));
+        line.push(' ');
+        let text = truncate_to_width(&content, content_width);
+        let padded = pad_to_width(&text, content_width);
+        line.push_str(&style_body_text(padded, theme));
+        lines.push(line);
     }
-    scroll_offset
 }
 
-fn observed_identity_metadata_blocks(
-    observed_identities: &[ObservedMetadataIdentity],
-) -> Vec<MetadataBlock> {
-    if observed_identities.is_empty() {
-        return vec![];
+fn style_meta_panel_bar(theme: Option<RenderTheme>) -> String {
+    if theme.is_none() {
+        return "│".to_owned();
     }
-    let mut lines = vec!["observed_identities".to_owned()];
-    for observed in observed_identities {
-        push_metadata_text_line(
-            &mut lines,
-            2,
-            &format!("observed_identity.{}", observed.identity.key),
-            &format!(
-                "{} target_count={} nearest_distance={}",
-                format_metadata_value(&observed.identity.value),
-                observed.target_count,
-                observed.nearest_distance
-            ),
-        );
-    }
-    vec![MetadataBlock { lines, hit: None }]
+    Style::new()
+        .fg(Color::Red)
+        .bold()
+        .paint("│")
+        .to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MetadataBlock {
-    lines: Vec<String>,
-    hit: Option<MetadataHit>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MetadataHit {
-    tab_id: u64,
-    tab_position: usize,
-    indent: usize,
-}
-
-fn metadata_projection_blocks(nodes: &[RenderNode]) -> Vec<MetadataBlock> {
-    let mut blocks = vec![];
-    for node in nodes {
-        match node {
-            RenderNode::Group(group) => {
-                blocks.push(group_metadata_block(group));
-                blocks.extend(metadata_projection_blocks(&group.children));
-            }
-            RenderNode::Tab(tab) => blocks.push(tab_metadata_block(tab)),
-        }
-    }
-    blocks
-}
-
-fn group_metadata_block(group: &RenderGroup) -> MetadataBlock {
+fn group_metadata_block(group: &RenderGroup) -> Vec<String> {
     let mut lines = vec![];
     push_metadata_text_line(
         &mut lines,
@@ -472,11 +455,8 @@ fn group_metadata_block(group: &RenderGroup) -> MetadataBlock {
     push_additional_metadata_lines(&mut lines, 4, &group.metadata, &excluded_keys);
     push_metadata_source_detail_lines(&mut lines, 2, &group.metadata_sources);
     push_reachable_identity_lines(&mut lines, 2, &group.reachable_identities);
-    push_metadata_section_header(&mut lines, 2, "templates");
-    push_template_or_builtin_diagnostic_line(
-        &mut lines,
-        4,
-        "template.group_header",
+    let template_rows: Vec<Vec<String>> = [(
+        "group_header",
         group.templates.group_header.as_ref(),
         TemplateRenderContext {
             slot: TemplateSlot::GroupHeader,
@@ -485,13 +465,20 @@ fn group_metadata_block(group: &RenderGroup) -> MetadataBlock {
             collapsed: group.collapsed,
             active_tab_name: active_tab_name(&group.children),
         },
-    );
+    )]
+    .into_iter()
+    .filter_map(|(name, slot, ctx)| template_diagnostic_row(name, slot, ctx))
+    .collect();
+    if !template_rows.is_empty() {
+        push_metadata_section_header(&mut lines, 2, "templates");
+        push_aligned_table(&mut lines, 4, TEMPLATE_TABLE_COLUMNS, &template_rows);
+    }
     push_metadata_section_header(&mut lines, 2, "group_path");
     push_group_path_metadata(&mut lines, 4, &group.path);
-    MetadataBlock { lines, hit: None }
+    lines
 }
 
-fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
+fn tab_metadata_block(tab: &RenderTab) -> Vec<String> {
     let mut lines = vec![];
     let indent = tab.indent;
     let card = &tab.card;
@@ -550,11 +537,9 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
     );
     push_metadata_source_detail_lines(&mut lines, indent + 2, &card.metadata_sources);
     push_reachable_identity_lines(&mut lines, indent + 2, &card.reachable_identities);
-    push_metadata_section_header(&mut lines, indent + 2, "templates");
-    push_template_or_builtin_diagnostic_line(
-        &mut lines,
-        indent + 4,
-        "template.tab_title",
+    let mut template_rows: Vec<Vec<String>> = vec![];
+    if let Some(row) = template_diagnostic_row(
+        "tab_title",
         card.templates.tab_title.as_ref(),
         TemplateRenderContext {
             slot: TemplateSlot::TabTitle,
@@ -563,7 +548,28 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
             collapsed: false,
             active_tab_name: None,
         },
-    );
+    ) {
+        template_rows.push(row);
+    }
+    if card.status.is_some() {
+        if let Some(row) = template_diagnostic_row(
+            "tab_status",
+            card.templates.tab_status.as_ref(),
+            TemplateRenderContext {
+                slot: TemplateSlot::TabStatus,
+                node_kind: RenderNodeKind::Tab,
+                metadata: &card.metadata,
+                collapsed: false,
+                active_tab_name: None,
+            },
+        ) {
+            template_rows.push(row);
+        }
+    }
+    if !template_rows.is_empty() {
+        push_metadata_section_header(&mut lines, indent + 2, "templates");
+        push_aligned_table(&mut lines, indent + 4, TEMPLATE_TABLE_COLUMNS, &template_rows);
+    }
     if let Some(grouping) = tab.grouping.as_ref() {
         push_metadata_section_header(&mut lines, indent + 2, "grouping");
         push_metadata_text_line(&mut lines, indent + 4, "group.label", &grouping.label);
@@ -593,28 +599,8 @@ fn tab_metadata_block(tab: &RenderTab) -> MetadataBlock {
             "status.source_pane",
             &format_pane_target(status.source_pane),
         );
-        push_template_or_builtin_diagnostic_line(
-            &mut lines,
-            indent + 4,
-            "template.tab_status",
-            card.templates.tab_status.as_ref(),
-            TemplateRenderContext {
-                slot: TemplateSlot::TabStatus,
-                node_kind: RenderNodeKind::Tab,
-                metadata: &card.metadata,
-                collapsed: false,
-                active_tab_name: None,
-            },
-        );
     }
-    MetadataBlock {
-        lines,
-        hit: Some(MetadataHit {
-            tab_id: card.tab_id,
-            tab_position: card.position,
-            indent,
-        }),
-    }
+    lines
 }
 
 fn push_group_path_metadata(lines: &mut Vec<String>, indent: usize, path: &GroupPath) {
@@ -650,64 +636,59 @@ fn push_metadata_source_detail_lines(
     if source_entries.values().all(Vec::is_empty) {
         return;
     }
-    push_metadata_section_header(lines, indent, "sources");
+    let mut rows: Vec<Vec<String>> = vec![];
     for (key, entries) in source_entries {
-        if entries.is_empty() {
-            continue;
-        }
-        push_metadata_text_line(lines, indent + 2, "key", key);
-        push_metadata_source_table(lines, indent + 2, entries);
-    }
-}
-
-fn push_metadata_source_table(
-    lines: &mut Vec<String>,
-    indent: usize,
-    entries: &[MetadataSourceEntry],
-) {
-    let rows = entries
-        .iter()
-        .map(|entry| {
-            (
-                entry.source_id.as_str(),
+        for entry in entries {
+            rows.push(vec![
+                key.clone(),
+                entry.source_id.clone(),
                 format_metadata_value(&entry.entry.value),
-                entry,
-            )
-        })
-        .collect::<Vec<_>>();
-    let source_width = rows
-        .iter()
-        .map(|(source_id, _, _)| source_id.len())
-        .max()
-        .unwrap_or(0)
-        .max("source".len());
-    let value_width = rows
-        .iter()
-        .map(|(_, value, _)| value.len())
-        .max()
-        .unwrap_or(0)
-        .max("value".len());
-
-    lines.push(format!(
-        "{}{:<source_width$}  {:<value_width$}  updated  ttl  prec  ord",
-        " ".repeat(indent),
-        "src",
-        "value",
-    ));
-    for (source_id, value, entry) in rows {
-        lines.push(format!(
-            "{}{source_id:<source_width$}  {value:<value_width$}  {:>7}  {:>3}  {:>4}  {:>3}",
-            " ".repeat(indent),
-            entry.entry.updated_at,
-            entry
-                .entry
-                .ttl_ms
-                .map(|ttl_ms| ttl_ms.to_string())
-                .unwrap_or_else(|| "-".to_owned()),
-            entry.entry.precedence,
-            entry.entry.ordinal,
-        ));
+                entry.entry.updated_at.to_string(),
+                entry
+                    .entry
+                    .ttl_ms
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "-".to_owned()),
+                entry.entry.precedence.to_string(),
+                entry.entry.ordinal.to_string(),
+            ]);
+        }
     }
+    if rows.is_empty() {
+        return;
+    }
+    push_metadata_section_header(lines, indent, "sources");
+    const COLUMNS: &[TableColumn] = &[
+        TableColumn {
+            header: "key",
+            align: ColumnAlign::Left,
+        },
+        TableColumn {
+            header: "src",
+            align: ColumnAlign::Left,
+        },
+        TableColumn {
+            header: "value",
+            align: ColumnAlign::Left,
+        },
+        TableColumn {
+            header: "updated",
+            align: ColumnAlign::Right,
+        },
+        TableColumn {
+            header: "ttl",
+            align: ColumnAlign::Right,
+        },
+        TableColumn {
+            header: "prec",
+            align: ColumnAlign::Right,
+        },
+        TableColumn {
+            header: "ord",
+            align: ColumnAlign::Right,
+        },
+    ];
+    push_aligned_table(lines, indent + 2, COLUMNS, &rows);
 }
 
 fn push_reachable_identity_lines(
@@ -719,18 +700,31 @@ fn push_reachable_identity_lines(
         return;
     }
     push_metadata_section_header(lines, indent, "reachable_identities");
-    for reachable in reachable_identities {
-        push_metadata_text_line(
-            lines,
-            indent + 2,
-            &format!("identity.{}", reachable.identity.key),
-            &format!(
-                "{} distance={}",
+    let rows: Vec<Vec<String>> = reachable_identities
+        .iter()
+        .map(|reachable| {
+            vec![
+                reachable.identity.key.clone(),
                 format_metadata_value(&reachable.identity.value),
-                reachable.distance
-            ),
-        );
-    }
+                reachable.distance.to_string(),
+            ]
+        })
+        .collect();
+    const COLUMNS: &[TableColumn] = &[
+        TableColumn {
+            header: "identity",
+            align: ColumnAlign::Left,
+        },
+        TableColumn {
+            header: "value",
+            align: ColumnAlign::Left,
+        },
+        TableColumn {
+            header: "distance",
+            align: ColumnAlign::Right,
+        },
+    ];
+    push_aligned_table(lines, indent + 2, COLUMNS, &rows);
 }
 
 fn push_metadata_text_line(lines: &mut Vec<String>, indent: usize, key: &str, value: &str) {
@@ -741,8 +735,78 @@ fn push_metadata_section_header(lines: &mut Vec<String>, indent: usize, label: &
     lines.push(format!("{}[{}]", " ".repeat(indent), label));
 }
 
-fn clamp_scroll_offset(offset: usize, content_rows: usize, available_rows: usize) -> usize {
-    offset.min(content_rows.saturating_sub(available_rows))
+#[derive(Debug, Clone, Copy)]
+enum ColumnAlign {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TableColumn {
+    header: &'static str,
+    align: ColumnAlign,
+}
+
+/// Render a header row plus N data rows as a single aligned text table.
+/// Per-column widths span all rows so columns line up across the whole
+/// section (unlike the previous per-key micro-tables). Columns whose
+/// values are all empty are dropped entirely.
+fn push_aligned_table(
+    lines: &mut Vec<String>,
+    indent: usize,
+    columns: &[TableColumn],
+    rows: &[Vec<String>],
+) {
+    if rows.is_empty() || columns.is_empty() {
+        return;
+    }
+    // Drop columns where every row is empty.
+    let keep: Vec<usize> = (0..columns.len())
+        .filter(|&i| {
+            rows.iter()
+                .any(|row| row.get(i).map(|c| !c.is_empty()).unwrap_or(false))
+        })
+        .collect();
+    if keep.is_empty() {
+        return;
+    }
+    let widths: Vec<usize> = keep
+        .iter()
+        .map(|&i| {
+            let header_len = columns[i].header.len();
+            rows.iter()
+                .map(|row| row.get(i).map(String::len).unwrap_or(0))
+                .max()
+                .unwrap_or(0)
+                .max(header_len)
+        })
+        .collect();
+    let pad = " ".repeat(indent);
+    let format_cell = |text: &str, width: usize, align: ColumnAlign| match align {
+        ColumnAlign::Left => format!("{text:<width$}"),
+        ColumnAlign::Right => format!("{text:>width$}"),
+    };
+    // Header
+    let mut header = pad.clone();
+    for (slot, &i) in keep.iter().enumerate() {
+        if slot > 0 {
+            header.push_str("  ");
+        }
+        header.push_str(&format_cell(columns[i].header, widths[slot], columns[i].align));
+    }
+    lines.push(header);
+    // Rows
+    for row in rows {
+        let mut line = pad.clone();
+        for (slot, &i) in keep.iter().enumerate() {
+            if slot > 0 {
+                line.push_str("  ");
+            }
+            let cell = row.get(i).map(String::as_str).unwrap_or("");
+            line.push_str(&format_cell(cell, widths[slot], columns[i].align));
+        }
+        lines.push(line);
+    }
 }
 
 fn format_metadata_value(value: &MetadataValue) -> String {
@@ -764,53 +828,77 @@ fn format_metadata_value(value: &MetadataValue) -> String {
     }
 }
 
-fn push_template_or_builtin_diagnostic_line(
-    lines: &mut Vec<String>,
-    indent: usize,
-    key: &str,
+/// Returns a row of cells for a single template slot's diagnostic, suitable
+/// for stacking in a slot-rowed templates table. Columns:
+/// [slot, template, fields, sizing, specificity, predicates, candidates].
+/// Returns None when there's nothing to show for that slot. Empty cells
+/// where N/A; `push_aligned_table` drops fully-empty columns.
+fn template_diagnostic_row(
+    slot_name: &str,
     resolved_slot: Option<&ResolvedTemplateSlot>,
     context: TemplateRenderContext<'_>,
-) {
+) -> Option<Vec<String>> {
     if let Some(slot) = resolved_slot {
-        push_metadata_text_line(lines, indent, key, &slot.template_name);
         let fields = slot
             .fields
             .iter()
             .map(|field| format!("{}({})", field.text, field.priority))
-            .collect::<Vec<_>>();
-        if !fields.is_empty() {
-            push_metadata_text_line(lines, indent, &format!("{key}.fields"), &fields.join(", "));
-        }
-        return;
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(vec![
+            slot_name.to_owned(),
+            slot.template_name.clone(),
+            fields,
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ]);
     }
     if let Some(template) = matched_template(context) {
-        push_metadata_text_line(lines, indent, key, template.name);
-        push_metadata_text_line(
-            lines,
-            indent,
-            &format!("{key}.sizing"),
-            template.sizing.as_text(),
-        );
-        push_metadata_text_line(
-            lines,
-            indent,
-            &format!("{key}.specificity"),
-            &template.specificity().to_string(),
-        );
-        push_metadata_text_line(
-            lines,
-            indent,
-            &format!("{key}.predicates"),
-            &template.predicates_text(),
-        );
-        push_metadata_text_line(
-            lines,
-            indent,
-            &format!("{key}.candidates"),
-            &matched_template_candidates_text(context),
-        );
+        return Some(vec![
+            slot_name.to_owned(),
+            template.name.to_owned(),
+            String::new(),
+            template.sizing.as_text().to_owned(),
+            template.specificity().to_string(),
+            template.predicates_text(),
+            matched_template_candidates_text(context),
+        ]);
     }
+    None
 }
+
+const TEMPLATE_TABLE_COLUMNS: &[TableColumn] = &[
+    TableColumn {
+        header: "slot",
+        align: ColumnAlign::Left,
+    },
+    TableColumn {
+        header: "template",
+        align: ColumnAlign::Left,
+    },
+    TableColumn {
+        header: "fields",
+        align: ColumnAlign::Left,
+    },
+    TableColumn {
+        header: "sizing",
+        align: ColumnAlign::Left,
+    },
+    TableColumn {
+        header: "specificity",
+        align: ColumnAlign::Right,
+    },
+    TableColumn {
+        header: "predicates",
+        align: ColumnAlign::Left,
+    },
+    TableColumn {
+        header: "candidates",
+        align: ColumnAlign::Left,
+    },
+];
 
 fn bool_text(value: bool) -> &'static str {
     if value {
@@ -892,14 +980,23 @@ fn foreground_style(color: PaletteColor) -> Style {
 }
 
 pub fn hit_at(hit_regions: &[HitRegion], row: usize, col: usize) -> Option<HitRegion> {
+    // Pick the smallest matching region. Card-wide SwitchTab hits would
+    // otherwise shadow single-cell controls (tristate glyph, gear, etc.)
+    // because they're registered after the controls. Ties broken by
+    // registration order (later wins) via `rev`.
     hit_regions
         .iter()
         .rev()
-        .find(|region| {
+        .filter(|region| {
             row >= region.row_start
                 && row <= region.row_end
                 && col >= region.col_start
                 && col <= region.col_end
+        })
+        .min_by_key(|region| {
+            let rows = region.row_end.saturating_sub(region.row_start) + 1;
+            let cols = region.col_end.saturating_sub(region.col_start) + 1;
+            rows * cols
         })
         .cloned()
 }
@@ -916,6 +1013,7 @@ fn render_cards(
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
+    metadata_controls: &MetadataControls,
 ) {
     match config.structure {
         RailStructure::JoinedCells => render_joined_cells(
@@ -930,6 +1028,7 @@ fn render_cards(
             theme,
             terminal_cell_size,
             template_catalog,
+            metadata_controls,
         ),
         RailStructure::SplitAroundActive => render_split_around_active(
             lines,
@@ -943,6 +1042,7 @@ fn render_cards(
             theme,
             terminal_cell_size,
             template_catalog,
+            metadata_controls,
         ),
         RailStructure::BoxPerTab => render_box_per_tab(
             lines,
@@ -956,6 +1056,7 @@ fn render_cards(
             theme,
             terminal_cell_size,
             template_catalog,
+            metadata_controls,
         ),
     }
 }
@@ -972,13 +1073,30 @@ fn render_nodes(
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
-) {
+    metadata_controls: &MetadataControls,
+    rail_scroll_offset: isize,
+) -> usize {
     if nodes.is_empty() || available_rows == 0 {
-        return;
+        return 0;
     }
 
-    if let Some(cards) = top_level_cards(nodes) {
-        return render_cards(
+    // Root's MetaChildren cascades to descendants.
+    let root_meta_children =
+        metadata_controls.propagates_to_children(&NodeKey::Root, false);
+
+    if let Some(top_tabs) = top_level_tabs(nodes) {
+        let cards = top_tabs
+            .iter()
+            .map(|tab| {
+                let mut card = tab.card.clone();
+                let key = NodeKey::Tab(card.tab_id);
+                if metadata_controls.effective_show(&key, root_meta_children) {
+                    card.meta_panel = Some(tab_metadata_block(tab));
+                }
+                card
+            })
+            .collect::<Vec<_>>();
+        render_cards(
             lines,
             hit_regions,
             visible_cards,
@@ -990,9 +1108,12 @@ fn render_nodes(
             theme,
             terminal_cell_size,
             template_catalog,
+            metadata_controls,
         );
+        // Top-level (ungrouped) path doesn't go through copy_visible_buffer;
+        // visible_cells already fits content. No scroll concept here yet.
+        return 0;
     }
-
     let mut buffered_lines = vec![];
     let mut buffered_hits = vec![];
     let mut buffered_cards = vec![];
@@ -1008,7 +1129,10 @@ fn render_nodes(
         terminal_cell_size,
         template_catalog,
         &BTreeSet::new(),
+        metadata_controls,
+        root_meta_children,
     );
+    let content_height = buffered_lines.len();
     copy_visible_buffer(
         lines,
         hit_regions,
@@ -1018,14 +1142,16 @@ fn render_nodes(
         buffered_cards,
         active_tab_id(nodes),
         available_rows,
+        rail_scroll_offset,
     );
+    content_height
 }
 
-fn top_level_cards(nodes: &[RenderNode]) -> Option<Vec<RenderCard>> {
+fn top_level_tabs(nodes: &[RenderNode]) -> Option<Vec<&RenderTab>> {
     nodes
         .iter()
         .map(|node| match node {
-            RenderNode::Tab(tab) if tab.indent == 0 => Some(tab.card.clone()),
+            RenderNode::Tab(tab) if tab.indent == 0 => Some(tab),
             _ => None,
         })
         .collect()
@@ -1043,13 +1169,15 @@ fn render_nodes_to_buffer(
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
     ancestor_template_fields: &BTreeSet<ResolvedTemplateFieldSource>,
+    metadata_controls: &MetadataControls,
+    ancestor_meta_children: bool,
 ) {
     let mut pending_tabs = vec![];
     for node in nodes {
         match node {
             RenderNode::Tab(tab) => pending_tabs.push(tab.clone()),
             RenderNode::Group(group) => {
-                append_tab_run(
+                let _tab_allocations = append_tab_run(
                     lines,
                     hit_regions,
                     visible_cards,
@@ -1060,9 +1188,11 @@ fn render_nodes_to_buffer(
                     theme,
                     terminal_cell_size,
                     template_catalog,
+                    metadata_controls,
+                    ancestor_meta_children,
                 );
                 pending_tabs.clear();
-                let visible_header_sources = append_group_header(
+                let (visible_header_sources, _group_allocation) = append_group_header(
                     lines,
                     hit_regions,
                     group,
@@ -1070,10 +1200,23 @@ fn render_nodes_to_buffer(
                     theme,
                     template_catalog,
                     ancestor_template_fields,
+                    metadata_controls,
                 );
+                let group_key = NodeKey::Group(group.path.clone());
+                if metadata_controls.effective_show(&group_key, ancestor_meta_children) {
+                    append_meta_panel(
+                        lines,
+                        group.indent + 2,
+                        cols,
+                        group_metadata_block(group),
+                        theme,
+                    );
+                }
                 if !group.collapsed {
                     let mut child_ancestor_template_fields = ancestor_template_fields.clone();
                     child_ancestor_template_fields.extend(visible_header_sources);
+                    let child_meta_children = metadata_controls
+                        .propagates_to_children(&group_key, ancestor_meta_children);
                     render_nodes_to_buffer(
                         lines,
                         hit_regions,
@@ -1086,12 +1229,14 @@ fn render_nodes_to_buffer(
                         terminal_cell_size,
                         template_catalog,
                         &child_ancestor_template_fields,
+                        metadata_controls,
+                        child_meta_children,
                     );
                 }
             }
         }
     }
-    append_tab_run(
+    let _trailing_tab_allocations = append_tab_run(
         lines,
         hit_regions,
         visible_cards,
@@ -1102,7 +1247,15 @@ fn render_nodes_to_buffer(
         theme,
         terminal_cell_size,
         template_catalog,
+        metadata_controls,
+        ancestor_meta_children,
     );
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeRowAllocation {
+    pub key: NodeKey,
+    pub rows: std::ops::Range<usize>,
 }
 
 fn append_group_header(
@@ -1113,10 +1266,22 @@ fn append_group_header(
     theme: Option<RenderTheme>,
     template_catalog: Option<&TemplateConfigCatalog>,
     ancestor_template_fields: &BTreeSet<ResolvedTemplateFieldSource>,
-) -> BTreeSet<ResolvedTemplateFieldSource> {
+    metadata_controls: &MetadataControls,
+) -> (BTreeSet<ResolvedTemplateFieldSource>, NodeRowAllocation) {
     let row = lines.len();
     let indent = group.indent.min(cols);
     let inner_width = cols.saturating_sub(indent);
+    // Reserve the last 2 cells when the metadata root toggle is on: glyph
+    // at width-2 (vertically aligning with the tab cards' glyphs, which sit
+    // just inside the `┐` corner), and a `─` filler at width-1 so the
+    // horizontal line visually continues past the glyph the way the tab
+    // border's corner does.
+    let glyph_reserved = metadata_controls.root_enabled && inner_width >= 4;
+    let header_width = if glyph_reserved {
+        inner_width.saturating_sub(2)
+    } else {
+        inner_width
+    };
     let mut line = " ".repeat(indent);
     let rendered = group_header_line(
         &group.metadata,
@@ -1124,12 +1289,32 @@ fn append_group_header(
         contains_active_tab(&group.children),
         active_tab_name(&group.children),
         group.templates.group_header.as_ref(),
-        inner_width,
+        header_width,
         theme,
         template_catalog,
         ancestor_template_fields,
     );
     line.push_str(&rendered.text);
+    if glyph_reserved {
+        let key = NodeKey::Group(group.path.clone());
+        let glyph = effective_node_glyph(metadata_controls, &key);
+        let styled_tail = style_group_header_text(
+            format!("{glyph}─"),
+            contains_active_tab(&group.children),
+            theme,
+        );
+        line.push_str(&styled_tail);
+        hit_regions.push(HitRegion {
+            row_start: row,
+            row_end: row,
+            col_start: indent + inner_width - 2,
+            col_end: indent + inner_width - 2,
+            tab_id: 0,
+            tab_position: 0,
+            group_path: Some(group.path.clone()),
+            action: HitAction::CycleMetadataTriState,
+        });
+    }
     lines.push(line);
     hit_regions.push(HitRegion {
         row_start: row,
@@ -1141,7 +1326,11 @@ fn append_group_header(
         group_path: Some(group.path.clone()),
         action: HitAction::ToggleGroup,
     });
-    rendered.visible_sources
+    let allocation = NodeRowAllocation {
+        key: NodeKey::Group(group.path.clone()),
+        rows: row..row + 1,
+    };
+    (rendered.visible_sources, allocation)
 }
 
 fn append_tab_run(
@@ -1155,9 +1344,11 @@ fn append_tab_run(
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
-) {
+    metadata_controls: &MetadataControls,
+    ancestor_meta_children: bool,
+) -> Vec<NodeRowAllocation> {
     if tabs.is_empty() {
-        return;
+        return vec![];
     }
     let indent = tabs
         .iter()
@@ -1166,7 +1357,17 @@ fn append_tab_run(
         .unwrap_or(0)
         .min(cols.saturating_sub(1));
     let inner_cols = cols.saturating_sub(indent);
-    let cards = tabs.iter().map(|tab| tab.card.clone()).collect::<Vec<_>>();
+    let cards = tabs
+        .iter()
+        .map(|tab| {
+            let mut card = tab.card.clone();
+            let key = NodeKey::Tab(card.tab_id);
+            if metadata_controls.effective_show(&key, ancestor_meta_children) {
+                card.meta_panel = Some(tab_metadata_block(tab));
+            }
+            card
+        })
+        .collect::<Vec<_>>();
     let run_height = generous_card_run_height(&cards, config.sizing);
     let mut local_lines = vec![blank(inner_cols); run_height];
     let mut local_hits = vec![];
@@ -1183,6 +1384,7 @@ fn append_tab_run(
         theme,
         terminal_cell_size,
         template_catalog,
+        metadata_controls,
     );
     let used_rows = local_lines
         .iter()
@@ -1190,6 +1392,17 @@ fn append_tab_run(
         .map(|index| index + 1)
         .unwrap_or(0);
     let row_offset = lines.len();
+    // Per-tab row ranges derived from the SwitchTab hit regions that
+    // add_card_metadata emits for every rendered card. The hit region's
+    // row_start/row_end span the card body inclusive.
+    let allocations = local_hits
+        .iter()
+        .filter(|hit| hit.action == HitAction::SwitchTab)
+        .map(|hit| NodeRowAllocation {
+            key: NodeKey::Tab(hit.tab_id),
+            rows: (hit.row_start + row_offset)..(hit.row_end + row_offset + 1),
+        })
+        .collect::<Vec<_>>();
     lines.extend(
         local_lines
             .into_iter()
@@ -1212,6 +1425,7 @@ fn append_tab_run(
         }
         visible_card
     }));
+    allocations
 }
 
 fn generous_card_run_height(cards: &[RenderCard], sizing: RailSizingPreset) -> usize {
@@ -1231,6 +1445,7 @@ fn copy_visible_buffer(
     buffered_cards: Vec<VisibleCard>,
     active_tab_id: Option<u64>,
     available_rows: usize,
+    user_scroll_offset: isize,
 ) {
     if buffered_lines.is_empty() || available_rows == 0 {
         return;
@@ -1255,9 +1470,12 @@ fn copy_visible_buffer(
                 .map(|hit| hit.row_start)
         })
         .unwrap_or(0);
-    let visible_start = active_row
+    let max_start = buffered_lines.len().saturating_sub(available_rows);
+    let auto_start = active_row
         .saturating_sub(available_rows / 2)
-        .min(buffered_lines.len().saturating_sub(available_rows));
+        .min(max_start);
+    let visible_start = ((auto_start as isize) + user_scroll_offset)
+        .clamp(0, max_start as isize) as usize;
     let visible_end = buffered_lines.len().min(visible_start + available_rows);
 
     for (output_row, line) in buffered_lines[visible_start..visible_end]
@@ -1328,6 +1546,7 @@ fn render_joined_cells(
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
+    metadata_controls: &MetadataControls,
 ) {
     let visible = visible_cells(cards, available_rows, sizing);
     for (visible_index, (card_index, cell_height)) in visible.iter().copied().enumerate() {
@@ -1337,12 +1556,16 @@ fn render_joined_cells(
             .take(visible_index)
             .map(|(_, height)| *height)
             .sum();
-        lines[row] = title_border_line(
+        write_tab_top_border(
+            lines,
+            hit_regions,
+            row,
             &tab_title_with_template_catalog(card, template_catalog),
             cols,
             visible_index == 0,
-            card.active,
+            card,
             theme,
+            metadata_controls,
         );
         render_card_body(
             lines,
@@ -1380,6 +1603,7 @@ fn render_split_around_active(
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
+    metadata_controls: &MetadataControls,
 ) {
     let Some(active_index) = cards.iter().position(|card| card.active) else {
         return render_joined_cells(
@@ -1394,6 +1618,7 @@ fn render_split_around_active(
             theme,
             terminal_cell_size,
             template_catalog,
+            metadata_controls,
         );
     };
     let visible = visible_cells(cards, available_rows, sizing);
@@ -1416,6 +1641,7 @@ fn render_split_around_active(
                 theme,
                 terminal_cell_size,
                 template_catalog,
+                metadata_controls,
             );
             continue;
         }
@@ -1425,12 +1651,16 @@ fn render_split_around_active(
                 .get(visible_index.saturating_sub(1))
                 .map(|(previous_card_index, _)| *previous_card_index == active_index)
                 .unwrap_or(false);
-        lines[row] = title_border_line(
+        write_tab_top_border(
+            lines,
+            hit_regions,
+            row,
             &tab_title_with_template_catalog(card, template_catalog),
             cols,
             first_in_run,
-            false,
+            card,
             theme,
+            metadata_controls,
         );
         render_card_body(
             lines,
@@ -1471,6 +1701,7 @@ fn render_box_per_tab(
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
+    metadata_controls: &MetadataControls,
 ) {
     let visible = visible_boxes(cards, available_rows, sizing);
     let mut row = 0;
@@ -1487,6 +1718,7 @@ fn render_box_per_tab(
             theme,
             terminal_cell_size,
             template_catalog,
+            metadata_controls,
         );
     }
 }
@@ -1503,42 +1735,54 @@ fn render_standalone_box(
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
+    metadata_controls: &MetadataControls,
 ) -> usize {
     if row >= lines.len() || box_height < 2 {
         return row;
     }
-    lines[row] = title_border_line(
+    write_tab_top_border(
+        lines,
+        hit_regions,
+        row,
         &tab_title_with_template_catalog(card, template_catalog),
         cols,
         true,
-        card.active,
+        card,
         theme,
+        metadata_controls,
     );
-    let body_rows = box_height.saturating_sub(2);
-    let body_lines = body_lines(
+    let total_body_rows = box_height.saturating_sub(2);
+    let meta_lines = card.meta_panel.as_ref();
+    let meta_rows = meta_lines.map_or(0, |panel| panel.len());
+    let base_body_rows = total_body_rows.saturating_sub(meta_rows);
+    let status_body_lines = body_lines(
         card,
         row,
-        body_rows,
+        base_body_rows,
         cols,
         terminal_cell_size,
         template_catalog,
     );
-    for body_index in 0..body_rows {
+    for body_index in 0..total_body_rows {
+        let text = if body_index < base_body_rows {
+            status_body_lines
+                .get(body_index)
+                .map(String::as_str)
+                .unwrap_or_default()
+        } else {
+            meta_lines
+                .and_then(|panel| panel.get(body_index - base_body_rows))
+                .map(String::as_str)
+                .unwrap_or_default()
+        };
         if let Some(line) = lines.get_mut(row + 1 + body_index) {
-            *line = body_line(
-                body_lines
-                    .get(body_index)
-                    .map(String::as_str)
-                    .unwrap_or_default(),
-                cols,
-                card.active,
-                theme,
-            );
+            *line = body_line(text, cols, card.active, theme);
         }
     }
     if let Some(line) = lines.get_mut(row + box_height - 1) {
         *line = bottom_border_line(cols, card.active, theme);
     }
+    let body_rows = total_body_rows;
     add_card_metadata(
         hit_regions,
         visible_cards,
@@ -1566,26 +1810,32 @@ fn render_card_body(
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
 ) {
-    let body_rows = cell_height.saturating_sub(1);
-    let body_lines = body_lines(
+    let total_body_rows = cell_height.saturating_sub(1);
+    let meta_lines = card.meta_panel.as_ref();
+    let meta_rows = meta_lines.map_or(0, |panel| panel.len());
+    let base_body_rows = total_body_rows.saturating_sub(meta_rows);
+    let status_body_lines = body_lines(
         card,
         row,
-        body_rows,
+        base_body_rows,
         cols,
         terminal_cell_size,
         template_catalog,
     );
-    for body_index in 0..body_rows {
+    for body_index in 0..total_body_rows {
+        let text = if body_index < base_body_rows {
+            status_body_lines
+                .get(body_index)
+                .map(String::as_str)
+                .unwrap_or_default()
+        } else {
+            meta_lines
+                .and_then(|panel| panel.get(body_index - base_body_rows))
+                .map(String::as_str)
+                .unwrap_or_default()
+        };
         if let Some(line) = lines.get_mut(row + 1 + body_index) {
-            *line = body_line(
-                body_lines
-                    .get(body_index)
-                    .map(String::as_str)
-                    .unwrap_or_default(),
-                cols,
-                card.active,
-                theme,
-            );
+            *line = body_line(text, cols, card.active, theme);
         }
     }
     add_card_metadata(
@@ -1596,7 +1846,7 @@ fn render_card_body(
         cell_height,
         cols,
         controller_available,
-        body_rows,
+        total_body_rows,
         terminal_cell_size,
     );
 }
@@ -1678,7 +1928,7 @@ fn nodes_to_render(
                         metadata,
                         metadata_sources: RenderMetadataSources::new(),
                         reachable_identities: RenderReachableIdentities::new(),
-                        templates: ResolvedTemplateSlots::default(),
+                        templates: ResolvedTemplateSlots::default(),                        meta_panel: None,
                     },
                     indent: 0,
                     grouping: None,
@@ -2121,6 +2371,7 @@ fn render_card_from_model(card: &TabCard, local_by_id: &HashMap<u64, &LocalTab>)
         metadata_sources: RenderMetadataSources::new(),
         reachable_identities: RenderReachableIdentities::new(),
         templates: card.templates.clone(),
+        meta_panel: None,
     }
 }
 
@@ -2279,13 +2530,17 @@ fn cell_height(card: &RenderCard, sizing: RailSizingPreset, joined_cell: bool) -
     } else {
         COMPACT_CELL_HEIGHT + 1
     };
-    match sizing {
+    let base = match sizing {
         RailSizingPreset::Compact => compact,
         RailSizingPreset::Large => ACTIVE_CELL_HEIGHT,
         RailSizingPreset::ActiveLarge if card.active => ACTIVE_CELL_HEIGHT,
         RailSizingPreset::PinnedLarge if card.active || card.pinned => ACTIVE_CELL_HEIGHT,
         RailSizingPreset::ActiveLarge | RailSizingPreset::PinnedLarge => compact,
-    }
+    };
+    // Meta panel sits inside the card body; grow the card by the number of
+    // panel rows so the existing border + body layout absorbs them without
+    // breaking joined-cells adjacency.
+    base + card.meta_panel.as_ref().map_or(0, |panel| panel.len())
 }
 
 fn format_status_with_template_catalog(
@@ -2479,46 +2734,361 @@ pub fn status_icon_is_renderable(icon: &StatusIcon) -> bool {
     matches!(icon, StatusIcon::PngFile(_))
 }
 
-fn title_border_line(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BorderKind {
+    Top { active: bool, first_cell: bool },
+    Bottom { active: bool },
+    Footer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CellStyle {
+    Border { active: bool },
+    Title { active: bool },
+    Body,
+}
+
+#[derive(Debug, Clone)]
+struct BorderCell {
+    glyph: char,
+    style: CellStyle,
+    owner: Option<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+struct BorderHitPayload {
+    tab_id: u64,
+    tab_position: usize,
+    group_path: Option<GroupPath>,
+}
+
+impl BorderHitPayload {
+    fn none() -> Self {
+        Self {
+            tab_id: 0,
+            tab_position: 0,
+            group_path: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BorderPendingHit {
+    col_start: usize,
+    col_end: usize,
+    action: HitAction,
+    payload: BorderHitPayload,
+}
+
+/// Single-row builder that tracks per-cell ownership so two widgets cannot
+/// silently overpaint each other. Existing border/footer rendering routes
+/// through this; new controls (tri-state, root toggle) will use the same
+/// placement API.
+struct BorderRow {
+    cells: Vec<BorderCell>,
+    width: usize,
+    kind: BorderKind,
+    hits: Vec<BorderPendingHit>,
+}
+
+impl BorderRow {
+    fn new(width: usize, kind: BorderKind) -> Self {
+        let (fill_glyph, fill_style) = match kind {
+            BorderKind::Top { active, .. } | BorderKind::Bottom { active } => {
+                ('─', CellStyle::Border { active })
+            }
+            BorderKind::Footer => (' ', CellStyle::Body),
+        };
+        let mut cells = (0..width)
+            .map(|_| BorderCell {
+                glyph: fill_glyph,
+                style: fill_style,
+                owner: None,
+            })
+            .collect::<Vec<_>>();
+        if width >= 1 {
+            if let Some((glyph, style)) = corner_left(kind) {
+                cells[0] = BorderCell {
+                    glyph,
+                    style,
+                    owner: Some("corner_left"),
+                };
+            }
+        }
+        if width >= 2 {
+            if let Some((glyph, style)) = corner_right(kind) {
+                cells[width - 1] = BorderCell {
+                    glyph,
+                    style,
+                    owner: Some("corner_right"),
+                };
+            }
+        }
+        Self {
+            cells,
+            width,
+            kind,
+            hits: vec![],
+        }
+    }
+
+    fn inner_range(&self) -> std::ops::Range<usize> {
+        let start = match self.kind {
+            BorderKind::Top { .. } | BorderKind::Bottom { .. } if self.width >= 1 => 1,
+            _ => 0,
+        };
+        let end = match self.kind {
+            BorderKind::Top { .. } | BorderKind::Bottom { .. } if self.width >= 2 => self.width - 1,
+            _ => self.width,
+        };
+        start.min(end)..end
+    }
+
+    fn decoration_style(&self) -> CellStyle {
+        match self.kind {
+            BorderKind::Top { active, .. } | BorderKind::Bottom { active } => {
+                CellStyle::Border { active }
+            }
+            BorderKind::Footer => CellStyle::Body,
+        }
+    }
+
+    fn place_left(
+        &mut self,
+        offset: usize,
+        glyph: char,
+        hit: Option<(HitAction, BorderHitPayload)>,
+        owner: &'static str,
+    ) {
+        let inner = self.inner_range();
+        let col = inner.start + offset;
+        self.place_at(col, glyph, hit, owner);
+    }
+
+    fn place_right(
+        &mut self,
+        offset: usize,
+        glyph: char,
+        hit: Option<(HitAction, BorderHitPayload)>,
+        owner: &'static str,
+    ) {
+        let inner = self.inner_range();
+        if inner.end == 0 {
+            return;
+        }
+        let col = inner.end - 1 - offset;
+        self.place_at(col, glyph, hit, owner);
+    }
+
+    fn place_at(
+        &mut self,
+        col: usize,
+        glyph: char,
+        hit: Option<(HitAction, BorderHitPayload)>,
+        owner: &'static str,
+    ) {
+        let inner = self.inner_range();
+        if col < inner.start || col >= inner.end {
+            debug_assert!(
+                false,
+                "BorderRow::place_at out of inner range: col={} inner={:?} owner={}",
+                col, inner, owner
+            );
+            return;
+        }
+        if let Some(existing) = self.cells[col].owner {
+            debug_assert!(
+                false,
+                "BorderRow cell collision at col={} (claimed by {}, attempted by {})",
+                col, existing, owner
+            );
+            return;
+        }
+        self.cells[col] = BorderCell {
+            glyph,
+            style: self.decoration_style(),
+            owner: Some(owner),
+        };
+        if let Some((action, payload)) = hit {
+            self.hits.push(BorderPendingHit {
+                col_start: col,
+                col_end: col,
+                action,
+                payload,
+            });
+        }
+    }
+
+    /// Place a title in the leftmost unclaimed inner cells. Pads the title
+    /// with one space on each side and truncates to fit. Caller is responsible
+    /// for placing decorations *before* calling `title` if those decorations
+    /// should constrain title width.
+    fn title(&mut self, title: &str) {
+        let inner = self.inner_range();
+        if inner.is_empty() {
+            return;
+        }
+        // Find the leftmost unclaimed run starting at inner.start.
+        let mut run_start = inner.start;
+        while run_start < inner.end && self.cells[run_start].owner.is_some() {
+            run_start += 1;
+        }
+        let mut run_end = run_start;
+        while run_end < inner.end && self.cells[run_end].owner.is_none() {
+            run_end += 1;
+        }
+        let run_width = run_end - run_start;
+        if run_width == 0 {
+            return;
+        }
+        let padded = format!(" {title} ");
+        let label = truncate_to_width(&padded, run_width);
+        let title_style = match self.kind {
+            BorderKind::Top { active, .. } | BorderKind::Bottom { active } => {
+                CellStyle::Title { active }
+            }
+            BorderKind::Footer => CellStyle::Body,
+        };
+        let mut col = run_start;
+        for ch in label.chars() {
+            if col >= run_end {
+                break;
+            }
+            let ch_width = ch.width().unwrap_or(0).max(1);
+            self.cells[col] = BorderCell {
+                glyph: ch,
+                style: title_style,
+                owner: Some("title"),
+            };
+            col += ch_width;
+        }
+    }
+
+    fn finish(self, row: usize, theme: Option<RenderTheme>) -> (String, Vec<HitRegion>) {
+        let mut out = String::new();
+        if !self.cells.is_empty() {
+            let mut i = 0;
+            while i < self.cells.len() {
+                let style = self.cells[i].style;
+                let mut j = i + 1;
+                while j < self.cells.len() && self.cells[j].style == style {
+                    j += 1;
+                }
+                let span: String = self.cells[i..j].iter().map(|c| c.glyph).collect();
+                out.push_str(&style_span(span, style, theme));
+                i = j;
+            }
+        }
+        let hits = self
+            .hits
+            .into_iter()
+            .map(|hit| HitRegion {
+                row_start: row,
+                row_end: row,
+                col_start: hit.col_start,
+                col_end: hit.col_end,
+                tab_id: hit.payload.tab_id,
+                tab_position: hit.payload.tab_position,
+                group_path: hit.payload.group_path,
+                action: hit.action,
+            })
+            .collect();
+        (out, hits)
+    }
+
+    fn into_line(self, theme: Option<RenderTheme>) -> String {
+        self.finish(0, theme).0
+    }
+}
+
+fn corner_left(kind: BorderKind) -> Option<(char, CellStyle)> {
+    match kind {
+        BorderKind::Top { active, first_cell } => Some((
+            if first_cell { '┌' } else { '├' },
+            CellStyle::Border { active },
+        )),
+        BorderKind::Bottom { active } => Some(('└', CellStyle::Border { active })),
+        BorderKind::Footer => None,
+    }
+}
+
+fn corner_right(kind: BorderKind) -> Option<(char, CellStyle)> {
+    match kind {
+        BorderKind::Top { active, first_cell } => Some((
+            if first_cell { '┐' } else { '┤' },
+            CellStyle::Border { active },
+        )),
+        BorderKind::Bottom { active } => Some(('┘', CellStyle::Border { active })),
+        BorderKind::Footer => None,
+    }
+}
+
+fn style_span(text: String, style: CellStyle, theme: Option<RenderTheme>) -> String {
+    match style {
+        CellStyle::Border { active } => style_border_text(text, active, theme),
+        CellStyle::Title { active } => style_title_text(text, active, theme),
+        CellStyle::Body => style_body_text(text, theme),
+    }
+}
+
+/// Effective glyph for a node given the explicit-state map. Step 3 treats
+/// absent (no explicit override) the same as Clean visually; step 4 will add
+/// the inherited-dim distinction.
+fn effective_node_glyph(controls: &MetadataControls, key: &NodeKey) -> char {
+    controls
+        .per_node
+        .get(key)
+        .copied()
+        .unwrap_or(MetadataTriState::Clean)
+        .glyph()
+}
+
+/// Top border for a tab card. Places a tri-state metadata glyph on the right
+/// when controls.root_enabled and there's room. Hit region emitted at the
+/// glyph cell to drive the cycle action.
+fn write_tab_top_border(
+    lines: &mut [String],
+    hit_regions: &mut Vec<HitRegion>,
+    row: usize,
     title: &str,
     width: usize,
     first_cell: bool,
-    active: bool,
+    card: &RenderCard,
     theme: Option<RenderTheme>,
-) -> String {
-    let left = if first_cell { "┌" } else { "├" };
-    let right = if first_cell { "┐" } else { "┤" };
-    border_line(left, right, &format!(" {title} "), width, active, theme)
+    metadata_controls: &MetadataControls,
+) {
+    let mut border = BorderRow::new(
+        width,
+        BorderKind::Top {
+            active: card.active,
+            first_cell,
+        },
+    );
+    if metadata_controls.root_enabled && width >= 4 {
+        let key = NodeKey::Tab(card.tab_id);
+        let glyph = effective_node_glyph(metadata_controls, &key);
+        let payload = BorderHitPayload {
+            tab_id: card.tab_id,
+            tab_position: card.position,
+            group_path: None,
+        };
+        border.place_right(
+            0,
+            glyph,
+            Some((HitAction::CycleMetadataTriState, payload)),
+            "tab_metadata_tristate",
+        );
+    }
+    border.title(title);
+    let (line, hits) = border.finish(row, theme);
+    if let Some(slot) = lines.get_mut(row) {
+        *slot = line;
+    }
+    hit_regions.extend(hits);
 }
 
 fn bottom_border_line(width: usize, active: bool, theme: Option<RenderTheme>) -> String {
-    border_line("└", "┘", "", width, active, theme)
-}
-
-fn border_line(
-    left: &str,
-    right: &str,
-    label: &str,
-    width: usize,
-    active: bool,
-    theme: Option<RenderTheme>,
-) -> String {
-    match width {
-        0 => String::new(),
-        1 => style_border_text(left.to_owned(), active, theme),
-        _ => {
-            let inner_width = width - 2;
-            let label = truncate_to_width(label, inner_width);
-            let fill_width = inner_width.saturating_sub(label.width());
-            format!(
-                "{}{}{}{}",
-                style_border_text(left.to_owned(), active, theme),
-                style_title_text(label, active, theme),
-                style_border_text("─".repeat(fill_width), active, theme),
-                style_border_text(right.to_owned(), active, theme)
-            )
-        }
-    }
+    BorderRow::new(width, BorderKind::Bottom { active }).into_line(theme)
 }
 
 fn body_line(text: &str, width: usize, active: bool, theme: Option<RenderTheme>) -> String {
@@ -2544,51 +3114,64 @@ fn render_footer(
     row: usize,
     width: usize,
     theme: Option<RenderTheme>,
+    metadata_controls: &MetadataControls,
+    rail_can_scroll: bool,
 ) {
     if width == 0 {
         return;
     }
-    let mut chars = vec![' '; width];
-    chars[0] = '⚙';
+    let mut footer = BorderRow::new(width, BorderKind::Footer);
+    footer.place_left(
+        0,
+        '⚙',
+        Some((HitAction::OpenConfig, BorderHitPayload::none())),
+        "footer_gear",
+    );
     if width >= 2 {
-        chars[width - 2] = '▲';
-        chars[width - 1] = '▼';
-    } else {
-        chars[0] = '⚙';
+        let toggle_glyph = if metadata_controls.root_enabled {
+            '◆'
+        } else {
+            '◇'
+        };
+        footer.place_left(
+            1,
+            toggle_glyph,
+            Some((HitAction::ToggleMetadataRoot, BorderHitPayload::none())),
+            "footer_metadata_root",
+        );
+        if rail_can_scroll {
+            footer.place_right(
+                1,
+                '▲',
+                Some((HitAction::ScrollRailUp, BorderHitPayload::none())),
+                "footer_scroll_up",
+            );
+            footer.place_right(
+                0,
+                '▼',
+                Some((HitAction::ScrollRailDown, BorderHitPayload::none())),
+                "footer_scroll_down",
+            );
+        }
     }
-    lines[row] = style_body_text(chars.into_iter().collect(), theme);
-    hit_regions.push(HitRegion {
-        row_start: row,
-        row_end: row,
-        col_start: 0,
-        col_end: 0,
-        tab_id: 0,
-        tab_position: 0,
-        group_path: None,
-        action: HitAction::OpenConfig,
-    });
-    if width >= 2 {
-        hit_regions.push(HitRegion {
-            row_start: row,
-            row_end: row,
-            col_start: width - 2,
-            col_end: width - 2,
-            tab_id: 0,
-            tab_position: 0,
-            group_path: None,
-            action: HitAction::ScrollMetadataUp,
-        });
-        hit_regions.push(HitRegion {
-            row_start: row,
-            row_end: row,
-            col_start: width - 1,
-            col_end: width - 1,
-            tab_id: 0,
-            tab_position: 0,
-            group_path: None,
-            action: HitAction::ScrollMetadataDown,
-        });
+    // Root tri-state glyph sits one cell left of the scroll arrows (when
+    // present) — roughly inline with the per-node glyphs on the tab/group
+    // borders above.
+    if metadata_controls.root_enabled && width >= 5 {
+        let offset = if rail_can_scroll { 2 } else { 0 };
+        footer.place_right(
+            offset,
+            effective_node_glyph(metadata_controls, &NodeKey::Root),
+            Some((
+                HitAction::CycleRootMetadataTriState,
+                BorderHitPayload::none(),
+            )),
+            "footer_root_tristate",
+        );
     }
+    let (line, hits) = footer.finish(row, theme);
+    lines[row] = line;
+    hit_regions.extend(hits);
 }
 
 fn group_header_line(
@@ -3379,7 +3962,7 @@ mod tests {
     use super::*;
     use andamento_shared::{
         GroupPath, GroupSegment, MetadataEntry, MetadataTarget, MetadataValue, PaneTarget,
-        RailConfig, RailGroupingMode, RailRow, RailSizingPreset, RailStructure, RailViewMode,
+        RailConfig, RailGroupingMode, RailRow, RailSizingPreset, RailStructure,
         ResolvedMetadata, SortMode, StatusIcon,
     };
 
@@ -3430,6 +4013,7 @@ mod tests {
             rows: vec![],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            metadata_controls: MetadataControls::default(),
         }
     }
 
@@ -3492,6 +4076,7 @@ mod tests {
             ],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            metadata_controls: MetadataControls::default(),
         }
     }
 
@@ -3502,13 +4087,13 @@ mod tests {
                 grouping: RailGroupingMode::Directory,
                 structure: RailStructure::JoinedCells,
                 sizing: RailSizingPreset::Compact,
-                view: RailViewMode::Normal,
             },
             template_config: andamento_shared::TemplateConfigDiagnostics::default(),
             tabs: vec![],
             rows: vec![],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            metadata_controls: MetadataControls::default(),
         };
         for (tab_id, worktree) in [(1, "worktree-a"), (2, "worktree-b")] {
             let path = GroupPath(vec![
@@ -3540,8 +4125,7 @@ mod tests {
                 label: worktree.to_owned(),
                 full_label: format!("project-a/{worktree}"),
                 tab_count: 1,
-                templates: ResolvedTemplateSlots::default(),
-            });
+                templates: ResolvedTemplateSlots::default(),            });
             let tab_id = tab.tab_id;
             model.tabs.push(tab);
             model.rows.push(RailRow::Tab {
@@ -3573,9 +4157,8 @@ mod tests {
                 grouping: RailGroupingMode::Directory,
                 structure: RailStructure::JoinedCells,
                 sizing: RailSizingPreset::Compact,
-                view: RailViewMode::Normal,
             },
-            template_config: tabs_shared::TemplateConfigDiagnostics::default(),
+            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
             tabs: vec![
                 TabCard {
                     tab_id: 1,
@@ -3630,6 +4213,7 @@ mod tests {
             ],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            metadata_controls: MetadataControls::default(),
         }
     }
 
@@ -3703,8 +4287,7 @@ mod tests {
             metadata: metadata_for_group_header(&GroupPath::default(), "parent", "parent", 1),
             metadata_sources: RenderMetadataSources::new(),
             reachable_identities: RenderReachableIdentities::new(),
-            templates: ResolvedTemplateSlots::default(),
-            children: vec![RenderNode::Group(RenderGroup {
+            templates: ResolvedTemplateSlots::default(),            children: vec![RenderNode::Group(RenderGroup {
                 path: GroupPath::default(),
                 label: "typed-child".to_owned(),
                 full_label: "typed-child".to_owned(),
@@ -3714,8 +4297,7 @@ mod tests {
                 metadata: metadata_for_group_header(&GroupPath::default(), "child", "child", 1),
                 metadata_sources: RenderMetadataSources::new(),
                 reachable_identities: RenderReachableIdentities::new(),
-                templates: ResolvedTemplateSlots::default(),
-                children: vec![RenderNode::Tab(RenderTab {
+                templates: ResolvedTemplateSlots::default(),                children: vec![RenderNode::Tab(RenderTab {
                     card: RenderCard {
                         tab_id: 42,
                         position: 0,
@@ -3731,7 +4313,7 @@ mod tests {
                         }),
                         metadata_sources: RenderMetadataSources::new(),
                         reachable_identities: RenderReachableIdentities::new(),
-                        templates: ResolvedTemplateSlots::default(),
+                        templates: ResolvedTemplateSlots::default(),                        meta_panel: None,
                     },
                     indent: 4,
                     grouping: None,
@@ -3755,6 +4337,8 @@ mod tests {
             None,
             None,
             None,
+            &MetadataControls::default(),
+            0,
         );
 
         assert!(lines[0].starts_with("▼ parent"));
@@ -3835,7 +4419,7 @@ mod tests {
         if let RailRow::GroupHeader { templates, .. } = &mut model.rows[0] {
             templates.group_header = Some(ResolvedTemplateSlot {
                 template_name: "repo.group-header".to_owned(),
-                fields: vec![tabs_shared::ResolvedTemplateField {
+                fields: vec![andamento_shared::ResolvedTemplateField {
                     text: "zellij-org/zellij".to_owned(),
                     priority: 100,
                     source: Some(repo_source.clone()),
@@ -3846,12 +4430,12 @@ mod tests {
             templates.group_header = Some(ResolvedTemplateSlot {
                 template_name: "branch.group-header".to_owned(),
                 fields: vec![
-                    tabs_shared::ResolvedTemplateField {
+                    andamento_shared::ResolvedTemplateField {
                         text: "zellij-org/zellij".to_owned(),
                         priority: 100,
                         source: Some(repo_source),
                     },
-                    tabs_shared::ResolvedTemplateField {
+                    andamento_shared::ResolvedTemplateField {
                         text: "feat/kitty-image-plumbing".to_owned(),
                         priority: 100,
                         source: Some(branch_source),
@@ -4355,8 +4939,7 @@ mod tests {
             metadata,
             metadata_sources: RenderMetadataSources::new(),
             reachable_identities: RenderReachableIdentities::new(),
-            templates: ResolvedTemplateSlots::default(),
-            children: vec![],
+            templates: ResolvedTemplateSlots::default(),            children: vec![],
         };
         let mut lines = vec![];
         let mut hit_regions = vec![];
@@ -4369,6 +4952,7 @@ mod tests {
             None,
             None,
             &BTreeSet::new(),
+            &MetadataControls::default(),
         );
 
         assert!(
@@ -4421,7 +5005,7 @@ mod tests {
             metadata,
             metadata_sources: RenderMetadataSources::new(),
             reachable_identities: RenderReachableIdentities::new(),
-            templates: ResolvedTemplateSlots::default(),
+            templates: ResolvedTemplateSlots::default(),            meta_panel: None,
         };
 
         assert_eq!(
@@ -4620,307 +5204,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn metadata_view_renders_group_and_tab_key_values() {
-        let mut model = grouped_model();
-        model.config.view = RailViewMode::Metadata;
 
-        let rendered = render_lines(Some(&model), &[], 52, 64, true);
 
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("group: zellij")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("zellij.pane.cwd: /Users/robert/dev/zellij")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("tab: tests")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("zellij.tab.active: true")));
-        assert!(!rendered
-            .lines
-            .iter()
-            .any(|line| line.starts_with("┌ tests")));
-    }
 
-    #[test]
-    fn metadata_view_renders_matched_template_names() {
-        let mut model = grouped_model();
-        model.config.view = RailViewMode::Metadata;
-        model.tabs[1].status = Some(TabStatusSummary {
-            priority: Priority::Waiting,
-            title: "waiting".to_owned(),
-            detail: Some("input".to_owned()),
-            icon: None,
-            source_pane: PaneTarget::Terminal(9),
-        });
 
-        let rendered = render_lines(Some(&model), &[], 80, 180, true);
 
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("template.group_header: builtin.group-header")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("template.tab_title: builtin.tab-title")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("template.tab_status: builtin.tab-status.waiting")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("template.tab_status.sizing: auto")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("template.tab_status.specificity: 4")));
-        assert!(rendered.lines.iter().any(|line| line.contains(
-            "template.tab_status.predicates: exists(status.title), status.priority == waiting"
-        )));
-        assert!(rendered.lines.iter().any(|line| line.contains(
-            "template.tab_status.candidates: builtin.tab-status(1), builtin.tab-status.waiting(4), builtin.tab-status.terminal-source(3)"
-        )));
-    }
 
-    #[test]
-    fn metadata_view_keeps_resolved_group_templates_after_child_rows() {
-        let mut model = grouped_model();
-        model.config.view = RailViewMode::Metadata;
-        if let RailRow::GroupHeader { templates, .. } = &mut model.rows[0] {
-            templates.group_header = Some(ResolvedTemplateSlot {
-                template_name: "andamento.git.group-header".to_owned(),
-                fields: vec![
-                    andamento_shared::ResolvedTemplateField {
-                        text: "zellij-org/zellij".to_owned(),
-                        priority: 100,
-                        source: None,
-                    },
-                    andamento_shared::ResolvedTemplateField {
-                        text: " feat/kitty-image-plumbing".to_owned(),
-                        priority: 60,
-                        source: None,
-                    },
-                ],
-            });
-        }
 
-        let rendered = render_lines(Some(&model), &[], 80, 180, true);
 
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| { line.contains("template.group_header: andamento.git.group-header") }));
-        assert!(!rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("template.group_header: builtin.group-header")));
-    }
-
-    #[test]
-    fn metadata_view_uses_local_tab_name_over_controller_name() {
-        let mut model = model();
-        model.config.view = RailViewMode::Metadata;
-
-        let rendered = render_lines(
-            Some(&model),
-            &[LocalTab {
-                tab_id: 2,
-                position: 1,
-                name: "local-title".to_owned(),
-                active: true,
-            }],
-            10,
-            40,
-            true,
-        );
-
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("tab: local-title")));
-        assert!(!rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("tab: tab-2")));
-    }
-
-    #[test]
-    fn metadata_view_renders_resolved_model_metadata_values() {
-        let mut model = model();
-        model.config.view = RailViewMode::Metadata;
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Tab(2),
-            values: BTreeMap::from([(
-                "tab.subject".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("checkout".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
-
-        let rendered = render_lines(Some(&model), &[], 14, 48, true);
-
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("tab.subject: checkout")));
-    }
-
-    #[test]
-    fn metadata_view_renders_resolved_metadata_source_details() {
-        let mut model = model();
-        model.config.view = RailViewMode::Metadata;
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Tab(2),
-            values: BTreeMap::from([(
-                "tab.subject".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("checkout".to_owned()),
-                    updated_at: 12,
-                    ttl_ms: Some(100),
-                    precedence: 4,
-                    ordinal: 2,
-                },
-            )]),
-            source_entries: BTreeMap::from([(
-                "tab.subject".to_owned(),
-                vec![andamento_shared::MetadataSourceEntry {
-                    source_id: "flotilla".to_owned(),
-                    entry: MetadataEntry {
-                        value: MetadataValue::Text("checkout".to_owned()),
-                        updated_at: 12,
-                        ttl_ms: Some(100),
-                        precedence: 4,
-                        ordinal: 2,
-                    },
-                }],
-            )]),
-            reachable_identities: vec![],
-        }];
-
-        let rendered = render_lines(Some(&model), &[], 36, 120, true);
-        let source_header_line = rendered
-            .lines
-            .iter()
-            .find(|line| line.contains("key: tab.subject"))
-            .expect("source key line");
-        let table_header_line = rendered
-            .lines
-            .iter()
-            .find(|line| line.contains("src") && line.contains("updated"))
-            .expect("source table header");
-        let source_value_line = rendered
-            .lines
-            .iter()
-            .find(|line| line.contains("flotilla") && line.contains("checkout"))
-            .expect("source value line");
-
-        assert!(source_header_line.contains("tab.subject"));
-        assert!(table_header_line.contains("ttl"));
-        assert!(table_header_line.contains("prec"));
-        assert!(table_header_line.contains("ord"));
-        assert!(source_value_line.contains("12"));
-        assert!(source_value_line.contains("100"));
-        assert!(source_value_line.contains("4"));
-        assert!(source_value_line.contains("2"));
-        assert!(!rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("tab.subject.source.flotilla")));
-    }
-
-    #[test]
-    fn metadata_view_renders_reachable_identity_details() {
-        let mut model = model();
-        model.config.view = RailViewMode::Metadata;
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Tab(2),
-            values: BTreeMap::new(),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![andamento_shared::ReachableMetadataIdentity {
-                identity: andamento_shared::MetadataIdentity {
-                    key: "git.repo".to_owned(),
-                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
-                },
-                distance: 1,
-            }],
-        }];
-
-        let rendered = render_lines(Some(&model), &[], 12, 120, true);
-
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("identity.git.repo: rjwittams/katzensteg distance=1")));
-    }
-
-    #[test]
-    fn metadata_view_renders_observed_identity_index() {
-        let mut model = model();
-        model.config.view = RailViewMode::Metadata;
-        model.observed_identities = vec![andamento_shared::ObservedMetadataIdentity {
-            identity: andamento_shared::MetadataIdentity {
-                key: "git.repo".to_owned(),
-                value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
-            },
-            target_count: 2,
-            nearest_distance: 1,
-        }];
-
-        let rendered = render_lines(Some(&model), &[], 12, 120, true);
-
-        assert!(rendered.lines.iter().any(|line| line.contains(
-            "observed_identity.git.repo: rjwittams/katzensteg target_count=2 nearest_distance=1"
-        )));
-    }
-
-    #[test]
-    fn metadata_view_renders_resolved_group_metadata_values() {
-        let mut model = grouped_model();
-        model.config.view = RailViewMode::Metadata;
-        let group_path = GroupPath(vec![GroupSegment {
-            key: "zellij.pane.cwd".to_owned(),
-            value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
-            label: None,
-        }]);
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Group(group_path),
-            values: BTreeMap::from([(
-                "group.summary".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("running tests".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
-
-        let rendered = render_lines(Some(&model), &[], 14, 48, true);
-
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("group.summary: running tests")));
-    }
 
     #[test]
     fn active_tab_title_is_embedded_in_border_without_marker() {
@@ -5061,18 +5352,19 @@ mod tests {
         model.tabs[0].status.as_mut().unwrap().icon =
             Some(StatusIcon::PngFile("/tmp/waiting.png".into()));
 
-        let rendered = render_lines_with_theme_and_cell_size(
+        let rendered = render_lines_with_options(
             Some(&model),
             &[],
             9,
             24,
             true,
             None,
-            0,
             Some(SizeInPixels {
                 width: 9,
                 height: 18,
             }),
+            &[],
+            None,
         );
 
         let active_card = rendered
@@ -5306,39 +5598,589 @@ mod tests {
         let rendered = render_lines(Some(&model()), &[], 9, 24, true);
 
         assert_eq!(
-            hit_at(&rendered.hit_regions, 8, 2).map(|hit| hit.action),
-            None
-        );
-        assert_eq!(
             hit_at(&rendered.hit_regions, 8, 0).map(|hit| hit.action),
             Some(HitAction::OpenConfig)
         );
-        assert_eq!(
-            hit_at(&rendered.hit_regions, 8, 22).map(|hit| hit.action),
-            Some(HitAction::ScrollMetadataUp)
-        );
+        assert!(rendered.lines[8].starts_with("⚙"));
+        // Scroll arrows appear only when content overflows; this fixture fits,
+        // so they should be absent.
         assert_eq!(
             hit_at(&rendered.hit_regions, 8, 23).map(|hit| hit.action),
-            Some(HitAction::ScrollMetadataDown)
+            None
         );
-        assert!(rendered.lines[8].starts_with("⚙"));
-        assert!(rendered.lines[8].ends_with("▲▼"));
+    }
+
+
+    #[test]
+    fn border_row_zero_width_emits_empty_string() {
+        let line = BorderRow::new(0, BorderKind::Top { active: true, first_cell: true })
+            .into_line(None);
+        assert_eq!(line, "");
+        let line = BorderRow::new(0, BorderKind::Bottom { active: false }).into_line(None);
+        assert_eq!(line, "");
+        let line = BorderRow::new(0, BorderKind::Footer).into_line(None);
+        assert_eq!(line, "");
     }
 
     #[test]
-    fn metadata_view_scroll_offset_moves_visible_lines_and_clamps() {
-        let mut model = grouped_model();
-        model.config.view = RailViewMode::Metadata;
+    fn border_row_width_one_emits_left_corner_only() {
+        let line = BorderRow::new(1, BorderKind::Top { active: true, first_cell: true })
+            .into_line(None);
+        assert_eq!(line, "┌");
+        let line = BorderRow::new(1, BorderKind::Bottom { active: true }).into_line(None);
+        assert_eq!(line, "└");
+    }
 
-        let top =
-            render_lines_with_theme_and_cell_size(Some(&model), &[], 5, 64, true, None, 0, None);
-        let scrolled =
-            render_lines_with_theme_and_cell_size(Some(&model), &[], 5, 64, true, None, 3, None);
-        let overscrolled =
-            render_lines_with_theme_and_cell_size(Some(&model), &[], 5, 64, true, None, 999, None);
+    #[test]
+    fn border_row_top_with_title_matches_old_format() {
+        let line = BorderRow::new(20, BorderKind::Top { active: true, first_cell: true })
+            .also(|row| row.title("zellij"))
+            .into_line(None);
+        assert_eq!(line, "┌ zellij ──────────┐");
+    }
 
-        assert!(top.lines[0].contains("group: zellij"));
-        assert!(scrolled.lines[0].contains("group.tab_count"));
-        assert!(overscrolled.metadata_scroll_offset < 999);
+    #[test]
+    fn border_row_top_continuation_uses_t_corners() {
+        let line = BorderRow::new(10, BorderKind::Top { active: true, first_cell: false })
+            .also(|row| row.title("x"))
+            .into_line(None);
+        assert_eq!(line, "├ x ─────┤");
+    }
+
+    #[test]
+    fn border_row_bottom_has_no_title_slot() {
+        let line = BorderRow::new(10, BorderKind::Bottom { active: false }).into_line(None);
+        assert_eq!(line, "└────────┘");
+    }
+
+    #[test]
+    fn border_row_title_truncates_to_fit() {
+        let line = BorderRow::new(8, BorderKind::Top { active: false, first_cell: true })
+            .also(|row| row.title("a-very-long-title-here"))
+            .into_line(None);
+        assert_eq!(line.chars().count(), 8);
+        assert!(line.starts_with('┌'));
+        assert!(line.ends_with('┐'));
+    }
+
+    #[test]
+    fn border_row_footer_places_gear_and_scroll_arrows() {
+        let mut footer = BorderRow::new(10, BorderKind::Footer);
+        footer.place_left(0, '⚙', None, "gear");
+        footer.place_right(1, '▲', None, "up");
+        footer.place_right(0, '▼', None, "down");
+        let line = footer.into_line(None);
+        assert_eq!(line, "⚙       ▲▼");
+    }
+
+    #[test]
+    fn border_row_footer_emits_hit_regions_at_correct_columns() {
+        let mut footer = BorderRow::new(10, BorderKind::Footer);
+        footer.place_left(
+            0,
+            '⚙',
+            Some((HitAction::OpenConfig, BorderHitPayload::none())),
+            "gear",
+        );
+        footer.place_right(
+            1,
+            '▲',
+            Some((HitAction::ScrollRailUp, BorderHitPayload::none())),
+            "up",
+        );
+        footer.place_right(
+            0,
+            '▼',
+            Some((HitAction::ScrollRailDown, BorderHitPayload::none())),
+            "down",
+        );
+        let (_, hits) = footer.finish(7, None);
+        assert_eq!(hits.len(), 3);
+        assert_eq!(hits[0].row_start, 7);
+        assert_eq!(hits[0].col_start, 0);
+        assert_eq!(hits[0].action, HitAction::OpenConfig);
+        assert_eq!(hits[1].col_start, 8);
+        assert_eq!(hits[1].action, HitAction::ScrollRailUp);
+        assert_eq!(hits[2].col_start, 9);
+        assert_eq!(hits[2].action, HitAction::ScrollRailDown);
+    }
+
+    #[test]
+    fn border_row_top_decoration_then_title_fills_around_it() {
+        let mut row = BorderRow::new(20, BorderKind::Top { active: true, first_cell: true });
+        row.place_right(0, '○', None, "tristate");
+        row.title("tab");
+        let line = row.into_line(None);
+        assert_eq!(line, "┌ tab ────────────○┐");
+    }
+
+    #[test]
+    fn border_row_title_skips_claimed_left_cells() {
+        let mut row = BorderRow::new(20, BorderKind::Top { active: true, first_cell: true });
+        row.place_left(0, '◇', None, "root_toggle");
+        row.title("tab");
+        let line = row.into_line(None);
+        assert_eq!(line, "┌◇ tab ────────────┐");
+    }
+
+    #[test]
+    #[should_panic(expected = "BorderRow cell collision")]
+    fn border_row_collision_panics_in_debug() {
+        let mut row = BorderRow::new(20, BorderKind::Top { active: true, first_cell: true });
+        row.place_left(0, '◇', None, "first");
+        row.place_left(0, '◆', None, "second");
+    }
+
+    #[test]
+    #[should_panic(expected = "BorderRow::place_at out of inner range")]
+    fn border_row_out_of_range_panics_in_debug() {
+        let mut row = BorderRow::new(5, BorderKind::Top { active: true, first_cell: true });
+        row.place_left(99, '◇', None, "way_off");
+    }
+
+    trait BorderRowExt {
+        fn also(self, f: impl FnOnce(&mut Self)) -> Self;
+    }
+
+    impl BorderRowExt for BorderRow {
+        fn also(mut self, f: impl FnOnce(&mut Self)) -> Self {
+            f(&mut self);
+            self
+        }
+    }
+
+    #[test]
+    fn append_group_header_returns_single_row_allocation() {
+        let mut lines: Vec<String> = vec!["pre".into(), "pre".into()];
+        let mut hits = vec![];
+        let group = RenderGroup {
+            path: GroupPath(vec![GroupSegment {
+                key: "git.repo".into(),
+                value: MetadataValue::Text("zellij".into()),
+                label: Some("zellij".into()),
+            }]),
+            label: "zellij".into(),
+            full_label: "zellij".into(),
+            tab_count: 1,
+            collapsed: false,
+            indent: 0,
+            metadata: BTreeMap::new(),
+            metadata_sources: BTreeMap::new(),
+            reachable_identities: vec![],
+            templates: ResolvedTemplateSlots::default(),            children: vec![],
+        };
+        let (_sources, allocation) = append_group_header(
+            &mut lines,
+            &mut hits,
+            &group,
+            20,
+            None,
+            None,
+            &BTreeSet::new(),
+            &MetadataControls::default(),
+        );
+        assert_eq!(allocation.rows, 2..3);
+        assert!(matches!(allocation.key, NodeKey::Group(ref p) if p == &group.path));
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn metadata_controls_cycle_visits_each_state_then_clears() {
+        let mut controls = MetadataControls::default();
+        let key = NodeKey::Tab(42);
+        // Absent → Meta
+        controls.cycle(key.clone());
+        assert_eq!(controls.per_node.get(&key), Some(&MetadataTriState::Meta));
+        // Meta → MetaChildren
+        controls.cycle(key.clone());
+        assert_eq!(
+            controls.per_node.get(&key),
+            Some(&MetadataTriState::MetaChildren)
+        );
+        // MetaChildren → Clean
+        controls.cycle(key.clone());
+        assert_eq!(controls.per_node.get(&key), Some(&MetadataTriState::Clean));
+        // Clean → Absent
+        controls.cycle(key.clone());
+        assert_eq!(controls.per_node.get(&key), None);
+    }
+
+    #[test]
+    fn metadata_tristate_glyphs_are_distinct() {
+        assert_eq!(MetadataTriState::Clean.glyph(), '○');
+        assert_eq!(MetadataTriState::Meta.glyph(), '◐');
+        assert_eq!(MetadataTriState::MetaChildren.glyph(), '●');
+    }
+
+    #[test]
+    fn footer_shows_open_diamond_when_root_disabled() {
+        let mut lines = vec![blank(20); 1];
+        let mut hits = vec![];
+        let controls = MetadataControls::default();
+        render_footer(&mut lines, &mut hits, 0, 20, None, &controls, false);
+        // Gear at col 0, toggle at col 1.
+        assert!(lines[0].starts_with("⚙◇"), "got {:?}", lines[0]);
+        let toggle_hit = hits
+            .iter()
+            .find(|h| h.action == HitAction::ToggleMetadataRoot)
+            .expect("toggle hit emitted");
+        assert_eq!(toggle_hit.col_start, 1);
+    }
+
+    #[test]
+    fn footer_shows_filled_diamond_when_root_enabled() {
+        let mut lines = vec![blank(20); 1];
+        let mut hits = vec![];
+        let mut controls = MetadataControls::default();
+        controls.root_enabled = true;
+        render_footer(&mut lines, &mut hits, 0, 20, None, &controls, false);
+        assert!(lines[0].starts_with("⚙◆"), "got {:?}", lines[0]);
+    }
+
+    #[test]
+    fn footer_places_root_tristate_next_to_scroll_arrows_when_enabled() {
+        let mut lines = vec![blank(20); 1];
+        let mut hits = vec![];
+        let mut controls = MetadataControls::default();
+        controls.root_enabled = true;
+        controls
+            .per_node
+            .insert(NodeKey::Root, MetadataTriState::MetaChildren);
+        // can_scroll=true so the scroll arrows appear; tristate sits to their left.
+        render_footer(&mut lines, &mut hits, 0, 20, None, &controls, true);
+        // Glyph at width-3 = col 17, ▲ at 18, ▼ at 19.
+        assert!(lines[0].ends_with("●▲▼"), "got {:?}", lines[0]);
+        let cycle_hit = hits
+            .iter()
+            .find(|h| h.action == HitAction::CycleRootMetadataTriState)
+            .expect("root cycle hit emitted");
+        assert_eq!(cycle_hit.col_start, 17);
+    }
+
+    #[test]
+    fn footer_places_root_tristate_at_far_right_when_no_scroll_arrows() {
+        // Without scroll arrows, the tristate takes the rightmost cell.
+        let mut lines = vec![blank(20); 1];
+        let mut hits = vec![];
+        let mut controls = MetadataControls::default();
+        controls.root_enabled = true;
+        controls
+            .per_node
+            .insert(NodeKey::Root, MetadataTriState::MetaChildren);
+        render_footer(&mut lines, &mut hits, 0, 20, None, &controls, false);
+        assert!(lines[0].ends_with('●'), "got {:?}", lines[0]);
+    }
+
+    #[test]
+    fn footer_omits_root_tristate_when_disabled() {
+        let mut lines = vec![blank(20); 1];
+        let mut hits = vec![];
+        let controls = MetadataControls::default(); // root_enabled = false
+        render_footer(&mut lines, &mut hits, 0, 20, None, &controls, false);
+        assert!(
+            !hits
+                .iter()
+                .any(|h| h.action == HitAction::CycleRootMetadataTriState),
+            "root tristate hit should not be emitted when disabled"
+        );
+        // No arrows when can_scroll=false either; the footer is just gear + toggle + blank.
+        assert!(lines[0].starts_with("⚙◇"), "got {:?}", lines[0]);
+        assert!(lines[0].trim_end().ends_with('◇'), "got {:?}", lines[0]);
+    }
+
+    #[test]
+    fn tab_top_border_places_tristate_glyph_when_root_enabled() {
+        let mut lines = vec![blank(20); 1];
+        let mut hits = vec![];
+        let mut controls = MetadataControls::default();
+        controls.root_enabled = true;
+        controls
+            .per_node
+            .insert(NodeKey::Tab(7), MetadataTriState::MetaChildren);
+        let card = RenderCard {
+            tab_id: 7,
+            position: 0,
+            name: "tab".into(),
+            active: true,
+            pinned: false,
+            status: None,
+            metadata: BTreeMap::new(),
+            metadata_sources: BTreeMap::new(),
+            reachable_identities: vec![],
+            templates: ResolvedTemplateSlots::default(),            meta_panel: None,
+        };
+        write_tab_top_border(
+            &mut lines,
+            &mut hits,
+            0,
+            "tab",
+            20,
+            true,
+            &card,
+            None,
+            &controls,
+        );
+        assert!(lines[0].ends_with("●┐"), "got {:?}", lines[0]);
+        let cycle_hit = hits
+            .iter()
+            .find(|h| h.action == HitAction::CycleMetadataTriState)
+            .expect("cycle hit emitted");
+        assert_eq!(cycle_hit.col_start, 18);
+        assert_eq!(cycle_hit.tab_id, 7);
+    }
+
+    #[test]
+    fn tab_top_border_omits_glyph_when_root_disabled() {
+        let mut lines = vec![blank(20); 1];
+        let mut hits = vec![];
+        let controls = MetadataControls::default(); // root disabled
+        let card = RenderCard {
+            tab_id: 7,
+            position: 0,
+            name: "tab".into(),
+            active: false,
+            pinned: false,
+            status: None,
+            metadata: BTreeMap::new(),
+            metadata_sources: BTreeMap::new(),
+            reachable_identities: vec![],
+            templates: ResolvedTemplateSlots::default(),            meta_panel: None,
+        };
+        write_tab_top_border(
+            &mut lines,
+            &mut hits,
+            0,
+            "tab",
+            20,
+            true,
+            &card,
+            None,
+            &controls,
+        );
+        assert!(lines[0].ends_with("─┐"), "got {:?}", lines[0]);
+        assert!(
+            !hits
+                .iter()
+                .any(|h| h.action == HitAction::CycleMetadataTriState),
+            "no cycle hit when root disabled"
+        );
+    }
+
+    #[test]
+    fn effective_show_requires_root_enabled() {
+        let mut controls = MetadataControls::default();
+        controls
+            .per_node
+            .insert(NodeKey::Tab(1), MetadataTriState::Meta);
+        // Root disabled blocks everything.
+        assert!(!controls.effective_show(&NodeKey::Tab(1), false));
+        controls.root_enabled = true;
+        assert!(controls.effective_show(&NodeKey::Tab(1), false));
+    }
+
+    #[test]
+    fn effective_show_explicit_clean_overrides_inheritance() {
+        let mut controls = MetadataControls::default();
+        controls.root_enabled = true;
+        controls
+            .per_node
+            .insert(NodeKey::Tab(1), MetadataTriState::Clean);
+        // Even with ancestor MetaChildren cascading down, explicit Clean hides.
+        assert!(!controls.effective_show(&NodeKey::Tab(1), true));
+    }
+
+    #[test]
+    fn effective_show_inherits_from_ancestor_when_absent() {
+        let mut controls = MetadataControls::default();
+        controls.root_enabled = true;
+        // No entry for Tab(1); inherits.
+        assert!(controls.effective_show(&NodeKey::Tab(1), true));
+        assert!(!controls.effective_show(&NodeKey::Tab(1), false));
+    }
+
+    #[test]
+    fn propagates_to_children_only_for_meta_children_or_inherited() {
+        let mut controls = MetadataControls::default();
+        controls.root_enabled = true;
+        let key = NodeKey::Tab(1);
+        // Explicit Meta does NOT propagate.
+        controls.per_node.insert(key.clone(), MetadataTriState::Meta);
+        assert!(!controls.propagates_to_children(&key, false));
+        assert!(!controls.propagates_to_children(&key, true));
+        // Explicit MetaChildren propagates.
+        controls
+            .per_node
+            .insert(key.clone(), MetadataTriState::MetaChildren);
+        assert!(controls.propagates_to_children(&key, false));
+        // Explicit Clean stops propagation even if ancestor was MetaChildren.
+        controls.per_node.insert(key.clone(), MetadataTriState::Clean);
+        assert!(!controls.propagates_to_children(&key, true));
+        // Absent passes ancestor flag through.
+        controls.per_node.remove(&key);
+        assert!(controls.propagates_to_children(&key, true));
+        assert!(!controls.propagates_to_children(&key, false));
+    }
+
+    #[test]
+    fn hit_at_prefers_smaller_region_over_card_wide() {
+        let hits = vec![
+            HitRegion {
+                row_start: 0,
+                row_end: 5,
+                col_start: 0,
+                col_end: 19,
+                tab_id: 7,
+                tab_position: 0,
+                group_path: None,
+                action: HitAction::SwitchTab,
+            },
+            HitRegion {
+                row_start: 0,
+                row_end: 0,
+                col_start: 18,
+                col_end: 18,
+                tab_id: 7,
+                tab_position: 0,
+                group_path: None,
+                action: HitAction::CycleMetadataTriState,
+            },
+        ];
+        // Clicking the single-cell tristate glyph should NOT be shadowed
+        // by the surrounding card-wide SwitchTab hit.
+        let hit = hit_at(&hits, 0, 18).expect("hit found");
+        assert_eq!(hit.action, HitAction::CycleMetadataTriState);
+        // Clicking elsewhere on the card still falls through to SwitchTab.
+        let hit = hit_at(&hits, 2, 5).expect("hit found");
+        assert_eq!(hit.action, HitAction::SwitchTab);
+    }
+
+    #[test]
+    fn cell_height_grows_when_card_has_meta_panel() {
+        let mut card = RenderCard {
+            tab_id: 1,
+            position: 0,
+            name: "t".into(),
+            active: false,
+            pinned: false,
+            status: None,
+            metadata: BTreeMap::new(),
+            metadata_sources: BTreeMap::new(),
+            reachable_identities: vec![],
+            templates: ResolvedTemplateSlots::default(),            meta_panel: None,
+        };
+        let base = cell_height(&card, RailSizingPreset::Compact, false);
+        card.meta_panel = Some(vec!["a".into(), "b".into(), "c".into()]);
+        let grown = cell_height(&card, RailSizingPreset::Compact, false);
+        assert_eq!(grown, base + 3);
+    }
+
+    #[test]
+    fn append_meta_panel_emits_red_bar_and_content() {
+        let mut lines: Vec<String> = vec![];
+        let panel_lines = vec!["group: zellij".to_owned(), "  [metadata]".to_owned()];
+        append_meta_panel(&mut lines, 2, 30, panel_lines, None);
+        assert_eq!(lines.len(), 2);
+        // Outer indent 2, then `│`, then space, then content.
+        assert!(lines[0].starts_with("  │ group: zellij"), "got {:?}", lines[0]);
+        assert!(lines[1].starts_with("  │   [metadata]"), "got {:?}", lines[1]);
+    }
+
+    #[test]
+    fn group_header_appends_tristate_glyph_when_root_enabled() {
+        let mut lines = vec![];
+        let mut hits = vec![];
+        let mut controls = MetadataControls::default();
+        controls.root_enabled = true;
+        let path = GroupPath(vec![GroupSegment {
+            key: "git.repo".into(),
+            value: MetadataValue::Text("zellij".into()),
+            label: Some("zellij".into()),
+        }]);
+        controls
+            .per_node
+            .insert(NodeKey::Group(path.clone()), MetadataTriState::Meta);
+        let group = RenderGroup {
+            path: path.clone(),
+            label: "zellij".into(),
+            full_label: "zellij".into(),
+            tab_count: 1,
+            collapsed: false,
+            indent: 0,
+            metadata: BTreeMap::new(),
+            metadata_sources: BTreeMap::new(),
+            reachable_identities: vec![],
+            templates: ResolvedTemplateSlots::default(),            children: vec![],
+        };
+        append_group_header(
+            &mut lines,
+            &mut hits,
+            &group,
+            30,
+            None,
+            None,
+            &BTreeSet::new(),
+            &controls,
+        );
+        assert!(lines[0].ends_with("◐─"), "got {:?}", lines[0]);
+        let cycle_hit = hits
+            .iter()
+            .find(|h| h.action == HitAction::CycleMetadataTriState)
+            .expect("cycle hit emitted");
+        assert_eq!(cycle_hit.col_start, 28);
+        assert_eq!(cycle_hit.group_path.as_ref(), Some(&path));
+    }
+
+    #[test]
+    fn append_tab_run_returns_per_tab_allocations() {
+        let mut lines: Vec<String> = vec!["pre".into()];
+        let mut hits = vec![];
+        let mut visible = vec![];
+        let make_tab = |id: u64, position: usize, active: bool| RenderTab {
+            card: RenderCard {
+                tab_id: id,
+                position,
+                name: format!("tab{id}"),
+                active,
+                pinned: false,
+                status: None,
+                metadata: BTreeMap::new(),
+                metadata_sources: BTreeMap::new(),
+                reachable_identities: vec![],
+                templates: ResolvedTemplateSlots::default(),                meta_panel: None,
+            },
+            indent: 0,
+            grouping: None,
+            parent_path: None,
+        };
+        let tabs = vec![make_tab(1, 0, true), make_tab(2, 1, false)];
+        let allocations = append_tab_run(
+            &mut lines,
+            &mut hits,
+            &mut visible,
+            &tabs,
+            30,
+            true,
+            RailConfig::default(),
+            None,
+            None,
+            None,
+            &MetadataControls::default(),
+            false,
+        );
+        assert_eq!(allocations.len(), 2);
+        for allocation in &allocations {
+            assert!(matches!(allocation.key, NodeKey::Tab(_)));
+            assert!(allocation.rows.start >= 1, "starts after the preexisting row");
+            assert!(allocation.rows.end > allocation.rows.start);
+            assert!(allocation.rows.end <= lines.len());
+        }
+        let tab_ids: Vec<u64> = allocations
+            .iter()
+            .map(|a| match a.key {
+                NodeKey::Tab(id) => id,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(tab_ids, vec![1, 2]);
     }
 }

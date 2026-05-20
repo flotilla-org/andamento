@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -25,6 +25,8 @@ pub const MSG_STATS_REQUEST: &str = "andamento-stats-request";
 pub const MSG_STATS_REPORT: &str = "andamento-stats-report";
 pub const MSG_RAIL_SIZE_OBSERVED: &str = "andamento-rail-size-observed";
 pub const MSG_RAIL_SIZE_TARGET: &str = "andamento-rail-size-target";
+pub const MSG_TOGGLE_METADATA_ROOT: &str = "andamento-toggle-metadata-root";
+pub const MSG_CYCLE_METADATA_TRISTATE: &str = "andamento-cycle-metadata-tristate";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -402,19 +404,6 @@ impl Default for RailGroupingMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RailViewMode {
-    Normal,
-    Metadata,
-}
-
-impl Default for RailViewMode {
-    fn default() -> Self {
-        Self::Normal
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum RailRow {
@@ -499,8 +488,6 @@ pub struct RailConfig {
     pub sizing: RailSizingPreset,
     #[serde(default)]
     pub grouping: RailGroupingMode,
-    #[serde(default)]
-    pub view: RailViewMode,
 }
 
 impl Default for RailConfig {
@@ -509,7 +496,6 @@ impl Default for RailConfig {
             structure: RailStructure::default(),
             sizing: RailSizingPreset::default(),
             grouping: RailGroupingMode::default(),
-            view: RailViewMode::default(),
         }
     }
 }
@@ -527,6 +513,113 @@ pub struct ControllerViewModel {
     pub resolved_metadata: Vec<ResolvedMetadata>,
     #[serde(default)]
     pub observed_identities: Vec<ObservedMetadataIdentity>,
+    #[serde(default)]
+    pub metadata_controls: MetadataControls,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MetadataTriState {
+    Clean,
+    Meta,
+    MetaChildren,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "kind", content = "value")]
+pub enum NodeKey {
+    Root,
+    Group(GroupPath),
+    Tab(u64),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataControls {
+    #[serde(default)]
+    pub root_enabled: bool,
+    /// Sparse storage: an entry exists only when the user has explicitly set
+    /// a state on that node. Absence = inherit from above (defaults hidden).
+    /// We use HashMap rather than BTreeMap because NodeKey is not Ord.
+    #[serde(
+        default,
+        serialize_with = "serialize_node_map",
+        deserialize_with = "deserialize_node_map"
+    )]
+    pub per_node: HashMap<NodeKey, MetadataTriState>,
+}
+
+fn serialize_node_map<S>(
+    map: &HashMap<NodeKey, MetadataTriState>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let entries: Vec<(&NodeKey, &MetadataTriState)> = map.iter().collect();
+    entries.serialize(serializer)
+}
+
+fn deserialize_node_map<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<NodeKey, MetadataTriState>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let entries: Vec<(NodeKey, MetadataTriState)> = Vec::deserialize(deserializer)?;
+    Ok(entries.into_iter().collect())
+}
+
+impl MetadataTriState {
+    pub fn glyph(self) -> char {
+        match self {
+            MetadataTriState::Clean => '○',
+            MetadataTriState::Meta => '◐',
+            MetadataTriState::MetaChildren => '●',
+        }
+    }
+}
+
+impl MetadataControls {
+    /// Cycle order: Absent → Meta → MetaChildren → Clean → Absent.
+    pub fn cycle(&mut self, key: NodeKey) {
+        let next = match self.per_node.get(&key) {
+            None => Some(MetadataTriState::Meta),
+            Some(MetadataTriState::Meta) => Some(MetadataTriState::MetaChildren),
+            Some(MetadataTriState::MetaChildren) => Some(MetadataTriState::Clean),
+            Some(MetadataTriState::Clean) => None,
+        };
+        match next {
+            Some(state) => {
+                self.per_node.insert(key, state);
+            }
+            None => {
+                self.per_node.remove(&key);
+            }
+        }
+    }
+
+    pub fn effective_show(&self, key: &NodeKey, ancestor_meta_children: bool) -> bool {
+        if !self.root_enabled {
+            return false;
+        }
+        match self.per_node.get(key) {
+            Some(MetadataTriState::Meta) | Some(MetadataTriState::MetaChildren) => true,
+            Some(MetadataTriState::Clean) => false,
+            None => ancestor_meta_children,
+        }
+    }
+
+    pub fn propagates_to_children(&self, key: &NodeKey, ancestor_meta_children: bool) -> bool {
+        if !self.root_enabled {
+            return false;
+        }
+        match self.per_node.get(key) {
+            Some(MetadataTriState::MetaChildren) => true,
+            Some(MetadataTriState::Meta) => false,
+            Some(MetadataTriState::Clean) => false,
+            None => ancestor_meta_children,
+        }
+    }
 }
 
 impl ControllerViewModel {
@@ -718,6 +811,7 @@ mod tests {
                 target_count: 2,
                 nearest_distance: 1,
             }],
+            metadata_controls: MetadataControls::default(),
         };
         let encoded = serde_json::to_string(&model).unwrap();
         let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
@@ -737,13 +831,6 @@ mod tests {
         let config = RailConfig::default();
 
         assert_eq!(config.grouping, RailGroupingMode::None);
-    }
-
-    #[test]
-    fn rail_config_defaults_to_normal_view() {
-        let config = RailConfig::default();
-
-        assert_eq!(config.view, RailViewMode::Normal);
     }
 
     #[test]
@@ -827,7 +914,6 @@ mod tests {
                 structure: RailStructure::JoinedCells,
                 sizing: RailSizingPreset::Compact,
                 grouping: RailGroupingMode::Directory,
-                view: RailViewMode::Normal,
             },
             template_config: TemplateConfigDiagnostics::default(),
             tabs: vec![TabCard {
@@ -853,8 +939,7 @@ mod tests {
                     label: "zellij".to_owned(),
                     full_label: "/Users/robert/dev/zellij".to_owned(),
                     tab_count: 1,
-                    templates: ResolvedTemplateSlots::default(),
-                },
+                    templates: ResolvedTemplateSlots::default(),                },
                 RailRow::Tab {
                     tab_id: 1,
                     indent: 2,
@@ -863,6 +948,7 @@ mod tests {
             ],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            metadata_controls: MetadataControls::default(),
         };
 
         let encoded = serde_json::to_string(&model).unwrap();
@@ -1049,7 +1135,6 @@ mod tests {
             structure: RailStructure::BoxPerTab,
             sizing: RailSizingPreset::Compact,
             grouping: RailGroupingMode::None,
-            view: RailViewMode::Metadata,
         };
 
         let encoded = serde_json::to_string(&config).unwrap();

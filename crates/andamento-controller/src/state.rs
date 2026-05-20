@@ -60,6 +60,7 @@ pub struct ControllerState {
     template_catalog: Option<andamento_shared::template_config::TemplateConfigCatalog>,
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
+    metadata_controls: andamento_shared::MetadataControls,
 }
 
 impl ControllerState {
@@ -256,6 +257,14 @@ impl ControllerState {
         self.rail_config = rail_config;
     }
 
+    pub fn toggle_metadata_root(&mut self) {
+        self.metadata_controls.root_enabled = !self.metadata_controls.root_enabled;
+    }
+
+    pub fn cycle_metadata_tristate(&mut self, key: andamento_shared::NodeKey) {
+        self.metadata_controls.cycle(key);
+    }
+
     pub fn set_template_catalog(
         &mut self,
         catalog: Option<andamento_shared::template_config::TemplateConfigCatalog>,
@@ -428,6 +437,7 @@ impl ControllerState {
             observed_identities,
             rows,
             tabs,
+            metadata_controls: self.metadata_controls.clone(),
         }
     }
 
@@ -1308,7 +1318,7 @@ mod tests {
     use super::*;
     use andamento_shared::{
         GroupPath, GroupSegment, RailGroupingMode, RailRow, RailSizingPreset, RailStructure,
-        RailViewMode, StatusIcon,
+        StatusIcon,
     };
 
     fn status(
@@ -2772,7 +2782,6 @@ mod tests {
             structure: RailStructure::BoxPerTab,
             sizing: RailSizingPreset::Compact,
             grouping: RailGroupingMode::Directory,
-            view: RailViewMode::Normal,
         });
         source.toggle_pin(7);
         source.set_status(status(

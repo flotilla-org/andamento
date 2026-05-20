@@ -171,10 +171,10 @@ use render::{hit_at, HitAction, HitRegion};
 use render::{status_icon_is_renderable, LocalTab, VisibleCard, VisibleIconRect};
 use andamento_shared::StatusIcon;
 use andamento_shared::{
-    ControllerViewModel, GroupPath, PluginStatsRecorder, RailSizeObserved, RailViewMode,
-    RendererHello, StatsCollectRequest, MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_SIZE_TARGET,
-    MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_PIN,
-    MSG_VIEW_MODEL,
+    ControllerViewModel, GroupPath, NodeKey, PluginStatsRecorder, RailSizeObserved, RendererHello,
+    StatsCollectRequest, MSG_CYCLE_METADATA_TRISTATE, MSG_RAIL_SIZE_OBSERVED,
+    MSG_RAIL_SIZE_TARGET, MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_STATS_REPORT,
+    MSG_STATS_REQUEST, MSG_TOGGLE_METADATA_ROOT, MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
 };
 use andamento_shared::{RailSize, RailSizeTarget};
 use zellij_tile::output::print;
@@ -202,7 +202,8 @@ pub struct PluginState {
     icon_asset_ids: HashMap<StatusIcon, u32>,
     next_icon_asset_id: u32,
     last_graphics_signature: Option<Vec<GraphicsSignatureEntry>>,
-    metadata_scroll_offset: usize,
+    rail_scroll_offset: isize,
+    rail_can_scroll: bool,
     own_is_selectable: bool,
     own_is_focused: bool,
     collapsed_groups: BTreeSet<GroupPath>,
@@ -356,7 +357,12 @@ impl ZellijPlugin for PluginState {
         let started_at = Instant::now();
         let controller_available = self.controller_model.is_some();
         let collapsed_groups = self.collapsed_groups.iter().cloned().collect::<Vec<_>>();
-        let rendered = render::render_lines_with_options(
+        let metadata_controls = self
+            .controller_model
+            .as_ref()
+            .map(|model| model.metadata_controls.clone())
+            .unwrap_or_default();
+        let rendered = render::render_lines_with_rail_scroll(
             self.controller_model.as_ref(),
             &self.local_tabs,
             rows,
@@ -365,12 +371,13 @@ impl ZellijPlugin for PluginState {
             self.mode_info
                 .as_ref()
                 .map(|mode_info| mode_info.style.colors.into()),
-            self.metadata_scroll_offset,
             terminal_pixel_cell_size(),
             &collapsed_groups,
             None,
+            &metadata_controls,
+            self.rail_scroll_offset,
         );
-        self.metadata_scroll_offset = rendered.metadata_scroll_offset;
+        self.rail_can_scroll = rendered.can_scroll();
         if should_sync_graphics(controller_available) {
             self.sync_graphics(&rendered.visible_cards);
         }
@@ -745,6 +752,7 @@ impl PluginState {
                 };
                 match hit.action {
                     HitAction::SwitchTab => {
+                        self.rail_scroll_offset = 0;
                         switch_tab_to((hit.tab_position + 1) as u32);
                         false
                     }
@@ -764,31 +772,53 @@ impl PluginState {
                         self.open_config_pane();
                         false
                     }
-                    HitAction::ScrollMetadataUp => {
-                        self.metadata_scroll_offset = self.metadata_scroll_offset.saturating_sub(1);
+                    HitAction::ScrollRailUp => {
+                        self.rail_scroll_offset = self.rail_scroll_offset.saturating_sub(1);
                         true
                     }
-                    HitAction::ScrollMetadataDown => {
-                        self.metadata_scroll_offset = self.metadata_scroll_offset.saturating_add(1);
+                    HitAction::ScrollRailDown => {
+                        self.rail_scroll_offset = self.rail_scroll_offset.saturating_add(1);
                         true
+                    }
+                    HitAction::ToggleMetadataRoot => {
+                        self.send_toggle_metadata_root();
+                        false
+                    }
+                    HitAction::CycleMetadataTriState => {
+                        // Discriminate by group_path presence — tab_id 0 is a
+                        // valid id (the initial tab), so we can't use it as
+                        // an "absent" sentinel.
+                        let key = if let Some(group_path) = hit.group_path {
+                            NodeKey::Group(group_path)
+                        } else {
+                            NodeKey::Tab(hit.tab_id)
+                        };
+                        self.send_cycle_metadata_tristate(key);
+                        false
+                    }
+                    HitAction::CycleRootMetadataTriState => {
+                        self.send_cycle_metadata_tristate(NodeKey::Root);
+                        false
                     }
                 }
             }
             Mouse::ScrollUp(_) => {
-                if self.is_metadata_view() {
-                    self.metadata_scroll_offset = self.metadata_scroll_offset.saturating_sub(1);
+                if self.rail_can_scroll {
+                    self.rail_scroll_offset = self.rail_scroll_offset.saturating_sub(1);
                     return true;
-                } else if let Some(active_tab_idx) = self.active_tab_idx() {
+                }
+                if let Some(active_tab_idx) = self.active_tab_idx() {
                     let prev = max(active_tab_idx.saturating_sub(1), 1);
                     switch_tab_to(prev as u32);
                 }
                 false
             }
             Mouse::ScrollDown(_) => {
-                if self.is_metadata_view() {
-                    self.metadata_scroll_offset = self.metadata_scroll_offset.saturating_add(1);
+                if self.rail_can_scroll {
+                    self.rail_scroll_offset = self.rail_scroll_offset.saturating_add(1);
                     return true;
-                } else if let Some(active_tab_idx) = self.active_tab_idx() {
+                }
+                if let Some(active_tab_idx) = self.active_tab_idx() {
                     let next = min(active_tab_idx + 1, self.local_tabs.len());
                     switch_tab_to(next as u32);
                 }
@@ -796,13 +826,6 @@ impl PluginState {
             }
             _ => false,
         }
-    }
-
-    fn is_metadata_view(&self) -> bool {
-        self.controller_model
-            .as_ref()
-            .map(|model| model.config.view == RailViewMode::Metadata)
-            .unwrap_or(false)
     }
 
     fn active_tab_idx(&self) -> Option<usize> {
@@ -825,6 +848,37 @@ impl PluginState {
             self.controller_message(MSG_TOGGLE_PIN)
                 .with_destination_client_id(client_id)
                 .with_args(args),
+        );
+    }
+
+    fn send_toggle_metadata_root(&self) {
+        let Some(client_id) = self.own_client_id else {
+            return;
+        };
+        if self.controller_model.is_none() {
+            return;
+        }
+        pipe_message_to_plugin(
+            self.controller_message(MSG_TOGGLE_METADATA_ROOT)
+                .with_destination_client_id(client_id),
+        );
+    }
+
+    fn send_cycle_metadata_tristate(&self, key: NodeKey) {
+        let Some(client_id) = self.own_client_id else {
+            return;
+        };
+        if self.controller_model.is_none() {
+            return;
+        }
+        let payload = match serde_json::to_string(&key) {
+            Ok(payload) => payload,
+            Err(_) => return,
+        };
+        pipe_message_to_plugin(
+            self.controller_message(MSG_CYCLE_METADATA_TRISTATE)
+                .with_destination_client_id(client_id)
+                .with_payload(payload),
         );
     }
 
