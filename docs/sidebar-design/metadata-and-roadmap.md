@@ -320,6 +320,7 @@ For now:
 - external metadata attached to those group identities participates in normal identity resolution.
 - group-header templates are resolved for each prefix from the controller's resolved metadata.
 - tab rows carry their exact parent group path so a group can contain both direct tabs and child groups without relying on the rail's previous "last group header" state.
+- direct tab children render before child group nodes within the same parent, while preserving relative tab order and relative group order.
 - resolved template fields carry optional metadata key/value provenance. While rendering a hierarchy, a descendant elides any field whose exact metadata key/value was already visibly rendered by an ancestor group, so shared facts such as `git.repo` do not repeat under every branch.
 - collapse toggles and other rail-local affordances stay outside external templates.
 
@@ -363,9 +364,16 @@ Tile size should start as automatic squash-down based on available space. Templa
 
 Status: started internally. The renderer now has generic ordered template fields with required, optional, and priority classes. Render nodes also carry an initial metadata map populated from the current compatibility view model. Group headers, tab titles, and tab status text are the first field callers, and these field builders now read their display values from render metadata. This is still hard-coded Rust, not external template config, and should be extended to nested groups before adding user-authored templates.
 
-### Group And Tab Bodies Need A Real Slot Model
+### Bodies, Content, And Slots Need A Recursive Layout Model
 
-Headers are not enough. Groups, tabs, panes, and latent nodes need a body slot that can render richer content when space allows:
+Headers are not enough. Groups, tabs, panes, and latent nodes need a recursive slot/layout model. The important distinction is:
+
+- `body` is template-owned extra surface for details, actions, previews, summaries, and controls.
+- `content` is the default recursive projection of the node's children: child tabs, child groups, panes, and latent nodes.
+
+The default body for a group can simply include its `content`, but the model should keep these separate. Later a template or policy can compose, reorder, hide, or replace the content projection without pretending child nodes are just body text.
+
+Body/content slots should be able to render richer content when space allows:
 
 - one or more metadata text lines.
 - status/progress rows.
@@ -374,15 +382,26 @@ Headers are not enough. Groups, tabs, panes, and latent nodes need a body slot t
 - action affordances.
 - expanded debugging/details in metadata view.
 
-The body should be template-driven, but layout policy should stay separate from matching. A template can produce a body tree such as text lines, image slots, counters, or command buttons; the rail decides how much of that body fits in the current projection.
+The template result should be a small recursive layout tree rather than a single string. The first implementation can support a narrow subset, but the schema should be able to describe at least:
+
+- rows and columns.
+- text nodes with optional metadata/value sources.
+- image nodes backed by the same image-placement machinery as pane/image chrome.
+- references to other slots, including `content`.
+- conditional fragments driven by metadata predicates and inherited UI properties.
+- actions on text or images, such as focus, materialize, browser/editor launch, new tab, or floating pane.
+
+Layout policy should stay separate from matching. A template can produce a body tree such as text lines, image slots, counters, content references, or command buttons; the rail decides how much of that tree fits in the current projection.
 
 Open layout policies:
 
-- vertical list body under a header.
+- vertical list content/body under a header.
 - compact one-line body folded into the header.
 - horizontal tab strip for child tabs.
 - responsive wrap/masonry for child nodes in expanded or wider modes.
-- hidden body with only header affordances in compact navigation mode.
+- hidden body/content with only header affordances in compact navigation mode.
+
+Template fragments should be able to test both node metadata and inherited UI properties. For example, a group body can appear only when `git.repo` exists and `show-repo-actions` is enabled. This lets bottom-bar toggles, global header/footer controls, and per-node settings drive local template output without hard-coding global modes into every render path.
 
 This slot model should also handle image asset chrome/buttons. The bottom control row and per-node affordances should eventually be able to use carefully-crafted transparent image assets for gear/chevrons/toggles/status buttons. Text fallback stays useful, but image assets make independent scaling, hover animation, and more polished chrome possible.
 
@@ -846,7 +865,7 @@ This should not require a new data model. It should consume the same metadata st
 - What is the minimum materialization recipe shape for latent tabs without coupling too tightly to flotilla?
 - When external metadata arrives, should values be typed JSON-like data, strings only, or a small tagged enum?
 - What exact rules make two single-child group levels compatible for visual conflation?
-- What is the first body-slot schema that can support text, status, buttons, and images without becoming a full UI framework?
+- What is the first body/content slot schema that can support rows, columns, text, status, buttons, images, actions, and content references without becoming a full UI framework?
 - Which node settings should be inherited first: image visibility, child layout mode, or compact/detailed body mode?
 - How should image chrome assets be packaged, cached, scaled, and toggled?
 - What is the minimum native-plugin API needed for Andamento to avoid the worst wasm serialization costs while preserving the same state boundaries?

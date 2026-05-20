@@ -2082,7 +2082,27 @@ fn pending_nodes_to_render_nodes(
         }
     }
     refresh_group_tab_counts(&mut nodes);
+    normalize_render_node_order(&mut nodes);
     nodes
+}
+
+fn normalize_render_node_order(nodes: &mut [RenderNode]) {
+    for node in nodes {
+        let RenderNode::Group(group) = node else {
+            continue;
+        };
+        normalize_render_node_order(&mut group.children);
+        let mut tabs = Vec::new();
+        let mut groups = Vec::new();
+        for child in group.children.drain(..) {
+            match child {
+                RenderNode::Tab(_) => tabs.push(child),
+                RenderNode::Group(_) => groups.push(child),
+            }
+        }
+        group.children = tabs;
+        group.children.extend(groups);
+    }
 }
 
 fn ensure_group_path<'a>(
@@ -4385,6 +4405,11 @@ mod tests {
             panic!("expected one parent group, got {nodes:?}");
         };
         assert_eq!(parent.label, "zellij");
+        assert!(
+            matches!(&parent.children[0], RenderNode::Tab(tab) if tab.card.name == "repo-overview"),
+            "direct tabs should be ordered before child groups: {:?}",
+            parent.children
+        );
         assert!(parent
             .children
             .iter()
