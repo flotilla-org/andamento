@@ -1109,6 +1109,7 @@ mod tests {
                         full_label: "/repo/app".to_owned(),
                     }),
                     templates: andamento_shared::ResolvedTemplateSlots::default(),
+                    active_pane: None,
                 },
                 TabCard {
                     tab_id: 2,
@@ -1119,6 +1120,7 @@ mod tests {
                     status: None,
                     grouping: None,
                     templates: andamento_shared::ResolvedTemplateSlots::default(),
+                    active_pane: None,
                 },
             ],
             rows: vec![],

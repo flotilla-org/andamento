@@ -154,6 +154,10 @@ pub struct TabCard {
     pub grouping: Option<TabGroupingInfo>,
     #[serde(default)]
     pub templates: ResolvedTemplateSlots,
+    /// The currently-focused pane on this tab, if any. Useful for
+    /// templates and debugging.
+    #[serde(default)]
+    pub active_pane: Option<PaneTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -702,6 +706,7 @@ mod tests {
                 }),
                 grouping: None,
                 templates: ResolvedTemplateSlots::default(),
+                active_pane: None,
             }],
             rows: vec![],
             resolved_metadata: vec![],
@@ -839,6 +844,7 @@ mod tests {
                     full_label: "/Users/robert/dev/zellij".to_owned(),
                 }),
                 templates: ResolvedTemplateSlots::default(),
+                active_pane: None,
             }],
             rows: vec![
                 RailRow::GroupHeader {

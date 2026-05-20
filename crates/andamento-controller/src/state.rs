@@ -391,6 +391,11 @@ impl ControllerState {
                 status: self.status_for_tab(tab.tab_id),
                 grouping: grouping_by_tab.get(&tab.tab_id).cloned(),
                 templates: ResolvedTemplateSlots::default(),
+                active_pane: self
+                    .panes
+                    .values()
+                    .find(|pane| pane.tab_id == tab.tab_id && pane.is_focused)
+                    .map(|pane| pane.pane_id),
             })
             .collect();
 

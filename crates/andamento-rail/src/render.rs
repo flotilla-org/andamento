@@ -2170,6 +2170,12 @@ fn metadata_for_tab_card(
         "rail.tab.pinned".to_owned(),
         MetadataValue::Bool(card.pinned),
     );
+    if let Some(active_pane) = card.active_pane {
+        metadata.insert(
+            "zellij.tab.active_pane".to_owned(),
+            MetadataValue::Text(format_pane_target(active_pane)),
+        );
+    }
     if let Some(grouping) = card.grouping.as_ref() {
         metadata.insert(
             "group.label".to_owned(),
@@ -3407,6 +3413,7 @@ mod tests {
                     }),
                     grouping: None,
                     templates: ResolvedTemplateSlots::default(),
+                active_pane: None,
                 },
                 TabCard {
                     tab_id: 1,
@@ -3417,6 +3424,7 @@ mod tests {
                     status: None,
                     grouping: None,
                     templates: ResolvedTemplateSlots::default(),
+                active_pane: None,
                 },
             ],
             rows: vec![],
@@ -3440,6 +3448,7 @@ mod tests {
             status: None,
             grouping: None,
             templates: ResolvedTemplateSlots::default(),
+                active_pane: None,
         };
         let tab_two = TabCard {
             tab_id: 2,
@@ -3450,6 +3459,7 @@ mod tests {
             status: None,
             grouping: None,
             templates: ResolvedTemplateSlots::default(),
+                active_pane: None,
         };
         ControllerViewModel {
             sort_mode: SortMode::Position,
@@ -3522,6 +3532,7 @@ mod tests {
                 status: None,
                 grouping: None,
                 templates: ResolvedTemplateSlots::default(),
+                active_pane: None,
             };
             model.rows.push(RailRow::GroupHeader {
                 group_id: format!("project-a/{worktree}"),
@@ -3575,6 +3586,7 @@ mod tests {
                     status: None,
                     grouping: None,
                     templates: ResolvedTemplateSlots::default(),
+                active_pane: None,
                 },
                 TabCard {
                     tab_id: 2,
@@ -3585,6 +3597,7 @@ mod tests {
                     status: None,
                     grouping: None,
                     templates: ResolvedTemplateSlots::default(),
+                active_pane: None,
                 },
             ],
             rows: vec![
