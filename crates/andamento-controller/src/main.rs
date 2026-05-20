@@ -85,6 +85,7 @@ impl ZellijPlugin for PluginState {
         subscribe(&[
             EventType::TabUpdate,
             EventType::PaneUpdate,
+            EventType::PaneClosed,
             EventType::CwdChanged,
             EventType::PermissionRequestResult,
             EventType::FailedToChangeHostFolder,
@@ -148,43 +149,10 @@ impl ZellijPlugin for PluginState {
             }
             Event::PaneUpdate(pane_manifest) => {
                 self.stats.increment("update.pane");
-                let live_plugin_ids: std::collections::HashSet<u32> = pane_manifest
-                    .panes
-                    .values()
-                    .flat_map(|panes| panes.iter())
-                    .filter(|pane| pane.is_plugin)
-                    .map(|pane| pane.id)
-                    .collect();
-                let all_pane_ids: Vec<(u32, bool)> = pane_manifest
-                    .panes
-                    .values()
-                    .flat_map(|panes| panes.iter())
-                    .map(|p| (p.id, p.is_plugin))
-                    .collect();
-                let inst = (&self.state as *const _) as usize & 0xFFFFFF;
-                log::info!(
-                    "andamento-controller[inst {inst:x}]: PaneUpdate — known_rails={:?}, live_plugin_ids={:?}, all_panes(id,is_plugin)={:?}",
-                    self.state.rail_plugin_targets().iter().map(|r| r.plugin_id).collect::<Vec<_>>(),
-                    live_plugin_ids,
-                    all_pane_ids,
-                );
-                let rails_before_retain = self.state.known_rail_count();
-                let config_editors_before_retain = self.state.known_config_editor_count();
-                self.state.retain_rails(&live_plugin_ids);
-                self.stats
-                    .add("retain-rails.rails-before", rails_before_retain as u64);
-                self.stats.add(
-                    "retain-rails.config-editors-before",
-                    config_editors_before_retain as u64,
-                );
-                self.stats.add(
-                    "retain-rails.rails-after",
-                    self.state.known_rail_count() as u64,
-                );
-                self.stats.add(
-                    "retain-rails.config-editors-after",
-                    self.state.known_config_editor_count() as u64,
-                );
+                // Renderer eviction is driven by Event::PaneClosed, not by
+                // the live-plugin set in this manifest — the manifest can
+                // arrive between a new rail's HELLO and its pane appearing,
+                // racing the new rail out of known_rails.
                 let mut state_changed = self.state.update_panes_from_manifest(pane_manifest);
                 for terminal_id in self.state.terminal_panes_for_cwd_refresh() {
                     if let Ok(cwd) = get_pane_cwd(PaneId::Terminal(terminal_id)) {
@@ -196,6 +164,14 @@ impl ZellijPlugin for PluginState {
                 }
                 if state_changed {
                     self.queue_view_model_push(ViewModelPushReason::UpdatePane);
+                }
+            }
+            Event::PaneClosed(pane_id) => {
+                self.stats.increment("update.pane-closed");
+                if let PaneId::Plugin(plugin_id) = pane_id {
+                    if self.state.unregister_renderer(plugin_id) {
+                        self.stats.increment("renderer.unregistered");
+                    }
                 }
             }
             Event::CwdChanged(pane_id, cwd, _) => {

@@ -332,6 +332,14 @@ impl ControllerState {
             .retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
     }
 
+    /// Remove a renderer by plugin id, regardless of whether it was registered
+    /// as a rail or a config editor. Returns true if anything was removed.
+    pub fn unregister_renderer(&mut self, plugin_id: u32) -> bool {
+        let r = self.known_rails.remove(&plugin_id).is_some();
+        let c = self.known_config_editors.remove(&plugin_id).is_some();
+        r || c
+    }
+
     #[allow(dead_code)]
     pub fn rail_plugin_ids(&self) -> Vec<u32> {
         self.known_rails
