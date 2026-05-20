@@ -1514,13 +1514,13 @@ mod tests {
             name: "main".to_owned(),
             active: true,
         }]);
-        let patch = tabs_shared::MetadataPatch {
-            target: tabs_shared::MetadataTarget::Tab(1),
+        let patch = andamento_shared::MetadataPatch {
+            target: andamento_shared::MetadataTarget::Tab(1),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 "tab.subject".to_owned(),
-                tabs_shared::MetadataValueUpdate {
-                    value: tabs_shared::MetadataValue::Text("checkout".to_owned()),
+                andamento_shared::MetadataValueUpdate {
+                    value: andamento_shared::MetadataValue::Text("checkout".to_owned()),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: None,
