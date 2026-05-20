@@ -43,15 +43,16 @@ layout {
         }
     }
 
-    tab name="main" hide_floating_panes=true {
-        pane
-        floating_panes {
-            pane command="$ANDAMENTO_ROOT/scripts/andamento-git-watcher.py" cwd="$ANDAMENTO_ROOT" {
-                args "--interval" "5"
-                width 80
-                height 12
-                x 10
-                y 5
+    tab name="main" {
+        pane split_direction="vertical" {
+            pane
+            pane split_direction="horizontal" {
+                pane size="45%" {
+                    plugin location="andamento-config"
+                }
+                pane command="$ANDAMENTO_ROOT/scripts/andamento-git-watcher.py" cwd="$ANDAMENTO_ROOT" {
+                    args "--interval" "5" "--factory-repo-manager"
+                }
             }
         }
     }

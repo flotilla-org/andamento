@@ -2,7 +2,7 @@ layout {
     default_tab_template {
         pane split_direction="vertical" {
             pane size=20 borderless=true {
-                plugin location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/andamento.wasm"
+                plugin location="file:/Users/robert/dev/andamento/target/wasm32-wasip1/release/andamento.wasm"
             }
             children
         }
@@ -14,7 +14,7 @@ layout {
     new_tab_template {
         pane split_direction="vertical" {
             pane size=20 borderless=true {
-                plugin location="file:/Users/robert/dev/zellij-scratch/target/wasm32-wasip1/release/andamento.wasm"
+                plugin location="file:/Users/robert/dev/andamento/target/wasm32-wasip1/release/andamento.wasm"
             }
             pane
         }
