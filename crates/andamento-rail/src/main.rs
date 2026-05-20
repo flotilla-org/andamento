@@ -203,6 +203,8 @@ pub struct PluginState {
     next_icon_asset_id: u32,
     last_graphics_signature: Option<Vec<GraphicsSignatureEntry>>,
     metadata_scroll_offset: usize,
+    own_is_selectable: bool,
+    own_is_focused: bool,
     collapsed_groups: BTreeSet<GroupPath>,
     stats: PluginStatsRecorder,
     rail_placement: RailPlacement,
@@ -311,6 +313,16 @@ impl ZellijPlugin for PluginState {
                         self.stats
                             .record_span_elapsed("json.decode-view-model", started_at);
                         self.controller_model = Some(model);
+                        // Defensive: zellij may grant cached permissions
+                        // without firing PermissionRequestResult. Receiving a
+                        // view model proves the controller is talking to us
+                        // (which requires permissions), so flip non-selectable
+                        // now rather than waiting for an event that may never
+                        // arrive.
+                        if !self.permissions_granted {
+                            self.permissions_granted = true;
+                            set_selectable(false);
+                        }
                         return true;
                     }
                     Err(error) => {
@@ -364,14 +376,18 @@ impl ZellijPlugin for PluginState {
         }
         self.hit_regions = rendered.hit_regions;
         print!("{}", rendered.lines.join("\n"));
-        // Temporary diagnostic: overlay the rail instance fingerprint at the
-        // bottom-right so we can visually tell rail instances apart.
+        // Temporary diagnostic: instance fingerprint + selectable/focused
+        // state of our own pane, just above the footer so we don't clobber
+        // the gear/toggle/scroll controls on the footer row itself.
         let inst = (self as *const _) as usize & 0xFFFFFF;
-        let label = format!("[{inst:06x}]");
+        let sel = if self.own_is_selectable { '✓' } else { '✗' };
+        let focus = if self.own_is_focused { '◉' } else { '○' };
+        let label = format!("[{inst:06x} sel:{sel} focus:{focus}]");
         let label_len = label.chars().count();
-        if rows >= 1 && cols >= label_len {
+        if rows >= 2 && cols >= label_len {
             let col = cols.saturating_sub(label_len) + 1;
-            print!("\x1b[{rows};{col}H\x1b[2m{label}\x1b[0m");
+            let row_above_footer = rows - 1;
+            print!("\x1b[{row_above_footer};{col}H\x1b[2m{label}\x1b[0m");
         }
         self.stats.record_span_elapsed("render.rail", started_at);
     }
@@ -622,19 +638,31 @@ impl PluginState {
         let Some(plugin_id) = self.own_plugin_id else {
             return;
         };
-        let Some(size) = pane_manifest
+        let own_pane = pane_manifest
             .panes
             .values()
             .flat_map(|panes| panes.iter())
-            .find(|pane| pane.is_plugin && pane.id == plugin_id)
-            .and_then(|pane| {
-                rail_size_from_constraints(
-                    self.rail_placement,
-                    pane.pane_rows_constraint,
-                    pane.pane_columns_constraint,
-                )
-            })
-        else {
+            .find(|pane| pane.is_plugin && pane.id == plugin_id);
+        if let Some(pane) = own_pane {
+            self.own_is_selectable = pane.is_selectable;
+            self.own_is_focused = pane.is_focused;
+            // Defensive auto-correct: the rail should never be selectable
+            // once we're past the initial permission window (signalled by
+            // having a controller_model). Some lifecycle path is flipping
+            // it back to selectable; force-correct here whenever we observe
+            // it instead of relying on event-driven state.
+            if pane.is_selectable && self.controller_model.is_some() {
+                set_selectable(false);
+                self.stats.increment("rail.auto-unselectable");
+            }
+        }
+        let Some(size) = own_pane.and_then(|pane| {
+            rail_size_from_constraints(
+                self.rail_placement,
+                pane.pane_rows_constraint,
+                pane.pane_columns_constraint,
+            )
+        }) else {
             return;
         };
         if self
