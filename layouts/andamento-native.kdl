@@ -50,7 +50,7 @@ layout {
         pane
         floating_panes {
             pane command="$ANDAMENTO_ROOT/scripts/andamento-git-watcher.py" cwd="$ANDAMENTO_ROOT" {
-                args "--interval" "5" "--plugin-url" "andamento-controller"
+                args "--interval" "5"
                 width 80
                 height 12
                 x 10
