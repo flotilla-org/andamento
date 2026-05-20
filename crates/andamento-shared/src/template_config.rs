@@ -40,28 +40,25 @@ pub fn parse_template_config_kdl(
 }
 
 pub fn load_template_catalog_from_json_file(
-    path: impl AsRef<Path>,
+    path: &str,
 ) -> Result<TemplateConfigCatalog, TemplateConfigError> {
-    let content = std::fs::read_to_string(zellij_tile::vfs::translate_plugin_path(path.as_ref())).map_err(|source| {
-        TemplateConfigError::Io(format!(
-            "failed to read {}: {source}",
-            path.as_ref().display()
-        ))
+    let resolved = zellij_tile::vfs::resolve_host_path(path)
+        .map_err(|err| TemplateConfigError::Io(err.to_string()))?;
+    let content = std::fs::read_to_string(&resolved).map_err(|source| {
+        TemplateConfigError::Io(format!("failed to read {}: {source}", resolved.display()))
     })?;
     parse_template_config_json(&content).map(TemplateConfigCatalog::from_config)
 }
 
 pub fn load_template_catalog_from_file(
-    path: impl AsRef<Path>,
+    path: &str,
 ) -> Result<TemplateConfigCatalog, TemplateConfigError> {
-    let content = std::fs::read_to_string(zellij_tile::vfs::translate_plugin_path(path.as_ref())).map_err(|source| {
-        TemplateConfigError::Io(format!(
-            "failed to read {}: {source}",
-            path.as_ref().display()
-        ))
+    let resolved = zellij_tile::vfs::resolve_host_path(path)
+        .map_err(|err| TemplateConfigError::Io(err.to_string()))?;
+    let content = std::fs::read_to_string(&resolved).map_err(|source| {
+        TemplateConfigError::Io(format!("failed to read {}: {source}", resolved.display()))
     })?;
-    if path
-        .as_ref()
+    if Path::new(path)
         .extension()
         .is_some_and(|extension| extension == "kdl")
     {

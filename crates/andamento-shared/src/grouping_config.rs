@@ -85,16 +85,14 @@ pub fn parse_grouping_config_json(
 }
 
 pub fn load_grouping_catalog_from_file(
-    path: impl AsRef<Path>,
+    path: &str,
 ) -> Result<GroupingConfigCatalog, GroupingConfigError> {
-    let content = std::fs::read_to_string(zellij_tile::vfs::translate_plugin_path(path.as_ref())).map_err(|source| {
-        GroupingConfigError::Io(format!(
-            "failed to read {}: {source}",
-            path.as_ref().display()
-        ))
+    let resolved = zellij_tile::vfs::resolve_host_path(path)
+        .map_err(|err| GroupingConfigError::Io(err.to_string()))?;
+    let content = std::fs::read_to_string(&resolved).map_err(|source| {
+        GroupingConfigError::Io(format!("failed to read {}: {source}", resolved.display()))
     })?;
-    let config = if path
-        .as_ref()
+    let config = if Path::new(path)
         .extension()
         .is_some_and(|extension| extension == "kdl")
     {
