@@ -50,6 +50,7 @@ pub struct HitRegion {
     pub tab_id: u64,
     pub tab_position: usize,
     pub group_path: Option<GroupPath>,
+    pub inspect_target: Option<NodeKey>,
     pub action: HitAction,
 }
 
@@ -1369,6 +1370,7 @@ fn append_group_header(
             tab_id: 0,
             tab_position: 0,
             group_path: Some(group.path.clone()),
+            inspect_target: Some(NodeKey::Group(group.path.clone())),
             action: HitAction::InspectNode,
         });
     }
@@ -1381,6 +1383,7 @@ fn append_group_header(
         tab_id: 0,
         tab_position: 0,
         group_path: Some(group.path.clone()),
+        inspect_target: None,
         action: HitAction::ToggleGroup,
     });
     let allocation = NodeRowAllocation {
@@ -1465,6 +1468,7 @@ fn append_compact_tab_strip(
             tab_id: tab.card.tab_id,
             tab_position: tab.card.position,
             group_path: tab.parent_path.clone(),
+            inspect_target: None,
             action: HitAction::SwitchTab,
         });
     }
@@ -2024,6 +2028,7 @@ fn add_card_metadata(
         tab_id: card.tab_id,
         tab_position: card.position,
         group_path: None,
+        inspect_target: None,
         action: HitAction::SwitchTab,
     });
     if controller_available {
@@ -2035,6 +2040,7 @@ fn add_card_metadata(
             tab_id: card.tab_id,
             tab_position: card.position,
             group_path: None,
+            inspect_target: None,
             action: HitAction::TogglePin,
         });
     }
@@ -2935,6 +2941,7 @@ struct BorderHitPayload {
     tab_id: u64,
     tab_position: usize,
     group_path: Option<GroupPath>,
+    inspect_target: Option<NodeKey>,
 }
 
 impl BorderHitPayload {
@@ -2943,6 +2950,7 @@ impl BorderHitPayload {
             tab_id: 0,
             tab_position: 0,
             group_path: None,
+            inspect_target: None,
         }
     }
 }
@@ -3165,6 +3173,7 @@ impl BorderRow {
                 tab_id: hit.payload.tab_id,
                 tab_position: hit.payload.tab_position,
                 group_path: hit.payload.group_path,
+                inspect_target: hit.payload.inspect_target,
                 action: hit.action,
             })
             .collect();
@@ -3246,6 +3255,7 @@ fn write_tab_top_border(
             tab_id: card.tab_id,
             tab_position: card.position,
             group_path: None,
+            inspect_target: Some(NodeKey::Tab(card.tab_id)),
         };
         border.place_right(
             0,
@@ -3322,7 +3332,13 @@ fn render_footer(
         footer.place_right(
             offset,
             inspect_node_glyph(inspected_node, &NodeKey::Root),
-            Some((HitAction::InspectNode, BorderHitPayload::none())),
+            Some((
+                HitAction::InspectNode,
+                BorderHitPayload {
+                    inspect_target: Some(NodeKey::Root),
+                    ..BorderHitPayload::none()
+                },
+            )),
             "footer_root_inspect",
         );
     }
@@ -5894,6 +5910,10 @@ mod tests {
             hit_at(&rendered.hit_regions, 8, 23).map(|hit| hit.action),
             Some(HitAction::InspectNode)
         );
+        assert_eq!(
+            hit_at(&rendered.hit_regions, 8, 23).and_then(|hit| hit.inspect_target),
+            Some(NodeKey::Root)
+        );
     }
 
     #[test]
@@ -6163,8 +6183,9 @@ mod tests {
         assert!(lines[0].ends_with("○"), "got {:?}", lines[0]);
         let inspect_hit = hits
             .iter()
-            .find(|h| h.action == HitAction::InspectNode)
+            .find(|h| h.inspect_target == Some(NodeKey::Root))
             .expect("inspect hit emitted");
+        assert_eq!(inspect_hit.action, HitAction::InspectNode);
         assert_eq!(inspect_hit.col_start, 19);
     }
 
@@ -6205,8 +6226,9 @@ mod tests {
         assert!(lines[0].ends_with("●▲▼"), "got {:?}", lines[0]);
         let cycle_hit = hits
             .iter()
-            .find(|h| h.action == HitAction::InspectNode)
+            .find(|h| h.inspect_target == Some(NodeKey::Root))
             .expect("root inspect hit emitted");
+        assert_eq!(cycle_hit.action, HitAction::InspectNode);
         assert_eq!(cycle_hit.col_start, 17);
     }
 
@@ -6235,7 +6257,9 @@ mod tests {
         let controls = MetadataControls::default();
         render_footer(&mut lines, &mut hits, 0, 20, None, &controls, None, false);
         assert!(
-            hits.iter().any(|h| h.action == HitAction::InspectNode),
+            hits.iter()
+                .any(|h| h.action == HitAction::InspectNode
+                    && h.inspect_target == Some(NodeKey::Root)),
             "root inspect hit should still be emitted"
         );
         assert!(lines[0].starts_with("⚙"), "got {:?}", lines[0]);
@@ -6373,6 +6397,7 @@ mod tests {
                 tab_id: 7,
                 tab_position: 0,
                 group_path: None,
+                inspect_target: None,
                 action: HitAction::SwitchTab,
             },
             HitRegion {
@@ -6383,6 +6408,7 @@ mod tests {
                 tab_id: 7,
                 tab_position: 0,
                 group_path: None,
+                inspect_target: Some(NodeKey::Tab(7)),
                 action: HitAction::InspectNode,
             },
         ];

@@ -684,6 +684,23 @@ mod tests {
     }
 
     #[test]
+    fn main_tab_zero_is_a_tab_not_root() {
+        let hit = HitRegion {
+            row_start: 0,
+            row_end: 0,
+            col_start: 0,
+            col_end: 0,
+            tab_id: 0,
+            tab_position: 0,
+            group_path: None,
+            inspect_target: Some(NodeKey::Tab(0)),
+            action: HitAction::InspectNode,
+        };
+
+        assert_eq!(hit.inspect_target, Some(NodeKey::Tab(0)));
+    }
+
+    #[test]
     fn resolves_own_plugin_tab_placement_from_pane_manifest() {
         let pane_manifest = PaneManifest {
             panes: HashMap::from([(
@@ -1000,14 +1017,9 @@ impl PluginState {
                         true
                     }
                     HitAction::InspectNode => {
-                        let key = if let Some(group_path) = hit.group_path {
-                            NodeKey::Group(group_path)
-                        } else if hit.tab_id != 0 {
-                            NodeKey::Tab(hit.tab_id)
-                        } else {
-                            NodeKey::Root
-                        };
-                        self.open_config_for_node(key);
+                        if let Some(key) = hit.inspect_target {
+                            self.open_config_for_node(key);
+                        }
                         false
                     }
                 }
