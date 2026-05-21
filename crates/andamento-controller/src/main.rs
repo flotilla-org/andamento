@@ -10,22 +10,23 @@ use std::time::Instant;
 /// emits at debug level, which the server's default INFO filter drops).
 const RECENT_PIPE_LOG_CAPACITY: usize = 20;
 
-use state::ControllerState;
 use andamento_shared::PaneTarget;
 use andamento_shared::PluginStatsRecorder;
 use andamento_shared::MSG_RAIL_SIZE_TARGET;
 use andamento_shared::MSG_VIEW_MODEL;
 use andamento_shared::{
-    ControllerBootstrapSnapshot, ExternalMessage, RailConfig, RailGroupingMode, RailSize,
-    RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RendererHello,
-    SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS,
-    MSG_CONFIG_EDITOR_HELLO, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE,
-    MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
-    MSG_CYCLE_METADATA_TRISTATE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE,
-    MSG_STATS_COLLECT, MSG_TOGGLE_METADATA_ROOT, MSG_TOGGLE_PIN,
+    ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage, RailConfig,
+    RailGroupingMode, RailSize, RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure,
+    RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS,
+    MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST,
+    MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_CYCLE_METADATA_TRISTATE, MSG_OBSERVED_IDENTITIES,
+    MSG_RAIL_SIZE_OBSERVED, MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_SET_PANE_STATUS,
+    MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_METADATA_ROOT,
+    MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
+use state::ControllerState;
 use zellij_tile::output::print;
 use zellij_tile::prelude::*;
 
@@ -36,6 +37,9 @@ const RAIL_SIZE_SYNC_DEBOUNCE_SECS: f64 = 0.05;
 #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
 const VIEW_MODEL_PUSH_COALESCE_SECS: f64 = 0.01;
 const MAX_TEMPLATE_RELOAD_ATTEMPTS: u8 = 20;
+const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
+const CONFIG_CLOSE_ON_HIDDEN: &str = "close_on_hidden";
+const CONFIG_RAIL_SCOPE: &str = "rail_scope";
 
 #[cfg(not(target_family = "wasm"))]
 fn main() {}
@@ -58,6 +62,7 @@ pub struct PluginState {
     recent_pipe_log: VecDeque<String>,
 }
 
+#[cfg(target_family = "wasm")]
 register_plugin!(PluginState);
 
 impl ZellijPlugin for PluginState {
@@ -225,6 +230,9 @@ impl ZellijPlugin for PluginState {
         }
         if let Some(observed) = result.rail_size_observed {
             self.queue_rail_size_sync(observed);
+        }
+        if let Some(request) = result.config_inspect_request.as_ref() {
+            self.open_or_focus_config_editor(request);
         }
         if let Some(output) = result.cli_pipe_output.as_ref() {
             cli_pipe_output(&output.pipe_id, &output.output);
@@ -554,6 +562,18 @@ impl PluginState {
             );
         }
     }
+
+    fn open_or_focus_config_editor(&self, request: &ConfigInspectRequest) {
+        let message = self
+            .state
+            .config_editor_target_for_client(request.client_id)
+            .and_then(|target| config_inspect_message_for_existing_editor(request, target))
+            .or_else(|| config_inspect_message_for_new_editor(request));
+        let Some(message) = message else {
+            return;
+        };
+        pipe_message_to_plugin(message);
+    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -565,6 +585,7 @@ struct HandlePipeResult {
     cli_pipe_unblock: Option<String>,
     stats_collect_request: Option<StatsCollectRequest>,
     rail_size_observed: Option<RailSizeObserved>,
+    config_inspect_request: Option<ConfigInspectRequest>,
 }
 
 #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
@@ -840,6 +861,10 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
                 ..HandlePipeResult::default()
             }
         }
+        Ok(Some(ControllerMessage::ConfigInspect(request))) => HandlePipeResult {
+            config_inspect_request: Some(request),
+            ..HandlePipeResult::default()
+        },
         Ok(None) => HandlePipeResult::default(),
         Err(error) => {
             eprintln!("andamento-controller: {error}");
@@ -915,6 +940,41 @@ fn template_config_error_diagnostics(
     }
 }
 
+fn config_inspect_message_for_existing_editor(
+    request: &ConfigInspectRequest,
+    target: RendererHello,
+) -> Option<MessageToPlugin> {
+    let payload = serde_json::to_string(request).ok()?;
+    Some(
+        MessageToPlugin::new(MSG_CONFIG_INSPECT)
+            .with_destination_plugin_id(target.plugin_id)
+            .with_destination_client_id(target.client_id)
+            .with_payload(payload),
+    )
+}
+
+fn config_inspect_message_for_new_editor(
+    request: &ConfigInspectRequest,
+) -> Option<MessageToPlugin> {
+    let payload = serde_json::to_string(request).ok()?;
+    let mut configuration = BTreeMap::new();
+    configuration.insert(
+        CONFIG_CONTROLLER_PLUGIN_URL.to_owned(),
+        request.controller_plugin_url.clone(),
+    );
+    configuration.insert(CONFIG_RAIL_SCOPE.to_owned(), request.scope.clone());
+    configuration.insert(CONFIG_CLOSE_ON_HIDDEN.to_owned(), "true".to_owned());
+    Some(
+        MessageToPlugin::new(MSG_CONFIG_INSPECT)
+            .with_plugin_url(request.config_plugin_url.clone())
+            .with_destination_client_id(request.client_id)
+            .with_plugin_config(configuration)
+            .with_payload(payload)
+            .new_plugin_instance_should_float(true)
+            .new_plugin_instance_should_be_focused(),
+    )
+}
+
 fn should_retry_template_load(attempts: u8, loaded: bool) -> bool {
     !loaded && attempts < MAX_TEMPLATE_RELOAD_ATTEMPTS
 }
@@ -987,6 +1047,7 @@ enum ControllerMessage {
     RailSizeObserved(RailSizeObserved),
     ToggleMetadataRoot,
     CycleMetadataTriState(andamento_shared::NodeKey),
+    ConfigInspect(ConfigInspectRequest),
 }
 
 fn parse_controller_message(
@@ -1064,6 +1125,16 @@ fn parse_controller_message(
                     .map_err(|e| format!("invalid node key: {e}"))
             })
             .map(ControllerMessage::CycleMetadataTriState)
+            .map(Some),
+        MSG_CONFIG_INSPECT => pipe_message
+            .payload
+            .as_deref()
+            .ok_or_else(|| "config inspect requires payload".to_owned())
+            .and_then(|payload| {
+                serde_json::from_str::<ConfigInspectRequest>(payload)
+                    .map_err(|e| format!("invalid config inspect request: {e}"))
+            })
+            .map(ControllerMessage::ConfigInspect)
             .map(Some),
         MSG_REQUEST_STATE => Ok(Some(ControllerMessage::RequestState)),
         MSG_OBSERVED_IDENTITIES => match &pipe_message.source {
@@ -1229,6 +1300,85 @@ mod tests {
                 client_id: 1
             }))
         );
+    }
+
+    #[test]
+    fn parses_config_inspect_request() {
+        let request = ConfigInspectRequest {
+            scope: "tab:7".to_owned(),
+            client_id: 4,
+            config_plugin_url: "andamento-config".to_owned(),
+            controller_plugin_url: "andamento-controller".to_owned(),
+        };
+        let payload = serde_json::to_string(&request).unwrap();
+
+        let parsed =
+            parse_controller_message(&pipe(MSG_CONFIG_INSPECT, Some(payload), BTreeMap::new()))
+                .unwrap();
+
+        assert_eq!(parsed, Some(ControllerMessage::ConfigInspect(request)));
+    }
+
+    #[test]
+    fn config_inspect_message_targets_existing_editor_by_plugin_id() {
+        let request = ConfigInspectRequest {
+            scope: "tab:7".to_owned(),
+            client_id: 4,
+            config_plugin_url: "andamento-config".to_owned(),
+            controller_plugin_url: "andamento-controller".to_owned(),
+        };
+        let target = RendererHello {
+            plugin_id: 44,
+            client_id: 4,
+        };
+
+        let message = config_inspect_message_for_existing_editor(&request, target).unwrap();
+
+        assert_eq!(message.plugin_url, None);
+        assert_eq!(message.destination_plugin_id, Some(44));
+        assert_eq!(message.destination_client_id, Some(4));
+        assert_eq!(message.message_name, MSG_CONFIG_INSPECT);
+        assert!(message.new_plugin_args.is_none());
+        let payload: ConfigInspectRequest =
+            serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
+        assert_eq!(payload, request);
+    }
+
+    #[test]
+    fn config_inspect_message_launches_focused_floating_editor_when_needed() {
+        let request = ConfigInspectRequest {
+            scope: "tab:7".to_owned(),
+            client_id: 4,
+            config_plugin_url: "andamento-config".to_owned(),
+            controller_plugin_url: "andamento-controller".to_owned(),
+        };
+
+        let message = config_inspect_message_for_new_editor(&request).unwrap();
+
+        assert_eq!(message.plugin_url.as_deref(), Some("andamento-config"));
+        assert_eq!(message.destination_client_id, Some(4));
+        assert_eq!(message.message_name, MSG_CONFIG_INSPECT);
+        assert_eq!(
+            message
+                .plugin_config
+                .get("controller_plugin_url")
+                .map(String::as_str),
+            Some("andamento-controller")
+        );
+        assert_eq!(
+            message.plugin_config.get("rail_scope").map(String::as_str),
+            Some("tab:7")
+        );
+        assert_eq!(
+            message
+                .plugin_config
+                .get("close_on_hidden")
+                .map(String::as_str),
+            Some("true")
+        );
+        let new_plugin_args = message.new_plugin_args.as_ref().unwrap();
+        assert_eq!(new_plugin_args.should_float, Some(true));
+        assert_eq!(new_plugin_args.should_focus, Some(true));
     }
 
     #[test]

@@ -377,6 +377,13 @@ impl ControllerState {
         self.known_config_editors.len()
     }
 
+    pub fn config_editor_target_for_client(&self, client_id: u16) -> Option<RendererHello> {
+        self.known_config_editors
+            .values()
+            .find(|target| target.client_id == client_id)
+            .cloned()
+    }
+
     #[allow(dead_code)]
     pub fn register_config_editor(&mut self, hello: RendererHello) -> bool {
         if self.known_config_editors.get(&hello.plugin_id) == Some(&hello) {
@@ -2928,5 +2935,26 @@ mod tests {
         assert_eq!(state.known_rail_count(), 1);
         assert_eq!(state.known_config_editor_count(), 0);
         assert_eq!(state.rail_plugin_ids(), vec![8]);
+    }
+
+    #[test]
+    fn config_editor_target_prefers_same_client() {
+        let mut state = ControllerState::default();
+        state.register_config_editor(RendererHello {
+            plugin_id: 30,
+            client_id: 1,
+        });
+        state.register_config_editor(RendererHello {
+            plugin_id: 31,
+            client_id: 2,
+        });
+
+        assert_eq!(
+            state.config_editor_target_for_client(2),
+            Some(RendererHello {
+                plugin_id: 31,
+                client_id: 2
+            })
+        );
     }
 }

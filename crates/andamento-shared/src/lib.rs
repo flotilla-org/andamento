@@ -27,6 +27,7 @@ pub const MSG_RAIL_SIZE_OBSERVED: &str = "andamento-rail-size-observed";
 pub const MSG_RAIL_SIZE_TARGET: &str = "andamento-rail-size-target";
 pub const MSG_TOGGLE_METADATA_ROOT: &str = "andamento-toggle-metadata-root";
 pub const MSG_CYCLE_METADATA_TRISTATE: &str = "andamento-cycle-metadata-tristate";
+pub const MSG_CONFIG_INSPECT: &str = "andamento-config-inspect";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -68,6 +69,14 @@ pub enum ExternalMessage {
 pub struct RendererHello {
     pub plugin_id: u32,
     pub client_id: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigInspectRequest {
+    pub scope: String,
+    pub client_id: u16,
+    pub config_plugin_url: String,
+    pub controller_plugin_url: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -738,6 +747,7 @@ mod tests {
             MSG_STATS_REPORT,
             MSG_RAIL_SIZE_OBSERVED,
             MSG_RAIL_SIZE_TARGET,
+            MSG_CONFIG_INSPECT,
         ];
 
         let old_prefix = ["ta", "bs-"].concat();
@@ -816,6 +826,21 @@ mod tests {
         let encoded = serde_json::to_string(&model).unwrap();
         let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, model);
+    }
+
+    #[test]
+    fn config_inspect_request_round_trips_json() {
+        let request = ConfigInspectRequest {
+            scope: "tab:7".to_owned(),
+            client_id: 4,
+            config_plugin_url: "andamento-config".to_owned(),
+            controller_plugin_url: "andamento-controller".to_owned(),
+        };
+
+        let encoded = serde_json::to_string(&request).unwrap();
+        let decoded: ConfigInspectRequest = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, request);
     }
 
     #[test]

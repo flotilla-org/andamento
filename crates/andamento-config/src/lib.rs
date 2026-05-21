@@ -2,15 +2,16 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use andamento_shared::{
-    ControllerViewModel, GroupPath, MetadataValue, PluginStatsSnapshot, RailConfig,
-    RailGroupingMode, RailSizingPreset, RailStructure,
+    ConfigInspectRequest, ControllerViewModel, GroupPath, MetadataValue, PluginStatsSnapshot,
+    RailConfig, RailGroupingMode, RailSizingPreset, RailStructure,
 };
 use unicode_width::UnicodeWidthStr;
 
 use andamento_shared::StatsCollectRequest;
 use andamento_shared::{
-    PluginStatsRecorder, RendererHello, MSG_CONFIG_EDITOR_HELLO, MSG_REQUEST_STATE,
-    MSG_SET_RAIL_CONFIG, MSG_STATS_COLLECT, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_VIEW_MODEL,
+    PluginStatsRecorder, RendererHello, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT,
+    MSG_REQUEST_STATE, MSG_SET_RAIL_CONFIG, MSG_STATS_COLLECT, MSG_STATS_REPORT, MSG_STATS_REQUEST,
+    MSG_VIEW_MODEL,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -190,6 +191,23 @@ impl ZellijPlugin for PluginState {
             }
             self.send_hello();
             return true;
+        }
+        if message.name == MSG_CONFIG_INSPECT {
+            if let Some(payload) = message.payload.as_deref() {
+                match serde_json::from_str::<ConfigInspectRequest>(payload) {
+                    Ok(request) => {
+                        apply_config_inspect_request(&mut self.rail_scope, &mut self.page, request);
+                        if self.permissions_granted {
+                            show_self(true);
+                        }
+                        self.send_hello();
+                        return true;
+                    }
+                    Err(error) => {
+                        eprintln!("andamento-config: failed to parse inspect request: {error}");
+                    }
+                }
+            }
         }
         if message.name == MSG_VIEW_MODEL {
             if let Some(payload) = message.payload.as_deref() {
@@ -461,6 +479,15 @@ fn initial_page_for_scope(rail_scope: Option<&str>) -> ConfigPage {
     } else {
         ConfigPage::default()
     }
+}
+
+fn apply_config_inspect_request(
+    rail_scope: &mut Option<String>,
+    page: &mut ConfigPage,
+    request: ConfigInspectRequest,
+) {
+    *rail_scope = Some(request.scope);
+    *page = ConfigPage::Inspect;
 }
 
 #[cfg(test)]
@@ -1150,6 +1177,23 @@ mod tests {
             initial_page_for_scope(config_scope(&configuration).as_deref()),
             ConfigPage::Inspect
         );
+    }
+
+    #[test]
+    fn config_inspect_request_updates_scope_and_page() {
+        let request = ConfigInspectRequest {
+            scope: "tab:7".to_owned(),
+            client_id: 4,
+            config_plugin_url: "andamento-config".to_owned(),
+            controller_plugin_url: "andamento-controller".to_owned(),
+        };
+        let mut scope = None;
+        let mut page = ConfigPage::Settings;
+
+        apply_config_inspect_request(&mut scope, &mut page, request);
+
+        assert_eq!(scope.as_deref(), Some("tab:7"));
+        assert_eq!(page, ConfigPage::Inspect);
     }
 
     #[test]

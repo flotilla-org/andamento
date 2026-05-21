@@ -164,16 +164,17 @@ use std::cmp::{max, min};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Instant;
 
-use render::{hit_at, HitAction, HitRegion};
-use render::{status_icon_is_renderable, LocalTab, VisibleCard, VisibleIconRect};
 use andamento_shared::StatusIcon;
 use andamento_shared::{
-    ControllerViewModel, GroupPath, NodeKey, PluginStatsRecorder, RailSizeObserved, RendererHello,
-    StatsCollectRequest, MSG_CYCLE_METADATA_TRISTATE, MSG_RAIL_SIZE_OBSERVED,
-    MSG_RAIL_SIZE_TARGET, MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_STATS_REPORT,
-    MSG_STATS_REQUEST, MSG_TOGGLE_METADATA_ROOT, MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
+    ConfigInspectRequest, ControllerViewModel, GroupPath, NodeKey, PluginStatsRecorder,
+    RailSizeObserved, RendererHello, StatsCollectRequest, MSG_CONFIG_INSPECT,
+    MSG_CYCLE_METADATA_TRISTATE, MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_SIZE_TARGET, MSG_RENDERER_HELLO,
+    MSG_REQUEST_STATE, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_METADATA_ROOT,
+    MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
 };
 use andamento_shared::{RailSize, RailSizeTarget};
+use render::{hit_at, HitAction, HitRegion};
+use render::{status_icon_is_renderable, LocalTab, VisibleCard, VisibleIconRect};
 use zellij_tile::output::print;
 use zellij_tile::prelude::*;
 #[cfg(test)]
@@ -181,9 +182,28 @@ use zellij_tile::prelude::{Direction, ModeInfo, PaneDimensionConstraint, TabInfo
 
 const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
 const CONFIG_CONFIG_PLUGIN_URL: &str = "config_plugin_url";
-const CONFIG_CLOSE_ON_HIDDEN: &str = "close_on_hidden";
-const CONFIG_RAIL_SCOPE: &str = "rail_scope";
 const CONFIG_RAIL_PLACEMENT: &str = "rail_placement";
+
+fn build_config_inspect_message(
+    controller_plugin_url: &str,
+    config_plugin_url: &str,
+    client_id: u16,
+    scope: String,
+) -> Option<MessageToPlugin> {
+    let request = ConfigInspectRequest {
+        scope,
+        client_id,
+        config_plugin_url: config_plugin_url.to_owned(),
+        controller_plugin_url: controller_plugin_url.to_owned(),
+    };
+    let payload = serde_json::to_string(&request).ok()?;
+    Some(
+        MessageToPlugin::new(MSG_CONFIG_INSPECT)
+            .with_plugin_url(controller_plugin_url.to_owned())
+            .with_destination_client_id(client_id)
+            .with_payload(payload),
+    )
+}
 
 #[derive(Default)]
 pub struct PluginState {
@@ -552,6 +572,30 @@ mod tests {
             Some(RailSize::Percent(12.5))
         );
     }
+
+    #[test]
+    fn config_button_builds_controller_inspect_request() {
+        let message = build_config_inspect_message(
+            "andamento-controller",
+            "andamento-config",
+            4,
+            "tab:7".to_owned(),
+        )
+        .unwrap();
+
+        assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
+        assert_eq!(message.destination_client_id, Some(4));
+        assert_eq!(message.message_name, MSG_CONFIG_INSPECT);
+        assert!(message.plugin_config.is_empty());
+        assert!(message.new_plugin_args.is_none());
+
+        let payload: ConfigInspectRequest =
+            serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
+        assert_eq!(payload.scope, "tab:7");
+        assert_eq!(payload.client_id, 4);
+        assert_eq!(payload.config_plugin_url, "andamento-config");
+        assert_eq!(payload.controller_plugin_url, "andamento-controller");
+    }
 }
 
 impl PluginState {
@@ -888,21 +932,15 @@ impl PluginState {
         let Some(client_id) = self.own_client_id else {
             return;
         };
-        let mut configuration = BTreeMap::new();
-        configuration.insert(
-            CONFIG_CONTROLLER_PLUGIN_URL.to_owned(),
-            self.controller_plugin_url.clone(),
-        );
-        configuration.insert(CONFIG_RAIL_SCOPE.to_owned(), self.config_editor_scope());
-        configuration.insert(CONFIG_CLOSE_ON_HIDDEN.to_owned(), "true".to_owned());
-        pipe_message_to_plugin(
-            MessageToPlugin::new(MSG_REQUEST_STATE)
-                .with_plugin_url(self.config_plugin_url.clone())
-                .with_destination_client_id(client_id)
-                .with_plugin_config(configuration)
-                .new_plugin_instance_should_float(true)
-                .new_plugin_instance_should_be_focused(),
-        );
+        let Some(message) = build_config_inspect_message(
+            &self.controller_plugin_url,
+            &self.config_plugin_url,
+            client_id,
+            self.config_editor_scope(),
+        ) else {
+            return;
+        };
+        pipe_message_to_plugin(message);
     }
 
     fn config_editor_scope(&self) -> String {

@@ -361,7 +361,7 @@ Status: started. `andamento-config` now has the same lib/bin shape as the rail, 
 
 Small fixed enum settings should render as inline segmented radio rows rather than one option per row. For example, `structure`, `grouping`, and `sizing` fit better as one labeled row each, with every segment directly clickable. Drop-downs should be reserved for large or dynamic option sets because they hide the available choices and require extra open/close state.
 
-The config plugin also has a first `Inspect` page. When opened from the rail with a `rail_scope` such as `tab:<id>`, it starts on Inspect and resolves that tab from the controller view model. The current page shows selected scope, model counts, metadata-control state, tab state, grouping, and active pane. This is intentionally the beginning of the richer item-focus surface rather than a separate metadata renderer.
+The config plugin also has a first `Inspect` page. When opened from the rail with a scope such as `tab:<id>`, the rail now sends a `ConfigInspectRequest` to the controller instead of directly launching a config plugin by URL. The controller prefers an already-registered config editor on the same client and sends it `andamento-config-inspect`; if none exists, it launches a focused floating config editor with the same scope. The config editor updates its scope on that message, switches to Inspect, and resolves the selected tab from the controller view model. The current page shows selected scope, model counts, metadata-control state, tab state, grouping, and active pane. This is intentionally the beginning of the richer item-focus surface rather than a separate metadata renderer.
 
 ### Template Matching Is A Projection Policy
 
