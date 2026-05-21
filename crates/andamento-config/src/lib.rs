@@ -15,12 +15,13 @@ use andamento_shared::{
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
-use ratatui::widgets::{Tabs, Widget};
+use ratatui::widgets::{Paragraph, Tabs, Widget};
 use zellij_tile::output::print;
 use zellij_tile::prelude::*;
 
 const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
 const CONFIG_CLOSE_ON_HIDDEN: &str = "close_on_hidden";
+const CONFIG_RAIL_SCOPE: &str = "rail_scope";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigAction {
@@ -34,6 +35,7 @@ enum ConfigAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigPage {
     Settings,
+    Inspect,
     Templates,
     Stats,
 }
@@ -59,10 +61,86 @@ struct RenderedConfig {
     stats_scroll_offset: usize,
 }
 
+struct ConfigUiFrame {
+    buffer: Buffer,
+    rows: usize,
+    cols: usize,
+    next_row: usize,
+    hit_regions: Vec<HitRegion>,
+}
+
+impl ConfigUiFrame {
+    fn new(rows: usize, cols: usize) -> Self {
+        Self {
+            buffer: Buffer::empty(Rect::new(0, 0, cols as u16, rows as u16)),
+            rows,
+            cols,
+            next_row: 0,
+            hit_regions: vec![],
+        }
+    }
+
+    fn current_row(&self) -> usize {
+        self.next_row
+    }
+
+    fn push_plain(&mut self, text: &str) -> Option<usize> {
+        self.push_line(Line::from(text.to_owned()))
+    }
+
+    fn push_blank(&mut self) -> Option<usize> {
+        self.push_plain("")
+    }
+
+    fn push_line(&mut self, line: Line<'static>) -> Option<usize> {
+        if self.next_row >= self.rows {
+            return None;
+        }
+        let row = self.next_row;
+        Paragraph::new(line).render(
+            Rect::new(0, row as u16, self.cols as u16, 1),
+            &mut self.buffer,
+        );
+        self.next_row = self.next_row.saturating_add(1);
+        Some(row)
+    }
+
+    fn add_hit(&mut self, row: usize, col_start: usize, col_end: usize, action: ConfigAction) {
+        if row >= self.rows || col_start >= self.cols {
+            return;
+        }
+        self.hit_regions.push(HitRegion {
+            row,
+            col_start,
+            col_end: col_end.min(self.cols.saturating_sub(1)),
+            action,
+        });
+    }
+
+    fn into_rendered(self, stats_scroll_offset: usize) -> RenderedConfig {
+        let mut lines = vec![];
+        for row in 0..self.rows {
+            let line = (0..self.cols)
+                .map(|col| self.buffer[(col as u16, row as u16)].symbol())
+                .collect::<String>();
+            lines.push(pad_to_width(
+                &truncate_to_width(&line, self.cols),
+                self.cols,
+            ));
+        }
+        RenderedConfig {
+            lines,
+            hit_regions: self.hit_regions,
+            stats_scroll_offset,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct PluginState {
     controller_plugin_url: String,
     close_on_hidden: bool,
+    rail_scope: Option<String>,
     own_plugin_id: Option<u32>,
     own_client_id: Option<u16>,
     model: Option<ControllerViewModel>,
@@ -89,6 +167,8 @@ impl ZellijPlugin for PluginState {
         self.close_on_hidden = configuration
             .get(CONFIG_CLOSE_ON_HIDDEN)
             .is_some_and(|value| config_bool(value));
+        self.rail_scope = config_scope(&configuration);
+        self.page = initial_page_for_scope(self.rail_scope.as_deref());
 
         request_permission(&[
             PermissionType::ChangeApplicationState,
@@ -206,10 +286,11 @@ impl ZellijPlugin for PluginState {
             .pending_config
             .or_else(|| self.model.as_ref().map(|model| model.config))
             .unwrap_or_default();
-        let rendered = render_config(
+        let rendered = render_config_with_scope(
             config,
             self.model.as_ref(),
             self.page,
+            self.rail_scope.as_deref(),
             rows,
             cols,
             &self.stats_reports,
@@ -366,10 +447,51 @@ fn config_should_close_on_visibility(is_visible: bool, close_on_hidden: bool) ->
     close_on_hidden && !is_visible
 }
 
+fn config_scope(configuration: &BTreeMap<String, String>) -> Option<String> {
+    configuration
+        .get(CONFIG_RAIL_SCOPE)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn initial_page_for_scope(rail_scope: Option<&str>) -> ConfigPage {
+    if rail_scope.is_some() {
+        ConfigPage::Inspect
+    } else {
+        ConfigPage::default()
+    }
+}
+
+#[cfg(test)]
 fn render_config(
     config: RailConfig,
     model: Option<&ControllerViewModel>,
     page: ConfigPage,
+    rows: usize,
+    cols: usize,
+    stats_reports: &[PluginStatsSnapshot],
+    stats_collection_pending: bool,
+    stats_scroll_offset: usize,
+) -> RenderedConfig {
+    render_config_with_scope(
+        config,
+        model,
+        page,
+        None,
+        rows,
+        cols,
+        stats_reports,
+        stats_collection_pending,
+        stats_scroll_offset,
+    )
+}
+
+fn render_config_with_scope(
+    config: RailConfig,
+    model: Option<&ControllerViewModel>,
+    page: ConfigPage,
+    rail_scope: Option<&str>,
     rows: usize,
     cols: usize,
     stats_reports: &[PluginStatsSnapshot],
@@ -383,21 +505,17 @@ fn render_config(
             stats_scroll_offset: 0,
         };
     }
-    let mut lines = vec![];
-    let mut hit_regions = vec![];
+    let mut frame = ConfigUiFrame::new(rows, cols);
     let mut effective_stats_scroll_offset = stats_scroll_offset;
-    push_tab_row(&mut lines, &mut hit_regions, cols, page);
-    push_plain(&mut lines, cols, "");
+    push_tab_row(&mut frame, page);
+    frame.push_blank();
     match page {
-        ConfigPage::Settings => {
-            push_settings_page(&mut lines, &mut hit_regions, cols, config, model)
-        }
-        ConfigPage::Templates => push_templates_page(&mut lines, cols, model),
+        ConfigPage::Settings => push_settings_page(&mut frame, config, model),
+        ConfigPage::Inspect => push_inspect_page(&mut frame, model, rail_scope),
+        ConfigPage::Templates => push_templates_page(&mut frame, model),
         ConfigPage::Stats => {
             effective_stats_scroll_offset = push_stats_page(
-                &mut lines,
-                &mut hit_regions,
-                cols,
+                &mut frame,
                 stats_reports,
                 stats_collection_pending,
                 rows,
@@ -405,45 +523,101 @@ fn render_config(
             );
         }
     }
+    frame.into_rendered(effective_stats_scroll_offset)
+}
 
-    lines.truncate(rows);
-    hit_regions.retain(|hit| hit.row < rows);
-    while lines.len() < rows {
-        lines.push(" ".repeat(cols));
+fn push_inspect_page(
+    frame: &mut ConfigUiFrame,
+    model: Option<&ControllerViewModel>,
+    rail_scope: Option<&str>,
+) {
+    frame.push_plain("inspect");
+    let scope = rail_scope.unwrap_or("<none>");
+    frame.push_plain(&format!("scope: {scope}"));
+
+    let Some(model) = model else {
+        frame.push_plain("no controller state yet");
+        return;
+    };
+
+    frame.push_plain(&format!(
+        "model: tabs={} rows={} metadata={} identities={}",
+        model.tabs.len(),
+        model.rows.len(),
+        model.resolved_metadata.len(),
+        model.observed_identities.len()
+    ));
+    frame.push_plain(&format!(
+        "metadata view: root={} explicit={}",
+        if model.metadata_controls.root_enabled {
+            "on"
+        } else {
+            "off"
+        },
+        model.metadata_controls.per_node.len()
+    ));
+
+    let Some(tab_id) = rail_scope.and_then(parse_tab_scope) else {
+        return;
+    };
+    let Some(tab) = model.tab_by_id(tab_id) else {
+        frame.push_plain(&format!("tab: <missing> #{tab_id}"));
+        return;
+    };
+    frame.push_blank();
+    frame.push_plain(&format!("tab: {} #{}", tab.name, tab.tab_id));
+    frame.push_plain(&format!(
+        "state: position={} active={} pinned={}",
+        tab.position, tab.active, tab.pinned
+    ));
+    if let Some(grouping) = tab.grouping.as_ref() {
+        frame.push_plain(&format!(
+            "group: {} {}",
+            grouping.label,
+            format_group_path(&grouping.path)
+        ));
+    } else {
+        frame.push_plain("group: <none>");
     }
+    if let Some(active_pane) = tab.active_pane.as_ref() {
+        frame.push_plain(&format!("active pane: {}", format_pane_target(active_pane)));
+    }
+}
 
-    RenderedConfig {
-        lines,
-        hit_regions,
-        stats_scroll_offset: effective_stats_scroll_offset,
+fn parse_tab_scope(scope: &str) -> Option<u64> {
+    scope.strip_prefix("tab:")?.parse().ok()
+}
+
+fn format_pane_target(target: &andamento_shared::PaneTarget) -> String {
+    match target {
+        andamento_shared::PaneTarget::Terminal(id) => format!("terminal:{id}"),
+        andamento_shared::PaneTarget::Plugin(id) => format!("plugin:{id}"),
     }
 }
 
 fn push_stats_page(
-    lines: &mut Vec<String>,
-    hit_regions: &mut Vec<HitRegion>,
-    cols: usize,
+    frame: &mut ConfigUiFrame,
     stats_reports: &[PluginStatsSnapshot],
     stats_collection_pending: bool,
     rows: usize,
     stats_scroll_offset: usize,
 ) -> usize {
-    push_plain(lines, cols, "stats");
-    let row = lines.len();
-    push_plain(lines, cols, "[collect stats]");
-    hit_regions.push(HitRegion {
-        row,
-        col_start: 0,
-        col_end: "[collect stats]".width().saturating_sub(1),
-        action: ConfigAction::CollectStats,
-    });
-    push_plain(lines, cols, "");
-    let body_rows = rows.saturating_sub(lines.len());
+    frame.push_plain("stats");
+    if let Some(row) = frame.push_plain("[collect stats]") {
+        frame.add_hit(
+            row,
+            0,
+            "[collect stats]".width().saturating_sub(1),
+            ConfigAction::CollectStats,
+        );
+    }
+    frame.push_blank();
+    let body_rows = rows.saturating_sub(frame.current_row());
     if stats_reports.is_empty() {
         if stats_collection_pending {
-            push_plain(lines, cols, "collecting...");
+            frame.push_plain("collecting...");
         } else {
-            push_plain(lines, cols, "no stats collected yet");
+            frame.push_plain("no stats collected yet");
         }
         return 0;
     }
@@ -471,22 +645,18 @@ fn push_stats_page(
     let max_scroll_offset = body.len().saturating_sub(body_rows);
     let effective_scroll_offset = stats_scroll_offset.min(max_scroll_offset);
     for line in body.iter().skip(effective_scroll_offset).take(body_rows) {
-        push_plain(lines, cols, line);
+        frame.push_plain(line);
     }
     effective_scroll_offset
 }
 
 fn push_settings_page(
-    lines: &mut Vec<String>,
-    hit_regions: &mut Vec<HitRegion>,
-    cols: usize,
+    frame: &mut ConfigUiFrame,
     config: RailConfig,
     model: Option<&ControllerViewModel>,
 ) {
     push_segmented_choice(
-        lines,
-        hit_regions,
-        cols,
+        frame,
         "structure",
         &[
             (
@@ -507,9 +677,7 @@ fn push_settings_page(
         ],
     );
     push_segmented_choice(
-        lines,
-        hit_regions,
-        cols,
+        frame,
         "grouping",
         &[
             (
@@ -525,9 +693,7 @@ fn push_settings_page(
         ],
     );
     push_segmented_choice(
-        lines,
-        hit_regions,
-        cols,
+        frame,
         "sizing",
         &[
             (
@@ -552,74 +718,59 @@ fn push_settings_page(
             ),
         ],
     );
-    push_plain(lines, cols, "");
-    push_cwd_metadata(lines, cols, model);
-    push_plain(lines, cols, "");
-    push_plain(lines, cols, "click to apply");
+    frame.push_blank();
+    push_cwd_metadata(frame, model);
+    frame.push_blank();
+    frame.push_plain("click to apply");
 }
 
-fn push_templates_page(lines: &mut Vec<String>, cols: usize, model: Option<&ControllerViewModel>) {
-    push_plain(lines, cols, "templates");
+fn push_templates_page(frame: &mut ConfigUiFrame, model: Option<&ControllerViewModel>) {
+    frame.push_plain("templates");
     let Some(model) = model else {
-        push_plain(lines, cols, "no controller state yet");
+        frame.push_plain("no controller state yet");
         return;
     };
     let diagnostics = &model.template_config;
-    push_plain(
-        lines,
-        cols,
-        &format!("state: {}", template_config_state_text(diagnostics.state)),
-    );
-    push_plain(
-        lines,
-        cols,
-        &format!(
-            "path: {}",
-            diagnostics.path.as_deref().unwrap_or("<not configured>")
-        ),
-    );
-    push_plain(
-        lines,
-        cols,
-        &format!("template count: {}", diagnostics.template_count),
-    );
+    frame.push_plain(&format!(
+        "state: {}",
+        template_config_state_text(diagnostics.state)
+    ));
+    frame.push_plain(&format!(
+        "path: {}",
+        diagnostics.path.as_deref().unwrap_or("<not configured>")
+    ));
+    frame.push_plain(&format!("template count: {}", diagnostics.template_count));
     if !diagnostics.template_names.is_empty() {
-        push_plain(lines, cols, "template names");
+        frame.push_plain("template names");
         for name in &diagnostics.template_names {
-            push_plain(lines, cols, &format!("  {name}"));
+            frame.push_plain(&format!("  {name}"));
         }
     }
     if let Some(error) = diagnostics.last_error.as_ref() {
-        push_plain(lines, cols, "last error");
-        push_plain(lines, cols, &format!("  {error}"));
+        frame.push_plain("last error");
+        frame.push_plain(&format!("  {error}"));
     }
-    push_plain(lines, cols, "");
-    push_plain(lines, cols, "resolved slots");
+    frame.push_blank();
+    frame.push_plain("resolved slots");
     for row in &model.rows {
         match row {
             andamento_shared::RailRow::GroupHeader {
                 label, templates, ..
             } => {
                 if let Some(slot) = templates.group_header.as_ref() {
-                    push_plain(
-                        lines,
-                        cols,
-                        &format!("group {label}: {}", format_resolved_slot(slot)),
-                    );
+                    frame.push_plain(&format!("group {label}: {}", format_resolved_slot(slot)));
                 }
             }
             andamento_shared::RailRow::Tab { .. } => {
                 if let Some(tab) = model.tab_for_row(row) {
                     push_tab_template_slot(
-                        lines,
-                        cols,
+                        frame,
                         &tab.name,
                         "title",
                         tab.templates.tab_title.as_ref(),
                     );
                     push_tab_template_slot(
-                        lines,
-                        cols,
+                        frame,
                         &tab.name,
                         "status",
                         tab.templates.tab_status.as_ref(),
@@ -631,18 +782,16 @@ fn push_templates_page(lines: &mut Vec<String>, cols: usize, model: Option<&Cont
 }
 
 fn push_tab_template_slot(
-    lines: &mut Vec<String>,
-    cols: usize,
+    frame: &mut ConfigUiFrame,
     tab_name: &str,
     slot_name: &str,
     slot: Option<&andamento_shared::ResolvedTemplateSlot>,
 ) {
     if let Some(slot) = slot {
-        push_plain(
-            lines,
-            cols,
-            &format!("tab {tab_name} {slot_name}: {}", format_resolved_slot(slot)),
-        );
+        frame.push_plain(&format!(
+            "tab {tab_name} {slot_name}: {}",
+            format_resolved_slot(slot)
+        ));
     }
 }
 
@@ -668,24 +817,21 @@ fn template_config_state_text(state: andamento_shared::TemplateConfigState) -> &
     }
 }
 
-fn push_tab_row(
-    lines: &mut Vec<String>,
-    hit_regions: &mut Vec<HitRegion>,
-    cols: usize,
-    page: ConfigPage,
-) {
-    let (line, mut row_hits) = render_tab_row_with_ratatui(page, cols);
-    let row = lines.len();
-    lines.push(line);
+fn push_tab_row(frame: &mut ConfigUiFrame, page: ConfigPage) {
+    let (line, mut row_hits) = render_tab_row_with_ratatui(page, frame.cols);
+    let Some(row) = frame.push_plain(&line) else {
+        return;
+    };
     for hit in &mut row_hits {
         hit.row = row;
     }
-    hit_regions.extend(row_hits);
+    frame.hit_regions.extend(row_hits);
 }
 
 fn render_tab_row_with_ratatui(page: ConfigPage, cols: usize) -> (String, Vec<HitRegion>) {
     let tabs = [
         (ConfigPage::Settings, "settings"),
+        (ConfigPage::Inspect, "inspect"),
         (ConfigPage::Templates, "templates"),
         (ConfigPage::Stats, "stats"),
     ];
@@ -736,35 +882,27 @@ fn render_tab_row_with_ratatui(page: ConfigPage, cols: usize) -> (String, Vec<Hi
     (line, hit_regions)
 }
 
-fn push_cwd_metadata(lines: &mut Vec<String>, cols: usize, model: Option<&ControllerViewModel>) {
-    push_plain(lines, cols, "cwd metadata");
+fn push_cwd_metadata(frame: &mut ConfigUiFrame, model: Option<&ControllerViewModel>) {
+    frame.push_plain("cwd metadata");
     let Some(model) = model else {
-        push_plain(lines, cols, "no controller state yet");
+        frame.push_plain("no controller state yet");
         return;
     };
     if model.tabs.is_empty() {
-        push_plain(lines, cols, "no tabs");
+        frame.push_plain("no tabs");
         return;
     }
     for tab in &model.tabs {
         let Some(grouping) = tab.grouping.as_ref() else {
-            push_plain(
-                lines,
-                cols,
-                &format!("{}: zellij.pane.cwd=<none>", tab.name),
-            );
+            frame.push_plain(&format!("{}: zellij.pane.cwd=<none>", tab.name));
             continue;
         };
-        push_plain(
-            lines,
-            cols,
-            &format!(
-                "{}: {} {}",
-                tab.name,
-                grouping.label,
-                format_group_path(&grouping.path)
-            ),
-        );
+        frame.push_plain(&format!(
+            "{}: {} {}",
+            tab.name,
+            grouping.label,
+            format_group_path(&grouping.path)
+        ));
     }
 }
 
@@ -798,19 +936,12 @@ fn format_metadata_value(value: &MetadataValue) -> String {
     }
 }
 
-fn push_plain(lines: &mut Vec<String>, cols: usize, text: &str) {
-    lines.push(pad_to_width(&truncate_to_width(text, cols), cols));
-}
-
 fn push_segmented_choice(
-    lines: &mut Vec<String>,
-    hit_regions: &mut Vec<HitRegion>,
-    cols: usize,
+    frame: &mut ConfigUiFrame,
     label: &str,
     options: &[(&str, bool, ConfigAction)],
 ) {
     const LABEL_WIDTH: usize = 9;
-    let row = lines.len();
     let mut text = format!("{label:<LABEL_WIDTH$}  ");
     let mut col = text.width();
     for (index, (option_label, selected, action)) in options.iter().enumerate() {
@@ -820,21 +951,22 @@ fn push_segmented_choice(
         }
         let segment = format!("{} {option_label}", if *selected { "●" } else { "○" });
         let segment_width = segment.width();
-        if col < cols {
-            hit_regions.push(HitRegion {
-                row,
-                col_start: col,
-                col_end: col
-                    .saturating_add(segment_width)
-                    .saturating_sub(1)
-                    .min(cols.saturating_sub(1)),
-                action: *action,
-            });
-        }
+        let segment_start = col;
         text.push_str(&segment);
         col = col.saturating_add(segment_width);
+        if segment_start < frame.cols {
+            let row = frame.current_row();
+            frame.add_hit(
+                row,
+                segment_start,
+                segment_start
+                    .saturating_add(segment_width)
+                    .saturating_sub(1),
+                *action,
+            );
+        }
     }
-    lines.push(pad_to_width(&truncate_to_width(&text, cols), cols));
+    frame.push_plain(&text);
 }
 
 fn truncate_to_width(text: &str, max_width: usize) -> String {
@@ -991,20 +1123,92 @@ mod tests {
 
     #[test]
     fn ratatui_tab_row_keeps_existing_pages_and_hit_regions() {
-        let (line, hits) = render_tab_row_with_ratatui(ConfigPage::Templates, 40);
+        let (line, hits) = render_tab_row_with_ratatui(ConfigPage::Templates, 60);
 
         assert!(line.contains("settings"));
+        assert!(line.contains("inspect"));
         assert!(line.contains("templates"));
         assert!(line.contains("stats"));
-        assert!(!line.contains("inspect"));
         assert_eq!(
             hits.iter().map(|hit| hit.action).collect::<Vec<_>>(),
             vec![
                 ConfigAction::SetPage(ConfigPage::Settings),
+                ConfigAction::SetPage(ConfigPage::Inspect),
                 ConfigAction::SetPage(ConfigPage::Templates),
                 ConfigAction::SetPage(ConfigPage::Stats),
             ]
         );
+    }
+
+    #[test]
+    fn config_scope_opens_inspect_when_present() {
+        let mut configuration = BTreeMap::new();
+        configuration.insert("rail_scope".to_owned(), " tab:7 ".to_owned());
+
+        assert_eq!(config_scope(&configuration), Some("tab:7".to_owned()));
+        assert_eq!(
+            initial_page_for_scope(config_scope(&configuration).as_deref()),
+            ConfigPage::Inspect
+        );
+    }
+
+    #[test]
+    fn inspect_page_renders_selected_tab_details() {
+        let model = ControllerViewModel {
+            sort_mode: SortMode::Position,
+            config: RailConfig::default(),
+            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
+            tabs: vec![TabCard {
+                tab_id: 7,
+                position: 2,
+                name: "repo".to_owned(),
+                active: true,
+                pinned: false,
+                status: None,
+                grouping: Some(TabGroupingInfo {
+                    key: "git:/repo".to_owned(),
+                    path: GroupPath(vec![GroupSegment {
+                        key: "git.repo".to_owned(),
+                        value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
+                        label: Some("flotilla".to_owned()),
+                    }]),
+                    label: "flotilla".to_owned(),
+                    full_label: "flotilla-org/flotilla".to_owned(),
+                }),
+                templates: andamento_shared::ResolvedTemplateSlots::default(),
+                active_pane: None,
+            }],
+            rows: vec![],
+            resolved_metadata: vec![],
+            observed_identities: vec![],
+            metadata_controls: andamento_shared::MetadataControls::default(),
+        };
+
+        let rendered = render_config_with_scope(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Inspect,
+            Some("tab:7"),
+            18,
+            80,
+            &[],
+            false,
+            0,
+        );
+
+        assert!(rendered.lines[0].contains("[inspect]"));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim() == "scope: tab:7"));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim() == "tab: repo #7"));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim() == "group: flotilla git.repo=flotilla-org/flotilla"));
     }
 
     #[test]
