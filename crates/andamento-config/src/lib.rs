@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::time::Instant;
 
+mod segment_bar;
+
 use andamento_shared::{
     ConfigInspectRequest, ControllerViewModel, GroupPath, MetadataEntry, MetadataRootToggleRequest,
     MetadataSourceEntry, MetadataTarget, MetadataTriState, MetadataTriStateCycleRequest,
@@ -24,6 +26,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 use zellij_tile::output::print;
 use zellij_tile::prelude::*;
+use zellij_tile::ui_components::serialize_ribbon_with_coordinates;
 
 const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
 const CONFIG_CLOSE_ON_HIDDEN: &str = "close_on_hidden";
@@ -126,7 +129,17 @@ struct HitRegion {
 struct RenderedConfig {
     lines: Vec<String>,
     hit_regions: Vec<HitRegion>,
+    ribbons: Vec<RibbonOverlay>,
     body_scroll_offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RibbonOverlay {
+    row: usize,
+    col: usize,
+    width: usize,
+    label: String,
+    selected: bool,
 }
 
 struct ConfigUiFrame {
@@ -135,6 +148,7 @@ struct ConfigUiFrame {
     next_row: usize,
     lines: Vec<String>,
     hit_regions: Vec<HitRegion>,
+    ribbons: Vec<RibbonOverlay>,
 }
 
 impl ConfigUiFrame {
@@ -145,6 +159,7 @@ impl ConfigUiFrame {
             next_row: 0,
             lines: vec![],
             hit_regions: vec![],
+            ribbons: vec![],
         }
     }
 
@@ -189,6 +204,19 @@ impl ConfigUiFrame {
             action,
         });
     }
+
+    fn add_ribbon(&mut self, ribbon: RibbonOverlay) {
+        if ribbon.row < self.rows && ribbon.col < self.cols {
+            self.ribbons.push(ribbon);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderedTabRow {
+    line: String,
+    hit_regions: Vec<HitRegion>,
+    ribbons: Vec<RibbonOverlay>,
 }
 
 #[derive(Default)]
@@ -391,7 +419,20 @@ impl ZellijPlugin for PluginState {
         self.hit_regions = rendered.hit_regions;
         self.body_scroll_offset = rendered.body_scroll_offset;
         print!("{}", rendered.lines.join("\n"));
+        for ribbon in rendered.ribbons {
+            print!("{}", ribbon.to_zellij_component());
+        }
         self.stats.record_span_elapsed("render.config", started_at);
+    }
+}
+
+impl RibbonOverlay {
+    fn to_zellij_component(&self) -> String {
+        let mut text = Text::new(self.label.as_str());
+        if self.selected {
+            text = text.selected();
+        }
+        serialize_ribbon_with_coordinates(&text, self.col, self.row, Some(self.width), Some(1))
     }
 }
 
@@ -811,6 +852,7 @@ fn render_config_with_scope(
         return RenderedConfig {
             lines: vec![],
             hit_regions: vec![],
+            ribbons: vec![],
             body_scroll_offset: 0,
         };
     }
@@ -858,6 +900,7 @@ fn render_with_scroll(
         lines.push(" ".repeat(cols));
     }
     let mut hit_regions = tab_frame.hit_regions;
+    let mut ribbons = tab_frame.ribbons;
     hit_regions.extend(body_frame.hit_regions.into_iter().filter_map(|mut hit| {
         let visible_end = effective_scroll_offset.saturating_add(body_rows);
         if hit.row < effective_scroll_offset || hit.row >= visible_end {
@@ -869,9 +912,21 @@ fn render_with_scroll(
             .saturating_add(1);
         Some(hit)
     }));
+    ribbons.extend(body_frame.ribbons.into_iter().filter_map(|mut ribbon| {
+        let visible_end = effective_scroll_offset.saturating_add(body_rows);
+        if ribbon.row < effective_scroll_offset || ribbon.row >= visible_end {
+            return None;
+        }
+        ribbon.row = ribbon
+            .row
+            .saturating_sub(effective_scroll_offset)
+            .saturating_add(1);
+        Some(ribbon)
+    }));
     RenderedConfig {
         lines,
         hit_regions,
+        ribbons,
         body_scroll_offset: effective_scroll_offset,
     }
 }
@@ -1341,57 +1396,60 @@ fn template_config_state_text(state: andamento_shared::TemplateConfigState) -> &
 }
 
 fn push_tab_row(frame: &mut ConfigUiFrame, page: ConfigPage) {
-    let (line, mut row_hits) = render_tab_row(page, frame.cols);
-    let Some(row) = frame.push_plain(&line) else {
+    let rendered = render_tab_row(page, frame.cols);
+    let Some(row) = frame.push_plain(&rendered.line) else {
         return;
     };
-    for hit in &mut row_hits {
+    for mut hit in rendered.hit_regions {
         hit.row = row;
+        frame.hit_regions.push(hit);
     }
-    frame.hit_regions.extend(row_hits);
+    for mut ribbon in rendered.ribbons {
+        ribbon.row = row;
+        frame.add_ribbon(ribbon);
+    }
 }
 
-fn render_tab_row(page: ConfigPage, cols: usize) -> (String, Vec<HitRegion>) {
+fn render_tab_row(page: ConfigPage, cols: usize) -> RenderedTabRow {
     let tabs = [
         (ConfigPage::Settings, "settings"),
         (ConfigPage::Inspect, "inspect"),
         (ConfigPage::Templates, "templates"),
         (ConfigPage::Stats, "stats"),
     ];
-    let mut line = String::new();
+    let items = tabs
+        .iter()
+        .map(|(tab_page, label)| segment_bar::SegmentItem {
+            label: (*label).to_owned(),
+            active: *tab_page == page,
+        })
+        .collect::<Vec<_>>();
+    let (line, segment_hits) = segment_bar::render(&items, &segment_bar::ZellijRibbonStyle, cols);
     let mut hit_regions = vec![];
-    let mut col = 0;
-    for (tab_page, label) in tabs {
-        let active = tab_page == page;
-        let display_label = if active {
-            label.to_uppercase()
-        } else {
-            label.to_owned()
+    let mut ribbons = vec![];
+    for hit in segment_hits {
+        let Some((tab_page, label)) = tabs.get(hit.index) else {
+            continue;
         };
-        let segment = if active {
-            format!(" {display_label} ")
-        } else {
-            format!(" {display_label} ")
-        };
-        let segment_width = segment.width();
-        if col >= cols {
-            break;
-        }
-        let visible_segment = truncate_to_width(&segment, cols - col);
-        let visible_width = visible_segment.width();
-        if visible_width == 0 {
-            break;
-        }
-        line.push_str(&visible_segment);
         hit_regions.push(HitRegion {
             row: 0,
-            col_start: col,
-            col_end: col.saturating_add(visible_width).saturating_sub(1),
-            action: ConfigAction::SetPage(tab_page),
+            col_start: hit.col_start,
+            col_end: hit.col_end,
+            action: ConfigAction::SetPage(*tab_page),
         });
-        col = col.saturating_add(segment_width);
+        ribbons.push(RibbonOverlay {
+            row: 0,
+            col: hit.col_start,
+            width: hit.col_end.saturating_sub(hit.col_start).saturating_add(1),
+            label: (*label).to_owned(),
+            selected: *tab_page == page,
+        });
     }
-    (pad_to_width(&line, cols), hit_regions)
+    RenderedTabRow {
+        line,
+        hit_regions,
+        ribbons,
+    }
 }
 
 fn push_cwd_metadata(frame: &mut ConfigUiFrame, model: Option<&ControllerViewModel>) {
@@ -1654,13 +1712,36 @@ mod tests {
 
     #[test]
     fn config_tab_row_keeps_existing_pages_and_hit_regions() {
-        let (line, hits) = render_tab_row(ConfigPage::Templates, 60);
+        let rendered = render_tab_row(ConfigPage::Templates, 60);
+        let line = rendered.line;
+        let hits = rendered.hit_regions;
 
         assert!(line.contains("settings"));
         assert!(line.contains("inspect"));
-        assert!(line.contains("TEMPLATES"));
+        assert!(line.contains("templates"));
         assert!(line.contains("stats"));
-        assert!(line.contains(""));
+        assert!(
+            !line.contains("TEMPLATES"),
+            "active tab should be styled by the segment, not uppercased"
+        );
+        assert!(
+            !line.contains(""),
+            "config tabs should use a consistent Zellij ribbon shape"
+        );
+        assert!(line.starts_with(" settings  inspect "));
+        assert_eq!(
+            rendered
+                .ribbons
+                .iter()
+                .map(|ribbon| (ribbon.label.as_str(), ribbon.selected))
+                .collect::<Vec<_>>(),
+            vec![
+                ("settings", false),
+                ("inspect", false),
+                ("templates", true),
+                ("stats", false)
+            ]
+        );
         assert_eq!(
             hits.iter().map(|hit| hit.action).collect::<Vec<_>>(),
             vec![
@@ -1674,10 +1755,12 @@ mod tests {
 
     #[test]
     fn tab_row_hit_regions_match_rendered_segments() {
-        let (line, hits) = render_tab_row(ConfigPage::Inspect, 80);
+        let rendered = render_tab_row(ConfigPage::Inspect, 80);
+        let line = rendered.line;
+        let hits = rendered.hit_regions;
         let expectations = [
             (ConfigAction::SetPage(ConfigPage::Settings), "settings"),
-            (ConfigAction::SetPage(ConfigPage::Inspect), "INSPECT"),
+            (ConfigAction::SetPage(ConfigPage::Inspect), "inspect"),
             (ConfigAction::SetPage(ConfigPage::Templates), "templates"),
             (ConfigAction::SetPage(ConfigPage::Stats), "stats"),
         ];
@@ -2241,7 +2324,7 @@ mod tests {
             5,
         );
 
-        assert!(rendered.lines[0].contains("STATS"));
+        assert!(rendered.lines[0].contains("stats"));
         assert!(!rendered
             .lines
             .iter()
