@@ -4821,7 +4821,7 @@ mod tests {
 
         assert_eq!(
             render_template_fields(&fields, 30),
-            "zellij-org/zellij feat/kitty..."
+            "zellij-org/zellij feat/kitt..."
         );
     }
 

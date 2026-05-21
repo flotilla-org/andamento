@@ -6,7 +6,7 @@ license.workspace = true
 
 [lib]
 name = "andamento_rail"
-path = "src/main.rs"
+path = "src/lib.rs"
 
 [[bin]]
 name = "andamento-rail"
