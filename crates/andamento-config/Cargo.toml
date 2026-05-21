@@ -6,7 +6,7 @@ license.workspace = true
 
 [lib]
 name = "andamento_config"
-path = "src/main.rs"
+path = "src/lib.rs"
 
 [[bin]]
 name = "andamento-config"
@@ -15,5 +15,6 @@ path = "src/main.rs"
 [dependencies]
 serde_json.workspace = true
 andamento-shared.workspace = true
+ratatui.workspace = true
 unicode-width.workspace = true
 zellij-tile.workspace = true

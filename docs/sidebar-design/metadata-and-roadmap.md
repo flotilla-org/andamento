@@ -348,6 +348,17 @@ edit external template/config file -> reload -> inspect metadata and match resul
 
 The plugin should preview, reload, and report parse/match errors, but editing should stay in the user's normal editor rather than implementing a terminal text editor.
 
+### Config UI Should Be A Testable Inspector Surface
+
+The config plugin is the right place for a richer settings and inspection surface, but it should not grow a second hand-written metadata inspector before we know how we want to render it. The immediate direction is:
+
+- keep the config plugin split into a native-testable library plus tiny Wasm entrypoint.
+- use the current Settings/Templates/Stats pages as the ratatui feasibility target.
+- add an `Inspect` page only after the rendering approach is chosen, so the first inspector implementation can use the same widget/layout path that later metadata controls will use.
+- keep the rail's existing metadata view as the source of truth for in-context hierarchy inspection until that config inspector exists.
+
+Status: started. `andamento-config` now has the same lib/bin shape as the rail, so native unit tests run against the plugin implementation without the `register_plugin!` entrypoint collision. A narrow ratatui spike renders only the config page tab row through `ratatui::widgets::Tabs`, then converts the buffer back to Zellij text while preserving existing manual hit regions. This builds for `wasm32-wasip1` with `ratatui` default features disabled and only `std` enabled. The evidence so far supports using ratatui in the config plugin, but not moving the rail to ratatui yet: the rail remains custom enough that its layout, image placement, hover behavior, and recursive compact projections need tighter control.
+
 ### Template Matching Is A Projection Policy
 
 Template rendering should be driven by match rules over render nodes and resolved metadata, not by one-off code at each hierarchy level.
