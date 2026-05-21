@@ -1028,7 +1028,8 @@ mod tests {
         )
         .expect("write fixture");
 
-        let catalog = load_template_catalog_from_json_file(&path).expect("load catalog");
+        let catalog = load_template_catalog_from_json_file(&path.to_string_lossy())
+            .expect("load catalog");
         std::fs::remove_file(&path).expect("remove fixture");
         let metadata = BTreeMap::new();
 
