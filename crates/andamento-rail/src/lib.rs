@@ -267,6 +267,7 @@ pub struct PluginState {
     last_graphics_signature: Option<Vec<GraphicsSignatureEntry>>,
     rail_scroll_offset: isize,
     rail_can_scroll: bool,
+    last_pane_manifest: Option<PaneManifest>,
     own_is_selectable: bool,
     own_is_focused: bool,
     collapsed_groups: BTreeSet<GroupPath>,
@@ -346,11 +347,17 @@ impl ZellijPlugin for PluginState {
                 }
                 self.tabs = tabs;
                 self.local_tabs = local_tabs;
+                if let Some(pane_manifest) = self.last_pane_manifest.clone() {
+                    self.observe_own_rail_size(&pane_manifest);
+                }
                 true
             }
             Event::PaneUpdate(pane_manifest) => {
                 self.stats.increment("update.pane");
-                self.observe_own_rail_size(pane_manifest);
+                self.last_pane_manifest = Some(pane_manifest);
+                if let Some(pane_manifest) = self.last_pane_manifest.clone() {
+                    self.observe_own_rail_size(&pane_manifest);
+                }
                 false
             }
             Event::Visible(true) => {
@@ -648,6 +655,35 @@ mod tests {
     }
 
     #[test]
+    fn inspect_defaults_to_rail_own_tab_before_global_active_tab() {
+        let state = PluginState {
+            local_tabs: vec![
+                LocalTab {
+                    tab_id: 1,
+                    position: 0,
+                    name: "main".to_owned(),
+                    active: true,
+                },
+                LocalTab {
+                    tab_id: 7,
+                    position: 1,
+                    name: "work".to_owned(),
+                    active: false,
+                },
+            ],
+            own_plugin_placement: Some(PluginPlacement::Tab {
+                tab_id: 7,
+                pane_kind: PluginPaneKind::Tiled,
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(state.active_tab_id(), Some(1));
+        assert_eq!(state.own_tab_id(), Some(7));
+        assert_eq!(state.active_inspect_node(), Some(NodeKey::Tab(7)));
+    }
+
+    #[test]
     fn resolves_own_plugin_tab_placement_from_pane_manifest() {
         let pane_manifest = PaneManifest {
             panes: HashMap::from([(
@@ -819,11 +855,11 @@ impl PluginState {
         );
     }
 
-    fn observe_own_rail_size(&mut self, pane_manifest: PaneManifest) {
+    fn observe_own_rail_size(&mut self, pane_manifest: &PaneManifest) {
         let Some(plugin_id) = self.own_plugin_id else {
             return;
         };
-        let next_placement = own_plugin_tab_placement(&pane_manifest, &self.local_tabs, plugin_id);
+        let next_placement = own_plugin_tab_placement(pane_manifest, &self.local_tabs, plugin_id);
         if next_placement.is_some() && self.own_plugin_placement != next_placement {
             self.own_plugin_placement = next_placement;
             self.send_renderer_hello();
@@ -1043,7 +1079,9 @@ impl PluginState {
             &self.controller_plugin_url,
             &self.config_plugin_url,
             client_id,
-            self.active_tab_id().unwrap_or(0),
+            self.own_tab_id()
+                .or_else(|| self.active_tab_id())
+                .unwrap_or(0),
             node_key,
         ) else {
             return;
@@ -1058,8 +1096,17 @@ impl PluginState {
             .map(|tab| tab.tab_id)
     }
 
+    fn own_tab_id(&self) -> Option<u64> {
+        match self.own_plugin_placement {
+            Some(PluginPlacement::Tab { tab_id, .. }) => Some(tab_id),
+            _ => None,
+        }
+    }
+
     fn active_inspect_node(&self) -> Option<NodeKey> {
-        self.active_tab_id().map(NodeKey::Tab)
+        self.own_tab_id()
+            .or_else(|| self.active_tab_id())
+            .map(NodeKey::Tab)
     }
 
     fn sync_graphics(&mut self, visible_cards: &[VisibleCard]) {

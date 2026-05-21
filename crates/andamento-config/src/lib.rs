@@ -225,6 +225,7 @@ pub struct PluginState {
     suppress_show_on_inspect: bool,
     rail_scope: Option<String>,
     local_tabs: Vec<ConfigLocalTab>,
+    last_pane_manifest: Option<PaneManifest>,
     own_plugin_id: Option<u32>,
     own_client_id: Option<u16>,
     own_plugin_placement: Option<PluginPlacement>,
@@ -390,11 +391,17 @@ impl ZellijPlugin for PluginState {
                     return false;
                 }
                 self.local_tabs = local_tabs;
+                if let Some(pane_manifest) = self.last_pane_manifest.clone() {
+                    self.observe_own_config_placement(&pane_manifest);
+                }
                 false
             }
             Event::PaneUpdate(pane_manifest) => {
                 self.stats.increment("update.pane");
-                self.observe_own_config_placement(pane_manifest);
+                self.last_pane_manifest = Some(pane_manifest);
+                if let Some(pane_manifest) = self.last_pane_manifest.clone() {
+                    self.observe_own_config_placement(&pane_manifest);
+                }
                 false
             }
             _ => false,
@@ -473,11 +480,11 @@ impl PluginState {
         );
     }
 
-    fn observe_own_config_placement(&mut self, pane_manifest: PaneManifest) {
+    fn observe_own_config_placement(&mut self, pane_manifest: &PaneManifest) {
         let Some(plugin_id) = self.own_plugin_id else {
             return;
         };
-        let next_placement = own_plugin_tab_placement(&pane_manifest, &self.local_tabs, plugin_id);
+        let next_placement = own_plugin_tab_placement(pane_manifest, &self.local_tabs, plugin_id);
         if next_placement.is_some() && self.own_plugin_placement != next_placement {
             self.own_plugin_placement = next_placement;
             self.send_hello();
