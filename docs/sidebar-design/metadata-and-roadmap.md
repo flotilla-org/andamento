@@ -359,6 +359,8 @@ The config plugin is the right place for a richer settings and inspection surfac
 
 Status: started. `andamento-config` now has the same lib/bin shape as the rail, so native unit tests run against the plugin implementation without the `register_plugin!` entrypoint collision. A narrow ratatui spike renders only the config page tab row through `ratatui::widgets::Tabs`, then converts the buffer back to Zellij text while preserving existing manual hit regions. This builds for `wasm32-wasip1` with `ratatui` default features disabled and only `std` enabled. The evidence so far supports using ratatui in the config plugin, but not moving the rail to ratatui yet: the rail remains custom enough that its layout, image placement, hover behavior, and recursive compact projections need tighter control.
 
+Small fixed enum settings should render as inline segmented radio rows rather than one option per row. For example, `structure`, `grouping`, and `sizing` fit better as one labeled row each, with every segment directly clickable. Drop-downs should be reserved for large or dynamic option sets because they hide the available choices and require extra open/close state.
+
 ### Template Matching Is A Projection Policy
 
 Template rendering should be driven by match rules over render nodes and resolved metadata, not by one-off code at each hierarchy level.

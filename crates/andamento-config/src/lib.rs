@@ -483,82 +483,74 @@ fn push_settings_page(
     config: RailConfig,
     model: Option<&ControllerViewModel>,
 ) {
-    push_plain(lines, cols, "structure");
-    push_option(
+    push_segmented_choice(
         lines,
         hit_regions,
         cols,
-        "joined cells",
-        config.structure == RailStructure::JoinedCells,
-        ConfigAction::SetStructure(RailStructure::JoinedCells),
+        "structure",
+        &[
+            (
+                "joined cells",
+                config.structure == RailStructure::JoinedCells,
+                ConfigAction::SetStructure(RailStructure::JoinedCells),
+            ),
+            (
+                "split around active",
+                config.structure == RailStructure::SplitAroundActive,
+                ConfigAction::SetStructure(RailStructure::SplitAroundActive),
+            ),
+            (
+                "box per tab",
+                config.structure == RailStructure::BoxPerTab,
+                ConfigAction::SetStructure(RailStructure::BoxPerTab),
+            ),
+        ],
     );
-    push_option(
+    push_segmented_choice(
         lines,
         hit_regions,
         cols,
-        "split around active",
-        config.structure == RailStructure::SplitAroundActive,
-        ConfigAction::SetStructure(RailStructure::SplitAroundActive),
+        "grouping",
+        &[
+            (
+                "ungrouped",
+                config.grouping == RailGroupingMode::None,
+                ConfigAction::SetGrouping(RailGroupingMode::None),
+            ),
+            (
+                "directory",
+                config.grouping == RailGroupingMode::Directory,
+                ConfigAction::SetGrouping(RailGroupingMode::Directory),
+            ),
+        ],
     );
-    push_option(
+    push_segmented_choice(
         lines,
         hit_regions,
         cols,
-        "box per tab",
-        config.structure == RailStructure::BoxPerTab,
-        ConfigAction::SetStructure(RailStructure::BoxPerTab),
-    );
-    push_plain(lines, cols, "");
-    push_plain(lines, cols, "grouping");
-    push_option(
-        lines,
-        hit_regions,
-        cols,
-        "ungrouped",
-        config.grouping == RailGroupingMode::None,
-        ConfigAction::SetGrouping(RailGroupingMode::None),
-    );
-    push_option(
-        lines,
-        hit_regions,
-        cols,
-        "directory",
-        config.grouping == RailGroupingMode::Directory,
-        ConfigAction::SetGrouping(RailGroupingMode::Directory),
-    );
-    push_plain(lines, cols, "");
-    push_plain(lines, cols, "sizing");
-    push_option(
-        lines,
-        hit_regions,
-        cols,
-        "compact",
-        config.sizing == RailSizingPreset::Compact,
-        ConfigAction::SetSizing(RailSizingPreset::Compact),
-    );
-    push_option(
-        lines,
-        hit_regions,
-        cols,
-        "large",
-        config.sizing == RailSizingPreset::Large,
-        ConfigAction::SetSizing(RailSizingPreset::Large),
-    );
-    push_option(
-        lines,
-        hit_regions,
-        cols,
-        "active large",
-        config.sizing == RailSizingPreset::ActiveLarge,
-        ConfigAction::SetSizing(RailSizingPreset::ActiveLarge),
-    );
-    push_option(
-        lines,
-        hit_regions,
-        cols,
-        "pinned large",
-        config.sizing == RailSizingPreset::PinnedLarge,
-        ConfigAction::SetSizing(RailSizingPreset::PinnedLarge),
+        "sizing",
+        &[
+            (
+                "compact",
+                config.sizing == RailSizingPreset::Compact,
+                ConfigAction::SetSizing(RailSizingPreset::Compact),
+            ),
+            (
+                "large",
+                config.sizing == RailSizingPreset::Large,
+                ConfigAction::SetSizing(RailSizingPreset::Large),
+            ),
+            (
+                "active large",
+                config.sizing == RailSizingPreset::ActiveLarge,
+                ConfigAction::SetSizing(RailSizingPreset::ActiveLarge),
+            ),
+            (
+                "pinned large",
+                config.sizing == RailSizingPreset::PinnedLarge,
+                ConfigAction::SetSizing(RailSizingPreset::PinnedLarge),
+            ),
+        ],
     );
     push_plain(lines, cols, "");
     push_cwd_metadata(lines, cols, model);
@@ -810,24 +802,39 @@ fn push_plain(lines: &mut Vec<String>, cols: usize, text: &str) {
     lines.push(pad_to_width(&truncate_to_width(text, cols), cols));
 }
 
-fn push_option(
+fn push_segmented_choice(
     lines: &mut Vec<String>,
     hit_regions: &mut Vec<HitRegion>,
     cols: usize,
     label: &str,
-    selected: bool,
-    action: ConfigAction,
+    options: &[(&str, bool, ConfigAction)],
 ) {
+    const LABEL_WIDTH: usize = 9;
     let row = lines.len();
-    let marker = if selected { ">" } else { " " };
-    let text = format!("{marker} {label}");
+    let mut text = format!("{label:<LABEL_WIDTH$}  ");
+    let mut col = text.width();
+    for (index, (option_label, selected, action)) in options.iter().enumerate() {
+        if index > 0 {
+            text.push_str("  ");
+            col = col.saturating_add(2);
+        }
+        let segment = format!("{} {option_label}", if *selected { "●" } else { "○" });
+        let segment_width = segment.width();
+        if col < cols {
+            hit_regions.push(HitRegion {
+                row,
+                col_start: col,
+                col_end: col
+                    .saturating_add(segment_width)
+                    .saturating_sub(1)
+                    .min(cols.saturating_sub(1)),
+                action: *action,
+            });
+        }
+        text.push_str(&segment);
+        col = col.saturating_add(segment_width);
+    }
     lines.push(pad_to_width(&truncate_to_width(&text, cols), cols));
-    hit_regions.push(HitRegion {
-        row,
-        col_start: 0,
-        col_end: cols.saturating_sub(1),
-        action,
-    });
 }
 
 fn truncate_to_width(text: &str, max_width: usize) -> String {
@@ -866,7 +873,7 @@ mod tests {
             None,
             ConfigPage::Settings,
             22,
-            30,
+            90,
             &[],
             false,
             0,
@@ -875,12 +882,15 @@ mod tests {
         assert!(rendered
             .lines
             .iter()
-            .any(|line| line.trim() == "> box per tab"));
-        assert!(rendered.lines.iter().any(|line| line.trim() == "> compact"));
+            .any(|line| line.trim().ends_with("● box per tab")));
         assert!(rendered
             .lines
             .iter()
-            .any(|line| line.trim() == "> directory"));
+            .any(|line| line.trim().contains("● compact")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim().ends_with("● directory")));
     }
 
     #[test]
@@ -890,7 +900,7 @@ mod tests {
             None,
             ConfigPage::Settings,
             22,
-            30,
+            90,
             &[],
             false,
             0,
@@ -908,6 +918,75 @@ mod tests {
             .hit_regions
             .iter()
             .any(|hit| hit.action == ConfigAction::SetGrouping(RailGroupingMode::Directory)));
+    }
+
+    #[test]
+    fn settings_page_renders_enum_choices_inline() {
+        let rendered = render_config(
+            RailConfig {
+                structure: RailStructure::BoxPerTab,
+                sizing: RailSizingPreset::Compact,
+                grouping: RailGroupingMode::Directory,
+            },
+            None,
+            ConfigPage::Settings,
+            16,
+            90,
+            &[],
+            false,
+            0,
+        );
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim()
+                == "structure  ○ joined cells  ○ split around active  ● box per tab"));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim() == "grouping   ○ ungrouped  ● directory"));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim()
+                == "sizing     ● compact  ○ large  ○ active large  ○ pinned large"));
+    }
+
+    #[test]
+    fn settings_inline_choices_have_separate_click_targets() {
+        let rendered = render_config(
+            RailConfig::default(),
+            None,
+            ConfigPage::Settings,
+            16,
+            90,
+            &[],
+            false,
+            0,
+        );
+
+        let structure_hits = rendered
+            .hit_regions
+            .iter()
+            .filter(|hit| {
+                matches!(
+                    hit.action,
+                    ConfigAction::SetStructure(RailStructure::JoinedCells)
+                        | ConfigAction::SetStructure(RailStructure::SplitAroundActive)
+                        | ConfigAction::SetStructure(RailStructure::BoxPerTab)
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(structure_hits.len(), 3);
+        assert!(structure_hits
+            .windows(2)
+            .all(|pair| pair[0].row == pair[1].row && pair[0].col_end < pair[1].col_start));
+
+        assert!(rendered
+            .hit_regions
+            .iter()
+            .any(|hit| hit.action == ConfigAction::SetSizing(RailSizingPreset::PinnedLarge)));
     }
 
     #[test]
