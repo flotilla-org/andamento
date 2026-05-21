@@ -561,11 +561,7 @@ impl ControllerState {
         {
             return Some(target.identity.clone());
         }
-        client
-            .background_config_editors
-            .values()
-            .next()
-            .map(|registration| registration.identity.clone())
+        None
     }
 
     pub fn set_inspected_node(&mut self, client_id: u16, node_key: NodeKey) -> bool {
@@ -3287,7 +3283,7 @@ mod tests {
     }
 
     #[test]
-    fn config_editor_target_reuses_same_client_unknown_editor() {
+    fn config_editor_target_does_not_reuse_unknown_editor() {
         let mut state = ControllerState::default();
         state.register_config_editor(PluginRegistrationHello {
             identity: RendererHello {
@@ -3304,13 +3300,7 @@ mod tests {
             placement: PluginPlacement::Unknown,
         });
 
-        assert_eq!(
-            state.config_editor_target_for_client_tab(2, 3),
-            Some(RendererHello {
-                plugin_id: 31,
-                client_id: 2
-            })
-        );
+        assert_eq!(state.config_editor_target_for_client_tab(2, 3), None);
     }
 
     #[test]
