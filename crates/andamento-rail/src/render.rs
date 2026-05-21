@@ -179,6 +179,12 @@ struct CurrentGroupHeader {
     templates: ResolvedTemplateSlots,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildLayout {
+    Vertical,
+    CompactStrip,
+}
+
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub fn render_lines(
     model: Option<&ControllerViewModel>,
@@ -1131,6 +1137,7 @@ fn render_nodes(
         &BTreeSet::new(),
         metadata_controls,
         root_meta_children,
+        ChildLayout::Vertical,
     );
     let content_height = buffered_lines.len();
     copy_visible_buffer(
@@ -1171,6 +1178,7 @@ fn render_nodes_to_buffer(
     ancestor_template_fields: &BTreeSet<ResolvedTemplateFieldSource>,
     metadata_controls: &MetadataControls,
     ancestor_meta_children: bool,
+    inherited_child_layout: ChildLayout,
 ) {
     let mut pending_tabs = vec![];
     for node in nodes {
@@ -1217,6 +1225,36 @@ fn render_nodes_to_buffer(
                     child_ancestor_template_fields.extend(visible_header_sources);
                     let child_meta_children = metadata_controls
                         .propagates_to_children(&group_key, ancestor_meta_children);
+                    let child_layout =
+                        child_layout_for_group(group).unwrap_or(inherited_child_layout);
+                    if child_layout == ChildLayout::CompactStrip {
+                        let (direct_tabs, remaining_children) =
+                            direct_tabs_and_child_groups(&group.children);
+                        append_compact_tab_strip(
+                            lines,
+                            hit_regions,
+                            &direct_tabs,
+                            cols,
+                            template_catalog,
+                        );
+                        render_nodes_to_buffer(
+                            lines,
+                            hit_regions,
+                            visible_cards,
+                            &remaining_children,
+                            cols,
+                            controller_available,
+                            config,
+                            theme,
+                            terminal_cell_size,
+                            template_catalog,
+                            &child_ancestor_template_fields,
+                            metadata_controls,
+                            child_meta_children,
+                            child_layout,
+                        );
+                        continue;
+                    }
                     render_nodes_to_buffer(
                         lines,
                         hit_regions,
@@ -1231,6 +1269,7 @@ fn render_nodes_to_buffer(
                         &child_ancestor_template_fields,
                         metadata_controls,
                         child_meta_children,
+                        child_layout,
                     );
                 }
             }
@@ -1331,6 +1370,93 @@ fn append_group_header(
         rows: row..row + 1,
     };
     (rendered.visible_sources, allocation)
+}
+
+fn child_layout_for_group(group: &RenderGroup) -> Option<ChildLayout> {
+    match metadata_text(&group.metadata, "rail.child_layout") {
+        Some("compact-strip") | Some("compact_strip") => Some(ChildLayout::CompactStrip),
+        Some("vertical") => Some(ChildLayout::Vertical),
+        _ => None,
+    }
+}
+
+fn direct_tabs_and_child_groups(children: &[RenderNode]) -> (Vec<RenderTab>, Vec<RenderNode>) {
+    children
+        .iter()
+        .cloned()
+        .fold((vec![], vec![]), |mut split, child| {
+            match child {
+                RenderNode::Tab(tab) => split.0.push(tab),
+                RenderNode::Group(group) => split.1.push(RenderNode::Group(group)),
+            }
+            split
+        })
+}
+
+fn append_compact_tab_strip(
+    lines: &mut Vec<String>,
+    hit_regions: &mut Vec<HitRegion>,
+    tabs: &[RenderTab],
+    cols: usize,
+    template_catalog: Option<&TemplateConfigCatalog>,
+) {
+    if tabs.is_empty() {
+        return;
+    }
+    let indent = tabs
+        .iter()
+        .map(|tab| tab.indent)
+        .min()
+        .unwrap_or(0)
+        .min(cols.saturating_sub(1));
+    let inner_width = cols.saturating_sub(indent);
+    if inner_width == 0 {
+        return;
+    }
+    let mut line = String::new();
+    let mut row = lines.len();
+    for tab in tabs {
+        let prefix = if tab.card.active { "● " } else { "○ " };
+        let token = truncate_to_width(
+            &format!(
+                "{prefix}{}",
+                tab_title_with_template_catalog(&tab.card, template_catalog)
+            ),
+            inner_width,
+        );
+        let separator = if line.is_empty() { "" } else { "  " };
+        if !line.is_empty() && line.width() + separator.width() + token.width() > inner_width {
+            lines.push(format!(
+                "{}{}",
+                " ".repeat(indent),
+                pad_to_width(&line, inner_width)
+            ));
+            row += 1;
+            line.clear();
+        }
+        let col_start = indent + line.width() + if line.is_empty() { 0 } else { 2 };
+        if !line.is_empty() {
+            line.push_str("  ");
+        }
+        line.push_str(&token);
+        hit_regions.push(HitRegion {
+            row_start: row,
+            row_end: row,
+            col_start,
+            col_end: col_start + token.width().saturating_sub(1),
+            tab_id: tab.card.tab_id,
+            tab_position: tab.card.position,
+            group_path: tab.parent_path.clone(),
+            action: HitAction::SwitchTab,
+        });
+    }
+    if !line.is_empty() {
+        lines.push(format!(
+            "{}{}",
+            " ".repeat(indent),
+            pad_to_width(&line, inner_width)
+        ));
+    }
 }
 
 fn append_tab_run(
@@ -4466,6 +4592,60 @@ mod tests {
             .children
             .iter()
             .any(|node| matches!(node, RenderNode::Tab(tab) if tab.card.name == "branch-agent")));
+    }
+
+    #[test]
+    fn group_child_layout_metadata_can_render_direct_tabs_as_compact_strip() {
+        let mut model = mixed_child_group_model();
+        let parent_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("first row should be parent group"),
+        };
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Group(parent_path),
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 8, 48, true);
+
+        assert!(
+            rendered.lines[1].contains("● repo-overview"),
+            "direct tab should render as a compact strip below the group header: {:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .position(|line| line.contains("repo-overview"))
+                < rendered
+                    .lines
+                    .iter()
+                    .position(|line| line.contains("feat/kitty-image-plumbing")),
+            "direct tab strip should appear before child group headers: {:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered.lines.iter().any(|line| line.contains("○ branch-agent")),
+            "child groups should inherit compact-strip for their direct tabs: {:?}",
+            rendered.lines
+        );
+        assert!(
+            !rendered.lines.iter().any(|line| line.contains("┌ branch-agent")),
+            "inherited compact-strip should avoid full child tab cards: {:?}",
+            rendered.lines
+        );
     }
 
     #[test]

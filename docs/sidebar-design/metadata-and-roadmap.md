@@ -425,6 +425,8 @@ The model should support per-node settings/toggles that inherit from the nearest
 
 This keeps configuration ergonomic: a user can say "this repo group shows images" or "this project uses horizontal child tabs" without setting the same value on every child. It also gives templates a stable way to ask for local display policy without hard-coding global modes.
 
+Status: started. The rail recognizes group metadata `rail.child_layout=compact-strip` as an inherited child-layout setting. A group with that setting renders its direct tab children as a compact inline strip before rendering child groups normally. The default remains vertical card rendering, and there is not yet UI for toggling this setting.
+
 ### Sensible Order For Templates And Deep Hierarchy
 
 Do not let templating grow around the current two-level `group -> tab` shape. The current rail implementation is useful as a compatibility step, but arbitrary-depth grouping needs the renderer to become recursive and metadata-driven before templates become user-authored configuration.
