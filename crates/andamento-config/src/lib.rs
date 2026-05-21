@@ -1,17 +1,21 @@
 use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::HashMap;
 use std::time::Instant;
 
 use andamento_shared::{
-    ConfigInspectRequest, ControllerViewModel, GroupPath, MetadataValue, PluginStatsSnapshot,
-    RailConfig, RailGroupingMode, RailSizingPreset, RailStructure,
+    ConfigInspectRequest, ControllerViewModel, GroupPath, MetadataRootToggleRequest,
+    MetadataTriStateCycleRequest, MetadataValue, NodeKey, PluginPaneKind, PluginPlacement,
+    PluginRegistrationHello, PluginStatsSnapshot, RailConfig, RailGroupingMode, RailSizingPreset,
+    RailStructure,
 };
 use unicode_width::UnicodeWidthStr;
 
 use andamento_shared::StatsCollectRequest;
 use andamento_shared::{
     PluginStatsRecorder, RendererHello, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT,
-    MSG_REQUEST_STATE, MSG_SET_RAIL_CONFIG, MSG_STATS_COLLECT, MSG_STATS_REPORT, MSG_STATS_REQUEST,
-    MSG_VIEW_MODEL,
+    MSG_CYCLE_METADATA_TRISTATE, MSG_REQUEST_STATE, MSG_SET_RAIL_CONFIG, MSG_STATS_COLLECT,
+    MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_METADATA_ROOT, MSG_VIEW_MODEL,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -24,6 +28,64 @@ const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
 const CONFIG_CLOSE_ON_HIDDEN: &str = "close_on_hidden";
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfigLocalTab {
+    tab_id: u64,
+    position: usize,
+}
+
+fn local_tabs_from_zellij(tabs: &[TabInfo]) -> Vec<ConfigLocalTab> {
+    tabs.iter()
+        .map(|tab| ConfigLocalTab {
+            tab_id: tab.tab_id as u64,
+            position: tab.position,
+        })
+        .collect()
+}
+
+fn own_plugin_tab_placement(
+    pane_manifest: &PaneManifest,
+    local_tabs: &[ConfigLocalTab],
+    plugin_id: u32,
+) -> Option<PluginPlacement> {
+    let (tab_position, pane) = pane_manifest
+        .panes
+        .iter()
+        .find_map(|(tab_position, panes)| {
+            panes
+                .iter()
+                .find(|pane| pane.is_plugin && pane.id == plugin_id)
+                .map(|pane| (*tab_position, pane))
+        })?;
+    let tab_id = local_tabs
+        .iter()
+        .find(|tab| tab.position == tab_position)
+        .map(|tab| tab.tab_id)?;
+    Some(PluginPlacement::Tab {
+        tab_id,
+        pane_kind: if pane.is_floating {
+            PluginPaneKind::Floating
+        } else {
+            PluginPaneKind::Tiled
+        },
+    })
+}
+
+fn config_editor_hello_payload(
+    plugin_id: u32,
+    client_id: u16,
+    placement: PluginPlacement,
+) -> Option<String> {
+    serde_json::to_string(&PluginRegistrationHello {
+        identity: RendererHello {
+            plugin_id,
+            client_id,
+        },
+        placement,
+    })
+    .ok()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigAction {
     SetPage(ConfigPage),
@@ -31,6 +93,8 @@ enum ConfigAction {
     SetSizing(RailSizingPreset),
     SetGrouping(RailGroupingMode),
     CollectStats,
+    ToggleMetadataRoot,
+    CycleInspectedMetadata,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,8 +206,10 @@ pub struct PluginState {
     controller_plugin_url: String,
     close_on_hidden: bool,
     rail_scope: Option<String>,
+    local_tabs: Vec<ConfigLocalTab>,
     own_plugin_id: Option<u32>,
     own_client_id: Option<u16>,
+    own_plugin_placement: Option<PluginPlacement>,
     model: Option<ControllerViewModel>,
     pending_config: Option<RailConfig>,
     page: ConfigPage,
@@ -176,6 +242,8 @@ impl ZellijPlugin for PluginState {
             PermissionType::MessageAndLaunchOtherPlugins,
         ]);
         subscribe(&[
+            EventType::TabUpdate,
+            EventType::PaneUpdate,
             EventType::Mouse,
             EventType::PermissionRequestResult,
             EventType::Visible,
@@ -293,6 +361,20 @@ impl ZellijPlugin for PluginState {
                 }
                 should_resync
             }
+            Event::TabUpdate(tabs) => {
+                self.stats.increment("update.tab");
+                let local_tabs = local_tabs_from_zellij(&tabs);
+                if self.local_tabs == local_tabs {
+                    return false;
+                }
+                self.local_tabs = local_tabs;
+                false
+            }
+            Event::PaneUpdate(pane_manifest) => {
+                self.stats.increment("update.pane");
+                self.observe_own_config_placement(pane_manifest);
+                false
+            }
             _ => false,
         }
     }
@@ -336,11 +418,13 @@ impl PluginState {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
             return;
         };
-        let hello = RendererHello {
+        let Some(payload) = config_editor_hello_payload(
             plugin_id,
             client_id,
-        };
-        let Ok(payload) = serde_json::to_string(&hello) else {
+            self.own_plugin_placement
+                .clone()
+                .unwrap_or(PluginPlacement::Unknown),
+        ) else {
             return;
         };
         pipe_message_to_plugin(
@@ -352,6 +436,17 @@ impl PluginState {
             self.controller_message(MSG_REQUEST_STATE)
                 .with_destination_client_id(client_id),
         );
+    }
+
+    fn observe_own_config_placement(&mut self, pane_manifest: PaneManifest) {
+        let Some(plugin_id) = self.own_plugin_id else {
+            return;
+        };
+        let next_placement = own_plugin_tab_placement(&pane_manifest, &self.local_tabs, plugin_id);
+        if next_placement.is_some() && self.own_plugin_placement != next_placement {
+            self.own_plugin_placement = next_placement;
+            self.send_hello();
+        }
     }
 
     fn handle_click(&mut self, row: usize, col: usize) -> bool {
@@ -368,6 +463,14 @@ impl PluginState {
         }
         if hit.action == ConfigAction::CollectStats {
             self.collect_stats();
+            return true;
+        }
+        if hit.action == ConfigAction::ToggleMetadataRoot {
+            self.toggle_metadata_root();
+            return true;
+        }
+        if hit.action == ConfigAction::CycleInspectedMetadata {
+            self.cycle_inspected_metadata();
             return true;
         }
         let mut config = self
@@ -437,6 +540,42 @@ impl PluginState {
                 .with_payload(payload),
         );
     }
+
+    fn toggle_metadata_root(&self) {
+        let Some(client_id) = self.own_client_id else {
+            return;
+        };
+        let Ok(payload) = serde_json::to_string(&MetadataRootToggleRequest { client_id }) else {
+            return;
+        };
+        pipe_message_to_plugin(
+            self.controller_message(MSG_TOGGLE_METADATA_ROOT)
+                .with_destination_client_id(client_id)
+                .with_payload(payload),
+        );
+    }
+
+    fn cycle_inspected_metadata(&self) {
+        let Some(client_id) = self.own_client_id else {
+            return;
+        };
+        let node_key = self
+            .model
+            .as_ref()
+            .and_then(|model| model.inspected_node.clone())
+            .unwrap_or(NodeKey::Root);
+        let Ok(payload) = serde_json::to_string(&MetadataTriStateCycleRequest {
+            client_id,
+            node_key,
+        }) else {
+            return;
+        };
+        pipe_message_to_plugin(
+            self.controller_message(MSG_CYCLE_METADATA_TRISTATE)
+                .with_destination_client_id(client_id)
+                .with_payload(payload),
+        );
+    }
 }
 
 fn apply_config_action(mut config: RailConfig, action: ConfigAction) -> RailConfig {
@@ -445,7 +584,9 @@ fn apply_config_action(mut config: RailConfig, action: ConfigAction) -> RailConf
         ConfigAction::SetStructure(structure) => config.structure = structure,
         ConfigAction::SetSizing(sizing) => config.sizing = sizing,
         ConfigAction::SetGrouping(grouping) => config.grouping = grouping,
-        ConfigAction::CollectStats => {}
+        ConfigAction::CollectStats
+        | ConfigAction::ToggleMetadataRoot
+        | ConfigAction::CycleInspectedMetadata => {}
     }
     config
 }
@@ -486,8 +627,16 @@ fn apply_config_inspect_request(
     page: &mut ConfigPage,
     request: ConfigInspectRequest,
 ) {
-    *rail_scope = Some(request.scope);
+    *rail_scope = Some(inspect_scope_label(&request.node_key));
     *page = ConfigPage::Inspect;
+}
+
+fn inspect_scope_label(key: &NodeKey) -> String {
+    match key {
+        NodeKey::Root => "root".to_owned(),
+        NodeKey::Tab(tab_id) => format!("tab:{tab_id}"),
+        NodeKey::Group(_) => "group".to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -582,6 +731,37 @@ fn push_inspect_page(
             "off"
         },
         model.metadata_controls.per_node.len()
+    ));
+    if let Some(row) = frame.push_plain(&format!(
+        "[metadata root: {}]",
+        if model.metadata_controls.root_enabled {
+            "on"
+        } else {
+            "off"
+        }
+    )) {
+        frame.add_hit(
+            row,
+            0,
+            "[metadata root: off]".width().saturating_sub(1),
+            ConfigAction::ToggleMetadataRoot,
+        );
+    }
+    if let Some(row) = frame.push_plain("[cycle inspected metadata]") {
+        frame.add_hit(
+            row,
+            0,
+            "[cycle inspected metadata]".width().saturating_sub(1),
+            ConfigAction::CycleInspectedMetadata,
+        );
+    }
+    frame.push_plain(&format!(
+        "inspected: {}",
+        model
+            .inspected_node
+            .as_ref()
+            .map(inspect_scope_label)
+            .unwrap_or_else(|| "<none>".to_owned())
     ));
 
     let Some(tab_id) = rail_scope.and_then(parse_tab_scope) else {
@@ -1182,8 +1362,9 @@ mod tests {
     #[test]
     fn config_inspect_request_updates_scope_and_page() {
         let request = ConfigInspectRequest {
-            scope: "tab:7".to_owned(),
             client_id: 4,
+            origin_tab_id: 7,
+            node_key: NodeKey::Tab(7),
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
@@ -1194,6 +1375,88 @@ mod tests {
 
         assert_eq!(scope.as_deref(), Some("tab:7"));
         assert_eq!(page, ConfigPage::Inspect);
+    }
+
+    #[test]
+    fn resolves_own_config_tab_placement_from_pane_manifest() {
+        let pane_manifest = PaneManifest {
+            panes: HashMap::from([(
+                2,
+                vec![PaneInfo {
+                    id: 21,
+                    is_plugin: true,
+                    is_floating: false,
+                    ..Default::default()
+                }],
+            )]),
+        };
+        let local_tabs = vec![ConfigLocalTab {
+            tab_id: 7,
+            position: 2,
+        }];
+
+        assert_eq!(
+            own_plugin_tab_placement(&pane_manifest, &local_tabs, 21),
+            Some(PluginPlacement::Tab {
+                tab_id: 7,
+                pane_kind: PluginPaneKind::Tiled,
+            })
+        );
+    }
+
+    #[test]
+    fn resolves_floating_config_placement_from_pane_manifest() {
+        let pane_manifest = PaneManifest {
+            panes: HashMap::from([(
+                3,
+                vec![PaneInfo {
+                    id: 22,
+                    is_plugin: true,
+                    is_floating: true,
+                    ..Default::default()
+                }],
+            )]),
+        };
+        let local_tabs = vec![ConfigLocalTab {
+            tab_id: 8,
+            position: 3,
+        }];
+
+        assert_eq!(
+            own_plugin_tab_placement(&pane_manifest, &local_tabs, 22),
+            Some(PluginPlacement::Tab {
+                tab_id: 8,
+                pane_kind: PluginPaneKind::Floating,
+            })
+        );
+    }
+
+    #[test]
+    fn config_editor_hello_payload_includes_registration_placement() {
+        let payload = config_editor_hello_payload(
+            22,
+            4,
+            PluginPlacement::Tab {
+                tab_id: 8,
+                pane_kind: PluginPaneKind::Floating,
+            },
+        )
+        .unwrap();
+        let decoded: PluginRegistrationHello = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(
+            decoded,
+            PluginRegistrationHello {
+                identity: RendererHello {
+                    plugin_id: 22,
+                    client_id: 4,
+                },
+                placement: PluginPlacement::Tab {
+                    tab_id: 8,
+                    pane_kind: PluginPaneKind::Floating,
+                },
+            }
+        );
     }
 
     #[test]
@@ -1226,6 +1489,7 @@ mod tests {
             resolved_metadata: vec![],
             observed_identities: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
+            inspected_node: None,
         };
 
         let rendered = render_config_with_scope(
@@ -1294,6 +1558,7 @@ mod tests {
             resolved_metadata: vec![],
             observed_identities: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
+            inspected_node: None,
         };
 
         let rendered = render_config(
@@ -1451,6 +1716,7 @@ mod tests {
             resolved_metadata: vec![],
             observed_identities: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
+            inspected_node: None,
         };
 
         let rendered = render_config(

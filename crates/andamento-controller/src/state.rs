@@ -6,9 +6,10 @@ use crate::metadata::{
 };
 use andamento_shared::grouping_config::{GroupingConfigCatalog, GroupingRule};
 use andamento_shared::{
-    ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataEntry,
-    MetadataIdentity, MetadataSourceEntry, MetadataValue, ObservedMetadataIdentity, PaneTarget,
-    Priority, RailConfig, RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello,
+    ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataControls,
+    MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataValue, NodeKey,
+    ObservedMetadataIdentity, PaneTarget, PluginPlacement, PluginRegistrationHello, Priority,
+    RailConfig, RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello,
     ResolvedMetadata, ResolvedTemplateField, ResolvedTemplateSlot, ResolvedTemplateSlots,
     SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics,
 };
@@ -44,6 +45,29 @@ struct ControllerPane {
     cwd: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ControllerClientState {
+    pub client_id: u16,
+    pub inspected_node: Option<NodeKey>,
+    pub metadata_controls: MetadataControls,
+    pub tabs: BTreeMap<u64, ControllerClientTabState>,
+    pub background_rails: BTreeMap<u32, PluginRegistration>,
+    pub background_config_editors: BTreeMap<u32, PluginRegistration>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ControllerClientTabState {
+    pub tab_id: u64,
+    pub rails: BTreeMap<u32, PluginRegistration>,
+    pub config_editors: BTreeMap<u32, PluginRegistration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginRegistration {
+    pub identity: RendererHello,
+    pub placement: PluginPlacement,
+}
+
 #[derive(Debug, Default)]
 pub struct ControllerState {
     tabs: Vec<ControllerTab>,
@@ -52,18 +76,30 @@ pub struct ControllerState {
     metadata: MetadataStore,
     pane_statuses: HashMap<PaneTarget, StoredPaneStatus>,
     pinned_tabs: HashSet<u64>,
-    known_rails: BTreeMap<u32, RendererHello>,
-    known_config_editors: BTreeMap<u32, RendererHello>,
+    clients: BTreeMap<u16, ControllerClientState>,
     sort_mode: SortMode,
     rail_config: RailConfig,
     grouping_catalog: Option<GroupingConfigCatalog>,
     template_catalog: Option<andamento_shared::template_config::TemplateConfigCatalog>,
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
-    metadata_controls: andamento_shared::MetadataControls,
 }
 
 impl ControllerState {
+    #[allow(dead_code)]
+    pub fn client(&self, client_id: u16) -> Option<&ControllerClientState> {
+        self.clients.get(&client_id)
+    }
+
+    fn client_mut(&mut self, client_id: u16) -> &mut ControllerClientState {
+        self.clients
+            .entry(client_id)
+            .or_insert_with(|| ControllerClientState {
+                client_id,
+                ..Default::default()
+            })
+    }
+
     #[allow(dead_code)]
     pub fn update_tabs_from_zellij(&mut self, tabs: Vec<TabInfo>) -> bool {
         let mut next_tabs: Vec<ControllerTab> = tabs
@@ -257,12 +293,13 @@ impl ControllerState {
         self.rail_config = rail_config;
     }
 
-    pub fn toggle_metadata_root(&mut self) {
-        self.metadata_controls.root_enabled = !self.metadata_controls.root_enabled;
+    pub fn toggle_metadata_root_for_client(&mut self, client_id: u16) {
+        let controls = &mut self.client_mut(client_id).metadata_controls;
+        controls.root_enabled = !controls.root_enabled;
     }
 
-    pub fn cycle_metadata_tristate(&mut self, key: andamento_shared::NodeKey) {
-        self.metadata_controls.cycle(key);
+    pub fn cycle_metadata_tristate_for_client(&mut self, client_id: u16, key: NodeKey) {
+        self.client_mut(client_id).metadata_controls.cycle(key);
     }
 
     pub fn set_template_catalog(
@@ -324,72 +361,230 @@ impl ControllerState {
         }
     }
 
+    fn plugin_registration(&self, plugin_id: u32) -> Option<&PluginRegistration> {
+        for client in self.clients.values() {
+            if let Some(registration) = client.background_rails.get(&plugin_id) {
+                return Some(registration);
+            }
+            if let Some(registration) = client.background_config_editors.get(&plugin_id) {
+                return Some(registration);
+            }
+            for tab in client.tabs.values() {
+                if let Some(registration) = tab.rails.get(&plugin_id) {
+                    return Some(registration);
+                }
+                if let Some(registration) = tab.config_editors.get(&plugin_id) {
+                    return Some(registration);
+                }
+            }
+        }
+        None
+    }
+
     #[allow(dead_code)]
-    pub fn register_rail(&mut self, hello: RendererHello) -> bool {
-        if self.known_rails.get(&hello.plugin_id) == Some(&hello) {
+    pub fn register_rail(&mut self, hello: PluginRegistrationHello) -> bool {
+        let registration = PluginRegistration {
+            identity: hello.identity,
+            placement: hello.placement,
+        };
+        if self.plugin_registration(registration.identity.plugin_id) == Some(&registration) {
             return false;
         }
-        self.known_rails.insert(hello.plugin_id, hello);
+        self.unregister_renderer(registration.identity.plugin_id);
+        let client = self.client_mut(registration.identity.client_id);
+        match registration.placement {
+            PluginPlacement::Tab { tab_id, .. } => {
+                let tab = client
+                    .tabs
+                    .entry(tab_id)
+                    .or_insert_with(|| ControllerClientTabState {
+                        tab_id,
+                        ..Default::default()
+                    });
+                tab.rails
+                    .insert(registration.identity.plugin_id, registration);
+            }
+            PluginPlacement::Background | PluginPlacement::Unknown => {
+                client
+                    .background_rails
+                    .insert(registration.identity.plugin_id, registration);
+            }
+        }
         true
     }
 
     #[allow(dead_code)]
     pub fn retain_rails(&mut self, live_plugin_ids: &HashSet<u32>) {
-        self.known_rails
-            .retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
-        self.known_config_editors
-            .retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
+        for client in self.clients.values_mut() {
+            client
+                .background_rails
+                .retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
+            client
+                .background_config_editors
+                .retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
+            for tab in client.tabs.values_mut() {
+                tab.rails
+                    .retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
+                tab.config_editors
+                    .retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
+            }
+            client
+                .tabs
+                .retain(|_, tab| !tab.rails.is_empty() || !tab.config_editors.is_empty());
+        }
+        self.clients.retain(|_, client| {
+            !client.background_rails.is_empty()
+                || !client.background_config_editors.is_empty()
+                || !client.tabs.is_empty()
+                || client.inspected_node.is_some()
+                || client.metadata_controls != MetadataControls::default()
+        });
     }
 
     /// Remove a renderer by plugin id, regardless of whether it was registered
     /// as a rail or a config editor. Returns true if anything was removed.
     pub fn unregister_renderer(&mut self, plugin_id: u32) -> bool {
-        let r = self.known_rails.remove(&plugin_id).is_some();
-        let c = self.known_config_editors.remove(&plugin_id).is_some();
-        r || c
+        let mut removed = false;
+        for client in self.clients.values_mut() {
+            removed |= client.background_rails.remove(&plugin_id).is_some();
+            removed |= client
+                .background_config_editors
+                .remove(&plugin_id)
+                .is_some();
+            for tab in client.tabs.values_mut() {
+                removed |= tab.rails.remove(&plugin_id).is_some();
+                removed |= tab.config_editors.remove(&plugin_id).is_some();
+            }
+            client
+                .tabs
+                .retain(|_, tab| !tab.rails.is_empty() || !tab.config_editors.is_empty());
+        }
+        removed
     }
 
     #[allow(dead_code)]
     pub fn rail_plugin_ids(&self) -> Vec<u32> {
-        self.known_rails
-            .keys()
-            .chain(self.known_config_editors.keys())
-            .copied()
+        self.rail_plugin_targets()
+            .into_iter()
+            .map(|target| target.plugin_id)
             .collect()
     }
 
     #[allow(dead_code)]
     pub fn rail_plugin_targets(&self) -> Vec<RendererHello> {
-        self.known_rails
-            .values()
-            .chain(self.known_config_editors.values())
-            .cloned()
-            .collect()
+        let mut targets = vec![];
+        for client in self.clients.values() {
+            targets.extend(
+                client
+                    .background_rails
+                    .values()
+                    .map(|registration| registration.identity.clone()),
+            );
+            targets.extend(
+                client
+                    .background_config_editors
+                    .values()
+                    .map(|registration| registration.identity.clone()),
+            );
+            for tab in client.tabs.values() {
+                targets.extend(
+                    tab.rails
+                        .values()
+                        .map(|registration| registration.identity.clone()),
+                );
+                targets.extend(
+                    tab.config_editors
+                        .values()
+                        .map(|registration| registration.identity.clone()),
+                );
+            }
+        }
+        targets
     }
 
     #[allow(dead_code)]
     pub fn known_rail_count(&self) -> usize {
-        self.known_rails.len()
+        self.clients
+            .values()
+            .map(|client| {
+                client.background_rails.len()
+                    + client
+                        .tabs
+                        .values()
+                        .map(|tab| tab.rails.len())
+                        .sum::<usize>()
+            })
+            .sum()
     }
 
     #[allow(dead_code)]
     pub fn known_config_editor_count(&self) -> usize {
-        self.known_config_editors.len()
+        self.clients
+            .values()
+            .map(|client| {
+                client.background_config_editors.len()
+                    + client
+                        .tabs
+                        .values()
+                        .map(|tab| tab.config_editors.len())
+                        .sum::<usize>()
+            })
+            .sum()
     }
 
-    pub fn config_editor_target_for_client(&self, client_id: u16) -> Option<RendererHello> {
-        self.known_config_editors
+    pub fn config_editor_target_for_client_tab(
+        &self,
+        client_id: u16,
+        tab_id: u64,
+    ) -> Option<RendererHello> {
+        let client = self.clients.get(&client_id)?;
+        client
+            .tabs
+            .get(&tab_id)?
+            .config_editors
             .values()
-            .find(|target| target.client_id == client_id)
-            .cloned()
+            .next()
+            .map(|registration| registration.identity.clone())
+    }
+
+    pub fn set_inspected_node(&mut self, client_id: u16, node_key: NodeKey) -> bool {
+        let client = self.client_mut(client_id);
+        if client.inspected_node.as_ref() == Some(&node_key) {
+            return false;
+        }
+        client.inspected_node = Some(node_key);
+        true
     }
 
     #[allow(dead_code)]
-    pub fn register_config_editor(&mut self, hello: RendererHello) -> bool {
-        if self.known_config_editors.get(&hello.plugin_id) == Some(&hello) {
+    pub fn register_config_editor(&mut self, hello: PluginRegistrationHello) -> bool {
+        let registration = PluginRegistration {
+            identity: hello.identity,
+            placement: hello.placement,
+        };
+        if self.plugin_registration(registration.identity.plugin_id) == Some(&registration) {
             return false;
         }
-        self.known_config_editors.insert(hello.plugin_id, hello);
+        self.unregister_renderer(registration.identity.plugin_id);
+        let client = self.client_mut(registration.identity.client_id);
+        match registration.placement {
+            PluginPlacement::Tab { tab_id, .. } => {
+                let tab = client
+                    .tabs
+                    .entry(tab_id)
+                    .or_insert_with(|| ControllerClientTabState {
+                        tab_id,
+                        ..Default::default()
+                    });
+                tab.config_editors
+                    .insert(registration.identity.plugin_id, registration);
+            }
+            PluginPlacement::Background | PluginPlacement::Unknown => {
+                client
+                    .background_config_editors
+                    .insert(registration.identity.plugin_id, registration);
+            }
+        }
         true
     }
 
@@ -444,8 +639,22 @@ impl ControllerState {
             observed_identities,
             rows,
             tabs,
-            metadata_controls: self.metadata_controls.clone(),
+            metadata_controls: self
+                .clients
+                .get(&0)
+                .map(|client| client.metadata_controls.clone())
+                .unwrap_or_default(),
+            inspected_node: None,
         }
+    }
+
+    pub fn view_model_for_client(&self, client_id: u16) -> ControllerViewModel {
+        let mut model = self.view_model();
+        if let Some(client) = self.clients.get(&client_id) {
+            model.metadata_controls = client.metadata_controls.clone();
+            model.inspected_node = client.inspected_node.clone();
+        }
+        model
     }
 
     fn rows_for_tabs(&self, tabs: &[TabCard]) -> Vec<RailRow> {
@@ -1324,8 +1533,8 @@ fn observed_metadata_identities(
 mod tests {
     use super::*;
     use andamento_shared::{
-        GroupPath, GroupSegment, RailGroupingMode, RailRow, RailSizingPreset, RailStructure,
-        StatusIcon,
+        GroupPath, GroupSegment, PluginPaneKind, PluginPlacement, PluginRegistrationHello,
+        RailGroupingMode, RailRow, RailSizingPreset, RailStructure, StatusIcon,
     };
 
     fn status(
@@ -2921,13 +3130,25 @@ mod tests {
     #[test]
     fn cleanup_removes_missing_rail_renderers() {
         let mut state = ControllerState::default();
-        state.register_rail(RendererHello {
-            plugin_id: 7,
-            client_id: 1,
+        state.register_rail(PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 7,
+                client_id: 1,
+            },
+            placement: PluginPlacement::Tab {
+                tab_id: 1,
+                pane_kind: PluginPaneKind::Tiled,
+            },
         });
-        state.register_rail(RendererHello {
-            plugin_id: 8,
-            client_id: 1,
+        state.register_rail(PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 8,
+                client_id: 1,
+            },
+            placement: PluginPlacement::Tab {
+                tab_id: 1,
+                pane_kind: PluginPaneKind::Tiled,
+            },
         });
 
         state.retain_rails(&[8].into_iter().collect());
@@ -2938,23 +3159,158 @@ mod tests {
     }
 
     #[test]
-    fn config_editor_target_prefers_same_client() {
+    fn config_editor_target_prefers_same_client_and_tab() {
         let mut state = ControllerState::default();
-        state.register_config_editor(RendererHello {
-            plugin_id: 30,
-            client_id: 1,
+        state.register_config_editor(PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 30,
+                client_id: 1,
+            },
+            placement: PluginPlacement::Tab {
+                tab_id: 1,
+                pane_kind: PluginPaneKind::Floating,
+            },
         });
-        state.register_config_editor(RendererHello {
-            plugin_id: 31,
-            client_id: 2,
+        state.register_config_editor(PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 31,
+                client_id: 2,
+            },
+            placement: PluginPlacement::Tab {
+                tab_id: 2,
+                pane_kind: PluginPaneKind::Floating,
+            },
+        });
+        state.register_config_editor(PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 32,
+                client_id: 2,
+            },
+            placement: PluginPlacement::Tab {
+                tab_id: 1,
+                pane_kind: PluginPaneKind::Floating,
+            },
         });
 
         assert_eq!(
-            state.config_editor_target_for_client(2),
+            state.config_editor_target_for_client_tab(2, 1),
+            Some(RendererHello {
+                plugin_id: 32,
+                client_id: 2
+            })
+        );
+        assert_eq!(
+            state.config_editor_target_for_client_tab(2, 2),
             Some(RendererHello {
                 plugin_id: 31,
                 client_id: 2
             })
+        );
+        assert_eq!(state.config_editor_target_for_client_tab(2, 3), None);
+    }
+
+    #[test]
+    fn view_model_for_client_uses_that_clients_inspected_node() {
+        let mut state = ControllerState::default();
+        state.set_inspected_node(4, NodeKey::Tab(7));
+        state.set_inspected_node(5, NodeKey::Root);
+
+        assert_eq!(
+            state.view_model_for_client(4).inspected_node,
+            Some(NodeKey::Tab(7))
+        );
+        assert_eq!(
+            state.view_model_for_client(5).inspected_node,
+            Some(NodeKey::Root)
+        );
+    }
+
+    #[test]
+    fn registering_rail_places_it_under_client_and_tab() {
+        let mut state = ControllerState::default();
+        let hello = PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 10,
+                client_id: 4,
+            },
+            placement: PluginPlacement::Tab {
+                tab_id: 7,
+                pane_kind: PluginPaneKind::Tiled,
+            },
+        };
+
+        assert!(state.register_rail(hello));
+        assert_eq!(
+            state
+                .client(4)
+                .and_then(|client| client.tabs.get(&7))
+                .map(|tab| tab.rails.contains_key(&10)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn registering_config_places_it_under_client_and_tab() {
+        let mut state = ControllerState::default();
+        let hello = PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 11,
+                client_id: 4,
+            },
+            placement: PluginPlacement::Tab {
+                tab_id: 7,
+                pane_kind: PluginPaneKind::Floating,
+            },
+        };
+
+        assert!(state.register_config_editor(hello));
+        assert_eq!(
+            state
+                .client(4)
+                .and_then(|client| client.tabs.get(&7))
+                .map(|tab| tab.config_editors.contains_key(&11)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn rail_plugin_targets_include_rails_and_config_editors_across_clients() {
+        let mut state = ControllerState::default();
+        state.register_rail(PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 1,
+                client_id: 4,
+            },
+            placement: PluginPlacement::Tab {
+                tab_id: 7,
+                pane_kind: PluginPaneKind::Tiled,
+            },
+        });
+        state.register_config_editor(PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 2,
+                client_id: 4,
+            },
+            placement: PluginPlacement::Tab {
+                tab_id: 7,
+                pane_kind: PluginPaneKind::Floating,
+            },
+        });
+
+        let targets = state.rail_plugin_targets();
+
+        assert_eq!(
+            targets,
+            vec![
+                RendererHello {
+                    plugin_id: 1,
+                    client_id: 4
+                },
+                RendererHello {
+                    plugin_id: 2,
+                    client_id: 4
+                },
+            ]
         );
     }
 }

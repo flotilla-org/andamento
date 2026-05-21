@@ -15,20 +15,23 @@ use andamento_shared::PluginStatsRecorder;
 use andamento_shared::MSG_RAIL_SIZE_TARGET;
 use andamento_shared::MSG_VIEW_MODEL;
 use andamento_shared::{
-    ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage, RailConfig,
-    RailGroupingMode, RailSize, RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure,
-    RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS,
-    MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST,
-    MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_CYCLE_METADATA_TRISTATE, MSG_OBSERVED_IDENTITIES,
-    MSG_RAIL_SIZE_OBSERVED, MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_SET_PANE_STATUS,
-    MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_METADATA_ROOT,
-    MSG_TOGGLE_PIN,
+    ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage, MetadataRootToggleRequest,
+    MetadataTriStateCycleRequest, PluginRegistrationHello, RailConfig, RailGroupingMode, RailSize,
+    RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RendererHello, SortMode,
+    StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO,
+    MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE,
+    MSG_CYCLE_METADATA_TRISTATE, MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED,
+    MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG,
+    MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_METADATA_ROOT, MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
 use state::ControllerState;
 use zellij_tile::output::print;
 use zellij_tile::prelude::*;
+
+#[cfg(test)]
+use andamento_shared::{NodeKey, PluginPlacement};
 
 #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
 const TEMPLATE_RELOAD_RETRY_SECS: f64 = 0.25;
@@ -470,12 +473,6 @@ impl PluginState {
             self.stats.increment("view-model.push.skipped.no-targets");
             return;
         }
-        let started_at = Instant::now();
-        let Ok(payload) = serde_json::to_string(&self.state.view_model()) else {
-            return;
-        };
-        self.stats
-            .record_span_elapsed("json.encode-view-model", started_at);
         self.stats.increment("view-model.push.sent");
         for reason in reasons {
             self.stats.increment(reason.counter_name());
@@ -487,9 +484,17 @@ impl PluginState {
             "view-model.targets.config-editors",
             config_editor_target_count as u64,
         );
-        self.stats
-            .add("view-model.payload-bytes", payload.len() as u64);
         for rail in targets {
+            let started_at = Instant::now();
+            let Ok(payload) =
+                serde_json::to_string(&self.state.view_model_for_client(rail.client_id))
+            else {
+                continue;
+            };
+            self.stats
+                .record_span_elapsed("json.encode-view-model", started_at);
+            self.stats
+                .add("view-model.payload-bytes", payload.len() as u64);
             pipe_message_to_plugin(
                 MessageToPlugin::new(MSG_VIEW_MODEL)
                     .with_destination_plugin_id(rail.plugin_id)
@@ -566,7 +571,7 @@ impl PluginState {
     fn open_or_focus_config_editor(&self, request: &ConfigInspectRequest) {
         let message = self
             .state
-            .config_editor_target_for_client(request.client_id)
+            .config_editor_target_for_client_tab(request.client_id, request.origin_tab_id)
             .and_then(|target| config_inspect_message_for_existing_editor(request, target))
             .or_else(|| config_inspect_message_for_new_editor(request));
         let Some(message) = message else {
@@ -763,8 +768,8 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             let inst = (state as *const _) as usize & 0xFFFFFF;
             log::info!(
                 "andamento-controller[inst {inst:x}]: RendererHello from plugin_id={} client_id={} (known rails before: {})",
-                hello.plugin_id,
-                hello.client_id,
+                hello.identity.plugin_id,
+                hello.identity.client_id,
                 state.known_rail_count()
             );
             let state_changed = state.register_rail(hello);
@@ -845,26 +850,33 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             rail_size_observed: Some(observed),
             ..HandlePipeResult::default()
         },
-        Ok(Some(ControllerMessage::ToggleMetadataRoot)) => {
-            state.toggle_metadata_root();
+        Ok(Some(ControllerMessage::ToggleMetadataRoot(request))) => {
+            state.toggle_metadata_root_for_client(request.client_id);
             HandlePipeResult {
                 state_changed: true,
                 view_model_push_reason: Some(ViewModelPushReason::PipeMetadataControls),
                 ..HandlePipeResult::default()
             }
         }
-        Ok(Some(ControllerMessage::CycleMetadataTriState(key))) => {
-            state.cycle_metadata_tristate(key);
+        Ok(Some(ControllerMessage::CycleMetadataTriState(request))) => {
+            state.cycle_metadata_tristate_for_client(request.client_id, request.node_key);
             HandlePipeResult {
                 state_changed: true,
                 view_model_push_reason: Some(ViewModelPushReason::PipeMetadataControls),
                 ..HandlePipeResult::default()
             }
         }
-        Ok(Some(ControllerMessage::ConfigInspect(request))) => HandlePipeResult {
-            config_inspect_request: Some(request),
-            ..HandlePipeResult::default()
-        },
+        Ok(Some(ControllerMessage::ConfigInspect(request))) => {
+            let state_changed =
+                state.set_inspected_node(request.client_id, request.node_key.clone());
+            HandlePipeResult {
+                state_changed,
+                view_model_push_reason: state_changed
+                    .then_some(ViewModelPushReason::PipeMetadataControls),
+                config_inspect_request: Some(request),
+                ..HandlePipeResult::default()
+            }
+        }
         Ok(None) => HandlePipeResult::default(),
         Err(error) => {
             eprintln!("andamento-controller: {error}");
@@ -962,7 +974,10 @@ fn config_inspect_message_for_new_editor(
         CONFIG_CONTROLLER_PLUGIN_URL.to_owned(),
         request.controller_plugin_url.clone(),
     );
-    configuration.insert(CONFIG_RAIL_SCOPE.to_owned(), request.scope.clone());
+    configuration.insert(
+        CONFIG_RAIL_SCOPE.to_owned(),
+        inspect_scope_label(&request.node_key),
+    );
     configuration.insert(CONFIG_CLOSE_ON_HIDDEN.to_owned(), "true".to_owned());
     Some(
         MessageToPlugin::new(MSG_CONFIG_INSPECT)
@@ -973,6 +988,14 @@ fn config_inspect_message_for_new_editor(
             .new_plugin_instance_should_float(true)
             .new_plugin_instance_should_be_focused(),
     )
+}
+
+fn inspect_scope_label(key: &andamento_shared::NodeKey) -> String {
+    match key {
+        andamento_shared::NodeKey::Root => "root".to_owned(),
+        andamento_shared::NodeKey::Tab(tab_id) => format!("tab:{tab_id}"),
+        andamento_shared::NodeKey::Group(_) => "group".to_owned(),
+    }
 }
 
 fn should_retry_template_load(attempts: u8, loaded: bool) -> bool {
@@ -1034,8 +1057,8 @@ fn parse_rail_grouping(value: &str) -> Option<RailGroupingMode> {
 #[derive(Debug, PartialEq)]
 enum ControllerMessage {
     External(ExternalMessage),
-    RendererHello(RendererHello),
-    ConfigEditorHello(RendererHello),
+    RendererHello(PluginRegistrationHello),
+    ConfigEditorHello(PluginRegistrationHello),
     TogglePin(u64),
     SetSortMode(SortMode),
     SetRailConfig(RailConfig),
@@ -1045,8 +1068,8 @@ enum ControllerMessage {
     ObservedIdentitiesRequest(String),
     StatsCollect(StatsCollectRequest),
     RailSizeObserved(RailSizeObserved),
-    ToggleMetadataRoot,
-    CycleMetadataTriState(andamento_shared::NodeKey),
+    ToggleMetadataRoot(MetadataRootToggleRequest),
+    CycleMetadataTriState(MetadataTriStateCycleRequest),
     ConfigInspect(ConfigInspectRequest),
 }
 
@@ -1069,7 +1092,7 @@ fn parse_controller_message(
                 .payload
                 .as_deref()
                 .ok_or_else(|| "renderer hello requires a JSON payload".to_owned())?;
-            serde_json::from_str::<RendererHello>(payload)
+            serde_json::from_str::<PluginRegistrationHello>(payload)
                 .map(ControllerMessage::RendererHello)
                 .map(Some)
                 .map_err(|e| format!("failed to parse renderer hello: {e}"))
@@ -1079,7 +1102,7 @@ fn parse_controller_message(
                 .payload
                 .as_deref()
                 .ok_or_else(|| "config editor hello requires a JSON payload".to_owned())?;
-            serde_json::from_str::<RendererHello>(payload)
+            serde_json::from_str::<PluginRegistrationHello>(payload)
                 .map(ControllerMessage::ConfigEditorHello)
                 .map(Some)
                 .map_err(|e| format!("failed to parse config editor hello: {e}"))
@@ -1115,14 +1138,23 @@ fn parse_controller_message(
             })
             .map(ControllerMessage::SetRailConfig)
             .map(Some),
-        MSG_TOGGLE_METADATA_ROOT => Ok(Some(ControllerMessage::ToggleMetadataRoot)),
+        MSG_TOGGLE_METADATA_ROOT => pipe_message
+            .payload
+            .as_deref()
+            .ok_or_else(|| "toggle metadata root requires payload".to_owned())
+            .and_then(|payload| {
+                serde_json::from_str::<MetadataRootToggleRequest>(payload)
+                    .map_err(|e| format!("invalid metadata root toggle request: {e}"))
+            })
+            .map(ControllerMessage::ToggleMetadataRoot)
+            .map(Some),
         MSG_CYCLE_METADATA_TRISTATE => pipe_message
             .payload
             .as_deref()
             .ok_or_else(|| "cycle metadata tri-state requires payload".to_owned())
             .and_then(|payload| {
-                serde_json::from_str::<andamento_shared::NodeKey>(payload)
-                    .map_err(|e| format!("invalid node key: {e}"))
+                serde_json::from_str::<MetadataTriStateCycleRequest>(payload)
+                    .map_err(|e| format!("invalid metadata tri-state cycle request: {e}"))
             })
             .map(ControllerMessage::CycleMetadataTriState)
             .map(Some),
@@ -1259,32 +1291,32 @@ mod tests {
 
     #[test]
     fn parses_renderer_hello() {
-        let payload = serde_json::to_string(&RendererHello {
-            plugin_id: 7,
-            client_id: 1,
-        })
-        .unwrap();
+        let hello = PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 7,
+                client_id: 1,
+            },
+            placement: PluginPlacement::Unknown,
+        };
+        let payload = serde_json::to_string(&hello).unwrap();
 
         let parsed =
             parse_controller_message(&pipe(MSG_RENDERER_HELLO, Some(payload), BTreeMap::new()))
                 .unwrap();
 
-        assert_eq!(
-            parsed,
-            Some(ControllerMessage::RendererHello(RendererHello {
-                plugin_id: 7,
-                client_id: 1
-            }))
-        );
+        assert_eq!(parsed, Some(ControllerMessage::RendererHello(hello)));
     }
 
     #[test]
     fn parses_config_editor_hello() {
-        let payload = serde_json::to_string(&RendererHello {
-            plugin_id: 11,
-            client_id: 1,
-        })
-        .unwrap();
+        let hello = PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 11,
+                client_id: 1,
+            },
+            placement: PluginPlacement::Unknown,
+        };
+        let payload = serde_json::to_string(&hello).unwrap();
 
         let parsed = parse_controller_message(&pipe(
             MSG_CONFIG_EDITOR_HELLO,
@@ -1293,20 +1325,15 @@ mod tests {
         ))
         .unwrap();
 
-        assert_eq!(
-            parsed,
-            Some(ControllerMessage::ConfigEditorHello(RendererHello {
-                plugin_id: 11,
-                client_id: 1
-            }))
-        );
+        assert_eq!(parsed, Some(ControllerMessage::ConfigEditorHello(hello)));
     }
 
     #[test]
     fn parses_config_inspect_request() {
         let request = ConfigInspectRequest {
-            scope: "tab:7".to_owned(),
             client_id: 4,
+            origin_tab_id: 7,
+            node_key: NodeKey::Tab(7),
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
@@ -1322,8 +1349,9 @@ mod tests {
     #[test]
     fn config_inspect_message_targets_existing_editor_by_plugin_id() {
         let request = ConfigInspectRequest {
-            scope: "tab:7".to_owned(),
             client_id: 4,
+            origin_tab_id: 7,
+            node_key: NodeKey::Tab(7),
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
@@ -1347,8 +1375,9 @@ mod tests {
     #[test]
     fn config_inspect_message_launches_focused_floating_editor_when_needed() {
         let request = ConfigInspectRequest {
-            scope: "tab:7".to_owned(),
             client_id: 4,
+            origin_tab_id: 7,
+            node_key: NodeKey::Tab(7),
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
@@ -1626,7 +1655,9 @@ mod tests {
                 .values
                 .get("tab.subject")
                 .map(|entry| &entry.value),
-            Some(&andamento_shared::MetadataValue::Text("checkout".to_owned()))
+            Some(&andamento_shared::MetadataValue::Text(
+                "checkout".to_owned()
+            ))
         );
         assert_eq!(
             tab_metadata
@@ -1771,9 +1802,12 @@ mod tests {
     #[test]
     fn duplicate_renderer_hello_does_not_request_state_broadcast() {
         let mut state = ControllerState::default();
-        let hello = RendererHello {
-            plugin_id: 9,
-            client_id: 1,
+        let hello = PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 9,
+                client_id: 1,
+            },
+            placement: PluginPlacement::Unknown,
         };
         let payload = serde_json::to_string(&hello).unwrap();
 
@@ -1788,6 +1822,34 @@ mod tests {
 
         assert!(first.state_changed);
         assert!(!second.state_changed);
+    }
+
+    #[test]
+    fn config_inspect_request_sets_client_inspected_node() {
+        let mut state = ControllerState::default();
+        let request = ConfigInspectRequest {
+            client_id: 4,
+            origin_tab_id: 7,
+            node_key: NodeKey::Tab(7),
+            config_plugin_url: "andamento-config".to_owned(),
+            controller_plugin_url: "andamento-controller".to_owned(),
+        };
+        let payload = serde_json::to_string(&request).unwrap();
+
+        let result = handle_pipe_message(
+            &mut state,
+            pipe(MSG_CONFIG_INSPECT, Some(payload), BTreeMap::new()),
+        );
+
+        assert!(result.state_changed);
+        assert_eq!(
+            result.view_model_push_reason,
+            Some(ViewModelPushReason::PipeMetadataControls)
+        );
+        assert_eq!(
+            state.view_model_for_client(4).inspected_node,
+            Some(NodeKey::Tab(7))
+        );
     }
 
     #[test]

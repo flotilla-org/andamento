@@ -160,17 +160,60 @@ fn rail_size_target_should_apply(
         .unwrap_or(false)
 }
 
+fn own_plugin_tab_placement(
+    pane_manifest: &PaneManifest,
+    local_tabs: &[LocalTab],
+    plugin_id: u32,
+) -> Option<PluginPlacement> {
+    let (tab_position, pane) = pane_manifest
+        .panes
+        .iter()
+        .find_map(|(tab_position, panes)| {
+            panes
+                .iter()
+                .find(|pane| pane.is_plugin && pane.id == plugin_id)
+                .map(|pane| (*tab_position, pane))
+        })?;
+    let tab_id = local_tabs
+        .iter()
+        .find(|tab| tab.position == tab_position)
+        .map(|tab| tab.tab_id)?;
+    Some(PluginPlacement::Tab {
+        tab_id,
+        pane_kind: if pane.is_floating {
+            PluginPaneKind::Floating
+        } else {
+            PluginPaneKind::Tiled
+        },
+    })
+}
+
+fn renderer_hello_payload(
+    plugin_id: u32,
+    client_id: u16,
+    placement: PluginPlacement,
+) -> Option<String> {
+    serde_json::to_string(&PluginRegistrationHello {
+        identity: RendererHello {
+            plugin_id,
+            client_id,
+        },
+        placement,
+    })
+    .ok()
+}
+
 use std::cmp::{max, min};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Instant;
 
 use andamento_shared::StatusIcon;
 use andamento_shared::{
-    ConfigInspectRequest, ControllerViewModel, GroupPath, NodeKey, PluginStatsRecorder,
-    RailSizeObserved, RendererHello, StatsCollectRequest, MSG_CONFIG_INSPECT,
-    MSG_CYCLE_METADATA_TRISTATE, MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_SIZE_TARGET, MSG_RENDERER_HELLO,
-    MSG_REQUEST_STATE, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_METADATA_ROOT,
-    MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
+    ConfigInspectRequest, ControllerViewModel, GroupPath, NodeKey, PluginPaneKind, PluginPlacement,
+    PluginRegistrationHello, PluginStatsRecorder, RailSizeObserved, RendererHello,
+    StatsCollectRequest, MSG_CONFIG_INSPECT, MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_SIZE_TARGET,
+    MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_PIN,
+    MSG_VIEW_MODEL,
 };
 use andamento_shared::{RailSize, RailSizeTarget};
 use render::{hit_at, HitAction, HitRegion};
@@ -188,11 +231,13 @@ fn build_config_inspect_message(
     controller_plugin_url: &str,
     config_plugin_url: &str,
     client_id: u16,
-    scope: String,
+    origin_tab_id: u64,
+    node_key: NodeKey,
 ) -> Option<MessageToPlugin> {
     let request = ConfigInspectRequest {
-        scope,
         client_id,
+        origin_tab_id,
+        node_key,
         config_plugin_url: config_plugin_url.to_owned(),
         controller_plugin_url: controller_plugin_url.to_owned(),
     };
@@ -227,6 +272,7 @@ pub struct PluginState {
     collapsed_groups: BTreeSet<GroupPath>,
     stats: PluginStatsRecorder,
     rail_placement: RailPlacement,
+    own_plugin_placement: Option<PluginPlacement>,
     observed_rail_size: Option<RailSize>,
     latest_rail_size_target: Option<RailSizeTarget>,
     applied_rail_size_version: u64,
@@ -360,7 +406,9 @@ impl ZellijPlugin for PluginState {
             if let Some(payload) = message.payload.as_deref() {
                 match serde_json::from_str::<RailSizeTarget>(payload) {
                     Ok(target) => self.handle_rail_size_target(target),
-                    Err(error) => eprintln!("andamento-rail: failed to parse rail size target: {error}"),
+                    Err(error) => {
+                        eprintln!("andamento-rail: failed to parse rail size target: {error}")
+                    }
                 }
             }
             return false;
@@ -579,7 +627,8 @@ mod tests {
             "andamento-controller",
             "andamento-config",
             4,
-            "tab:7".to_owned(),
+            7,
+            NodeKey::Tab(7),
         )
         .unwrap();
 
@@ -591,10 +640,97 @@ mod tests {
 
         let payload: ConfigInspectRequest =
             serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
-        assert_eq!(payload.scope, "tab:7");
         assert_eq!(payload.client_id, 4);
+        assert_eq!(payload.origin_tab_id, 7);
+        assert_eq!(payload.node_key, NodeKey::Tab(7));
         assert_eq!(payload.config_plugin_url, "andamento-config");
         assert_eq!(payload.controller_plugin_url, "andamento-controller");
+    }
+
+    #[test]
+    fn resolves_own_plugin_tab_placement_from_pane_manifest() {
+        let pane_manifest = PaneManifest {
+            panes: HashMap::from([(
+                2,
+                vec![PaneInfo {
+                    id: 42,
+                    is_plugin: true,
+                    is_floating: false,
+                    ..Default::default()
+                }],
+            )]),
+        };
+        let local_tabs = vec![LocalTab {
+            tab_id: 70,
+            position: 2,
+            name: "work".to_owned(),
+            active: true,
+        }];
+
+        assert_eq!(
+            own_plugin_tab_placement(&pane_manifest, &local_tabs, 42),
+            Some(PluginPlacement::Tab {
+                tab_id: 70,
+                pane_kind: PluginPaneKind::Tiled,
+            })
+        );
+    }
+
+    #[test]
+    fn resolves_floating_plugin_placement_from_pane_manifest() {
+        let pane_manifest = PaneManifest {
+            panes: HashMap::from([(
+                1,
+                vec![PaneInfo {
+                    id: 9,
+                    is_plugin: true,
+                    is_floating: true,
+                    ..Default::default()
+                }],
+            )]),
+        };
+        let local_tabs = vec![LocalTab {
+            tab_id: 15,
+            position: 1,
+            name: "settings".to_owned(),
+            active: false,
+        }];
+
+        assert_eq!(
+            own_plugin_tab_placement(&pane_manifest, &local_tabs, 9),
+            Some(PluginPlacement::Tab {
+                tab_id: 15,
+                pane_kind: PluginPaneKind::Floating,
+            })
+        );
+    }
+
+    #[test]
+    fn renderer_hello_payload_includes_registration_placement() {
+        let payload = renderer_hello_payload(
+            42,
+            3,
+            PluginPlacement::Tab {
+                tab_id: 70,
+                pane_kind: PluginPaneKind::Tiled,
+            },
+        )
+        .unwrap();
+        let decoded: PluginRegistrationHello = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(
+            decoded,
+            PluginRegistrationHello {
+                identity: RendererHello {
+                    plugin_id: 42,
+                    client_id: 3,
+                },
+                placement: PluginPlacement::Tab {
+                    tab_id: 70,
+                    pane_kind: PluginPaneKind::Tiled,
+                },
+            }
+        );
     }
 }
 
@@ -614,11 +750,13 @@ impl PluginState {
             return;
         };
         log::info!("andamento-rail: send_renderer_hello plugin_id={plugin_id} client_id={client_id} → controller={:?}", self.controller_plugin_url);
-        let hello = RendererHello {
+        let Some(payload) = renderer_hello_payload(
             plugin_id,
             client_id,
-        };
-        let Ok(payload) = serde_json::to_string(&hello) else {
+            self.own_plugin_placement
+                .clone()
+                .unwrap_or(PluginPlacement::Unknown),
+        ) else {
             return;
         };
         pipe_message_to_plugin(
@@ -685,6 +823,11 @@ impl PluginState {
         let Some(plugin_id) = self.own_plugin_id else {
             return;
         };
+        let next_placement = own_plugin_tab_placement(&pane_manifest, &self.local_tabs, plugin_id);
+        if next_placement.is_some() && self.own_plugin_placement != next_placement {
+            self.own_plugin_placement = next_placement;
+            self.send_renderer_hello();
+        }
         let own_pane = pane_manifest
             .panes
             .values()
@@ -820,24 +963,15 @@ impl PluginState {
                         self.rail_scroll_offset = self.rail_scroll_offset.saturating_add(1);
                         true
                     }
-                    HitAction::ToggleMetadataRoot => {
-                        self.send_toggle_metadata_root();
-                        false
-                    }
-                    HitAction::CycleMetadataTriState => {
-                        // Discriminate by group_path presence — tab_id 0 is a
-                        // valid id (the initial tab), so we can't use it as
-                        // an "absent" sentinel.
+                    HitAction::InspectNode => {
                         let key = if let Some(group_path) = hit.group_path {
                             NodeKey::Group(group_path)
-                        } else {
+                        } else if hit.tab_id != 0 {
                             NodeKey::Tab(hit.tab_id)
+                        } else {
+                            NodeKey::Root
                         };
-                        self.send_cycle_metadata_tristate(key);
-                        false
-                    }
-                    HitAction::CycleRootMetadataTriState => {
-                        self.send_cycle_metadata_tristate(NodeKey::Root);
+                        self.open_config_for_node(key);
                         false
                     }
                 }
@@ -891,37 +1025,6 @@ impl PluginState {
         );
     }
 
-    fn send_toggle_metadata_root(&self) {
-        let Some(client_id) = self.own_client_id else {
-            return;
-        };
-        if self.controller_model.is_none() {
-            return;
-        }
-        pipe_message_to_plugin(
-            self.controller_message(MSG_TOGGLE_METADATA_ROOT)
-                .with_destination_client_id(client_id),
-        );
-    }
-
-    fn send_cycle_metadata_tristate(&self, key: NodeKey) {
-        let Some(client_id) = self.own_client_id else {
-            return;
-        };
-        if self.controller_model.is_none() {
-            return;
-        }
-        let payload = match serde_json::to_string(&key) {
-            Ok(payload) => payload,
-            Err(_) => return,
-        };
-        pipe_message_to_plugin(
-            self.controller_message(MSG_CYCLE_METADATA_TRISTATE)
-                .with_destination_client_id(client_id)
-                .with_payload(payload),
-        );
-    }
-
     fn toggle_group(&mut self, group_path: GroupPath) {
         if !self.collapsed_groups.insert(group_path.clone()) {
             self.collapsed_groups.remove(&group_path);
@@ -929,6 +1032,10 @@ impl PluginState {
     }
 
     fn open_config_pane(&self) {
+        self.open_config_for_node(self.active_inspect_node().unwrap_or(NodeKey::Root));
+    }
+
+    fn open_config_for_node(&self, node_key: NodeKey) {
         let Some(client_id) = self.own_client_id else {
             return;
         };
@@ -936,26 +1043,23 @@ impl PluginState {
             &self.controller_plugin_url,
             &self.config_plugin_url,
             client_id,
-            self.config_editor_scope(),
+            self.active_tab_id().unwrap_or(0),
+            node_key,
         ) else {
             return;
         };
         pipe_message_to_plugin(message);
     }
 
-    fn config_editor_scope(&self) -> String {
-        if let Some(tab_id) = self
-            .local_tabs
+    fn active_tab_id(&self) -> Option<u64> {
+        self.local_tabs
             .iter()
             .find(|tab| tab.active)
             .map(|tab| tab.tab_id)
-        {
-            return format!("tab:{tab_id}");
-        }
-        if let Some(plugin_id) = self.own_plugin_id {
-            return format!("plugin:{plugin_id}");
-        }
-        "unknown".to_owned()
+    }
+
+    fn active_inspect_node(&self) -> Option<NodeKey> {
+        self.active_tab_id().map(NodeKey::Tab)
     }
 
     fn sync_graphics(&mut self, visible_cards: &[VisibleCard]) {

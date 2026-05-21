@@ -72,11 +72,47 @@ pub struct RendererHello {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginRegistrationHello {
+    pub identity: RendererHello,
+    pub placement: PluginPlacement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum PluginPlacement {
+    Tab {
+        tab_id: u64,
+        pane_kind: PluginPaneKind,
+    },
+    Background,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PluginPaneKind {
+    Tiled,
+    Floating,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigInspectRequest {
-    pub scope: String,
     pub client_id: u16,
+    pub origin_tab_id: u64,
+    pub node_key: NodeKey,
     pub config_plugin_url: String,
     pub controller_plugin_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataRootToggleRequest {
+    pub client_id: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataTriStateCycleRequest {
+    pub client_id: u16,
+    pub node_key: NodeKey,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -524,6 +560,8 @@ pub struct ControllerViewModel {
     pub observed_identities: Vec<ObservedMetadataIdentity>,
     #[serde(default)]
     pub metadata_controls: MetadataControls,
+    #[serde(default)]
+    pub inspected_node: Option<NodeKey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -822,6 +860,7 @@ mod tests {
                 nearest_distance: 1,
             }],
             metadata_controls: MetadataControls::default(),
+            inspected_node: None,
         };
         let encoded = serde_json::to_string(&model).unwrap();
         let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
@@ -831,8 +870,9 @@ mod tests {
     #[test]
     fn config_inspect_request_round_trips_json() {
         let request = ConfigInspectRequest {
-            scope: "tab:7".to_owned(),
             client_id: 4,
+            origin_tab_id: 7,
+            node_key: NodeKey::Tab(7),
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
@@ -841,6 +881,41 @@ mod tests {
         let decoded: ConfigInspectRequest = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn plugin_registration_hello_round_trips_json() {
+        let hello = PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 11,
+                client_id: 4,
+            },
+            placement: PluginPlacement::Tab {
+                tab_id: 7,
+                pane_kind: PluginPaneKind::Floating,
+            },
+        };
+
+        let encoded = serde_json::to_string(&hello).unwrap();
+        let decoded: PluginRegistrationHello = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, hello);
+    }
+
+    #[test]
+    fn metadata_control_requests_round_trip_json() {
+        let toggle = MetadataRootToggleRequest { client_id: 4 };
+        let encoded = serde_json::to_string(&toggle).unwrap();
+        let decoded: MetadataRootToggleRequest = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, toggle);
+
+        let cycle = MetadataTriStateCycleRequest {
+            client_id: 4,
+            node_key: NodeKey::Tab(7),
+        };
+        let encoded = serde_json::to_string(&cycle).unwrap();
+        let decoded: MetadataTriStateCycleRequest = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, cycle);
     }
 
     #[test]
@@ -964,7 +1039,8 @@ mod tests {
                     label: "zellij".to_owned(),
                     full_label: "/Users/robert/dev/zellij".to_owned(),
                     tab_count: 1,
-                    templates: ResolvedTemplateSlots::default(),                },
+                    templates: ResolvedTemplateSlots::default(),
+                },
                 RailRow::Tab {
                     tab_id: 1,
                     indent: 2,
@@ -974,6 +1050,7 @@ mod tests {
             resolved_metadata: vec![],
             observed_identities: vec![],
             metadata_controls: MetadataControls::default(),
+            inspected_node: None,
         };
 
         let encoded = serde_json::to_string(&model).unwrap();
