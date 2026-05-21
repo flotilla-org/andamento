@@ -45,7 +45,6 @@ const CONFIG_CLOSE_ON_HIDDEN: &str = "close_on_hidden";
 const CONFIG_ORIGIN_TAB_ID: &str = "origin_tab_id";
 const CONFIG_PANE_KIND: &str = "pane_kind";
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
-const CONFIG_SUPPRESS_SHOW_ON_INSPECT: &str = "suppress_show_on_inspect";
 
 #[cfg(not(target_family = "wasm"))]
 fn main() {}
@@ -979,17 +978,14 @@ fn config_inspect_message_for_new_editor(
         request.origin_tab_id.to_string(),
     );
     configuration.insert(CONFIG_PANE_KIND.to_owned(), "floating".to_owned());
-    configuration.insert(
-        CONFIG_SUPPRESS_SHOW_ON_INSPECT.to_owned(),
-        "true".to_owned(),
-    );
     Some(
         MessageToPlugin::new(MSG_CONFIG_INSPECT)
             .with_plugin_url(request.config_plugin_url.clone())
             .with_destination_client_id(request.client_id)
             .with_plugin_config(configuration)
             .with_payload(payload)
-            .new_plugin_instance_should_float(true),
+            .new_plugin_instance_should_float(true)
+            .new_plugin_instance_should_be_focused(),
     )
 }
 
@@ -1408,16 +1404,9 @@ mod tests {
             message.plugin_config.get("pane_kind").map(String::as_str),
             Some("floating")
         );
-        assert_eq!(
-            message
-                .plugin_config
-                .get("suppress_show_on_inspect")
-                .map(String::as_str),
-            Some("true")
-        );
         let new_plugin_args = message.new_plugin_args.as_ref().unwrap();
         assert_eq!(new_plugin_args.should_float, Some(true));
-        assert_eq!(new_plugin_args.should_focus, None);
+        assert_eq!(new_plugin_args.should_focus, Some(true));
     }
 
     #[test]

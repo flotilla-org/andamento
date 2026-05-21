@@ -32,7 +32,6 @@ const CONFIG_CLOSE_ON_HIDDEN: &str = "close_on_hidden";
 const CONFIG_ORIGIN_TAB_ID: &str = "origin_tab_id";
 const CONFIG_PANE_KIND: &str = "pane_kind";
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
-const CONFIG_SUPPRESS_SHOW_ON_INSPECT: &str = "suppress_show_on_inspect";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ConfigLocalTab {
@@ -222,7 +221,6 @@ struct RenderedTabRow {
 pub struct PluginState {
     controller_plugin_url: String,
     close_on_hidden: bool,
-    suppress_show_on_inspect: bool,
     rail_scope: Option<String>,
     local_tabs: Vec<ConfigLocalTab>,
     last_pane_manifest: Option<PaneManifest>,
@@ -252,9 +250,6 @@ impl ZellijPlugin for PluginState {
             .unwrap_or_else(|| "andamento-controller".to_owned());
         self.close_on_hidden = configuration
             .get(CONFIG_CLOSE_ON_HIDDEN)
-            .is_some_and(|value| config_bool(value));
-        self.suppress_show_on_inspect = configuration
-            .get(CONFIG_SUPPRESS_SHOW_ON_INSPECT)
             .is_some_and(|value| config_bool(value));
         self.rail_scope = config_scope(&configuration);
         self.own_plugin_placement = launch_config_placement(&configuration);
@@ -288,7 +283,7 @@ impl ZellijPlugin for PluginState {
                 match serde_json::from_str::<ConfigInspectRequest>(payload) {
                     Ok(request) => {
                         apply_config_inspect_request(&mut self.rail_scope, &mut self.page, request);
-                        if self.permissions_granted && !self.suppress_show_on_inspect {
+                        if self.permissions_granted {
                             show_self(true);
                         }
                         self.send_hello();
