@@ -21,7 +21,7 @@ use andamento_shared::{
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
-use ratatui::widgets::{Paragraph, Tabs, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 use zellij_tile::output::print;
 use zellij_tile::prelude::*;
 
@@ -126,24 +126,24 @@ struct HitRegion {
 struct RenderedConfig {
     lines: Vec<String>,
     hit_regions: Vec<HitRegion>,
-    stats_scroll_offset: usize,
+    body_scroll_offset: usize,
 }
 
 struct ConfigUiFrame {
-    buffer: Buffer,
     rows: usize,
     cols: usize,
     next_row: usize,
+    lines: Vec<String>,
     hit_regions: Vec<HitRegion>,
 }
 
 impl ConfigUiFrame {
     fn new(rows: usize, cols: usize) -> Self {
         Self {
-            buffer: Buffer::empty(Rect::new(0, 0, cols as u16, rows as u16)),
             rows,
             cols,
             next_row: 0,
+            lines: vec![],
             hit_regions: vec![],
         }
     }
@@ -165,10 +165,15 @@ impl ConfigUiFrame {
             return None;
         }
         let row = self.next_row;
-        Paragraph::new(line).render(
-            Rect::new(0, row as u16, self.cols as u16, 1),
-            &mut self.buffer,
-        );
+        let mut buffer = Buffer::empty(Rect::new(0, 0, self.cols as u16, 1));
+        Paragraph::new(line).render(Rect::new(0, 0, self.cols as u16, 1), &mut buffer);
+        let rendered = (0..self.cols)
+            .map(|col| buffer[(col as u16, 0)].symbol())
+            .collect::<String>();
+        self.lines.push(pad_to_width(
+            &truncate_to_width(&rendered, self.cols),
+            self.cols,
+        ));
         self.next_row = self.next_row.saturating_add(1);
         Some(row)
     }
@@ -183,24 +188,6 @@ impl ConfigUiFrame {
             col_end: col_end.min(self.cols.saturating_sub(1)),
             action,
         });
-    }
-
-    fn into_rendered(self, stats_scroll_offset: usize) -> RenderedConfig {
-        let mut lines = vec![];
-        for row in 0..self.rows {
-            let line = (0..self.cols)
-                .map(|col| self.buffer[(col as u16, row as u16)].symbol())
-                .collect::<String>();
-            lines.push(pad_to_width(
-                &truncate_to_width(&line, self.cols),
-                self.cols,
-            ));
-        }
-        RenderedConfig {
-            lines,
-            hit_regions: self.hit_regions,
-            stats_scroll_offset,
-        }
     }
 }
 
@@ -222,7 +209,7 @@ pub struct PluginState {
     stats_collection_id: u64,
     stats_collection_pending: bool,
     stats_reports: Vec<PluginStatsSnapshot>,
-    stats_scroll_offset: usize,
+    body_scroll_offset: usize,
 }
 
 impl ZellijPlugin for PluginState {
@@ -339,14 +326,14 @@ impl ZellijPlugin for PluginState {
                 self.stats.increment("update.mouse.left-click");
                 self.handle_click(row as usize, col as usize)
             }
-            Event::Mouse(Mouse::ScrollUp(_)) if self.page == ConfigPage::Stats => {
+            Event::Mouse(Mouse::ScrollUp(_)) => {
                 self.stats.increment("update.mouse.scroll-up");
-                self.stats_scroll_offset = self.stats_scroll_offset.saturating_sub(1);
+                self.body_scroll_offset = self.body_scroll_offset.saturating_sub(1);
                 true
             }
-            Event::Mouse(Mouse::ScrollDown(_)) if self.page == ConfigPage::Stats => {
+            Event::Mouse(Mouse::ScrollDown(_)) => {
                 self.stats.increment("update.mouse.scroll-down");
-                self.stats_scroll_offset = self.stats_scroll_offset.saturating_add(1);
+                self.body_scroll_offset = self.body_scroll_offset.saturating_add(1);
                 true
             }
             Event::Visible(is_visible) => {
@@ -399,10 +386,10 @@ impl ZellijPlugin for PluginState {
             cols,
             &self.stats_reports,
             self.stats_collection_pending,
-            self.stats_scroll_offset,
+            self.body_scroll_offset,
         );
         self.hit_regions = rendered.hit_regions;
-        self.stats_scroll_offset = rendered.stats_scroll_offset;
+        self.body_scroll_offset = rendered.body_scroll_offset;
         print!("{}", rendered.lines.join("\n"));
         self.stats.record_span_elapsed("render.config", started_at);
     }
@@ -504,7 +491,7 @@ impl PluginState {
         self.stats_collection_id = self.stats_collection_id.saturating_add(1);
         self.stats_collection_pending = true;
         self.stats_reports.clear();
-        self.stats_scroll_offset = 0;
+        self.body_scroll_offset = 0;
         let request = StatsCollectRequest {
             requester: RendererHello {
                 plugin_id,
@@ -794,7 +781,7 @@ fn render_config(
     cols: usize,
     stats_reports: &[PluginStatsSnapshot],
     stats_collection_pending: bool,
-    stats_scroll_offset: usize,
+    body_scroll_offset: usize,
 ) -> RenderedConfig {
     render_config_with_scope(
         config,
@@ -805,7 +792,7 @@ fn render_config(
         cols,
         stats_reports,
         stats_collection_pending,
-        stats_scroll_offset,
+        body_scroll_offset,
     )
 }
 
@@ -818,34 +805,75 @@ fn render_config_with_scope(
     cols: usize,
     stats_reports: &[PluginStatsSnapshot],
     stats_collection_pending: bool,
-    stats_scroll_offset: usize,
+    body_scroll_offset: usize,
 ) -> RenderedConfig {
     if rows == 0 || cols == 0 {
         return RenderedConfig {
             lines: vec![],
             hit_regions: vec![],
-            stats_scroll_offset: 0,
+            body_scroll_offset: 0,
         };
     }
-    let mut frame = ConfigUiFrame::new(rows, cols);
-    let mut effective_stats_scroll_offset = stats_scroll_offset;
-    push_tab_row(&mut frame, page);
-    frame.push_blank();
+    let mut tab_frame = ConfigUiFrame::new(1, cols);
+    push_tab_row(&mut tab_frame, page);
+    let mut body_frame = ConfigUiFrame::new(usize::MAX, cols);
     match page {
-        ConfigPage::Settings => push_settings_page(&mut frame, config, model),
-        ConfigPage::Inspect => push_inspect_page(&mut frame, model, rail_scope),
-        ConfigPage::Templates => push_templates_page(&mut frame, model),
+        ConfigPage::Settings => push_settings_page(&mut body_frame, config, model),
+        ConfigPage::Inspect => push_inspect_page(&mut body_frame, model, rail_scope),
+        ConfigPage::Templates => push_templates_page(&mut body_frame, model),
         ConfigPage::Stats => {
-            effective_stats_scroll_offset = push_stats_page(
-                &mut frame,
-                stats_reports,
-                stats_collection_pending,
-                rows,
-                stats_scroll_offset,
-            );
+            push_stats_page(&mut body_frame, stats_reports, stats_collection_pending);
         }
     }
-    frame.into_rendered(effective_stats_scroll_offset)
+    render_with_scroll(tab_frame, body_frame, rows, cols, body_scroll_offset)
+}
+
+fn render_with_scroll(
+    tab_frame: ConfigUiFrame,
+    body_frame: ConfigUiFrame,
+    rows: usize,
+    cols: usize,
+    scroll_offset: usize,
+) -> RenderedConfig {
+    let body_rows = rows.saturating_sub(1);
+    let max_scroll_offset = body_frame.lines.len().saturating_sub(body_rows);
+    let effective_scroll_offset = scroll_offset.min(max_scroll_offset);
+    let mut lines = Vec::with_capacity(rows);
+    lines.push(
+        tab_frame
+            .lines
+            .first()
+            .cloned()
+            .unwrap_or_else(|| " ".repeat(cols)),
+    );
+    for line in body_frame
+        .lines
+        .iter()
+        .skip(effective_scroll_offset)
+        .take(body_rows)
+    {
+        lines.push(line.clone());
+    }
+    while lines.len() < rows {
+        lines.push(" ".repeat(cols));
+    }
+    let mut hit_regions = tab_frame.hit_regions;
+    hit_regions.extend(body_frame.hit_regions.into_iter().filter_map(|mut hit| {
+        let visible_end = effective_scroll_offset.saturating_add(body_rows);
+        if hit.row < effective_scroll_offset || hit.row >= visible_end {
+            return None;
+        }
+        hit.row = hit
+            .row
+            .saturating_sub(effective_scroll_offset)
+            .saturating_add(1);
+        Some(hit)
+    }));
+    RenderedConfig {
+        lines,
+        hit_regions,
+        body_scroll_offset: effective_scroll_offset,
+    }
 }
 
 fn push_inspect_page(
@@ -883,7 +911,7 @@ fn push_inspect_header(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>
 }
 
 fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {
-    frame.push_plain("Identity");
+    push_section_header(frame, "Identity");
     push_key_value(frame, "type", inspect_target_kind_label(target.kind));
     match target.kind {
         InspectTargetKind::Root => {
@@ -926,7 +954,7 @@ fn push_inspect_visibility_section(
     model: &ControllerViewModel,
     target: &InspectTargetView<'_>,
 ) {
-    frame.push_plain("Metadata Visibility");
+    push_section_header(frame, "Metadata Visibility");
     push_segmented_choice(
         frame,
         "Root metadata",
@@ -977,7 +1005,7 @@ fn push_inspect_visibility_section(
 }
 
 fn push_inspect_metadata_section(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {
-    frame.push_plain("Metadata");
+    push_section_header(frame, "Metadata");
     if target.metadata.is_empty() {
         frame.push_plain("  <none>");
         return;
@@ -998,7 +1026,7 @@ fn push_inspect_metadata_section(frame: &mut ConfigUiFrame, target: &InspectTarg
 }
 
 fn push_inspect_sources_section(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {
-    frame.push_plain("Sources");
+    push_section_header(frame, "Sources");
     if target.sources.is_empty() {
         frame.push_plain("  <none>");
         return;
@@ -1023,7 +1051,7 @@ fn push_inspect_sources_section(frame: &mut ConfigUiFrame, target: &InspectTarge
 }
 
 fn push_inspect_templates_section(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {
-    frame.push_plain("Templates");
+    push_section_header(frame, "Templates");
     match target.kind {
         InspectTargetKind::Tab => {
             let Some(tab) = target.tab else {
@@ -1061,6 +1089,29 @@ fn push_key_value(frame: &mut ConfigUiFrame, key: &str, value: &str) {
     frame.push_plain(&format!("{key:<9} {value}"));
 }
 
+fn push_section_header(frame: &mut ConfigUiFrame, title: &str) {
+    frame.push_plain(&section_divider(title, frame.cols));
+}
+
+fn section_divider(title: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let prefix = format!("── {title} ");
+    if prefix.width() >= width {
+        return truncate_to_width(&prefix, width);
+    }
+    format!("{prefix}{}", "─".repeat(width - prefix.width()))
+}
+
+fn push_button(frame: &mut ConfigUiFrame, label: &str, action: ConfigAction) {
+    let text = format!("● {label}");
+    let Some(row) = frame.push_plain(&text) else {
+        return;
+    };
+    frame.add_hit(row, 0, text.width().saturating_sub(1), action);
+}
+
 fn inspect_target_kind_label(kind: InspectTargetKind) -> &'static str {
     match kind {
         InspectTargetKind::Root => "Root",
@@ -1088,36 +1139,25 @@ fn push_stats_page(
     frame: &mut ConfigUiFrame,
     stats_reports: &[PluginStatsSnapshot],
     stats_collection_pending: bool,
-    rows: usize,
-    stats_scroll_offset: usize,
-) -> usize {
-    frame.push_plain("stats");
-    if let Some(row) = frame.push_plain("[collect stats]") {
-        frame.add_hit(
-            row,
-            0,
-            "[collect stats]".width().saturating_sub(1),
-            ConfigAction::CollectStats,
-        );
-    }
+) {
+    push_section_header(frame, "Stats");
+    push_button(frame, "collect stats", ConfigAction::CollectStats);
     frame.push_blank();
-    let body_rows = rows.saturating_sub(frame.current_row());
     if stats_reports.is_empty() {
         if stats_collection_pending {
             frame.push_plain("collecting...");
         } else {
             frame.push_plain("no stats collected yet");
         }
-        return 0;
+        return;
     }
-    let mut body = vec![];
     for report in stats_reports {
-        body.push(format!(
+        frame.push_plain(&format!(
             "{} #{} c{}",
             report.plugin_kind, report.plugin_id, report.client_id
         ));
         for (name, count) in &report.counters {
-            body.push(format!("  {name}: {count}"));
+            frame.push_plain(&format!("  {name}: {count}"));
         }
         for span in &report.spans {
             let avg_us = if span.count == 0 {
@@ -1125,18 +1165,12 @@ fn push_stats_page(
             } else {
                 span.total_us / span.count
             };
-            body.push(format!(
+            frame.push_plain(&format!(
                 "  {}: n={} total={}us avg={}us max={}us",
                 span.name, span.count, span.total_us, avg_us, span.max_us
             ));
         }
     }
-    let max_scroll_offset = body.len().saturating_sub(body_rows);
-    let effective_scroll_offset = stats_scroll_offset.min(max_scroll_offset);
-    for line in body.iter().skip(effective_scroll_offset).take(body_rows) {
-        frame.push_plain(line);
-    }
-    effective_scroll_offset
 }
 
 fn push_settings_page(
@@ -1307,7 +1341,7 @@ fn template_config_state_text(state: andamento_shared::TemplateConfigState) -> &
 }
 
 fn push_tab_row(frame: &mut ConfigUiFrame, page: ConfigPage) {
-    let (line, mut row_hits) = render_tab_row_with_ratatui(page, frame.cols);
+    let (line, mut row_hits) = render_tab_row(page, frame.cols);
     let Some(row) = frame.push_plain(&line) else {
         return;
     };
@@ -1317,58 +1351,47 @@ fn push_tab_row(frame: &mut ConfigUiFrame, page: ConfigPage) {
     frame.hit_regions.extend(row_hits);
 }
 
-fn render_tab_row_with_ratatui(page: ConfigPage, cols: usize) -> (String, Vec<HitRegion>) {
+fn render_tab_row(page: ConfigPage, cols: usize) -> (String, Vec<HitRegion>) {
     let tabs = [
         (ConfigPage::Settings, "settings"),
         (ConfigPage::Inspect, "inspect"),
         (ConfigPage::Templates, "templates"),
         (ConfigPage::Stats, "stats"),
     ];
-    let labels = tabs
-        .iter()
-        .map(|(tab_page, label)| {
-            if *tab_page == page {
-                format!("[{label}]")
-            } else {
-                format!(" {label} ")
-            }
-        })
-        .collect::<Vec<_>>();
-    let text = labels.join(" ");
-    let mut buffer = Buffer::empty(Rect::new(0, 0, cols as u16, 1));
-    let tab_lines = labels
-        .iter()
-        .map(|label| Line::from(label.as_str()))
-        .collect::<Vec<_>>();
-    Tabs::new(tab_lines)
-        .divider(" ")
-        .render(Rect::new(0, 0, cols as u16, 1), &mut buffer);
-
-    let line = if cols == 0 {
-        String::new()
-    } else {
-        let rendered = (0..cols)
-            .map(|col| buffer[(col as u16, 0)].symbol())
-            .collect::<String>();
-        pad_to_width(&truncate_to_width(&rendered, cols), cols)
-    };
-    let line = if line.trim().is_empty() {
-        pad_to_width(&truncate_to_width(&text, cols), cols)
-    } else {
-        line
-    };
+    let mut line = String::new();
     let mut hit_regions = vec![];
-    let mut col = 0usize;
-    for ((tab_page, _), label) in tabs.iter().zip(labels.iter()) {
+    let mut col = 0;
+    for (tab_page, label) in tabs {
+        let active = tab_page == page;
+        let display_label = if active {
+            label.to_uppercase()
+        } else {
+            label.to_owned()
+        };
+        let segment = if active {
+            format!(" {display_label} ")
+        } else {
+            format!(" {display_label} ")
+        };
+        let segment_width = segment.width();
+        if col >= cols {
+            break;
+        }
+        let visible_segment = truncate_to_width(&segment, cols - col);
+        let visible_width = visible_segment.width();
+        if visible_width == 0 {
+            break;
+        }
+        line.push_str(&visible_segment);
         hit_regions.push(HitRegion {
             row: 0,
             col_start: col,
-            col_end: col.saturating_add(label.width()).saturating_sub(1),
-            action: ConfigAction::SetPage(*tab_page),
+            col_end: col.saturating_add(visible_width).saturating_sub(1),
+            action: ConfigAction::SetPage(tab_page),
         });
-        col = col.saturating_add(label.width()).saturating_add(1);
+        col = col.saturating_add(segment_width);
     }
-    (line, hit_regions)
+    (pad_to_width(&line, cols), hit_regions)
 }
 
 fn push_cwd_metadata(frame: &mut ConfigUiFrame, model: Option<&ControllerViewModel>) {
@@ -1473,6 +1496,27 @@ fn pad_to_width(text: &str, width: usize) -> String {
     let mut out = String::with_capacity(text.len() + (width - text_width));
     out.push_str(text);
     out.push_str(&" ".repeat(width - text_width));
+    out
+}
+
+#[cfg(test)]
+fn display_width_slice(text: &str, start: usize, end: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+
+    let mut out = String::new();
+    let mut col: usize = 0;
+    for ch in text.chars() {
+        let ch_width = ch.width().unwrap_or(0).max(1);
+        let ch_start = col;
+        let ch_end = col.saturating_add(ch_width).saturating_sub(1);
+        if ch_end >= start && ch_start <= end {
+            out.push(ch);
+        }
+        col = col.saturating_add(ch_width);
+        if col > end {
+            break;
+        }
+    }
     out
 }
 
@@ -1609,13 +1653,14 @@ mod tests {
     }
 
     #[test]
-    fn ratatui_tab_row_keeps_existing_pages_and_hit_regions() {
-        let (line, hits) = render_tab_row_with_ratatui(ConfigPage::Templates, 60);
+    fn config_tab_row_keeps_existing_pages_and_hit_regions() {
+        let (line, hits) = render_tab_row(ConfigPage::Templates, 60);
 
         assert!(line.contains("settings"));
         assert!(line.contains("inspect"));
-        assert!(line.contains("templates"));
+        assert!(line.contains("TEMPLATES"));
         assert!(line.contains("stats"));
+        assert!(line.contains(""));
         assert_eq!(
             hits.iter().map(|hit| hit.action).collect::<Vec<_>>(),
             vec![
@@ -1625,6 +1670,29 @@ mod tests {
                 ConfigAction::SetPage(ConfigPage::Stats),
             ]
         );
+    }
+
+    #[test]
+    fn tab_row_hit_regions_match_rendered_segments() {
+        let (line, hits) = render_tab_row(ConfigPage::Inspect, 80);
+        let expectations = [
+            (ConfigAction::SetPage(ConfigPage::Settings), "settings"),
+            (ConfigAction::SetPage(ConfigPage::Inspect), "INSPECT"),
+            (ConfigAction::SetPage(ConfigPage::Templates), "templates"),
+            (ConfigAction::SetPage(ConfigPage::Stats), "stats"),
+        ];
+
+        for (action, label) in expectations {
+            let hit = hits
+                .iter()
+                .find(|hit| hit.action == action)
+                .expect("hit for tab");
+            let segment = display_width_slice(&line, hit.col_start, hit.col_end);
+            assert!(
+                segment.contains(label),
+                "segment {segment:?} should contain {label:?}"
+            );
+        }
     }
 
     #[test]
@@ -1896,15 +1964,30 @@ mod tests {
         );
         let rendered_text = rendered.lines.join("\n");
 
-        assert!(rendered.lines[2].contains("Inspect: Tab \"repo\" #7"));
-        assert!(rendered.lines.iter().any(|line| line.trim() == "Identity"));
         assert!(rendered
             .lines
             .iter()
-            .any(|line| line.trim() == "Metadata Visibility"));
-        assert!(rendered.lines.iter().any(|line| line.trim() == "Metadata"));
-        assert!(rendered.lines.iter().any(|line| line.trim() == "Sources"));
-        assert!(rendered.lines.iter().any(|line| line.trim() == "Templates"));
+            .any(|line| line.contains("Inspect: Tab \"repo\" #7")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim().starts_with("── Identity ")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim().starts_with("── Metadata Visibility ")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim().starts_with("── Metadata ")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim().starts_with("── Sources ")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.trim().starts_with("── Templates ")));
         assert!(rendered
             .lines
             .iter()
@@ -1915,6 +1998,11 @@ mod tests {
             .any(|line| line.trim() == "group     flotilla git.repo=flotilla-org/flotilla"));
         assert!(!rendered_text.contains("[cycle inspected metadata]"));
         assert!(!rendered_text.contains("model: tabs="));
+    }
+
+    #[test]
+    fn section_divider_uses_rail_border_characters() {
+        assert_eq!(section_divider("Metadata", 24), "── Metadata ────────────");
     }
 
     #[test]
@@ -1959,6 +2047,58 @@ mod tests {
         assert!(rendered_text.contains("andamento-git-watcher"));
         assert!(rendered_text.contains("10s"));
         assert!(rendered_text.contains("    4     2"));
+    }
+
+    #[test]
+    fn inspect_page_scrolls_body_content() {
+        let mut model = model_with_tab(7, "repo");
+        model.inspected_node = Some(NodeKey::Tab(7));
+        let values = (0..16)
+            .map(|index| {
+                (
+                    format!("meta.{index:02}"),
+                    MetadataEntry {
+                        value: MetadataValue::Text(format!("value-{index:02}")),
+                        updated_at: index,
+                        ttl_ms: None,
+                        precedence: 0,
+                        ordinal: 0,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        model.resolved_metadata = vec![andamento_shared::ResolvedMetadata {
+            target: MetadataTarget::Tab(7),
+            values,
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let top = render_config(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Inspect,
+            10,
+            80,
+            &[],
+            false,
+            0,
+        );
+        let scrolled = render_config(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Inspect,
+            10,
+            80,
+            &[],
+            false,
+            25,
+        );
+
+        assert!(top.lines.join("\n").contains("Inspect: Tab \"repo\" #7"));
+        assert!(!top.lines.join("\n").contains("meta.15"));
+        assert!(scrolled.lines.join("\n").contains("meta.15"));
+        assert_eq!(top.lines[0], scrolled.lines[0], "tab bar stays fixed");
     }
 
     #[test]
@@ -2076,7 +2216,7 @@ mod tests {
     }
 
     #[test]
-    fn scrolls_collected_stats_body_under_fixed_controls() {
+    fn scrolls_collected_stats_body_under_fixed_tab_bar() {
         let mut counters = std::collections::BTreeMap::new();
         for idx in 0..8 {
             counters.insert(format!("counter-{idx:02}"), idx);
@@ -2095,16 +2235,13 @@ mod tests {
             None,
             ConfigPage::Stats,
             8,
-            40,
+            80,
             &reports,
             false,
-            4,
+            5,
         );
 
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("collect stats")));
+        assert!(rendered.lines[0].contains("STATS"));
         assert!(!rendered
             .lines
             .iter()
