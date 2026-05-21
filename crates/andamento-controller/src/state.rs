@@ -8,8 +8,8 @@ use andamento_shared::grouping_config::{GroupingConfigCatalog, GroupingRule};
 use andamento_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataControls,
     MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataValue, NodeKey,
-    ObservedMetadataIdentity, PaneTarget, PluginPlacement, PluginRegistrationHello, Priority,
-    RailConfig, RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello,
+    ObservedMetadataIdentity, PaneTarget, PluginPaneKind, PluginPlacement, PluginRegistrationHello,
+    Priority, RailConfig, RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello,
     ResolvedMetadata, ResolvedTemplateField, ResolvedTemplateSlot, ResolvedTemplateSlots,
     SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics,
 };
@@ -538,10 +538,31 @@ impl ControllerState {
         tab_id: u64,
     ) -> Option<RendererHello> {
         let client = self.clients.get(&client_id)?;
-        client
+        if let Some(target) = client
             .tabs
-            .get(&tab_id)?
-            .config_editors
+            .get(&tab_id)
+            .and_then(|tab| tab.config_editors.values().next())
+        {
+            return Some(target.identity.clone());
+        }
+        if let Some(target) = client
+            .tabs
+            .values()
+            .flat_map(|tab| tab.config_editors.values())
+            .find(|registration| {
+                matches!(
+                    registration.placement,
+                    PluginPlacement::Tab {
+                        pane_kind: PluginPaneKind::Floating,
+                        ..
+                    }
+                )
+            })
+        {
+            return Some(target.identity.clone());
+        }
+        client
+            .background_config_editors
             .values()
             .next()
             .map(|registration| registration.identity.clone())
@@ -3206,7 +3227,90 @@ mod tests {
                 client_id: 2
             })
         );
+        assert_eq!(
+            state.config_editor_target_for_client_tab(2, 3),
+            Some(RendererHello {
+                plugin_id: 32,
+                client_id: 2
+            })
+        );
+    }
+
+    #[test]
+    fn config_editor_target_reuses_same_client_floating_editor() {
+        let mut state = ControllerState::default();
+        state.register_config_editor(PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 30,
+                client_id: 1,
+            },
+            placement: PluginPlacement::Tab {
+                tab_id: 1,
+                pane_kind: PluginPaneKind::Floating,
+            },
+        });
+        state.register_config_editor(PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 31,
+                client_id: 2,
+            },
+            placement: PluginPlacement::Tab {
+                tab_id: 9,
+                pane_kind: PluginPaneKind::Floating,
+            },
+        });
+
+        assert_eq!(
+            state.config_editor_target_for_client_tab(2, 3),
+            Some(RendererHello {
+                plugin_id: 31,
+                client_id: 2
+            })
+        );
+    }
+
+    #[test]
+    fn config_editor_target_does_not_reuse_other_tab_tiled_editor() {
+        let mut state = ControllerState::default();
+        state.register_config_editor(PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 30,
+                client_id: 2,
+            },
+            placement: PluginPlacement::Tab {
+                tab_id: 9,
+                pane_kind: PluginPaneKind::Tiled,
+            },
+        });
+
         assert_eq!(state.config_editor_target_for_client_tab(2, 3), None);
+    }
+
+    #[test]
+    fn config_editor_target_reuses_same_client_unknown_editor() {
+        let mut state = ControllerState::default();
+        state.register_config_editor(PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 30,
+                client_id: 1,
+            },
+            placement: PluginPlacement::Unknown,
+        });
+        state.register_config_editor(PluginRegistrationHello {
+            identity: RendererHello {
+                plugin_id: 31,
+                client_id: 2,
+            },
+            placement: PluginPlacement::Unknown,
+        });
+
+        assert_eq!(
+            state.config_editor_target_for_client_tab(2, 3),
+            Some(RendererHello {
+                plugin_id: 31,
+                client_id: 2
+            })
+        );
     }
 
     #[test]

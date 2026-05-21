@@ -4,10 +4,11 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use andamento_shared::{
-    ConfigInspectRequest, ControllerViewModel, GroupPath, MetadataRootToggleRequest,
-    MetadataTriStateCycleRequest, MetadataValue, NodeKey, PluginPaneKind, PluginPlacement,
-    PluginRegistrationHello, PluginStatsSnapshot, RailConfig, RailGroupingMode, RailSizingPreset,
-    RailStructure,
+    ConfigInspectRequest, ControllerViewModel, GroupPath, MetadataEntry, MetadataRootToggleRequest,
+    MetadataSourceEntry, MetadataTarget, MetadataTriState, MetadataTriStateCycleRequest,
+    MetadataValue, NodeKey, PluginPaneKind, PluginPlacement, PluginRegistrationHello,
+    PluginStatsSnapshot, RailConfig, RailGroupingMode, RailRow, RailSizingPreset, RailStructure,
+    ResolvedTemplateSlots, TabCard,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -26,6 +27,8 @@ use zellij_tile::prelude::*;
 
 const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
 const CONFIG_CLOSE_ON_HIDDEN: &str = "close_on_hidden";
+const CONFIG_ORIGIN_TAB_ID: &str = "origin_tab_id";
+const CONFIG_PANE_KIND: &str = "pane_kind";
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +238,7 @@ impl ZellijPlugin for PluginState {
             .get(CONFIG_CLOSE_ON_HIDDEN)
             .is_some_and(|value| config_bool(value));
         self.rail_scope = config_scope(&configuration);
+        self.own_plugin_placement = launch_config_placement(&configuration);
         self.page = initial_page_for_scope(self.rail_scope.as_deref());
 
         request_permission(&[
@@ -614,6 +618,23 @@ fn config_scope(configuration: &BTreeMap<String, String>) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn launch_config_placement(configuration: &BTreeMap<String, String>) -> Option<PluginPlacement> {
+    let tab_id = configuration
+        .get(CONFIG_ORIGIN_TAB_ID)?
+        .trim()
+        .parse()
+        .ok()?;
+    let pane_kind = match configuration
+        .get(CONFIG_PANE_KIND)
+        .map(|value| value.trim())
+    {
+        Some("floating") => PluginPaneKind::Floating,
+        Some("tiled") => PluginPaneKind::Tiled,
+        _ => return None,
+    };
+    Some(PluginPlacement::Tab { tab_id, pane_kind })
+}
+
 fn initial_page_for_scope(rail_scope: Option<&str>) -> ConfigPage {
     if rail_scope.is_some() {
         ConfigPage::Inspect
@@ -637,6 +658,131 @@ fn inspect_scope_label(key: &NodeKey) -> String {
         NodeKey::Tab(tab_id) => format!("tab:{tab_id}"),
         NodeKey::Group(_) => "group".to_owned(),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InspectTargetKind {
+    Root,
+    Group,
+    Tab,
+    Missing,
+}
+
+struct InspectTargetView<'a> {
+    label: String,
+    kind: InspectTargetKind,
+    node_key: NodeKey,
+    tab: Option<&'a TabCard>,
+    group_templates: Option<&'a ResolvedTemplateSlots>,
+    metadata: BTreeMap<String, MetadataEntry>,
+    sources: BTreeMap<String, Vec<MetadataSourceEntry>>,
+}
+
+fn inspect_target_for<'a>(
+    inspected_node: Option<&NodeKey>,
+    rail_scope: Option<&str>,
+    model: &'a ControllerViewModel,
+) -> InspectTargetView<'a> {
+    let node_key = inspected_node
+        .cloned()
+        .or_else(|| rail_scope.and_then(parse_scope_node_key))
+        .unwrap_or(NodeKey::Root);
+    let metadata = metadata_for_node(model, &node_key);
+    let sources = sources_for_node(model, &node_key);
+    match node_key.clone() {
+        NodeKey::Root => InspectTargetView {
+            label: "Root".to_owned(),
+            kind: InspectTargetKind::Root,
+            node_key,
+            tab: None,
+            group_templates: None,
+            metadata,
+            sources,
+        },
+        NodeKey::Tab(tab_id) => match model.tab_by_id(tab_id) {
+            Some(tab) => InspectTargetView {
+                label: format!("Tab \"{}\" #{}", tab.name, tab.tab_id),
+                kind: InspectTargetKind::Tab,
+                node_key,
+                tab: Some(tab),
+                group_templates: None,
+                metadata,
+                sources,
+            },
+            None => InspectTargetView {
+                label: format!("Missing tab #{tab_id}"),
+                kind: InspectTargetKind::Missing,
+                node_key,
+                tab: None,
+                group_templates: None,
+                metadata,
+                sources,
+            },
+        },
+        NodeKey::Group(path) => InspectTargetView {
+            label: format!("Group {}", format_group_path(&path)),
+            kind: InspectTargetKind::Group,
+            node_key,
+            tab: None,
+            group_templates: group_templates_for_path(model, &path),
+            metadata,
+            sources,
+        },
+    }
+}
+
+fn parse_scope_node_key(scope: &str) -> Option<NodeKey> {
+    if scope == "root" {
+        return Some(NodeKey::Root);
+    }
+    parse_tab_scope(scope).map(NodeKey::Tab)
+}
+
+fn metadata_for_node(
+    model: &ControllerViewModel,
+    node_key: &NodeKey,
+) -> BTreeMap<String, MetadataEntry> {
+    resolved_metadata_for_node(model, node_key)
+        .map(|metadata| metadata.values.clone())
+        .unwrap_or_default()
+}
+
+fn sources_for_node(
+    model: &ControllerViewModel,
+    node_key: &NodeKey,
+) -> BTreeMap<String, Vec<MetadataSourceEntry>> {
+    resolved_metadata_for_node(model, node_key)
+        .map(|metadata| metadata.source_entries.clone())
+        .unwrap_or_default()
+}
+
+fn resolved_metadata_for_node<'a>(
+    model: &'a ControllerViewModel,
+    node_key: &NodeKey,
+) -> Option<&'a andamento_shared::ResolvedMetadata> {
+    let target = match node_key {
+        NodeKey::Root => return None,
+        NodeKey::Tab(tab_id) => MetadataTarget::Tab(*tab_id),
+        NodeKey::Group(path) => MetadataTarget::Group(path.clone()),
+    };
+    model
+        .resolved_metadata
+        .iter()
+        .find(|metadata| metadata.target == target)
+}
+
+fn group_templates_for_path<'a>(
+    model: &'a ControllerViewModel,
+    path: &GroupPath,
+) -> Option<&'a ResolvedTemplateSlots> {
+    model.rows.iter().find_map(|row| match row {
+        RailRow::GroupHeader {
+            path: row_path,
+            templates,
+            ..
+        } if row_path == path => Some(templates),
+        _ => None,
+    })
 }
 
 #[cfg(test)]
@@ -707,92 +853,228 @@ fn push_inspect_page(
     model: Option<&ControllerViewModel>,
     rail_scope: Option<&str>,
 ) {
-    frame.push_plain("inspect");
-    let scope = rail_scope.unwrap_or("<none>");
-    frame.push_plain(&format!("scope: {scope}"));
-
     let Some(model) = model else {
+        frame.push_plain("Inspect");
+        frame.push_blank();
         frame.push_plain("no controller state yet");
         return;
     };
+    let target = inspect_target_for(model.inspected_node.as_ref(), rail_scope, model);
 
-    frame.push_plain(&format!(
-        "model: tabs={} rows={} metadata={} identities={}",
-        model.tabs.len(),
-        model.rows.len(),
-        model.resolved_metadata.len(),
-        model.observed_identities.len()
-    ));
-    frame.push_plain(&format!(
-        "metadata view: root={} explicit={}",
-        if model.metadata_controls.root_enabled {
-            "on"
-        } else {
-            "off"
-        },
-        model.metadata_controls.per_node.len()
-    ));
-    if let Some(row) = frame.push_plain(&format!(
-        "[metadata root: {}]",
-        if model.metadata_controls.root_enabled {
-            "on"
-        } else {
-            "off"
-        }
-    )) {
-        frame.add_hit(
-            row,
-            0,
-            "[metadata root: off]".width().saturating_sub(1),
-            ConfigAction::ToggleMetadataRoot,
-        );
-    }
-    if let Some(row) = frame.push_plain("[cycle inspected metadata]") {
-        frame.add_hit(
-            row,
-            0,
-            "[cycle inspected metadata]".width().saturating_sub(1),
-            ConfigAction::CycleInspectedMetadata,
-        );
-    }
-    frame.push_plain(&format!(
-        "inspected: {}",
-        model
-            .inspected_node
-            .as_ref()
-            .map(inspect_scope_label)
-            .unwrap_or_else(|| "<none>".to_owned())
-    ));
-
-    let Some(tab_id) = rail_scope.and_then(parse_tab_scope) else {
-        return;
-    };
-    let Some(tab) = model.tab_by_id(tab_id) else {
-        frame.push_plain(&format!("tab: <missing> #{tab_id}"));
-        return;
-    };
+    push_inspect_header(frame, &target);
     frame.push_blank();
-    frame.push_plain(&format!("tab: {} #{}", tab.name, tab.tab_id));
-    frame.push_plain(&format!(
-        "state: position={} active={} pinned={}",
-        tab.position, tab.active, tab.pinned
-    ));
-    if let Some(grouping) = tab.grouping.as_ref() {
-        frame.push_plain(&format!(
-            "group: {} {}",
-            grouping.label,
-            format_group_path(&grouping.path)
-        ));
-    } else {
-        frame.push_plain("group: <none>");
-    }
-    if let Some(active_pane) = tab.active_pane.as_ref() {
-        frame.push_plain(&format!("active pane: {}", format_pane_target(active_pane)));
-    }
+    push_inspect_identity_section(frame, &target);
+    frame.push_blank();
+    push_inspect_visibility_section(frame, model, &target);
+    frame.push_blank();
+    push_inspect_metadata_section(frame, &target);
+    frame.push_blank();
+    push_inspect_sources_section(frame, &target);
+    frame.push_blank();
+    push_inspect_templates_section(frame, &target);
 }
 
 fn parse_tab_scope(scope: &str) -> Option<u64> {
     scope.strip_prefix("tab:")?.parse().ok()
+}
+
+fn push_inspect_header(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {
+    frame.push_plain(&format!("Inspect: {}", target.label));
+}
+
+fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {
+    frame.push_plain("Identity");
+    push_key_value(frame, "type", inspect_target_kind_label(target.kind));
+    match target.kind {
+        InspectTargetKind::Root => {
+            push_key_value(frame, "scope", "session");
+        }
+        InspectTargetKind::Group => {
+            if let NodeKey::Group(path) = &target.node_key {
+                push_key_value(frame, "path", &format_group_path(path));
+            }
+        }
+        InspectTargetKind::Tab => {
+            if let Some(tab) = target.tab {
+                push_key_value(frame, "name", &tab.name);
+                push_key_value(frame, "tab id", &tab.tab_id.to_string());
+                push_key_value(frame, "position", &tab.position.to_string());
+                push_key_value(frame, "active", if tab.active { "yes" } else { "no" });
+                push_key_value(frame, "pinned", if tab.pinned { "yes" } else { "no" });
+                if let Some(grouping) = tab.grouping.as_ref() {
+                    push_key_value(
+                        frame,
+                        "group",
+                        &format!("{} {}", grouping.label, format_group_path(&grouping.path)),
+                    );
+                } else {
+                    push_key_value(frame, "group", "<none>");
+                }
+                if let Some(active_pane) = tab.active_pane.as_ref() {
+                    push_key_value(frame, "pane", &format_pane_target(active_pane));
+                }
+            }
+        }
+        InspectTargetKind::Missing => {
+            push_key_value(frame, "state", "missing");
+        }
+    }
+}
+
+fn push_inspect_visibility_section(
+    frame: &mut ConfigUiFrame,
+    model: &ControllerViewModel,
+    target: &InspectTargetView<'_>,
+) {
+    frame.push_plain("Metadata Visibility");
+    push_segmented_choice(
+        frame,
+        "Root metadata",
+        &[
+            (
+                "on",
+                model.metadata_controls.root_enabled,
+                ConfigAction::ToggleMetadataRoot,
+            ),
+            (
+                "off",
+                !model.metadata_controls.root_enabled,
+                ConfigAction::ToggleMetadataRoot,
+            ),
+        ],
+    );
+    let explicit_state = model
+        .metadata_controls
+        .per_node
+        .get(&target.node_key)
+        .copied();
+    push_segmented_choice(
+        frame,
+        "This item",
+        &[
+            (
+                "inherit",
+                explicit_state.is_none(),
+                ConfigAction::CycleInspectedMetadata,
+            ),
+            (
+                "show",
+                explicit_state == Some(MetadataTriState::Meta),
+                ConfigAction::CycleInspectedMetadata,
+            ),
+            (
+                "children",
+                explicit_state == Some(MetadataTriState::MetaChildren),
+                ConfigAction::CycleInspectedMetadata,
+            ),
+            (
+                "hide",
+                explicit_state == Some(MetadataTriState::Clean),
+                ConfigAction::CycleInspectedMetadata,
+            ),
+        ],
+    );
+}
+
+fn push_inspect_metadata_section(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {
+    frame.push_plain("Metadata");
+    if target.metadata.is_empty() {
+        frame.push_plain("  <none>");
+        return;
+    }
+    frame.push_plain(&format!(
+        "{:<22} {:<30} {:>7} {:>6}",
+        "key", "value", "updated", "ttl"
+    ));
+    for (key, entry) in &target.metadata {
+        frame.push_plain(&format!(
+            "{:<22} {:<30} {:>7} {:>6}",
+            truncate_to_width(key, 22),
+            truncate_to_width(&format_metadata_value(&entry.value), 30),
+            entry.updated_at,
+            format_ttl(entry.ttl_ms)
+        ));
+    }
+}
+
+fn push_inspect_sources_section(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {
+    frame.push_plain("Sources");
+    if target.sources.is_empty() {
+        frame.push_plain("  <none>");
+        return;
+    }
+    frame.push_plain(&format!(
+        "{:<22} {:<22} {:<26} {:>6} {:>5} {:>5}",
+        "key", "source", "value", "ttl", "prec", "ord"
+    ));
+    for (key, entries) in &target.sources {
+        for source in entries {
+            frame.push_plain(&format!(
+                "{:<22} {:<22} {:<26} {:>6} {:>5} {:>5}",
+                truncate_to_width(key, 22),
+                truncate_to_width(&source.source_id, 22),
+                truncate_to_width(&format_metadata_value(&source.entry.value), 26),
+                format_ttl(source.entry.ttl_ms),
+                source.entry.precedence,
+                source.entry.ordinal,
+            ));
+        }
+    }
+}
+
+fn push_inspect_templates_section(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {
+    frame.push_plain("Templates");
+    match target.kind {
+        InspectTargetKind::Tab => {
+            let Some(tab) = target.tab else {
+                frame.push_plain("  <none>");
+                return;
+            };
+            push_template_slot_row(frame, "tab title", tab.templates.tab_title.as_ref());
+            push_template_slot_row(frame, "tab status", tab.templates.tab_status.as_ref());
+        }
+        InspectTargetKind::Group => {
+            let Some(templates) = target.group_templates else {
+                frame.push_plain("  <none>");
+                return;
+            };
+            push_template_slot_row(frame, "group hdr", templates.group_header.as_ref());
+        }
+        InspectTargetKind::Root | InspectTargetKind::Missing => {
+            frame.push_plain("  <none>");
+        }
+    }
+}
+
+fn push_template_slot_row(
+    frame: &mut ConfigUiFrame,
+    label: &str,
+    slot: Option<&andamento_shared::ResolvedTemplateSlot>,
+) {
+    match slot {
+        Some(slot) => push_key_value(frame, label, &format_resolved_slot(slot)),
+        None => push_key_value(frame, label, "<none>"),
+    }
+}
+
+fn push_key_value(frame: &mut ConfigUiFrame, key: &str, value: &str) {
+    frame.push_plain(&format!("{key:<9} {value}"));
+}
+
+fn inspect_target_kind_label(kind: InspectTargetKind) -> &'static str {
+    match kind {
+        InspectTargetKind::Root => "Root",
+        InspectTargetKind::Group => "Group",
+        InspectTargetKind::Tab => "Tab",
+        InspectTargetKind::Missing => "Missing",
+    }
+}
+
+fn format_ttl(ttl_ms: Option<u64>) -> String {
+    match ttl_ms {
+        Some(ttl_ms) => format!("{}s", ttl_ms / 1000),
+        None => "-".to_owned(),
+    }
 }
 
 fn format_pane_target(target: &andamento_shared::PaneTarget) -> String {
@@ -1197,9 +1479,7 @@ fn pad_to_width(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use andamento_shared::{
-        GroupPath, GroupSegment, MetadataValue, SortMode, TabCard, TabGroupingInfo,
-    };
+    use andamento_shared::{GroupPath, GroupSegment, MetadataValue, SortMode, TabGroupingInfo};
 
     #[test]
     fn renders_selected_config() {
@@ -1360,6 +1640,21 @@ mod tests {
     }
 
     #[test]
+    fn launch_config_origin_tab_sets_initial_floating_placement() {
+        let mut configuration = BTreeMap::new();
+        configuration.insert("origin_tab_id".to_owned(), "7".to_owned());
+        configuration.insert("pane_kind".to_owned(), "floating".to_owned());
+
+        assert_eq!(
+            launch_config_placement(&configuration),
+            Some(PluginPlacement::Tab {
+                tab_id: 7,
+                pane_kind: PluginPaneKind::Floating,
+            })
+        );
+    }
+
+    #[test]
     fn config_inspect_request_updates_scope_and_page() {
         let request = ConfigInspectRequest {
             client_id: 4,
@@ -1460,8 +1755,103 @@ mod tests {
     }
 
     #[test]
-    fn inspect_page_renders_selected_tab_details() {
+    fn inspect_target_resolves_selected_tab() {
+        let mut model = model_with_tab(7, "repo");
+        model.inspected_node = Some(NodeKey::Tab(7));
+
+        let target = inspect_target_for(model.inspected_node.as_ref(), None, &model);
+
+        assert_eq!(target.node_key, NodeKey::Tab(7));
+        assert_eq!(target.kind, InspectTargetKind::Tab);
+        assert_eq!(target.label, "Tab \"repo\" #7");
+        assert_eq!(target.tab.map(|tab| tab.name.as_str()), Some("repo"));
+    }
+
+    #[test]
+    fn inspect_target_resolves_root() {
+        let mut model = model_with_tab(7, "repo");
+        model.inspected_node = Some(NodeKey::Root);
+
+        let target = inspect_target_for(model.inspected_node.as_ref(), Some("tab:7"), &model);
+
+        assert_eq!(target.node_key, NodeKey::Root);
+        assert_eq!(target.kind, InspectTargetKind::Root);
+        assert_eq!(target.label, "Root");
+        assert!(target.tab.is_none());
+    }
+
+    #[test]
+    fn inspect_target_handles_missing_tab() {
+        let model = model_with_tab(7, "repo");
+
+        let target = inspect_target_for(Some(&NodeKey::Tab(99)), None, &model);
+
+        assert_eq!(target.node_key, NodeKey::Tab(99));
+        assert_eq!(target.kind, InspectTargetKind::Missing);
+        assert_eq!(target.label, "Missing tab #99");
+        assert!(target.tab.is_none());
+    }
+
+    #[test]
+    fn inspect_target_resolves_group() {
+        let path = GroupPath(vec![GroupSegment {
+            key: "git.repo".to_owned(),
+            value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
+            label: Some("flotilla".to_owned()),
+        }]);
         let model = ControllerViewModel {
+            sort_mode: SortMode::Position,
+            config: RailConfig::default(),
+            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
+            tabs: vec![],
+            rows: vec![RailRow::GroupHeader {
+                group_id: "git.repo=flotilla-org/flotilla".to_owned(),
+                path: path.clone(),
+                label: "flotilla".to_owned(),
+                full_label: "flotilla-org/flotilla".to_owned(),
+                tab_count: 2,
+                templates: ResolvedTemplateSlots {
+                    group_header: Some(andamento_shared::ResolvedTemplateSlot {
+                        template_name: "repo-header".to_owned(),
+                        fields: vec![],
+                    }),
+                    ..Default::default()
+                },
+            }],
+            resolved_metadata: vec![],
+            observed_identities: vec![],
+            metadata_controls: andamento_shared::MetadataControls::default(),
+            inspected_node: Some(NodeKey::Group(path.clone())),
+        };
+
+        let target = inspect_target_for(model.inspected_node.as_ref(), None, &model);
+
+        assert_eq!(target.node_key, NodeKey::Group(path));
+        assert_eq!(target.kind, InspectTargetKind::Group);
+        assert_eq!(target.label, "Group git.repo=flotilla-org/flotilla");
+        assert_eq!(
+            target
+                .group_templates
+                .and_then(|templates| templates.group_header.as_ref())
+                .map(|slot| slot.template_name.as_str()),
+            Some("repo-header")
+        );
+    }
+
+    #[test]
+    fn inspect_target_falls_back_to_rail_scope() {
+        let model = model_with_tab(7, "repo");
+
+        let target = inspect_target_for(None, Some("tab:7"), &model);
+
+        assert_eq!(target.node_key, NodeKey::Tab(7));
+        assert_eq!(target.kind, InspectTargetKind::Tab);
+        assert_eq!(target.tab.map(|tab| tab.tab_id), Some(7));
+    }
+
+    #[test]
+    fn inspect_page_renders_selected_tab_details() {
+        let mut model = ControllerViewModel {
             sort_mode: SortMode::Position,
             config: RailConfig::default(),
             template_config: andamento_shared::TemplateConfigDiagnostics::default(),
@@ -1491,32 +1881,84 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
         };
+        model.inspected_node = Some(NodeKey::Tab(7));
 
         let rendered = render_config_with_scope(
             RailConfig::default(),
             Some(&model),
             ConfigPage::Inspect,
             Some("tab:7"),
-            18,
+            40,
             80,
             &[],
             false,
             0,
         );
+        let rendered_text = rendered.lines.join("\n");
 
-        assert!(rendered.lines[0].contains("[inspect]"));
+        assert!(rendered.lines[2].contains("Inspect: Tab \"repo\" #7"));
+        assert!(rendered.lines.iter().any(|line| line.trim() == "Identity"));
         assert!(rendered
             .lines
             .iter()
-            .any(|line| line.trim() == "scope: tab:7"));
+            .any(|line| line.trim() == "Metadata Visibility"));
+        assert!(rendered.lines.iter().any(|line| line.trim() == "Metadata"));
+        assert!(rendered.lines.iter().any(|line| line.trim() == "Sources"));
+        assert!(rendered.lines.iter().any(|line| line.trim() == "Templates"));
         assert!(rendered
             .lines
             .iter()
-            .any(|line| line.trim() == "tab: repo #7"));
+            .any(|line| line.trim() == "type      Tab"));
         assert!(rendered
             .lines
             .iter()
-            .any(|line| line.trim() == "group: flotilla git.repo=flotilla-org/flotilla"));
+            .any(|line| line.trim() == "group     flotilla git.repo=flotilla-org/flotilla"));
+        assert!(!rendered_text.contains("[cycle inspected metadata]"));
+        assert!(!rendered_text.contains("model: tabs="));
+    }
+
+    #[test]
+    fn inspect_page_renders_metadata_and_sources_as_tables() {
+        let mut model = model_with_tab(7, "repo");
+        model.inspected_node = Some(NodeKey::Tab(7));
+        let entry = MetadataEntry {
+            value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
+            updated_at: 150,
+            ttl_ms: Some(10_000),
+            precedence: 4,
+            ordinal: 2,
+        };
+        model.resolved_metadata = vec![andamento_shared::ResolvedMetadata {
+            target: MetadataTarget::Tab(7),
+            values: BTreeMap::from([("git.repo".to_owned(), entry.clone())]),
+            source_entries: BTreeMap::from([(
+                "git.repo".to_owned(),
+                vec![MetadataSourceEntry {
+                    source_id: "andamento-git-watcher".to_owned(),
+                    entry,
+                }],
+            )]),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_config(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Inspect,
+            40,
+            100,
+            &[],
+            false,
+            0,
+        );
+        let rendered_text = rendered.lines.join("\n");
+
+        assert!(rendered_text.contains("key                    value"));
+        assert!(rendered_text.contains("git.repo"));
+        assert!(rendered_text.contains("flotilla-org/flotilla"));
+        assert!(rendered_text.contains("andamento-git-watcher"));
+        assert!(rendered_text.contains("10s"));
+        assert!(rendered_text.contains("    4     2"));
     }
 
     #[test]
@@ -1742,6 +2184,30 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.trim() == "scratch: zellij.pane.cwd=<none>"));
+    }
+
+    fn model_with_tab(tab_id: u64, name: &str) -> ControllerViewModel {
+        ControllerViewModel {
+            sort_mode: SortMode::Position,
+            config: RailConfig::default(),
+            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
+            tabs: vec![TabCard {
+                tab_id,
+                position: 0,
+                name: name.to_owned(),
+                active: true,
+                pinned: false,
+                status: None,
+                grouping: None,
+                templates: andamento_shared::ResolvedTemplateSlots::default(),
+                active_pane: None,
+            }],
+            rows: vec![],
+            resolved_metadata: vec![],
+            observed_identities: vec![],
+            metadata_controls: andamento_shared::MetadataControls::default(),
+            inspected_node: None,
+        }
     }
 
     #[test]

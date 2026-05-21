@@ -42,6 +42,8 @@ const VIEW_MODEL_PUSH_COALESCE_SECS: f64 = 0.01;
 const MAX_TEMPLATE_RELOAD_ATTEMPTS: u8 = 20;
 const CONFIG_CONTROLLER_PLUGIN_URL: &str = "controller_plugin_url";
 const CONFIG_CLOSE_ON_HIDDEN: &str = "close_on_hidden";
+const CONFIG_ORIGIN_TAB_ID: &str = "origin_tab_id";
+const CONFIG_PANE_KIND: &str = "pane_kind";
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
 
 #[cfg(not(target_family = "wasm"))]
@@ -979,6 +981,11 @@ fn config_inspect_message_for_new_editor(
         inspect_scope_label(&request.node_key),
     );
     configuration.insert(CONFIG_CLOSE_ON_HIDDEN.to_owned(), "true".to_owned());
+    configuration.insert(
+        CONFIG_ORIGIN_TAB_ID.to_owned(),
+        request.origin_tab_id.to_string(),
+    );
+    configuration.insert(CONFIG_PANE_KIND.to_owned(), "floating".to_owned());
     Some(
         MessageToPlugin::new(MSG_CONFIG_INSPECT)
             .with_plugin_url(request.config_plugin_url.clone())
@@ -1404,6 +1411,17 @@ mod tests {
                 .get("close_on_hidden")
                 .map(String::as_str),
             Some("true")
+        );
+        assert_eq!(
+            message
+                .plugin_config
+                .get("origin_tab_id")
+                .map(String::as_str),
+            Some("7")
+        );
+        assert_eq!(
+            message.plugin_config.get("pane_kind").map(String::as_str),
+            Some("floating")
         );
         let new_plugin_args = message.new_plugin_args.as_ref().unwrap();
         assert_eq!(new_plugin_args.should_float, Some(true));
