@@ -358,9 +358,11 @@ General shape:
 2. optionally match metadata predicates: exact value first, prefix matching early, regex only if needed later.
 3. choose the most specific matching template by default.
 4. later allow interactive cycling among multiple matching templates for a tile.
-5. render a priority list of fields, each with its own coalescing and truncation behavior.
+5. render a priority list of fields, each with its own coalescing, compaction, and truncation behavior.
 
 Tile size should start as automatic squash-down based on available space. Templates can later add sizing hints such as minimum useful size, preferred size, compact variant, and expanded variant.
+
+Field compaction should eventually happen before priority dropping. A string field can expose progressively shorter representations, such as full repo slug, basename, user-configured alias, and finally ellipsis truncation. Some compact labels can come from transforms, such as `rjwittams/katzensteg` -> `katzensteg`; others should be supplied by watchers or config when a user-specific abbreviation such as `ks` is meaningful enough to distinguish the node.
 
 Status: started internally. The renderer now has generic ordered template fields with required, optional, and priority classes. Render nodes also carry an initial metadata map populated from the current compatibility view model. Group headers, tab titles, and tab status text are the first field callers, and these field builders now read their display values from render metadata. This is still hard-coded Rust, not external template config, and should be extended to nested groups before adding user-authored templates.
 

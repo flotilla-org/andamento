@@ -3793,11 +3793,7 @@ fn render_template_fields_with_suppression(
         .collect::<Vec<_>>();
     let selected_fields = select_template_fields_for_width(&fields, width);
     let text = join_template_fields_by(&selected_fields, |_| true);
-    let text = if text.width() <= width {
-        text
-    } else {
-        truncate_to_width(&text, width)
-    };
+    let text = truncate_to_width(&text, width);
     let visible_sources = selected_fields
         .iter()
         .filter_map(template_field_source)
@@ -3810,9 +3806,8 @@ fn render_template_fields_with_suppression(
 }
 
 fn select_template_fields_for_width(fields: &[TemplateField], width: usize) -> Vec<TemplateField> {
-    let full = join_template_fields(fields, true);
-    if full.width() <= width {
-        return fields.to_vec();
+    if let Some(selected) = fit_template_fields_for_width(fields, width) {
+        return selected;
     }
     for threshold in droppable_template_field_priorities(fields) {
         let selected = fields
@@ -3820,7 +3815,7 @@ fn select_template_fields_for_width(fields: &[TemplateField], width: usize) -> V
             .filter(|field| template_field_priority(field) > threshold)
             .cloned()
             .collect::<Vec<_>>();
-        if join_template_fields_by(&selected, |_| true).width() <= width {
+        if let Some(selected) = fit_template_fields_for_width(&selected, width) {
             return selected;
         }
     }
@@ -3832,6 +3827,39 @@ fn select_template_fields_for_width(fields: &[TemplateField], width: usize) -> V
         .filter(|field| template_field_priority(field) == highest_priority)
         .cloned()
         .collect()
+}
+
+fn fit_template_fields_for_width(
+    fields: &[TemplateField],
+    width: usize,
+) -> Option<Vec<TemplateField>> {
+    if join_template_fields(fields, true).width() <= width {
+        return Some(fields.to_vec());
+    }
+    let mut fields = fields.to_vec();
+    let lowest_priority = fields.iter().map(template_field_priority).min()?;
+    let field_indexes = fields
+        .iter()
+        .enumerate()
+        .filter_map(|(index, field)| {
+            (template_field_priority(field) == lowest_priority).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    for index in field_indexes {
+        let current_width = join_template_fields_by(&fields, |_| true).width();
+        if current_width <= width {
+            return Some(fields);
+        }
+        let value_width = template_field_value(&fields[index]).width();
+        if value_width <= 3 {
+            continue;
+        }
+        let overflow = current_width - width;
+        let max_reduction = value_width - 3;
+        let new_value_width = value_width - overflow.min(max_reduction);
+        truncate_template_field(&mut fields[index], new_value_width);
+    }
+    (join_template_fields_by(&fields, |_| true).width() <= width).then_some(fields)
 }
 
 fn join_template_fields(fields: &[TemplateField], include_optional: bool) -> String {
@@ -3880,6 +3908,16 @@ fn template_field_value(field: &TemplateField) -> &str {
         | TemplateField::Optional(value)
         | TemplateField::Priority(value) => value,
         TemplateField::Prioritized { value, .. } => value,
+    }
+}
+
+fn truncate_template_field(field: &mut TemplateField, width: usize) {
+    let value = truncate_to_width(template_field_value(field), width);
+    match field {
+        TemplateField::Required(existing)
+        | TemplateField::Optional(existing)
+        | TemplateField::Priority(existing) => *existing = value,
+        TemplateField::Prioritized { value: existing, .. } => *existing = value,
     }
 }
 
@@ -4764,6 +4802,27 @@ mod tests {
         ];
 
         assert_eq!(render_template_fields(&fields, 12), "repo: tests");
+    }
+
+    #[test]
+    fn render_template_fields_truncates_low_priority_fields_before_dropping_them() {
+        let fields = vec![
+            TemplateField::Prioritized {
+                value: "zellij-org/zellij".to_owned(),
+                priority: 100,
+                source: None,
+            },
+            TemplateField::Prioritized {
+                value: "feat/kitty-image-plumbing".to_owned(),
+                priority: 60,
+                source: None,
+            },
+        ];
+
+        assert_eq!(
+            render_template_fields(&fields, 30),
+            "zellij-org/zellij feat/kitty..."
+        );
     }
 
     #[test]
