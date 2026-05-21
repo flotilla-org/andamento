@@ -6,11 +6,10 @@ use std::time::Instant;
 mod segment_bar;
 
 use andamento_shared::{
-    ConfigInspectRequest, ControllerViewModel, GroupPath, MetadataEntry, MetadataRootToggleRequest,
-    MetadataSourceEntry, MetadataTarget, MetadataTriState, MetadataTriStateCycleRequest,
-    MetadataValue, NodeKey, PluginPaneKind, PluginPlacement, PluginRegistrationHello,
-    PluginStatsSnapshot, RailConfig, RailGroupingMode, RailRow, RailSizingPreset, RailStructure,
-    ResolvedTemplateSlots, TabCard,
+    ConfigInspectRequest, ControllerViewModel, GroupPath, MetadataEntry, MetadataSourceEntry,
+    MetadataTarget, MetadataTriState, MetadataTriStateCycleRequest, MetadataValue, NodeKey,
+    PluginPaneKind, PluginPlacement, PluginRegistrationHello, PluginStatsSnapshot, RailConfig,
+    RailGroupingMode, RailRow, RailSizingPreset, RailStructure, ResolvedTemplateSlots, TabCard,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -18,7 +17,7 @@ use andamento_shared::StatsCollectRequest;
 use andamento_shared::{
     PluginStatsRecorder, RendererHello, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT,
     MSG_CYCLE_METADATA_TRISTATE, MSG_REQUEST_STATE, MSG_SET_RAIL_CONFIG, MSG_STATS_COLLECT,
-    MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_METADATA_ROOT, MSG_VIEW_MODEL,
+    MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_VIEW_MODEL,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -33,6 +32,7 @@ const CONFIG_CLOSE_ON_HIDDEN: &str = "close_on_hidden";
 const CONFIG_ORIGIN_TAB_ID: &str = "origin_tab_id";
 const CONFIG_PANE_KIND: &str = "pane_kind";
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
+const CONFIG_SUPPRESS_SHOW_ON_INSPECT: &str = "suppress_show_on_inspect";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ConfigLocalTab {
@@ -99,7 +99,6 @@ enum ConfigAction {
     SetSizing(RailSizingPreset),
     SetGrouping(RailGroupingMode),
     CollectStats,
-    ToggleMetadataRoot,
     CycleInspectedMetadata,
 }
 
@@ -223,6 +222,7 @@ struct RenderedTabRow {
 pub struct PluginState {
     controller_plugin_url: String,
     close_on_hidden: bool,
+    suppress_show_on_inspect: bool,
     rail_scope: Option<String>,
     local_tabs: Vec<ConfigLocalTab>,
     own_plugin_id: Option<u32>,
@@ -251,6 +251,9 @@ impl ZellijPlugin for PluginState {
             .unwrap_or_else(|| "andamento-controller".to_owned());
         self.close_on_hidden = configuration
             .get(CONFIG_CLOSE_ON_HIDDEN)
+            .is_some_and(|value| config_bool(value));
+        self.suppress_show_on_inspect = configuration
+            .get(CONFIG_SUPPRESS_SHOW_ON_INSPECT)
             .is_some_and(|value| config_bool(value));
         self.rail_scope = config_scope(&configuration);
         self.own_plugin_placement = launch_config_placement(&configuration);
@@ -284,7 +287,7 @@ impl ZellijPlugin for PluginState {
                 match serde_json::from_str::<ConfigInspectRequest>(payload) {
                     Ok(request) => {
                         apply_config_inspect_request(&mut self.rail_scope, &mut self.page, request);
-                        if self.permissions_granted {
+                        if self.permissions_granted && !self.suppress_show_on_inspect {
                             show_self(true);
                         }
                         self.send_hello();
@@ -497,10 +500,6 @@ impl PluginState {
             self.collect_stats();
             return true;
         }
-        if hit.action == ConfigAction::ToggleMetadataRoot {
-            self.toggle_metadata_root();
-            return true;
-        }
         if hit.action == ConfigAction::CycleInspectedMetadata {
             self.cycle_inspected_metadata();
             return true;
@@ -573,20 +572,6 @@ impl PluginState {
         );
     }
 
-    fn toggle_metadata_root(&self) {
-        let Some(client_id) = self.own_client_id else {
-            return;
-        };
-        let Ok(payload) = serde_json::to_string(&MetadataRootToggleRequest { client_id }) else {
-            return;
-        };
-        pipe_message_to_plugin(
-            self.controller_message(MSG_TOGGLE_METADATA_ROOT)
-                .with_destination_client_id(client_id)
-                .with_payload(payload),
-        );
-    }
-
     fn cycle_inspected_metadata(&self) {
         let Some(client_id) = self.own_client_id else {
             return;
@@ -616,9 +601,7 @@ fn apply_config_action(mut config: RailConfig, action: ConfigAction) -> RailConf
         ConfigAction::SetStructure(structure) => config.structure = structure,
         ConfigAction::SetSizing(sizing) => config.sizing = sizing,
         ConfigAction::SetGrouping(grouping) => config.grouping = grouping,
-        ConfigAction::CollectStats
-        | ConfigAction::ToggleMetadataRoot
-        | ConfigAction::CycleInspectedMetadata => {}
+        ConfigAction::CollectStats | ConfigAction::CycleInspectedMetadata => {}
     }
     config
 }
@@ -1010,22 +993,6 @@ fn push_inspect_visibility_section(
     target: &InspectTargetView<'_>,
 ) {
     push_section_header(frame, "Metadata Visibility");
-    push_segmented_choice(
-        frame,
-        "Root metadata",
-        &[
-            (
-                "on",
-                model.metadata_controls.root_enabled,
-                ConfigAction::ToggleMetadataRoot,
-            ),
-            (
-                "off",
-                !model.metadata_controls.root_enabled,
-                ConfigAction::ToggleMetadataRoot,
-            ),
-        ],
-    );
     let explicit_state = model
         .metadata_controls
         .per_node
@@ -1445,6 +1412,9 @@ fn render_tab_row(page: ConfigPage, cols: usize) -> RenderedTabRow {
             selected: *tab_page == page,
         });
     }
+    if let Some(last_ribbon) = ribbons.last_mut() {
+        last_ribbon.width = cols.saturating_sub(last_ribbon.col).max(last_ribbon.width);
+    }
     RenderedTabRow {
         line,
         hit_regions,
@@ -1741,6 +1711,12 @@ mod tests {
                 ("templates", true),
                 ("stats", false)
             ]
+        );
+        let last_ribbon = rendered.ribbons.last().expect("last ribbon");
+        assert_eq!(
+            last_ribbon.col + last_ribbon.width,
+            60,
+            "final ribbon should fill the rest of the tab row"
         );
         assert_eq!(
             hits.iter().map(|hit| hit.action).collect::<Vec<_>>(),
@@ -2079,6 +2055,7 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.trim() == "group     flotilla git.repo=flotilla-org/flotilla"));
+        assert!(!rendered_text.contains("Root metadata"));
         assert!(!rendered_text.contains("[cycle inspected metadata]"));
         assert!(!rendered_text.contains("model: tabs="));
     }

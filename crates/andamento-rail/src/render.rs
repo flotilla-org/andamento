@@ -3217,9 +3217,9 @@ fn inspect_node_glyph(inspected_node: Option<&NodeKey>, key: &NodeKey) -> char {
     }
 }
 
-/// Top border for a tab card. Places a tri-state metadata glyph on the right
-/// when controls.root_enabled and there's room. Hit region emitted at the
-/// glyph cell to drive the cycle action.
+/// Top border for a tab card. Places an inspect glyph on the right when
+/// there is room. Hit region emitted at the glyph cell to select this tab in
+/// the config inspector.
 fn write_tab_top_border(
     lines: &mut [String],
     hit_regions: &mut Vec<HitRegion>,
@@ -6172,8 +6172,7 @@ mod tests {
     fn footer_shows_selected_root_inspect_glyph() {
         let mut lines = vec![blank(20); 1];
         let mut hits = vec![];
-        let mut controls = MetadataControls::default();
-        controls.root_enabled = true;
+        let controls = MetadataControls::default();
         render_footer(
             &mut lines,
             &mut hits,
@@ -6192,8 +6191,7 @@ mod tests {
     fn footer_places_root_inspect_next_to_scroll_arrows() {
         let mut lines = vec![blank(20); 1];
         let mut hits = vec![];
-        let mut controls = MetadataControls::default();
-        controls.root_enabled = true;
+        let controls = MetadataControls::default();
         render_footer(
             &mut lines,
             &mut hits,
@@ -6216,8 +6214,7 @@ mod tests {
     fn footer_places_root_inspect_at_far_right_when_no_scroll_arrows() {
         let mut lines = vec![blank(20); 1];
         let mut hits = vec![];
-        let mut controls = MetadataControls::default();
-        controls.root_enabled = true;
+        let controls = MetadataControls::default();
         render_footer(
             &mut lines,
             &mut hits,
@@ -6232,10 +6229,10 @@ mod tests {
     }
 
     #[test]
-    fn footer_keeps_root_inspect_when_metadata_root_disabled() {
+    fn footer_always_keeps_root_inspect_selector() {
         let mut lines = vec![blank(20); 1];
         let mut hits = vec![];
-        let controls = MetadataControls::default(); // root_enabled = false
+        let controls = MetadataControls::default();
         render_footer(&mut lines, &mut hits, 0, 20, None, &controls, None, false);
         assert!(
             hits.iter().any(|h| h.action == HitAction::InspectNode),
@@ -6250,7 +6247,6 @@ mod tests {
         let mut lines = vec![blank(20); 1];
         let mut hits = vec![];
         let mut controls = MetadataControls::default();
-        controls.root_enabled = true;
         controls
             .per_node
             .insert(NodeKey::Tab(7), MetadataTriState::MetaChildren);
@@ -6314,21 +6310,17 @@ mod tests {
     }
 
     #[test]
-    fn effective_show_requires_root_enabled() {
+    fn effective_show_uses_explicit_node_state() {
         let mut controls = MetadataControls::default();
         controls
             .per_node
             .insert(NodeKey::Tab(1), MetadataTriState::Meta);
-        // Root disabled blocks everything.
-        assert!(!controls.effective_show(&NodeKey::Tab(1), false));
-        controls.root_enabled = true;
         assert!(controls.effective_show(&NodeKey::Tab(1), false));
     }
 
     #[test]
     fn effective_show_explicit_clean_overrides_inheritance() {
         let mut controls = MetadataControls::default();
-        controls.root_enabled = true;
         controls
             .per_node
             .insert(NodeKey::Tab(1), MetadataTriState::Clean);
@@ -6338,8 +6330,7 @@ mod tests {
 
     #[test]
     fn effective_show_inherits_from_ancestor_when_absent() {
-        let mut controls = MetadataControls::default();
-        controls.root_enabled = true;
+        let controls = MetadataControls::default();
         // No entry for Tab(1); inherits.
         assert!(controls.effective_show(&NodeKey::Tab(1), true));
         assert!(!controls.effective_show(&NodeKey::Tab(1), false));
@@ -6348,7 +6339,6 @@ mod tests {
     #[test]
     fn propagates_to_children_only_for_meta_children_or_inherited() {
         let mut controls = MetadataControls::default();
-        controls.root_enabled = true;
         let key = NodeKey::Tab(1);
         // Explicit Meta does NOT propagate.
         controls
@@ -6450,7 +6440,6 @@ mod tests {
         let mut lines = vec![];
         let mut hits = vec![];
         let mut controls = MetadataControls::default();
-        controls.root_enabled = true;
         let path = GroupPath(vec![GroupSegment {
             key: "git.repo".into(),
             value: MetadataValue::Text("zellij".into()),

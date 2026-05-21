@@ -8,8 +8,8 @@ use andamento_shared::grouping_config::{GroupingConfigCatalog, GroupingRule};
 use andamento_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataControls,
     MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataValue, NodeKey,
-    ObservedMetadataIdentity, PaneTarget, PluginPaneKind, PluginPlacement, PluginRegistrationHello,
-    Priority, RailConfig, RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello,
+    ObservedMetadataIdentity, PaneTarget, PluginPlacement, PluginRegistrationHello, Priority,
+    RailConfig, RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello,
     ResolvedMetadata, ResolvedTemplateField, ResolvedTemplateSlot, ResolvedTemplateSlots,
     SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics,
 };
@@ -293,11 +293,6 @@ impl ControllerState {
         self.rail_config = rail_config;
     }
 
-    pub fn toggle_metadata_root_for_client(&mut self, client_id: u16) {
-        let controls = &mut self.client_mut(client_id).metadata_controls;
-        controls.root_enabled = !controls.root_enabled;
-    }
-
     pub fn cycle_metadata_tristate_for_client(&mut self, client_id: u16, key: NodeKey) {
         self.client_mut(client_id).metadata_controls.cycle(key);
     }
@@ -542,22 +537,6 @@ impl ControllerState {
             .tabs
             .get(&tab_id)
             .and_then(|tab| tab.config_editors.values().next())
-        {
-            return Some(target.identity.clone());
-        }
-        if let Some(target) = client
-            .tabs
-            .values()
-            .flat_map(|tab| tab.config_editors.values())
-            .find(|registration| {
-                matches!(
-                    registration.placement,
-                    PluginPlacement::Tab {
-                        pane_kind: PluginPaneKind::Floating,
-                        ..
-                    }
-                )
-            })
         {
             return Some(target.identity.clone());
         }
@@ -3223,17 +3202,11 @@ mod tests {
                 client_id: 2
             })
         );
-        assert_eq!(
-            state.config_editor_target_for_client_tab(2, 3),
-            Some(RendererHello {
-                plugin_id: 32,
-                client_id: 2
-            })
-        );
+        assert_eq!(state.config_editor_target_for_client_tab(2, 3), None);
     }
 
     #[test]
-    fn config_editor_target_reuses_same_client_floating_editor() {
+    fn config_editor_target_does_not_reuse_other_tab_floating_editor() {
         let mut state = ControllerState::default();
         state.register_config_editor(PluginRegistrationHello {
             identity: RendererHello {
@@ -3256,13 +3229,7 @@ mod tests {
             },
         });
 
-        assert_eq!(
-            state.config_editor_target_for_client_tab(2, 3),
-            Some(RendererHello {
-                plugin_id: 31,
-                client_id: 2
-            })
-        );
+        assert_eq!(state.config_editor_target_for_client_tab(2, 3), None);
     }
 
     #[test]

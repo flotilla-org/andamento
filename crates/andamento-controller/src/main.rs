@@ -15,14 +15,14 @@ use andamento_shared::PluginStatsRecorder;
 use andamento_shared::MSG_RAIL_SIZE_TARGET;
 use andamento_shared::MSG_VIEW_MODEL;
 use andamento_shared::{
-    ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage, MetadataRootToggleRequest,
+    ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage,
     MetadataTriStateCycleRequest, PluginRegistrationHello, RailConfig, RailGroupingMode, RailSize,
     RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RendererHello, SortMode,
     StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO,
     MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE,
     MSG_CYCLE_METADATA_TRISTATE, MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED,
     MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG,
-    MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_METADATA_ROOT, MSG_TOGGLE_PIN,
+    MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
@@ -45,6 +45,7 @@ const CONFIG_CLOSE_ON_HIDDEN: &str = "close_on_hidden";
 const CONFIG_ORIGIN_TAB_ID: &str = "origin_tab_id";
 const CONFIG_PANE_KIND: &str = "pane_kind";
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
+const CONFIG_SUPPRESS_SHOW_ON_INSPECT: &str = "suppress_show_on_inspect";
 
 #[cfg(not(target_family = "wasm"))]
 fn main() {}
@@ -852,14 +853,6 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             rail_size_observed: Some(observed),
             ..HandlePipeResult::default()
         },
-        Ok(Some(ControllerMessage::ToggleMetadataRoot(request))) => {
-            state.toggle_metadata_root_for_client(request.client_id);
-            HandlePipeResult {
-                state_changed: true,
-                view_model_push_reason: Some(ViewModelPushReason::PipeMetadataControls),
-                ..HandlePipeResult::default()
-            }
-        }
         Ok(Some(ControllerMessage::CycleMetadataTriState(request))) => {
             state.cycle_metadata_tristate_for_client(request.client_id, request.node_key);
             HandlePipeResult {
@@ -986,14 +979,17 @@ fn config_inspect_message_for_new_editor(
         request.origin_tab_id.to_string(),
     );
     configuration.insert(CONFIG_PANE_KIND.to_owned(), "floating".to_owned());
+    configuration.insert(
+        CONFIG_SUPPRESS_SHOW_ON_INSPECT.to_owned(),
+        "true".to_owned(),
+    );
     Some(
         MessageToPlugin::new(MSG_CONFIG_INSPECT)
             .with_plugin_url(request.config_plugin_url.clone())
             .with_destination_client_id(request.client_id)
             .with_plugin_config(configuration)
             .with_payload(payload)
-            .new_plugin_instance_should_float(true)
-            .new_plugin_instance_should_be_focused(),
+            .new_plugin_instance_should_float(true),
     )
 }
 
@@ -1075,7 +1071,6 @@ enum ControllerMessage {
     ObservedIdentitiesRequest(String),
     StatsCollect(StatsCollectRequest),
     RailSizeObserved(RailSizeObserved),
-    ToggleMetadataRoot(MetadataRootToggleRequest),
     CycleMetadataTriState(MetadataTriStateCycleRequest),
     ConfigInspect(ConfigInspectRequest),
 }
@@ -1144,16 +1139,6 @@ fn parse_controller_message(
                     .map_err(|e| format!("invalid rail config: {e}"))
             })
             .map(ControllerMessage::SetRailConfig)
-            .map(Some),
-        MSG_TOGGLE_METADATA_ROOT => pipe_message
-            .payload
-            .as_deref()
-            .ok_or_else(|| "toggle metadata root requires payload".to_owned())
-            .and_then(|payload| {
-                serde_json::from_str::<MetadataRootToggleRequest>(payload)
-                    .map_err(|e| format!("invalid metadata root toggle request: {e}"))
-            })
-            .map(ControllerMessage::ToggleMetadataRoot)
             .map(Some),
         MSG_CYCLE_METADATA_TRISTATE => pipe_message
             .payload
@@ -1380,7 +1365,7 @@ mod tests {
     }
 
     #[test]
-    fn config_inspect_message_launches_focused_floating_editor_when_needed() {
+    fn config_inspect_message_launches_floating_editor_when_needed() {
         let request = ConfigInspectRequest {
             client_id: 4,
             origin_tab_id: 7,
@@ -1423,9 +1408,16 @@ mod tests {
             message.plugin_config.get("pane_kind").map(String::as_str),
             Some("floating")
         );
+        assert_eq!(
+            message
+                .plugin_config
+                .get("suppress_show_on_inspect")
+                .map(String::as_str),
+            Some("true")
+        );
         let new_plugin_args = message.new_plugin_args.as_ref().unwrap();
         assert_eq!(new_plugin_args.should_float, Some(true));
-        assert_eq!(new_plugin_args.should_focus, Some(true));
+        assert_eq!(new_plugin_args.should_focus, None);
     }
 
     #[test]

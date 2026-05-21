@@ -25,7 +25,6 @@ pub const MSG_STATS_REQUEST: &str = "andamento-stats-request";
 pub const MSG_STATS_REPORT: &str = "andamento-stats-report";
 pub const MSG_RAIL_SIZE_OBSERVED: &str = "andamento-rail-size-observed";
 pub const MSG_RAIL_SIZE_TARGET: &str = "andamento-rail-size-target";
-pub const MSG_TOGGLE_METADATA_ROOT: &str = "andamento-toggle-metadata-root";
 pub const MSG_CYCLE_METADATA_TRISTATE: &str = "andamento-cycle-metadata-tristate";
 pub const MSG_CONFIG_INSPECT: &str = "andamento-config-inspect";
 
@@ -102,11 +101,6 @@ pub struct ConfigInspectRequest {
     pub node_key: NodeKey,
     pub config_plugin_url: String,
     pub controller_plugin_url: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MetadataRootToggleRequest {
-    pub client_id: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -582,8 +576,6 @@ pub enum NodeKey {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetadataControls {
-    #[serde(default)]
-    pub root_enabled: bool,
     /// Sparse storage: an entry exists only when the user has explicitly set
     /// a state on that node. Absence = inherit from above (defaults hidden).
     /// We use HashMap rather than BTreeMap because NodeKey is not Ord.
@@ -646,9 +638,6 @@ impl MetadataControls {
     }
 
     pub fn effective_show(&self, key: &NodeKey, ancestor_meta_children: bool) -> bool {
-        if !self.root_enabled {
-            return false;
-        }
         match self.per_node.get(key) {
             Some(MetadataTriState::Meta) | Some(MetadataTriState::MetaChildren) => true,
             Some(MetadataTriState::Clean) => false,
@@ -657,9 +646,6 @@ impl MetadataControls {
     }
 
     pub fn propagates_to_children(&self, key: &NodeKey, ancestor_meta_children: bool) -> bool {
-        if !self.root_enabled {
-            return false;
-        }
         match self.per_node.get(key) {
             Some(MetadataTriState::MetaChildren) => true,
             Some(MetadataTriState::Meta) => false,
@@ -904,11 +890,6 @@ mod tests {
 
     #[test]
     fn metadata_control_requests_round_trip_json() {
-        let toggle = MetadataRootToggleRequest { client_id: 4 };
-        let encoded = serde_json::to_string(&toggle).unwrap();
-        let decoded: MetadataRootToggleRequest = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, toggle);
-
         let cycle = MetadataTriStateCycleRequest {
             client_id: 4,
             node_key: NodeKey::Tab(7),
