@@ -6,18 +6,19 @@ use std::time::Instant;
 mod segment_bar;
 
 use andamento_shared::{
-    ConfigInspectRequest, ControllerViewModel, GroupPath, MetadataEntry, MetadataSourceEntry,
-    MetadataTarget, MetadataTriState, MetadataTriStateCycleRequest, MetadataValue, NodeKey,
-    PluginPaneKind, PluginPlacement, PluginRegistrationHello, PluginStatsSnapshot, RailConfig,
-    RailGroupingMode, RailRow, RailSizingPreset, RailStructure, ResolvedTemplateSlots, TabCard,
+    ChildLayoutSetRequest, ChildLayoutSetting, ConfigInspectRequest, ControllerViewModel,
+    GroupPath, MetadataEntry, MetadataSourceEntry, MetadataTarget, MetadataTriState, MetadataValue,
+    MetadataVisibilitySetRequest, NodeKey, PluginPaneKind, PluginPlacement,
+    PluginRegistrationHello, PluginStatsSnapshot, RailConfig, RailGroupingMode, RailRow,
+    RailSizingPreset, RailStructure, ResolvedTemplateSlots, TabCard,
 };
 use unicode_width::UnicodeWidthStr;
 
 use andamento_shared::StatsCollectRequest;
 use andamento_shared::{
     PluginStatsRecorder, RendererHello, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT,
-    MSG_CYCLE_METADATA_TRISTATE, MSG_REQUEST_STATE, MSG_SET_RAIL_CONFIG, MSG_STATS_COLLECT,
-    MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_VIEW_MODEL,
+    MSG_REQUEST_STATE, MSG_SET_CHILD_LAYOUT, MSG_SET_METADATA_VISIBILITY, MSG_SET_RAIL_CONFIG,
+    MSG_STATS_COLLECT, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_VIEW_MODEL,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -98,7 +99,8 @@ enum ConfigAction {
     SetSizing(RailSizingPreset),
     SetGrouping(RailGroupingMode),
     CollectStats,
-    CycleInspectedMetadata,
+    SetInspectedMetadata(Option<MetadataTriState>),
+    SetChildLayout(Option<ChildLayoutSetting>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -502,8 +504,12 @@ impl PluginState {
             self.collect_stats();
             return true;
         }
-        if hit.action == ConfigAction::CycleInspectedMetadata {
-            self.cycle_inspected_metadata();
+        if let ConfigAction::SetInspectedMetadata(state) = hit.action {
+            self.set_inspected_metadata(state);
+            return true;
+        }
+        if let ConfigAction::SetChildLayout(layout) = hit.action {
+            self.set_child_layout(layout);
             return true;
         }
         let mut config = self
@@ -574,26 +580,52 @@ impl PluginState {
         );
     }
 
-    fn cycle_inspected_metadata(&self) {
+    fn set_inspected_metadata(&self, state: Option<MetadataTriState>) {
         let Some(client_id) = self.own_client_id else {
             return;
         };
-        let node_key = self
-            .model
-            .as_ref()
-            .and_then(|model| model.inspected_node.clone())
-            .unwrap_or(NodeKey::Root);
-        let Ok(payload) = serde_json::to_string(&MetadataTriStateCycleRequest {
+        let node_key = self.current_inspected_node();
+        let Ok(payload) = serde_json::to_string(&MetadataVisibilitySetRequest {
             client_id,
             node_key,
+            state,
         }) else {
             return;
         };
         pipe_message_to_plugin(
-            self.controller_message(MSG_CYCLE_METADATA_TRISTATE)
+            self.controller_message(MSG_SET_METADATA_VISIBILITY)
                 .with_destination_client_id(client_id)
                 .with_payload(payload),
         );
+    }
+
+    fn set_child_layout(&self, layout: Option<ChildLayoutSetting>) {
+        let Some(client_id) = self.own_client_id else {
+            return;
+        };
+        let NodeKey::Group(path) = self.current_inspected_node() else {
+            return;
+        };
+        let Ok(payload) = serde_json::to_string(&ChildLayoutSetRequest {
+            client_id,
+            node_key: NodeKey::Group(path),
+            layout,
+        }) else {
+            return;
+        };
+        pipe_message_to_plugin(
+            self.controller_message(MSG_SET_CHILD_LAYOUT)
+                .with_destination_client_id(client_id)
+                .with_payload(payload),
+        );
+    }
+
+    fn current_inspected_node(&self) -> NodeKey {
+        self.model
+            .as_ref()
+            .and_then(|model| model.inspected_node.clone())
+            .or_else(|| self.rail_scope.as_deref().and_then(parse_scope_node_key))
+            .unwrap_or(NodeKey::Root)
     }
 }
 
@@ -603,7 +635,9 @@ fn apply_config_action(mut config: RailConfig, action: ConfigAction) -> RailConf
         ConfigAction::SetStructure(structure) => config.structure = structure,
         ConfigAction::SetSizing(sizing) => config.sizing = sizing,
         ConfigAction::SetGrouping(grouping) => config.grouping = grouping,
-        ConfigAction::CollectStats | ConfigAction::CycleInspectedMetadata => {}
+        ConfigAction::CollectStats
+        | ConfigAction::SetInspectedMetadata(_)
+        | ConfigAction::SetChildLayout(_) => {}
     }
     config
 }
@@ -933,7 +967,7 @@ fn push_inspect_page(
     frame.push_blank();
     push_inspect_identity_section(frame, &target);
     frame.push_blank();
-    push_inspect_visibility_section(frame, model, &target);
+    push_inspect_options_section(frame, model, &target);
     frame.push_blank();
     push_inspect_metadata_section(frame, &target);
     frame.push_blank();
@@ -989,12 +1023,12 @@ fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTarg
     }
 }
 
-fn push_inspect_visibility_section(
+fn push_inspect_options_section(
     frame: &mut ConfigUiFrame,
     model: &ControllerViewModel,
     target: &InspectTargetView<'_>,
 ) {
-    push_section_header(frame, "Metadata Visibility");
+    push_section_header(frame, "Options");
     let explicit_state = model
         .metadata_controls
         .per_node
@@ -1007,25 +1041,64 @@ fn push_inspect_visibility_section(
             (
                 "inherit",
                 explicit_state.is_none(),
-                ConfigAction::CycleInspectedMetadata,
+                ConfigAction::SetInspectedMetadata(None),
             ),
             (
-                "show",
-                explicit_state == Some(MetadataTriState::Meta),
-                ConfigAction::CycleInspectedMetadata,
-            ),
-            (
-                "children",
-                explicit_state == Some(MetadataTriState::MetaChildren),
-                ConfigAction::CycleInspectedMetadata,
-            ),
-            (
-                "hide",
+                "hidden",
                 explicit_state == Some(MetadataTriState::Clean),
-                ConfigAction::CycleInspectedMetadata,
+                ConfigAction::SetInspectedMetadata(Some(MetadataTriState::Clean)),
+            ),
+            (
+                "item",
+                explicit_state == Some(MetadataTriState::Meta),
+                ConfigAction::SetInspectedMetadata(Some(MetadataTriState::Meta)),
+            ),
+            (
+                "subtree",
+                explicit_state == Some(MetadataTriState::MetaChildren),
+                ConfigAction::SetInspectedMetadata(Some(MetadataTriState::MetaChildren)),
             ),
         ],
     );
+    if target.kind == InspectTargetKind::Group {
+        let child_layout = child_layout_setting_from_metadata(&target.metadata);
+        push_segmented_choice(
+            frame,
+            "Child layout",
+            &[
+                (
+                    "inherit",
+                    child_layout.is_none(),
+                    ConfigAction::SetChildLayout(None),
+                ),
+                (
+                    "cards",
+                    child_layout == Some(ChildLayoutSetting::Cards),
+                    ConfigAction::SetChildLayout(Some(ChildLayoutSetting::Cards)),
+                ),
+                (
+                    "compact",
+                    child_layout == Some(ChildLayoutSetting::CompactStrip),
+                    ConfigAction::SetChildLayout(Some(ChildLayoutSetting::CompactStrip)),
+                ),
+            ],
+        );
+    }
+}
+
+fn child_layout_setting_from_metadata(
+    metadata: &BTreeMap<String, MetadataEntry>,
+) -> Option<ChildLayoutSetting> {
+    let value = metadata.get("rail.child_layout")?;
+    match &value.value {
+        MetadataValue::Text(text) if text == "compact-strip" || text == "compact_strip" => {
+            Some(ChildLayoutSetting::CompactStrip)
+        }
+        MetadataValue::Text(text) if text == "vertical" || text == "cards" => {
+            Some(ChildLayoutSetting::Cards)
+        }
+        _ => None,
+    }
 }
 
 fn push_inspect_metadata_section(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {
@@ -1483,8 +1556,9 @@ fn push_segmented_choice(
     label: &str,
     options: &[(&str, bool, ConfigAction)],
 ) {
-    const LABEL_WIDTH: usize = 9;
-    let mut text = format!("{label:<LABEL_WIDTH$}  ");
+    const MIN_LABEL_WIDTH: usize = 9;
+    let label_width = MIN_LABEL_WIDTH.max(label.width());
+    let mut text = format!("{label:<label_width$}  ");
     let mut col = text.width();
     for (index, (option_label, selected, action)) in options.iter().enumerate() {
         if index > 0 {
@@ -2036,7 +2110,9 @@ mod tests {
         assert!(rendered
             .lines
             .iter()
-            .any(|line| line.trim().starts_with("── Metadata Visibility ")));
+            .any(|line| line.trim().starts_with("── Options ")));
+        assert!(rendered_text.contains("item"));
+        assert!(rendered_text.contains("subtree"));
         assert!(rendered
             .lines
             .iter()
@@ -2060,6 +2136,63 @@ mod tests {
         assert!(!rendered_text.contains("Root metadata"));
         assert!(!rendered_text.contains("[cycle inspected metadata]"));
         assert!(!rendered_text.contains("model: tabs="));
+    }
+
+    #[test]
+    fn inspect_group_options_expose_direct_child_layout_actions() {
+        let path = GroupPath(vec![GroupSegment {
+            key: "git.repo".to_owned(),
+            value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
+            label: Some("flotilla".to_owned()),
+        }]);
+        let model = ControllerViewModel {
+            sort_mode: SortMode::Position,
+            config: RailConfig::default(),
+            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
+            tabs: vec![],
+            rows: vec![RailRow::GroupHeader {
+                group_id: "git.repo=flotilla-org/flotilla".to_owned(),
+                path: path.clone(),
+                label: "flotilla".to_owned(),
+                full_label: "flotilla-org/flotilla".to_owned(),
+                tab_count: 2,
+                templates: ResolvedTemplateSlots::default(),
+            }],
+            resolved_metadata: vec![],
+            observed_identities: vec![],
+            metadata_controls: andamento_shared::MetadataControls::default(),
+            inspected_node: Some(NodeKey::Group(path)),
+        };
+
+        let rendered = render_config_with_scope(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Inspect,
+            None,
+            40,
+            100,
+            &[],
+            false,
+            0,
+        );
+        let rendered_text = rendered.lines.join("\n");
+
+        assert!(rendered_text.contains("Options"));
+        assert!(rendered_text.contains("Metadata"));
+        assert!(rendered_text.contains("Child layout"));
+        assert!(rendered.hit_regions.iter().any(|hit| {
+            hit.action == ConfigAction::SetInspectedMetadata(Some(MetadataTriState::MetaChildren))
+        }));
+        assert!(rendered.hit_regions.iter().any(|hit| {
+            hit.action
+                == ConfigAction::SetChildLayout(Some(
+                    andamento_shared::ChildLayoutSetting::CompactStrip,
+                ))
+        }));
+        assert!(rendered
+            .hit_regions
+            .iter()
+            .any(|hit| hit.action == ConfigAction::SetChildLayout(None)));
     }
 
     #[test]

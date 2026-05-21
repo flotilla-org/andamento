@@ -7,7 +7,7 @@ use crate::metadata::{
 use andamento_shared::grouping_config::{GroupingConfigCatalog, GroupingRule};
 use andamento_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataControls,
-    MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataValue, NodeKey,
+    MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey,
     ObservedMetadataIdentity, PaneTarget, PluginPlacement, PluginRegistrationHello, Priority,
     RailConfig, RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello,
     ResolvedMetadata, ResolvedTemplateField, ResolvedTemplateSlot, ResolvedTemplateSlots,
@@ -293,8 +293,18 @@ impl ControllerState {
         self.rail_config = rail_config;
     }
 
-    pub fn cycle_metadata_tristate_for_client(&mut self, client_id: u16, key: NodeKey) {
-        self.client_mut(client_id).metadata_controls.cycle(key);
+    pub fn set_metadata_visibility_for_client(
+        &mut self,
+        client_id: u16,
+        key: NodeKey,
+        state: Option<MetadataTriState>,
+    ) {
+        let controls = &mut self.client_mut(client_id).metadata_controls;
+        if let Some(state) = state {
+            controls.per_node.insert(key, state);
+        } else {
+            controls.per_node.remove(&key);
+        }
     }
 
     pub fn set_template_catalog(

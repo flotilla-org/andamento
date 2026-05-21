@@ -25,7 +25,8 @@ pub const MSG_STATS_REQUEST: &str = "andamento-stats-request";
 pub const MSG_STATS_REPORT: &str = "andamento-stats-report";
 pub const MSG_RAIL_SIZE_OBSERVED: &str = "andamento-rail-size-observed";
 pub const MSG_RAIL_SIZE_TARGET: &str = "andamento-rail-size-target";
-pub const MSG_CYCLE_METADATA_TRISTATE: &str = "andamento-cycle-metadata-tristate";
+pub const MSG_SET_METADATA_VISIBILITY: &str = "andamento-set-metadata-visibility";
+pub const MSG_SET_CHILD_LAYOUT: &str = "andamento-set-child-layout";
 pub const MSG_CONFIG_INSPECT: &str = "andamento-config-inspect";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -104,9 +105,24 @@ pub struct ConfigInspectRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MetadataTriStateCycleRequest {
+pub struct MetadataVisibilitySetRequest {
     pub client_id: u16,
     pub node_key: NodeKey,
+    pub state: Option<MetadataTriState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChildLayoutSetting {
+    Cards,
+    CompactStrip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChildLayoutSetRequest {
+    pub client_id: u16,
+    pub node_key: NodeKey,
+    pub layout: Option<ChildLayoutSetting>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -771,6 +787,8 @@ mod tests {
             MSG_STATS_REPORT,
             MSG_RAIL_SIZE_OBSERVED,
             MSG_RAIL_SIZE_TARGET,
+            MSG_SET_METADATA_VISIBILITY,
+            MSG_SET_CHILD_LAYOUT,
             MSG_CONFIG_INSPECT,
         ];
 
@@ -890,13 +908,27 @@ mod tests {
 
     #[test]
     fn metadata_control_requests_round_trip_json() {
-        let cycle = MetadataTriStateCycleRequest {
+        let visibility = MetadataVisibilitySetRequest {
             client_id: 4,
             node_key: NodeKey::Tab(7),
+            state: Some(MetadataTriState::MetaChildren),
         };
-        let encoded = serde_json::to_string(&cycle).unwrap();
-        let decoded: MetadataTriStateCycleRequest = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, cycle);
+        let encoded = serde_json::to_string(&visibility).unwrap();
+        let decoded: MetadataVisibilitySetRequest = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, visibility);
+
+        let child_layout = ChildLayoutSetRequest {
+            client_id: 4,
+            node_key: NodeKey::Group(GroupPath(vec![GroupSegment {
+                key: "git.repo".to_owned(),
+                value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
+                label: Some("flotilla".to_owned()),
+            }])),
+            layout: Some(ChildLayoutSetting::CompactStrip),
+        };
+        let encoded = serde_json::to_string(&child_layout).unwrap();
+        let decoded: ChildLayoutSetRequest = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, child_layout);
     }
 
     #[test]

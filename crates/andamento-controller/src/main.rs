@@ -15,13 +15,14 @@ use andamento_shared::PluginStatsRecorder;
 use andamento_shared::MSG_RAIL_SIZE_TARGET;
 use andamento_shared::MSG_VIEW_MODEL;
 use andamento_shared::{
-    ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage,
-    MetadataTriStateCycleRequest, PluginRegistrationHello, RailConfig, RailGroupingMode, RailSize,
+    ChildLayoutSetRequest, ChildLayoutSetting, ConfigInspectRequest, ControllerBootstrapSnapshot,
+    ExternalMessage, MetadataPatch, MetadataTarget, MetadataValueUpdate,
+    MetadataVisibilitySetRequest, PluginRegistrationHello, RailConfig, RailGroupingMode, RailSize,
     RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RendererHello, SortMode,
     StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO,
     MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE,
-    MSG_CYCLE_METADATA_TRISTATE, MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED,
-    MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG,
+    MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
+    MSG_SET_CHILD_LAYOUT, MSG_SET_METADATA_VISIBILITY, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG,
     MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
@@ -852,11 +853,25 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             rail_size_observed: Some(observed),
             ..HandlePipeResult::default()
         },
-        Ok(Some(ControllerMessage::CycleMetadataTriState(request))) => {
-            state.cycle_metadata_tristate_for_client(request.client_id, request.node_key);
+        Ok(Some(ControllerMessage::SetMetadataVisibility(request))) => {
+            state.set_metadata_visibility_for_client(
+                request.client_id,
+                request.node_key,
+                request.state,
+            );
             HandlePipeResult {
                 state_changed: true,
                 view_model_push_reason: Some(ViewModelPushReason::PipeMetadataControls),
+                ..HandlePipeResult::default()
+            }
+        }
+        Ok(Some(ControllerMessage::SetChildLayout(request))) => {
+            let state_changed = child_layout_patch(request)
+                .map(|patch| state.apply_metadata_patch(patch))
+                .unwrap_or(false);
+            HandlePipeResult {
+                state_changed,
+                view_model_push_reason: state_changed.then_some(ViewModelPushReason::PipeMetadata),
                 ..HandlePipeResult::default()
             }
         }
@@ -879,6 +894,45 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
     };
     result.cli_pipe_unblock = cli_pipe_unblock;
     result
+}
+
+fn child_layout_patch(request: ChildLayoutSetRequest) -> Option<MetadataPatch> {
+    let andamento_shared::NodeKey::Group(path) = request.node_key else {
+        return None;
+    };
+    let (set, unset) = match request.layout {
+        Some(ChildLayoutSetting::Cards) => (
+            BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataValueUpdate {
+                    value: andamento_shared::MetadataValue::Text("vertical".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            Vec::new(),
+        ),
+        Some(ChildLayoutSetting::CompactStrip) => (
+            BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataValueUpdate {
+                    value: andamento_shared::MetadataValue::Text("compact-strip".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            Vec::new(),
+        ),
+        None => (BTreeMap::new(), vec!["rail.child_layout".to_owned()]),
+    };
+    Some(MetadataPatch {
+        target: MetadataTarget::Group(path),
+        source_id: "andamento-inspector".to_owned(),
+        set,
+        unset,
+    })
 }
 
 fn parse_rail_config(configuration: &BTreeMap<String, String>) -> RailConfig {
@@ -1067,7 +1121,8 @@ enum ControllerMessage {
     ObservedIdentitiesRequest(String),
     StatsCollect(StatsCollectRequest),
     RailSizeObserved(RailSizeObserved),
-    CycleMetadataTriState(MetadataTriStateCycleRequest),
+    SetMetadataVisibility(MetadataVisibilitySetRequest),
+    SetChildLayout(ChildLayoutSetRequest),
     ConfigInspect(ConfigInspectRequest),
 }
 
@@ -1136,15 +1191,25 @@ fn parse_controller_message(
             })
             .map(ControllerMessage::SetRailConfig)
             .map(Some),
-        MSG_CYCLE_METADATA_TRISTATE => pipe_message
+        MSG_SET_METADATA_VISIBILITY => pipe_message
             .payload
             .as_deref()
-            .ok_or_else(|| "cycle metadata tri-state requires payload".to_owned())
+            .ok_or_else(|| "set metadata visibility requires payload".to_owned())
             .and_then(|payload| {
-                serde_json::from_str::<MetadataTriStateCycleRequest>(payload)
-                    .map_err(|e| format!("invalid metadata tri-state cycle request: {e}"))
+                serde_json::from_str::<MetadataVisibilitySetRequest>(payload)
+                    .map_err(|e| format!("invalid metadata visibility request: {e}"))
             })
-            .map(ControllerMessage::CycleMetadataTriState)
+            .map(ControllerMessage::SetMetadataVisibility)
+            .map(Some),
+        MSG_SET_CHILD_LAYOUT => pipe_message
+            .payload
+            .as_deref()
+            .ok_or_else(|| "set child layout requires payload".to_owned())
+            .and_then(|payload| {
+                serde_json::from_str::<ChildLayoutSetRequest>(payload)
+                    .map_err(|e| format!("invalid child layout request: {e}"))
+            })
+            .map(ControllerMessage::SetChildLayout)
             .map(Some),
         MSG_CONFIG_INSPECT => pipe_message
             .payload
@@ -1583,6 +1648,88 @@ mod tests {
         .unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::RailSizeObserved(observed)));
+    }
+
+    #[test]
+    fn parses_metadata_visibility_set_request() {
+        let request = andamento_shared::MetadataVisibilitySetRequest {
+            client_id: 4,
+            node_key: NodeKey::Tab(7),
+            state: Some(andamento_shared::MetadataTriState::MetaChildren),
+        };
+        let payload = serde_json::to_string(&request).unwrap();
+
+        let parsed = parse_controller_message(&pipe(
+            andamento_shared::MSG_SET_METADATA_VISIBILITY,
+            Some(payload),
+            BTreeMap::new(),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            parsed,
+            Some(ControllerMessage::SetMetadataVisibility(request))
+        );
+    }
+
+    #[test]
+    fn child_layout_request_patches_group_metadata() {
+        let group_path = andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
+            key: "zellij.pane.cwd".to_owned(),
+            value: andamento_shared::MetadataValue::Text("/repo".to_owned()),
+            label: Some("repo".to_owned()),
+        }]);
+        let request = andamento_shared::ChildLayoutSetRequest {
+            client_id: 4,
+            node_key: NodeKey::Group(group_path.clone()),
+            layout: Some(andamento_shared::ChildLayoutSetting::CompactStrip),
+        };
+        let payload = serde_json::to_string(&request).unwrap();
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![state::ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "repo".to_owned(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
+        state.set_pane_cwd(PaneTarget::Terminal(1), "/repo".to_owned());
+
+        let changed = handle_pipe_message(
+            &mut state,
+            pipe(
+                andamento_shared::MSG_SET_CHILD_LAYOUT,
+                Some(payload),
+                BTreeMap::new(),
+            ),
+        );
+
+        let model = state.view_model();
+        let group_metadata = model
+            .resolved_metadata
+            .iter()
+            .find(|metadata| {
+                metadata.target == andamento_shared::MetadataTarget::Group(group_path.clone())
+            })
+            .expect("group metadata");
+        assert!(changed.state_changed);
+        assert_eq!(
+            changed.view_model_push_reason,
+            Some(ViewModelPushReason::PipeMetadata)
+        );
+        assert_eq!(
+            group_metadata
+                .values
+                .get("rail.child_layout")
+                .map(|entry| &entry.value),
+            Some(&andamento_shared::MetadataValue::Text(
+                "compact-strip".to_owned()
+            ))
+        );
     }
 
     #[test]
