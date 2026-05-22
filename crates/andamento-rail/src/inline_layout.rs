@@ -13,6 +13,7 @@ pub struct InlineItem {
     pub priority: i64,
     pub min_width: usize,
     pub compact_text: Option<String>,
+    pub hit: Option<InlineHit>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,13 @@ pub enum InlineClass {
     Required,
     Optional,
     Priority,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineHit {
+    GroupToggle,
+    InspectNode,
+    SwitchTab { index: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +41,7 @@ pub struct PlacedInlineRun {
 pub struct PlacedInlineItem {
     pub id: String,
     pub cols: std::ops::Range<usize>,
+    pub hit: Option<InlineHit>,
 }
 
 impl InlineRun {
@@ -57,6 +66,7 @@ impl InlineItem {
             priority: 100,
             min_width,
             compact_text: None,
+            hit: None,
         }
     }
 
@@ -75,6 +85,11 @@ impl InlineItem {
     pub fn priority(mut self, priority: i64) -> Self {
         self.class = InlineClass::Priority;
         self.priority = priority;
+        self
+    }
+
+    pub fn hit(mut self, hit: InlineHit) -> Self {
+        self.hit = Some(hit);
         self
     }
 }
@@ -129,6 +144,7 @@ fn place_items(items: &[InlineItem], width: usize) -> PlacedInlineRun {
         placed_items.push(PlacedInlineItem {
             id: item.id.clone(),
             cols: start..visible_width,
+            hit: item.hit,
         });
     }
     PlacedInlineRun {
@@ -264,5 +280,23 @@ mod tests {
         assert!(placed.text.ends_with("…"));
         assert!(placed.items.iter().any(|item| item.id == "branch"));
         assert!(placed.visible_width <= 28);
+    }
+
+    #[test]
+    fn inline_run_keeps_hit_payloads_for_visible_items() {
+        let run = InlineRun::new(vec![
+            InlineItem::text("toggle", "▼")
+                .required()
+                .hit(InlineHit::GroupToggle),
+            InlineItem::text("inspect", "◐")
+                .required()
+                .hit(InlineHit::InspectNode),
+        ]);
+
+        let placed = run.layout(8);
+
+        assert_eq!(placed.items[0].hit, Some(InlineHit::GroupToggle));
+        assert_eq!(placed.items[0].cols, 0..1);
+        assert_eq!(placed.items[1].hit, Some(InlineHit::InspectNode));
     }
 }
