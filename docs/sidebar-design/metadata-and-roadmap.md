@@ -301,6 +301,8 @@ Compatibility should start conservative:
 
 This is likely to become load-bearing as grouping gets richer, because one flexible grouping rule needs to look reasonable across very different workspace shapes.
 
+Status: started in the rail renderer. A single-child group chain can now be visibly conflated into one header after resolved metadata has been merged into the render tree. The visible node keeps the deepest group path for normal group actions and stores the conflated prefixes for inspection. Direct tabs still block conflation, collapsed groups block conflation, and explicit `rail.child_layout` settings on either side of a boundary block conflation so local layout choices remain visible boundaries.
+
 ### Group Prefixes Are First-Class Controller Targets
 
 Hierarchical grouping should not treat only the deepest group as real. Every prefix of a `GroupPath` is a semantic group target:

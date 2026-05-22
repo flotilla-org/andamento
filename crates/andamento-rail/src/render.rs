@@ -166,6 +166,7 @@ enum RenderNode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RenderGroup {
     path: GroupPath,
+    conflated_paths: Vec<GroupPath>,
     label: String,
     full_label: String,
     tab_count: usize,
@@ -524,6 +525,12 @@ fn group_metadata_block(group: &RenderGroup) -> Vec<String> {
     }
     push_metadata_section_header(&mut lines, 2, "group_path");
     push_group_path_metadata(&mut lines, 4, &group.path);
+    if group.conflated_paths.len() > 1 {
+        push_metadata_section_header(&mut lines, 2, "conflated_paths");
+        for path in &group.conflated_paths {
+            push_metadata_text_line(&mut lines, 4, "path", &format_group_path(path));
+        }
+    }
     lines
 }
 
@@ -666,6 +673,14 @@ fn push_group_path_metadata(lines: &mut Vec<String>, indent: usize, path: &Group
             &format_metadata_value(&segment.value),
         );
     }
+}
+
+fn format_group_path(path: &GroupPath) -> String {
+    path.0
+        .iter()
+        .map(|segment| format!("{}={}", segment.key, format_metadata_value(&segment.value)))
+        .collect::<Vec<_>>()
+        .join(" / ")
 }
 
 fn push_additional_metadata_lines(
@@ -2361,6 +2376,7 @@ fn nodes_to_render(
     };
     let mut nodes = pending_nodes_to_render_nodes(pending_rows, collapsed_groups);
     merge_resolved_metadata(&mut nodes, &model.resolved_metadata);
+    conflate_spindly_groups(&mut nodes);
     nodes
 }
 
@@ -2499,6 +2515,7 @@ fn ensure_group_path<'a>(
                     reachable_identities: RenderReachableIdentities::new(),
                     templates: templates.clone(),
                     path: path.clone(),
+                    conflated_paths: vec![path.clone()],
                     label: leaf_label.to_owned(),
                     full_label: leaf_full_label.to_owned(),
                     tab_count: 0,
@@ -2571,6 +2588,7 @@ fn ensure_group_path_at<'a>(
                     ResolvedTemplateSlots::default()
                 },
                 path: prefix.clone(),
+                conflated_paths: vec![prefix.clone()],
                 label: label.clone(),
                 full_label: full_label.clone(),
                 tab_count: 0,
@@ -2665,6 +2683,93 @@ fn merge_resolved_metadata(nodes: &mut [RenderNode], resolved_metadata: &[Resolv
         &sources_by_target,
         &identities_by_target,
     );
+}
+
+fn conflate_spindly_groups(nodes: &mut Vec<RenderNode>) {
+    for node in nodes {
+        let RenderNode::Group(group) = node else {
+            continue;
+        };
+        conflate_spindly_groups(&mut group.children);
+        while can_conflate_group_with_only_child(group) {
+            conflate_group_with_only_child(group);
+            conflate_spindly_groups(&mut group.children);
+        }
+    }
+}
+
+fn can_conflate_group_with_only_child(group: &RenderGroup) -> bool {
+    if group.collapsed || child_layout_from_metadata(&group.metadata).is_some() {
+        return false;
+    }
+    let mut child_groups = 0;
+    for child in &group.children {
+        match child {
+            RenderNode::Tab(_) => return false,
+            RenderNode::Group(child_group) => {
+                if child_group.collapsed
+                    || child_layout_from_metadata(&child_group.metadata).is_some()
+                {
+                    return false;
+                }
+                child_groups += 1;
+            }
+        }
+    }
+    child_groups == 1
+}
+
+fn conflate_group_with_only_child(group: &mut RenderGroup) {
+    let child_index = group
+        .children
+        .iter()
+        .position(|child| matches!(child, RenderNode::Group(_)))
+        .expect("checked by can_conflate_group_with_only_child");
+    let RenderNode::Group(mut child) = group.children.remove(child_index) else {
+        unreachable!("child index should point at a group");
+    };
+    let indent_delta = child.indent.saturating_sub(group.indent);
+    let label = format!("{} / {}", group.label, child.label);
+    let full_label = label.clone();
+
+    let mut metadata = group.metadata.clone();
+    metadata.extend(child.metadata.clone());
+    metadata.insert("group.label".to_owned(), MetadataValue::Text(label.clone()));
+    metadata.insert(
+        "group.full_label".to_owned(),
+        MetadataValue::Text(full_label.clone()),
+    );
+
+    group.path = child.path;
+    group.conflated_paths.extend(child.conflated_paths);
+    group.label = label;
+    group.full_label = full_label;
+    group.tab_count = child.tab_count;
+    group.collapsed = child.collapsed;
+    group.templates = child.templates;
+    group.metadata = metadata;
+    group
+        .metadata_sources
+        .extend(std::mem::take(&mut child.metadata_sources));
+    group
+        .reachable_identities
+        .extend(std::mem::take(&mut child.reachable_identities));
+    group.children = child.children;
+    shift_render_node_indents(&mut group.children, indent_delta);
+}
+
+fn shift_render_node_indents(nodes: &mut [RenderNode], delta: usize) {
+    for node in nodes {
+        match node {
+            RenderNode::Tab(tab) => {
+                tab.indent = tab.indent.saturating_sub(delta);
+            }
+            RenderNode::Group(group) => {
+                group.indent = group.indent.saturating_sub(delta);
+                shift_render_node_indents(&mut group.children, delta);
+            }
+        }
+    }
 }
 
 fn merge_resolved_metadata_into_nodes(
@@ -4742,6 +4847,7 @@ mod tests {
         config.sizing = RailSizingPreset::Compact;
         let nodes = vec![RenderNode::Group(RenderGroup {
             path: GroupPath::default(),
+            conflated_paths: vec![GroupPath::default()],
             label: "typed-parent".to_owned(),
             full_label: "typed-parent".to_owned(),
             tab_count: 1,
@@ -4753,6 +4859,7 @@ mod tests {
             templates: ResolvedTemplateSlots::default(),
             children: vec![RenderNode::Group(RenderGroup {
                 path: GroupPath::default(),
+                conflated_paths: vec![GroupPath::default()],
                 label: "typed-child".to_owned(),
                 full_label: "typed-child".to_owned(),
                 tab_count: 1,
@@ -4839,6 +4946,154 @@ mod tests {
                 .iter()
                 .any(|line| line.starts_with("    ├ agent-1") || line.starts_with("    ┌ agent-1")),
             "tab should be indented under the leaf group: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
+    fn single_child_group_chain_conflates_into_one_visible_header() {
+        let mut model = nested_group_model();
+        let path = GroupPath(vec![
+            GroupSegment {
+                key: "project".to_owned(),
+                value: MetadataValue::Text("project-a".to_owned()),
+                label: None,
+            },
+            GroupSegment {
+                key: "repo".to_owned(),
+                value: MetadataValue::Text("repo-a".to_owned()),
+                label: None,
+            },
+            GroupSegment {
+                key: "branch".to_owned(),
+                value: MetadataValue::Text("main".to_owned()),
+                label: None,
+            },
+        ]);
+        model.tabs = vec![TabCard {
+            tab_id: 1,
+            position: 0,
+            name: "agent-1".to_owned(),
+            active: true,
+            pinned: false,
+            status: None,
+            grouping: None,
+            templates: ResolvedTemplateSlots::default(),
+            active_pane: None,
+        }];
+        model.rows = vec![
+            RailRow::GroupHeader {
+                group_id: "project-a/repo-a/main".to_owned(),
+                path: path.clone(),
+                label: "main".to_owned(),
+                full_label: "project-a/repo-a/main".to_owned(),
+                tab_count: 1,
+                templates: ResolvedTemplateSlots::default(),
+            },
+            RailRow::Tab {
+                tab_id: 1,
+                indent: 2,
+                parent_path: Some(path.clone()),
+            },
+        ];
+
+        let nodes = nodes_to_render(Some(&model), &[], &[]);
+        let [RenderNode::Group(group)] = nodes.as_slice() else {
+            panic!("expected one conflated group, got {nodes:?}");
+        };
+        assert_eq!(group.path, path);
+        assert_eq!(group.conflated_paths.len(), 3);
+        assert_eq!(group.label, "project-a / repo-a / main");
+        assert!(
+            matches!(&group.children[0], RenderNode::Tab(tab) if tab.indent == 2),
+            "child tab should remain directly under the visible conflated group: {:?}",
+            group.children
+        );
+
+        let rendered = render_lines(Some(&model), &[], 6, 48, true);
+        assert!(
+            rendered.lines[0].starts_with("▼ project-a / repo-a / main"),
+            "{:?}",
+            rendered.lines
+        );
+        assert!(
+            !rendered.lines.iter().any(|line| line.starts_with("  ▼")),
+            "intermediate headers should not be rendered for a spindly chain: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
+    fn explicit_child_layout_setting_blocks_group_conflation_boundary() {
+        let mut model = nested_group_model();
+        let path = GroupPath(vec![
+            GroupSegment {
+                key: "project".to_owned(),
+                value: MetadataValue::Text("project-a".to_owned()),
+                label: None,
+            },
+            GroupSegment {
+                key: "repo".to_owned(),
+                value: MetadataValue::Text("repo-a".to_owned()),
+                label: None,
+            },
+        ]);
+        model.tabs = vec![TabCard {
+            tab_id: 1,
+            position: 0,
+            name: "agent-1".to_owned(),
+            active: true,
+            pinned: false,
+            status: None,
+            grouping: None,
+            templates: ResolvedTemplateSlots::default(),
+            active_pane: None,
+        }];
+        model.rows = vec![
+            RailRow::GroupHeader {
+                group_id: "project-a/repo-a".to_owned(),
+                path: path.clone(),
+                label: "repo-a".to_owned(),
+                full_label: "project-a/repo-a".to_owned(),
+                tab_count: 1,
+                templates: ResolvedTemplateSlots::default(),
+            },
+            RailRow::Tab {
+                tab_id: 1,
+                indent: 2,
+                parent_path: Some(path),
+            },
+        ];
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Group(GroupPath(vec![GroupSegment {
+                key: "project".to_owned(),
+                value: MetadataValue::Text("project-a".to_owned()),
+                label: None,
+            }])),
+            values: BTreeMap::from([(
+                RAIL_CHILD_LAYOUT_METADATA_KEY.to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 6, 48, true);
+
+        assert!(
+            rendered.lines[0].starts_with("▼ project-a"),
+            "{:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered.lines[1].starts_with("  ▼ repo-a"),
+            "explicit parent layout should keep the child group boundary visible: {:?}",
             rendered.lines
         );
     }
@@ -5610,6 +5865,7 @@ mod tests {
         metadata.insert("group.tab_count".to_owned(), MetadataValue::Integer(3));
         let group = RenderGroup {
             path: GroupPath::default(),
+            conflated_paths: vec![GroupPath::default()],
             label: "typed-label".to_owned(),
             full_label: "/typed".to_owned(),
             tab_count: 1,
@@ -6473,6 +6729,11 @@ mod tests {
                 value: MetadataValue::Text("zellij".into()),
                 label: Some("zellij".into()),
             }]),
+            conflated_paths: vec![GroupPath(vec![GroupSegment {
+                key: "git.repo".into(),
+                value: MetadataValue::Text("zellij".into()),
+                label: Some("zellij".into()),
+            }])],
             label: "zellij".into(),
             full_label: "zellij".into(),
             tab_count: 1,
@@ -6831,6 +7092,7 @@ mod tests {
             .insert(NodeKey::Group(path.clone()), MetadataTriState::Meta);
         let group = RenderGroup {
             path: path.clone(),
+            conflated_paths: vec![path.clone()],
             label: "zellij".into(),
             full_label: "zellij".into(),
             tab_count: 1,
