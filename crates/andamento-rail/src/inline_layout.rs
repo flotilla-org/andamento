@@ -36,6 +36,7 @@ pub enum InlineClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum InlineHit {
     GroupToggle,
     InspectNode,
@@ -114,6 +115,7 @@ impl InlineItem {
         }
     }
 
+    #[allow(dead_code)]
     pub fn styled_text(
         id: impl Into<String>,
         text: impl Into<String>,

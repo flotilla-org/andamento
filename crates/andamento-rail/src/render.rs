@@ -4346,6 +4346,7 @@ struct RenderedTemplateFields {
     visible_sources: BTreeSet<ResolvedTemplateFieldSource>,
 }
 
+#[cfg(test)]
 fn render_template_fields_with_suppression(
     fields: &[TemplateField],
     width: usize,
@@ -4372,6 +4373,7 @@ fn render_template_fields_with_suppression(
     }
 }
 
+#[cfg(test)]
 fn select_template_fields_for_width(fields: &[TemplateField], width: usize) -> Vec<TemplateField> {
     if let Some(selected) = fit_template_fields_for_width(fields, width) {
         return selected;
@@ -4396,6 +4398,7 @@ fn select_template_fields_for_width(fields: &[TemplateField], width: usize) -> V
         .collect()
 }
 
+#[cfg(test)]
 fn fit_template_fields_for_width(
     fields: &[TemplateField],
     width: usize,
@@ -4455,6 +4458,7 @@ fn join_template_fields_by(
     output
 }
 
+#[cfg(test)]
 fn droppable_template_field_priorities(fields: &[TemplateField]) -> Vec<i64> {
     let Some(highest_priority) = fields.iter().map(template_field_priority).max() else {
         return vec![];
@@ -4478,6 +4482,7 @@ fn template_field_value(field: &TemplateField) -> &str {
     }
 }
 
+#[cfg(test)]
 fn truncate_template_field(field: &mut TemplateField, width: usize) {
     let value = truncate_to_width(template_field_value(field), width);
     match field {
@@ -4490,6 +4495,7 @@ fn truncate_template_field(field: &mut TemplateField, width: usize) {
     }
 }
 
+#[cfg(test)]
 fn template_field_priority(field: &TemplateField) -> i64 {
     match field {
         TemplateField::Optional(_) => 0,
