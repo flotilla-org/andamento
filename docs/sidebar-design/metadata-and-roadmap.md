@@ -412,7 +412,7 @@ Header niche absorption has a first conservative implementation. A group with ef
 
 If no direct tabs are absorbed at that level, the renderer may absorb one child-group path instead: the first child group label is rendered as a header fragment, separated with the rail border character, and an expanded child group can recursively donate its own first direct tab run into the remaining niche. A collapsed absorbed child group only contributes its group fragment, not descendants. Absorbed tab runs are right-aligned within the available niche and keep switch-tab mouse hits. Absorbed group fragments are display-only for now, because toggling a projected group label while its overflow remains below is confusing.
 
-This remains a projection over the recursive tree. Absorption does not mutate grouping identity, ordering, collapse state, or inherited settings. Content that does not fit remains in the normal child rendering below the header.
+This remains a projection over the recursive tree. Absorption does not mutate grouping identity, ordering, collapse state, or inherited settings. Content that does not fit remains in the normal child rendering below the header. If a child group is partially absorbed, its overflow children render below without repeating the child group's own header, avoiding a second toggle for a group that is already represented in the parent header.
 
 ### Bodies, Content, And Slots Need A Recursive Layout Model
 

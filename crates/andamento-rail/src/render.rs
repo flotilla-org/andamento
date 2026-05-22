@@ -1578,8 +1578,8 @@ fn children_after_niche_consumption(
                             &group.children,
                             &group_consumption.child_consumption,
                         );
-                        if !group.collapsed && !group.children.is_empty() {
-                            remaining.push(RenderNode::Group(group));
+                        if !group.collapsed {
+                            remaining.extend(group.children);
                         }
                         seen_groups += 1;
                         continue;
@@ -3835,7 +3835,8 @@ fn group_header_line(
         theme,
         template_catalog,
     );
-    let niche_start = visible_width + " ─ ".width();
+    let separator = header_niche_separator(&niche_projection.text);
+    let niche_start = visible_width + separator.width();
     let niche_hits = niche_projection
         .hits
         .iter()
@@ -3851,10 +3852,10 @@ fn group_header_line(
         .collect::<Vec<_>>();
     let mut prefix = text.clone();
     if niche_projection.visible_width > 0 {
-        prefix.push_str(" ─ ");
+        prefix.push_str(separator);
         text = prefix.clone();
         text.push_str(&niche_projection.text);
-        visible_width += " ─ ".width() + niche_projection.visible_width;
+        visible_width += separator.width() + niche_projection.visible_width;
     }
     let remaining = width.saturating_sub(visible_width);
     let suffix = if remaining >= 2 {
@@ -4024,8 +4025,9 @@ fn project_child_group_header_niche(
             template_catalog,
         );
         if child_projection.visible_width > 0 {
-            let child_start = visible_width + " ─ ".width();
-            text.push_str(" ─ ");
+            let separator = header_niche_separator(&child_projection.text);
+            let child_start = visible_width + separator.width();
+            text.push_str(separator);
             text.push_str(&child_projection.text);
             hits.extend(child_projection.hits.into_iter().map(|hit| HeaderNicheHit {
                 col_start: child_start + hit.col_start,
@@ -4036,7 +4038,7 @@ fn project_child_group_header_niche(
                 inspect_target: hit.inspect_target,
                 action: hit.action,
             }));
-            visible_width += " ─ ".width() + child_projection.visible_width;
+            visible_width += separator.width() + child_projection.visible_width;
             child_consumption = child_projection.consumption;
         } else {
             return HeaderNicheProjection::default();
@@ -4054,6 +4056,14 @@ fn project_child_group_header_niche(
                 child_consumption,
             })),
         },
+    }
+}
+
+fn header_niche_separator(niche_text: &str) -> &'static str {
+    if niche_text.starts_with('─') {
+        " "
+    } else {
+        " ─ "
     }
 }
 
@@ -5776,6 +5786,110 @@ mod tests {
             tab_col >= 28,
             "absorbed tab should sit near the right edge of the available header niche: {:?}",
             rendered.lines[0]
+        );
+    }
+
+    #[test]
+    fn right_aligned_absorbed_tabs_do_not_leave_separator_artifact_after_group_label() {
+        let mut model = nested_group_model();
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Root,
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 10, 72, true);
+
+        assert!(
+            !rendered.lines[0].contains("worktree-a ─ ─"),
+            "absorbed group label should join directly into border fill before right-aligned tabs: {:?}",
+            rendered.lines[0]
+        );
+    }
+
+    #[test]
+    fn partially_absorbed_child_group_renders_overflow_without_duplicate_group_toggle() {
+        let mut model = nested_group_model();
+        let child_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("first row should be child group"),
+        };
+        for tab_id in [3_u64, 4] {
+            model.tabs.push(TabCard {
+                tab_id,
+                position: tab_id as usize - 1,
+                name: format!("agent-{tab_id}"),
+                active: false,
+                pinned: false,
+                status: None,
+                grouping: None,
+                templates: ResolvedTemplateSlots::default(),
+                active_pane: None,
+            });
+            model.rows.insert(
+                tab_id as usize - 1,
+                RailRow::Tab {
+                    tab_id,
+                    indent: 2,
+                    parent_path: Some(child_path.clone()),
+                },
+            );
+        }
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Root,
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 10, 44, true);
+
+        assert!(
+            rendered.lines[0].contains("worktree-a"),
+            "child group should still be absorbed into the parent header: {:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered.lines[0].contains("agent-1"),
+            "at least one child tab should be absorbed into the parent header: {:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .skip(1)
+                .any(|line| line.contains("agent-")),
+            "overflow child tabs should still render below the header: {:?}",
+            rendered.lines
+        );
+        assert!(
+            !rendered
+                .lines
+                .iter()
+                .skip(1)
+                .any(|line| line.contains("worktree-a")),
+            "partially absorbed child group should not render a duplicate togglable group header below: {:?}",
+            rendered.lines
         );
     }
 
