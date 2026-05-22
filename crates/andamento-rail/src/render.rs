@@ -1317,18 +1317,28 @@ fn render_nodes_to_buffer(
                     ancestor_meta_children,
                 );
                 pending_tabs.clear();
-                let (visible_header_sources, _group_allocation) = append_group_header(
-                    lines,
-                    hit_regions,
-                    group,
-                    cols,
-                    theme,
-                    template_catalog,
-                    ancestor_template_fields,
-                    metadata_controls,
-                    inspected_node,
-                );
                 let group_key = NodeKey::Group(group.path.clone());
+                let child_settings = inherited_settings.with_node_metadata(&group.metadata);
+                let (direct_tabs, remaining_children) = if !group.collapsed
+                    && child_settings.child_layout == ChildLayoutSetting::CompactStrip
+                {
+                    direct_tabs_and_child_groups(&group.children)
+                } else {
+                    (vec![], vec![])
+                };
+                let (visible_header_sources, _group_allocation, absorbed_direct_tabs) =
+                    append_group_header(
+                        lines,
+                        hit_regions,
+                        group,
+                        cols,
+                        theme,
+                        template_catalog,
+                        ancestor_template_fields,
+                        metadata_controls,
+                        inspected_node,
+                        &direct_tabs,
+                    );
                 if metadata_controls.effective_show(&group_key, ancestor_meta_children) {
                     append_meta_panel(
                         lines,
@@ -1343,14 +1353,16 @@ fn render_nodes_to_buffer(
                     child_ancestor_template_fields.extend(visible_header_sources);
                     let child_meta_children = metadata_controls
                         .propagates_to_children(&group_key, ancestor_meta_children);
-                    let child_settings = inherited_settings.with_node_metadata(&group.metadata);
                     if child_settings.child_layout == ChildLayoutSetting::CompactStrip {
-                        let (direct_tabs, remaining_children) =
-                            direct_tabs_and_child_groups(&group.children);
+                        let remaining_direct_tabs = direct_tabs
+                            .iter()
+                            .skip(absorbed_direct_tabs)
+                            .cloned()
+                            .collect::<Vec<_>>();
                         append_compact_tab_strip(
                             lines,
                             hit_regions,
-                            &direct_tabs,
+                            &remaining_direct_tabs,
                             cols,
                             theme,
                             template_catalog,
@@ -1429,7 +1441,12 @@ fn append_group_header(
     ancestor_template_fields: &BTreeSet<ResolvedTemplateFieldSource>,
     _metadata_controls: &MetadataControls,
     inspected_node: Option<&NodeKey>,
-) -> (BTreeSet<ResolvedTemplateFieldSource>, NodeRowAllocation) {
+    niche_tabs: &[RenderTab],
+) -> (
+    BTreeSet<ResolvedTemplateFieldSource>,
+    NodeRowAllocation,
+    usize,
+) {
     let row = lines.len();
     let indent = group.indent.min(cols);
     let inner_width = cols.saturating_sub(indent);
@@ -1455,8 +1472,24 @@ fn append_group_header(
         theme,
         template_catalog,
         ancestor_template_fields,
+        niche_tabs,
     );
     line.push_str(&rendered.text);
+    for hit in rendered.niche_hits {
+        if let Some(tab) = niche_tabs.get(hit.index) {
+            hit_regions.push(HitRegion {
+                row_start: row,
+                row_end: row,
+                col_start: indent + hit.col_start,
+                col_end: indent + hit.col_end,
+                tab_id: tab.card.tab_id,
+                tab_position: tab.card.position,
+                group_path: tab.parent_path.clone(),
+                inspect_target: None,
+                action: HitAction::SwitchTab,
+            });
+        }
+    }
     if glyph_reserved {
         let key = NodeKey::Group(group.path.clone());
         let glyph = inspect_node_glyph(inspected_node, &key);
@@ -1494,7 +1527,11 @@ fn append_group_header(
         key: NodeKey::Group(group.path.clone()),
         rows: row..row + 1,
     };
-    (rendered.visible_sources, allocation)
+    (
+        rendered.visible_sources,
+        allocation,
+        rendered.consumed_niche_tabs,
+    )
 }
 
 fn child_layout_from_metadata(metadata: &RenderMetadata) -> Option<ChildLayoutSetting> {
@@ -3729,6 +3766,7 @@ fn group_header_line(
     theme: Option<RenderTheme>,
     template_catalog: Option<&TemplateConfigCatalog>,
     ancestor_template_fields: &BTreeSet<ResolvedTemplateFieldSource>,
+    niche_tabs: &[RenderTab],
 ) -> RenderedTemplateLine {
     let fields = match resolved_slot {
         Some(slot) => group_header_fields_from_resolved_slot(slot, collapsed, active_tab_name),
@@ -3741,21 +3779,103 @@ fn group_header_line(
     };
     let rendered_fields =
         render_template_fields_inline_with_suppression(&fields, width, ancestor_template_fields);
-    let label = rendered_fields.text;
-    let remaining = width.saturating_sub(label.width());
-    let text = if remaining >= 2 {
-        format!("{label} {}", "─".repeat(remaining - 1))
+    let mut text = rendered_fields.text;
+    let mut visible_width = text.width();
+    let max_niche_width = width
+        .saturating_sub(visible_width)
+        .saturating_sub(" ─ ".width());
+    let niche_projection =
+        project_direct_tab_header_niche(niche_tabs, max_niche_width, theme, template_catalog);
+    let niche_start = visible_width + " ─ ".width();
+    let niche_hits = niche_projection
+        .hits
+        .iter()
+        .map(|hit| CompactSegmentHitBox {
+            index: hit.index,
+            row: 0,
+            col_start: niche_start + hit.col_start,
+            col_end: niche_start + hit.col_end,
+        })
+        .collect::<Vec<_>>();
+    let mut prefix = text.clone();
+    if niche_projection.visible_width > 0 {
+        prefix.push_str(" ─ ");
+        text = prefix.clone();
+        text.push_str(&niche_projection.text);
+        visible_width += " ─ ".width() + niche_projection.visible_width;
+    }
+    let remaining = width.saturating_sub(visible_width);
+    let suffix = if remaining >= 2 {
+        format!(" {}", "─".repeat(remaining - 1))
+    } else if remaining == 1 {
+        " ".to_owned()
     } else {
-        label
+        String::new()
     };
-    let text = style_group_header_text(
-        pad_to_width(&truncate_to_width(&text, width), width),
-        contains_active_tab,
-        theme,
-    );
+    let text = if niche_projection.visible_width > 0 {
+        let mut styled = style_group_header_text(prefix, contains_active_tab, theme);
+        styled.push_str(&niche_projection.text);
+        styled.push_str(&style_group_header_text(suffix, contains_active_tab, theme));
+        styled
+    } else {
+        style_group_header_text(format!("{text}{suffix}"), contains_active_tab, theme)
+    };
     RenderedTemplateLine {
         text,
         visible_sources: rendered_fields.visible_sources,
+        niche_hits,
+        consumed_niche_tabs: niche_projection.consumed_tabs,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeaderNicheProjection {
+    text: String,
+    visible_width: usize,
+    hits: Vec<CompactSegmentHitBox>,
+    consumed_tabs: usize,
+}
+
+fn project_direct_tab_header_niche(
+    tabs: &[RenderTab],
+    width: usize,
+    theme: Option<RenderTheme>,
+    template_catalog: Option<&TemplateConfigCatalog>,
+) -> HeaderNicheProjection {
+    let mut text = String::new();
+    let mut visible_width = 0usize;
+    let mut hits = vec![];
+    let mut consumed_tabs = 0usize;
+    for (index, tab) in tabs.iter().enumerate() {
+        let label = tab_title_with_template_catalog(&tab.card, template_catalog);
+        let segment_item = SegmentItem {
+            label,
+            active: tab.card.active,
+        };
+        let segment_width = compact_segment_width(&segment_item.label);
+        if segment_width > width.saturating_sub(visible_width) {
+            break;
+        }
+        let start = visible_width;
+        let (segment, rendered_width) = render_compact_segment(&segment_item, segment_width, theme);
+        if rendered_width == 0 || rendered_width > width.saturating_sub(visible_width) {
+            break;
+        }
+        text.push_str(&segment);
+        visible_width += rendered_width;
+        hits.push(CompactSegmentHitBox {
+            index,
+            row: 0,
+            col_start: start,
+            col_end: visible_width.saturating_sub(1),
+        });
+        consumed_tabs += 1;
+    }
+    HeaderNicheProjection {
+        text,
+        visible_width,
+        hits,
+        consumed_tabs,
     }
 }
 
@@ -3805,6 +3925,8 @@ fn inline_item_from_template_field(index: usize, field: &TemplateField) -> Inlin
 struct RenderedTemplateLine {
     text: String,
     visible_sources: BTreeSet<ResolvedTemplateFieldSource>,
+    niche_hits: Vec<CompactSegmentHitBox>,
+    consumed_niche_tabs: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5262,11 +5384,11 @@ mod tests {
         let rendered = render_lines(Some(&model), &[], 8, 48, true);
 
         assert!(
-            rendered.lines[1].contains(" repo-overview "),
-            "direct tab should render as a Zellij-style tab strip below the group header: {:?}",
+            rendered.lines[0].contains(" repo-overview "),
+            "direct tab should render as a Zellij-style tab strip in the group header niche: {:?}",
             rendered.lines
         );
-        let repo_hit = hit_at(&rendered.hit_regions, 1, 4).expect("repo strip hit");
+        let repo_hit = hit_at(&rendered.hit_regions, 0, 16).expect("repo strip hit");
         assert_eq!(repo_hit.action, HitAction::SwitchTab);
         assert_eq!(repo_hit.tab_id, 2);
         assert!(
@@ -5300,6 +5422,43 @@ mod tests {
     }
 
     #[test]
+    fn group_header_absorbs_direct_tab_prefix_into_header_niche() {
+        let mut model = mixed_child_group_model();
+        let parent_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("first row should be parent group"),
+        };
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Group(parent_path),
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines_with_theme(Some(&model), &[], 8, 72, true, Some(test_theme()));
+
+        assert!(
+            rendered.lines[0].contains("repo-overview"),
+            "first direct tab should be rendered in the parent header niche: {:?}",
+            rendered.lines
+        );
+        assert!(
+            !rendered.lines[1].contains("repo-overview"),
+            "absorbed direct tab should not be repeated below the header: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
     fn root_child_layout_metadata_is_inherited_by_groups() {
         let mut model = mixed_child_group_model();
         model.resolved_metadata = vec![ResolvedMetadata {
@@ -5321,7 +5480,7 @@ mod tests {
         let rendered = render_lines(Some(&model), &[], 8, 48, true);
 
         assert!(
-            rendered.lines[1].contains(" repo-overview "),
+            rendered.lines[0].contains(" repo-overview "),
             "root child layout should apply to direct tabs in descendant groups: {:?}",
             rendered.lines
         );
@@ -5361,14 +5520,14 @@ mod tests {
         let rendered = render_lines_with_theme(Some(&model), &[], 8, 48, true, Some(test_theme()));
 
         assert!(
-            rendered.lines[1].contains("\u{1b}[1;48;5;10;38;5;14m\u{1b}[0m"),
+            rendered.lines[0].contains("\u{1b}[1;48;5;10;38;5;14m\u{1b}[0m"),
             "active left separator should use between foreground and active tab background: {:?}",
-            rendered.lines[1]
+            rendered.lines[0]
         );
         assert!(
-            rendered.lines[1].contains("\u{1b}[1;48;5;10;38;5;11m repo-overview \u{1b}[0m"),
+            rendered.lines[0].contains("\u{1b}[1;48;5;10;38;5;11m repo-overview \u{1b}[0m"),
             "active label should use active tab foreground/background: {:?}",
-            rendered.lines[1]
+            rendered.lines[0]
         );
         assert!(
             rendered
@@ -5378,7 +5537,7 @@ mod tests {
             "inactive label should use inactive tab foreground/background: {:?}",
             rendered.lines
         );
-        assert_eq!(visible_width_without_ansi(&rendered.lines[1]), 48);
+        assert_eq!(visible_width_without_ansi(&rendered.lines[0]), 48);
     }
 
     #[test]
@@ -5435,12 +5594,12 @@ mod tests {
         );
 
         assert!(
-            rendered.lines[1].contains(" External "),
+            rendered.lines[0].contains(" External "),
             "themed compact strip should keep template-resolved tab title labels: {:?}",
             rendered.lines
         );
         assert!(
-            !rendered.lines[1].contains(" repo-overview "),
+            !rendered.lines[0].contains(" repo-overview "),
             "themed compact strip should not fall back to built-in tab title labels: {:?}",
             rendered.lines
         );
@@ -5490,9 +5649,9 @@ mod tests {
         let rendered = render_lines_with_theme(Some(&model), &[], 8, 48, true, Some(test_theme()));
 
         assert!(
-            rendered.lines[1].contains("\u{1b}[1;48;5;10;38;2;1;2;3m\u{1b}[0m"),
+            rendered.lines[0].contains("\u{1b}[1;48;5;10;38;2;1;2;3m\u{1b}[0m"),
             "configured between color should become the active left separator foreground: {:?}",
-            rendered.lines[1]
+            rendered.lines[0]
         );
     }
 
@@ -6058,6 +6217,7 @@ mod tests {
             &BTreeSet::new(),
             &MetadataControls::default(),
             None,
+            &[],
         );
 
         assert!(
@@ -6929,7 +7089,7 @@ mod tests {
             templates: ResolvedTemplateSlots::default(),
             children: vec![],
         };
-        let (_sources, allocation) = append_group_header(
+        let (_sources, allocation, _absorbed_tabs) = append_group_header(
             &mut lines,
             &mut hits,
             &group,
@@ -6939,6 +7099,7 @@ mod tests {
             &BTreeSet::new(),
             &MetadataControls::default(),
             None,
+            &[],
         );
         assert_eq!(allocation.rows, 2..3);
         assert!(matches!(allocation.key, NodeKey::Group(ref p) if p == &group.path));
@@ -7298,6 +7459,7 @@ mod tests {
             &BTreeSet::new(),
             &controls,
             Some(&NodeKey::Group(path.clone())),
+            &[],
         );
         assert!(lines[0].ends_with("●─"), "got {:?}", lines[0]);
         let cycle_hit = hits
