@@ -1319,14 +1319,21 @@ fn render_nodes_to_buffer(
                 pending_tabs.clear();
                 let group_key = NodeKey::Group(group.path.clone());
                 let child_settings = inherited_settings.with_node_metadata(&group.metadata);
-                let (direct_tabs, remaining_children) = if !group.collapsed
+                let (direct_tabs, child_group_nodes) = if !group.collapsed
                     && child_settings.child_layout == ChildLayoutSetting::CompactStrip
                 {
                     direct_tabs_and_child_groups(&group.children)
                 } else {
                     (vec![], vec![])
                 };
-                let (visible_header_sources, _group_allocation, absorbed_direct_tabs) =
+                let child_groups = child_group_nodes
+                    .iter()
+                    .filter_map(|node| match node {
+                        RenderNode::Group(group) => Some(group.clone()),
+                        RenderNode::Tab(_) => None,
+                    })
+                    .collect::<Vec<_>>();
+                let (visible_header_sources, _group_allocation, niche_consumption) =
                     append_group_header(
                         lines,
                         hit_regions,
@@ -1338,6 +1345,7 @@ fn render_nodes_to_buffer(
                         metadata_controls,
                         inspected_node,
                         &direct_tabs,
+                        &child_groups,
                     );
                 if metadata_controls.effective_show(&group_key, ancestor_meta_children) {
                     append_meta_panel(
@@ -1354,11 +1362,10 @@ fn render_nodes_to_buffer(
                     let child_meta_children = metadata_controls
                         .propagates_to_children(&group_key, ancestor_meta_children);
                     if child_settings.child_layout == ChildLayoutSetting::CompactStrip {
-                        let remaining_direct_tabs = direct_tabs
-                            .iter()
-                            .skip(absorbed_direct_tabs)
-                            .cloned()
-                            .collect::<Vec<_>>();
+                        let remaining_children =
+                            children_after_niche_consumption(&group.children, &niche_consumption);
+                        let (remaining_direct_tabs, remaining_child_groups) =
+                            direct_tabs_and_child_groups(&remaining_children);
                         append_compact_tab_strip(
                             lines,
                             hit_regions,
@@ -1371,7 +1378,7 @@ fn render_nodes_to_buffer(
                             lines,
                             hit_regions,
                             visible_cards,
-                            &remaining_children,
+                            &remaining_child_groups,
                             cols,
                             controller_available,
                             config,
@@ -1442,10 +1449,11 @@ fn append_group_header(
     _metadata_controls: &MetadataControls,
     inspected_node: Option<&NodeKey>,
     niche_tabs: &[RenderTab],
+    niche_child_groups: &[RenderGroup],
 ) -> (
     BTreeSet<ResolvedTemplateFieldSource>,
     NodeRowAllocation,
-    usize,
+    HeaderNicheConsumption,
 ) {
     let row = lines.len();
     let indent = group.indent.min(cols);
@@ -1473,22 +1481,21 @@ fn append_group_header(
         template_catalog,
         ancestor_template_fields,
         niche_tabs,
+        niche_child_groups,
     );
     line.push_str(&rendered.text);
     for hit in rendered.niche_hits {
-        if let Some(tab) = niche_tabs.get(hit.index) {
-            hit_regions.push(HitRegion {
-                row_start: row,
-                row_end: row,
-                col_start: indent + hit.col_start,
-                col_end: indent + hit.col_end,
-                tab_id: tab.card.tab_id,
-                tab_position: tab.card.position,
-                group_path: tab.parent_path.clone(),
-                inspect_target: None,
-                action: HitAction::SwitchTab,
-            });
-        }
+        hit_regions.push(HitRegion {
+            row_start: row,
+            row_end: row,
+            col_start: indent + hit.col_start,
+            col_end: indent + hit.col_end,
+            tab_id: hit.tab_id,
+            tab_position: hit.tab_position,
+            group_path: hit.group_path,
+            inspect_target: hit.inspect_target,
+            action: hit.action,
+        });
     }
     if glyph_reserved {
         let key = NodeKey::Group(group.path.clone());
@@ -1530,7 +1537,7 @@ fn append_group_header(
     (
         rendered.visible_sources,
         allocation,
-        rendered.consumed_niche_tabs,
+        rendered.niche_consumption,
     )
 }
 
@@ -1549,6 +1556,42 @@ fn direct_tabs_and_child_groups(children: &[RenderNode]) -> (Vec<RenderTab>, Vec
             }
             split
         })
+}
+
+fn children_after_niche_consumption(
+    children: &[RenderNode],
+    consumption: &HeaderNicheConsumption,
+) -> Vec<RenderNode> {
+    let mut remaining = vec![];
+    let mut skipped_tabs = 0usize;
+    let mut seen_groups = 0usize;
+    for child in children {
+        match child {
+            RenderNode::Tab(_) if skipped_tabs < consumption.direct_tabs => {
+                skipped_tabs += 1;
+            }
+            RenderNode::Group(group) => {
+                if let Some(group_consumption) = consumption.child_group.as_deref() {
+                    if seen_groups == group_consumption.child_group_index {
+                        let mut group = group.clone();
+                        group.children = children_after_niche_consumption(
+                            &group.children,
+                            &group_consumption.child_consumption,
+                        );
+                        if !group.collapsed && !group.children.is_empty() {
+                            remaining.push(RenderNode::Group(group));
+                        }
+                        seen_groups += 1;
+                        continue;
+                    }
+                }
+                seen_groups += 1;
+                remaining.push(child.clone());
+            }
+            RenderNode::Tab(_) => remaining.push(child.clone()),
+        }
+    }
+    remaining
 }
 
 fn append_compact_tab_strip(
@@ -3767,6 +3810,7 @@ fn group_header_line(
     template_catalog: Option<&TemplateConfigCatalog>,
     ancestor_template_fields: &BTreeSet<ResolvedTemplateFieldSource>,
     niche_tabs: &[RenderTab],
+    niche_child_groups: &[RenderGroup],
 ) -> RenderedTemplateLine {
     let fields = match resolved_slot {
         Some(slot) => group_header_fields_from_resolved_slot(slot, collapsed, active_tab_name),
@@ -3784,17 +3828,25 @@ fn group_header_line(
     let max_niche_width = width
         .saturating_sub(visible_width)
         .saturating_sub(" ─ ".width());
-    let niche_projection =
-        project_direct_tab_header_niche(niche_tabs, max_niche_width, theme, template_catalog);
+    let niche_projection = project_header_niche(
+        niche_tabs,
+        niche_child_groups,
+        max_niche_width,
+        theme,
+        template_catalog,
+    );
     let niche_start = visible_width + " ─ ".width();
     let niche_hits = niche_projection
         .hits
         .iter()
-        .map(|hit| CompactSegmentHitBox {
-            index: hit.index,
-            row: 0,
+        .map(|hit| HeaderNicheHit {
             col_start: niche_start + hit.col_start,
             col_end: niche_start + hit.col_end,
+            tab_id: hit.tab_id,
+            tab_position: hit.tab_position,
+            group_path: hit.group_path.clone(),
+            inspect_target: hit.inspect_target.clone(),
+            action: hit.action,
         })
         .collect::<Vec<_>>();
     let mut prefix = text.clone();
@@ -3824,16 +3876,52 @@ fn group_header_line(
         text,
         visible_sources: rendered_fields.visible_sources,
         niche_hits,
-        consumed_niche_tabs: niche_projection.consumed_tabs,
+        niche_consumption: niche_projection.consumption,
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct HeaderNicheProjection {
     text: String,
     visible_width: usize,
-    hits: Vec<CompactSegmentHitBox>,
-    consumed_tabs: usize,
+    hits: Vec<HeaderNicheHit>,
+    consumption: HeaderNicheConsumption,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeaderNicheHit {
+    col_start: usize,
+    col_end: usize,
+    tab_id: u64,
+    tab_position: usize,
+    group_path: Option<GroupPath>,
+    inspect_target: Option<NodeKey>,
+    action: HitAction,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct HeaderNicheConsumption {
+    direct_tabs: usize,
+    child_group: Option<Box<HeaderNicheGroupConsumption>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeaderNicheGroupConsumption {
+    child_group_index: usize,
+    child_consumption: HeaderNicheConsumption,
+}
+
+fn project_header_niche(
+    tabs: &[RenderTab],
+    child_groups: &[RenderGroup],
+    width: usize,
+    theme: Option<RenderTheme>,
+    template_catalog: Option<&TemplateConfigCatalog>,
+) -> HeaderNicheProjection {
+    if !tabs.is_empty() {
+        return project_direct_tab_header_niche(tabs, width, theme, template_catalog);
+    }
+    project_child_group_header_niche(child_groups, width, theme, template_catalog)
 }
 
 fn project_direct_tab_header_niche(
@@ -3845,7 +3933,7 @@ fn project_direct_tab_header_niche(
     let mut text = String::new();
     let mut visible_width = 0usize;
     let mut hits = vec![];
-    let mut consumed_tabs = 0usize;
+    let mut consumption = HeaderNicheConsumption::default();
     for (index, tab) in tabs.iter().enumerate() {
         let label = tab_title_with_template_catalog(&tab.card, template_catalog);
         let segment_item = SegmentItem {
@@ -3863,19 +3951,103 @@ fn project_direct_tab_header_niche(
         }
         text.push_str(&segment);
         visible_width += rendered_width;
-        hits.push(CompactSegmentHitBox {
-            index,
-            row: 0,
+        hits.push(HeaderNicheHit {
             col_start: start,
             col_end: visible_width.saturating_sub(1),
+            tab_id: tab.card.tab_id,
+            tab_position: tab.card.position,
+            group_path: tab.parent_path.clone(),
+            inspect_target: None,
+            action: HitAction::SwitchTab,
         });
-        consumed_tabs += 1;
+        consumption.direct_tabs = index + 1;
     }
     HeaderNicheProjection {
         text,
         visible_width,
         hits,
-        consumed_tabs,
+        consumption,
+    }
+}
+
+fn project_child_group_header_niche(
+    child_groups: &[RenderGroup],
+    width: usize,
+    theme: Option<RenderTheme>,
+    template_catalog: Option<&TemplateConfigCatalog>,
+) -> HeaderNicheProjection {
+    let Some(group) = child_groups.first() else {
+        return HeaderNicheProjection::default();
+    };
+    let group_label = group.label.clone();
+    let group_width = group_label.width();
+    if group_width == 0 || group_width > width {
+        return HeaderNicheProjection::default();
+    }
+
+    let mut text = group_label;
+    let mut visible_width = group_width;
+    let mut hits = vec![HeaderNicheHit {
+        col_start: 0,
+        col_end: visible_width.saturating_sub(1),
+        tab_id: 0,
+        tab_position: 0,
+        group_path: Some(group.path.clone()),
+        inspect_target: None,
+        action: HitAction::ToggleGroup,
+    }];
+    let mut child_consumption = HeaderNicheConsumption::default();
+
+    if !group.collapsed {
+        let (direct_tabs, child_group_nodes) = direct_tabs_and_child_groups(&group.children);
+        let child_groups = child_group_nodes
+            .iter()
+            .filter_map(|node| match node {
+                RenderNode::Group(group) => Some(group.clone()),
+                RenderNode::Tab(_) => None,
+            })
+            .collect::<Vec<_>>();
+        let child_width = width
+            .saturating_sub(visible_width)
+            .saturating_sub(" ─ ".width());
+        let child_projection = project_header_niche(
+            &direct_tabs,
+            &child_groups,
+            child_width,
+            theme,
+            template_catalog,
+        );
+        if child_projection.visible_width > 0 {
+            let child_start = visible_width + " ─ ".width();
+            text.push_str(" ─ ");
+            text.push_str(&child_projection.text);
+            hits.extend(child_projection.hits.into_iter().map(|hit| HeaderNicheHit {
+                col_start: child_start + hit.col_start,
+                col_end: child_start + hit.col_end,
+                tab_id: hit.tab_id,
+                tab_position: hit.tab_position,
+                group_path: hit.group_path,
+                inspect_target: hit.inspect_target,
+                action: hit.action,
+            }));
+            visible_width += " ─ ".width() + child_projection.visible_width;
+            child_consumption = child_projection.consumption;
+        } else {
+            return HeaderNicheProjection::default();
+        }
+    }
+
+    HeaderNicheProjection {
+        text,
+        visible_width,
+        hits,
+        consumption: HeaderNicheConsumption {
+            direct_tabs: 0,
+            child_group: Some(Box::new(HeaderNicheGroupConsumption {
+                child_group_index: 0,
+                child_consumption,
+            })),
+        },
     }
 }
 
@@ -3925,8 +4097,8 @@ fn inline_item_from_template_field(index: usize, field: &TemplateField) -> Inlin
 struct RenderedTemplateLine {
     text: String,
     visible_sources: BTreeSet<ResolvedTemplateFieldSource>,
-    niche_hits: Vec<CompactSegmentHitBox>,
-    consumed_niche_tabs: usize,
+    niche_hits: Vec<HeaderNicheHit>,
+    niche_consumption: HeaderNicheConsumption,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5317,8 +5489,8 @@ mod tests {
             rendered.lines
         );
         assert!(
-            rendered.lines[1].starts_with("  ▼ repo-a"),
-            "explicit parent layout should keep the child group boundary visible: {:?}",
+            rendered.lines[0].contains("─ repo-a"),
+            "explicit parent layout should keep the child group boundary visible without structural conflation: {:?}",
             rendered.lines
         );
     }
@@ -5454,6 +5626,104 @@ mod tests {
         assert!(
             !rendered.lines[1].contains("repo-overview"),
             "absorbed direct tab should not be repeated below the header: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
+    fn group_header_absorbs_one_child_group_path_into_niche() {
+        let mut model = nested_group_model();
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Root,
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 10, 72, true);
+
+        assert!(
+            rendered.lines[0].contains("worktree-a"),
+            "first child group should be absorbed into the parent header niche: {:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered.lines[0].contains("agent-1"),
+            "first child group's direct tab should use the remaining niche: {:?}",
+            rendered.lines
+        );
+        assert!(
+            !rendered
+                .lines
+                .iter()
+                .skip(1)
+                .any(|line| line.contains("worktree-a")),
+            "fully absorbed child group should not be repeated below: {:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .skip(1)
+                .any(|line| line.contains("worktree-b")),
+            "unabsorbed sibling child group should still render below: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
+    fn collapsed_absorbed_child_group_does_not_absorb_descendants() {
+        let mut model = nested_group_model();
+        let collapsed_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("first row should be child group"),
+        };
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Root,
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered =
+            render_lines_with_collapsed_groups(Some(&model), &[], 10, 72, true, &[collapsed_path]);
+
+        assert!(
+            rendered.lines[0].contains("worktree-a"),
+            "collapsed child group should still be absorbable as a group fragment: {:?}",
+            rendered.lines
+        );
+        assert!(
+            !rendered.lines[0].contains("agent-1"),
+            "collapsed child group should not donate descendants into the parent niche: {:?}",
+            rendered.lines
+        );
+        assert!(
+            !rendered
+                .lines
+                .iter()
+                .skip(1)
+                .any(|line| line.contains("worktree-a")),
+            "absorbed collapsed child group should not be repeated below: {:?}",
             rendered.lines
         );
     }
@@ -6217,6 +6487,7 @@ mod tests {
             &BTreeSet::new(),
             &MetadataControls::default(),
             None,
+            &[],
             &[],
         );
 
@@ -7100,6 +7371,7 @@ mod tests {
             &MetadataControls::default(),
             None,
             &[],
+            &[],
         );
         assert_eq!(allocation.rows, 2..3);
         assert!(matches!(allocation.key, NodeKey::Group(ref p) if p == &group.path));
@@ -7459,6 +7731,7 @@ mod tests {
             &BTreeSet::new(),
             &controls,
             Some(&NodeKey::Group(path.clone())),
+            &[],
             &[],
         );
         assert!(lines[0].ends_with("●─"), "got {:?}", lines[0]);
