@@ -1644,7 +1644,10 @@ fn render_compact_segment_run(
                 line.push_str(&" ".repeat(item.cols.start - col));
                 col = item.cols.start;
             }
-            let label = tab_title_with_template_catalog(&tab.card, None);
+            let label = items
+                .get(index)
+                .map(|item| item.text.clone())
+                .unwrap_or_else(|| tab_title_with_template_catalog(&tab.card, None));
             let segment_item = SegmentItem {
                 label,
                 active: tab.card.active,
@@ -5370,6 +5373,71 @@ mod tests {
             rendered.lines
         );
         assert_eq!(visible_width_without_ansi(&rendered.lines[1]), 48);
+    }
+
+    #[test]
+    fn themed_compact_strip_uses_template_catalog_tab_titles() {
+        let config = andamento_shared::template_config::parse_template_config_json(
+            r#"
+            {
+              "templates": [
+                {
+                  "name": "custom.tab-title",
+                  "slot": "tab-title",
+                  "node-kind": "tab",
+                  "fields": [
+                    { "class": "required", "sources": [{ "kind": "literal", "value": "External" }] }
+                  ]
+                }
+              ]
+            }
+            "#,
+        )
+        .expect("valid template config");
+        let catalog = andamento_shared::template_config::TemplateConfigCatalog::from_config(config);
+        let mut model = mixed_child_group_model();
+        let parent_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("first row should be parent group"),
+        };
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Group(parent_path),
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines_with_options(
+            Some(&model),
+            &[],
+            8,
+            48,
+            true,
+            Some(test_theme()),
+            None,
+            &[],
+            Some(&catalog),
+        );
+
+        assert!(
+            rendered.lines[1].contains(" External "),
+            "themed compact strip should keep template-resolved tab title labels: {:?}",
+            rendered.lines
+        );
+        assert!(
+            !rendered.lines[1].contains(" repo-overview "),
+            "themed compact strip should not fall back to built-in tab title labels: {:?}",
+            rendered.lines
+        );
     }
 
     #[test]
