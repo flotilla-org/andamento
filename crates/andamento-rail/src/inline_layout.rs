@@ -9,6 +9,7 @@ pub struct InlineRun {
 pub struct InlineItem {
     pub id: String,
     pub text: String,
+    pub measure_text: String,
     pub class: InlineClass,
     pub priority: i64,
     pub min_width: usize,
@@ -61,10 +62,29 @@ impl InlineItem {
         let min_width = text.width().min(3);
         Self {
             id: id.into(),
+            measure_text: text.clone(),
             text,
             class: InlineClass::Required,
             priority: 100,
             min_width,
+            compact_text: None,
+            hit: None,
+        }
+    }
+
+    pub fn styled_text(
+        id: impl Into<String>,
+        text: impl Into<String>,
+        measure_text: impl Into<String>,
+    ) -> Self {
+        let measure_text = measure_text.into();
+        Self {
+            id: id.into(),
+            text: text.into(),
+            min_width: measure_text.width().min(3),
+            measure_text,
+            class: InlineClass::Required,
+            priority: 100,
             compact_text: None,
             hit: None,
         }
@@ -130,9 +150,9 @@ fn place_items(items: &[InlineItem], width: usize) -> PlacedInlineRun {
     let mut visible_width = 0usize;
     let mut placed_items = Vec::new();
     for item in items {
-        let separator = inline_separator(&text, &item.text);
+        let separator = inline_separator(&text, &item.measure_text);
         let separator_width = separator.width();
-        let item_width = item.text.width();
+        let item_width = item.measure_text.width();
         if visible_width + separator_width + item_width > width {
             break;
         }
@@ -158,10 +178,10 @@ fn inline_items_width(items: &[InlineItem]) -> usize {
     let mut text = String::new();
     let mut width = 0usize;
     for item in items {
-        let separator = inline_separator(&text, &item.text);
-        width += separator.width() + item.text.width();
+        let separator = inline_separator(&text, &item.measure_text);
+        width += separator.width() + item.measure_text.width();
         text.push_str(separator);
-        text.push_str(&item.text);
+        text.push_str(&item.measure_text);
     }
     width
 }
@@ -170,7 +190,7 @@ fn truncate_lowest_priority_item_to_fit(items: &mut [InlineItem], width: usize) 
     let Some((index, _)) = items
         .iter()
         .enumerate()
-        .filter(|(_, item)| item.text.width() > item.min_width)
+        .filter(|(_, item)| item.measure_text.width() > item.min_width)
         .min_by_key(|(_, item)| item.priority)
     else {
         return;
@@ -179,11 +199,13 @@ fn truncate_lowest_priority_item_to_fit(items: &mut [InlineItem], width: usize) 
     if current_width <= width {
         return;
     }
-    let item_width = items[index].text.width();
+    let item_width = items[index].measure_text.width();
     let overflow = current_width - width;
     let max_reduction = item_width.saturating_sub(items[index].min_width);
     let new_width = item_width.saturating_sub(overflow.min(max_reduction));
-    items[index].text = truncate_to_width(&items[index].text, new_width);
+    let truncated = truncate_to_width(&items[index].measure_text, new_width);
+    items[index].measure_text = truncated.clone();
+    items[index].text = truncated;
 }
 
 fn droppable_priorities(items: &[InlineItem]) -> Vec<i64> {
@@ -227,6 +249,25 @@ fn inline_separator(current_text: &str, next_text: &str) -> &'static str {
     } else {
         " "
     }
+}
+
+#[cfg(test)]
+fn visible_width_without_ansi(line: &str) -> usize {
+    let mut visible = String::new();
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for code in chars.by_ref() {
+                if code == 'm' {
+                    break;
+                }
+            }
+            continue;
+        }
+        visible.push(ch);
+    }
+    visible.width()
 }
 
 #[cfg(test)]
@@ -298,5 +339,18 @@ mod tests {
         assert_eq!(placed.items[0].hit, Some(InlineHit::GroupToggle));
         assert_eq!(placed.items[0].cols, 0..1);
         assert_eq!(placed.items[1].hit, Some(InlineHit::InspectNode));
+    }
+
+    #[test]
+    fn inline_run_counts_visible_width_without_ansi() {
+        let styled = "\u{1b}[1;38;5;2mproject\u{1b}[0m";
+        let run = InlineRun::new(vec![
+            InlineItem::styled_text("label", styled, "project").required()
+        ]);
+
+        let placed = run.layout(7);
+
+        assert_eq!(placed.visible_width, 7);
+        assert_eq!(visible_width_without_ansi(&placed.text), 7);
     }
 }
