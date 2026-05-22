@@ -301,7 +301,7 @@ Compatibility should start conservative:
 
 This is likely to become load-bearing as grouping gets richer, because one flexible grouping rule needs to look reasonable across very different workspace shapes.
 
-Status: started in the rail renderer. A single-child group chain can now be visibly conflated into one header after resolved metadata has been merged into the render tree. The visible node keeps the deepest group path for normal group actions and stores the conflated prefixes for inspection. Direct tabs still block conflation, collapsed groups block conflation, and explicit `rail.child_layout` settings on either side of a boundary block conflation so local layout choices remain visible boundaries.
+Status: started in the rail renderer. A single-child group chain can now be visibly conflated into one header after resolved metadata has been merged into the render tree. The visible node keeps the deepest group path for normal group actions and stores the conflated prefixes for inspection. The visible title joins conflated labels with the rail border character so it reads as one combined header. The current conservative blockers are direct tabs, collapsed groups, and explicit `rail.child_layout` settings on either side of a boundary. These blockers are intentionally provisional; as inherited settings, body/content slots, priority areas, and header-niche absorption take shape, the compatibility rule should be revisited rather than treated as final.
 
 ### Group Prefixes Are First-Class Controller Targets
 

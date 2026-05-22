@@ -2719,6 +2719,10 @@ fn can_conflate_group_with_only_child(group: &RenderGroup) -> bool {
     child_groups == 1
 }
 
+fn conflated_group_label(parent: &str, child: &str) -> String {
+    format!("{parent}─{child}")
+}
+
 fn conflate_group_with_only_child(group: &mut RenderGroup) {
     let child_index = group
         .children
@@ -2729,7 +2733,7 @@ fn conflate_group_with_only_child(group: &mut RenderGroup) {
         unreachable!("child index should point at a group");
     };
     let indent_delta = child.indent.saturating_sub(group.indent);
-    let label = format!("{} / {}", group.label, child.label);
+    let label = conflated_group_label(&group.label, &child.label);
     let full_label = label.clone();
 
     let mut metadata = group.metadata.clone();
@@ -5003,7 +5007,7 @@ mod tests {
         };
         assert_eq!(group.path, path);
         assert_eq!(group.conflated_paths.len(), 3);
-        assert_eq!(group.label, "project-a / repo-a / main");
+        assert_eq!(group.label, "project-a─repo-a─main");
         assert!(
             matches!(&group.children[0], RenderNode::Tab(tab) if tab.indent == 2),
             "child tab should remain directly under the visible conflated group: {:?}",
@@ -5012,7 +5016,7 @@ mod tests {
 
         let rendered = render_lines(Some(&model), &[], 6, 48, true);
         assert!(
-            rendered.lines[0].starts_with("▼ project-a / repo-a / main"),
+            rendered.lines[0].starts_with("▼ project-a─repo-a─main"),
             "{:?}",
             rendered.lines
         );

@@ -57,7 +57,7 @@ layout {
                     }
                 }
                 pane command="$ANDAMENTO_ROOT/scripts/andamento-git-watcher.py" cwd="$ANDAMENTO_ROOT" {
-                    args "--interval" "5" "--factory-repo-manager"
+                    args "--interval" "5"
                 }
             }
         }
