@@ -386,6 +386,30 @@ Field compaction should eventually happen before priority dropping. A string fie
 
 Status: started internally. The renderer now has generic ordered template fields with required, optional, and priority classes. Render nodes also carry an initial metadata map populated from the current compatibility view model. Group headers, tab titles, and tab status text are the first field callers, and these field builders now read their display values from render metadata. This is still hard-coded Rust, not external template config, and should be extended to nested groups before adding user-authored templates.
 
+### Header Rows Need An Inline Layout Model
+
+Header rows and compact tab strips need a smaller layout primitive than the future recursive body/content tree. These rows are not rectangular pages like the config plugin, and they are not just strings: they contain symbols, labels, counters, template fields, separators, focus/inspect controls, future image-backed buttons, and exact mouse hit regions.
+
+The rail should therefore keep a custom inline layout model rather than move this part to ratatui. Ratatui is useful for config pages and inspector forms, but the rail needs tighter control over:
+
+- visible-width measurement of styled text.
+- priority fitting and truncation before full field elision.
+- exact Zellij tabbar segment glyphs and colours.
+- hit payloads tied to the placed item, not the original string.
+- compact child runs that can later fit into a group header niche.
+- optional future item kinds such as image placeholders, action buttons, focus toggles, and priority/pinned chips.
+
+Status: started in `andamento-rail`. `InlineRun` and `InlineItem` now model the row as placed items with required/optional/priority classes, min widths, truncation, wrapping, styled text measurement, and local hit payloads. Group header template fields are packed through this inline model, so low-priority fields truncate with `...` before disappearing entirely. Compact child tab strips also use inline placement before rendering their Zellij-tabbar-like segments, preserving template-resolved tab labels and click regions.
+
+This model is intentionally a row-level projection. It does not replace `body`, `content`, or `children`, and it should not become a second tree model. A recursive node can later project part of itself into an inline run, for example:
+
+- collapse toggle + group title + count.
+- group title plus a prefix of direct child tabs in a spare header niche.
+- compact focus/action controls when an inherited "show controls" setting is active.
+- priority/pinned tab chips duplicated into a top-level attention area.
+
+Header niche absorption is not implemented yet. The current compact strip receives the available width under the group header. The next step is to let a header compute a bounded niche width and ask the same inline/segment machinery how many direct child tabs fit there, with overflow falling back to compact child strips or full cards.
+
 ### Bodies, Content, And Slots Need A Recursive Layout Model
 
 Headers are not enough. Groups, tabs, panes, and latent nodes need a recursive slot/layout model. The important distinction is:
@@ -449,7 +473,7 @@ This keeps configuration ergonomic: a user can say "this repo group shows images
 
 Status: started. The rail recognizes root/group metadata `rail.child_layout=compact-strip` as an inherited child-layout setting. Root metadata provides the default for the tree; each group can override it for its own children and descendants. A group with the effective compact setting renders its direct tab children as a compact Zellij-tabbar-like segment run before rendering child groups normally. Compact segments use the exact Zellij powerline separator glyph with active/inactive tab foreground/background colours, and `rail_segment_between_color "#RRGGBB"` can override the in-between separator colour to match the terminal background. The default remains vertical card rendering, and the Inspect page can set or clear the child-layout override for root or an inspected group.
 
-The segment renderer is deliberately pure and bounded: callers provide the available width and get rendered text plus hit geometry back. Today the compact child layout gives it the remaining rail width under the group header. Later, a group header can pass a smaller "niche" width and absorb a prefix of direct child tabs into an available gap without the segment code assuming it owns the whole row. Segment style is also separate from segment data so future runs can be selected from metadata, choose explicit adjacency/gap rules, or be replaced by image-backed segment assets without changing the child-node projection model.
+The segment renderer is deliberately pure and bounded: callers provide the available width and get rendered text plus hit geometry back. Today the compact child layout gives it the remaining rail width under the group header, via the rail inline layout model. Later, a group header can pass a smaller "niche" width and absorb a prefix of direct child tabs into an available gap without the segment code assuming it owns the whole row. Segment style is also separate from segment data so future runs can be selected from metadata, choose explicit adjacency/gap rules, or be replaced by image-backed segment assets without changing the child-node projection model.
 
 Compact child layouts should not assume that every affordance is always visible. For example, focus/config/action buttons may be hidden by default when tabs are rendered as compact header segments, because there may not be enough space to show them without destroying the density benefit. A separate inherited toggle should put a subtree into an action/focus mode where those controls are visible or given priority. This avoids overloading compact layout itself with "show buttons" semantics.
 
@@ -904,6 +928,7 @@ This should not require a new data model. It should consume the same metadata st
 - What is the minimum materialization recipe shape for latent tabs without coupling too tightly to flotilla?
 - When external metadata arrives, should values be typed JSON-like data, strings only, or a small tagged enum?
 - What exact rules make two single-child group levels compatible for visual conflation?
+- What is the first useful header-niche policy: absorb only direct tabs, absorb direct tabs plus compatible child groups, or allow priority/pinned duplicates from elsewhere in the tree?
 - What is the first body/content/children slot schema that can support rows, columns, text, status, buttons, images, actions, and child references without becoming a full UI framework?
 - Which node settings should be inherited first: image visibility, child layout mode, or compact/detailed body mode?
 - How should image chrome assets be packaged, cached, scaled, and toggled?
