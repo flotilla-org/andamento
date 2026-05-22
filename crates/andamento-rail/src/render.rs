@@ -3962,6 +3962,20 @@ fn project_direct_tab_header_niche(
         });
         consumption.direct_tabs = index + 1;
     }
+    let leading_width = width.saturating_sub(visible_width);
+    if visible_width > 0 && leading_width > 0 {
+        let leading = if leading_width == 1 {
+            " ".to_owned()
+        } else {
+            format!("{} ", "─".repeat(leading_width - 1))
+        };
+        text = format!("{leading}{text}");
+        for hit in &mut hits {
+            hit.col_start += leading_width;
+            hit.col_end += leading_width;
+        }
+        visible_width += leading_width;
+    }
     HeaderNicheProjection {
         text,
         visible_width,
@@ -3987,15 +4001,7 @@ fn project_child_group_header_niche(
 
     let mut text = group_label;
     let mut visible_width = group_width;
-    let mut hits = vec![HeaderNicheHit {
-        col_start: 0,
-        col_end: visible_width.saturating_sub(1),
-        tab_id: 0,
-        tab_position: 0,
-        group_path: Some(group.path.clone()),
-        inspect_target: None,
-        action: HitAction::ToggleGroup,
-    }];
+    let mut hits = vec![];
     let mut child_consumption = HeaderNicheConsumption::default();
 
     if !group.collapsed {
@@ -5560,7 +5566,12 @@ mod tests {
             "direct tab should render as a Zellij-style tab strip in the group header niche: {:?}",
             rendered.lines
         );
-        let repo_hit = hit_at(&rendered.hit_regions, 0, 16).expect("repo strip hit");
+        let repo_col = rendered.lines[0]
+            .split("repo-overview")
+            .next()
+            .expect("repo strip should be visible")
+            .width();
+        let repo_hit = hit_at(&rendered.hit_regions, 0, repo_col).expect("repo strip hit");
         assert_eq!(repo_hit.action, HitAction::SwitchTab);
         assert_eq!(repo_hit.tab_id, 2);
         assert!(
@@ -5678,6 +5689,93 @@ mod tests {
                 .any(|line| line.contains("worktree-b")),
             "unabsorbed sibling child group should still render below: {:?}",
             rendered.lines
+        );
+    }
+
+    #[test]
+    fn absorbed_child_group_label_is_not_a_toggle_hit() {
+        let mut model = nested_group_model();
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Root,
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 10, 72, true);
+        let group_label_col = rendered.lines[0]
+            .split("worktree-a")
+            .next()
+            .expect("absorbed group label should be visible")
+            .width();
+        let tab_col = rendered.lines[0]
+            .split("agent-1")
+            .next()
+            .expect("absorbed tab should be visible")
+            .width();
+
+        assert!(
+            !matches!(
+                hit_at(&rendered.hit_regions, 0, group_label_col),
+                Some(HitRegion {
+                    action: HitAction::ToggleGroup,
+                    ..
+                })
+            ),
+            "absorbed group label should not toggle the projected group's body: {:?}",
+            rendered.hit_regions
+        );
+        assert_eq!(
+            hit_at(&rendered.hit_regions, 0, tab_col)
+                .expect("absorbed tab should remain clickable")
+                .action,
+            HitAction::SwitchTab
+        );
+    }
+
+    #[test]
+    fn absorbed_direct_tabs_are_right_aligned_in_header_niche() {
+        let mut model = mixed_child_group_model();
+        let parent_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("first row should be parent group"),
+        };
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Group(parent_path),
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 8, 48, true);
+        let tab_col = rendered.lines[0]
+            .split("repo-overview")
+            .next()
+            .expect("absorbed tab should be visible")
+            .width();
+
+        assert!(
+            tab_col >= 28,
+            "absorbed tab should sit near the right edge of the available header niche: {:?}",
+            rendered.lines[0]
         );
     }
 
