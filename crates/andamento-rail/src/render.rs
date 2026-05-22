@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::inline_layout::{InlineItem, InlineRun};
 use andamento_shared::segment_bar::{self, SegmentItem};
 use andamento_shared::template_config::{
     TemplateConfigCatalog, TemplateConfigFieldClass, TemplateConfigMatchContext,
@@ -3689,7 +3690,7 @@ fn group_header_line(
         ),
     };
     let rendered_fields =
-        render_template_fields_with_suppression(&fields, width, ancestor_template_fields);
+        render_template_fields_inline_with_suppression(&fields, width, ancestor_template_fields);
     let label = rendered_fields.text;
     let remaining = width.saturating_sub(label.width());
     let text = if remaining >= 2 {
@@ -3705,6 +3706,48 @@ fn group_header_line(
     RenderedTemplateLine {
         text,
         visible_sources: rendered_fields.visible_sources,
+    }
+}
+
+fn render_template_fields_inline_with_suppression(
+    fields: &[TemplateField],
+    width: usize,
+    suppressed_sources: &BTreeSet<ResolvedTemplateFieldSource>,
+) -> RenderedTemplateFields {
+    let inline_items = fields
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| {
+            template_field_source(field).is_none_or(|source| !suppressed_sources.contains(source))
+        })
+        .map(|(index, field)| inline_item_from_template_field(index, field))
+        .collect::<Vec<_>>();
+    let placed = InlineRun::new(inline_items).layout(width);
+    let visible_sources = placed
+        .items
+        .iter()
+        .filter_map(|item| {
+            item.id
+                .strip_prefix("field:")
+                .and_then(|index| index.parse::<usize>().ok())
+                .and_then(|index| fields.get(index))
+                .and_then(template_field_source)
+                .cloned()
+        })
+        .collect();
+    RenderedTemplateFields {
+        text: placed.text,
+        visible_sources,
+    }
+}
+
+fn inline_item_from_template_field(index: usize, field: &TemplateField) -> InlineItem {
+    let item = InlineItem::text(format!("field:{index}"), template_field_value(field));
+    match field {
+        TemplateField::Required(_) => item.required(),
+        TemplateField::Optional(_) => item.optional(),
+        TemplateField::Priority(_) => item.priority(100),
+        TemplateField::Prioritized { priority, .. } => item.priority(*priority),
     }
 }
 
@@ -5900,6 +5943,22 @@ mod tests {
             lines[0].starts_with("▼ metadata-label (3)"),
             "group header template should render from metadata: {:?}",
             lines[0]
+        );
+    }
+
+    #[test]
+    fn group_header_inline_layout_preserves_toggle_label_count_and_filler() {
+        let rendered = render_lines(Some(&grouped_model()), &[], 8, 24, true);
+
+        assert!(rendered.lines[0].starts_with("▼ zellij (2)"));
+        assert!(
+            rendered.lines[0].contains("──"),
+            "group header should retain horizontal filler: {:?}",
+            rendered.lines[0]
+        );
+        assert_eq!(
+            hit_at(&rendered.hit_regions, 0, 0).map(|hit| hit.action),
+            Some(HitAction::ToggleGroup)
         );
     }
 
