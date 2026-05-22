@@ -514,6 +514,7 @@ fn group_metadata_block(group: &RenderGroup) -> Vec<String> {
             node_kind: RenderNodeKind::Group,
             metadata: &group.metadata,
             collapsed: group.collapsed,
+            collapsible: true,
             active_tab_name: active_tab_name(&group.children),
         },
     )]
@@ -603,6 +604,7 @@ fn tab_metadata_block(tab: &RenderTab) -> Vec<String> {
             node_kind: RenderNodeKind::Tab,
             metadata: &card.metadata,
             collapsed: false,
+            collapsible: false,
             active_tab_name: None,
         },
     ) {
@@ -617,6 +619,7 @@ fn tab_metadata_block(tab: &RenderTab) -> Vec<String> {
                 node_kind: RenderNodeKind::Tab,
                 metadata: &card.metadata,
                 collapsed: false,
+                collapsible: false,
                 active_tab_name: None,
             },
         ) {
@@ -1319,13 +1322,12 @@ fn render_nodes_to_buffer(
                 pending_tabs.clear();
                 let group_key = NodeKey::Group(group.path.clone());
                 let child_settings = inherited_settings.with_node_metadata(&group.metadata);
-                let (direct_tabs, child_group_nodes) = if !group.collapsed
-                    && child_settings.child_layout == ChildLayoutSetting::CompactStrip
-                {
-                    direct_tabs_and_child_groups(&group.children)
-                } else {
-                    (vec![], vec![])
-                };
+                let (direct_tabs, child_group_nodes) =
+                    if child_settings.child_layout == ChildLayoutSetting::CompactStrip {
+                        direct_tabs_and_child_groups(&group.children)
+                    } else {
+                        (vec![], vec![])
+                    };
                 let child_groups = child_group_nodes
                     .iter()
                     .filter_map(|node| match node {
@@ -1346,6 +1348,7 @@ fn render_nodes_to_buffer(
                         inspected_node,
                         &direct_tabs,
                         &child_groups,
+                        child_settings.child_layout,
                     );
                 if metadata_controls.effective_show(&group_key, ancestor_meta_children) {
                     append_meta_panel(
@@ -1450,6 +1453,7 @@ fn append_group_header(
     inspected_node: Option<&NodeKey>,
     niche_tabs: &[RenderTab],
     niche_child_groups: &[RenderGroup],
+    child_layout: ChildLayoutSetting,
 ) -> (
     BTreeSet<ResolvedTemplateFieldSource>,
     NodeRowAllocation,
@@ -1470,9 +1474,10 @@ fn append_group_header(
         inner_width
     };
     let mut line = " ".repeat(indent);
-    let rendered = group_header_line(
+    let mut rendered = group_header_line(
         &group.metadata,
         group.collapsed,
+        true,
         contains_active_tab(&group.children),
         active_tab_name(&group.children),
         group.templates.group_header.as_ref(),
@@ -1483,6 +1488,22 @@ fn append_group_header(
         niche_tabs,
         niche_child_groups,
     );
+    if !group_header_has_revealable_body(group, child_layout, &rendered.niche_consumption) {
+        rendered = group_header_line(
+            &group.metadata,
+            group.collapsed,
+            false,
+            contains_active_tab(&group.children),
+            active_tab_name(&group.children),
+            group.templates.group_header.as_ref(),
+            header_width,
+            theme,
+            template_catalog,
+            ancestor_template_fields,
+            niche_tabs,
+            niche_child_groups,
+        );
+    }
     line.push_str(&rendered.text);
     for hit in rendered.niche_hits {
         hit_regions.push(HitRegion {
@@ -1519,17 +1540,21 @@ fn append_group_header(
         });
     }
     lines.push(line);
-    hit_regions.push(HitRegion {
-        row_start: row,
-        row_end: row,
-        col_start: indent,
-        col_end: indent,
-        tab_id: 0,
-        tab_position: 0,
-        group_path: Some(group.path.clone()),
-        inspect_target: None,
-        action: HitAction::ToggleGroup,
-    });
+    let collapse_visible =
+        group_header_has_revealable_body(group, child_layout, &rendered.niche_consumption);
+    if collapse_visible {
+        hit_regions.push(HitRegion {
+            row_start: row,
+            row_end: row,
+            col_start: indent,
+            col_end: indent,
+            tab_id: 0,
+            tab_position: 0,
+            group_path: Some(group.path.clone()),
+            inspect_target: None,
+            action: HitAction::ToggleGroup,
+        });
+    }
     let allocation = NodeRowAllocation {
         key: NodeKey::Group(group.path.clone()),
         rows: row..row + 1,
@@ -1539,6 +1564,20 @@ fn append_group_header(
         allocation,
         rendered.niche_consumption,
     )
+}
+
+fn group_header_has_revealable_body(
+    group: &RenderGroup,
+    child_layout: ChildLayoutSetting,
+    niche_consumption: &HeaderNicheConsumption,
+) -> bool {
+    if group.children.is_empty() {
+        return false;
+    }
+    if child_layout != ChildLayoutSetting::CompactStrip {
+        return true;
+    }
+    !children_after_niche_consumption(&group.children, niche_consumption).is_empty()
 }
 
 fn child_layout_from_metadata(metadata: &RenderMetadata) -> Option<ChildLayoutSetting> {
@@ -2507,7 +2546,7 @@ fn nodes_to_render(
     };
     let mut nodes = pending_nodes_to_render_nodes(pending_rows, collapsed_groups);
     merge_resolved_metadata(&mut nodes, &model.resolved_metadata);
-    conflate_spindly_groups(&mut nodes);
+    conflate_spindly_groups(&mut nodes, root_inherited_settings_for_model(Some(model)));
     nodes
 }
 
@@ -2816,21 +2855,25 @@ fn merge_resolved_metadata(nodes: &mut [RenderNode], resolved_metadata: &[Resolv
     );
 }
 
-fn conflate_spindly_groups(nodes: &mut Vec<RenderNode>) {
+fn conflate_spindly_groups(nodes: &mut Vec<RenderNode>, inherited_settings: InheritedRailSettings) {
     for node in nodes {
         let RenderNode::Group(group) = node else {
             continue;
         };
-        conflate_spindly_groups(&mut group.children);
-        while can_conflate_group_with_only_child(group) {
+        let child_settings = inherited_settings.with_node_metadata(&group.metadata);
+        conflate_spindly_groups(&mut group.children, child_settings);
+        while can_conflate_group_with_only_child(group, child_settings) {
             conflate_group_with_only_child(group);
-            conflate_spindly_groups(&mut group.children);
+            conflate_spindly_groups(&mut group.children, child_settings);
         }
     }
 }
 
-fn can_conflate_group_with_only_child(group: &RenderGroup) -> bool {
-    if group.collapsed || child_layout_from_metadata(&group.metadata).is_some() {
+fn can_conflate_group_with_only_child(
+    group: &RenderGroup,
+    effective_settings: InheritedRailSettings,
+) -> bool {
+    if group.collapsed || effective_settings.child_layout != ChildLayoutSetting::Cards {
         return false;
     }
     let mut child_groups = 0;
@@ -3205,6 +3248,7 @@ fn status_template_fields_with_template_catalog(
         node_kind: RenderNodeKind::Tab,
         metadata,
         collapsed: false,
+        collapsible: false,
         active_tab_name: None,
     };
     if let Some(fields) = external_template_fields(template_catalog, context) {
@@ -3215,6 +3259,7 @@ fn status_template_fields_with_template_catalog(
         node_kind: RenderNodeKind::Tab,
         metadata,
         collapsed: false,
+        collapsible: false,
         active_tab_name: None,
     })
 }
@@ -3282,6 +3327,7 @@ fn tab_title_template_fields_with_template_catalog(
         node_kind: RenderNodeKind::Tab,
         metadata,
         collapsed: false,
+        collapsible: false,
         active_tab_name: None,
     };
     if let Some(fields) = external_template_fields(template_catalog, context) {
@@ -3292,6 +3338,7 @@ fn tab_title_template_fields_with_template_catalog(
         node_kind: RenderNodeKind::Tab,
         metadata,
         collapsed: false,
+        collapsible: false,
         active_tab_name: None,
     })
 }
@@ -3802,6 +3849,7 @@ fn render_footer(
 fn group_header_line(
     metadata: &RenderMetadata,
     collapsed: bool,
+    collapsible: bool,
     contains_active_tab: bool,
     active_tab_name: Option<&str>,
     resolved_slot: Option<&ResolvedTemplateSlot>,
@@ -3813,10 +3861,13 @@ fn group_header_line(
     niche_child_groups: &[RenderGroup],
 ) -> RenderedTemplateLine {
     let fields = match resolved_slot {
-        Some(slot) => group_header_fields_from_resolved_slot(slot, collapsed, active_tab_name),
+        Some(slot) => {
+            group_header_fields_from_resolved_slot(slot, collapsed, collapsible, active_tab_name)
+        }
         None => group_header_template_fields_with_template_catalog(
             metadata,
             collapsed,
+            collapsible,
             active_tab_name,
             template_catalog,
         ),
@@ -3991,6 +4042,7 @@ fn project_child_group_header_niche(
     theme: Option<RenderTheme>,
     template_catalog: Option<&TemplateConfigCatalog>,
 ) -> HeaderNicheProjection {
+    let candidate_group_count = child_groups.len();
     let Some(group) = child_groups.first() else {
         return HeaderNicheProjection::default();
     };
@@ -4005,44 +4057,48 @@ fn project_child_group_header_niche(
     let mut hits = vec![];
     let mut child_consumption = HeaderNicheConsumption::default();
 
-    if !group.collapsed {
-        let (direct_tabs, child_group_nodes) = direct_tabs_and_child_groups(&group.children);
-        let child_groups = child_group_nodes
-            .iter()
-            .filter_map(|node| match node {
-                RenderNode::Group(group) => Some(group.clone()),
-                RenderNode::Tab(_) => None,
-            })
-            .collect::<Vec<_>>();
-        let child_width = width
-            .saturating_sub(visible_width)
-            .saturating_sub(" ─ ".width());
-        let child_projection = project_header_niche(
-            &direct_tabs,
-            &child_groups,
-            child_width,
-            theme,
-            template_catalog,
-        );
-        if child_projection.visible_width > 0 {
-            let separator = header_niche_separator(&child_projection.text);
-            let child_start = visible_width + separator.width();
-            text.push_str(separator);
-            text.push_str(&child_projection.text);
-            hits.extend(child_projection.hits.into_iter().map(|hit| HeaderNicheHit {
-                col_start: child_start + hit.col_start,
-                col_end: child_start + hit.col_end,
-                tab_id: hit.tab_id,
-                tab_position: hit.tab_position,
-                group_path: hit.group_path,
-                inspect_target: hit.inspect_target,
-                action: hit.action,
-            }));
-            visible_width += separator.width() + child_projection.visible_width;
-            child_consumption = child_projection.consumption;
-        } else {
+    let (direct_tabs, child_group_nodes) = direct_tabs_and_child_groups(&group.children);
+    let child_groups = child_group_nodes
+        .iter()
+        .filter_map(|node| match node {
+            RenderNode::Group(group) => Some(group.clone()),
+            RenderNode::Tab(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let child_width = width
+        .saturating_sub(visible_width)
+        .saturating_sub(" ─ ".width());
+    let child_projection = project_header_niche(
+        &direct_tabs,
+        &child_groups,
+        child_width,
+        theme,
+        template_catalog,
+    );
+    if child_projection.visible_width > 0 {
+        if candidate_group_count == 1
+            && !children_after_niche_consumption(&group.children, &child_projection.consumption)
+                .is_empty()
+        {
             return HeaderNicheProjection::default();
         }
+        let separator = header_niche_separator(&child_projection.text);
+        let child_start = visible_width + separator.width();
+        text.push_str(separator);
+        text.push_str(&child_projection.text);
+        hits.extend(child_projection.hits.into_iter().map(|hit| HeaderNicheHit {
+            col_start: child_start + hit.col_start,
+            col_end: child_start + hit.col_end,
+            tab_id: hit.tab_id,
+            tab_position: hit.tab_position,
+            group_path: hit.group_path,
+            inspect_target: hit.inspect_target,
+            action: hit.action,
+        }));
+        visible_width += separator.width() + child_projection.visible_width;
+        child_consumption = child_projection.consumption;
+    } else if !group.children.is_empty() {
+        return HeaderNicheProjection::default();
     }
 
     HeaderNicheProjection {
@@ -4211,6 +4267,7 @@ struct TemplateRenderContext<'a> {
     node_kind: RenderNodeKind,
     metadata: &'a RenderMetadata,
     collapsed: bool,
+    collapsible: bool,
     active_tab_name: Option<&'a str>,
 }
 
@@ -4488,7 +4545,7 @@ impl TemplateFieldCondition {
     fn matches(&self, context: &TemplateRenderContext<'_>) -> bool {
         match self {
             TemplateFieldCondition::Always => true,
-            TemplateFieldCondition::Collapsed => context.collapsed,
+            TemplateFieldCondition::Collapsed => context.collapsed && context.collapsible,
         }
     }
 }
@@ -4516,6 +4573,9 @@ impl TemplateValueSource {
                 collapsed,
                 expanded,
             } => {
+                if !context.collapsible {
+                    return None;
+                }
                 if context.collapsed {
                     (*collapsed).to_owned()
                 } else {
@@ -4581,12 +4641,19 @@ fn group_header_template_fields(
     collapsed: bool,
     active_tab_name: Option<&str>,
 ) -> Vec<TemplateField> {
-    group_header_template_fields_with_template_catalog(metadata, collapsed, active_tab_name, None)
+    group_header_template_fields_with_template_catalog(
+        metadata,
+        collapsed,
+        true,
+        active_tab_name,
+        None,
+    )
 }
 
 fn group_header_template_fields_with_template_catalog(
     metadata: &RenderMetadata,
     collapsed: bool,
+    collapsible: bool,
     active_tab_name: Option<&str>,
     template_catalog: Option<&TemplateConfigCatalog>,
 ) -> Vec<TemplateField> {
@@ -4595,6 +4662,7 @@ fn group_header_template_fields_with_template_catalog(
         node_kind: RenderNodeKind::Group,
         metadata,
         collapsed,
+        collapsible,
         active_tab_name,
     };
     if let Some(fields) = external_template_fields(template_catalog, context) {
@@ -4605,6 +4673,7 @@ fn group_header_template_fields_with_template_catalog(
         node_kind: RenderNodeKind::Group,
         metadata,
         collapsed,
+        collapsible,
         active_tab_name,
     })
 }
@@ -4612,17 +4681,22 @@ fn group_header_template_fields_with_template_catalog(
 fn group_header_fields_from_resolved_slot(
     slot: &ResolvedTemplateSlot,
     collapsed: bool,
+    collapsible: bool,
     active_tab_name: Option<&str>,
 ) -> Vec<TemplateField> {
-    let mut fields = vec![TemplateField::Required(
-        if collapsed { "▶" } else { "▼" }.to_owned(),
-    )];
+    let mut fields = if collapsible {
+        vec![TemplateField::Required(
+            if collapsed { "▶" } else { "▼" }.to_owned(),
+        )]
+    } else {
+        vec![]
+    };
     fields.extend(slot.fields.iter().map(|field| TemplateField::Prioritized {
         value: field.text.clone(),
         priority: field.priority,
         source: field.source.clone(),
     }));
-    if collapsed {
+    if collapsed && collapsible {
         if let Some(active_tab_name) = active_tab_name {
             fields.push(TemplateField::Prioritized {
                 value: format!(": {active_tab_name}"),
@@ -5500,7 +5574,7 @@ mod tests {
         let rendered = render_lines(Some(&model), &[], 6, 48, true);
 
         assert!(
-            rendered.lines[0].starts_with("▼ project-a"),
+            rendered.lines[0].starts_with("project-a"),
             "{:?}",
             rendered.lines
         );
@@ -5894,7 +5968,121 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_absorbed_child_group_does_not_absorb_descendants() {
+    fn fully_absorbed_group_body_does_not_show_a_collapse_toggle() {
+        let mut model = grouped_model();
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Root,
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 8, 72, true);
+
+        assert!(
+            rendered.lines[0].contains("server") && rendered.lines[0].contains("tests"),
+            "both child tabs should be absorbed into the header niche: {:?}",
+            rendered.lines
+        );
+        assert!(
+            !rendered.lines[0].contains('▼') && !rendered.lines[0].contains('▶'),
+            "a group with no remaining body rows should not show a collapse glyph: {:?}",
+            rendered.lines
+        );
+        assert_eq!(
+            hit_at(&rendered.hit_regions, 0, 0).map(|hit| hit.action),
+            None,
+            "a group with no remaining body rows should not register a collapse hit: {:?}",
+            rendered.hit_regions
+        );
+        assert!(
+            !rendered
+                .lines
+                .iter()
+                .skip(1)
+                .any(|line| line.contains("server") || line.contains("tests")),
+            "fully absorbed tabs should not repeat below the header: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
+    fn single_child_group_falls_back_to_grouped_rendering_when_too_narrow_to_absorb_all_children() {
+        let mut model = nested_group_model();
+        let child_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("first row should be child group"),
+        };
+        model.tabs.truncate(1);
+        model.rows.truncate(2);
+        for tab_id in [3_u64, 4] {
+            model.tabs.push(TabCard {
+                tab_id,
+                position: tab_id as usize - 1,
+                name: format!("agent-{tab_id}"),
+                active: false,
+                pinned: false,
+                status: None,
+                grouping: None,
+                templates: ResolvedTemplateSlots::default(),
+                active_pane: None,
+            });
+            model.rows.push(RailRow::Tab {
+                tab_id,
+                indent: 2,
+                parent_path: Some(child_path.clone()),
+            });
+        }
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Root,
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 10, 44, true);
+
+        assert!(
+            !rendered.lines[0].contains("worktree-a"),
+            "single child group should not be partially absorbed when narrow: {:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered.lines[1].contains("▼ worktree-a"),
+            "single child group should return to normal grouped rendering when narrow: {:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .skip(2)
+                .any(|line| line.contains("agent-")),
+            "child tabs should remain visible under the normal group: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
+    fn collapsed_absorbed_child_group_keeps_descendants_already_projected_into_parent_niche() {
         let mut model = nested_group_model();
         let collapsed_path = match &model.rows[0] {
             RailRow::GroupHeader { path, .. } => path.clone(),
@@ -5925,8 +6113,8 @@ mod tests {
             rendered.lines
         );
         assert!(
-            !rendered.lines[0].contains("agent-1"),
-            "collapsed child group should not donate descendants into the parent niche: {:?}",
+            rendered.lines[0].contains("agent-1"),
+            "collapse should not hide descendants already projected into an ancestor header niche: {:?}",
             rendered.lines
         );
         assert!(
@@ -6531,6 +6719,7 @@ mod tests {
             node_kind: RenderNodeKind::Tab,
             metadata: &metadata,
             collapsed: false,
+            collapsible: false,
             active_tab_name: None,
         };
 
@@ -6589,6 +6778,7 @@ mod tests {
             node_kind: RenderNodeKind::Tab,
             metadata: &metadata,
             collapsed: false,
+            collapsible: false,
             active_tab_name: None,
         };
 
@@ -6609,6 +6799,7 @@ mod tests {
             node_kind: RenderNodeKind::Tab,
             metadata: &metadata,
             collapsed: false,
+            collapsible: false,
             active_tab_name: None,
         };
         let spec = TemplateFieldSpec {
@@ -6652,6 +6843,7 @@ mod tests {
             node_kind: RenderNodeKind::Tab,
             metadata: &metadata,
             collapsed: false,
+            collapsible: false,
             active_tab_name: None,
         });
 
@@ -6701,10 +6893,11 @@ mod tests {
             None,
             &[],
             &[],
+            ChildLayoutSetting::Cards,
         );
 
         assert!(
-            lines[0].starts_with("▼ metadata-label (3)"),
+            lines[0].starts_with("metadata-label (3)"),
             "group header template should render from metadata: {:?}",
             lines[0]
         );
@@ -6837,6 +7030,7 @@ mod tests {
         let fields = group_header_template_fields_with_template_catalog(
             &metadata,
             false,
+            true,
             None,
             Some(&catalog),
         );
@@ -7584,6 +7778,7 @@ mod tests {
             None,
             &[],
             &[],
+            ChildLayoutSetting::Cards,
         );
         assert_eq!(allocation.rows, 2..3);
         assert!(matches!(allocation.key, NodeKey::Group(ref p) if p == &group.path));
@@ -7945,6 +8140,7 @@ mod tests {
             Some(&NodeKey::Group(path.clone())),
             &[],
             &[],
+            ChildLayoutSetting::Cards,
         );
         assert!(lines[0].ends_with("●─"), "got {:?}", lines[0]);
         let cycle_hit = hits
