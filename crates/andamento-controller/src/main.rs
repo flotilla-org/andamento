@@ -14,16 +14,17 @@ use andamento_shared::PaneTarget;
 use andamento_shared::PluginStatsRecorder;
 use andamento_shared::MSG_RAIL_SIZE_TARGET;
 use andamento_shared::MSG_VIEW_MODEL;
+use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
-    ChildLayoutSetRequest, ChildLayoutSetting, ConfigInspectRequest, ControllerBootstrapSnapshot,
-    ExternalMessage, MetadataPatch, MetadataTarget, MetadataValueUpdate,
-    MetadataVisibilitySetRequest, PluginRegistrationHello, RailConfig, RailGroupingMode,
-    RailRgbColor, RailSize, RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure,
-    RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS,
-    MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST,
-    MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED,
-    MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_SET_CHILD_LAYOUT, MSG_SET_METADATA_VISIBILITY,
-    MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
+    ChildLayoutSetRequest, ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage,
+    MetadataPatch, MetadataTarget, MetadataValueUpdate, MetadataVisibilitySetRequest,
+    PluginRegistrationHello, RailConfig, RailGroupingMode, RailRgbColor, RailSize,
+    RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RendererHello, SortMode,
+    StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO,
+    MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE,
+    MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
+    MSG_SET_CHILD_LAYOUT, MSG_SET_METADATA_VISIBILITY, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG,
+    MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
@@ -903,11 +904,11 @@ fn child_layout_patch(request: ChildLayoutSetRequest) -> Option<MetadataPatch> {
         andamento_shared::NodeKey::Tab(_) => return None,
     };
     let (set, unset) = match request.layout {
-        Some(ChildLayoutSetting::Cards) => (
+        Some(layout) => (
             BTreeMap::from([(
-                "rail.child_layout".to_owned(),
+                RAIL_CHILD_LAYOUT_METADATA_KEY.to_owned(),
                 MetadataValueUpdate {
-                    value: andamento_shared::MetadataValue::Text("vertical".to_owned()),
+                    value: layout.to_metadata_value(),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: None,
@@ -915,19 +916,10 @@ fn child_layout_patch(request: ChildLayoutSetRequest) -> Option<MetadataPatch> {
             )]),
             Vec::new(),
         ),
-        Some(ChildLayoutSetting::CompactStrip) => (
-            BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataValueUpdate {
-                    value: andamento_shared::MetadataValue::Text("compact-strip".to_owned()),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: None,
-                },
-            )]),
-            Vec::new(),
+        None => (
+            BTreeMap::new(),
+            vec![RAIL_CHILD_LAYOUT_METADATA_KEY.to_owned()],
         ),
-        None => (BTreeMap::new(), vec!["rail.child_layout".to_owned()]),
     };
     Some(MetadataPatch {
         target,

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use andamento_shared::segment_bar;
+use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
     ChildLayoutSetRequest, ChildLayoutSetting, ConfigInspectRequest, ControllerViewModel,
     GroupPath, MetadataEntry, MetadataSourceEntry, MetadataTarget, MetadataTriState, MetadataValue,
@@ -1101,16 +1102,7 @@ fn push_inspect_options_section(
 fn child_layout_setting_from_metadata(
     metadata: &BTreeMap<String, MetadataEntry>,
 ) -> Option<ChildLayoutSetting> {
-    let value = metadata.get("rail.child_layout")?;
-    match &value.value {
-        MetadataValue::Text(text) if text == "compact-strip" || text == "compact_strip" => {
-            Some(ChildLayoutSetting::CompactStrip)
-        }
-        MetadataValue::Text(text) if text == "vertical" || text == "cards" => {
-            Some(ChildLayoutSetting::Cards)
-        }
-        _ => None,
-    }
+    ChildLayoutSetting::from_metadata_value(&metadata.get(RAIL_CHILD_LAYOUT_METADATA_KEY)?.value)
 }
 
 fn push_inspect_metadata_section(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {

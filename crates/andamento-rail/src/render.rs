@@ -5,12 +5,13 @@ use andamento_shared::template_config::{
     TemplateConfigCatalog, TemplateConfigFieldClass, TemplateConfigMatchContext,
     TemplateConfigNodeKind, TemplateConfigSlot,
 };
+use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
-    ControllerViewModel, GroupPath, GroupSegment, MetadataControls, MetadataEntry,
-    MetadataSourceEntry, MetadataTarget, MetadataValue, NodeKey, PaneTarget, Priority, RailConfig,
-    RailRgbColor, RailRow, RailSizingPreset, RailStructure, ReachableMetadataIdentity,
-    ResolvedMetadata, ResolvedTemplateFieldSource, ResolvedTemplateSlot, ResolvedTemplateSlots,
-    StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
+    ChildLayoutSetting, ControllerViewModel, GroupPath, GroupSegment, MetadataControls,
+    MetadataEntry, MetadataSourceEntry, MetadataTarget, MetadataValue, NodeKey, PaneTarget,
+    Priority, RailConfig, RailRgbColor, RailRow, RailSizingPreset, RailStructure,
+    ReachableMetadataIdentity, ResolvedMetadata, ResolvedTemplateFieldSource, ResolvedTemplateSlot,
+    ResolvedTemplateSlots, StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
 };
 use ansi_term::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -206,9 +207,24 @@ struct CurrentGroupHeader {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChildLayout {
-    Vertical,
-    CompactStrip,
+struct InheritedRailSettings {
+    child_layout: ChildLayoutSetting,
+}
+
+impl Default for InheritedRailSettings {
+    fn default() -> Self {
+        Self {
+            child_layout: ChildLayoutSetting::Cards,
+        }
+    }
+}
+
+impl InheritedRailSettings {
+    fn with_node_metadata(self, metadata: &RenderMetadata) -> Self {
+        Self {
+            child_layout: child_layout_from_metadata(metadata).unwrap_or(self.child_layout),
+        }
+    }
 }
 
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -371,7 +387,7 @@ pub fn render_lines_with_rail_scroll(
     let config = model.map(|model| model.config).unwrap_or_default();
     let theme = theme.map(|theme| theme.with_config(config));
     let inspected_node = model.and_then(|model| model.inspected_node.as_ref());
-    let root_child_layout = root_child_layout_for_model(model).unwrap_or(ChildLayout::Vertical);
+    let root_settings = root_inherited_settings_for_model(model);
     let mut content_height = 0;
     if nodes.is_empty() {
         lines[0] = pad_to_width("tabs: waiting for tab state", cols);
@@ -390,7 +406,7 @@ pub fn render_lines_with_rail_scroll(
             template_catalog,
             metadata_controls,
             inspected_node,
-            root_child_layout,
+            root_settings,
             rail_scroll_offset,
         );
     }
@@ -1136,7 +1152,7 @@ fn render_nodes(
     template_catalog: Option<&TemplateConfigCatalog>,
     metadata_controls: &MetadataControls,
     inspected_node: Option<&NodeKey>,
-    root_child_layout: ChildLayout,
+    root_settings: InheritedRailSettings,
     rail_scroll_offset: isize,
 ) -> usize {
     if nodes.is_empty() || available_rows == 0 {
@@ -1195,7 +1211,7 @@ fn render_nodes(
         metadata_controls,
         inspected_node,
         root_meta_children,
-        root_child_layout,
+        root_settings,
     );
     let content_height = buffered_lines.len();
     copy_visible_buffer(
@@ -1212,16 +1228,28 @@ fn render_nodes(
     content_height
 }
 
-fn root_child_layout_for_model(model: Option<&ControllerViewModel>) -> Option<ChildLayout> {
-    let metadata = model?
+fn root_inherited_settings_for_model(model: Option<&ControllerViewModel>) -> InheritedRailSettings {
+    let Some(model) = model else {
+        return InheritedRailSettings::default();
+    };
+    let Some(metadata) = model
         .resolved_metadata
         .iter()
-        .find(|metadata| metadata.target == MetadataTarget::Root)?;
-    child_layout_from_metadata_value(
-        metadata
-            .values
-            .get("rail.child_layout")
-            .map(|entry| &entry.value),
+        .find(|metadata| metadata.target == MetadataTarget::Root)
+    else {
+        return InheritedRailSettings::default();
+    };
+    metadata.values.iter().fold(
+        InheritedRailSettings::default(),
+        |settings, (key, entry)| {
+            if key == RAIL_CHILD_LAYOUT_METADATA_KEY {
+                ChildLayoutSetting::from_metadata_value(&entry.value)
+                    .map(|child_layout| InheritedRailSettings { child_layout })
+                    .unwrap_or(settings)
+            } else {
+                settings
+            }
+        },
     )
 }
 
@@ -1250,7 +1278,7 @@ fn render_nodes_to_buffer(
     metadata_controls: &MetadataControls,
     inspected_node: Option<&NodeKey>,
     ancestor_meta_children: bool,
-    inherited_child_layout: ChildLayout,
+    inherited_settings: InheritedRailSettings,
 ) {
     let mut pending_tabs = vec![];
     for node in nodes {
@@ -1299,9 +1327,8 @@ fn render_nodes_to_buffer(
                     child_ancestor_template_fields.extend(visible_header_sources);
                     let child_meta_children = metadata_controls
                         .propagates_to_children(&group_key, ancestor_meta_children);
-                    let child_layout =
-                        child_layout_for_group(group).unwrap_or(inherited_child_layout);
-                    if child_layout == ChildLayout::CompactStrip {
+                    let child_settings = inherited_settings.with_node_metadata(&group.metadata);
+                    if child_settings.child_layout == ChildLayoutSetting::CompactStrip {
                         let (direct_tabs, remaining_children) =
                             direct_tabs_and_child_groups(&group.children);
                         append_compact_tab_strip(
@@ -1327,7 +1354,7 @@ fn render_nodes_to_buffer(
                             metadata_controls,
                             inspected_node,
                             child_meta_children,
-                            child_layout,
+                            child_settings,
                         );
                         continue;
                     }
@@ -1346,7 +1373,7 @@ fn render_nodes_to_buffer(
                         metadata_controls,
                         inspected_node,
                         child_meta_children,
-                        child_layout,
+                        child_settings,
                     );
                 }
             }
@@ -1454,24 +1481,8 @@ fn append_group_header(
     (rendered.visible_sources, allocation)
 }
 
-fn child_layout_for_group(group: &RenderGroup) -> Option<ChildLayout> {
-    child_layout_from_metadata(&group.metadata)
-}
-
-fn child_layout_from_metadata(metadata: &RenderMetadata) -> Option<ChildLayout> {
-    child_layout_from_metadata_value(metadata.get("rail.child_layout"))
-}
-
-fn child_layout_from_metadata_value(value: Option<&MetadataValue>) -> Option<ChildLayout> {
-    match value {
-        Some(MetadataValue::Text(text)) if text == "compact-strip" || text == "compact_strip" => {
-            Some(ChildLayout::CompactStrip)
-        }
-        Some(MetadataValue::Text(text)) if text == "vertical" || text == "cards" => {
-            Some(ChildLayout::Vertical)
-        }
-        _ => None,
-    }
+fn child_layout_from_metadata(metadata: &RenderMetadata) -> Option<ChildLayoutSetting> {
+    ChildLayoutSetting::from_metadata_value(metadata.get(RAIL_CHILD_LAYOUT_METADATA_KEY)?)
 }
 
 fn direct_tabs_and_child_groups(children: &[RenderNode]) -> (Vec<RenderTab>, Vec<RenderNode>) {
@@ -4794,7 +4805,7 @@ mod tests {
             None,
             &MetadataControls::default(),
             None,
-            ChildLayout::Vertical,
+            InheritedRailSettings::default(),
             0,
         );
 

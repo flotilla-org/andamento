@@ -119,6 +119,30 @@ pub enum ChildLayoutSetting {
     CompactStrip,
 }
 
+pub const RAIL_CHILD_LAYOUT_METADATA_KEY: &str = "rail.child_layout";
+
+impl ChildLayoutSetting {
+    pub fn to_metadata_value(self) -> MetadataValue {
+        let text = match self {
+            ChildLayoutSetting::Cards => "vertical",
+            ChildLayoutSetting::CompactStrip => "compact-strip",
+        };
+        MetadataValue::Text(text.to_owned())
+    }
+
+    pub fn from_metadata_value(value: &MetadataValue) -> Option<Self> {
+        match value {
+            MetadataValue::Text(text) if text == "compact-strip" || text == "compact_strip" => {
+                Some(ChildLayoutSetting::CompactStrip)
+            }
+            MetadataValue::Text(text) if text == "vertical" || text == "cards" => {
+                Some(ChildLayoutSetting::Cards)
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChildLayoutSetRequest {
     pub client_id: u16,
@@ -941,6 +965,32 @@ mod tests {
         let encoded = serde_json::to_string(&child_layout).unwrap();
         let decoded: ChildLayoutSetRequest = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, child_layout);
+    }
+
+    #[test]
+    fn child_layout_setting_owns_metadata_encoding() {
+        assert_eq!(
+            ChildLayoutSetting::Cards.to_metadata_value(),
+            MetadataValue::Text("vertical".to_owned())
+        );
+        assert_eq!(
+            ChildLayoutSetting::CompactStrip.to_metadata_value(),
+            MetadataValue::Text("compact-strip".to_owned())
+        );
+        assert_eq!(
+            ChildLayoutSetting::from_metadata_value(&MetadataValue::Text("cards".to_owned())),
+            Some(ChildLayoutSetting::Cards)
+        );
+        assert_eq!(
+            ChildLayoutSetting::from_metadata_value(&MetadataValue::Text(
+                "compact_strip".to_owned()
+            )),
+            Some(ChildLayoutSetting::CompactStrip)
+        );
+        assert_eq!(
+            ChildLayoutSetting::from_metadata_value(&MetadataValue::Bool(true)),
+            None
+        );
     }
 
     #[test]
