@@ -1045,6 +1045,23 @@ impl ControllerState {
         let mut identities_by_target: BTreeMap<EntityId, Vec<ReachableMetadataIdentity>> =
             BTreeMap::new();
         let mut group_paths = BTreeSet::new();
+        let root_target = EntityId::Root;
+        let (root_values, root_sources, root_identities) =
+            self.resolve_target_metadata(&root_target, BTreeMap::new());
+        if !root_values.is_empty() || !root_sources.is_empty() || !root_identities.is_empty() {
+            by_target
+                .entry(root_target.clone())
+                .or_default()
+                .extend(root_values);
+            sources_by_target
+                .entry(root_target.clone())
+                .or_default()
+                .extend(root_sources);
+            identities_by_target
+                .entry(root_target)
+                .or_default()
+                .extend(root_identities);
+        }
         for tab in tabs {
             let tab_target = EntityId::Tab(tab.tab_id);
             let tab_seed_values = self.tab_seed_metadata_entries(tab.tab_id);
@@ -3004,6 +3021,7 @@ mod tests {
             structure: RailStructure::BoxPerTab,
             sizing: RailSizingPreset::Compact,
             grouping: RailGroupingMode::Directory,
+            segment_between_color: None,
         });
         source.toggle_pin(7);
         source.set_status(status(

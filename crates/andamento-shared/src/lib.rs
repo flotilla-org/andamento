@@ -5,6 +5,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 pub mod grouping_config;
+pub mod segment_bar;
 pub mod template_config;
 
 pub const MSG_RENDERER_HELLO: &str = "andamento-renderer-hello";
@@ -383,6 +384,7 @@ pub struct MetadataIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
 pub enum MetadataTarget {
+    Root,
     Pane(PaneTarget),
     Tab(u64),
     Group(GroupPath),
@@ -536,6 +538,13 @@ pub enum TemplateConfigState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RailRgbColor {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RailConfig {
     #[serde(default)]
     pub structure: RailStructure,
@@ -543,6 +552,8 @@ pub struct RailConfig {
     pub sizing: RailSizingPreset,
     #[serde(default)]
     pub grouping: RailGroupingMode,
+    #[serde(default)]
+    pub segment_between_color: Option<RailRgbColor>,
 }
 
 impl Default for RailConfig {
@@ -551,6 +562,7 @@ impl Default for RailConfig {
             structure: RailStructure::default(),
             sizing: RailSizingPreset::default(),
             grouping: RailGroupingMode::default(),
+            segment_between_color: None,
         }
     }
 }
@@ -1027,6 +1039,7 @@ mod tests {
                 structure: RailStructure::JoinedCells,
                 sizing: RailSizingPreset::Compact,
                 grouping: RailGroupingMode::Directory,
+                segment_between_color: None,
             },
             template_config: TemplateConfigDiagnostics::default(),
             tabs: vec![TabCard {
@@ -1250,6 +1263,11 @@ mod tests {
             structure: RailStructure::BoxPerTab,
             sizing: RailSizingPreset::Compact,
             grouping: RailGroupingMode::None,
+            segment_between_color: Some(RailRgbColor {
+                red: 1,
+                green: 2,
+                blue: 3,
+            }),
         };
 
         let encoded = serde_json::to_string(&config).unwrap();

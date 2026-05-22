@@ -288,6 +288,8 @@ Deep grouping rules can produce noisy trees when each parent has exactly one chi
 
 The renderer should be able to conflate compatible single-child group chains without losing the underlying identities. Each original group prefix remains addressable for metadata, templates, ordering, toggles, and external facts; the visible node is only a combined presentation of the chain.
 
+This is related to the "header niche" idea for compact child content. Both features are about using the visible header row as a denser projection of the underlying tree without changing the tree itself. A conflated group header may have more semantic context available, and a group header may also have spare horizontal space where a prefix of direct child tabs can be rendered as compact segments. These should be implemented as layout projections over the same recursive node tree, not as special grouping modes.
+
 Compatibility should start conservative:
 
 - only conflate adjacent groups, never tabs or latent nodes.
@@ -295,6 +297,7 @@ Compatibility should start conservative:
 - preserve all original path prefixes internally.
 - let templates decide how to render the combined label from ancestor metadata.
 - avoid conflating across a group boundary that has an explicit local setting, pin, manual order, attention marker, or body content.
+- keep compact child absorption separate from conflation: a header can absorb some direct tabs into a niche without pretending those tabs are part of the group label.
 
 This is likely to become load-bearing as grouping gets richer, because one flexible grouping rule needs to look reasonable across very different workspace shapes.
 
@@ -434,13 +437,21 @@ Many future controls are naturally scoped to a subtree:
 - compact versus detailed body.
 - child layout mode: vertical, horizontal strip, masonry, zellij-tabbar-like compact.
 - metadata/debug visibility.
+- focus/action button visibility.
+- priority/pinned duplication policy.
 - factory/latent-node display policy.
 
 The model should support per-node settings/toggles that inherit from the nearest explicitly-set ancestor. A group header can expose small right-aligned toggles for local overrides, while default settings flow from the root or profile.
 
 This keeps configuration ergonomic: a user can say "this repo group shows images" or "this project uses horizontal child tabs" without setting the same value on every child. It also gives templates a stable way to ask for local display policy without hard-coding global modes.
 
-Status: started. The rail recognizes group metadata `rail.child_layout=compact-strip` as an inherited child-layout setting. A group with that setting renders its direct tab children as a compact inline strip before rendering child groups normally. The default remains vertical card rendering, and there is not yet UI for toggling this setting.
+Status: started. The rail recognizes root/group metadata `rail.child_layout=compact-strip` as an inherited child-layout setting. Root metadata provides the default for the tree; each group can override it for its own children and descendants. A group with the effective compact setting renders its direct tab children as a compact Zellij-tabbar-like segment run before rendering child groups normally. Compact segments use the exact Zellij powerline separator glyph with active/inactive tab foreground/background colours, and `rail_segment_between_color "#RRGGBB"` can override the in-between separator colour to match the terminal background. The default remains vertical card rendering, and the Inspect page can set or clear the child-layout override for root or an inspected group.
+
+The segment renderer is deliberately pure and bounded: callers provide the available width and get rendered text plus hit geometry back. Today the compact child layout gives it the remaining rail width under the group header. Later, a group header can pass a smaller "niche" width and absorb a prefix of direct child tabs into an available gap without the segment code assuming it owns the whole row. Segment style is also separate from segment data so future runs can be selected from metadata, choose explicit adjacency/gap rules, or be replaced by image-backed segment assets without changing the child-node projection model.
+
+Compact child layouts should not assume that every affordance is always visible. For example, focus/config/action buttons may be hidden by default when tabs are rendered as compact header segments, because there may not be enough space to show them without destroying the density benefit. A separate inherited toggle should put a subtree into an action/focus mode where those controls are visible or given priority. This avoids overloading compact layout itself with "show buttons" semantics.
+
+The layout should eventually be adaptive within a single group. Some direct tabs can be absorbed into a header niche, overflow into a compact child strip, or expand as cards when they have important status, icons, body content, or actions to show. This means `rail.child_layout` should be treated as a policy preference and starting point, not as a rigid one-renderer-per-subtree command.
 
 ### Sensible Order For Templates And Deep Hierarchy
 
@@ -810,25 +821,31 @@ Scope:
 - pinned groups.
 - pinned tabs.
 - individual pinned tabs that render above grouped sections even if their original group is lower.
+- priority areas that can show important tabs independently of their normal grouped location.
+- an inherited policy for whether a tab shown in a higher-priority area is still repeated in lower-priority projections.
 - drag of groups or tabs that switches the affected scope into manual ordering mode.
 
 The projection should support common item types such as:
 
 ```text
 ProjectionItem =
+  PriorityTab(tab_id)
   PinnedTab(tab_id)
   PinnedGroup(group_path)
   Group(group_path, children: Vec<TabId>)
   Tab(tab_id)
 ```
 
+The same underlying tab may appear in more than one projection area. For example, a tab can be shown in a priority or pinned area while also remaining in its normal group, or it can be suppressed from lower-priority areas to avoid duplication. This should be configurable as an inherited display policy, because compact navigation, status-heavy, and overview-heavy profiles will want different answers.
+
 A future layered ordering policy can be:
 
 1. pinned items.
-2. manual order if present.
-3. metadata-derived urgency/activity order.
-4. grouping/default order.
-5. stable tab order fallback.
+2. priority/status projection areas.
+3. manual order if present.
+4. metadata-derived urgency/activity order.
+5. grouping/default order.
+6. stable tab order fallback.
 
 ### 13. Latent Tabs And Materialization
 
@@ -837,7 +854,7 @@ Represent work items that are not currently real Zellij tabs.
 Scope:
 
 - latent render nodes.
-- materialization recipes.
+- materialization recipes, eventually loaded from the same external configuration surface as templates/grouping rules.
 - activation behavior that creates a tab/panes or asks another plugin to do so.
 - relation from latent node to materialized tab.
 - flotilla integration for desired work items and convoys.

@@ -3,8 +3,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::time::Instant;
 
-mod segment_bar;
-
+use andamento_shared::segment_bar;
 use andamento_shared::{
     ChildLayoutSetRequest, ChildLayoutSetting, ConfigInspectRequest, ControllerViewModel,
     GroupPath, MetadataEntry, MetadataSourceEntry, MetadataTarget, MetadataTriState, MetadataValue,
@@ -603,12 +602,14 @@ impl PluginState {
         let Some(client_id) = self.own_client_id else {
             return;
         };
-        let NodeKey::Group(path) = self.current_inspected_node() else {
-            return;
+        let node_key = match self.current_inspected_node() {
+            NodeKey::Root => NodeKey::Root,
+            NodeKey::Group(path) => NodeKey::Group(path),
+            NodeKey::Tab(_) => return,
         };
         let Ok(payload) = serde_json::to_string(&ChildLayoutSetRequest {
             client_id,
-            node_key: NodeKey::Group(path),
+            node_key,
             layout,
         }) else {
             return;
@@ -808,7 +809,7 @@ fn resolved_metadata_for_node<'a>(
     node_key: &NodeKey,
 ) -> Option<&'a andamento_shared::ResolvedMetadata> {
     let target = match node_key {
-        NodeKey::Root => return None,
+        NodeKey::Root => MetadataTarget::Root,
         NodeKey::Tab(tab_id) => MetadataTarget::Tab(*tab_id),
         NodeKey::Group(path) => MetadataTarget::Group(path.clone()),
     };
@@ -1029,14 +1030,24 @@ fn push_inspect_options_section(
     target: &InspectTargetView<'_>,
 ) {
     push_section_header(frame, "Options");
+    let mut option_labels = vec!["Metadata"];
+    if target.kind == InspectTargetKind::Root || target.kind == InspectTargetKind::Group {
+        option_labels.push("Child layout");
+    }
+    let label_width = option_labels
+        .iter()
+        .map(|label| label.width())
+        .max()
+        .unwrap_or(0);
     let explicit_state = model
         .metadata_controls
         .per_node
         .get(&target.node_key)
         .copied();
-    push_segmented_choice(
+    push_segmented_form_choice(
         frame,
-        "This item",
+        "Metadata",
+        label_width,
         &[
             (
                 "inherit",
@@ -1060,11 +1071,12 @@ fn push_inspect_options_section(
             ),
         ],
     );
-    if target.kind == InspectTargetKind::Group {
+    if target.kind == InspectTargetKind::Root || target.kind == InspectTargetKind::Group {
         let child_layout = child_layout_setting_from_metadata(&target.metadata);
-        push_segmented_choice(
+        push_segmented_form_choice(
             frame,
             "Child layout",
+            label_width,
             &[
                 (
                     "inherit",
@@ -1557,7 +1569,16 @@ fn push_segmented_choice(
     options: &[(&str, bool, ConfigAction)],
 ) {
     const MIN_LABEL_WIDTH: usize = 9;
-    let label_width = MIN_LABEL_WIDTH.max(label.width());
+    push_segmented_form_choice(frame, label, MIN_LABEL_WIDTH.max(label.width()), options);
+}
+
+fn push_segmented_form_choice(
+    frame: &mut ConfigUiFrame,
+    label: &str,
+    label_width: usize,
+    options: &[(&str, bool, ConfigAction)],
+) {
+    let label_width = label_width.max(label.width());
     let mut text = format!("{label:<label_width$}  ");
     let mut col = text.width();
     for (index, (option_label, selected, action)) in options.iter().enumerate() {
@@ -1636,6 +1657,7 @@ mod tests {
                 structure: RailStructure::BoxPerTab,
                 sizing: RailSizingPreset::Compact,
                 grouping: RailGroupingMode::Directory,
+                segment_between_color: None,
             },
             None,
             ConfigPage::Settings,
@@ -1694,6 +1716,7 @@ mod tests {
                 structure: RailStructure::BoxPerTab,
                 sizing: RailSizingPreset::Compact,
                 grouping: RailGroupingMode::Directory,
+                segment_between_color: None,
             },
             None,
             ConfigPage::Settings,
@@ -2111,6 +2134,8 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.trim().starts_with("── Options ")));
+        assert!(rendered_text.contains("Metadata"));
+        assert!(!rendered_text.contains("This item"));
         assert!(rendered_text.contains("item"));
         assert!(rendered_text.contains("subtree"));
         assert!(rendered
@@ -2180,6 +2205,21 @@ mod tests {
         assert!(rendered_text.contains("Options"));
         assert!(rendered_text.contains("Metadata"));
         assert!(rendered_text.contains("Child layout"));
+        let metadata_options_line = rendered
+            .lines
+            .iter()
+            .find(|line| line.trim_start().starts_with("Metadata"))
+            .expect("metadata options row");
+        let child_layout_options_line = rendered
+            .lines
+            .iter()
+            .find(|line| line.trim_start().starts_with("Child layout"))
+            .expect("child layout options row");
+        assert_eq!(
+            metadata_options_line.find("● inherit"),
+            child_layout_options_line.find("● inherit"),
+            "option controls should align in one form column: metadata={metadata_options_line:?} child_layout={child_layout_options_line:?}"
+        );
         assert!(rendered.hit_regions.iter().any(|hit| {
             hit.action == ConfigAction::SetInspectedMetadata(Some(MetadataTriState::MetaChildren))
         }));
@@ -2193,6 +2233,34 @@ mod tests {
             .hit_regions
             .iter()
             .any(|hit| hit.action == ConfigAction::SetChildLayout(None)));
+    }
+
+    #[test]
+    fn inspect_root_options_expose_inheritable_child_layout_actions() {
+        let mut model = model_with_tab(7, "repo");
+        model.inspected_node = Some(NodeKey::Root);
+
+        let rendered = render_config_with_scope(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Inspect,
+            None,
+            40,
+            100,
+            &[],
+            false,
+            0,
+        );
+        let rendered_text = rendered.lines.join("\n");
+
+        assert!(rendered_text.contains("Options"));
+        assert!(rendered_text.contains("Child layout"));
+        assert!(rendered.hit_regions.iter().any(|hit| {
+            hit.action
+                == ConfigAction::SetChildLayout(Some(
+                    andamento_shared::ChildLayoutSetting::CompactStrip,
+                ))
+        }));
     }
 
     #[test]

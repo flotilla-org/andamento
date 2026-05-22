@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,6 +16,17 @@ SOURCE_ID = "andamento-git-watcher"
 DEFAULT_TTL_MS = 10_000
 DEFAULT_FACTORY_LAYOUT = Path(__file__).resolve().parent.parent / "layouts" / "repo-manager-tab.kdl"
 DEFAULT_FACTORY_NAME_PREFIX = "repo: "
+
+
+def default_zellij_bin(environ=None, script_path=None):
+    environ = environ or os.environ
+    if environ.get("ZELLIJ_BIN"):
+        return environ["ZELLIJ_BIN"]
+    script_path = Path(script_path or __file__).resolve()
+    sibling_dev_opt = script_path.parent.parent.parent / "zellij" / "target" / "dev-opt" / "zellij"
+    if sibling_dev_opt.exists() and os.access(sibling_dev_opt, os.X_OK):
+        return str(sibling_dev_opt)
+    return "zellij"
 
 
 def log(message):
@@ -399,7 +411,7 @@ def main(argv):
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--zellij-bin", default=os.environ.get("ZELLIJ_BIN", "zellij"))
+    parser.add_argument("--zellij-bin", default=default_zellij_bin())
     parser.add_argument("--factory-repo-manager", action="store_true")
     parser.add_argument("--factory-layout", type=Path, default=DEFAULT_FACTORY_LAYOUT)
     parser.add_argument("--scope-current-tab", action="store_true")
@@ -523,6 +535,32 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(parse_terminal_pane_id("3"), 3)
         self.assertEqual(parse_terminal_pane_id("terminal_4"), 4)
         self.assertIsNone(parse_terminal_pane_id("plugin_4"))
+
+    def test_default_zellij_bin_prefers_env_then_sibling_fork_build(self):
+        self.assertEqual(
+            default_zellij_bin(environ={"ZELLIJ_BIN": "/tmp/custom-zellij"}),
+            "/tmp/custom-zellij",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script_path = root / "andamento" / "scripts" / "andamento-git-watcher.py"
+            fork_bin = root / "zellij" / "target" / "dev-opt" / "zellij"
+            script_path.parent.mkdir(parents=True)
+            fork_bin.parent.mkdir(parents=True)
+            fork_bin.write_text("#!/bin/sh\n")
+            fork_bin.chmod(0o755)
+
+            self.assertEqual(
+                default_zellij_bin(environ={}, script_path=script_path),
+                str(fork_bin.resolve()),
+            )
+
+    def test_default_zellij_bin_falls_back_to_path_lookup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = Path(tmp) / "andamento" / "scripts" / "andamento-git-watcher.py"
+            script_path.parent.mkdir(parents=True)
+
+            self.assertEqual(default_zellij_bin(environ={}, script_path=script_path), "zellij")
 
 
 if __name__ == "__main__":

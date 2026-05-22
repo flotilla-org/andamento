@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use andamento_shared::segment_bar::{self, SegmentItem};
 use andamento_shared::template_config::{
     TemplateConfigCatalog, TemplateConfigFieldClass, TemplateConfigMatchContext,
     TemplateConfigNodeKind, TemplateConfigSlot,
@@ -7,9 +8,9 @@ use andamento_shared::template_config::{
 use andamento_shared::{
     ControllerViewModel, GroupPath, GroupSegment, MetadataControls, MetadataEntry,
     MetadataSourceEntry, MetadataTarget, MetadataValue, NodeKey, PaneTarget, Priority, RailConfig,
-    RailRow, RailSizingPreset, RailStructure, ReachableMetadataIdentity, ResolvedMetadata,
-    ResolvedTemplateFieldSource, ResolvedTemplateSlot, ResolvedTemplateSlots, StatusIcon, TabCard,
-    TabGroupingInfo, TabStatusSummary,
+    RailRgbColor, RailRow, RailSizingPreset, RailStructure, ReachableMetadataIdentity,
+    ResolvedMetadata, ResolvedTemplateFieldSource, ResolvedTemplateSlot, ResolvedTemplateSlots,
+    StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
 };
 use ansi_term::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -96,6 +97,11 @@ pub struct RenderTheme {
     pub active_border: PaletteColor,
     pub inactive_border: PaletteColor,
     pub body_foreground: PaletteColor,
+    pub segment_active_background: PaletteColor,
+    pub segment_active_foreground: PaletteColor,
+    pub segment_inactive_background: PaletteColor,
+    pub segment_inactive_foreground: PaletteColor,
+    pub segment_between_background: PaletteColor,
 }
 
 impl From<Styling> for RenderTheme {
@@ -106,8 +112,30 @@ impl From<Styling> for RenderTheme {
             active_border: colors.ribbon_selected.background,
             inactive_border: colors.ribbon_unselected.background,
             body_foreground: colors.text_unselected.base,
+            segment_active_background: colors.ribbon_selected.background,
+            segment_active_foreground: colors.ribbon_selected.base,
+            segment_inactive_background: colors.ribbon_unselected.background,
+            segment_inactive_foreground: colors.ribbon_unselected.base,
+            // The plugin API Styling currently does not expose Zellij's top-level
+            // theme background. Keep this explicit in RenderTheme so config/API
+            // work can supply the real terminal-like background without changing
+            // compact strip rendering.
+            segment_between_background: colors.text_unselected.background,
         }
     }
+}
+
+impl RenderTheme {
+    fn with_config(mut self, config: RailConfig) -> Self {
+        if let Some(color) = config.segment_between_color {
+            self.segment_between_background = palette_color_from_rgb(color);
+        }
+        self
+    }
+}
+
+fn palette_color_from_rgb(color: RailRgbColor) -> PaletteColor {
+    PaletteColor::Rgb((color.red, color.green, color.blue))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,7 +369,9 @@ pub fn render_lines_with_rail_scroll(
     let mut visible_cards = vec![];
     let nodes = nodes_to_render(model, tabs, collapsed_groups);
     let config = model.map(|model| model.config).unwrap_or_default();
+    let theme = theme.map(|theme| theme.with_config(config));
     let inspected_node = model.and_then(|model| model.inspected_node.as_ref());
+    let root_child_layout = root_child_layout_for_model(model).unwrap_or(ChildLayout::Vertical);
     let mut content_height = 0;
     if nodes.is_empty() {
         lines[0] = pad_to_width("tabs: waiting for tab state", cols);
@@ -360,6 +390,7 @@ pub fn render_lines_with_rail_scroll(
             template_catalog,
             metadata_controls,
             inspected_node,
+            root_child_layout,
             rail_scroll_offset,
         );
     }
@@ -984,10 +1015,25 @@ fn style_group_header_text(
 }
 
 fn foreground_style(color: PaletteColor) -> Style {
-    Style::new().fg(match color {
+    Style::new().fg(ansi_color(color))
+}
+
+fn style_cell(foreground: PaletteColor, background: PaletteColor, bold: bool) -> Style {
+    let style = Style::new()
+        .fg(ansi_color(foreground))
+        .on(ansi_color(background));
+    if bold {
+        style.bold()
+    } else {
+        style
+    }
+}
+
+fn ansi_color(color: PaletteColor) -> Color {
+    match color {
         PaletteColor::Rgb((r, g, b)) => Color::RGB(r, g, b),
         PaletteColor::EightBit(color) => Color::Fixed(color),
-    })
+    }
 }
 
 pub fn hit_at(hit_regions: &[HitRegion], row: usize, col: usize) -> Option<HitRegion> {
@@ -1090,6 +1136,7 @@ fn render_nodes(
     template_catalog: Option<&TemplateConfigCatalog>,
     metadata_controls: &MetadataControls,
     inspected_node: Option<&NodeKey>,
+    root_child_layout: ChildLayout,
     rail_scroll_offset: isize,
 ) -> usize {
     if nodes.is_empty() || available_rows == 0 {
@@ -1148,7 +1195,7 @@ fn render_nodes(
         metadata_controls,
         inspected_node,
         root_meta_children,
-        ChildLayout::Vertical,
+        root_child_layout,
     );
     let content_height = buffered_lines.len();
     copy_visible_buffer(
@@ -1163,6 +1210,19 @@ fn render_nodes(
         rail_scroll_offset,
     );
     content_height
+}
+
+fn root_child_layout_for_model(model: Option<&ControllerViewModel>) -> Option<ChildLayout> {
+    let metadata = model?
+        .resolved_metadata
+        .iter()
+        .find(|metadata| metadata.target == MetadataTarget::Root)?;
+    child_layout_from_metadata_value(
+        metadata
+            .values
+            .get("rail.child_layout")
+            .map(|entry| &entry.value),
+    )
 }
 
 fn top_level_tabs(nodes: &[RenderNode]) -> Option<Vec<&RenderTab>> {
@@ -1249,6 +1309,7 @@ fn render_nodes_to_buffer(
                             hit_regions,
                             &direct_tabs,
                             cols,
+                            theme,
                             template_catalog,
                         );
                         render_nodes_to_buffer(
@@ -1394,9 +1455,21 @@ fn append_group_header(
 }
 
 fn child_layout_for_group(group: &RenderGroup) -> Option<ChildLayout> {
-    match metadata_text(&group.metadata, "rail.child_layout") {
-        Some("compact-strip") | Some("compact_strip") => Some(ChildLayout::CompactStrip),
-        Some("vertical") => Some(ChildLayout::Vertical),
+    child_layout_from_metadata(&group.metadata)
+}
+
+fn child_layout_from_metadata(metadata: &RenderMetadata) -> Option<ChildLayout> {
+    child_layout_from_metadata_value(metadata.get("rail.child_layout"))
+}
+
+fn child_layout_from_metadata_value(value: Option<&MetadataValue>) -> Option<ChildLayout> {
+    match value {
+        Some(MetadataValue::Text(text)) if text == "compact-strip" || text == "compact_strip" => {
+            Some(ChildLayout::CompactStrip)
+        }
+        Some(MetadataValue::Text(text)) if text == "vertical" || text == "cards" => {
+            Some(ChildLayout::Vertical)
+        }
         _ => None,
     }
 }
@@ -1419,6 +1492,7 @@ fn append_compact_tab_strip(
     hit_regions: &mut Vec<HitRegion>,
     tabs: &[RenderTab],
     cols: usize,
+    theme: Option<RenderTheme>,
     template_catalog: Option<&TemplateConfigCatalog>,
 ) {
     if tabs.is_empty() {
@@ -1434,37 +1508,28 @@ fn append_compact_tab_strip(
     if inner_width == 0 {
         return;
     }
-    let mut line = String::new();
-    let mut row = lines.len();
-    for tab in tabs {
-        let prefix = if tab.card.active { "● " } else { "○ " };
-        let token = truncate_to_width(
-            &format!(
-                "{prefix}{}",
-                tab_title_with_template_catalog(&tab.card, template_catalog)
-            ),
-            inner_width,
-        );
-        let separator = if line.is_empty() { "" } else { "  " };
-        if !line.is_empty() && line.width() + separator.width() + token.width() > inner_width {
-            lines.push(format!(
-                "{}{}",
-                " ".repeat(indent),
-                pad_to_width(&line, inner_width)
-            ));
-            row += 1;
-            line.clear();
-        }
-        let col_start = indent + line.width() + if line.is_empty() { 0 } else { 2 };
-        if !line.is_empty() {
-            line.push_str("  ");
-        }
-        line.push_str(&token);
+
+    let items = tabs
+        .iter()
+        .map(|tab| SegmentItem {
+            label: tab_title_with_template_catalog(&tab.card, template_catalog),
+            active: tab.card.active,
+        })
+        .collect::<Vec<_>>();
+    let rendered = render_compact_segment_run(&items, inner_width, theme);
+    let base_row = lines.len();
+    for line in rendered.lines {
+        lines.push(format!("{}{}", " ".repeat(indent), line));
+    }
+    for hit in rendered.hits {
+        let Some(tab) = tabs.get(hit.index) else {
+            continue;
+        };
         hit_regions.push(HitRegion {
-            row_start: row,
-            row_end: row,
-            col_start,
-            col_end: col_start + token.width().saturating_sub(1),
+            row_start: base_row + hit.row,
+            row_end: base_row + hit.row,
+            col_start: indent + hit.col_start,
+            col_end: indent + hit.col_end,
             tab_id: tab.card.tab_id,
             tab_position: tab.card.position,
             group_path: tab.parent_path.clone(),
@@ -1472,13 +1537,149 @@ fn append_compact_tab_strip(
             action: HitAction::SwitchTab,
         });
     }
-    if !line.is_empty() {
-        lines.push(format!(
-            "{}{}",
-            " ".repeat(indent),
-            pad_to_width(&line, inner_width)
-        ));
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompactSegmentRun {
+    lines: Vec<String>,
+    hits: Vec<segment_bar::SegmentHitBox>,
+}
+
+fn render_compact_segment_run(
+    items: &[SegmentItem],
+    width: usize,
+    theme: Option<RenderTheme>,
+) -> CompactSegmentRun {
+    if width == 0 || items.is_empty() {
+        return CompactSegmentRun {
+            lines: vec![],
+            hits: vec![],
+        };
     }
+    if theme.is_none() {
+        let rendered = segment_bar::render_wrapped(items, &segment_bar::ZellijRibbonStyle, width);
+        return CompactSegmentRun {
+            lines: rendered.lines,
+            hits: rendered.hits,
+        };
+    }
+
+    let mut lines = vec![];
+    let mut hits = vec![];
+    let mut line = String::new();
+    let mut col = 0usize;
+    let mut row = 0usize;
+
+    for (index, item) in items.iter().enumerate() {
+        let segment_width = compact_segment_width(&item.label);
+        if !line.is_empty() && segment_width > width.saturating_sub(col) {
+            lines.push(pad_styled_line_to_width(&line, col, width));
+            line.clear();
+            col = 0;
+            row = row.saturating_add(1);
+        }
+
+        let item_start = col;
+        let remaining_width = width.saturating_sub(col);
+        if remaining_width == 0 {
+            break;
+        }
+        let (segment, visible_width) = render_compact_segment(item, remaining_width, theme);
+        if visible_width == 0 {
+            continue;
+        }
+        line.push_str(&segment);
+        col = col.saturating_add(visible_width);
+        hits.push(segment_bar::SegmentHitBox {
+            index,
+            row,
+            col_start: item_start,
+            col_end: col.saturating_sub(1),
+        });
+    }
+
+    if !line.is_empty() {
+        lines.push(pad_styled_line_to_width(&line, col, width));
+    }
+    CompactSegmentRun { lines, hits }
+}
+
+fn pad_styled_line_to_width(line: &str, visible_width: usize, width: usize) -> String {
+    if visible_width >= width {
+        return line.to_owned();
+    }
+    let mut out = String::with_capacity(line.len() + width - visible_width);
+    out.push_str(line);
+    out.push_str(&" ".repeat(width - visible_width));
+    out
+}
+
+fn compact_segment_width(label: &str) -> usize {
+    label.width().saturating_add(4)
+}
+
+fn render_compact_segment(
+    item: &SegmentItem,
+    max_width: usize,
+    theme: Option<RenderTheme>,
+) -> (String, usize) {
+    if max_width == 0 {
+        return (String::new(), 0);
+    }
+    let visible_width = compact_segment_width(&item.label).min(max_width);
+    if theme.is_none() {
+        let plain = format!(" {} ", item.label);
+        return (truncate_to_width(&plain, max_width), visible_width);
+    }
+
+    let Some(theme) = theme else {
+        unreachable!();
+    };
+    let (segment_bg, segment_fg) = if item.active {
+        (
+            theme.segment_active_background,
+            theme.segment_active_foreground,
+        )
+    } else {
+        (
+            theme.segment_inactive_background,
+            theme.segment_inactive_foreground,
+        )
+    };
+    let between_bg = theme.segment_between_background;
+    let mut remaining_width = visible_width;
+    let mut rendered = String::new();
+    if remaining_width > 0 {
+        rendered.push_str(
+            &style_cell(between_bg, segment_bg, true)
+                .paint("")
+                .to_string(),
+        );
+        remaining_width = remaining_width.saturating_sub(1);
+    }
+    if remaining_width == 1 {
+        rendered.push_str(
+            &style_cell(segment_bg, between_bg, true)
+                .paint("")
+                .to_string(),
+        );
+        return (rendered, visible_width);
+    }
+    if remaining_width > 1 {
+        let text_width = remaining_width.saturating_sub(1);
+        let text = truncate_to_width(&format!(" {} ", item.label), text_width);
+        rendered.push_str(
+            &style_cell(segment_fg, segment_bg, true)
+                .paint(text)
+                .to_string(),
+        );
+        rendered.push_str(
+            &style_cell(segment_bg, between_bg, true)
+                .paint("")
+                .to_string(),
+        );
+    }
+    (rendered, visible_width)
 }
 
 fn append_tab_run(
@@ -4188,6 +4389,37 @@ mod tests {
         }
     }
 
+    fn test_theme() -> RenderTheme {
+        RenderTheme {
+            active_border: PaletteColor::EightBit(2),
+            inactive_border: PaletteColor::EightBit(8),
+            body_foreground: PaletteColor::EightBit(7),
+            segment_active_background: PaletteColor::EightBit(10),
+            segment_active_foreground: PaletteColor::EightBit(11),
+            segment_inactive_background: PaletteColor::EightBit(12),
+            segment_inactive_foreground: PaletteColor::EightBit(13),
+            segment_between_background: PaletteColor::EightBit(14),
+        }
+    }
+
+    fn visible_width_without_ansi(line: &str) -> usize {
+        let mut visible = String::new();
+        let mut chars = line.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+                let _ = chars.next();
+                for code_ch in chars.by_ref() {
+                    if code_ch.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                visible.push(ch);
+            }
+        }
+        visible.width()
+    }
+
     fn model() -> ControllerViewModel {
         ControllerViewModel {
             sort_mode: SortMode::PinnedFirst,
@@ -4302,6 +4534,7 @@ mod tests {
                 grouping: RailGroupingMode::Directory,
                 structure: RailStructure::JoinedCells,
                 sizing: RailSizingPreset::Compact,
+                segment_between_color: None,
             },
             template_config: andamento_shared::TemplateConfigDiagnostics::default(),
             tabs: vec![],
@@ -4374,6 +4607,7 @@ mod tests {
                 grouping: RailGroupingMode::Directory,
                 structure: RailStructure::JoinedCells,
                 sizing: RailSizingPreset::Compact,
+                segment_between_color: None,
             },
             template_config: andamento_shared::TemplateConfigDiagnostics::default(),
             tabs: vec![
@@ -4560,6 +4794,7 @@ mod tests {
             None,
             &MetadataControls::default(),
             None,
+            ChildLayout::Vertical,
             0,
         );
 
@@ -4658,10 +4893,13 @@ mod tests {
         let rendered = render_lines(Some(&model), &[], 8, 48, true);
 
         assert!(
-            rendered.lines[1].contains("● repo-overview"),
-            "direct tab should render as a compact strip below the group header: {:?}",
+            rendered.lines[1].contains(" repo-overview "),
+            "direct tab should render as a Zellij-style tab strip below the group header: {:?}",
             rendered.lines
         );
+        let repo_hit = hit_at(&rendered.hit_regions, 1, 4).expect("repo strip hit");
+        assert_eq!(repo_hit.action, HitAction::SwitchTab);
+        assert_eq!(repo_hit.tab_id, 2);
         assert!(
             rendered
                 .lines
@@ -4678,7 +4916,7 @@ mod tests {
             rendered
                 .lines
                 .iter()
-                .any(|line| line.contains("○ branch-agent")),
+                .any(|line| line.contains(" branch-agent ")),
             "child groups should inherit compact-strip for their direct tabs: {:?}",
             rendered.lines
         );
@@ -4689,6 +4927,138 @@ mod tests {
                 .any(|line| line.contains("┌ branch-agent")),
             "inherited compact-strip should avoid full child tab cards: {:?}",
             rendered.lines
+        );
+    }
+
+    #[test]
+    fn root_child_layout_metadata_is_inherited_by_groups() {
+        let mut model = mixed_child_group_model();
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Root,
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 8, 48, true);
+
+        assert!(
+            rendered.lines[1].contains(" repo-overview "),
+            "root child layout should apply to direct tabs in descendant groups: {:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.contains(" branch-agent ")),
+            "root child layout should be inherited by nested groups: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
+    fn themed_compact_strip_uses_exact_separator_with_active_inactive_and_between_colors() {
+        let mut model = mixed_child_group_model();
+        let parent_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("first row should be parent group"),
+        };
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Group(parent_path),
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines_with_theme(Some(&model), &[], 8, 48, true, Some(test_theme()));
+
+        assert!(
+            rendered.lines[1].contains("\u{1b}[1;48;5;10;38;5;14m\u{1b}[0m"),
+            "active left separator should use between foreground and active tab background: {:?}",
+            rendered.lines[1]
+        );
+        assert!(
+            rendered.lines[1].contains("\u{1b}[1;48;5;10;38;5;11m repo-overview \u{1b}[0m"),
+            "active label should use active tab foreground/background: {:?}",
+            rendered.lines[1]
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.contains("\u{1b}[1;48;5;12;38;5;13m branch-agent \u{1b}[0m")),
+            "inactive label should use inactive tab foreground/background: {:?}",
+            rendered.lines
+        );
+        assert_eq!(visible_width_without_ansi(&rendered.lines[1]), 48);
+    }
+
+    #[test]
+    fn themed_compact_segment_truncates_before_styling_when_narrow() {
+        let item = SegmentItem {
+            label: "repo-overview".to_owned(),
+            active: true,
+        };
+
+        let (segment, visible_width) = render_compact_segment(&item, 3, Some(test_theme()));
+
+        assert_eq!(visible_width, 3);
+        assert_eq!(visible_width_without_ansi(&segment), 3);
+    }
+
+    #[test]
+    fn rail_config_overrides_compact_segment_between_color() {
+        let mut model = mixed_child_group_model();
+        model.config.segment_between_color = Some(andamento_shared::RailRgbColor {
+            red: 1,
+            green: 2,
+            blue: 3,
+        });
+        let parent_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("first row should be parent group"),
+        };
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: MetadataTarget::Group(parent_path),
+            values: BTreeMap::from([(
+                "rail.child_layout".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("compact-strip".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines_with_theme(Some(&model), &[], 8, 48, true, Some(test_theme()));
+
+        assert!(
+            rendered.lines[1].contains("\u{1b}[1;48;5;10;38;2;1;2;3m\u{1b}[0m"),
+            "configured between color should become the active left separator foreground: {:?}",
+            rendered.lines[1]
         );
     }
 
@@ -4847,18 +5217,8 @@ mod tests {
 
     #[test]
     fn group_header_containing_active_tab_uses_active_style() {
-        let rendered = render_lines_with_theme(
-            Some(&grouped_model()),
-            &[],
-            8,
-            24,
-            true,
-            Some(RenderTheme {
-                active_border: PaletteColor::EightBit(2),
-                inactive_border: PaletteColor::EightBit(8),
-                body_foreground: PaletteColor::EightBit(7),
-            }),
-        );
+        let rendered =
+            render_lines_with_theme(Some(&grouped_model()), &[], 8, 24, true, Some(test_theme()));
 
         assert!(
             rendered.lines[0].starts_with("\u{1b}[1;38;5;2m▼"),
@@ -5550,11 +5910,7 @@ mod tests {
             9,
             24,
             true,
-            Some(RenderTheme {
-                active_border: PaletteColor::EightBit(2),
-                inactive_border: PaletteColor::EightBit(8),
-                body_foreground: PaletteColor::EightBit(7),
-            }),
+            Some(test_theme()),
         );
 
         assert!(!rendered.lines.iter().any(|line| line.contains("[48;")));
@@ -5568,11 +5924,7 @@ mod tests {
             9,
             24,
             true,
-            Some(RenderTheme {
-                active_border: PaletteColor::EightBit(2),
-                inactive_border: PaletteColor::EightBit(8),
-                body_foreground: PaletteColor::EightBit(7),
-            }),
+            Some(test_theme()),
         );
 
         assert!(
@@ -5694,11 +6046,7 @@ mod tests {
             9,
             24,
             true,
-            Some(RenderTheme {
-                active_border: PaletteColor::EightBit(2),
-                inactive_border: PaletteColor::EightBit(8),
-                body_foreground: PaletteColor::EightBit(7),
-            }),
+            Some(test_theme()),
         );
 
         assert!(
@@ -5716,11 +6064,7 @@ mod tests {
             9,
             24,
             true,
-            Some(RenderTheme {
-                active_border: PaletteColor::EightBit(2),
-                inactive_border: PaletteColor::EightBit(8),
-                body_foreground: PaletteColor::EightBit(7),
-            }),
+            Some(test_theme()),
         );
 
         assert!(

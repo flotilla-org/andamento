@@ -17,13 +17,13 @@ use andamento_shared::MSG_VIEW_MODEL;
 use andamento_shared::{
     ChildLayoutSetRequest, ChildLayoutSetting, ConfigInspectRequest, ControllerBootstrapSnapshot,
     ExternalMessage, MetadataPatch, MetadataTarget, MetadataValueUpdate,
-    MetadataVisibilitySetRequest, PluginRegistrationHello, RailConfig, RailGroupingMode, RailSize,
-    RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RendererHello, SortMode,
-    StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO,
-    MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE,
-    MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
-    MSG_SET_CHILD_LAYOUT, MSG_SET_METADATA_VISIBILITY, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG,
-    MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
+    MetadataVisibilitySetRequest, PluginRegistrationHello, RailConfig, RailGroupingMode,
+    RailRgbColor, RailSize, RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure,
+    RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS,
+    MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST,
+    MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED,
+    MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_SET_CHILD_LAYOUT, MSG_SET_METADATA_VISIBILITY,
+    MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
@@ -897,8 +897,10 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
 }
 
 fn child_layout_patch(request: ChildLayoutSetRequest) -> Option<MetadataPatch> {
-    let andamento_shared::NodeKey::Group(path) = request.node_key else {
-        return None;
+    let target = match request.node_key {
+        andamento_shared::NodeKey::Root => MetadataTarget::Root,
+        andamento_shared::NodeKey::Group(path) => MetadataTarget::Group(path),
+        andamento_shared::NodeKey::Tab(_) => return None,
     };
     let (set, unset) = match request.layout {
         Some(ChildLayoutSetting::Cards) => (
@@ -928,7 +930,7 @@ fn child_layout_patch(request: ChildLayoutSetRequest) -> Option<MetadataPatch> {
         None => (BTreeMap::new(), vec!["rail.child_layout".to_owned()]),
     };
     Some(MetadataPatch {
-        target: MetadataTarget::Group(path),
+        target,
         source_id: "andamento-inspector".to_owned(),
         set,
         unset,
@@ -949,6 +951,9 @@ fn parse_rail_config(configuration: &BTreeMap<String, String>) -> RailConfig {
             .get("rail_grouping")
             .and_then(|value| parse_rail_grouping(value))
             .unwrap_or_default(),
+        segment_between_color: configuration
+            .get("rail_segment_between_color")
+            .and_then(|value| parse_rail_rgb_color(value)),
     }
 }
 
@@ -1105,6 +1110,18 @@ fn parse_rail_grouping(value: &str) -> Option<RailGroupingMode> {
         "directory" | "cwd" | "pane-cwd" | "pane_cwd" => Some(RailGroupingMode::Directory),
         _ => None,
     }
+}
+
+fn parse_rail_rgb_color(value: &str) -> Option<RailRgbColor> {
+    let hex = value.trim().strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    Some(RailRgbColor {
+        red: u8::from_str_radix(&hex[0..2], 16).ok()?,
+        green: u8::from_str_radix(&hex[2..4], 16).ok()?,
+        blue: u8::from_str_radix(&hex[4..6], 16).ok()?,
+    })
 }
 
 #[derive(Debug, PartialEq)]
@@ -1507,6 +1524,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_segment_between_color_from_plugin_configuration() {
+        let mut configuration = BTreeMap::new();
+        configuration.insert(
+            "rail_segment_between_color".to_owned(),
+            "#010203".to_owned(),
+        );
+
+        let config = parse_rail_config(&configuration);
+
+        assert_eq!(
+            config.segment_between_color,
+            Some(andamento_shared::RailRgbColor {
+                red: 1,
+                green: 2,
+                blue: 3,
+            })
+        );
+    }
+
+    #[test]
     fn parses_template_config_path_from_plugin_configuration() {
         let mut configuration = BTreeMap::new();
         configuration.insert(
@@ -1538,6 +1575,7 @@ mod tests {
             structure: RailStructure::SplitAroundActive,
             sizing: RailSizingPreset::PinnedLarge,
             grouping: RailGroupingMode::None,
+            segment_between_color: None,
         };
         let payload = serde_json::to_string(&config).unwrap();
 
@@ -1574,6 +1612,7 @@ mod tests {
                 structure: RailStructure::BoxPerTab,
                 sizing: RailSizingPreset::Compact,
                 grouping: RailGroupingMode::Directory,
+                segment_between_color: None,
             },
             pinned_tabs: vec![7],
             pane_statuses: vec![SetPaneStatus {
@@ -1733,11 +1772,53 @@ mod tests {
     }
 
     #[test]
+    fn child_layout_request_patches_root_metadata() {
+        let request = andamento_shared::ChildLayoutSetRequest {
+            client_id: 4,
+            node_key: NodeKey::Root,
+            layout: Some(andamento_shared::ChildLayoutSetting::CompactStrip),
+        };
+        let payload = serde_json::to_string(&request).unwrap();
+        let mut state = ControllerState::default();
+
+        let changed = handle_pipe_message(
+            &mut state,
+            pipe(
+                andamento_shared::MSG_SET_CHILD_LAYOUT,
+                Some(payload),
+                BTreeMap::new(),
+            ),
+        );
+
+        let model = state.view_model();
+        let root_metadata = model
+            .resolved_metadata
+            .iter()
+            .find(|metadata| metadata.target == andamento_shared::MetadataTarget::Root)
+            .expect("root metadata");
+        assert!(changed.state_changed);
+        assert_eq!(
+            changed.view_model_push_reason,
+            Some(ViewModelPushReason::PipeMetadata)
+        );
+        assert_eq!(
+            root_metadata
+                .values
+                .get("rail.child_layout")
+                .map(|entry| &entry.value),
+            Some(&andamento_shared::MetadataValue::Text(
+                "compact-strip".to_owned()
+            ))
+        );
+    }
+
+    #[test]
     fn set_rail_config_message_updates_controller_state() {
         let config = RailConfig {
             structure: RailStructure::BoxPerTab,
             sizing: RailSizingPreset::Compact,
             grouping: RailGroupingMode::None,
+            segment_between_color: None,
         };
         let payload = serde_json::to_string(&config).unwrap();
         let mut state = ControllerState::default();

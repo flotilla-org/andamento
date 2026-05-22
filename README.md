@@ -67,8 +67,11 @@ The controller can group tabs by the exact current working directory of their pa
 ```kdl
 plugin location="andamento-controller" {
     rail_grouping "directory"
+    rail_segment_between_color "#282c34"
 }
 ```
+
+`rail_segment_between_color` is optional. It controls the in-between colour used by compact tab-strip separators; set it to your terminal background colour when you want those segments to blend into the rail instead of using Zellij's ribbon background.
 
 ## External Grouping Rules
 
@@ -182,6 +185,10 @@ The example git watcher can also create managed tabs from the scripting side:
 When enabled, the watcher dedupes by tab name, creates one `repo: owner/name`
 tab per observed git repository, captures the tab id printed by
 `zellij action new-tab`, and patches that tab with typed metadata:
+
+Like the status helper, the watcher uses `$ZELLIJ_BIN` when set and otherwise
+prefers the sibling fork build at `/Users/robert/dev/zellij/target/dev-opt/zellij`
+before falling back to `zellij`.
 
 ```text
 tab.kind = repo-manager
