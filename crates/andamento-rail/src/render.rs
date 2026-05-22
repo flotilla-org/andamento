@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::inline_layout::{InlineItem, InlineRun};
+use crate::inline_layout::{InlineHit, InlineItem, InlineRun};
 use andamento_shared::segment_bar::{self, SegmentItem};
 use andamento_shared::template_config::{
     TemplateConfigCatalog, TemplateConfigFieldClass, TemplateConfigMatchContext,
@@ -1538,12 +1538,18 @@ fn append_compact_tab_strip(
 
     let items = tabs
         .iter()
-        .map(|tab| SegmentItem {
-            label: tab_title_with_template_catalog(&tab.card, template_catalog),
-            active: tab.card.active,
+        .enumerate()
+        .map(|(index, tab)| {
+            let label = tab_title_with_template_catalog(&tab.card, template_catalog);
+            InlineItem::segment(
+                format!("tab:{index}"),
+                label.clone(),
+                compact_segment_width(&label),
+            )
+            .hit(InlineHit::SwitchTab { index })
         })
         .collect::<Vec<_>>();
-    let rendered = render_compact_segment_run(&items, inner_width, theme);
+    let rendered = render_compact_segment_run(&items, tabs, inner_width, theme);
     let base_row = lines.len();
     for line in rendered.lines {
         lines.push(format!("{}{}", " ".repeat(indent), line));
@@ -1569,11 +1575,20 @@ fn append_compact_tab_strip(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompactSegmentRun {
     lines: Vec<String>,
-    hits: Vec<segment_bar::SegmentHitBox>,
+    hits: Vec<CompactSegmentHitBox>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompactSegmentHitBox {
+    index: usize,
+    row: usize,
+    col_start: usize,
+    col_end: usize,
 }
 
 fn render_compact_segment_run(
-    items: &[SegmentItem],
+    items: &[InlineItem],
+    tabs: &[RenderTab],
     width: usize,
     theme: Option<RenderTheme>,
 ) -> CompactSegmentRun {
@@ -1584,51 +1599,83 @@ fn render_compact_segment_run(
         };
     }
     if theme.is_none() {
-        let rendered = segment_bar::render_wrapped(items, &segment_bar::ZellijRibbonStyle, width);
+        let segment_items = tabs
+            .iter()
+            .zip(items.iter())
+            .map(|tab| SegmentItem {
+                label: tab.1.text.clone(),
+                active: tab.0.card.active,
+            })
+            .collect::<Vec<_>>();
+        let rendered =
+            segment_bar::render_wrapped(&segment_items, &segment_bar::ZellijRibbonStyle, width);
         return CompactSegmentRun {
             lines: rendered.lines,
-            hits: rendered.hits,
+            hits: rendered
+                .hits
+                .into_iter()
+                .map(|hit| CompactSegmentHitBox {
+                    index: hit.index,
+                    row: hit.row,
+                    col_start: hit.col_start,
+                    col_end: hit.col_end,
+                })
+                .collect(),
         };
     }
 
     let mut lines = vec![];
     let mut hits = vec![];
-    let mut line = String::new();
-    let mut col = 0usize;
-    let mut row = 0usize;
-
-    for (index, item) in items.iter().enumerate() {
-        let segment_width = compact_segment_width(&item.label);
-        if !line.is_empty() && segment_width > width.saturating_sub(col) {
-            lines.push(pad_styled_line_to_width(&line, col, width));
-            line.clear();
-            col = 0;
-            row = row.saturating_add(1);
+    for (row, placed) in InlineRun::new(items.to_vec())
+        .layout_wrapped(width)
+        .into_iter()
+        .enumerate()
+    {
+        let mut line = String::new();
+        let mut col = 0usize;
+        for item in placed.items {
+            let Some(index) = inline_switch_tab_index(item.hit) else {
+                continue;
+            };
+            let Some(tab) = tabs.get(index) else {
+                continue;
+            };
+            if item.cols.start > col {
+                line.push_str(&" ".repeat(item.cols.start - col));
+                col = item.cols.start;
+            }
+            let label = tab_title_with_template_catalog(&tab.card, None);
+            let segment_item = SegmentItem {
+                label,
+                active: tab.card.active,
+            };
+            let max_width = item.cols.end.saturating_sub(item.cols.start);
+            let (segment, visible_width) = render_compact_segment(&segment_item, max_width, theme);
+            if visible_width == 0 {
+                continue;
+            }
+            line.push_str(&segment);
+            col = col.saturating_add(visible_width);
+            hits.push(CompactSegmentHitBox {
+                index,
+                row,
+                col_start: item.cols.start,
+                col_end: item.cols.end.saturating_sub(1),
+            });
         }
-
-        let item_start = col;
-        let remaining_width = width.saturating_sub(col);
-        if remaining_width == 0 {
-            break;
-        }
-        let (segment, visible_width) = render_compact_segment(item, remaining_width, theme);
-        if visible_width == 0 {
+        if line.is_empty() {
             continue;
         }
-        line.push_str(&segment);
-        col = col.saturating_add(visible_width);
-        hits.push(segment_bar::SegmentHitBox {
-            index,
-            row,
-            col_start: item_start,
-            col_end: col.saturating_sub(1),
-        });
-    }
-
-    if !line.is_empty() {
         lines.push(pad_styled_line_to_width(&line, col, width));
     }
     CompactSegmentRun { lines, hits }
+}
+
+fn inline_switch_tab_index(hit: Option<InlineHit>) -> Option<usize> {
+    match hit {
+        Some(InlineHit::SwitchTab { index }) => Some(index),
+        Some(InlineHit::GroupToggle | InlineHit::InspectNode) | None => None,
+    }
 }
 
 fn pad_styled_line_to_width(line: &str, visible_width: usize, width: usize) -> String {

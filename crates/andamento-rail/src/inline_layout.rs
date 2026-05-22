@@ -10,11 +10,22 @@ pub struct InlineItem {
     pub id: String,
     pub text: String,
     pub measure_text: String,
+    pub kind: InlineItemKind,
     pub class: InlineClass,
     pub priority: i64,
     pub min_width: usize,
     pub compact_text: Option<String>,
     pub hit: Option<InlineHit>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum InlineItemKind {
+    Text,
+    Symbol,
+    Segment,
+    Spacer,
+    ImagePlaceholder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +65,36 @@ impl InlineRun {
         let selected = select_items_for_width(&self.items, width);
         place_items(&selected, width)
     }
+
+    pub fn layout_wrapped(&self, width: usize) -> Vec<PlacedInlineRun> {
+        if width == 0 || self.items.is_empty() {
+            return vec![];
+        }
+
+        let mut rows = vec![];
+        let mut current = Vec::new();
+        let mut current_width = 0usize;
+        for item in &self.items {
+            let item_width = item.measure_text.width().min(width);
+            if !current.is_empty() && item_width > width.saturating_sub(current_width) {
+                rows.push(place_items(&current, width));
+                current.clear();
+                current_width = 0;
+            }
+            let mut item = item.clone();
+            if item.measure_text.width() > width.saturating_sub(current_width) {
+                let visible_width = width.saturating_sub(current_width);
+                item.measure_text = " ".repeat(visible_width);
+            }
+            current_width = current_width.saturating_add(item.measure_text.width());
+            current.push(item);
+        }
+
+        if !current.is_empty() {
+            rows.push(place_items(&current, width));
+        }
+        rows
+    }
 }
 
 impl InlineItem {
@@ -64,6 +105,7 @@ impl InlineItem {
             id: id.into(),
             measure_text: text.clone(),
             text,
+            kind: InlineItemKind::Text,
             class: InlineClass::Required,
             priority: 100,
             min_width,
@@ -83,8 +125,23 @@ impl InlineItem {
             text: text.into(),
             min_width: measure_text.width().min(3),
             measure_text,
+            kind: InlineItemKind::Text,
             class: InlineClass::Required,
             priority: 100,
+            compact_text: None,
+            hit: None,
+        }
+    }
+
+    pub fn segment(id: impl Into<String>, label: impl Into<String>, width: usize) -> Self {
+        Self {
+            id: id.into(),
+            text: label.into(),
+            measure_text: " ".repeat(width),
+            kind: InlineItemKind::Segment,
+            class: InlineClass::Required,
+            priority: 100,
+            min_width: width.min(1),
             compact_text: None,
             hit: None,
         }
@@ -150,7 +207,7 @@ fn place_items(items: &[InlineItem], width: usize) -> PlacedInlineRun {
     let mut visible_width = 0usize;
     let mut placed_items = Vec::new();
     for item in items {
-        let separator = inline_separator(&text, &item.measure_text);
+        let separator = inline_separator(&text, item);
         let separator_width = separator.width();
         let item_width = item.measure_text.width();
         if visible_width + separator_width + item_width > width {
@@ -178,7 +235,7 @@ fn inline_items_width(items: &[InlineItem]) -> usize {
     let mut text = String::new();
     let mut width = 0usize;
     for item in items {
-        let separator = inline_separator(&text, &item.measure_text);
+        let separator = inline_separator(&text, item);
         width += separator.width() + item.measure_text.width();
         text.push_str(separator);
         text.push_str(&item.measure_text);
@@ -243,8 +300,14 @@ fn truncate_to_width(text: &str, width: usize) -> String {
     output
 }
 
-fn inline_separator(current_text: &str, next_text: &str) -> &'static str {
-    if current_text.is_empty() || next_text.starts_with(':') {
+fn inline_separator(current_text: &str, next_item: &InlineItem) -> &'static str {
+    if current_text.is_empty()
+        || next_item.measure_text.starts_with(':')
+        || matches!(
+            next_item.kind,
+            InlineItemKind::Segment | InlineItemKind::Spacer | InlineItemKind::ImagePlaceholder
+        )
+    {
         ""
     } else {
         " "
