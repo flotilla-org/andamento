@@ -12,6 +12,9 @@ path = "src/lib.rs"
 name = "andamento-rail"
 path = "src/main.rs"
 
+[features]
+native-plugin-factory = []
+
 [dependencies]
 ansi_term.workspace = true
 log = "0.4"

@@ -12,6 +12,9 @@ path = "src/main.rs"
 name = "andamento-controller"
 path = "src/main.rs"
 
+[features]
+native-plugin-factory = []
+
 [dependencies]
 log = "0.4"
 serde.workspace = true

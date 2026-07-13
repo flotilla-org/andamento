@@ -12,6 +12,9 @@ path = "src/lib.rs"
 name = "andamento-config"
 path = "src/main.rs"
 
+[features]
+native-plugin-factory = []
+
 [dependencies]
 serde_json.workspace = true
 andamento-shared.workspace = true

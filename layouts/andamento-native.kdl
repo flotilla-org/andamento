@@ -1,6 +1,6 @@
 // Same as andamento.kdl but with all three Andamento plugins loaded as
 // native (Rust-linked) rather than WASM. Requires zellij built with
-// --features native-tabs-all.
+// --features native-plugins-all (the superset; native-andamento-all also works).
 plugins {
     andamento-controller location="native:andamento-controller" {
         rail_structure "joined-cells"

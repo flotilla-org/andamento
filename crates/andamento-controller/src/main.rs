@@ -69,7 +69,7 @@ pub struct PluginState {
     recent_pipe_log: VecDeque<String>,
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", feature = "native-plugin-factory"))]
 register_plugin!(PluginState);
 
 impl ZellijPlugin for PluginState {

@@ -280,6 +280,9 @@ pub struct PluginState {
     applied_rail_size_version: u64,
 }
 
+#[cfg(feature = "native-plugin-factory")]
+register_plugin!(PluginState);
+
 impl ZellijPlugin for PluginState {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         let ids = get_plugin_ids();

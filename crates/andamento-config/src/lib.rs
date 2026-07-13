@@ -241,6 +241,9 @@ pub struct PluginState {
     body_scroll_offset: usize,
 }
 
+#[cfg(feature = "native-plugin-factory")]
+register_plugin!(PluginState);
+
 impl ZellijPlugin for PluginState {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         let ids = get_plugin_ids();
