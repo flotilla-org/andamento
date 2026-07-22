@@ -499,10 +499,16 @@ fn group_metadata_block(group: &RenderGroup) -> Vec<String> {
         &metadata_display_value(&group.metadata, "group.tab_count")
             .unwrap_or_else(|| group.tab_count.to_string()),
     );
-    let excluded_keys = ["group.label", "group.full_label", "group.tab_count"]
-        .into_iter()
-        .chain(group.path.0.iter().map(|segment| segment.key.as_str()))
-        .collect::<Vec<_>>();
+    let excluded_keys = [
+        "group.label",
+        "group.full_label",
+        "group.tab_count",
+        "group.key",
+        "group.value",
+    ]
+    .into_iter()
+    .chain(group.path.0.iter().map(|segment| segment.key.as_str()))
+    .collect::<Vec<_>>();
     push_additional_metadata_lines(&mut lines, 4, &group.metadata, &excluded_keys);
     push_metadata_source_detail_lines(&mut lines, 2, &group.metadata_sources);
     push_reachable_identity_lines(&mut lines, 2, &group.reachable_identities);
@@ -3025,6 +3031,13 @@ fn metadata_for_group_header(
     for segment in &path.0 {
         metadata.insert(segment.key.clone(), segment.value.clone());
     }
+    if let Some(segment) = path.0.last() {
+        metadata.insert(
+            "group.key".to_owned(),
+            MetadataValue::Text(segment.key.clone()),
+        );
+        metadata.insert("group.value".to_owned(), segment.value.clone());
+    }
     metadata
 }
 
@@ -3310,7 +3323,12 @@ fn tab_title_with_template_catalog(
         .unwrap_or_else(|| {
             tab_title_template_fields_with_template_catalog(&card.metadata, template_catalog)
         });
-    join_template_fields(&fields, true)
+    let rendered = join_template_fields(&fields, true);
+    if rendered.trim().is_empty() {
+        format!("{} (tab)", card.name)
+    } else {
+        rendered
+    }
 }
 
 #[cfg(test)]
@@ -3860,11 +3878,35 @@ fn group_header_line(
     niche_tabs: &[RenderTab],
     niche_child_groups: &[RenderGroup],
 ) -> RenderedTemplateLine {
-    let fields = match resolved_slot {
-        Some(slot) => {
-            group_header_fields_from_resolved_slot(slot, collapsed, collapsible, active_tab_name)
+    let (fields, text_style) = match resolved_slot {
+        Some(slot)
+            if slot
+                .fields
+                .iter()
+                .any(|field| !field.text.trim().is_empty()) =>
+        {
+            (
+                group_header_fields_from_resolved_slot(
+                    slot,
+                    collapsed,
+                    collapsible,
+                    active_tab_name,
+                ),
+                GroupHeaderTextStyle::Themed,
+            )
         }
-        None => group_header_template_fields_with_template_catalog(
+        Some(_) if unknown_grouping_key(metadata) => resolve_group_header_template_fields(
+            metadata,
+            collapsed,
+            collapsible,
+            active_tab_name,
+            None,
+        ),
+        Some(_) => (
+            group_identity_fallback_fields(metadata, collapsed, collapsible),
+            GroupHeaderTextStyle::Plain,
+        ),
+        None => resolve_group_header_template_fields(
             metadata,
             collapsed,
             collapsible,
@@ -3916,13 +3958,17 @@ fn group_header_line(
     } else {
         String::new()
     };
+    let style_header = |text| match text_style {
+        GroupHeaderTextStyle::Themed => style_group_header_text(text, contains_active_tab, theme),
+        GroupHeaderTextStyle::Plain => text,
+    };
     let text = if niche_projection.visible_width > 0 {
-        let mut styled = style_group_header_text(prefix, contains_active_tab, theme);
+        let mut styled = style_header(prefix);
         styled.push_str(&niche_projection.text);
-        styled.push_str(&style_group_header_text(suffix, contains_active_tab, theme));
+        styled.push_str(&style_header(suffix));
         styled
     } else {
-        style_group_header_text(format!("{text}{suffix}"), contains_active_tab, theme)
+        style_header(format!("{text}{suffix}"))
     };
     RenderedTemplateLine {
         text,
@@ -4239,11 +4285,21 @@ enum TemplateSlot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupHeaderTextStyle {
+    Themed,
+    Plain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MetadataPredicate {
     Exists(&'static str),
     TextEquals {
         key: &'static str,
         value: &'static str,
+    },
+    TextOneOf {
+        key: &'static str,
+        values: &'static [&'static str],
     },
     TextPrefix {
         key: &'static str,
@@ -4287,17 +4343,35 @@ const TERMINAL_STATUS_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
         prefix: "terminal:",
     },
 ];
+const RECOGNIZED_GROUPING_KEYS: &[&str] = &[
+    "andamento.project",
+    "branch",
+    "git.branch",
+    "git.repo",
+    "project",
+    "repo",
+    "worktree",
+    "zellij.pane.cwd",
+];
+const RECOGNIZED_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] =
+    &[MetadataPredicate::TextOneOf {
+        key: "group.key",
+        values: RECOGNIZED_GROUPING_KEYS,
+    }];
+const FALLBACK_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] =
+    &[MetadataPredicate::Exists("group.key")];
+const GROUP_HEADER_TOGGLE_FIELD: TemplateFieldSpec = TemplateFieldSpec {
+    class: TemplateFieldClass::Required,
+    sources: &[TemplateValueSource::CollapsedToggle {
+        collapsed: "▶",
+        expanded: "▼",
+    }],
+    prefix: "",
+    suffix: "",
+    condition: TemplateFieldCondition::Always,
+};
 const GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
-    TemplateFieldSpec {
-        class: TemplateFieldClass::Required,
-        sources: &[TemplateValueSource::CollapsedToggle {
-            collapsed: "▶",
-            expanded: "▼",
-        }],
-        prefix: "",
-        suffix: "",
-        condition: TemplateFieldCondition::Always,
-    },
+    GROUP_HEADER_TOGGLE_FIELD,
     TemplateFieldSpec {
         class: TemplateFieldClass::Required,
         sources: &[
@@ -4321,6 +4395,23 @@ const GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
         prefix: ": ",
         suffix: "",
         condition: TemplateFieldCondition::Collapsed,
+    },
+];
+const FALLBACK_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
+    GROUP_HEADER_TOGGLE_FIELD,
+    TemplateFieldSpec {
+        class: TemplateFieldClass::Required,
+        sources: &[TemplateValueSource::MetadataText("group.key")],
+        prefix: "",
+        suffix: ":",
+        condition: TemplateFieldCondition::Always,
+    },
+    TemplateFieldSpec {
+        class: TemplateFieldClass::Required,
+        sources: &[TemplateValueSource::MetadataDisplay("group.value")],
+        prefix: "",
+        suffix: " (group)",
+        condition: TemplateFieldCondition::Always,
     },
 ];
 const TAB_TITLE_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
@@ -4354,6 +4445,22 @@ const STATUS_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
 const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
     TemplateDefinition {
         name: "builtin.group-header",
+        slot: TemplateSlot::GroupHeader,
+        node_kind: RenderNodeKind::Group,
+        predicates: RECOGNIZED_GROUP_HEADER_TEMPLATE_PREDICATES,
+        fields: GROUP_HEADER_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
+    },
+    TemplateDefinition {
+        name: "builtin.group-header.fallback",
+        slot: TemplateSlot::GroupHeader,
+        node_kind: RenderNodeKind::Group,
+        predicates: FALLBACK_GROUP_HEADER_TEMPLATE_PREDICATES,
+        fields: FALLBACK_GROUP_HEADER_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
+    },
+    TemplateDefinition {
+        name: "builtin.group-header.legacy",
         slot: TemplateSlot::GroupHeader,
         node_kind: RenderNodeKind::Group,
         predicates: &[],
@@ -4612,6 +4719,9 @@ impl MetadataPredicate {
             MetadataPredicate::TextEquals { key, value } => {
                 metadata_text(metadata, key) == Some(*value)
             }
+            MetadataPredicate::TextOneOf { key, values } => {
+                metadata_text(metadata, key).is_some_and(|value| values.contains(&value))
+            }
             MetadataPredicate::TextPrefix { key, prefix } => {
                 metadata_text(metadata, key).is_some_and(|value| value.starts_with(prefix))
             }
@@ -4622,7 +4732,7 @@ impl MetadataPredicate {
         match self {
             MetadataPredicate::Exists(_) => 1,
             MetadataPredicate::TextPrefix { .. } => 2,
-            MetadataPredicate::TextEquals { .. } => 3,
+            MetadataPredicate::TextEquals { .. } | MetadataPredicate::TextOneOf { .. } => 3,
         }
     }
 
@@ -4630,6 +4740,9 @@ impl MetadataPredicate {
         match self {
             MetadataPredicate::Exists(key) => format!("exists({key})"),
             MetadataPredicate::TextEquals { key, value } => format!("{key} == {value}"),
+            MetadataPredicate::TextOneOf { key, values } => {
+                format!("{key} in [{}]", values.join(", "))
+            }
             MetadataPredicate::TextPrefix { key, prefix } => format!("{key} starts_with {prefix}"),
         }
     }
@@ -4650,6 +4763,7 @@ fn group_header_template_fields(
     )
 }
 
+#[cfg(test)]
 fn group_header_template_fields_with_template_catalog(
     metadata: &RenderMetadata,
     collapsed: bool,
@@ -4657,6 +4771,23 @@ fn group_header_template_fields_with_template_catalog(
     active_tab_name: Option<&str>,
     template_catalog: Option<&TemplateConfigCatalog>,
 ) -> Vec<TemplateField> {
+    resolve_group_header_template_fields(
+        metadata,
+        collapsed,
+        collapsible,
+        active_tab_name,
+        template_catalog,
+    )
+    .0
+}
+
+fn resolve_group_header_template_fields(
+    metadata: &RenderMetadata,
+    collapsed: bool,
+    collapsible: bool,
+    active_tab_name: Option<&str>,
+    template_catalog: Option<&TemplateConfigCatalog>,
+) -> (Vec<TemplateField>, GroupHeaderTextStyle) {
     let context = TemplateRenderContext {
         slot: TemplateSlot::GroupHeader,
         node_kind: RenderNodeKind::Group,
@@ -4666,16 +4797,40 @@ fn group_header_template_fields_with_template_catalog(
         active_tab_name,
     };
     if let Some(fields) = external_template_fields(template_catalog, context) {
-        return fields;
+        return (fields, GroupHeaderTextStyle::Themed);
     }
-    template_fields_for(TemplateRenderContext {
-        slot: TemplateSlot::GroupHeader,
-        node_kind: RenderNodeKind::Group,
-        metadata,
-        collapsed,
-        collapsible,
-        active_tab_name,
-    })
+    let Some(template) = resolve_template(BUILTIN_TEMPLATES, &context) else {
+        return (vec![], GroupHeaderTextStyle::Plain);
+    };
+    let text_style = if unknown_grouping_key(metadata) {
+        GroupHeaderTextStyle::Plain
+    } else {
+        GroupHeaderTextStyle::Themed
+    };
+    (template.build_fields(&context), text_style)
+}
+
+fn unknown_grouping_key(metadata: &RenderMetadata) -> bool {
+    metadata_text(metadata, "group.key").is_some_and(|key| !RECOGNIZED_GROUPING_KEYS.contains(&key))
+}
+
+fn group_header_toggle_field(collapsed: bool, collapsible: bool) -> Option<TemplateField> {
+    collapsible.then(|| TemplateField::Required(if collapsed { "▶" } else { "▼" }.to_owned()))
+}
+
+fn group_identity_fallback_fields(
+    metadata: &RenderMetadata,
+    collapsed: bool,
+    collapsible: bool,
+) -> Vec<TemplateField> {
+    let mut fields = group_header_toggle_field(collapsed, collapsible)
+        .into_iter()
+        .collect::<Vec<_>>();
+    let label = metadata_text(metadata, "group.label")
+        .filter(|label| !label.trim().is_empty())
+        .unwrap_or("group");
+    fields.push(TemplateField::Required(format!("{label} (group)")));
+    fields
 }
 
 fn group_header_fields_from_resolved_slot(
@@ -4684,13 +4839,9 @@ fn group_header_fields_from_resolved_slot(
     collapsible: bool,
     active_tab_name: Option<&str>,
 ) -> Vec<TemplateField> {
-    let mut fields = if collapsible {
-        vec![TemplateField::Required(
-            if collapsed { "▶" } else { "▼" }.to_owned(),
-        )]
-    } else {
-        vec![]
-    };
+    let mut fields = group_header_toggle_field(collapsed, collapsible)
+        .into_iter()
+        .collect::<Vec<_>>();
     fields.extend(slot.fields.iter().map(|field| TemplateField::Prioritized {
         value: field.text.clone(),
         priority: field.priority,
@@ -6997,6 +7148,94 @@ mod tests {
             render_lines_with_template_catalog(Some(&model()), &[], 7, 24, true, Some(&catalog));
 
         assert!(rendered.lines[0].starts_with("┌ External"));
+    }
+
+    #[test]
+    fn entry_with_no_recognized_fields_renders_label_and_kind() {
+        let mut model = model();
+        model.tabs[0].templates.tab_title = Some(ResolvedTemplateSlot {
+            template_name: "future.entry".to_owned(),
+            fields: vec![],
+        });
+
+        let rendered = render_lines(Some(&model), &[], 7, 24, true);
+
+        assert!(
+            rendered.lines[0].starts_with("┌ tab-2 (tab)"),
+            "entry fallback should retain its label and kind: {:?}",
+            rendered.lines[0]
+        );
+    }
+
+    #[test]
+    fn unknown_grouping_key_renders_plain_key_value_fallback() {
+        for group_header in [
+            None,
+            Some(ResolvedTemplateSlot {
+                template_name: "future.group".to_owned(),
+                fields: vec![],
+            }),
+        ] {
+            let mut model = grouped_model();
+            let path = GroupPath(vec![GroupSegment {
+                key: "flotilla.convoy".to_owned(),
+                value: MetadataValue::Text("andamento-total-fallback".to_owned()),
+                label: Some("total fallback".to_owned()),
+            }]);
+            model.rows = vec![
+                RailRow::GroupHeader {
+                    group_id: "flotilla.convoy:andamento-total-fallback".to_owned(),
+                    path: path.clone(),
+                    label: "total fallback".to_owned(),
+                    full_label: "total fallback".to_owned(),
+                    tab_count: 2,
+                    templates: ResolvedTemplateSlots {
+                        group_header,
+                        ..ResolvedTemplateSlots::default()
+                    },
+                },
+                RailRow::Tab {
+                    tab_id: 1,
+                    indent: 2,
+                    parent_path: Some(path.clone()),
+                },
+                RailRow::Tab {
+                    tab_id: 2,
+                    indent: 2,
+                    parent_path: Some(path),
+                },
+            ];
+
+            let rendered =
+                render_lines_with_theme(Some(&model), &[], 8, 56, true, Some(test_theme()));
+
+            assert!(
+                rendered.lines[0]
+                    .starts_with("▼ flotilla.convoy: andamento-total-fallback (group)"),
+                "unknown grouping key should render plain key, value, and kind: {:?}",
+                rendered.lines[0]
+            );
+        }
+    }
+
+    #[test]
+    fn group_with_no_resolved_fields_uses_its_builtin_fallback() {
+        let mut model = grouped_model();
+        let RailRow::GroupHeader { templates, .. } = &mut model.rows[0] else {
+            panic!("expected group header");
+        };
+        templates.group_header = Some(ResolvedTemplateSlot {
+            template_name: "future.group".to_owned(),
+            fields: vec![],
+        });
+
+        let rendered = render_lines(Some(&model), &[], 8, 24, true);
+
+        assert!(
+            rendered.lines[0].starts_with("▼ zellij (group)"),
+            "empty resolved group fields should retain its label and kind: {:?}",
+            rendered.lines[0]
+        );
     }
 
     #[test]
