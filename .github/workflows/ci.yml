@@ -18,8 +18,8 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           repository: rjwittams/zellij
           ref: ${{ env.ZELLIJ_REVISION }}
@@ -42,8 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: fmt
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           repository: rjwittams/zellij
           ref: ${{ env.ZELLIJ_REVISION }}
@@ -54,7 +54,7 @@ jobs:
         with:
           targets: wasm32-wasip1
           components: clippy
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -71,8 +71,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: fmt
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           repository: rjwittams/zellij
           ref: ${{ env.ZELLIJ_REVISION }}
@@ -80,7 +80,7 @@ jobs:
       - name: Link sibling Zellij dependency
         run: ln -s "$GITHUB_WORKSPACE/zellij" "$(dirname "$GITHUB_WORKSPACE")/zellij"
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -102,8 +102,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: fmt
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           repository: rjwittams/zellij
           ref: ${{ env.ZELLIJ_REVISION }}
@@ -113,7 +113,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip1
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
