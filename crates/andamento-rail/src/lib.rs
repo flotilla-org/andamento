@@ -520,6 +520,8 @@ mod tests {
     use super::*;
     use render::{VisibleCard, VisibleIconRect};
 
+    // Zellij's native shim references this WASM host import when tests exercise
+    // mouse handlers that can switch tabs.
     #[no_mangle]
     extern "C" fn host_run_plugin_command() {}
 
@@ -625,8 +627,27 @@ mod tests {
 
         assert_eq!(render_requests, [false, false, false]);
         assert_eq!(state.rail_scroll_offset, 0);
+        assert!(state.scroll_flush_scheduled);
         assert!(state.flush_pending_scroll());
         assert_eq!(state.rail_scroll_offset, 1);
+        assert!(!state.scroll_flush_scheduled);
+    }
+
+    #[test]
+    fn explicit_navigation_clears_scroll_queued_before_it() {
+        let mut state = PluginState {
+            rail_scroll_offset: 4,
+            rail_can_scroll: true,
+            ..Default::default()
+        };
+        state.handle_mouse(Mouse::ScrollDown(3));
+
+        state.reset_scroll_position();
+
+        assert_eq!(state.rail_scroll_offset, 0);
+        assert_eq!(state.pending_scroll_delta, 0);
+        assert!(!state.flush_pending_scroll());
+        assert_eq!(state.rail_scroll_offset, 0);
     }
 
     #[test]
@@ -1103,7 +1124,7 @@ impl PluginState {
                 };
                 match hit.action {
                     HitAction::SwitchTab => {
-                        self.rail_scroll_offset = 0;
+                        self.reset_scroll_position();
                         switch_tab_to((hit.tab_position + 1) as u32);
                         false
                     }
@@ -1111,7 +1132,7 @@ impl PluginState {
                         if let (Some(request), Some(client_id)) =
                             (hit.materialize_request.as_ref(), self.own_client_id)
                         {
-                            self.rail_scroll_offset = 0;
+                            self.reset_scroll_position();
                             if let Some(message) = build_materialize_latent_message(
                                 &self.controller_plugin_url,
                                 client_id,
@@ -1198,6 +1219,11 @@ impl PluginState {
             }
         }
         false
+    }
+
+    fn reset_scroll_position(&mut self) {
+        self.rail_scroll_offset = 0;
+        self.pending_scroll_delta = 0;
     }
 
     fn active_tab_idx(&self) -> Option<usize> {
