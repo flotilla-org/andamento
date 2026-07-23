@@ -1404,6 +1404,7 @@ fn push_templates_page(frame: &mut ConfigUiFrame, model: Option<&ControllerViewM
                     );
                 }
             }
+            andamento_shared::RailRow::Latent { .. } => {}
         }
     }
 }

@@ -28,6 +28,10 @@ pub struct MetadataStore {
 }
 
 impl MetadataStore {
+    pub fn targets(&self) -> impl Iterator<Item = &EntityId> {
+        self.entries.keys()
+    }
+
     pub fn set(
         &mut self,
         entity_id: EntityId,
