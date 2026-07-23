@@ -1051,9 +1051,10 @@ impl ControllerState {
     fn materialized_group_paths(&self) -> BTreeSet<GroupPath> {
         self.panes
             .keys()
-            .filter_map(|pane_id| {
-                let (values, _, _) =
-                    self.resolve_target_metadata(&EntityId::Pane(*pane_id), BTreeMap::new());
+            .map(|pane_id| EntityId::Pane(*pane_id))
+            .chain(self.tabs.iter().map(|tab| EntityId::Tab(tab.tab_id)))
+            .filter_map(|target| {
+                let (values, _, _) = self.resolve_target_metadata(&target, BTreeMap::new());
                 match values.get(KEY_TAB_SCOPE).map(|entry| &entry.value) {
                     Some(MetadataValue::GroupPath(segments)) => {
                         Some(metadata_path_segments_to_group_path(segments.clone()))
@@ -3775,6 +3776,65 @@ mod tests {
             .iter()
             .any(|row| matches!(row, RailRow::Latent { latent, .. }
                 if latent.path == path)));
+    }
+
+    #[test]
+    fn explicit_tab_scope_suppresses_matching_catalog_latent_tab() {
+        let mut state = ControllerState::default();
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 7,
+            position: 0,
+            name: "catalog".to_owned(),
+            active: true,
+        }]);
+        let path = GroupPath(vec![GroupSegment {
+            key: "flotilla.convoy".to_owned(),
+            value: MetadataValue::Text("dev/catalog".to_owned()),
+            label: Some("catalog".to_owned()),
+        }]);
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Group(path.clone()),
+            source_id: "flotilla-connector".to_owned(),
+            set: BTreeMap::from([(
+                KEY_FACTORY_ID.to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("flotilla:convoys/dev/catalog".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Tab(7),
+            source_id: "flotilla-actuator".to_owned(),
+            set: BTreeMap::from([(
+                KEY_TAB_SCOPE.to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::GroupPath(vec![
+                        andamento_shared::MetadataPathSegmentValue {
+                            key: path.0[0].key.clone(),
+                            value: andamento_shared::MetadataPathValue::Text(
+                                "dev/catalog".to_owned(),
+                            ),
+                            label: Some("catalog".to_owned()),
+                        },
+                    ]),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let rows = state.view_model().rows;
+
+        assert!(rows
+            .iter()
+            .any(|row| matches!(row, RailRow::Tab { tab_id: 7, .. })));
+        assert!(!rows.iter().any(|row| matches!(row, RailRow::Latent { .. })));
     }
 
     #[test]
