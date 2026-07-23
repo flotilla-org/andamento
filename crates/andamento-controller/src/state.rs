@@ -10,9 +10,9 @@ use andamento_shared::{
     LatentMaterializationState, LatentTab, MetadataControls, MetadataEntry, MetadataIdentity,
     MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey, ObservedMetadataIdentity,
     PaneTarget, PluginPlacement, PluginRegistrationHello, Priority, RailConfig, RailGroupingMode,
-    RailRow, RailUiAction, RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata,
-    ResolvedTemplateField, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode,
-    TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics,
+    RailRow, RailUiAction, RailUiRevision, RailUiState, ReachableMetadataIdentity, RendererHello,
+    ResolvedMetadata, ResolvedTemplateField, ResolvedTemplateSlot, ResolvedTemplateSlots,
+    SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -59,6 +59,13 @@ struct PendingLatentMaterialization {
     tab_id: Option<u64>,
 }
 
+#[derive(Debug, Default)]
+struct ControllerRailUiState {
+    revision: RailUiRevision,
+    collapsed_groups: BTreeSet<GroupPath>,
+    scroll_offset: isize,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ControllerClientState {
     pub client_id: u16,
@@ -99,9 +106,8 @@ pub struct ControllerState {
     receive_counter: u64,
     pending_materialized_tab_names: HashMap<u64, String>,
     pending_latent_materializations: BTreeMap<String, PendingLatentMaterialization>,
-    rail_ui_revision: u64,
-    collapsed_groups: BTreeSet<GroupPath>,
-    rail_scroll_offset: isize,
+    rail_ui: ControllerRailUiState,
+    rail_ui_writer_client_id: u16,
 }
 
 impl ControllerState {
@@ -344,38 +350,47 @@ impl ControllerState {
         }
     }
 
+    pub fn set_rail_ui_writer_client_id(&mut self, client_id: u16) {
+        self.rail_ui_writer_client_id = client_id;
+    }
+
     pub fn apply_rail_ui_action(&mut self, action: RailUiAction) {
-        self.rail_ui_revision = self.rail_ui_revision.saturating_add(1);
+        self.rail_ui.revision = RailUiRevision {
+            sequence: self.rail_ui.revision.sequence.saturating_add(1),
+            writer_client_id: self.rail_ui_writer_client_id,
+        };
         match action {
             RailUiAction::ToggleGroup { path } => {
-                if !self.collapsed_groups.insert(path.clone()) {
-                    self.collapsed_groups.remove(&path);
+                if !self.rail_ui.collapsed_groups.insert(path.clone()) {
+                    self.rail_ui.collapsed_groups.remove(&path);
                 }
             }
             RailUiAction::ScrollBy { delta } => {
-                self.rail_scroll_offset = self.rail_scroll_offset.saturating_add(delta);
+                self.rail_ui.scroll_offset = self.rail_ui.scroll_offset.saturating_add(delta);
             }
             RailUiAction::ResetScroll => {
-                self.rail_scroll_offset = 0;
+                self.rail_ui.scroll_offset = 0;
             }
         }
     }
 
     pub fn rail_ui_state(&self) -> RailUiState {
         RailUiState {
-            revision: self.rail_ui_revision,
-            collapsed_groups: self.collapsed_groups.iter().cloned().collect(),
-            scroll_offset: self.rail_scroll_offset,
+            revision: self.rail_ui.revision,
+            collapsed_groups: self.rail_ui.collapsed_groups.iter().cloned().collect(),
+            scroll_offset: self.rail_ui.scroll_offset,
         }
     }
 
     pub fn apply_rail_ui_state(&mut self, state: RailUiState) -> bool {
-        if state.revision <= self.rail_ui_revision {
+        if state.revision <= self.rail_ui.revision {
             return false;
         }
-        self.rail_ui_revision = state.revision;
-        self.collapsed_groups = state.collapsed_groups.into_iter().collect();
-        self.rail_scroll_offset = state.scroll_offset;
+        self.rail_ui = ControllerRailUiState {
+            revision: state.revision,
+            collapsed_groups: state.collapsed_groups.into_iter().collect(),
+            scroll_offset: state.scroll_offset,
+        };
         true
     }
 
@@ -727,7 +742,7 @@ impl ControllerState {
                 .map(|client| client.metadata_controls.clone())
                 .unwrap_or_default(),
             inspected_node: None,
-            collapsed_groups: self.collapsed_groups.iter().cloned().collect(),
+            collapsed_groups: self.rail_ui.collapsed_groups.iter().cloned().collect(),
         }
     }
 
@@ -3864,7 +3879,10 @@ mod tests {
         assert_eq!(
             target_snapshot.rail_ui_state,
             RailUiState {
-                revision: 1,
+                revision: RailUiRevision {
+                    sequence: 1,
+                    writer_client_id: 0,
+                },
                 collapsed_groups: vec![],
                 scroll_offset: 8,
             }
@@ -3878,14 +3896,20 @@ mod tests {
         state.apply_rail_ui_action(RailUiAction::ScrollBy { delta: 2 });
 
         assert!(!state.apply_rail_ui_state(RailUiState {
-            revision: 1,
+            revision: RailUiRevision {
+                sequence: 1,
+                writer_client_id: 9,
+            },
             collapsed_groups: vec![],
             scroll_offset: 99,
         }));
         assert_eq!(
             state.rail_ui_state(),
             RailUiState {
-                revision: 2,
+                revision: RailUiRevision {
+                    sequence: 2,
+                    writer_client_id: 0,
+                },
                 collapsed_groups: vec![],
                 scroll_offset: 10,
             }
@@ -4536,7 +4560,10 @@ mod tests {
         assert_eq!(
             state.rail_ui_state(),
             RailUiState {
-                revision: 2,
+                revision: RailUiRevision {
+                    sequence: 2,
+                    writer_client_id: 0,
+                },
                 collapsed_groups: vec![path],
                 scroll_offset: 7,
             }

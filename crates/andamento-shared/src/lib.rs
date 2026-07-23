@@ -162,10 +162,16 @@ pub enum RailUiAction {
     ResetScroll,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RailUiRevision {
+    pub sequence: u64,
+    pub writer_client_id: u16,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RailUiState {
     #[serde(default)]
-    pub revision: u64,
+    pub revision: RailUiRevision,
     #[serde(default)]
     pub collapsed_groups: Vec<GroupPath>,
     #[serde(default)]

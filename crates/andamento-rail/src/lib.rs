@@ -539,6 +539,7 @@ impl ZellijPlugin for PluginState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use andamento_shared::RailUiRevision;
     use render::{VisibleCard, VisibleIconRect};
 
     // Zellij's native shim references this WASM host import when tests exercise
@@ -870,7 +871,10 @@ mod tests {
             label: Some("repo".to_owned()),
         }]);
         let snapshot = RailUiState {
-            revision: 3,
+            revision: RailUiRevision {
+                sequence: 3,
+                writer_client_id: 1,
+            },
             collapsed_groups: vec![path],
             scroll_offset: 9,
         };
@@ -886,29 +890,47 @@ mod tests {
     }
 
     #[test]
-    fn delayed_broadcast_cannot_roll_a_rail_back() {
+    fn rail_total_orders_same_sequence_broadcasts() {
         let mut rail = PluginState::default();
         let current = RailUiState {
-            revision: 4,
+            revision: RailUiRevision {
+                sequence: 4,
+                writer_client_id: 1,
+            },
             collapsed_groups: vec![],
             scroll_offset: 12,
         };
-        let stale = RailUiState {
-            revision: 3,
+        let winner = RailUiState {
+            revision: RailUiRevision {
+                sequence: 4,
+                writer_client_id: 2,
+            },
             collapsed_groups: vec![],
-            scroll_offset: 2,
+            scroll_offset: 14,
+        };
+        let stale = RailUiState {
+            revision: RailUiRevision {
+                sequence: 4,
+                writer_client_id: 0,
+            },
+            collapsed_groups: vec![],
+            scroll_offset: 1,
         };
 
         assert!(rail.pipe(pipe(
             MSG_RAIL_UI_STATE,
             serde_json::to_string(&current).unwrap(),
         )));
+        assert!(rail.pipe(pipe(
+            MSG_RAIL_UI_STATE,
+            serde_json::to_string(&winner).unwrap(),
+        )));
         assert!(!rail.pipe(pipe(
             MSG_RAIL_UI_STATE,
             serde_json::to_string(&stale).unwrap(),
         )));
 
-        assert_eq!(rail.rail_ui_state, current);
+        assert_eq!(rail.rail_ui_state, winner);
     }
 
     #[test]

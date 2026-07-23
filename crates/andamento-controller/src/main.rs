@@ -88,6 +88,7 @@ impl ZellijPlugin for PluginState {
             plugin_id: ids.plugin_id,
             client_id: ids.client_id,
         });
+        self.state.set_rail_ui_writer_client_id(ids.client_id);
         self.state
             .set_rail_config(parse_rail_config(&configuration));
         self.template_config_path = template_config_path_from_configuration(&configuration);
@@ -1411,7 +1412,7 @@ fn parse_controller_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use andamento_shared::{PaneTarget, Priority, SetPaneStatus};
+    use andamento_shared::{PaneTarget, Priority, RailUiRevision, SetPaneStatus};
 
     fn pipe(name: &str, payload: Option<String>, args: BTreeMap<String, String>) -> PipeMessage {
         PipeMessage {
@@ -1951,17 +1952,31 @@ mod tests {
     }
 
     #[test]
-    fn controller_clone_follows_newer_ui_broadcast_and_ignores_stale_replay() {
+    fn controller_clone_total_orders_same_sequence_broadcasts() {
         let mut clone = ControllerState::default();
         let current = RailUiState {
-            revision: 7,
+            revision: RailUiRevision {
+                sequence: 7,
+                writer_client_id: 2,
+            },
             collapsed_groups: vec![],
             scroll_offset: 11,
         };
-        let stale = RailUiState {
-            revision: 6,
+        let winner = RailUiState {
+            revision: RailUiRevision {
+                sequence: 7,
+                writer_client_id: 3,
+            },
             collapsed_groups: vec![],
-            scroll_offset: 3,
+            scroll_offset: 13,
+        };
+        let stale = RailUiState {
+            revision: RailUiRevision {
+                sequence: 7,
+                writer_client_id: 1,
+            },
+            collapsed_groups: vec![],
+            scroll_offset: 1,
         };
 
         handle_pipe_message(
@@ -1976,18 +1991,31 @@ mod tests {
             &mut clone,
             pipe(
                 MSG_RAIL_UI_STATE,
+                Some(serde_json::to_string(&winner).unwrap()),
+                BTreeMap::new(),
+            ),
+        );
+        handle_pipe_message(
+            &mut clone,
+            pipe(
+                MSG_RAIL_UI_STATE,
                 Some(serde_json::to_string(&stale).unwrap()),
                 BTreeMap::new(),
             ),
         );
 
-        assert_eq!(clone.rail_ui_state(), current);
+        assert_eq!(clone.rail_ui_state(), winner);
     }
 
     #[test]
     fn late_rail_request_rebroadcasts_current_ui_state_without_target_filters() {
         let mut state = ControllerState::default();
-        state.apply_rail_ui_action(RailUiAction::ScrollBy { delta: 4 });
+        state.set_rail_ui_writer_client_id(6);
+        let action = serde_json::to_string(&RailUiAction::ScrollBy { delta: 4 }).unwrap();
+        let action_result = handle_pipe_message(
+            &mut state,
+            pipe(MSG_RAIL_UI_ACTION, Some(action), BTreeMap::new()),
+        );
 
         let result = handle_pipe_message(
             &mut state,
@@ -1995,6 +2023,7 @@ mod tests {
         );
         let message = rail_ui_state_broadcast_message(&state.rail_ui_state()).unwrap();
 
+        assert!(action_result.broadcast_rail_ui_state);
         assert!(result.broadcast_rail_ui_state);
         assert_eq!(message.plugin_url, None);
         assert_eq!(message.destination_plugin_id, None);
@@ -2004,7 +2033,10 @@ mod tests {
             serde_json::from_str::<RailUiState>(message.message_payload.as_deref().unwrap())
                 .unwrap(),
             RailUiState {
-                revision: 1,
+                revision: RailUiRevision {
+                    sequence: 1,
+                    writer_client_id: 6,
+                },
                 collapsed_groups: vec![],
                 scroll_offset: 4,
             }

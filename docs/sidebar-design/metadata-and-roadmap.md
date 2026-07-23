@@ -280,7 +280,7 @@ This model supports:
 
 The renderer can still project these nodes into simple rows for the sidebar. The important change is that row layout becomes one projection of a richer tree, not the primary model.
 
-Status: started in the rail plugin. Normal rendering now uses local render nodes for groups and tabs, and groups can be collapsed/expanded by clicking the group header. Collapse and vertical scroll state live in one controller-owned session snapshot that is broadcast to every rail. New rail instances request the current snapshot on startup, and monotonic revisions prevent delayed broadcasts from rolling an instance back.
+Status: started in the rail plugin. Normal rendering now uses local render nodes for groups and tabs, and groups can be collapsed/expanded by clicking the group header. Collapse and vertical scroll state live in one controller-owned session snapshot that is broadcast to every rail. The old collapse delivery reused per-client view-model pushes addressed only to renderers already known to the controller, making registration order a delivery dependency, while scroll state remained entirely local. The dedicated rail UI broadcast is untargeted, new rail instances request the current snapshot on startup, and totally ordered revisions prevent delayed or concurrent controller broadcasts from leaving instances on different snapshots.
 
 ### Spindly Hierarchies Should Conflate Compatible Levels
 

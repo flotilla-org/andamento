@@ -61,6 +61,13 @@ The current prototype is split across these plugins:
 - `andamento-rail`: visible sidebar renderer, intended to appear in each tab
 - `andamento-config`: in-rail settings, template diagnostics, and stats views
 
+Rail UI synchronization deliberately uses an untargeted session broadcast. The
+previous collapse path piggybacked on per-client view models addressed only to
+registered renderers, so startup/registration ordering could omit an instance;
+scroll position never left the originating rail at all. Rails now send actions
+to the controller, consume one totally ordered collapse/scroll snapshot, and
+request that current snapshot whenever a new instance starts.
+
 ## Directory Grouping
 
 The controller can group tabs by the exact current working directory of their panes:
