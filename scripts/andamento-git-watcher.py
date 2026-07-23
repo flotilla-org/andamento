@@ -13,6 +13,7 @@ from pathlib import Path
 OBSERVED_IDENTITIES_PIPE = "andamento-observed-identities"
 METADATA_PATCH_PIPE = "andamento-apply-metadata-patch"
 SOURCE_ID = "andamento-git-watcher"
+SOURCE = "git-watcher"
 DEFAULT_TTL_MS = 10_000
 DEFAULT_FACTORY_LAYOUT = Path(__file__).resolve().parent.parent / "layouts" / "repo-manager-tab.kdl"
 DEFAULT_FACTORY_NAME_PREFIX = "repo: "
@@ -80,6 +81,7 @@ def tab_target(tab_id):
 
 
 def metadata_patch_for_target(target, facts, ttl_ms=DEFAULT_TTL_MS):
+    facts = {"source": text_value(SOURCE), **facts}
     return {
         "type": "metadata-patch",
         "target": target,
@@ -155,7 +157,7 @@ def git_facts(cwd):
             pass
     repo = parse_repo(facts.get("git.remote.origin", ""))
     if repo:
-        facts["git.repo"] = repo
+        facts["vcs.repo"] = repo
         facts["repo.name"] = repo_name(repo)
     return facts
 
@@ -252,11 +254,11 @@ def repo_manager_tab_metadata(repo):
     name = repo_name(repo)
     return {
         "factory.id": text_value(f"repo-manager:{repo}"),
-        "git.repo": text_value(repo),
+        "vcs.repo": text_value(repo),
         "repo.name": text_value(name),
         "tab.kind": text_value("repo-manager"),
         "tab.scope": group_path_value([
-            group_path_segment("git.repo", repo, label=name),
+            group_path_segment("vcs.repo", repo, label=name),
         ]),
     }
 
@@ -269,7 +271,7 @@ def ensure_repo_manager_tab(
     layout_path=DEFAULT_FACTORY_LAYOUT,
     created_repos=None,
 ):
-    repo = facts.get("git.repo")
+    repo = facts.get("vcs.repo")
     root = facts.get("git.root")
     if not repo or not root:
         return []
@@ -475,7 +477,7 @@ class WatcherTests(unittest.TestCase):
         observed = [
             {"identity": {"key": "zellij.pane.cwd", "value": text_value("/repo")}},
             {"identity": {"key": "zellij.pane.cwd", "value": text_value("/repo")}},
-            {"identity": {"key": "git.repo", "value": text_value("rjwittams/katzensteg")}},
+            {"identity": {"key": "vcs.repo", "value": text_value("rjwittams/katzensteg")}},
             {"identity": {"key": "zellij.pane.cwd", "value": {"type": "integer", "value": 1}}},
         ]
         self.assertEqual(observed_text_identities(observed, "zellij.pane.cwd"), ["/repo"])
@@ -490,11 +492,12 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(observed_text_identities(observed, "zellij.pane.cwd"), ["/repo-a", "/repo-b"])
 
     def test_metadata_patch_shape(self):
-        patch = metadata_patch("zellij.pane.cwd", "/repo", {"git.repo": "rjwittams/katzensteg"})
+        patch = metadata_patch("zellij.pane.cwd", "/repo", {"vcs.repo": "rjwittams/katzensteg"})
         self.assertEqual(patch["type"], "metadata-patch")
         self.assertEqual(patch["source_id"], SOURCE_ID)
         self.assertEqual(patch["target"], identity_target("zellij.pane.cwd", "/repo"))
-        self.assertEqual(patch["set"]["git.repo"]["value"], text_value("rjwittams/katzensteg"))
+        self.assertEqual(patch["set"]["vcs.repo"]["value"], text_value("rjwittams/katzensteg"))
+        self.assertEqual(patch["set"]["source"]["value"], text_value("git-watcher"))
 
     def test_parse_tab_ids_reads_plain_stdout_lines(self):
         self.assertEqual(parse_tab_ids("12\n13\n"), [12, 13])
@@ -508,7 +511,7 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(
             metadata["tab.scope"],
             group_path_value([
-                group_path_segment("git.repo", "rjwittams/katzensteg", label="katzensteg")
+                group_path_segment("vcs.repo", "rjwittams/katzensteg", label="katzensteg")
             ]),
         )
 

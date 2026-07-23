@@ -3,15 +3,15 @@ version 1
 grouping "proj-repo-branch" {
   priority 100
   level key="andamento.project" optional=true
-  level key="git.repo" label-key="repo.name"
+  level key="vcs.repo" label-key="repo.name"
   level key="git.branch"
 }
 
 template "andamento.git.group-header" slot="group-header" node-kind="group" {
-  when exists="git.repo"
+  when exists="vcs.repo"
 
   field priority=100 {
-    value key="git.repo"
+    value key="vcs.repo"
     value key="group.label"
   }
   field key="git.branch" priority=60 prefix=" "
