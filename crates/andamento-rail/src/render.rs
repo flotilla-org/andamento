@@ -8,11 +8,12 @@ use andamento_shared::template_config::{
 };
 use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
-    ChildLayoutSetting, ControllerViewModel, GroupPath, GroupSegment, LatentTab, MetadataControls,
-    MetadataEntry, MetadataSourceEntry, MetadataTarget, MetadataValue, NodeKey, PaneTarget,
-    Priority, RailConfig, RailRgbColor, RailRow, RailSizingPreset, RailStructure,
-    ReachableMetadataIdentity, ResolvedMetadata, ResolvedTemplateFieldSource, ResolvedTemplateSlot,
-    ResolvedTemplateSlots, StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
+    ChildLayoutSetting, ControllerViewModel, GroupPath, GroupSegment, LatentMaterializationState,
+    LatentTab, MaterializeLatentRequest, MetadataControls, MetadataEntry, MetadataSourceEntry,
+    MetadataTarget, MetadataValue, NodeKey, PaneTarget, Priority, RailConfig, RailRgbColor,
+    RailRow, RailSizingPreset, RailStructure, ReachableMetadataIdentity, ResolvedMetadata,
+    ResolvedTemplateFieldSource, ResolvedTemplateSlot, ResolvedTemplateSlots, StatusIcon, TabCard,
+    TabGroupingInfo, TabStatusSummary,
 };
 use ansi_term::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -55,7 +56,7 @@ pub struct HitRegion {
     pub tab_position: usize,
     pub group_path: Option<GroupPath>,
     pub inspect_target: Option<NodeKey>,
-    pub materialize_recipe: Option<String>,
+    pub materialize_request: Option<MaterializeLatentRequest>,
     pub action: HitAction,
 }
 
@@ -155,7 +156,7 @@ struct RenderCard {
     reachable_identities: RenderReachableIdentities,
     templates: ResolvedTemplateSlots,
     latent: bool,
-    materialize_recipe: Option<String>,
+    materialize_request: Option<MaterializeLatentRequest>,
     latent_summary: Option<String>,
     /// Metadata-panel content rendered inside the card body when set.
     /// Populated by `append_tab_run`/`render_nodes` based on
@@ -1538,7 +1539,7 @@ fn append_group_header(
             tab_position: hit.tab_position,
             group_path: hit.group_path,
             inspect_target: hit.inspect_target,
-            materialize_recipe: hit.materialize_recipe,
+            materialize_request: hit.materialize_request,
             action: hit.action,
         });
     }
@@ -1560,7 +1561,7 @@ fn append_group_header(
             tab_position: 0,
             group_path: Some(group.path.clone()),
             inspect_target: Some(NodeKey::Group(group.path.clone())),
-            materialize_recipe: None,
+            materialize_request: None,
             action: HitAction::InspectNode,
         });
     }
@@ -1577,7 +1578,7 @@ fn append_group_header(
             tab_position: 0,
             group_path: Some(group.path.clone()),
             inspect_target: None,
-            materialize_recipe: None,
+            materialize_request: None,
             action: HitAction::ToggleGroup,
         });
     }
@@ -1703,7 +1704,7 @@ fn append_compact_tab_strip(
         let Some(tab) = tabs.get(hit.index) else {
             continue;
         };
-        if tab.card.latent && tab.card.materialize_recipe.is_none() {
+        if tab.card.latent && tab.card.materialize_request.is_none() {
             continue;
         }
         hit_regions.push(HitRegion {
@@ -1715,7 +1716,7 @@ fn append_compact_tab_strip(
             tab_position: tab.card.position,
             group_path: tab.parent_path.clone(),
             inspect_target: None,
-            materialize_recipe: tab.card.materialize_recipe.clone(),
+            materialize_request: tab.card.materialize_request.clone(),
             action: if tab.card.latent {
                 HitAction::Materialize
             } else {
@@ -2451,7 +2452,7 @@ fn add_card_metadata(
     body_rows: usize,
     terminal_cell_size: Option<SizeInPixels>,
 ) {
-    if !card.latent || card.materialize_recipe.is_some() {
+    if !card.latent || card.materialize_request.is_some() {
         hit_regions.push(HitRegion {
             row_start: row,
             row_end: row + height.saturating_sub(1),
@@ -2461,7 +2462,7 @@ fn add_card_metadata(
             tab_position: card.position,
             group_path: None,
             inspect_target: None,
-            materialize_recipe: card.materialize_recipe.clone(),
+            materialize_request: card.materialize_request.clone(),
             action: if card.latent {
                 HitAction::Materialize
             } else {
@@ -2479,7 +2480,7 @@ fn add_card_metadata(
             tab_position: card.position,
             group_path: None,
             inspect_target: None,
-            materialize_recipe: None,
+            materialize_request: None,
             action: HitAction::TogglePin,
         });
     }
@@ -2531,7 +2532,7 @@ fn nodes_to_render(
                         reachable_identities: RenderReachableIdentities::new(),
                         templates: ResolvedTemplateSlots::default(),
                         latent: false,
-                        materialize_recipe: None,
+                        materialize_request: None,
                         latent_summary: None,
                         meta_panel: None,
                     },
@@ -3112,15 +3113,28 @@ fn render_card_from_model(card: &TabCard, local_by_id: &HashMap<u64, &LocalTab>)
         reachable_identities: RenderReachableIdentities::new(),
         templates: card.templates.clone(),
         latent: false,
-        materialize_recipe: None,
+        materialize_request: None,
         latent_summary: None,
         meta_panel: None,
     }
 }
 
 fn render_card_from_latent(latent: &LatentTab) -> RenderCard {
-    let openable = latent.materialize_recipe.is_some();
-    let name = format!("{} {}", if openable { "↗" } else { "○" }, latent.name);
+    let materialize_request = latent.materialize_request();
+    let (marker, status_state, summary, materialize_state) = match latent.materialization {
+        LatentMaterializationState::Opening => ("…", Some("opening"), None, Some("opening")),
+        LatentMaterializationState::Ready => (
+            if materialize_request.is_some() {
+                "↗"
+            } else {
+                "○"
+            },
+            latent.status_state.as_deref(),
+            latent.summary.as_deref(),
+            None,
+        ),
+    };
+    let name = format!("{marker} {}", latent.name);
     let mut metadata = RenderMetadata::from([
         (
             "factory.id".to_owned(),
@@ -3132,16 +3146,22 @@ fn render_card_from_latent(latent: &LatentTab) -> RenderCard {
             MetadataValue::Text(name.clone()),
         ),
     ]);
-    if let Some(state) = latent.status_state.as_ref() {
+    if let Some(materialize_state) = materialize_state {
         metadata.insert(
-            "status.state".to_owned(),
-            MetadataValue::Text(state.clone()),
+            "materialize.state".to_owned(),
+            MetadataValue::Text(materialize_state.to_owned()),
         );
     }
-    if let Some(summary) = latent.summary.as_ref() {
+    if let Some(state) = status_state {
+        metadata.insert(
+            "status.state".to_owned(),
+            MetadataValue::Text(state.to_owned()),
+        );
+    }
+    if let Some(summary) = summary {
         metadata.insert(
             "summary.text".to_owned(),
-            MetadataValue::Text(summary.clone()),
+            MetadataValue::Text(summary.to_owned()),
         );
     }
     if let Some(recipe) = latent.materialize_recipe.as_ref() {
@@ -3150,22 +3170,23 @@ fn render_card_from_latent(latent: &LatentTab) -> RenderCard {
             MetadataValue::Text(recipe.clone()),
         );
     }
-    let latent_summary = match (&latent.status_state, &latent.summary) {
+    let latent_summary = match (status_state, summary) {
         (Some(state), Some(summary)) => Some(format!("{state} · {summary}")),
-        (Some(state), None) => Some(state.clone()),
-        (None, Some(summary)) => Some(summary.clone()),
+        (Some(state), None) => Some(state.to_owned()),
+        (None, Some(summary)) => Some(summary.to_owned()),
         (None, None) => None,
     };
-    let status = latent.status_state.as_ref().map(|state| TabStatusSummary {
-        priority: match state.as_str() {
+    let status = status_state.map(|state| TabStatusSummary {
+        priority: match state {
             "failed" => Priority::Error,
             "waiting" => Priority::Waiting,
+            "opening" => Priority::Waiting,
             "active" => Priority::Info,
             _ => Priority::Idle,
         },
-        title: state.clone(),
-        detail: latent.summary.clone(),
-        icon: Some(StatusIcon::Builtin(state.clone())),
+        title: state.to_owned(),
+        detail: summary.map(str::to_owned),
+        icon: Some(StatusIcon::Builtin(state.to_owned())),
         source_pane: PaneTarget::Plugin(0),
     });
     if let Some(status) = status.as_ref() {
@@ -3183,7 +3204,7 @@ fn render_card_from_latent(latent: &LatentTab) -> RenderCard {
         reachable_identities: RenderReachableIdentities::new(),
         templates: ResolvedTemplateSlots::default(),
         latent: true,
-        materialize_recipe: latent.materialize_recipe.clone(),
+        materialize_request,
         latent_summary,
         meta_panel: None,
     }
@@ -3829,7 +3850,7 @@ impl BorderRow {
                 tab_position: hit.payload.tab_position,
                 group_path: hit.payload.group_path,
                 inspect_target: hit.payload.inspect_target,
-                materialize_recipe: None,
+                materialize_request: None,
                 action: hit.action,
             })
             .collect();
@@ -4099,7 +4120,7 @@ fn group_header_line(
             tab_position: hit.tab_position,
             group_path: hit.group_path.clone(),
             inspect_target: hit.inspect_target.clone(),
-            materialize_recipe: hit.materialize_recipe.clone(),
+            materialize_request: hit.materialize_request.clone(),
             action: hit.action,
         })
         .collect::<Vec<_>>();
@@ -4154,7 +4175,7 @@ struct HeaderNicheHit {
     tab_position: usize,
     group_path: Option<GroupPath>,
     inspect_target: Option<NodeKey>,
-    materialize_recipe: Option<String>,
+    materialize_request: Option<MaterializeLatentRequest>,
     action: HitAction,
 }
 
@@ -4210,7 +4231,7 @@ fn project_direct_tab_header_niche(
         }
         text.push_str(&segment);
         visible_width += rendered_width;
-        if !tab.card.latent || tab.card.materialize_recipe.is_some() {
+        if !tab.card.latent || tab.card.materialize_request.is_some() {
             hits.push(HeaderNicheHit {
                 col_start: start,
                 col_end: visible_width.saturating_sub(1),
@@ -4218,7 +4239,7 @@ fn project_direct_tab_header_niche(
                 tab_position: tab.card.position,
                 group_path: tab.parent_path.clone(),
                 inspect_target: None,
-                materialize_recipe: tab.card.materialize_recipe.clone(),
+                materialize_request: tab.card.materialize_request.clone(),
                 action: if tab.card.latent {
                     HitAction::Materialize
                 } else {
@@ -4307,7 +4328,7 @@ fn project_child_group_header_niche(
             tab_position: hit.tab_position,
             group_path: hit.group_path,
             inspect_target: hit.inspect_target,
-            materialize_recipe: hit.materialize_recipe,
+            materialize_request: hit.materialize_request,
             action: hit.action,
         }));
         visible_width += separator.width() + child_projection.visible_width;
@@ -5335,6 +5356,7 @@ mod tests {
             factory_id: "flotilla:convoys/dev/latent-tabs".to_owned(),
             path: path.clone(),
             name: "latent tabs".to_owned(),
+            materialization: LatentMaterializationState::Ready,
             status_state: Some("waiting".to_owned()),
             summary: Some("1 vessel ready".to_owned()),
             materialize_recipe: recipe.map(str::to_owned),
@@ -5397,8 +5419,15 @@ mod tests {
             rendered.lines
         );
         assert!(rendered.hit_regions.iter().any(|hit| {
+            let Some(request) = hit.materialize_request.as_ref() else {
+                return false;
+            };
             hit.action == HitAction::Materialize
-                && hit.materialize_recipe.as_deref() == Some("flotilla attach latent-tabs")
+                && request.factory_id == "flotilla:convoys/dev/latent-tabs"
+                && request.name == "latent tabs"
+                && request.recipe == "flotilla attach latent-tabs"
+                && request.path.0[0].key == "flotilla.convoy"
+                && request.path.0[0].value == MetadataValue::Text("dev/latent-tabs".to_owned())
         }));
     }
 
@@ -5410,6 +5439,27 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.contains("○ latent tabs")));
+        assert!(!rendered
+            .hit_regions
+            .iter()
+            .any(|hit| hit.action == HitAction::Materialize));
+    }
+
+    #[test]
+    fn opening_latent_stays_visible_without_a_duplicate_materialize_hit() {
+        let mut model = latent_model(Some("flotilla attach latent-tabs"));
+        let RailRow::Latent { latent, .. } = &mut model.rows[1] else {
+            panic!("expected latent row");
+        };
+        latent.materialization = LatentMaterializationState::Opening;
+
+        let rendered = render_lines(Some(&model), &[], 12, 48, true);
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("… latent tabs")));
+        assert!(rendered.lines.iter().any(|line| line.contains("opening")));
         assert!(!rendered
             .hit_regions
             .iter()
@@ -5785,7 +5835,7 @@ mod tests {
                         reachable_identities: RenderReachableIdentities::new(),
                         templates: ResolvedTemplateSlots::default(),
                         latent: false,
-                        materialize_recipe: None,
+                        materialize_request: None,
                         latent_summary: None,
                         meta_panel: None,
                     },
@@ -7378,7 +7428,7 @@ mod tests {
             reachable_identities: RenderReachableIdentities::new(),
             templates: ResolvedTemplateSlots::default(),
             latent: false,
-            materialize_recipe: None,
+            materialize_request: None,
             latent_summary: None,
             meta_panel: None,
         };
@@ -8431,7 +8481,7 @@ mod tests {
             reachable_identities: vec![],
             templates: ResolvedTemplateSlots::default(),
             latent: false,
-            materialize_recipe: None,
+            materialize_request: None,
             latent_summary: None,
             meta_panel: None,
         };
@@ -8473,7 +8523,7 @@ mod tests {
             reachable_identities: vec![],
             templates: ResolvedTemplateSlots::default(),
             latent: false,
-            materialize_recipe: None,
+            materialize_request: None,
             latent_summary: None,
             meta_panel: None,
         };
@@ -8549,7 +8599,7 @@ mod tests {
                 tab_position: 0,
                 group_path: None,
                 inspect_target: None,
-                materialize_recipe: None,
+                materialize_request: None,
                 action: HitAction::SwitchTab,
             },
             HitRegion {
@@ -8561,7 +8611,7 @@ mod tests {
                 tab_position: 0,
                 group_path: None,
                 inspect_target: Some(NodeKey::Tab(7)),
-                materialize_recipe: None,
+                materialize_request: None,
                 action: HitAction::InspectNode,
             },
         ];
@@ -8588,7 +8638,7 @@ mod tests {
             reachable_identities: vec![],
             templates: ResolvedTemplateSlots::default(),
             latent: false,
-            materialize_recipe: None,
+            materialize_request: None,
             latent_summary: None,
             meta_panel: None,
         };
@@ -8685,7 +8735,7 @@ mod tests {
                 reachable_identities: vec![],
                 templates: ResolvedTemplateSlots::default(),
                 latent: false,
-                materialize_recipe: None,
+                materialize_request: None,
                 latent_summary: None,
                 meta_panel: None,
             },
