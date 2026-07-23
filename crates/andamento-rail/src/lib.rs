@@ -227,12 +227,12 @@ use std::time::Instant;
 
 use andamento_shared::StatusIcon;
 use andamento_shared::{
-    ConfigInspectRequest, ControllerViewModel, GroupCollapseToggleRequest, GroupPath, NodeKey,
-    PluginPaneKind, PluginPlacement, PluginRegistrationHello, PluginStatsRecorder,
-    RailSizeObserved, RendererHello, StatsCollectRequest, MSG_CONFIG_INSPECT,
-    MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_SIZE_TARGET, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
-    MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_GROUP_COLLAPSED, MSG_TOGGLE_PIN,
-    MSG_VIEW_MODEL,
+    ConfigInspectRequest, ControllerViewModel, GroupPath, NodeKey, PluginPaneKind, PluginPlacement,
+    PluginRegistrationHello, PluginStatsRecorder, RailSizeObserved, RailUiAction, RailUiState,
+    RendererHello, StatsCollectRequest, MSG_CONFIG_INSPECT, MSG_RAIL_SIZE_OBSERVED,
+    MSG_RAIL_SIZE_TARGET, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO,
+    MSG_REQUEST_RAIL_UI_STATE, MSG_REQUEST_STATE, MSG_STATS_REPORT, MSG_STATS_REQUEST,
+    MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
 };
 use andamento_shared::{RailSize, RailSizeTarget};
 use render::{hit_at, HitAction, HitRegion};
@@ -285,20 +285,26 @@ fn build_materialize_latent_message(
     })
 }
 
-fn build_group_collapse_message(
+fn build_rail_ui_action_message(
     controller_plugin_url: &str,
-    client_id: u16,
-    path: GroupPath,
+    action: RailUiAction,
 ) -> Option<MessageToPlugin> {
-    let payload = serde_json::to_string(&GroupCollapseToggleRequest { client_id, path }).ok()?;
-    let message = MessageToPlugin::new(MSG_TOGGLE_GROUP_COLLAPSED)
-        .with_destination_client_id(client_id)
-        .with_payload(payload);
+    let payload = serde_json::to_string(&action).ok()?;
+    let message = MessageToPlugin::new(MSG_RAIL_UI_ACTION).with_payload(payload);
     Some(if controller_plugin_url.trim().is_empty() {
         message
     } else {
         message.with_plugin_url(controller_plugin_url.to_owned())
     })
+}
+
+fn build_rail_ui_state_request_message(controller_plugin_url: &str) -> MessageToPlugin {
+    let message = MessageToPlugin::new(MSG_REQUEST_RAIL_UI_STATE);
+    if controller_plugin_url.trim().is_empty() {
+        message
+    } else {
+        message.with_plugin_url(controller_plugin_url.to_owned())
+    }
 }
 
 #[derive(Default)]
@@ -316,13 +322,11 @@ pub struct PluginState {
     icon_asset_ids: HashMap<StatusIcon, u32>,
     next_icon_asset_id: u32,
     last_graphics_signature: Option<Vec<GraphicsSignatureEntry>>,
-    rail_scroll_offset: isize,
+    rail_ui_state: RailUiState,
     rail_can_scroll: bool,
     pending_scroll_delta: isize,
     scroll_flush_scheduled: bool,
     last_pane_manifest: Option<PaneManifest>,
-    own_is_selectable: bool,
-    own_is_focused: bool,
     stats: PluginStatsRecorder,
     rail_placement: RailPlacement,
     own_plugin_placement: Option<PluginPlacement>,
@@ -461,6 +465,21 @@ impl ZellijPlugin for PluginState {
                 }
             }
         }
+        if message.name == MSG_RAIL_UI_STATE {
+            if let Some(payload) = message.payload.as_deref() {
+                match serde_json::from_str::<RailUiState>(payload) {
+                    Ok(state) if state.revision > self.rail_ui_state.revision => {
+                        self.rail_ui_state = state;
+                        return true;
+                    }
+                    Ok(_) => return false,
+                    Err(error) => {
+                        eprintln!("andamento-rail: failed to parse rail UI state: {error}");
+                    }
+                }
+            }
+            return false;
+        }
         if message.name == MSG_STATS_REQUEST {
             if let Some(payload) = message.payload.as_deref() {
                 if let Ok(request) = serde_json::from_str::<StatsCollectRequest>(payload) {
@@ -487,11 +506,6 @@ impl ZellijPlugin for PluginState {
         self.stats.increment("render.total");
         let started_at = Instant::now();
         let controller_available = self.controller_model.is_some();
-        let collapsed_groups = self
-            .controller_model
-            .as_ref()
-            .map(|model| model.collapsed_groups.as_slice())
-            .unwrap_or_default();
         let metadata_controls = self
             .controller_model
             .as_ref()
@@ -507,10 +521,10 @@ impl ZellijPlugin for PluginState {
                 .as_ref()
                 .map(|mode_info| mode_info.style.colors.into()),
             terminal_pixel_cell_size(),
-            collapsed_groups,
+            &self.rail_ui_state.collapsed_groups,
             None,
             &metadata_controls,
-            self.rail_scroll_offset,
+            self.rail_ui_state.scroll_offset,
         );
         self.rail_can_scroll = rendered.can_scroll();
         if should_sync_graphics(controller_available) {
@@ -518,19 +532,6 @@ impl ZellijPlugin for PluginState {
         }
         self.hit_regions = rendered.hit_regions;
         print!("{}", rendered.lines.join("\n"));
-        // Temporary diagnostic: instance fingerprint + selectable/focused
-        // state of our own pane, just above the footer so we don't clobber
-        // the gear/toggle/scroll controls on the footer row itself.
-        let inst = (self as *const _) as usize & 0xFFFFFF;
-        let sel = if self.own_is_selectable { '✓' } else { '✗' };
-        let focus = if self.own_is_focused { '◉' } else { '○' };
-        let label = format!("[{inst:06x} sel:{sel} focus:{focus}]");
-        let label_len = label.chars().count();
-        if rows >= 2 && cols >= label_len {
-            let col = cols.saturating_sub(label_len) + 1;
-            let row_above_footer = rows - 1;
-            print!("\x1b[{row_above_footer};{col}H\x1b[2m{label}\x1b[0m");
-        }
         self.stats.record_span_elapsed("render.rail", started_at);
     }
 }
@@ -544,6 +545,16 @@ mod tests {
     // mouse handlers that can switch tabs.
     #[no_mangle]
     extern "C" fn host_run_plugin_command() {}
+
+    fn pipe(name: &str, payload: String) -> PipeMessage {
+        PipeMessage {
+            source: PipeSource::Plugin(1),
+            name: name.to_owned(),
+            payload: Some(payload),
+            args: BTreeMap::new(),
+            is_private: false,
+        }
+    }
 
     fn tab_info(tab_id: usize, position: usize, name: &str, active: bool) -> TabInfo {
         TabInfo {
@@ -620,16 +631,21 @@ mod tests {
     }
 
     #[test]
-    fn coalesced_scroll_event_applies_its_full_line_count() {
-        let mut state = PluginState {
-            rail_can_scroll: true,
-            ..Default::default()
-        };
+    fn scroll_action_preserves_its_full_line_count() {
+        let message = build_rail_ui_action_message(
+            "andamento-controller",
+            RailUiAction::ScrollBy { delta: 7 },
+        )
+        .unwrap();
 
-        assert!(!state.handle_mouse(Mouse::ScrollDown(7)));
-        assert_eq!(state.rail_scroll_offset, 0);
-        assert!(state.flush_pending_scroll());
-        assert_eq!(state.rail_scroll_offset, 7);
+        assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
+        assert_eq!(message.destination_client_id, None);
+        assert_eq!(message.message_name, MSG_RAIL_UI_ACTION);
+        assert_eq!(
+            serde_json::from_str::<RailUiAction>(message.message_payload.as_deref().unwrap())
+                .unwrap(),
+            RailUiAction::ScrollBy { delta: 7 }
+        );
     }
 
     #[test]
@@ -646,17 +662,21 @@ mod tests {
         ];
 
         assert_eq!(render_requests, [false, false, false]);
-        assert_eq!(state.rail_scroll_offset, 0);
+        assert_eq!(state.rail_ui_state.scroll_offset, 0);
         assert!(state.scroll_flush_scheduled);
-        assert!(state.flush_pending_scroll());
-        assert_eq!(state.rail_scroll_offset, 1);
+        assert!(!state.flush_pending_scroll());
+        assert_eq!(state.rail_ui_state.scroll_offset, 0);
+        assert_eq!(state.pending_scroll_delta, 0);
         assert!(!state.scroll_flush_scheduled);
     }
 
     #[test]
     fn explicit_navigation_clears_scroll_queued_before_it() {
         let mut state = PluginState {
-            rail_scroll_offset: 4,
+            rail_ui_state: RailUiState {
+                scroll_offset: 4,
+                ..Default::default()
+            },
             rail_can_scroll: true,
             ..Default::default()
         };
@@ -664,10 +684,11 @@ mod tests {
 
         state.reset_scroll_position();
 
-        assert_eq!(state.rail_scroll_offset, 0);
+        assert_eq!(state.rail_ui_state.scroll_offset, 4);
         assert_eq!(state.pending_scroll_delta, 0);
+        assert!(!state.scroll_flush_scheduled);
         assert!(!state.flush_pending_scroll());
-        assert_eq!(state.rail_scroll_offset, 0);
+        assert_eq!(state.rail_ui_state.scroll_offset, 4);
     }
 
     #[test]
@@ -817,15 +838,77 @@ mod tests {
             label: Some("repo".to_owned()),
         }]);
 
-        let message =
-            build_group_collapse_message("andamento-controller", 4, path.clone()).unwrap();
+        let message = build_rail_ui_action_message(
+            "andamento-controller",
+            RailUiAction::ToggleGroup { path: path.clone() },
+        )
+        .unwrap();
 
         assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
-        assert_eq!(message.destination_client_id, Some(4));
-        assert_eq!(message.message_name, MSG_TOGGLE_GROUP_COLLAPSED);
-        let payload: GroupCollapseToggleRequest =
+        assert_eq!(message.destination_client_id, None);
+        assert_eq!(message.message_name, MSG_RAIL_UI_ACTION);
+        let payload: RailUiAction =
             serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
-        assert_eq!(payload, GroupCollapseToggleRequest { client_id: 4, path });
+        assert_eq!(payload, RailUiAction::ToggleGroup { path });
+    }
+
+    #[test]
+    fn late_spawned_rail_requests_session_ui_state_without_a_client_filter() {
+        let message = build_rail_ui_state_request_message("andamento-controller");
+
+        assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
+        assert_eq!(message.destination_plugin_id, None);
+        assert_eq!(message.destination_client_id, None);
+        assert_eq!(message.message_name, MSG_REQUEST_RAIL_UI_STATE);
+    }
+
+    #[test]
+    fn broadcast_snapshot_aligns_existing_and_late_spawned_rails() {
+        let path = GroupPath(vec![andamento_shared::GroupSegment {
+            key: "zellij.pane.cwd".to_owned(),
+            value: andamento_shared::MetadataValue::Text("/repo".to_owned()),
+            label: Some("repo".to_owned()),
+        }]);
+        let snapshot = RailUiState {
+            revision: 3,
+            collapsed_groups: vec![path],
+            scroll_offset: 9,
+        };
+        let payload = serde_json::to_string(&snapshot).unwrap();
+        let mut existing = PluginState::default();
+        let mut late_spawned = PluginState::default();
+
+        assert!(existing.pipe(pipe(MSG_RAIL_UI_STATE, payload.clone())));
+        assert!(late_spawned.pipe(pipe(MSG_RAIL_UI_STATE, payload)));
+
+        assert_eq!(existing.rail_ui_state, snapshot);
+        assert_eq!(late_spawned.rail_ui_state, snapshot);
+    }
+
+    #[test]
+    fn delayed_broadcast_cannot_roll_a_rail_back() {
+        let mut rail = PluginState::default();
+        let current = RailUiState {
+            revision: 4,
+            collapsed_groups: vec![],
+            scroll_offset: 12,
+        };
+        let stale = RailUiState {
+            revision: 3,
+            collapsed_groups: vec![],
+            scroll_offset: 2,
+        };
+
+        assert!(rail.pipe(pipe(
+            MSG_RAIL_UI_STATE,
+            serde_json::to_string(&current).unwrap(),
+        )));
+        assert!(!rail.pipe(pipe(
+            MSG_RAIL_UI_STATE,
+            serde_json::to_string(&stale).unwrap(),
+        )));
+
+        assert_eq!(rail.rail_ui_state, current);
     }
 
     #[test]
@@ -996,6 +1079,12 @@ impl PluginState {
             self.controller_message(MSG_REQUEST_STATE)
                 .with_destination_client_id(client_id),
         );
+        // UI state is session-wide and intentionally broadcast. Request the
+        // controller's current snapshot on every hello so rails created after
+        // earlier collapse/scroll actions immediately catch up.
+        pipe_message_to_plugin(build_rail_ui_state_request_message(
+            &self.controller_plugin_url,
+        ));
     }
 
     fn send_stats_report_to(&self, requester: RendererHello, collection_id: u64) {
@@ -1062,8 +1151,6 @@ impl PluginState {
             .flat_map(|panes| panes.iter())
             .find(|pane| pane.is_plugin && pane.id == plugin_id);
         if let Some(pane) = own_pane {
-            self.own_is_selectable = pane.is_selectable;
-            self.own_is_focused = pane.is_focused;
             // Defensive auto-correct: the rail should never be selectable
             // once we're past the initial permission window (signalled by
             // having a controller_model). Some lifecycle path is flipping
@@ -1197,12 +1284,12 @@ impl PluginState {
                         false
                     }
                     HitAction::ScrollRailUp => {
-                        self.rail_scroll_offset = self.rail_scroll_offset.saturating_sub(1);
-                        true
+                        self.send_rail_ui_action(RailUiAction::ScrollBy { delta: -1 });
+                        false
                     }
                     HitAction::ScrollRailDown => {
-                        self.rail_scroll_offset = self.rail_scroll_offset.saturating_add(1);
-                        true
+                        self.send_rail_ui_action(RailUiAction::ScrollBy { delta: 1 });
+                        false
                     }
                     HitAction::InspectNode => {
                         if let Some(key) = hit.inspect_target {
@@ -1246,8 +1333,8 @@ impl PluginState {
             return false;
         }
         if self.rail_can_scroll {
-            self.rail_scroll_offset = self.rail_scroll_offset.saturating_add(delta);
-            return true;
+            self.send_rail_ui_action(RailUiAction::ScrollBy { delta });
+            return false;
         }
         if let Some(active_tab_idx) = self.active_tab_idx() {
             let target = tab_index_after_scroll(active_tab_idx, self.local_tabs.len(), delta);
@@ -1259,8 +1346,9 @@ impl PluginState {
     }
 
     fn reset_scroll_position(&mut self) {
-        self.rail_scroll_offset = 0;
         self.pending_scroll_delta = 0;
+        self.scroll_flush_scheduled = false;
+        self.send_rail_ui_action(RailUiAction::ResetScroll);
     }
 
     fn active_tab_idx(&self) -> Option<usize> {
@@ -1287,11 +1375,11 @@ impl PluginState {
     }
 
     fn toggle_group(&self, group_path: GroupPath) {
-        let Some(client_id) = self.own_client_id else {
-            return;
-        };
-        let Some(message) =
-            build_group_collapse_message(&self.controller_plugin_url, client_id, group_path)
+        self.send_rail_ui_action(RailUiAction::ToggleGroup { path: group_path });
+    }
+
+    fn send_rail_ui_action(&self, action: RailUiAction) {
+        let Some(message) = build_rail_ui_action_message(&self.controller_plugin_url, action)
         else {
             return;
         };

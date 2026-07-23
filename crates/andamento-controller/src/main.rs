@@ -17,15 +17,15 @@ use andamento_shared::MSG_VIEW_MODEL;
 use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
     ChildLayoutSetRequest, ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage,
-    GroupCollapseToggleRequest, MetadataPatch, MetadataTarget, MetadataValueUpdate,
-    MetadataVisibilitySetRequest, PluginRegistrationHello, RailConfig, RailGroupingMode,
-    RailRgbColor, RailSize, RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure,
+    MetadataPatch, MetadataTarget, MetadataValueUpdate, MetadataVisibilitySetRequest,
+    PluginRegistrationHello, RailConfig, RailGroupingMode, RailRgbColor, RailSize,
+    RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RailUiAction, RailUiState,
     RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS,
     MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST,
     MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED,
-    MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_SET_CHILD_LAYOUT, MSG_SET_METADATA_VISIBILITY,
-    MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_STATS_COLLECT,
-    MSG_TOGGLE_GROUP_COLLAPSED, MSG_TOGGLE_PIN,
+    MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO, MSG_REQUEST_RAIL_UI_STATE,
+    MSG_REQUEST_STATE, MSG_SET_CHILD_LAYOUT, MSG_SET_METADATA_VISIBILITY, MSG_SET_PANE_STATUS,
+    MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
@@ -51,6 +51,10 @@ const CONFIG_RAIL_SCOPE: &str = "rail_scope";
 
 fn command_for_materialize_recipe(recipe: &str) -> CommandToRun {
     CommandToRun::new_with_args("/bin/sh", vec!["-c", recipe])
+}
+
+fn rail_ui_state_broadcast_message(state: &RailUiState) -> Option<MessageToPlugin> {
+    Some(MessageToPlugin::new(MSG_RAIL_UI_STATE).with_payload(serde_json::to_string(state).ok()?))
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -123,6 +127,7 @@ impl ZellijPlugin for PluginState {
                     self.schedule_template_reload();
                 }
                 self.request_bootstrap_snapshot();
+                self.broadcast_rail_ui_state();
                 return true;
             }
             Event::FailedToChangeHostFolder(error) => {
@@ -259,6 +264,9 @@ impl ZellijPlugin for PluginState {
         }
         if let Some(pipe_id) = result.cli_pipe_unblock.as_ref() {
             unblock_cli_pipe_input(pipe_id);
+        }
+        if result.broadcast_rail_ui_state {
+            self.broadcast_rail_ui_state();
         }
         if result.state_changed {
             self.push_view_model_to_rails_with_pending(
@@ -553,6 +561,16 @@ impl PluginState {
         }
     }
 
+    fn broadcast_rail_ui_state(&self) {
+        if !self.permissions_granted {
+            return;
+        }
+        let Some(message) = rail_ui_state_broadcast_message(&self.state.rail_ui_state()) else {
+            return;
+        };
+        pipe_message_to_plugin(message);
+    }
+
     fn send_stats_report_to(&self, requester: RendererHello, collection_id: u64) {
         let Some(identity) = self.own_identity.as_ref() else {
             return;
@@ -645,6 +663,7 @@ struct HandlePipeResult {
     rail_size_observed: Option<RailSizeObserved>,
     config_inspect_request: Option<ConfigInspectRequest>,
     materialize_latent_request: Option<andamento_shared::MaterializeLatentRequest>,
+    broadcast_rail_ui_state: bool,
 }
 
 #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
@@ -664,7 +683,6 @@ enum ViewModelPushReason {
     PipeRequestState,
     PipeBootstrap,
     PipeMetadataControls,
-    PipeGroupCollapse,
     PipeMaterializeLatent,
     PipeUnknown,
 }
@@ -687,7 +705,6 @@ impl ViewModelPushReason {
             Self::PipeRequestState => "view-model.push.reason.pipe.request-state",
             Self::PipeBootstrap => "view-model.push.reason.pipe.bootstrap",
             Self::PipeMetadataControls => "view-model.push.reason.pipe.metadata-controls",
-            Self::PipeGroupCollapse => "view-model.push.reason.pipe.group-collapse",
             Self::PipeMaterializeLatent => "view-model.push.reason.pipe.materialize-latent",
             Self::PipeUnknown => "view-model.push.reason.pipe.unknown",
         }
@@ -837,6 +854,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             );
             HandlePipeResult {
                 state_changed,
+                broadcast_rail_ui_state: true,
                 view_model_push_reason: state_changed
                     .then_some(ViewModelPushReason::PipeRendererHello),
                 ..HandlePipeResult::default()
@@ -888,6 +906,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             state.apply_bootstrap_snapshot(snapshot);
             HandlePipeResult {
                 state_changed: true,
+                broadcast_rail_ui_state: true,
                 view_model_push_reason: Some(ViewModelPushReason::PipeBootstrap),
                 ..HandlePipeResult::default()
             }
@@ -920,14 +939,21 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
                 ..HandlePipeResult::default()
             }
         }
-        Ok(Some(ControllerMessage::ToggleGroupCollapsed(request))) => {
-            state.toggle_group_collapsed_for_client(request.client_id, request.path);
+        Ok(Some(ControllerMessage::RailUiAction(action))) => {
+            state.apply_rail_ui_action(action);
             HandlePipeResult {
-                state_changed: true,
-                view_model_push_reason: Some(ViewModelPushReason::PipeGroupCollapse),
+                broadcast_rail_ui_state: true,
                 ..HandlePipeResult::default()
             }
         }
+        Ok(Some(ControllerMessage::RailUiState(snapshot))) => {
+            state.apply_rail_ui_state(snapshot);
+            HandlePipeResult::default()
+        }
+        Ok(Some(ControllerMessage::RequestRailUiState)) => HandlePipeResult {
+            broadcast_rail_ui_state: true,
+            ..HandlePipeResult::default()
+        },
         Ok(Some(ControllerMessage::SetChildLayout(request))) => {
             let state_changed = child_layout_patch(request)
                 .map(|patch| state.apply_metadata_patch(patch))
@@ -1197,7 +1223,9 @@ enum ControllerMessage {
     StatsCollect(StatsCollectRequest),
     RailSizeObserved(RailSizeObserved),
     SetMetadataVisibility(MetadataVisibilitySetRequest),
-    ToggleGroupCollapsed(GroupCollapseToggleRequest),
+    RailUiAction(RailUiAction),
+    RailUiState(RailUiState),
+    RequestRailUiState,
     SetChildLayout(ChildLayoutSetRequest),
     ConfigInspect(ConfigInspectRequest),
     MaterializeLatent(andamento_shared::MaterializeLatentRequest),
@@ -1278,16 +1306,27 @@ fn parse_controller_message(
             })
             .map(ControllerMessage::SetMetadataVisibility)
             .map(Some),
-        MSG_TOGGLE_GROUP_COLLAPSED => pipe_message
+        MSG_RAIL_UI_ACTION => pipe_message
             .payload
             .as_deref()
-            .ok_or_else(|| "toggle group collapsed requires payload".to_owned())
+            .ok_or_else(|| "rail UI action requires payload".to_owned())
             .and_then(|payload| {
-                serde_json::from_str::<GroupCollapseToggleRequest>(payload)
-                    .map_err(|e| format!("invalid group collapse toggle request: {e}"))
+                serde_json::from_str::<RailUiAction>(payload)
+                    .map_err(|e| format!("invalid rail UI action: {e}"))
             })
-            .map(ControllerMessage::ToggleGroupCollapsed)
+            .map(ControllerMessage::RailUiAction)
             .map(Some),
+        MSG_RAIL_UI_STATE => pipe_message
+            .payload
+            .as_deref()
+            .ok_or_else(|| "rail UI state requires payload".to_owned())
+            .and_then(|payload| {
+                serde_json::from_str::<RailUiState>(payload)
+                    .map_err(|e| format!("invalid rail UI state: {e}"))
+            })
+            .map(ControllerMessage::RailUiState)
+            .map(Some),
+        MSG_REQUEST_RAIL_UI_STATE => Ok(Some(ControllerMessage::RequestRailUiState)),
         MSG_SET_CHILD_LAYOUT => pipe_message
             .payload
             .as_deref()
@@ -1736,6 +1775,7 @@ mod tests {
                 timestamp_ms: Some(10),
             }],
             metadata_patches: vec![],
+            rail_ui_state: RailUiState::default(),
         };
         let payload = serde_json::to_string(&snapshot).unwrap();
 
@@ -1824,7 +1864,7 @@ mod tests {
     }
 
     #[test]
-    fn collapse_state_from_one_tab_is_projected_to_every_sidebar_for_client() {
+    fn collapse_state_from_one_rail_is_projected_to_every_rail() {
         let path = andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
             key: "zellij.pane.cwd".to_owned(),
             value: andamento_shared::MetadataValue::Text("/repo".to_owned()),
@@ -1848,44 +1888,127 @@ mod tests {
                 pipe(MSG_RENDERER_HELLO, Some(payload), BTreeMap::new()),
             );
         }
-        let request = andamento_shared::GroupCollapseToggleRequest {
-            client_id: 4,
-            path: path.clone(),
-        };
+        let request = andamento_shared::RailUiAction::ToggleGroup { path: path.clone() };
         let payload = serde_json::to_string(&request).unwrap();
 
         let result = handle_pipe_message(
             &mut state,
             pipe(
-                andamento_shared::MSG_TOGGLE_GROUP_COLLAPSED,
+                andamento_shared::MSG_RAIL_UI_ACTION,
                 Some(payload.clone()),
                 BTreeMap::new(),
             ),
         );
 
-        assert!(result.state_changed);
+        assert!(result.broadcast_rail_ui_state);
         let targets = state.rail_plugin_targets();
         assert_eq!(targets.len(), 2);
         assert!(targets.into_iter().all(|target| state
             .view_model_for_client(target.client_id)
             .collapsed_groups
             == vec![path.clone()]));
-        assert!(state.view_model_for_client(5).collapsed_groups.is_empty());
+        assert_eq!(
+            state.view_model_for_client(5).collapsed_groups,
+            vec![path.clone()]
+        );
 
         let result = handle_pipe_message(
             &mut state,
             pipe(
-                andamento_shared::MSG_TOGGLE_GROUP_COLLAPSED,
+                andamento_shared::MSG_RAIL_UI_ACTION,
                 Some(payload),
                 BTreeMap::new(),
             ),
         );
 
-        assert!(result.state_changed);
+        assert!(result.broadcast_rail_ui_state);
         assert!(state.rail_plugin_targets().into_iter().all(|target| state
             .view_model_for_client(target.client_id)
             .collapsed_groups
             .is_empty()));
+    }
+
+    #[test]
+    fn rail_ui_actions_update_one_session_snapshot() {
+        let mut state = ControllerState::default();
+        let scroll = serde_json::to_string(&RailUiAction::ScrollBy { delta: 6 }).unwrap();
+
+        let result = handle_pipe_message(
+            &mut state,
+            pipe(MSG_RAIL_UI_ACTION, Some(scroll), BTreeMap::new()),
+        );
+
+        assert!(result.broadcast_rail_ui_state);
+        assert_eq!(state.rail_ui_state().scroll_offset, 6);
+
+        let reset = serde_json::to_string(&RailUiAction::ResetScroll).unwrap();
+        handle_pipe_message(
+            &mut state,
+            pipe(MSG_RAIL_UI_ACTION, Some(reset), BTreeMap::new()),
+        );
+
+        assert_eq!(state.rail_ui_state().scroll_offset, 0);
+    }
+
+    #[test]
+    fn controller_clone_follows_newer_ui_broadcast_and_ignores_stale_replay() {
+        let mut clone = ControllerState::default();
+        let current = RailUiState {
+            revision: 7,
+            collapsed_groups: vec![],
+            scroll_offset: 11,
+        };
+        let stale = RailUiState {
+            revision: 6,
+            collapsed_groups: vec![],
+            scroll_offset: 3,
+        };
+
+        handle_pipe_message(
+            &mut clone,
+            pipe(
+                MSG_RAIL_UI_STATE,
+                Some(serde_json::to_string(&current).unwrap()),
+                BTreeMap::new(),
+            ),
+        );
+        handle_pipe_message(
+            &mut clone,
+            pipe(
+                MSG_RAIL_UI_STATE,
+                Some(serde_json::to_string(&stale).unwrap()),
+                BTreeMap::new(),
+            ),
+        );
+
+        assert_eq!(clone.rail_ui_state(), current);
+    }
+
+    #[test]
+    fn late_rail_request_rebroadcasts_current_ui_state_without_target_filters() {
+        let mut state = ControllerState::default();
+        state.apply_rail_ui_action(RailUiAction::ScrollBy { delta: 4 });
+
+        let result = handle_pipe_message(
+            &mut state,
+            pipe(MSG_REQUEST_RAIL_UI_STATE, None, BTreeMap::new()),
+        );
+        let message = rail_ui_state_broadcast_message(&state.rail_ui_state()).unwrap();
+
+        assert!(result.broadcast_rail_ui_state);
+        assert_eq!(message.plugin_url, None);
+        assert_eq!(message.destination_plugin_id, None);
+        assert_eq!(message.destination_client_id, None);
+        assert_eq!(message.message_name, MSG_RAIL_UI_STATE);
+        assert_eq!(
+            serde_json::from_str::<RailUiState>(message.message_payload.as_deref().unwrap())
+                .unwrap(),
+            RailUiState {
+                revision: 1,
+                collapsed_groups: vec![],
+                scroll_offset: 4,
+            }
+        );
     }
 
     #[test]
@@ -2204,7 +2327,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_renderer_hello_does_not_request_state_broadcast() {
+    fn duplicate_renderer_hello_skips_full_model_push_but_replays_ui_state() {
         let mut state = ControllerState::default();
         let hello = PluginRegistrationHello {
             identity: RendererHello {
@@ -2226,6 +2349,8 @@ mod tests {
 
         assert!(first.state_changed);
         assert!(!second.state_changed);
+        assert!(first.broadcast_rail_ui_state);
+        assert!(second.broadcast_rail_ui_state);
     }
 
     #[test]

@@ -10,9 +10,9 @@ use andamento_shared::{
     LatentMaterializationState, LatentTab, MetadataControls, MetadataEntry, MetadataIdentity,
     MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey, ObservedMetadataIdentity,
     PaneTarget, PluginPlacement, PluginRegistrationHello, Priority, RailConfig, RailGroupingMode,
-    RailRow, ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateField,
-    ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabGroupingInfo,
-    TabStatusSummary, TemplateConfigDiagnostics,
+    RailRow, RailUiAction, RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata,
+    ResolvedTemplateField, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode,
+    TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -64,7 +64,6 @@ pub struct ControllerClientState {
     pub client_id: u16,
     pub inspected_node: Option<NodeKey>,
     pub metadata_controls: MetadataControls,
-    pub collapsed_groups: BTreeSet<GroupPath>,
     pub tabs: BTreeMap<u64, ControllerClientTabState>,
     pub background_rails: BTreeMap<u32, PluginRegistration>,
     pub background_config_editors: BTreeMap<u32, PluginRegistration>,
@@ -100,6 +99,9 @@ pub struct ControllerState {
     receive_counter: u64,
     pending_materialized_tab_names: HashMap<u64, String>,
     pending_latent_materializations: BTreeMap<String, PendingLatentMaterialization>,
+    rail_ui_revision: u64,
+    collapsed_groups: BTreeSet<GroupPath>,
+    rail_scroll_offset: isize,
 }
 
 impl ControllerState {
@@ -342,11 +344,39 @@ impl ControllerState {
         }
     }
 
-    pub fn toggle_group_collapsed_for_client(&mut self, client_id: u16, path: GroupPath) {
-        let collapsed_groups = &mut self.client_mut(client_id).collapsed_groups;
-        if !collapsed_groups.insert(path.clone()) {
-            collapsed_groups.remove(&path);
+    pub fn apply_rail_ui_action(&mut self, action: RailUiAction) {
+        self.rail_ui_revision = self.rail_ui_revision.saturating_add(1);
+        match action {
+            RailUiAction::ToggleGroup { path } => {
+                if !self.collapsed_groups.insert(path.clone()) {
+                    self.collapsed_groups.remove(&path);
+                }
+            }
+            RailUiAction::ScrollBy { delta } => {
+                self.rail_scroll_offset = self.rail_scroll_offset.saturating_add(delta);
+            }
+            RailUiAction::ResetScroll => {
+                self.rail_scroll_offset = 0;
+            }
         }
+    }
+
+    pub fn rail_ui_state(&self) -> RailUiState {
+        RailUiState {
+            revision: self.rail_ui_revision,
+            collapsed_groups: self.collapsed_groups.iter().cloned().collect(),
+            scroll_offset: self.rail_scroll_offset,
+        }
+    }
+
+    pub fn apply_rail_ui_state(&mut self, state: RailUiState) -> bool {
+        if state.revision <= self.rail_ui_revision {
+            return false;
+        }
+        self.rail_ui_revision = state.revision;
+        self.collapsed_groups = state.collapsed_groups.into_iter().collect();
+        self.rail_scroll_offset = state.scroll_offset;
+        true
     }
 
     pub fn set_template_catalog(
@@ -393,6 +423,7 @@ impl ControllerState {
             pinned_tabs,
             pane_statuses,
             metadata_patches: self.metadata.snapshot_patches(self.receive_counter),
+            rail_ui_state: self.rail_ui_state(),
         }
     }
 
@@ -406,6 +437,7 @@ impl ControllerState {
         for patch in snapshot.metadata_patches {
             self.apply_metadata_patch(patch);
         }
+        self.apply_rail_ui_state(snapshot.rail_ui_state);
     }
 
     fn plugin_registration(&self, plugin_id: u32) -> Option<&PluginRegistration> {
@@ -485,7 +517,6 @@ impl ControllerState {
                 || !client.tabs.is_empty()
                 || client.inspected_node.is_some()
                 || client.metadata_controls != MetadataControls::default()
-                || !client.collapsed_groups.is_empty()
         });
     }
 
@@ -696,7 +727,7 @@ impl ControllerState {
                 .map(|client| client.metadata_controls.clone())
                 .unwrap_or_default(),
             inspected_node: None,
-            collapsed_groups: vec![],
+            collapsed_groups: self.collapsed_groups.iter().cloned().collect(),
         }
     }
 
@@ -705,7 +736,6 @@ impl ControllerState {
         if let Some(client) = self.clients.get(&client_id) {
             model.metadata_controls = client.metadata_controls.clone();
             model.inspected_node = client.inspected_node.clone();
-            model.collapsed_groups = client.collapsed_groups.iter().cloned().collect();
         }
         model
     }
@@ -3819,6 +3849,7 @@ mod tests {
             "waiting",
             10,
         ));
+        source.apply_rail_ui_action(RailUiAction::ScrollBy { delta: 8 });
 
         let snapshot = source.bootstrap_snapshot();
         let mut target = ControllerState::default();
@@ -3830,6 +3861,35 @@ mod tests {
         assert_eq!(target_snapshot.pinned_tabs, vec![7]);
         assert_eq!(target_snapshot.pane_statuses.len(), 1);
         assert_eq!(target_snapshot.pane_statuses[0].title, "waiting");
+        assert_eq!(
+            target_snapshot.rail_ui_state,
+            RailUiState {
+                revision: 1,
+                collapsed_groups: vec![],
+                scroll_offset: 8,
+            }
+        );
+    }
+
+    #[test]
+    fn stale_bootstrap_snapshot_cannot_overwrite_newer_rail_ui_state() {
+        let mut state = ControllerState::default();
+        state.apply_rail_ui_action(RailUiAction::ScrollBy { delta: 8 });
+        state.apply_rail_ui_action(RailUiAction::ScrollBy { delta: 2 });
+
+        assert!(!state.apply_rail_ui_state(RailUiState {
+            revision: 1,
+            collapsed_groups: vec![],
+            scroll_offset: 99,
+        }));
+        assert_eq!(
+            state.rail_ui_state(),
+            RailUiState {
+                revision: 2,
+                collapsed_groups: vec![],
+                scroll_offset: 10,
+            }
+        );
     }
 
     #[test]
@@ -4461,18 +4521,26 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_keeps_client_with_collapsed_group_state() {
+    fn renderer_cleanup_keeps_session_rail_ui_state() {
         let path = GroupPath(vec![GroupSegment {
             key: "zellij.pane.cwd".to_owned(),
             value: MetadataValue::Text("/repo".to_owned()),
             label: Some("repo".to_owned()),
         }]);
         let mut state = ControllerState::default();
-        state.toggle_group_collapsed_for_client(1, path.clone());
+        state.apply_rail_ui_action(RailUiAction::ToggleGroup { path: path.clone() });
+        state.apply_rail_ui_action(RailUiAction::ScrollBy { delta: 7 });
 
         state.retain_rails(&HashSet::new());
 
-        assert_eq!(state.view_model_for_client(1).collapsed_groups, vec![path]);
+        assert_eq!(
+            state.rail_ui_state(),
+            RailUiState {
+                revision: 2,
+                collapsed_groups: vec![path],
+                scroll_offset: 7,
+            }
+        );
     }
 
     #[test]

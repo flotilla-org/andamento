@@ -56,7 +56,8 @@ prototype below. The legacy behavior was:
 
 The current prototype is split across these plugins:
 
-- `andamento-controller`: background state owner for pins, ordering, and pane statuses
+- `andamento-controller`: background state owner for pins, ordering, pane statuses,
+  and the session-wide rail collapse/scroll snapshot
 - `andamento-rail`: visible sidebar renderer, intended to appear in each tab
 - `andamento-config`: in-rail settings, template diagnostics, and stats views
 

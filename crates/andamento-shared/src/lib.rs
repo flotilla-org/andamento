@@ -26,9 +26,11 @@ pub const MSG_STATS_REQUEST: &str = "andamento-stats-request";
 pub const MSG_STATS_REPORT: &str = "andamento-stats-report";
 pub const MSG_RAIL_SIZE_OBSERVED: &str = "andamento-rail-size-observed";
 pub const MSG_RAIL_SIZE_TARGET: &str = "andamento-rail-size-target";
+pub const MSG_RAIL_UI_ACTION: &str = "andamento-rail-ui-action";
+pub const MSG_RAIL_UI_STATE: &str = "andamento-rail-ui-state";
+pub const MSG_REQUEST_RAIL_UI_STATE: &str = "andamento-request-rail-ui-state";
 pub const MSG_SET_METADATA_VISIBILITY: &str = "andamento-set-metadata-visibility";
 pub const MSG_SET_CHILD_LAYOUT: &str = "andamento-set-child-layout";
-pub const MSG_TOGGLE_GROUP_COLLAPSED: &str = "andamento-toggle-group-collapsed";
 pub const MSG_CONFIG_INSPECT: &str = "andamento-config-inspect";
 pub const MSG_MATERIALIZE_LATENT: &str = "andamento-materialize-latent";
 
@@ -153,9 +155,21 @@ pub struct ChildLayoutSetRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GroupCollapseToggleRequest {
-    pub client_id: u16,
-    pub path: GroupPath,
+#[serde(tag = "action", rename_all = "kebab-case")]
+pub enum RailUiAction {
+    ToggleGroup { path: GroupPath },
+    ScrollBy { delta: isize },
+    ResetScroll,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RailUiState {
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub collapsed_groups: Vec<GroupPath>,
+    #[serde(default)]
+    pub scroll_offset: isize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -214,6 +228,8 @@ pub struct ControllerBootstrapSnapshot {
     pub pane_statuses: Vec<SetPaneStatus>,
     #[serde(default)]
     pub metadata_patches: Vec<MetadataPatch>,
+    #[serde(default)]
+    pub rail_ui_state: RailUiState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

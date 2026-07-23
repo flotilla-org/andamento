@@ -280,7 +280,7 @@ This model supports:
 
 The renderer can still project these nodes into simple rows for the sidebar. The important change is that row layout becomes one projection of a richer tree, not the primary model.
 
-Status: started in the rail plugin. Normal rendering now uses local render nodes for groups and tabs, and groups can be collapsed/expanded locally in the rail by clicking the group header. Collapse state is default-expanded and client-local for now; persisted/shared collapse state can be added once sidebar UI state has a durable home.
+Status: started in the rail plugin. Normal rendering now uses local render nodes for groups and tabs, and groups can be collapsed/expanded by clicking the group header. Collapse and vertical scroll state live in one controller-owned session snapshot that is broadcast to every rail. New rail instances request the current snapshot on startup, and monotonic revisions prevent delayed broadcasts from rolling an instance back.
 
 ### Spindly Hierarchies Should Conflate Compatible Levels
 
@@ -313,7 +313,7 @@ Hierarchical grouping should not treat only the deepest group as real. Every pre
 [(andamento.project, zellij), (git.repo, zellij-org/zellij), (git.branch, feat/kitty-image-plumbing)]
 ```
 
-The controller should resolve metadata and templates for each prefix and send those resolved states to the rail. The rail should remain mostly dumb: it builds the local recursive render tree, merges resolved metadata/templates by path, applies local layout/collapse/scroll decisions, and draws.
+The controller should resolve metadata and templates for each prefix and send those resolved states to the rail. The rail should remain mostly dumb: it builds the local recursive render tree, merges resolved metadata/templates by path, applies local layout decisions plus the shared collapse/scroll snapshot, and draws.
 
 This keeps grouping and template matching controller-centric while preserving room for client-local variants. If templates later need active/inactive, collapsed/expanded, or width-specific fields, the controller can send multiple resolved template states for the same node rather than moving all matching logic into every rail instance.
 
