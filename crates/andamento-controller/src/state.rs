@@ -1106,6 +1106,8 @@ impl ControllerState {
         &self,
         request: &andamento_shared::MaterializeLatentRequest,
     ) -> bool {
+        // This exact equality check is the security boundary for controller pipe callers:
+        // accepting a factory id alone would let a caller substitute its own recipe or scope.
         group_path_to_metadata_segments(&request.path).is_some()
             && self
                 .latent_tabs()
@@ -2124,6 +2126,65 @@ mod tests {
             has_bell_notification: false,
             is_flashing_bell: false,
         }
+    }
+
+    fn openable_latent_state() -> (
+        ControllerState,
+        andamento_shared::MaterializeLatentRequest,
+        GroupPath,
+    ) {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "main".to_owned(),
+            active: true,
+        }]);
+        let path = GroupPath(vec![GroupSegment {
+            key: "flotilla.convoy".to_owned(),
+            value: MetadataValue::Text("dev/latent-tabs".to_owned()),
+            label: Some("latent tabs".to_owned()),
+        }]);
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Group(path.clone()),
+            source_id: "flotilla-connector".to_owned(),
+            set: BTreeMap::from([
+                (
+                    KEY_FACTORY_ID.to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("flotilla:convoys/dev/latent-tabs".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    KEY_MATERIALIZE_RECIPE.to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("flotilla attach latent-tabs".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+            ]),
+            unset: vec![],
+        });
+        let request = state
+            .view_model()
+            .rows
+            .iter()
+            .find_map(|row| match row {
+                RailRow::Latent { latent, .. } => latent.materialize_request(),
+                _ => None,
+            })
+            .expect("openable latent");
+
+        (state, request, path)
     }
 
     #[test]
@@ -4066,56 +4127,7 @@ mod tests {
 
     #[test]
     fn opening_latent_is_idempotent_and_claims_its_created_tab_atomically() {
-        let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
-        state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "main".to_owned(),
-            active: true,
-        }]);
-        let path = GroupPath(vec![GroupSegment {
-            key: "flotilla.convoy".to_owned(),
-            value: MetadataValue::Text("dev/latent-tabs".to_owned()),
-            label: Some("latent tabs".to_owned()),
-        }]);
-        state.apply_metadata_patch(andamento_shared::MetadataPatch {
-            target: EntityId::Group(path.clone()),
-            source_id: "flotilla-connector".to_owned(),
-            set: BTreeMap::from([
-                (
-                    KEY_FACTORY_ID.to_owned(),
-                    andamento_shared::MetadataValueUpdate {
-                        value: MetadataValue::Text("flotilla:convoys/dev/latent-tabs".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-                (
-                    KEY_MATERIALIZE_RECIPE.to_owned(),
-                    andamento_shared::MetadataValueUpdate {
-                        value: MetadataValue::Text("flotilla attach latent-tabs".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-            ]),
-            unset: vec![],
-        });
-        let request = state
-            .view_model()
-            .rows
-            .iter()
-            .find_map(|row| match row {
-                RailRow::Latent { latent, .. } => latent.materialize_request(),
-                _ => None,
-            })
-            .expect("openable latent");
+        let (mut state, request, path) = openable_latent_state();
 
         assert!(state.begin_latent_materialization(&request));
         let opening_model = state.view_model();
@@ -4203,6 +4215,27 @@ mod tests {
                 ..Default::default()
             },
         ]));
+    }
+
+    #[test]
+    fn materialization_guards_reject_mismatches_and_abort_restores_ready_state() {
+        let (mut state, request, _) = openable_latent_state();
+        let mut mismatched_request = request.clone();
+        mismatched_request.recipe = "printf injected".to_owned();
+
+        assert!(!state.bind_materializing_tab(&request, 7));
+        assert!(!state.abort_latent_materialization(&request));
+        assert!(state.begin_latent_materialization(&request));
+        assert!(!state.bind_materializing_tab(&mismatched_request, 7));
+        assert!(!state.abort_latent_materialization(&mismatched_request));
+        assert!(state.bind_materializing_tab(&request, 7));
+        assert!(!state.bind_materializing_tab(&request, 8));
+        assert!(!state.can_materialize_latent(&request));
+
+        assert!(state.abort_latent_materialization(&request));
+        assert!(state.can_materialize_latent(&request));
+        assert!(!state.abort_latent_materialization(&request));
+        assert!(state.begin_latent_materialization(&request));
     }
 
     #[test]
