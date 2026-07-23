@@ -68,6 +68,24 @@ fn mode_info_needs_render(current: Option<&ModeInfo>, next: &ModeInfo) -> bool {
     current != Some(next)
 }
 
+fn tab_index_after_scroll(active_tab_idx: usize, tab_count: usize, delta: isize) -> usize {
+    if delta < 0 {
+        active_tab_idx.saturating_sub(delta.unsigned_abs()).max(1)
+    } else {
+        active_tab_idx
+            .saturating_add(delta.unsigned_abs())
+            .min(tab_count)
+    }
+}
+
+#[cfg(not(test))]
+fn schedule_scroll_flush() {
+    set_timeout(0.0);
+}
+
+#[cfg(test)]
+fn schedule_scroll_flush() {}
+
 fn rail_size_from_constraint(constraint: PaneDimensionConstraint) -> RailSize {
     match constraint {
         PaneDimensionConstraint::Fixed(size) => RailSize::Fixed(size),
@@ -204,7 +222,6 @@ fn renderer_hello_payload(
     .ok()
 }
 
-use std::cmp::{max, min};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Instant;
 
@@ -284,6 +301,8 @@ pub struct PluginState {
     last_graphics_signature: Option<Vec<GraphicsSignatureEntry>>,
     rail_scroll_offset: isize,
     rail_can_scroll: bool,
+    pending_scroll_delta: isize,
+    scroll_flush_scheduled: bool,
     last_pane_manifest: Option<PaneManifest>,
     own_is_selectable: bool,
     own_is_focused: bool,
@@ -332,6 +351,7 @@ impl ZellijPlugin for PluginState {
             EventType::ModeUpdate,
             EventType::PaneUpdate,
             EventType::Mouse,
+            EventType::Timer,
             EventType::Visible,
             EventType::PermissionRequestResult,
         ]);
@@ -388,6 +408,10 @@ impl ZellijPlugin for PluginState {
             Event::Mouse(mouse) => {
                 self.stats.increment("update.mouse");
                 self.handle_mouse(mouse)
+            }
+            Event::Timer(_) if self.scroll_flush_scheduled => {
+                self.stats.increment("update.scroll-flush");
+                self.flush_pending_scroll()
             }
             _ => false,
         }
@@ -496,6 +520,11 @@ mod tests {
     use super::*;
     use render::{VisibleCard, VisibleIconRect};
 
+    // Zellij's native shim references this WASM host import when tests exercise
+    // mouse handlers that can switch tabs.
+    #[no_mangle]
+    extern "C" fn host_run_plugin_command() {}
+
     fn tab_info(tab_id: usize, position: usize, name: &str, active: bool) -> TabInfo {
         TabInfo {
             position,
@@ -568,6 +597,65 @@ mod tests {
         let mode_info = ModeInfo::default();
 
         assert!(!mode_info_needs_render(Some(&mode_info), &mode_info));
+    }
+
+    #[test]
+    fn coalesced_scroll_event_applies_its_full_line_count() {
+        let mut state = PluginState {
+            rail_can_scroll: true,
+            ..Default::default()
+        };
+
+        assert!(!state.handle_mouse(Mouse::ScrollDown(7)));
+        assert_eq!(state.rail_scroll_offset, 0);
+        assert!(state.flush_pending_scroll());
+        assert_eq!(state.rail_scroll_offset, 7);
+    }
+
+    #[test]
+    fn wheel_burst_does_not_advance_render_state_event_by_event() {
+        let mut state = PluginState {
+            rail_can_scroll: true,
+            ..Default::default()
+        };
+
+        let render_requests = [
+            state.handle_mouse(Mouse::ScrollDown(1)),
+            state.handle_mouse(Mouse::ScrollDown(1)),
+            state.handle_mouse(Mouse::ScrollUp(1)),
+        ];
+
+        assert_eq!(render_requests, [false, false, false]);
+        assert_eq!(state.rail_scroll_offset, 0);
+        assert!(state.scroll_flush_scheduled);
+        assert!(state.flush_pending_scroll());
+        assert_eq!(state.rail_scroll_offset, 1);
+        assert!(!state.scroll_flush_scheduled);
+    }
+
+    #[test]
+    fn explicit_navigation_clears_scroll_queued_before_it() {
+        let mut state = PluginState {
+            rail_scroll_offset: 4,
+            rail_can_scroll: true,
+            ..Default::default()
+        };
+        state.handle_mouse(Mouse::ScrollDown(3));
+
+        state.reset_scroll_position();
+
+        assert_eq!(state.rail_scroll_offset, 0);
+        assert_eq!(state.pending_scroll_delta, 0);
+        assert!(!state.flush_pending_scroll());
+        assert_eq!(state.rail_scroll_offset, 0);
+    }
+
+    #[test]
+    fn tab_scroll_delta_is_clamped_against_current_state() {
+        assert_eq!(tab_index_after_scroll(3, 8, 4), 7);
+        assert_eq!(tab_index_after_scroll(3, 8, -2), 1);
+        assert_eq!(tab_index_after_scroll(3, 8, 99), 8);
+        assert_eq!(tab_index_after_scroll(3, 8, -99), 1);
     }
 
     #[test]
@@ -1036,7 +1124,7 @@ impl PluginState {
                 };
                 match hit.action {
                     HitAction::SwitchTab => {
-                        self.rail_scroll_offset = 0;
+                        self.reset_scroll_position();
                         switch_tab_to((hit.tab_position + 1) as u32);
                         false
                     }
@@ -1044,7 +1132,7 @@ impl PluginState {
                         if let (Some(request), Some(client_id)) =
                             (hit.materialize_request.as_ref(), self.own_client_id)
                         {
-                            self.rail_scroll_offset = 0;
+                            self.reset_scroll_position();
                             if let Some(message) = build_materialize_latent_message(
                                 &self.controller_plugin_url,
                                 client_id,
@@ -1087,30 +1175,55 @@ impl PluginState {
                     }
                 }
             }
-            Mouse::ScrollUp(_) => {
-                if self.rail_can_scroll {
-                    self.rail_scroll_offset = self.rail_scroll_offset.saturating_sub(1);
-                    return true;
-                }
-                if let Some(active_tab_idx) = self.active_tab_idx() {
-                    let prev = max(active_tab_idx.saturating_sub(1), 1);
-                    switch_tab_to(prev as u32);
-                }
-                false
-            }
-            Mouse::ScrollDown(_) => {
-                if self.rail_can_scroll {
-                    self.rail_scroll_offset = self.rail_scroll_offset.saturating_add(1);
-                    return true;
-                }
-                if let Some(active_tab_idx) = self.active_tab_idx() {
-                    let next = min(active_tab_idx + 1, self.local_tabs.len());
-                    switch_tab_to(next as u32);
-                }
-                false
+            Mouse::ScrollUp(lines) => self.queue_scroll_delta(
+                isize::try_from(lines)
+                    .unwrap_or(isize::MAX)
+                    .saturating_neg(),
+            ),
+            Mouse::ScrollDown(lines) => {
+                self.queue_scroll_delta(isize::try_from(lines).unwrap_or(isize::MAX))
             }
             _ => false,
         }
+    }
+
+    fn queue_scroll_delta(&mut self, delta: isize) -> bool {
+        if delta == 0 {
+            return false;
+        }
+        self.pending_scroll_delta = self.pending_scroll_delta.saturating_add(delta);
+        if !self.scroll_flush_scheduled {
+            self.scroll_flush_scheduled = true;
+            // The timer is enqueued behind scroll updates already waiting in
+            // Zellij. Suppress their individual draws, then apply their net
+            // effect against the latest state when the timer reaches us.
+            schedule_scroll_flush();
+        }
+        false
+    }
+
+    fn flush_pending_scroll(&mut self) -> bool {
+        self.scroll_flush_scheduled = false;
+        let delta = std::mem::take(&mut self.pending_scroll_delta);
+        if delta == 0 {
+            return false;
+        }
+        if self.rail_can_scroll {
+            self.rail_scroll_offset = self.rail_scroll_offset.saturating_add(delta);
+            return true;
+        }
+        if let Some(active_tab_idx) = self.active_tab_idx() {
+            let target = tab_index_after_scroll(active_tab_idx, self.local_tabs.len(), delta);
+            if target != active_tab_idx {
+                switch_tab_to(target as u32);
+            }
+        }
+        false
+    }
+
+    fn reset_scroll_position(&mut self) {
+        self.rail_scroll_offset = 0;
+        self.pending_scroll_delta = 0;
     }
 
     fn active_tab_idx(&self) -> Option<usize> {
