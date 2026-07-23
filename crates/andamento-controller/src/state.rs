@@ -689,38 +689,38 @@ impl ControllerState {
                 (path, ordinal)
             })
             .collect::<BTreeMap<_, _>>();
-        let mut rows = tabs
+        let mut catalog_rows = tabs
             .iter()
             .enumerate()
-            .map(|(index, tab)| {
-                let catalog_order = tab.grouping.as_ref().and_then(|grouping| {
-                    catalog_ordinal_by_path
-                        .get(&grouping.path)
-                        .copied()
-                        .flatten()
-                        .map(|ordinal| (ordinal, grouping.path.clone()))
-                });
-                (
-                    catalog_order,
+            .filter_map(|(index, tab)| {
+                let grouping = tab.grouping.as_ref()?;
+                let ordinal = catalog_ordinal_by_path
+                    .get(&grouping.path)
+                    .copied()
+                    .flatten()?;
+                Some((
+                    (ordinal, grouping.path.clone()),
                     index,
+                    true,
                     RailRow::Tab {
                         tab_id: tab.tab_id,
                         indent: 0,
                         parent_path: None,
                     },
-                )
+                ))
             })
             .chain(latent_tabs.iter().enumerate().map(|(index, latent)| {
                 (
-                    Some((
+                    (
                         catalog_ordinal_by_path
                             .get(&latent.path)
                             .copied()
                             .flatten()
                             .unwrap_or_default(),
                         latent.path.clone(),
-                    )),
+                    ),
                     tabs.len() + index,
+                    false,
                     RailRow::Latent {
                         latent: latent.clone(),
                         indent: 0,
@@ -729,20 +729,57 @@ impl ControllerState {
                 )
             }))
             .collect::<Vec<_>>();
-        rows.sort_by(
-            |(left_catalog, left_index, _), (right_catalog, right_index, _)| match (
-                left_catalog,
-                right_catalog,
-            ) {
-                (Some(left), Some(right)) => {
-                    left.cmp(right).then_with(|| left_index.cmp(right_index))
-                }
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => left_index.cmp(right_index),
+        catalog_rows.sort_by(
+            |(left_catalog, left_index, _, _), (right_catalog, right_index, _, _)| {
+                left_catalog
+                    .cmp(right_catalog)
+                    .then_with(|| left_index.cmp(right_index))
             },
         );
-        rows.into_iter().map(|(_, _, row)| row).collect()
+
+        let mut catalog_rows = catalog_rows.into_iter().peekable();
+        let mut catalog_slots = tabs
+            .iter()
+            .filter(|tab| {
+                tab.grouping.as_ref().is_some_and(|grouping| {
+                    catalog_ordinal_by_path
+                        .get(&grouping.path)
+                        .copied()
+                        .flatten()
+                        .is_some()
+                })
+            })
+            .count();
+        let mut rows = vec![];
+        if catalog_slots == 0 {
+            rows.extend(catalog_rows.by_ref().map(|(_, _, _, row)| row));
+        }
+        for tab in tabs {
+            let is_catalog = tab.grouping.as_ref().is_some_and(|grouping| {
+                catalog_ordinal_by_path
+                    .get(&grouping.path)
+                    .copied()
+                    .flatten()
+                    .is_some()
+            });
+            if !is_catalog {
+                rows.push(RailRow::Tab {
+                    tab_id: tab.tab_id,
+                    indent: 0,
+                    parent_path: None,
+                });
+                continue;
+            }
+
+            catalog_slots -= 1;
+            while let Some((_, _, is_live, row)) = catalog_rows.next() {
+                rows.push(row);
+                if is_live && catalog_slots > 0 {
+                    break;
+                }
+            }
+        }
+        rows
     }
 
     fn directory_group_rows(&self, tabs: &[TabCard], latent_tabs: &[LatentTab]) -> Vec<RailRow> {
@@ -2247,6 +2284,83 @@ mod tests {
             } if latent.path == path
         ));
         assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn grouping_none_keeps_plain_tab_before_catalog_ordered_entries() {
+        let mut state = ControllerState::default();
+        let path = GroupPath(vec![GroupSegment {
+            key: "flotilla.convoy".to_owned(),
+            value: MetadataValue::Text("dev/catalog".to_owned()),
+            label: Some("catalog".to_owned()),
+        }]);
+        let latent_path = GroupPath(vec![GroupSegment {
+            key: "flotilla.convoy".to_owned(),
+            value: MetadataValue::Text("dev/latent".to_owned()),
+            label: Some("latent".to_owned()),
+        }]);
+        for (entry_path, factory_id, ordinal) in [
+            (path.clone(), "flotilla:convoys/dev/catalog".to_owned(), 1),
+            (
+                latent_path.clone(),
+                "flotilla:convoys/dev/latent".to_owned(),
+                0,
+            ),
+        ] {
+            state.apply_metadata_patch(andamento_shared::MetadataPatch {
+                target: EntityId::Group(entry_path),
+                source_id: "flotilla-connector".to_owned(),
+                set: BTreeMap::from([(
+                    KEY_FACTORY_ID.to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text(factory_id),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: Some(ordinal),
+                    },
+                )]),
+                unset: vec![],
+            });
+        }
+        let tab = |tab_id, name: &str, grouping| TabCard {
+            tab_id,
+            position: tab_id as usize - 1,
+            name: name.to_owned(),
+            active: tab_id == 1,
+            pinned: false,
+            status: None,
+            grouping,
+            templates: ResolvedTemplateSlots::default(),
+            active_pane: None,
+        };
+        let rows = state.ungrouped_rows(
+            &[
+                tab(1, "plain", None),
+                tab(
+                    2,
+                    "catalog",
+                    Some(TabGroupingInfo {
+                        key: "flotilla.convoy:dev/catalog".to_owned(),
+                        path,
+                        label: "catalog".to_owned(),
+                        full_label: "catalog".to_owned(),
+                    }),
+                ),
+            ],
+            &[LatentTab {
+                factory_id: "flotilla:convoys/dev/latent".to_owned(),
+                path: latent_path,
+                name: "latent".to_owned(),
+                status_state: None,
+                summary: None,
+                materialize_recipe: None,
+            }],
+        );
+
+        assert!(matches!(&rows[0], RailRow::Tab { tab_id: 1, .. }));
+        assert!(matches!(&rows[1], RailRow::Latent { .. }));
+        assert!(matches!(&rows[2], RailRow::Tab { tab_id: 2, .. }));
+        assert_eq!(rows.len(), 3);
     }
 
     #[test]
