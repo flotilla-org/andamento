@@ -1189,10 +1189,8 @@ impl PluginState {
                     HitAction::ToggleGroup => {
                         if let Some(group_path) = hit.group_path {
                             self.toggle_group(group_path);
-                            true
-                        } else {
-                            false
                         }
+                        false
                     }
                     HitAction::OpenConfig => {
                         self.open_config_pane();

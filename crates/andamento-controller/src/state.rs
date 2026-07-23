@@ -4461,6 +4461,21 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_keeps_client_with_collapsed_group_state() {
+        let path = GroupPath(vec![GroupSegment {
+            key: "zellij.pane.cwd".to_owned(),
+            value: MetadataValue::Text("/repo".to_owned()),
+            label: Some("repo".to_owned()),
+        }]);
+        let mut state = ControllerState::default();
+        state.toggle_group_collapsed_for_client(1, path.clone());
+
+        state.retain_rails(&HashSet::new());
+
+        assert_eq!(state.view_model_for_client(1).collapsed_groups, vec![path]);
+    }
+
+    #[test]
     fn config_editor_target_prefers_same_client_and_tab() {
         let mut state = ControllerState::default();
         state.register_config_editor(PluginRegistrationHello {
