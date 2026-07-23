@@ -260,11 +260,17 @@ impl ZellijPlugin for PluginState {
             unblock_cli_pipe_input(pipe_id);
         }
         if result.state_changed {
-            self.push_view_model_to_rails_with_pending(
-                result
-                    .view_model_push_reason
-                    .unwrap_or(ViewModelPushReason::PipeUnknown),
-            );
+            let reason = result
+                .view_model_push_reason
+                .unwrap_or(ViewModelPushReason::PipeUnknown);
+            match pipe_view_model_delivery(reason) {
+                PipeViewModelDelivery::Immediate => {
+                    self.push_view_model_to_rails_with_pending(reason);
+                }
+                PipeViewModelDelivery::Coalesced => {
+                    self.queue_view_model_push(reason);
+                }
+            }
         }
         false
     }
@@ -688,6 +694,19 @@ impl ViewModelPushReason {
             Self::PipeMaterializeLatent => "view-model.push.reason.pipe.materialize-latent",
             Self::PipeUnknown => "view-model.push.reason.pipe.unknown",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipeViewModelDelivery {
+    Immediate,
+    Coalesced,
+}
+
+fn pipe_view_model_delivery(reason: ViewModelPushReason) -> PipeViewModelDelivery {
+    match reason {
+        ViewModelPushReason::PipeMetadata => PipeViewModelDelivery::Coalesced,
+        _ => PipeViewModelDelivery::Immediate,
     }
 }
 
@@ -2200,6 +2219,31 @@ mod tests {
         );
         assert!(!pending.is_pending());
         assert!(pending.queue(ViewModelPushReason::UpdateCwd));
+    }
+
+    #[test]
+    fn metadata_pipe_bursts_defer_full_view_model_fanout() {
+        let mut pending = PendingViewModelPush::default();
+        let timers_scheduled = (0..100)
+            .filter(|_| {
+                assert_eq!(
+                    pipe_view_model_delivery(ViewModelPushReason::PipeMetadata),
+                    PipeViewModelDelivery::Coalesced
+                );
+                pending.queue(ViewModelPushReason::PipeMetadata)
+            })
+            .count();
+
+        assert_eq!(timers_scheduled, 1);
+        assert_eq!(pending.take(), vec![ViewModelPushReason::PipeMetadata]);
+        assert_eq!(
+            pipe_view_model_delivery(ViewModelPushReason::PipeRendererHello),
+            PipeViewModelDelivery::Immediate
+        );
+        assert_eq!(
+            pipe_view_model_delivery(ViewModelPushReason::PipeRequestState),
+            PipeViewModelDelivery::Immediate
+        );
     }
 
     #[test]
