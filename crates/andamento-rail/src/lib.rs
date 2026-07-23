@@ -251,6 +251,10 @@ fn build_config_inspect_message(
     )
 }
 
+fn command_for_materialize_recipe(recipe: &str) -> CommandToRun {
+    CommandToRun::new_with_args("/bin/sh", vec!["-c", recipe])
+}
+
 #[derive(Default)]
 pub struct PluginState {
     tabs: Vec<TabInfo>,
@@ -659,6 +663,14 @@ mod tests {
     }
 
     #[test]
+    fn materialize_recipe_runs_verbatim_through_a_login_free_shell() {
+        let command = command_for_materialize_recipe("flotilla attach 'latent tabs'");
+
+        assert_eq!(command.path.to_string_lossy(), "/bin/sh");
+        assert_eq!(command.args, vec!["-c", "flotilla attach 'latent tabs'"]);
+    }
+
+    #[test]
     fn inspect_defaults_to_rail_own_tab_before_global_active_tab() {
         let state = PluginState {
             local_tabs: vec![
@@ -698,6 +710,7 @@ mod tests {
             tab_position: 0,
             group_path: None,
             inspect_target: Some(NodeKey::Tab(0)),
+            materialize_recipe: None,
             action: HitAction::InspectNode,
         };
 
@@ -994,6 +1007,16 @@ impl PluginState {
                     HitAction::SwitchTab => {
                         self.rail_scroll_offset = 0;
                         switch_tab_to((hit.tab_position + 1) as u32);
+                        false
+                    }
+                    HitAction::Materialize => {
+                        if let Some(recipe) = hit.materialize_recipe.as_deref() {
+                            self.rail_scroll_offset = 0;
+                            open_command_pane_in_new_tab(
+                                command_for_materialize_recipe(recipe),
+                                BTreeMap::new(),
+                            );
+                        }
                         false
                     }
                     HitAction::TogglePin => {

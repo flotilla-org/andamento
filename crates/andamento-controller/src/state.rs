@@ -6,18 +6,23 @@ use crate::metadata::{
 };
 use andamento_shared::grouping_config::{GroupingConfigCatalog, GroupingRule};
 use andamento_shared::{
-    ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, MetadataControls,
-    MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey,
-    ObservedMetadataIdentity, PaneTarget, PluginPlacement, PluginRegistrationHello, Priority,
-    RailConfig, RailGroupingMode, RailRow, ReachableMetadataIdentity, RendererHello,
-    ResolvedMetadata, ResolvedTemplateField, ResolvedTemplateSlot, ResolvedTemplateSlots,
-    SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics,
+    ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, LatentTab,
+    MetadataControls, MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataTriState,
+    MetadataValue, NodeKey, ObservedMetadataIdentity, PaneTarget, PluginPlacement,
+    PluginRegistrationHello, Priority, RailConfig, RailGroupingMode, RailRow,
+    ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateField,
+    ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabGroupingInfo,
+    TabStatusSummary, TemplateConfigDiagnostics,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
 const SOURCE_ZELLIJ: &str = "zellij";
 const KEY_PANE_CWD: &str = "zellij.pane.cwd";
 const KEY_TAB_SCOPE: &str = "tab.scope";
+const KEY_FACTORY_ID: &str = "factory.id";
+const KEY_MATERIALIZE_RECIPE: &str = "materialize.recipe";
+const KEY_STATUS_STATE: &str = "status.state";
+const KEY_SUMMARY_TEXT: &str = "summary.text";
 const FOCUSED_CWD_PRECEDENCE: i64 = 100;
 const NORMAL_CWD_PRECEDENCE: i64 = 0;
 
@@ -632,10 +637,12 @@ impl ControllerState {
             }
         }
 
+        let latent_tabs = self.latent_tabs();
         let resolved_metadata = self.resolved_metadata_for_tabs(&tabs);
         let observed_identities = observed_metadata_identities(&resolved_metadata);
         self.resolve_tab_templates(&mut tabs, &resolved_metadata);
-        let rows = self.rows_with_group_templates(self.rows_for_tabs(&tabs), &resolved_metadata);
+        let rows = self
+            .rows_with_group_templates(self.rows_for_tabs(&tabs, &latent_tabs), &resolved_metadata);
 
         ControllerViewModel {
             sort_mode: self.sort_mode,
@@ -663,21 +670,64 @@ impl ControllerState {
         model
     }
 
-    fn rows_for_tabs(&self, tabs: &[TabCard]) -> Vec<RailRow> {
+    fn rows_for_tabs(&self, tabs: &[TabCard], latent_tabs: &[LatentTab]) -> Vec<RailRow> {
         match self.rail_config.grouping {
-            RailGroupingMode::None => tabs
-                .iter()
-                .map(|tab| RailRow::Tab {
-                    tab_id: tab.tab_id,
-                    indent: 0,
-                    parent_path: None,
-                })
-                .collect(),
-            RailGroupingMode::Directory => self.directory_group_rows(tabs),
+            RailGroupingMode::None => self.ungrouped_rows(tabs, latent_tabs),
+            RailGroupingMode::Directory => self.directory_group_rows(tabs, latent_tabs),
         }
     }
 
-    fn directory_group_rows(&self, tabs: &[TabCard]) -> Vec<RailRow> {
+    fn ungrouped_rows(&self, tabs: &[TabCard], latent_tabs: &[LatentTab]) -> Vec<RailRow> {
+        let mut rows = tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                let catalog_order = tab.grouping.as_ref().and_then(|grouping| {
+                    self.catalog_group_ordinal(&grouping.path)
+                        .map(|ordinal| (ordinal, grouping.path.clone()))
+                });
+                (
+                    catalog_order,
+                    index,
+                    RailRow::Tab {
+                        tab_id: tab.tab_id,
+                        indent: 0,
+                        parent_path: None,
+                    },
+                )
+            })
+            .chain(latent_tabs.iter().enumerate().map(|(index, latent)| {
+                (
+                    Some((
+                        self.catalog_group_ordinal(&latent.path).unwrap_or_default(),
+                        latent.path.clone(),
+                    )),
+                    tabs.len() + index,
+                    RailRow::Latent {
+                        latent: latent.clone(),
+                        indent: 0,
+                        parent_path: None,
+                    },
+                )
+            }))
+            .collect::<Vec<_>>();
+        rows.sort_by(
+            |(left_catalog, left_index, _), (right_catalog, right_index, _)| match (
+                left_catalog,
+                right_catalog,
+            ) {
+                (Some(left), Some(right)) => {
+                    left.cmp(right).then_with(|| left_index.cmp(right_index))
+                }
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => left_index.cmp(right_index),
+            },
+        );
+        rows.into_iter().map(|(_, _, row)| row).collect()
+    }
+
+    fn directory_group_rows(&self, tabs: &[TabCard], latent_tabs: &[LatentTab]) -> Vec<RailRow> {
         let mut path_to_tabs: BTreeMap<GroupPath, Vec<TabCard>> = BTreeMap::new();
         let mut grouping_by_path: BTreeMap<GroupPath, TabGroupingInfo> = BTreeMap::new();
         for tab in tabs {
@@ -695,59 +745,133 @@ impl ControllerState {
                 *tab_count_by_prefix.entry(prefix).or_default() += grouped_tabs.len();
             }
         }
-        let mut emitted_groups = HashSet::new();
-        let mut emitted_leaf_groups = HashSet::new();
-        let mut rows = vec![];
-        for tab in tabs {
-            let Some(grouping) = tab.grouping.as_ref() else {
-                rows.push(RailRow::Tab {
-                    tab_id: tab.tab_id,
-                    indent: 0,
-                    parent_path: None,
-                });
-                continue;
-            };
-            if !emitted_leaf_groups.insert(grouping.path.clone()) {
-                continue;
+        for latent in latent_tabs {
+            for prefix in group_path_prefixes(&latent.path) {
+                *tab_count_by_prefix.entry(prefix).or_default() += 1;
             }
-            let grouped_tabs = path_to_tabs
-                .get(&grouping.path)
-                .cloned()
-                .unwrap_or_default();
-            let grouping = grouping_by_path
-                .get(&grouping.path)
-                .cloned()
-                .unwrap_or_else(|| grouping.clone());
-            for prefix in group_path_prefixes(&grouping.path) {
+        }
+        let latent_by_path = latent_tabs
+            .iter()
+            .cloned()
+            .map(|latent| (latent.path.clone(), latent))
+            .collect::<BTreeMap<_, _>>();
+        let mut tab_order_by_path = BTreeMap::new();
+        for (index, tab) in tabs.iter().enumerate() {
+            if let Some(grouping) = tab.grouping.as_ref() {
+                tab_order_by_path
+                    .entry(grouping.path.clone())
+                    .or_insert(index);
+            }
+        }
+        let mut ordered_paths = path_to_tabs
+            .keys()
+            .chain(latent_by_path.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        ordered_paths.sort_by(|left, right| {
+            match (
+                self.catalog_group_ordinal(left),
+                self.catalog_group_ordinal(right),
+            ) {
+                (Some(left_ordinal), Some(right_ordinal)) => left_ordinal
+                    .cmp(&right_ordinal)
+                    .then_with(|| left.cmp(right)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => tab_order_by_path
+                    .get(left)
+                    .cmp(&tab_order_by_path.get(right))
+                    .then_with(|| left.cmp(right)),
+            }
+        });
+
+        let ungrouped_tabs = tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, tab)| tab.grouping.is_none())
+            .map(|(index, tab)| (index, tab))
+            .collect::<Vec<_>>();
+        let mut next_ungrouped = 0usize;
+        let mut rows = vec![];
+        let mut emitted_groups = HashSet::new();
+        for path in ordered_paths {
+            if self.catalog_group_ordinal(&path).is_none() {
+                let group_index = tab_order_by_path.get(&path).copied().unwrap_or(usize::MAX);
+                while let Some((index, tab)) = ungrouped_tabs.get(next_ungrouped) {
+                    if *index >= group_index {
+                        break;
+                    }
+                    rows.push(RailRow::Tab {
+                        tab_id: tab.tab_id,
+                        indent: 0,
+                        parent_path: None,
+                    });
+                    next_ungrouped += 1;
+                }
+            }
+            let grouping = grouping_by_path.get(&path);
+            for prefix in group_path_prefixes(&path) {
                 if !emitted_groups.insert(prefix.clone()) {
                     continue;
                 }
-                let (group_id, label, full_label) = group_header_identity_for_prefix(
-                    &prefix,
-                    &grouping.path,
-                    &grouping.key,
-                    &grouping.label,
-                    &grouping.full_label,
-                );
+                let (group_id, label, full_label) = grouping
+                    .map(|grouping| {
+                        group_header_identity_for_prefix(
+                            &prefix,
+                            &path,
+                            &grouping.key,
+                            &grouping.label,
+                            &grouping.full_label,
+                        )
+                    })
+                    .unwrap_or_else(|| group_header_identity_for_path(&prefix));
                 rows.push(RailRow::GroupHeader {
                     group_id,
                     path: prefix.clone(),
                     label,
                     full_label,
-                    tab_count: tab_count_by_prefix
-                        .get(&prefix)
-                        .copied()
-                        .unwrap_or(grouped_tabs.len()),
+                    tab_count: tab_count_by_prefix.get(&prefix).copied().unwrap_or(1),
                     templates: ResolvedTemplateSlots::default(),
                 });
             }
-            rows.extend(grouped_tabs.into_iter().map(|tab| RailRow::Tab {
-                tab_id: tab.tab_id,
-                indent: grouping.path.0.len() * 2,
-                parent_path: Some(grouping.path.clone()),
-            }));
+            rows.extend(
+                path_to_tabs
+                    .get(&path)
+                    .into_iter()
+                    .flatten()
+                    .map(|tab| RailRow::Tab {
+                        tab_id: tab.tab_id,
+                        indent: path.0.len() * 2,
+                        parent_path: Some(path.clone()),
+                    }),
+            );
+            if let Some(latent) = latent_by_path.get(&path) {
+                rows.push(RailRow::Latent {
+                    latent: latent.clone(),
+                    indent: path.0.len() * 2,
+                    parent_path: Some(path),
+                });
+            }
         }
+        rows.extend(
+            ungrouped_tabs[next_ungrouped..]
+                .iter()
+                .map(|(_, tab)| RailRow::Tab {
+                    tab_id: tab.tab_id,
+                    indent: 0,
+                    parent_path: None,
+                }),
+        );
         rows
+    }
+
+    fn catalog_group_ordinal(&self, path: &GroupPath) -> Option<i64> {
+        self.metadata
+            .resolved_entries_for(&EntityId::Group(path.clone()), self.receive_counter)
+            .get(KEY_FACTORY_ID)
+            .map(|entry| entry.ordinal)
     }
 
     fn rows_with_group_templates(
@@ -795,6 +919,85 @@ impl ControllerState {
                     indent,
                     parent_path,
                 },
+                RailRow::Latent {
+                    latent,
+                    indent,
+                    parent_path,
+                } => RailRow::Latent {
+                    latent,
+                    indent,
+                    parent_path,
+                },
+            })
+            .collect()
+    }
+
+    fn latent_tabs(&self) -> Vec<LatentTab> {
+        let mut catalog_paths = self
+            .metadata
+            .targets()
+            .filter_map(|target| match target {
+                EntityId::Group(path) => {
+                    let values = self
+                        .metadata
+                        .resolved_entries_for(target, self.receive_counter);
+                    values
+                        .contains_key(KEY_FACTORY_ID)
+                        .then_some((path.clone(), values))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        catalog_paths.sort_by(|(left_path, left_values), (right_path, right_values)| {
+            let left_ordinal = left_values
+                .get(KEY_FACTORY_ID)
+                .map(|entry| entry.ordinal)
+                .unwrap_or_default();
+            let right_ordinal = right_values
+                .get(KEY_FACTORY_ID)
+                .map(|entry| entry.ordinal)
+                .unwrap_or_default();
+            left_ordinal
+                .cmp(&right_ordinal)
+                .then_with(|| left_path.cmp(right_path))
+        });
+        let live_paths = self.materialized_group_paths();
+
+        catalog_paths
+            .iter()
+            .filter(|(path, _)| !live_paths.contains(path))
+            .filter_map(|(path, values)| {
+                let factory_id = metadata_entry_text(values, KEY_FACTORY_ID)?.to_owned();
+                let name = path
+                    .0
+                    .last()
+                    .map(group_segment_label)
+                    .unwrap_or_else(|| factory_id.clone());
+                Some(LatentTab {
+                    factory_id,
+                    path: path.clone(),
+                    name,
+                    status_state: metadata_entry_text(values, KEY_STATUS_STATE).map(str::to_owned),
+                    summary: metadata_entry_text(values, KEY_SUMMARY_TEXT).map(str::to_owned),
+                    materialize_recipe: metadata_entry_text(values, KEY_MATERIALIZE_RECIPE)
+                        .map(str::to_owned),
+                })
+            })
+            .collect()
+    }
+
+    fn materialized_group_paths(&self) -> BTreeSet<GroupPath> {
+        self.panes
+            .keys()
+            .filter_map(|pane_id| {
+                let (values, _, _) =
+                    self.resolve_target_metadata(&EntityId::Pane(*pane_id), BTreeMap::new());
+                match values.get(KEY_TAB_SCOPE).map(|entry| &entry.value) {
+                    Some(MetadataValue::GroupPath(segments)) => {
+                        Some(metadata_path_segments_to_group_path(segments.clone()))
+                    }
+                    _ => None,
+                }
             })
             .collect()
     }
@@ -1044,7 +1247,14 @@ impl ControllerState {
             BTreeMap::new();
         let mut identities_by_target: BTreeMap<EntityId, Vec<ReachableMetadataIdentity>> =
             BTreeMap::new();
-        let mut group_paths = BTreeSet::new();
+        let mut group_paths = self
+            .metadata
+            .targets()
+            .filter_map(|target| match target {
+                EntityId::Group(path) => Some(path.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
         let root_target = EntityId::Root;
         let (root_values, root_sources, root_identities) =
             self.resolve_target_metadata(&root_target, BTreeMap::new());
@@ -1378,6 +1588,16 @@ fn group_path_prefixes(path: &GroupPath) -> Vec<GroupPath> {
         .collect()
 }
 
+fn metadata_entry_text<'a>(
+    values: &'a BTreeMap<String, MetadataEntry>,
+    key: &str,
+) -> Option<&'a str> {
+    match values.get(key).map(|entry| &entry.value) {
+        Some(MetadataValue::Text(value)) => Some(value),
+        _ => None,
+    }
+}
+
 fn group_header_identity_for_prefix(
     prefix: &GroupPath,
     leaf_path: &GroupPath,
@@ -1405,6 +1625,23 @@ fn group_header_identity_for_prefix(
     let label = labels.last().cloned().unwrap_or_else(|| key.clone());
     let full_label = labels.join(" / ");
     (key, label, full_label)
+}
+
+fn group_header_identity_for_path(path: &GroupPath) -> (String, String, String) {
+    let labels = path.0.iter().map(group_segment_label).collect::<Vec<_>>();
+    let key = format!(
+        "group:{}",
+        path.0
+            .iter()
+            .map(|segment| format!("{}={}", segment.key, metadata_value_display(&segment.value)))
+            .collect::<Vec<_>>()
+            .join("/")
+    );
+    (
+        key,
+        labels.last().cloned().unwrap_or_default(),
+        labels.join(" / "),
+    )
 }
 
 fn group_segment_label(segment: &GroupSegment) -> String {
@@ -2590,7 +2827,7 @@ mod tests {
             .iter()
             .find_map(|row| match row {
                 RailRow::GroupHeader { templates, .. } => templates.group_header.as_ref(),
-                RailRow::Tab { .. } => None,
+                RailRow::Tab { .. } | RailRow::Latent { .. } => None,
             })
             .expect("group header template");
 
@@ -2728,7 +2965,7 @@ mod tests {
                 RailRow::GroupHeader {
                     path, templates, ..
                 } => Some((path, templates.group_header.as_ref())),
-                RailRow::Tab { .. } => None,
+                RailRow::Tab { .. } | RailRow::Latent { .. } => None,
             })
             .collect::<Vec<_>>();
 
@@ -3105,6 +3342,323 @@ mod tests {
 
         let model = target.view_model();
         assert_eq!(model.tabs[0].status.as_ref().unwrap().title, "waiting");
+    }
+
+    #[test]
+    fn catalog_leaf_without_a_materialized_member_projects_a_latent_tab_in_place() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        let project = GroupSegment {
+            key: "git.repo".to_owned(),
+            value: MetadataValue::Text("flotilla-org/andamento".to_owned()),
+            label: Some("andamento".to_owned()),
+        };
+        let convoy = GroupSegment {
+            key: "flotilla.convoy".to_owned(),
+            value: MetadataValue::Text("dev/latent-tabs".to_owned()),
+            label: Some("latent tabs".to_owned()),
+        };
+        let path = GroupPath(vec![project.clone(), convoy]);
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Group(path.clone()),
+            source_id: "flotilla-connector".to_owned(),
+            set: BTreeMap::from([
+                (
+                    "factory.id".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("flotilla:convoys/dev/latent-tabs".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "status.state".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("waiting".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "summary.text".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("1 vessel ready".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "materialize.recipe".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("flotilla attach latent-tabs".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+            ]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+
+        assert!(matches!(
+            &model.rows[0],
+            RailRow::GroupHeader { path, .. }
+                if path == &GroupPath(vec![project])
+        ));
+        assert!(matches!(
+            &model.rows[1],
+            RailRow::GroupHeader { path: row_path, .. } if row_path == &path
+        ));
+        assert!(matches!(
+            &model.rows[2],
+            RailRow::Latent { latent, parent_path, .. }
+                if latent.name == "latent tabs"
+                    && latent.status_state.as_deref() == Some("waiting")
+                    && latent.summary.as_deref() == Some("1 vessel ready")
+                    && latent.materialize_recipe.as_deref()
+                        == Some("flotilla attach latent-tabs")
+                    && parent_path.as_ref() == Some(&path)
+        ));
+    }
+
+    #[test]
+    fn pane_identity_join_makes_catalog_entry_live_until_the_pane_closes() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 7,
+            position: 0,
+            name: "latent tabs".to_owned(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(42), 7, true, true, 0);
+        let path = GroupPath(vec![GroupSegment {
+            key: "flotilla.convoy".to_owned(),
+            value: MetadataValue::Text("dev/latent-tabs".to_owned()),
+            label: Some("latent tabs".to_owned()),
+        }]);
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Group(path.clone()),
+            source_id: "flotilla-connector".to_owned(),
+            set: BTreeMap::from([(
+                "factory.id".to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("flotilla:convoys/dev/latent-tabs".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+        let session_identity = MetadataIdentity {
+            key: "flotilla.session".to_owned(),
+            value: MetadataValue::Text("local/dev/latent-tabs-coder".to_owned()),
+        };
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Pane(PaneTarget::Terminal(42)),
+            source_id: "flotilla-attach".to_owned(),
+            set: BTreeMap::from([(
+                session_identity.key.clone(),
+                andamento_shared::MetadataValueUpdate {
+                    value: session_identity.value.clone(),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Identity(session_identity),
+            source_id: "flotilla-connector".to_owned(),
+            set: BTreeMap::from([(
+                KEY_TAB_SCOPE.to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::GroupPath(
+                        path.0
+                            .iter()
+                            .map(|segment| andamento_shared::MetadataPathSegmentValue {
+                                key: segment.key.clone(),
+                                value: match &segment.value {
+                                    MetadataValue::Text(value) => {
+                                        andamento_shared::MetadataPathValue::Text(value.clone())
+                                    }
+                                    _ => panic!("test scope uses text segments"),
+                                },
+                                label: segment.label.clone(),
+                            })
+                            .collect(),
+                    ),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+
+        assert!(!state
+            .view_model()
+            .rows
+            .iter()
+            .any(|row| matches!(row, RailRow::Latent { .. })));
+
+        state.retain_panes(HashSet::new());
+
+        assert!(state
+            .view_model()
+            .rows
+            .iter()
+            .any(|row| matches!(row, RailRow::Latent { latent, .. }
+                if latent.path == path)));
+    }
+
+    #[test]
+    fn nested_catalog_entries_each_render_at_their_own_group_path() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        let project_path = GroupPath(vec![GroupSegment {
+            key: "git.repo".to_owned(),
+            value: MetadataValue::Text("flotilla-org/andamento".to_owned()),
+            label: Some("andamento".to_owned()),
+        }]);
+        let convoy_path = GroupPath(vec![
+            project_path.0[0].clone(),
+            GroupSegment {
+                key: "flotilla.convoy".to_owned(),
+                value: MetadataValue::Text("dev/latent-tabs".to_owned()),
+                label: Some("latent tabs".to_owned()),
+            },
+        ]);
+        for (path, factory_id) in [
+            (project_path.clone(), "flotilla:projects/andamento"),
+            (convoy_path.clone(), "flotilla:convoys/dev/latent-tabs"),
+        ] {
+            state.apply_metadata_patch(andamento_shared::MetadataPatch {
+                target: EntityId::Group(path),
+                source_id: "flotilla-connector".to_owned(),
+                set: BTreeMap::from([(
+                    KEY_FACTORY_ID.to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text(factory_id.to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                )]),
+                unset: vec![],
+            });
+        }
+
+        let rows = state.view_model().rows;
+
+        assert!(matches!(
+            &rows[0],
+            RailRow::GroupHeader { path, .. } if path == &project_path
+        ));
+        assert!(matches!(
+            &rows[1],
+            RailRow::Latent { latent, .. } if latent.path == project_path
+        ));
+        assert!(matches!(
+            &rows[2],
+            RailRow::GroupHeader { path, .. } if path == &convoy_path
+        ));
+        assert!(matches!(
+            &rows[3],
+            RailRow::Latent { latent, .. } if latent.path == convoy_path
+        ));
+    }
+
+    #[test]
+    fn latent_and_live_catalog_entries_share_catalog_order() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 9,
+            position: 0,
+            name: "z-live".to_owned(),
+            active: true,
+        }]);
+        let path = |value: &str| {
+            GroupPath(vec![GroupSegment {
+                key: "flotilla.vessel".to_owned(),
+                value: MetadataValue::Text(value.to_owned()),
+                label: Some(value.to_owned()),
+            }])
+        };
+        let latent_path = path("a-latent");
+        let live_path = path("z-live");
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Tab(9),
+            source_id: "flotilla-actuator".to_owned(),
+            set: BTreeMap::from([(
+                KEY_TAB_SCOPE.to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::GroupPath(vec![
+                        andamento_shared::MetadataPathSegmentValue {
+                            key: live_path.0[0].key.clone(),
+                            value: andamento_shared::MetadataPathValue::Text("z-live".to_owned()),
+                            label: Some("z-live".to_owned()),
+                        },
+                    ]),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+        for (entry_path, factory_id) in [
+            (latent_path.clone(), "factory:a"),
+            (live_path.clone(), "factory:z"),
+        ] {
+            state.apply_metadata_patch(andamento_shared::MetadataPatch {
+                target: EntityId::Group(entry_path),
+                source_id: "flotilla-connector".to_owned(),
+                set: BTreeMap::from([(
+                    KEY_FACTORY_ID.to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text(factory_id.to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: Some(0),
+                    },
+                )]),
+                unset: vec![],
+            });
+        }
+
+        let rows = state.view_model().rows;
+
+        assert!(matches!(
+            &rows[0],
+            RailRow::GroupHeader { path, .. } if path == &latent_path
+        ));
+        assert!(matches!(&rows[1], RailRow::Latent { .. }));
+        assert!(matches!(
+            &rows[2],
+            RailRow::GroupHeader { path, .. } if path == &live_path
+        ));
+        assert!(matches!(&rows[3], RailRow::Tab { tab_id: 9, .. }));
     }
 
     #[test]

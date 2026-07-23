@@ -243,6 +243,20 @@ pub struct TabCard {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LatentTab {
+    /// Stable producer-owned identity used to deduplicate materializations.
+    pub factory_id: String,
+    pub path: GroupPath,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialize_recipe: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabGroupingInfo {
     pub key: String,
     #[serde(default)]
@@ -504,6 +518,12 @@ pub enum RailRow {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_path: Option<GroupPath>,
     },
+    Latent {
+        latent: LatentTab,
+        indent: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_path: Option<GroupPath>,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -715,7 +735,7 @@ impl ControllerViewModel {
     pub fn tab_for_row(&self, row: &RailRow) -> Option<&TabCard> {
         match row {
             RailRow::Tab { tab_id, .. } => self.tab_by_id(*tab_id),
-            RailRow::GroupHeader { .. } => None,
+            RailRow::GroupHeader { .. } | RailRow::Latent { .. } => None,
         }
     }
 }
@@ -1119,6 +1139,18 @@ mod tests {
                 },
                 RailRow::Tab {
                     tab_id: 1,
+                    indent: 2,
+                    parent_path: Some(group_path.clone()),
+                },
+                RailRow::Latent {
+                    latent: LatentTab {
+                        factory_id: "flotilla:convoys/dev/latent-tabs".to_owned(),
+                        path: group_path.clone(),
+                        name: "latent tabs".to_owned(),
+                        status_state: Some("waiting".to_owned()),
+                        summary: Some("1 vessel ready".to_owned()),
+                        materialize_recipe: Some("flotilla attach latent-tabs".to_owned()),
+                    },
                     indent: 2,
                     parent_path: Some(group_path.clone()),
                 },

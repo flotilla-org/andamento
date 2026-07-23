@@ -8,7 +8,7 @@ use andamento_shared::template_config::{
 };
 use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
-    ChildLayoutSetting, ControllerViewModel, GroupPath, GroupSegment, MetadataControls,
+    ChildLayoutSetting, ControllerViewModel, GroupPath, GroupSegment, LatentTab, MetadataControls,
     MetadataEntry, MetadataSourceEntry, MetadataTarget, MetadataValue, NodeKey, PaneTarget,
     Priority, RailConfig, RailRgbColor, RailRow, RailSizingPreset, RailStructure,
     ReachableMetadataIdentity, ResolvedMetadata, ResolvedTemplateFieldSource, ResolvedTemplateSlot,
@@ -36,6 +36,7 @@ pub struct LocalTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HitAction {
     SwitchTab,
+    Materialize,
     TogglePin,
     ToggleGroup,
     OpenConfig,
@@ -54,6 +55,7 @@ pub struct HitRegion {
     pub tab_position: usize,
     pub group_path: Option<GroupPath>,
     pub inspect_target: Option<NodeKey>,
+    pub materialize_recipe: Option<String>,
     pub action: HitAction,
 }
 
@@ -152,6 +154,9 @@ struct RenderCard {
     metadata_sources: RenderMetadataSources,
     reachable_identities: RenderReachableIdentities,
     templates: ResolvedTemplateSlots,
+    latent: bool,
+    materialize_recipe: Option<String>,
+    latent_summary: Option<String>,
     /// Metadata-panel content rendered inside the card body when set.
     /// Populated by `append_tab_run`/`render_nodes` based on
     /// `MetadataControls`; the card grows by `meta_panel.len()` rows.
@@ -1015,18 +1020,26 @@ fn style_border_text(line: String, active: bool, theme: Option<RenderTheme>) -> 
     .to_string()
 }
 
-fn style_title_text(line: String, active: bool, theme: Option<RenderTheme>) -> String {
-    let Some(theme) = theme else {
-        return line;
-    };
-    foreground_style(if active {
-        theme.active_border
-    } else {
-        theme.inactive_border
-    })
-    .bold()
-    .paint(line)
-    .to_string()
+fn style_title_text(
+    line: String,
+    active: bool,
+    dimmed: bool,
+    theme: Option<RenderTheme>,
+) -> String {
+    let mut style = theme
+        .map(|theme| {
+            foreground_style(if active {
+                theme.active_border
+            } else {
+                theme.inactive_border
+            })
+            .bold()
+        })
+        .unwrap_or_default();
+    if dimmed {
+        style = style.dimmed();
+    }
+    style.paint(line).to_string()
 }
 
 fn style_group_header_text(
@@ -1515,6 +1528,7 @@ fn append_group_header(
             tab_position: hit.tab_position,
             group_path: hit.group_path,
             inspect_target: hit.inspect_target,
+            materialize_recipe: hit.materialize_recipe,
             action: hit.action,
         });
     }
@@ -1536,6 +1550,7 @@ fn append_group_header(
             tab_position: 0,
             group_path: Some(group.path.clone()),
             inspect_target: Some(NodeKey::Group(group.path.clone())),
+            materialize_recipe: None,
             action: HitAction::InspectNode,
         });
     }
@@ -1552,6 +1567,7 @@ fn append_group_header(
             tab_position: 0,
             group_path: Some(group.path.clone()),
             inspect_target: None,
+            materialize_recipe: None,
             action: HitAction::ToggleGroup,
         });
     }
@@ -1677,6 +1693,9 @@ fn append_compact_tab_strip(
         let Some(tab) = tabs.get(hit.index) else {
             continue;
         };
+        if tab.card.latent && tab.card.materialize_recipe.is_none() {
+            continue;
+        }
         hit_regions.push(HitRegion {
             row_start: base_row + hit.row,
             row_end: base_row + hit.row,
@@ -1686,7 +1705,12 @@ fn append_compact_tab_strip(
             tab_position: tab.card.position,
             group_path: tab.parent_path.clone(),
             inspect_target: None,
-            action: HitAction::SwitchTab,
+            materialize_recipe: tab.card.materialize_recipe.clone(),
+            action: if tab.card.latent {
+                HitAction::Materialize
+            } else {
+                HitAction::SwitchTab
+            },
         });
     }
 }
@@ -2417,18 +2441,25 @@ fn add_card_metadata(
     body_rows: usize,
     terminal_cell_size: Option<SizeInPixels>,
 ) {
-    hit_regions.push(HitRegion {
-        row_start: row,
-        row_end: row + height.saturating_sub(1),
-        col_start: 0,
-        col_end: cols.saturating_sub(1),
-        tab_id: card.tab_id,
-        tab_position: card.position,
-        group_path: None,
-        inspect_target: None,
-        action: HitAction::SwitchTab,
-    });
-    if controller_available {
+    if !card.latent || card.materialize_recipe.is_some() {
+        hit_regions.push(HitRegion {
+            row_start: row,
+            row_end: row + height.saturating_sub(1),
+            col_start: 0,
+            col_end: cols.saturating_sub(1),
+            tab_id: card.tab_id,
+            tab_position: card.position,
+            group_path: None,
+            inspect_target: None,
+            materialize_recipe: card.materialize_recipe.clone(),
+            action: if card.latent {
+                HitAction::Materialize
+            } else {
+                HitAction::SwitchTab
+            },
+        });
+    }
+    if controller_available && !card.latent {
         hit_regions.push(HitRegion {
             row_start: row + 1,
             row_end: row + 1,
@@ -2438,6 +2469,7 @@ fn add_card_metadata(
             tab_position: card.position,
             group_path: None,
             inspect_target: None,
+            materialize_recipe: None,
             action: HitAction::TogglePin,
         });
     }
@@ -2450,15 +2482,17 @@ fn add_card_metadata(
         .status
         .as_ref()
         .and_then(|status| status_icon_rect(status, row, body_rows, cols, terminal_cell_size));
-    visible_cards.push(VisibleCard {
-        tab_id: card.tab_id,
-        tab_position: card.position,
-        row_start: row,
-        status_row,
-        status_icon_rect,
-        status_priority: card.status.as_ref().map(|status| status.priority),
-        status_icon: card.status.as_ref().and_then(|status| status.icon.clone()),
-    });
+    if !card.latent {
+        visible_cards.push(VisibleCard {
+            tab_id: card.tab_id,
+            tab_position: card.position,
+            row_start: row,
+            status_row,
+            status_icon_rect,
+            status_priority: card.status.as_ref().map(|status| status.priority),
+            status_icon: card.status.as_ref().and_then(|status| status.icon.clone()),
+        });
+    }
 }
 
 fn nodes_to_render(
@@ -2486,6 +2520,9 @@ fn nodes_to_render(
                         metadata_sources: RenderMetadataSources::new(),
                         reachable_identities: RenderReachableIdentities::new(),
                         templates: ResolvedTemplateSlots::default(),
+                        latent: false,
+                        materialize_recipe: None,
+                        latent_summary: None,
                         meta_panel: None,
                     },
                     indent: 0,
@@ -2541,6 +2578,16 @@ fn nodes_to_render(
                         parent_path: parent_path.clone(),
                     })
                 }),
+                RailRow::Latent {
+                    latent,
+                    indent,
+                    parent_path,
+                } => Some(PendingRenderNode::Tab(RenderTab {
+                    card: render_card_from_latent(latent),
+                    indent: *indent,
+                    grouping: None,
+                    parent_path: parent_path.clone(),
+                })),
             })
             .collect()
     };
@@ -3047,6 +3094,80 @@ fn render_card_from_model(card: &TabCard, local_by_id: &HashMap<u64, &LocalTab>)
         metadata_sources: RenderMetadataSources::new(),
         reachable_identities: RenderReachableIdentities::new(),
         templates: card.templates.clone(),
+        latent: false,
+        materialize_recipe: None,
+        latent_summary: None,
+        meta_panel: None,
+    }
+}
+
+fn render_card_from_latent(latent: &LatentTab) -> RenderCard {
+    let openable = latent.materialize_recipe.is_some();
+    let name = format!("{} {}", if openable { "↗" } else { "○" }, latent.name);
+    let mut metadata = RenderMetadata::from([
+        (
+            "factory.id".to_owned(),
+            MetadataValue::Text(latent.factory_id.clone()),
+        ),
+        ("rail.tab.latent".to_owned(), MetadataValue::Bool(true)),
+        (
+            "zellij.tab.name".to_owned(),
+            MetadataValue::Text(name.clone()),
+        ),
+    ]);
+    if let Some(state) = latent.status_state.as_ref() {
+        metadata.insert(
+            "status.state".to_owned(),
+            MetadataValue::Text(state.clone()),
+        );
+    }
+    if let Some(summary) = latent.summary.as_ref() {
+        metadata.insert(
+            "summary.text".to_owned(),
+            MetadataValue::Text(summary.clone()),
+        );
+    }
+    if let Some(recipe) = latent.materialize_recipe.as_ref() {
+        metadata.insert(
+            "materialize.recipe".to_owned(),
+            MetadataValue::Text(recipe.clone()),
+        );
+    }
+    let latent_summary = match (&latent.status_state, &latent.summary) {
+        (Some(state), Some(summary)) => Some(format!("{state} · {summary}")),
+        (Some(state), None) => Some(state.clone()),
+        (None, Some(summary)) => Some(summary.clone()),
+        (None, None) => None,
+    };
+    let status = latent.status_state.as_ref().map(|state| TabStatusSummary {
+        priority: match state.as_str() {
+            "failed" => Priority::Error,
+            "waiting" => Priority::Waiting,
+            "active" => Priority::Info,
+            _ => Priority::Idle,
+        },
+        title: state.clone(),
+        detail: latent.summary.clone(),
+        icon: Some(StatusIcon::Builtin(state.clone())),
+        source_pane: PaneTarget::Plugin(0),
+    });
+    if let Some(status) = status.as_ref() {
+        metadata.extend(status_metadata(status));
+    }
+    RenderCard {
+        tab_id: 0,
+        position: 0,
+        name,
+        active: false,
+        pinned: false,
+        status,
+        metadata,
+        metadata_sources: RenderMetadataSources::new(),
+        reachable_identities: RenderReachableIdentities::new(),
+        templates: ResolvedTemplateSlots::default(),
+        latent: true,
+        materialize_recipe: latent.materialize_recipe.clone(),
+        latent_summary,
         meta_panel: None,
     }
 }
@@ -3353,6 +3474,15 @@ fn body_lines(
 ) -> Vec<String> {
     let mut lines = vec![String::new(); body_rows];
     let Some(status) = &card.status else {
+        if let Some(summary) = card.latent_summary.as_ref() {
+            let text_width = cols.saturating_sub(2);
+            for (line, text) in lines
+                .iter_mut()
+                .zip(wrap_to_width(summary, text_width, body_rows))
+            {
+                *line = text;
+            }
+        }
         return lines;
     };
     let inner_width = cols.saturating_sub(2);
@@ -3424,7 +3554,7 @@ enum BorderKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CellStyle {
     Border { active: bool },
-    Title { active: bool },
+    Title { active: bool, dimmed: bool },
     Body,
 }
 
@@ -3606,6 +3736,10 @@ impl BorderRow {
     /// for placing decorations *before* calling `title` if those decorations
     /// should constrain title width.
     fn title(&mut self, title: &str) {
+        self.title_with_dim(title, false);
+    }
+
+    fn title_with_dim(&mut self, title: &str, dimmed: bool) {
         let inner = self.inner_range();
         if inner.is_empty() {
             return;
@@ -3627,7 +3761,7 @@ impl BorderRow {
         let label = truncate_to_width(&padded, run_width);
         let title_style = match self.kind {
             BorderKind::Top { active, .. } | BorderKind::Bottom { active } => {
-                CellStyle::Title { active }
+                CellStyle::Title { active, dimmed }
             }
             BorderKind::Footer => CellStyle::Body,
         };
@@ -3673,6 +3807,7 @@ impl BorderRow {
                 tab_position: hit.payload.tab_position,
                 group_path: hit.payload.group_path,
                 inspect_target: hit.payload.inspect_target,
+                materialize_recipe: None,
                 action: hit.action,
             })
             .collect();
@@ -3709,7 +3844,7 @@ fn corner_right(kind: BorderKind) -> Option<(char, CellStyle)> {
 fn style_span(text: String, style: CellStyle, theme: Option<RenderTheme>) -> String {
     match style {
         CellStyle::Border { active } => style_border_text(text, active, theme),
-        CellStyle::Title { active } => style_title_text(text, active, theme),
+        CellStyle::Title { active, dimmed } => style_title_text(text, active, dimmed, theme),
         CellStyle::Body => style_body_text(text, theme),
     }
 }
@@ -3747,7 +3882,7 @@ fn write_tab_top_border(
             first_cell,
         },
     );
-    if width >= 4 {
+    if width >= 4 && !card.latent {
         let key = NodeKey::Tab(card.tab_id);
         let glyph = inspect_node_glyph(inspected_node, &key);
         let payload = BorderHitPayload {
@@ -3763,7 +3898,11 @@ fn write_tab_top_border(
             "tab_inspect",
         );
     }
-    border.title(title);
+    if card.latent {
+        border.title_with_dim(title, true);
+    } else {
+        border.title(title);
+    }
     let (line, hits) = border.finish(row, theme);
     if let Some(slot) = lines.get_mut(row) {
         *slot = line;
@@ -3898,6 +4037,7 @@ fn group_header_line(
             tab_position: hit.tab_position,
             group_path: hit.group_path.clone(),
             inspect_target: hit.inspect_target.clone(),
+            materialize_recipe: hit.materialize_recipe.clone(),
             action: hit.action,
         })
         .collect::<Vec<_>>();
@@ -3948,6 +4088,7 @@ struct HeaderNicheHit {
     tab_position: usize,
     group_path: Option<GroupPath>,
     inspect_target: Option<NodeKey>,
+    materialize_recipe: Option<String>,
     action: HitAction,
 }
 
@@ -4003,15 +4144,22 @@ fn project_direct_tab_header_niche(
         }
         text.push_str(&segment);
         visible_width += rendered_width;
-        hits.push(HeaderNicheHit {
-            col_start: start,
-            col_end: visible_width.saturating_sub(1),
-            tab_id: tab.card.tab_id,
-            tab_position: tab.card.position,
-            group_path: tab.parent_path.clone(),
-            inspect_target: None,
-            action: HitAction::SwitchTab,
-        });
+        if !tab.card.latent || tab.card.materialize_recipe.is_some() {
+            hits.push(HeaderNicheHit {
+                col_start: start,
+                col_end: visible_width.saturating_sub(1),
+                tab_id: tab.card.tab_id,
+                tab_position: tab.card.position,
+                group_path: tab.parent_path.clone(),
+                inspect_target: None,
+                materialize_recipe: tab.card.materialize_recipe.clone(),
+                action: if tab.card.latent {
+                    HitAction::Materialize
+                } else {
+                    HitAction::SwitchTab
+                },
+            });
+        }
         consumption.direct_tabs = index + 1;
     }
     let leading_width = width.saturating_sub(visible_width);
@@ -4093,6 +4241,7 @@ fn project_child_group_header_niche(
             tab_position: hit.tab_position,
             group_path: hit.group_path,
             inspect_target: hit.inspect_target,
+            materialize_recipe: hit.materialize_recipe,
             action: hit.action,
         }));
         visible_width += separator.width() + child_projection.visible_width;
@@ -4978,9 +5127,9 @@ fn blank(cols: usize) -> String {
 mod tests {
     use super::*;
     use andamento_shared::{
-        GroupPath, GroupSegment, MetadataEntry, MetadataTarget, MetadataTriState, MetadataValue,
-        PaneTarget, RailConfig, RailGroupingMode, RailRow, RailSizingPreset, RailStructure,
-        ResolvedMetadata, SortMode, StatusIcon,
+        GroupPath, GroupSegment, LatentTab, MetadataEntry, MetadataTarget, MetadataTriState,
+        MetadataValue, PaneTarget, RailConfig, RailGroupingMode, RailRow, RailSizingPreset,
+        RailStructure, ResolvedMetadata, SortMode, StatusIcon,
     };
 
     fn local_tab(tab_id: u64, position: usize, active: bool) -> LocalTab {
@@ -5003,6 +5152,93 @@ mod tests {
             segment_inactive_foreground: PaletteColor::EightBit(13),
             segment_between_background: PaletteColor::EightBit(14),
         }
+    }
+
+    fn latent_model(recipe: Option<&str>) -> ControllerViewModel {
+        let path = GroupPath(vec![GroupSegment {
+            key: "flotilla.convoy".to_owned(),
+            value: MetadataValue::Text("dev/latent-tabs".to_owned()),
+            label: Some("latent tabs".to_owned()),
+        }]);
+        let latent = LatentTab {
+            factory_id: "flotilla:convoys/dev/latent-tabs".to_owned(),
+            path: path.clone(),
+            name: "latent tabs".to_owned(),
+            status_state: Some("waiting".to_owned()),
+            summary: Some("1 vessel ready".to_owned()),
+            materialize_recipe: recipe.map(str::to_owned),
+        };
+        ControllerViewModel {
+            sort_mode: SortMode::Position,
+            config: RailConfig {
+                grouping: RailGroupingMode::Directory,
+                ..RailConfig::default()
+            },
+            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
+            tabs: vec![],
+            rows: vec![
+                RailRow::GroupHeader {
+                    group_id: "convoy".to_owned(),
+                    path: path.clone(),
+                    label: "latent tabs".to_owned(),
+                    full_label: "latent tabs".to_owned(),
+                    tab_count: 1,
+                    templates: ResolvedTemplateSlots::default(),
+                },
+                RailRow::Latent {
+                    latent,
+                    indent: 2,
+                    parent_path: Some(path),
+                },
+            ],
+            resolved_metadata: vec![],
+            observed_identities: vec![],
+            metadata_controls: MetadataControls::default(),
+            inspected_node: None,
+        }
+    }
+
+    #[test]
+    fn openable_latent_tab_renders_metadata_and_materialize_hit() {
+        let rendered = render_lines(
+            Some(&latent_model(Some("flotilla attach latent-tabs"))),
+            &[],
+            12,
+            48,
+            true,
+        );
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("↗ latent tabs")));
+        assert!(rendered.lines.iter().any(|line| line.contains("\u{1b}[2m")));
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.contains("waiting: 1 vessel ready")),
+            "{:?}",
+            rendered.lines
+        );
+        assert!(rendered.hit_regions.iter().any(|hit| {
+            hit.action == HitAction::Materialize
+                && hit.materialize_recipe.as_deref() == Some("flotilla attach latent-tabs")
+        }));
+    }
+
+    #[test]
+    fn recipe_less_latent_tab_has_no_open_affordance_or_materialize_hit() {
+        let rendered = render_lines(Some(&latent_model(None)), &[], 12, 48, true);
+
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("○ latent tabs")));
+        assert!(!rendered
+            .hit_regions
+            .iter()
+            .any(|hit| hit.action == HitAction::Materialize));
     }
 
     fn visible_width_without_ansi(line: &str) -> usize {
@@ -5373,6 +5609,9 @@ mod tests {
                         metadata_sources: RenderMetadataSources::new(),
                         reachable_identities: RenderReachableIdentities::new(),
                         templates: ResolvedTemplateSlots::default(),
+                        latent: false,
+                        materialize_recipe: None,
+                        latent_summary: None,
                         meta_panel: None,
                     },
                     indent: 4,
@@ -6963,6 +7202,9 @@ mod tests {
             metadata_sources: RenderMetadataSources::new(),
             reachable_identities: RenderReachableIdentities::new(),
             templates: ResolvedTemplateSlots::default(),
+            latent: false,
+            materialize_recipe: None,
+            latent_summary: None,
             meta_panel: None,
         };
 
@@ -7925,6 +8167,9 @@ mod tests {
             metadata_sources: BTreeMap::new(),
             reachable_identities: vec![],
             templates: ResolvedTemplateSlots::default(),
+            latent: false,
+            materialize_recipe: None,
+            latent_summary: None,
             meta_panel: None,
         };
         write_tab_top_border(
@@ -7964,6 +8209,9 @@ mod tests {
             metadata_sources: BTreeMap::new(),
             reachable_identities: vec![],
             templates: ResolvedTemplateSlots::default(),
+            latent: false,
+            materialize_recipe: None,
+            latent_summary: None,
             meta_panel: None,
         };
         write_tab_top_border(
@@ -8038,6 +8286,7 @@ mod tests {
                 tab_position: 0,
                 group_path: None,
                 inspect_target: None,
+                materialize_recipe: None,
                 action: HitAction::SwitchTab,
             },
             HitRegion {
@@ -8049,6 +8298,7 @@ mod tests {
                 tab_position: 0,
                 group_path: None,
                 inspect_target: Some(NodeKey::Tab(7)),
+                materialize_recipe: None,
                 action: HitAction::InspectNode,
             },
         ];
@@ -8074,6 +8324,9 @@ mod tests {
             metadata_sources: BTreeMap::new(),
             reachable_identities: vec![],
             templates: ResolvedTemplateSlots::default(),
+            latent: false,
+            materialize_recipe: None,
+            latent_summary: None,
             meta_panel: None,
         };
         let base = cell_height(&card, RailSizingPreset::Compact, false);
@@ -8168,6 +8421,9 @@ mod tests {
                 metadata_sources: BTreeMap::new(),
                 reachable_identities: vec![],
                 templates: ResolvedTemplateSlots::default(),
+                latent: false,
+                materialize_recipe: None,
+                latent_summary: None,
                 meta_panel: None,
             },
             indent: 0,
