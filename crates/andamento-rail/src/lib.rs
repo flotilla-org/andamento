@@ -251,8 +251,20 @@ fn build_config_inspect_message(
     )
 }
 
-fn command_for_materialize_recipe(recipe: &str) -> CommandToRun {
-    CommandToRun::new_with_args("/bin/sh", vec!["-c", recipe])
+fn build_materialize_latent_message(
+    controller_plugin_url: &str,
+    client_id: u16,
+    request: &andamento_shared::MaterializeLatentRequest,
+) -> Option<MessageToPlugin> {
+    let payload = serde_json::to_string(request).ok()?;
+    let message = MessageToPlugin::new(andamento_shared::MSG_MATERIALIZE_LATENT)
+        .with_destination_client_id(client_id)
+        .with_payload(payload);
+    Some(if controller_plugin_url.trim().is_empty() {
+        message
+    } else {
+        message.with_plugin_url(controller_plugin_url.to_owned())
+    })
 }
 
 #[derive(Default)]
@@ -663,11 +675,30 @@ mod tests {
     }
 
     #[test]
-    fn materialize_recipe_runs_verbatim_through_a_login_free_shell() {
-        let command = command_for_materialize_recipe("flotilla attach 'latent tabs'");
+    fn latent_open_builds_an_identity_bearing_controller_request() {
+        let request = andamento_shared::MaterializeLatentRequest {
+            factory_id: "flotilla:convoys/dev/latent-tabs".to_owned(),
+            path: andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
+                key: "flotilla.convoy".to_owned(),
+                value: andamento_shared::MetadataValue::Text("dev/latent-tabs".to_owned()),
+                label: Some("latent tabs".to_owned()),
+            }]),
+            name: "latent tabs".to_owned(),
+            recipe: "flotilla attach latent-tabs".to_owned(),
+        };
 
-        assert_eq!(command.path.to_string_lossy(), "/bin/sh");
-        assert_eq!(command.args, vec!["-c", "flotilla attach 'latent tabs'"]);
+        let message =
+            build_materialize_latent_message("andamento-controller", 4, &request).unwrap();
+
+        assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
+        assert_eq!(message.destination_client_id, Some(4));
+        assert_eq!(
+            message.message_name,
+            andamento_shared::MSG_MATERIALIZE_LATENT
+        );
+        let payload: andamento_shared::MaterializeLatentRequest =
+            serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
+        assert_eq!(payload, request);
     }
 
     #[test]
@@ -710,7 +741,7 @@ mod tests {
             tab_position: 0,
             group_path: None,
             inspect_target: Some(NodeKey::Tab(0)),
-            materialize_recipe: None,
+            materialize_request: None,
             action: HitAction::InspectNode,
         };
 
@@ -1010,12 +1041,17 @@ impl PluginState {
                         false
                     }
                     HitAction::Materialize => {
-                        if let Some(recipe) = hit.materialize_recipe.as_deref() {
+                        if let (Some(request), Some(client_id)) =
+                            (hit.materialize_request.as_ref(), self.own_client_id)
+                        {
                             self.rail_scroll_offset = 0;
-                            open_command_pane_in_new_tab(
-                                command_for_materialize_recipe(recipe),
-                                BTreeMap::new(),
-                            );
+                            if let Some(message) = build_materialize_latent_message(
+                                &self.controller_plugin_url,
+                                client_id,
+                                request,
+                            ) {
+                                pipe_message_to_plugin(message);
+                            }
                         }
                         false
                     }

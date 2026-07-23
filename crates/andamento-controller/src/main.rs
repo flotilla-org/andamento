@@ -48,6 +48,10 @@ const CONFIG_ORIGIN_TAB_ID: &str = "origin_tab_id";
 const CONFIG_PANE_KIND: &str = "pane_kind";
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
 
+fn command_for_materialize_recipe(recipe: &str) -> CommandToRun {
+    CommandToRun::new_with_args("/bin/sh", vec!["-c", recipe])
+}
+
 #[cfg(not(target_family = "wasm"))]
 fn main() {}
 
@@ -93,6 +97,7 @@ impl ZellijPlugin for PluginState {
             PermissionType::ReadCliPipes,
             PermissionType::MessageAndLaunchOtherPlugins,
             PermissionType::OpenFiles,
+            PermissionType::RunCommands,
             PermissionType::FullHdAccess,
         ]);
         subscribe(&[
@@ -223,9 +228,16 @@ impl ZellijPlugin for PluginState {
         }
         self.recent_pipe_log.push_back(entry);
         let started_at = Instant::now();
-        let result = handle_pipe_message(&mut self.state, pipe_message);
+        let mut result = handle_pipe_message(&mut self.state, pipe_message);
         self.stats
             .record_span_elapsed("pipe.handle-message", started_at);
+        if let Some(request) = result.materialize_latent_request.take() {
+            let state_changed = self.materialize_latent(request);
+            result.state_changed |= state_changed;
+            if state_changed {
+                result.view_model_push_reason = Some(ViewModelPushReason::PipeMaterializeLatent);
+            }
+        }
         if let Some(requester) = result.bootstrap_request {
             if self.own_identity.as_ref() != Some(&requester) {
                 self.send_bootstrap_snapshot_to(requester);
@@ -583,6 +595,42 @@ impl PluginState {
         };
         pipe_message_to_plugin(message);
     }
+
+    fn materialize_latent(&mut self, request: andamento_shared::MaterializeLatentRequest) -> bool {
+        self.stats.increment("latent.materialize.request");
+        if let Some(tab_position) = self.state.materialized_tab_position(&request) {
+            self.stats.increment("latent.materialize.focus-existing");
+            switch_tab_to((tab_position + 1) as u32);
+            return false;
+        }
+        if !self.state.begin_latent_materialization(&request) {
+            self.stats.increment("latent.materialize.rejected-stale");
+            return false;
+        }
+        // Publish the opener-owned identity as pending before entering Zellij's
+        // create call. Duplicate gestures now observe a non-openable latent.
+        self.push_view_model_to_rails_with_pending(ViewModelPushReason::PipeMaterializeLatent);
+        let (Some(tab_id), _) = open_command_pane_in_new_tab(
+            command_for_materialize_recipe(&request.recipe),
+            BTreeMap::new(),
+        ) else {
+            self.stats.increment("latent.materialize.open-failed");
+            return self.state.abort_latent_materialization(&request);
+        };
+        if !self.state.bind_materializing_tab(&request, tab_id as u64) {
+            self.stats.increment("latent.materialize.bind-failed");
+            return self.state.abort_latent_materialization(&request);
+        }
+        // Residual approximation race: if the recipe dies before Zellij
+        // reports this tab, the latent can remain opening rather than be
+        // claimed. Atomic creation context is tracked for a later substrate
+        // upgrade at https://forgejo.lab.flotilla.work/fork-issues/zellij/issues/9.
+        rename_tab_with_id(tab_id as u64, &request.name);
+        self.stats.increment("latent.materialize.awaiting-claim");
+        // The first TabUpdate containing this ID claims it and publishes the
+        // opening-to-live transition; there is no intermediate orphan model.
+        false
+    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -595,6 +643,7 @@ struct HandlePipeResult {
     stats_collect_request: Option<StatsCollectRequest>,
     rail_size_observed: Option<RailSizeObserved>,
     config_inspect_request: Option<ConfigInspectRequest>,
+    materialize_latent_request: Option<andamento_shared::MaterializeLatentRequest>,
 }
 
 #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
@@ -614,6 +663,7 @@ enum ViewModelPushReason {
     PipeRequestState,
     PipeBootstrap,
     PipeMetadataControls,
+    PipeMaterializeLatent,
     PipeUnknown,
 }
 
@@ -635,6 +685,7 @@ impl ViewModelPushReason {
             Self::PipeRequestState => "view-model.push.reason.pipe.request-state",
             Self::PipeBootstrap => "view-model.push.reason.pipe.bootstrap",
             Self::PipeMetadataControls => "view-model.push.reason.pipe.metadata-controls",
+            Self::PipeMaterializeLatent => "view-model.push.reason.pipe.materialize-latent",
             Self::PipeUnknown => "view-model.push.reason.pipe.unknown",
         }
     }
@@ -887,6 +938,10 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
                 ..HandlePipeResult::default()
             }
         }
+        Ok(Some(ControllerMessage::MaterializeLatent(request))) => HandlePipeResult {
+            materialize_latent_request: Some(request),
+            ..HandlePipeResult::default()
+        },
         Ok(None) => HandlePipeResult::default(),
         Err(error) => {
             eprintln!("andamento-controller: {error}");
@@ -1133,6 +1188,7 @@ enum ControllerMessage {
     SetMetadataVisibility(MetadataVisibilitySetRequest),
     SetChildLayout(ChildLayoutSetRequest),
     ConfigInspect(ConfigInspectRequest),
+    MaterializeLatent(andamento_shared::MaterializeLatentRequest),
 }
 
 fn parse_controller_message(
@@ -1229,6 +1285,16 @@ fn parse_controller_message(
                     .map_err(|e| format!("invalid config inspect request: {e}"))
             })
             .map(ControllerMessage::ConfigInspect)
+            .map(Some),
+        andamento_shared::MSG_MATERIALIZE_LATENT => pipe_message
+            .payload
+            .as_deref()
+            .ok_or_else(|| "materialize latent requires payload".to_owned())
+            .and_then(|payload| {
+                serde_json::from_str::<andamento_shared::MaterializeLatentRequest>(payload)
+                    .map_err(|e| format!("invalid materialize latent request: {e}"))
+            })
+            .map(ControllerMessage::MaterializeLatent)
             .map(Some),
         MSG_REQUEST_STATE => Ok(Some(ControllerMessage::RequestState)),
         MSG_OBSERVED_IDENTITIES => match &pipe_message.source {
@@ -1406,6 +1472,38 @@ mod tests {
                 .unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::ConfigInspect(request)));
+    }
+
+    #[test]
+    fn parses_materialize_latent_request() {
+        let request = andamento_shared::MaterializeLatentRequest {
+            factory_id: "flotilla:convoys/dev/latent-tabs".to_owned(),
+            path: andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
+                key: "flotilla.convoy".to_owned(),
+                value: andamento_shared::MetadataValue::Text("dev/latent-tabs".to_owned()),
+                label: Some("latent tabs".to_owned()),
+            }]),
+            name: "latent tabs".to_owned(),
+            recipe: "flotilla attach latent-tabs".to_owned(),
+        };
+        let payload = serde_json::to_string(&request).unwrap();
+
+        let parsed = parse_controller_message(&pipe(
+            andamento_shared::MSG_MATERIALIZE_LATENT,
+            Some(payload),
+            BTreeMap::new(),
+        ))
+        .unwrap();
+
+        assert_eq!(parsed, Some(ControllerMessage::MaterializeLatent(request)));
+    }
+
+    #[test]
+    fn materialize_recipe_runs_verbatim_through_a_login_free_shell() {
+        let command = command_for_materialize_recipe("flotilla attach 'latent tabs'");
+
+        assert_eq!(command.path.to_string_lossy(), "/bin/sh");
+        assert_eq!(command.args, vec!["-c", "flotilla attach 'latent tabs'"]);
     }
 
     #[test]

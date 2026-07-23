@@ -6,17 +6,18 @@ use crate::metadata::{
 };
 use andamento_shared::grouping_config::{GroupingConfigCatalog, GroupingRule};
 use andamento_shared::{
-    ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment, LatentTab,
-    MetadataControls, MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataTriState,
-    MetadataValue, NodeKey, ObservedMetadataIdentity, PaneTarget, PluginPlacement,
-    PluginRegistrationHello, Priority, RailConfig, RailGroupingMode, RailRow,
-    ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateField,
+    ControllerBootstrapSnapshot, ControllerViewModel, GroupPath, GroupSegment,
+    LatentMaterializationState, LatentTab, MetadataControls, MetadataEntry, MetadataIdentity,
+    MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey, ObservedMetadataIdentity,
+    PaneTarget, PluginPlacement, PluginRegistrationHello, Priority, RailConfig, RailGroupingMode,
+    RailRow, ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateField,
     ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabGroupingInfo,
     TabStatusSummary, TemplateConfigDiagnostics,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
 const SOURCE_ZELLIJ: &str = "zellij";
+const SOURCE_LATENT_MATERIALIZER: &str = "andamento-latent-materializer";
 const KEY_PANE_CWD: &str = "zellij.pane.cwd";
 const KEY_TAB_SCOPE: &str = "tab.scope";
 const KEY_FACTORY_ID: &str = "factory.id";
@@ -25,6 +26,8 @@ const KEY_STATUS_STATE: &str = "status.state";
 const KEY_SUMMARY_TEXT: &str = "summary.text";
 const FOCUSED_CWD_PRECEDENCE: i64 = 100;
 const NORMAL_CWD_PRECEDENCE: i64 = 0;
+// Opener-owned identity must outrank observational discovery such as cwd grouping.
+const LATENT_MATERIALIZER_PRECEDENCE: i64 = 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControllerTab {
@@ -48,6 +51,12 @@ struct ControllerPane {
     is_focused: bool,
     ordinal: i64,
     cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingLatentMaterialization {
+    request: andamento_shared::MaterializeLatentRequest,
+    tab_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -88,6 +97,8 @@ pub struct ControllerState {
     template_catalog: Option<andamento_shared::template_config::TemplateConfigCatalog>,
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
+    pending_materialized_tab_names: HashMap<u64, String>,
+    pending_latent_materializations: BTreeMap<String, PendingLatentMaterialization>,
 }
 
 impl ControllerState {
@@ -107,26 +118,43 @@ impl ControllerState {
 
     #[allow(dead_code)]
     pub fn update_tabs_from_zellij(&mut self, tabs: Vec<TabInfo>) -> bool {
-        let mut next_tabs: Vec<ControllerTab> = tabs
-            .into_iter()
-            .map(|tab| ControllerTab {
+        let mut pending_materialized_tab_names =
+            std::mem::take(&mut self.pending_materialized_tab_names);
+        let mut next_tabs = Vec::with_capacity(tabs.len());
+        for tab in tabs {
+            let tab_id = tab.tab_id as u64;
+            let default_name = format!("Tab {}", tab.position + 1);
+            let incoming_name = if tab.name.is_empty() {
+                default_name.clone()
+            } else {
+                tab.name
+            };
+            let name = match pending_materialized_tab_names.get(&tab_id).cloned() {
+                Some(expected_name) if incoming_name == expected_name => {
+                    pending_materialized_tab_names.remove(&tab_id);
+                    incoming_name
+                }
+                Some(expected_name) if incoming_name == default_name => expected_name,
+                Some(_) => {
+                    pending_materialized_tab_names.remove(&tab_id);
+                    incoming_name
+                }
+                None => incoming_name,
+            };
+            next_tabs.push(ControllerTab {
                 tab_id: tab.tab_id as u64,
                 position: tab.position,
-                name: if tab.name.is_empty() {
-                    format!("Tab {}", tab.position + 1)
-                } else {
-                    tab.name
-                },
+                name,
                 active: tab.active,
-            })
-            .collect();
-        next_tabs.sort_by_key(|tab| tab.position);
-        if self.tabs == next_tabs {
-            return false;
+            });
         }
+        next_tabs.sort_by_key(|tab| tab.position);
+        let live_tab_ids: HashSet<u64> = next_tabs.iter().map(|tab| tab.tab_id).collect();
+        pending_materialized_tab_names.retain(|tab_id, _| live_tab_ids.contains(tab_id));
+        self.pending_materialized_tab_names = pending_materialized_tab_names;
+        let tabs_changed = self.tabs != next_tabs;
         self.tabs = next_tabs;
 
-        let live_tab_ids: HashSet<u64> = self.tabs.iter().map(|tab| tab.tab_id).collect();
         self.pinned_tabs
             .retain(|tab_id| live_tab_ids.contains(tab_id));
         self.pane_to_tab
@@ -139,7 +167,8 @@ impl ControllerState {
                 .map(|tab_id| live_tab_ids.contains(tab_id))
                 .unwrap_or(true)
         });
-        true
+        let claimed_materialization = self.claim_materializing_tabs();
+        tabs_changed || claimed_materialization
     }
 
     #[cfg(test)]
@@ -1036,6 +1065,14 @@ impl ControllerState {
                     .map(group_segment_label)
                     .unwrap_or_else(|| factory_id.clone());
                 Some(LatentTab {
+                    materialization: if self
+                        .pending_latent_materializations
+                        .contains_key(&factory_id)
+                    {
+                        LatentMaterializationState::Opening
+                    } else {
+                        LatentMaterializationState::Ready
+                    },
                     factory_id,
                     path: path.clone(),
                     name,
@@ -1063,6 +1100,164 @@ impl ControllerState {
                 }
             })
             .collect()
+    }
+
+    pub fn can_materialize_latent(
+        &self,
+        request: &andamento_shared::MaterializeLatentRequest,
+    ) -> bool {
+        group_path_to_metadata_segments(&request.path).is_some()
+            && self
+                .latent_tabs()
+                .iter()
+                .filter_map(LatentTab::materialize_request)
+                .any(|candidate| candidate == *request)
+    }
+
+    pub fn begin_latent_materialization(
+        &mut self,
+        request: &andamento_shared::MaterializeLatentRequest,
+    ) -> bool {
+        if self.materialized_tab_position(request).is_some()
+            || self
+                .pending_latent_materializations
+                .contains_key(&request.factory_id)
+            || !self.can_materialize_latent(request)
+        {
+            return false;
+        }
+        self.pending_latent_materializations.insert(
+            request.factory_id.clone(),
+            PendingLatentMaterialization {
+                request: request.clone(),
+                tab_id: None,
+            },
+        );
+        true
+    }
+
+    pub fn bind_materializing_tab(
+        &mut self,
+        request: &andamento_shared::MaterializeLatentRequest,
+        tab_id: u64,
+    ) -> bool {
+        let Some(pending) = self
+            .pending_latent_materializations
+            .get_mut(&request.factory_id)
+        else {
+            return false;
+        };
+        if pending.request != *request || pending.tab_id.is_some() {
+            return false;
+        }
+        pending.tab_id = Some(tab_id);
+        self.pending_materialized_tab_names
+            .insert(tab_id, request.name.clone());
+        true
+    }
+
+    pub fn abort_latent_materialization(
+        &mut self,
+        request: &andamento_shared::MaterializeLatentRequest,
+    ) -> bool {
+        let Some(pending) = self
+            .pending_latent_materializations
+            .get(&request.factory_id)
+        else {
+            return false;
+        };
+        if pending.request != *request {
+            return false;
+        }
+        if let Some(tab_id) = pending.tab_id {
+            self.pending_materialized_tab_names.remove(&tab_id);
+        }
+        self.pending_latent_materializations
+            .remove(&request.factory_id);
+        true
+    }
+
+    pub fn materialized_tab_position(
+        &self,
+        request: &andamento_shared::MaterializeLatentRequest,
+    ) -> Option<usize> {
+        self.tabs.iter().find_map(|tab| {
+            let target = EntityId::Tab(tab.tab_id);
+            let seed_values = self.tab_seed_metadata_entries(tab.tab_id);
+            let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
+            let factory_matches =
+                metadata_entry_text(&values, KEY_FACTORY_ID) == Some(request.factory_id.as_str());
+            let path_matches = match values.get(KEY_TAB_SCOPE).map(|entry| &entry.value) {
+                Some(MetadataValue::GroupPath(segments)) => {
+                    metadata_path_segments_to_group_path(segments.clone()) == request.path
+                }
+                _ => false,
+            };
+            (factory_matches || path_matches).then_some(tab.position)
+        })
+    }
+
+    fn claim_materializing_tabs(&mut self) -> bool {
+        let live_tab_ids = self
+            .tabs
+            .iter()
+            .map(|tab| tab.tab_id)
+            .collect::<HashSet<_>>();
+        let claims = self
+            .pending_latent_materializations
+            .iter()
+            .filter_map(|(factory_id, pending)| {
+                let tab_id = pending.tab_id?;
+                live_tab_ids.contains(&tab_id).then_some((
+                    factory_id.clone(),
+                    tab_id,
+                    pending.request.clone(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        for (factory_id, tab_id, request) in &claims {
+            if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.tab_id == *tab_id) {
+                tab.name = request.name.clone();
+            }
+            self.apply_materialized_identity(*tab_id, request);
+            self.pending_latent_materializations.remove(factory_id);
+        }
+        !claims.is_empty()
+    }
+
+    fn apply_materialized_identity(
+        &mut self,
+        tab_id: u64,
+        request: &andamento_shared::MaterializeLatentRequest,
+    ) -> bool {
+        let Some(scope) = group_path_to_metadata_segments(&request.path) else {
+            return false;
+        };
+        self.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Tab(tab_id),
+            source_id: SOURCE_LATENT_MATERIALIZER.to_owned(),
+            set: BTreeMap::from([
+                (
+                    KEY_FACTORY_ID.to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text(request.factory_id.clone()),
+                        ttl_ms: None,
+                        precedence: Some(LATENT_MATERIALIZER_PRECEDENCE),
+                        ordinal: None,
+                    },
+                ),
+                (
+                    KEY_TAB_SCOPE.to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::GroupPath(scope),
+                        ttl_ms: None,
+                        precedence: Some(LATENT_MATERIALIZER_PRECEDENCE),
+                        ordinal: None,
+                    },
+                ),
+            ]),
+            unset: vec![],
+        })
     }
 
     fn resolve_tab_templates(&self, tabs: &mut [TabCard], resolved_metadata: &[ResolvedMetadata]) {
@@ -1622,6 +1817,37 @@ fn metadata_path_segments_to_group_path(
             })
             .collect(),
     )
+}
+
+fn group_path_to_metadata_segments(
+    path: &GroupPath,
+) -> Option<Vec<andamento_shared::MetadataPathSegmentValue>> {
+    if path.0.is_empty() {
+        return None;
+    }
+    path.0
+        .iter()
+        .map(|segment| {
+            let value = match &segment.value {
+                MetadataValue::Text(value) => {
+                    andamento_shared::MetadataPathValue::Text(value.clone())
+                }
+                MetadataValue::Bool(value) => andamento_shared::MetadataPathValue::Bool(*value),
+                MetadataValue::Integer(value) => {
+                    andamento_shared::MetadataPathValue::Integer(*value)
+                }
+                MetadataValue::StringList(values) => {
+                    andamento_shared::MetadataPathValue::StringList(values.clone())
+                }
+                MetadataValue::GroupPath(_) => return None,
+            };
+            Some(andamento_shared::MetadataPathSegmentValue {
+                key: segment.key.clone(),
+                value,
+                label: segment.label.clone(),
+            })
+        })
+        .collect()
 }
 
 fn tab_grouping_info_for_explicit_scope(path: GroupPath) -> Option<TabGroupingInfo> {
@@ -2352,6 +2578,7 @@ mod tests {
                 factory_id: "flotilla:convoys/dev/latent".to_owned(),
                 path: latent_path,
                 name: "latent".to_owned(),
+                materialization: LatentMaterializationState::Ready,
                 status_state: None,
                 summary: None,
                 materialize_recipe: None,
@@ -3835,6 +4062,147 @@ mod tests {
             .iter()
             .any(|row| matches!(row, RailRow::Tab { tab_id: 7, .. })));
         assert!(!rows.iter().any(|row| matches!(row, RailRow::Latent { .. })));
+    }
+
+    #[test]
+    fn opening_latent_is_idempotent_and_claims_its_created_tab_atomically() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "main".to_owned(),
+            active: true,
+        }]);
+        let path = GroupPath(vec![GroupSegment {
+            key: "flotilla.convoy".to_owned(),
+            value: MetadataValue::Text("dev/latent-tabs".to_owned()),
+            label: Some("latent tabs".to_owned()),
+        }]);
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Group(path.clone()),
+            source_id: "flotilla-connector".to_owned(),
+            set: BTreeMap::from([
+                (
+                    KEY_FACTORY_ID.to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("flotilla:convoys/dev/latent-tabs".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    KEY_MATERIALIZE_RECIPE.to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("flotilla attach latent-tabs".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+            ]),
+            unset: vec![],
+        });
+        let request = state
+            .view_model()
+            .rows
+            .iter()
+            .find_map(|row| match row {
+                RailRow::Latent { latent, .. } => latent.materialize_request(),
+                _ => None,
+            })
+            .expect("openable latent");
+
+        assert!(state.begin_latent_materialization(&request));
+        let opening_model = state.view_model();
+        let opening = opening_model
+            .rows
+            .iter()
+            .find_map(|row| match row {
+                RailRow::Latent { latent, .. } => Some(latent),
+                _ => None,
+            })
+            .expect("opening latent remains projected");
+        assert_eq!(opening.materialization, LatentMaterializationState::Opening);
+        assert!(opening.materialize_request().is_none());
+        assert!(!state.begin_latent_materialization(&request));
+        assert!(state.bind_materializing_tab(&request, 7));
+
+        let fallback_path = GroupPath(vec![GroupSegment {
+            key: "git.repo.root".to_owned(),
+            value: MetadataValue::Text("/tmp/unrelated".to_owned()),
+            label: Some("unrelated".to_owned()),
+        }]);
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Tab(7),
+            source_id: "andamento-git-watcher".to_owned(),
+            set: BTreeMap::from([(
+                KEY_TAB_SCOPE.to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::GroupPath(
+                        group_path_to_metadata_segments(&fallback_path).unwrap(),
+                    ),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+        assert!(state.update_tabs_from_zellij(vec![
+            TabInfo {
+                tab_id: 1,
+                position: 0,
+                name: "main".to_owned(),
+                active: false,
+                ..Default::default()
+            },
+            TabInfo {
+                tab_id: 7,
+                position: 1,
+                name: String::new(),
+                active: true,
+                ..Default::default()
+            },
+        ]));
+
+        let model = state.view_model();
+        let live = model
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == 7)
+            .expect("materialized tab");
+        assert_eq!(
+            live.grouping.as_ref().map(|grouping| &grouping.path),
+            Some(&path)
+        );
+        assert!(!model
+            .rows
+            .iter()
+            .any(|row| matches!(row, RailRow::Latent { .. })));
+        assert_eq!(state.materialized_tab_position(&request), Some(1));
+        assert!(!state.can_materialize_latent(&request));
+
+        assert!(!state.update_tabs_from_zellij(vec![
+            TabInfo {
+                tab_id: 1,
+                position: 0,
+                name: "main".to_owned(),
+                active: false,
+                ..Default::default()
+            },
+            TabInfo {
+                tab_id: 7,
+                position: 1,
+                name: "latent tabs".to_owned(),
+                active: true,
+                ..Default::default()
+            },
+        ]));
     }
 
     #[test]

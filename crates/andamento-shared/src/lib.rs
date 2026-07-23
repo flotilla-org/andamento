@@ -29,6 +29,7 @@ pub const MSG_RAIL_SIZE_TARGET: &str = "andamento-rail-size-target";
 pub const MSG_SET_METADATA_VISIBILITY: &str = "andamento-set-metadata-visibility";
 pub const MSG_SET_CHILD_LAYOUT: &str = "andamento-set-child-layout";
 pub const MSG_CONFIG_INSPECT: &str = "andamento-config-inspect";
+pub const MSG_MATERIALIZE_LATENT: &str = "andamento-materialize-latent";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -242,18 +243,51 @@ pub struct TabCard {
     pub active_pane: Option<PaneTarget>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LatentMaterializationState {
+    #[default]
+    Ready,
+    Opening,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LatentTab {
     /// Stable producer-owned identity used to deduplicate materializations.
     pub factory_id: String,
     pub path: GroupPath,
     pub name: String,
+    /// The opener-owned lifecycle while this catalog entry has no live tab.
+    #[serde(default)]
+    pub materialization: LatentMaterializationState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub materialize_recipe: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterializeLatentRequest {
+    pub factory_id: String,
+    pub path: GroupPath,
+    pub name: String,
+    pub recipe: String,
+}
+
+impl LatentTab {
+    pub fn materialize_request(&self) -> Option<MaterializeLatentRequest> {
+        if self.materialization == LatentMaterializationState::Opening {
+            return None;
+        }
+        Some(MaterializeLatentRequest {
+            factory_id: self.factory_id.clone(),
+            path: self.path.clone(),
+            name: self.name.clone(),
+            recipe: self.materialize_recipe.clone()?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -846,6 +880,7 @@ mod tests {
             MSG_SET_METADATA_VISIBILITY,
             MSG_SET_CHILD_LAYOUT,
             MSG_CONFIG_INSPECT,
+            MSG_MATERIALIZE_LATENT,
         ];
 
         let old_prefix = ["ta", "bs-"].concat();
@@ -1147,6 +1182,7 @@ mod tests {
                         factory_id: "flotilla:convoys/dev/latent-tabs".to_owned(),
                         path: group_path.clone(),
                         name: "latent tabs".to_owned(),
+                        materialization: LatentMaterializationState::Ready,
                         status_state: Some("waiting".to_owned()),
                         summary: Some("1 vessel ready".to_owned()),
                         materialize_recipe: Some("flotilla attach latent-tabs".to_owned()),
