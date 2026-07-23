@@ -2044,6 +2044,7 @@ mod tests {
             observed_identities: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path.clone())),
+            collapsed_groups: vec![],
         };
 
         let target = inspect_target_for(model.inspected_node.as_ref(), None, &model);
@@ -2102,6 +2103,7 @@ mod tests {
             observed_identities: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
+            collapsed_groups: vec![],
         };
         model.inspected_node = Some(NodeKey::Tab(7));
 
@@ -2183,6 +2185,7 @@ mod tests {
             observed_identities: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path)),
+            collapsed_groups: vec![],
         };
 
         let rendered = render_config_with_scope(
@@ -2400,6 +2403,7 @@ mod tests {
             observed_identities: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
+            collapsed_groups: vec![],
         };
 
         let rendered = render_config(
@@ -2555,6 +2559,7 @@ mod tests {
             observed_identities: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
+            collapsed_groups: vec![],
         };
 
         let rendered = render_config(
@@ -2603,6 +2608,7 @@ mod tests {
             observed_identities: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
+            collapsed_groups: vec![],
         }
     }
 

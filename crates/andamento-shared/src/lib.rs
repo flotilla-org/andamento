@@ -28,6 +28,7 @@ pub const MSG_RAIL_SIZE_OBSERVED: &str = "andamento-rail-size-observed";
 pub const MSG_RAIL_SIZE_TARGET: &str = "andamento-rail-size-target";
 pub const MSG_SET_METADATA_VISIBILITY: &str = "andamento-set-metadata-visibility";
 pub const MSG_SET_CHILD_LAYOUT: &str = "andamento-set-child-layout";
+pub const MSG_TOGGLE_GROUP_COLLAPSED: &str = "andamento-toggle-group-collapsed";
 pub const MSG_CONFIG_INSPECT: &str = "andamento-config-inspect";
 pub const MSG_MATERIALIZE_LATENT: &str = "andamento-materialize-latent";
 
@@ -149,6 +150,12 @@ pub struct ChildLayoutSetRequest {
     pub client_id: u16,
     pub node_key: NodeKey,
     pub layout: Option<ChildLayoutSetting>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupCollapseToggleRequest {
+    pub client_id: u16,
+    pub path: GroupPath,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -662,6 +669,8 @@ pub struct ControllerViewModel {
     pub metadata_controls: MetadataControls,
     #[serde(default)]
     pub inspected_node: Option<NodeKey>,
+    #[serde(default)]
+    pub collapsed_groups: Vec<GroupPath>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -956,6 +965,7 @@ mod tests {
             }],
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
+            collapsed_groups: vec![],
         };
         let encoded = serde_json::to_string(&model).unwrap();
         let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
@@ -1195,6 +1205,7 @@ mod tests {
             observed_identities: vec![],
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
+            collapsed_groups: vec![],
         };
 
         let encoded = serde_json::to_string(&model).unwrap();

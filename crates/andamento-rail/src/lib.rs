@@ -222,15 +222,16 @@ fn renderer_hello_payload(
     .ok()
 }
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 use andamento_shared::StatusIcon;
 use andamento_shared::{
-    ConfigInspectRequest, ControllerViewModel, GroupPath, NodeKey, PluginPaneKind, PluginPlacement,
-    PluginRegistrationHello, PluginStatsRecorder, RailSizeObserved, RendererHello,
-    StatsCollectRequest, MSG_CONFIG_INSPECT, MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_SIZE_TARGET,
-    MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_PIN,
+    ConfigInspectRequest, ControllerViewModel, GroupCollapseToggleRequest, GroupPath, NodeKey,
+    PluginPaneKind, PluginPlacement, PluginRegistrationHello, PluginStatsRecorder,
+    RailSizeObserved, RendererHello, StatsCollectRequest, MSG_CONFIG_INSPECT,
+    MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_SIZE_TARGET, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
+    MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_GROUP_COLLAPSED, MSG_TOGGLE_PIN,
     MSG_VIEW_MODEL,
 };
 use andamento_shared::{RailSize, RailSizeTarget};
@@ -284,6 +285,22 @@ fn build_materialize_latent_message(
     })
 }
 
+fn build_group_collapse_message(
+    controller_plugin_url: &str,
+    client_id: u16,
+    path: GroupPath,
+) -> Option<MessageToPlugin> {
+    let payload = serde_json::to_string(&GroupCollapseToggleRequest { client_id, path }).ok()?;
+    let message = MessageToPlugin::new(MSG_TOGGLE_GROUP_COLLAPSED)
+        .with_destination_client_id(client_id)
+        .with_payload(payload);
+    Some(if controller_plugin_url.trim().is_empty() {
+        message
+    } else {
+        message.with_plugin_url(controller_plugin_url.to_owned())
+    })
+}
+
 #[derive(Default)]
 pub struct PluginState {
     tabs: Vec<TabInfo>,
@@ -306,7 +323,6 @@ pub struct PluginState {
     last_pane_manifest: Option<PaneManifest>,
     own_is_selectable: bool,
     own_is_focused: bool,
-    collapsed_groups: BTreeSet<GroupPath>,
     stats: PluginStatsRecorder,
     rail_placement: RailPlacement,
     own_plugin_placement: Option<PluginPlacement>,
@@ -471,7 +487,11 @@ impl ZellijPlugin for PluginState {
         self.stats.increment("render.total");
         let started_at = Instant::now();
         let controller_available = self.controller_model.is_some();
-        let collapsed_groups = self.collapsed_groups.iter().cloned().collect::<Vec<_>>();
+        let collapsed_groups = self
+            .controller_model
+            .as_ref()
+            .map(|model| model.collapsed_groups.as_slice())
+            .unwrap_or_default();
         let metadata_controls = self
             .controller_model
             .as_ref()
@@ -487,7 +507,7 @@ impl ZellijPlugin for PluginState {
                 .as_ref()
                 .map(|mode_info| mode_info.style.colors.into()),
             terminal_pixel_cell_size(),
-            &collapsed_groups,
+            collapsed_groups,
             None,
             &metadata_controls,
             self.rail_scroll_offset,
@@ -787,6 +807,25 @@ mod tests {
         let payload: andamento_shared::MaterializeLatentRequest =
             serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
         assert_eq!(payload, request);
+    }
+
+    #[test]
+    fn group_toggle_builds_controller_request() {
+        let path = GroupPath(vec![andamento_shared::GroupSegment {
+            key: "zellij.pane.cwd".to_owned(),
+            value: andamento_shared::MetadataValue::Text("/repo".to_owned()),
+            label: Some("repo".to_owned()),
+        }]);
+
+        let message =
+            build_group_collapse_message("andamento-controller", 4, path.clone()).unwrap();
+
+        assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
+        assert_eq!(message.destination_client_id, Some(4));
+        assert_eq!(message.message_name, MSG_TOGGLE_GROUP_COLLAPSED);
+        let payload: GroupCollapseToggleRequest =
+            serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
+        assert_eq!(payload, GroupCollapseToggleRequest { client_id: 4, path });
     }
 
     #[test]
@@ -1150,10 +1189,8 @@ impl PluginState {
                     HitAction::ToggleGroup => {
                         if let Some(group_path) = hit.group_path {
                             self.toggle_group(group_path);
-                            true
-                        } else {
-                            false
                         }
+                        false
                     }
                     HitAction::OpenConfig => {
                         self.open_config_pane();
@@ -1249,10 +1286,16 @@ impl PluginState {
         );
     }
 
-    fn toggle_group(&mut self, group_path: GroupPath) {
-        if !self.collapsed_groups.insert(group_path.clone()) {
-            self.collapsed_groups.remove(&group_path);
-        }
+    fn toggle_group(&self, group_path: GroupPath) {
+        let Some(client_id) = self.own_client_id else {
+            return;
+        };
+        let Some(message) =
+            build_group_collapse_message(&self.controller_plugin_url, client_id, group_path)
+        else {
+            return;
+        };
+        pipe_message_to_plugin(message);
     }
 
     fn open_config_pane(&self) {

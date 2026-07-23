@@ -64,6 +64,7 @@ pub struct ControllerClientState {
     pub client_id: u16,
     pub inspected_node: Option<NodeKey>,
     pub metadata_controls: MetadataControls,
+    pub collapsed_groups: BTreeSet<GroupPath>,
     pub tabs: BTreeMap<u64, ControllerClientTabState>,
     pub background_rails: BTreeMap<u32, PluginRegistration>,
     pub background_config_editors: BTreeMap<u32, PluginRegistration>,
@@ -341,6 +342,13 @@ impl ControllerState {
         }
     }
 
+    pub fn toggle_group_collapsed_for_client(&mut self, client_id: u16, path: GroupPath) {
+        let collapsed_groups = &mut self.client_mut(client_id).collapsed_groups;
+        if !collapsed_groups.insert(path.clone()) {
+            collapsed_groups.remove(&path);
+        }
+    }
+
     pub fn set_template_catalog(
         &mut self,
         catalog: Option<andamento_shared::template_config::TemplateConfigCatalog>,
@@ -477,6 +485,7 @@ impl ControllerState {
                 || !client.tabs.is_empty()
                 || client.inspected_node.is_some()
                 || client.metadata_controls != MetadataControls::default()
+                || !client.collapsed_groups.is_empty()
         });
     }
 
@@ -687,6 +696,7 @@ impl ControllerState {
                 .map(|client| client.metadata_controls.clone())
                 .unwrap_or_default(),
             inspected_node: None,
+            collapsed_groups: vec![],
         }
     }
 
@@ -695,6 +705,7 @@ impl ControllerState {
         if let Some(client) = self.clients.get(&client_id) {
             model.metadata_controls = client.metadata_controls.clone();
             model.inspected_node = client.inspected_node.clone();
+            model.collapsed_groups = client.collapsed_groups.iter().cloned().collect();
         }
         model
     }
@@ -4447,6 +4458,21 @@ mod tests {
         assert_eq!(state.known_rail_count(), 1);
         assert_eq!(state.known_config_editor_count(), 0);
         assert_eq!(state.rail_plugin_ids(), vec![8]);
+    }
+
+    #[test]
+    fn cleanup_keeps_client_with_collapsed_group_state() {
+        let path = GroupPath(vec![GroupSegment {
+            key: "zellij.pane.cwd".to_owned(),
+            value: MetadataValue::Text("/repo".to_owned()),
+            label: Some("repo".to_owned()),
+        }]);
+        let mut state = ControllerState::default();
+        state.toggle_group_collapsed_for_client(1, path.clone());
+
+        state.retain_rails(&HashSet::new());
+
+        assert_eq!(state.view_model_for_client(1).collapsed_groups, vec![path]);
     }
 
     #[test]

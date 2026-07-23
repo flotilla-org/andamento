@@ -5388,6 +5388,7 @@ mod tests {
             observed_identities: vec![],
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
+            collapsed_groups: vec![],
         }
     }
 
@@ -5524,6 +5525,7 @@ mod tests {
             observed_identities: vec![],
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
+            collapsed_groups: vec![],
         }
     }
 
@@ -5588,6 +5590,7 @@ mod tests {
             observed_identities: vec![],
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
+            collapsed_groups: vec![],
         }
     }
 
@@ -5607,6 +5610,7 @@ mod tests {
             observed_identities: vec![],
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
+            collapsed_groups: vec![],
         };
         for (tab_id, worktree) in [(1, "worktree-a"), (2, "worktree-b")] {
             let path = GroupPath(vec![
@@ -5730,6 +5734,7 @@ mod tests {
             observed_identities: vec![],
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
+            collapsed_groups: vec![],
         }
     }
 
