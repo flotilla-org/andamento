@@ -17,14 +17,15 @@ use andamento_shared::MSG_VIEW_MODEL;
 use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
     ChildLayoutSetRequest, ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage,
-    MetadataPatch, MetadataTarget, MetadataValueUpdate, MetadataVisibilitySetRequest,
-    PluginRegistrationHello, RailConfig, RailGroupingMode, RailRgbColor, RailSize,
-    RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RendererHello, SortMode,
-    StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO,
-    MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE,
-    MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED, MSG_RENDERER_HELLO, MSG_REQUEST_STATE,
-    MSG_SET_CHILD_LAYOUT, MSG_SET_METADATA_VISIBILITY, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG,
-    MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
+    GroupCollapseToggleRequest, MetadataPatch, MetadataTarget, MetadataValueUpdate,
+    MetadataVisibilitySetRequest, PluginRegistrationHello, RailConfig, RailGroupingMode,
+    RailRgbColor, RailSize, RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure,
+    RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS,
+    MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST,
+    MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED,
+    MSG_RENDERER_HELLO, MSG_REQUEST_STATE, MSG_SET_CHILD_LAYOUT, MSG_SET_METADATA_VISIBILITY,
+    MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_STATS_COLLECT,
+    MSG_TOGGLE_GROUP_COLLAPSED, MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
@@ -663,6 +664,7 @@ enum ViewModelPushReason {
     PipeRequestState,
     PipeBootstrap,
     PipeMetadataControls,
+    PipeGroupCollapse,
     PipeMaterializeLatent,
     PipeUnknown,
 }
@@ -685,6 +687,7 @@ impl ViewModelPushReason {
             Self::PipeRequestState => "view-model.push.reason.pipe.request-state",
             Self::PipeBootstrap => "view-model.push.reason.pipe.bootstrap",
             Self::PipeMetadataControls => "view-model.push.reason.pipe.metadata-controls",
+            Self::PipeGroupCollapse => "view-model.push.reason.pipe.group-collapse",
             Self::PipeMaterializeLatent => "view-model.push.reason.pipe.materialize-latent",
             Self::PipeUnknown => "view-model.push.reason.pipe.unknown",
         }
@@ -914,6 +917,14 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             HandlePipeResult {
                 state_changed: true,
                 view_model_push_reason: Some(ViewModelPushReason::PipeMetadataControls),
+                ..HandlePipeResult::default()
+            }
+        }
+        Ok(Some(ControllerMessage::ToggleGroupCollapsed(request))) => {
+            state.toggle_group_collapsed_for_client(request.client_id, request.path);
+            HandlePipeResult {
+                state_changed: true,
+                view_model_push_reason: Some(ViewModelPushReason::PipeGroupCollapse),
                 ..HandlePipeResult::default()
             }
         }
@@ -1186,6 +1197,7 @@ enum ControllerMessage {
     StatsCollect(StatsCollectRequest),
     RailSizeObserved(RailSizeObserved),
     SetMetadataVisibility(MetadataVisibilitySetRequest),
+    ToggleGroupCollapsed(GroupCollapseToggleRequest),
     SetChildLayout(ChildLayoutSetRequest),
     ConfigInspect(ConfigInspectRequest),
     MaterializeLatent(andamento_shared::MaterializeLatentRequest),
@@ -1265,6 +1277,16 @@ fn parse_controller_message(
                     .map_err(|e| format!("invalid metadata visibility request: {e}"))
             })
             .map(ControllerMessage::SetMetadataVisibility)
+            .map(Some),
+        MSG_TOGGLE_GROUP_COLLAPSED => pipe_message
+            .payload
+            .as_deref()
+            .ok_or_else(|| "toggle group collapsed requires payload".to_owned())
+            .and_then(|payload| {
+                serde_json::from_str::<GroupCollapseToggleRequest>(payload)
+                    .map_err(|e| format!("invalid group collapse toggle request: {e}"))
+            })
+            .map(ControllerMessage::ToggleGroupCollapsed)
             .map(Some),
         MSG_SET_CHILD_LAYOUT => pipe_message
             .payload
@@ -1799,6 +1821,71 @@ mod tests {
             parsed,
             Some(ControllerMessage::SetMetadataVisibility(request))
         );
+    }
+
+    #[test]
+    fn collapse_state_from_one_tab_is_projected_to_every_sidebar_for_client() {
+        let path = andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
+            key: "zellij.pane.cwd".to_owned(),
+            value: andamento_shared::MetadataValue::Text("/repo".to_owned()),
+            label: Some("repo".to_owned()),
+        }]);
+        let mut state = ControllerState::default();
+        for (plugin_id, tab_id) in [(11, 1), (22, 2)] {
+            let hello = PluginRegistrationHello {
+                identity: RendererHello {
+                    plugin_id,
+                    client_id: 4,
+                },
+                placement: PluginPlacement::Tab {
+                    tab_id,
+                    pane_kind: andamento_shared::PluginPaneKind::Tiled,
+                },
+            };
+            let payload = serde_json::to_string(&hello).unwrap();
+            handle_pipe_message(
+                &mut state,
+                pipe(MSG_RENDERER_HELLO, Some(payload), BTreeMap::new()),
+            );
+        }
+        let request = andamento_shared::GroupCollapseToggleRequest {
+            client_id: 4,
+            path: path.clone(),
+        };
+        let payload = serde_json::to_string(&request).unwrap();
+
+        let result = handle_pipe_message(
+            &mut state,
+            pipe(
+                andamento_shared::MSG_TOGGLE_GROUP_COLLAPSED,
+                Some(payload.clone()),
+                BTreeMap::new(),
+            ),
+        );
+
+        assert!(result.state_changed);
+        let targets = state.rail_plugin_targets();
+        assert_eq!(targets.len(), 2);
+        assert!(targets.into_iter().all(|target| state
+            .view_model_for_client(target.client_id)
+            .collapsed_groups
+            == vec![path.clone()]));
+        assert!(state.view_model_for_client(5).collapsed_groups.is_empty());
+
+        let result = handle_pipe_message(
+            &mut state,
+            pipe(
+                andamento_shared::MSG_TOGGLE_GROUP_COLLAPSED,
+                Some(payload),
+                BTreeMap::new(),
+            ),
+        );
+
+        assert!(result.state_changed);
+        assert!(state.rail_plugin_targets().into_iter().all(|target| state
+            .view_model_for_client(target.client_id)
+            .collapsed_groups
+            .is_empty()));
     }
 
     #[test]
