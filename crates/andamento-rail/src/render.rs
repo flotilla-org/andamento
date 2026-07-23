@@ -1043,7 +1043,7 @@ fn style_title_text(
         })
         .unwrap_or_default();
     if dimmed {
-        style = style.dimmed();
+        style = latent_tab_style(style);
     }
     style.paint(line).to_string()
 }
@@ -1070,6 +1070,10 @@ fn style_group_header_text(
 
 fn foreground_style(color: PaletteColor) -> Style {
     Style::new().fg(ansi_color(color))
+}
+
+fn latent_tab_style(style: Style) -> Style {
+    style.dimmed()
 }
 
 fn style_cell(foreground: PaletteColor, background: PaletteColor, bold: bool) -> Style {
@@ -2361,7 +2365,7 @@ fn render_standalone_box(
                 .unwrap_or_default()
         };
         if let Some(line) = lines.get_mut(row + 1 + body_index) {
-            *line = body_line(text, cols, card.active, theme);
+            *line = body_line(text, cols, card.active, card.latent, theme);
         }
     }
     if let Some(line) = lines.get_mut(row + box_height - 1) {
@@ -2420,7 +2424,7 @@ fn render_card_body(
                 .unwrap_or_default()
         };
         if let Some(line) = lines.get_mut(row + 1 + body_index) {
-            *line = body_line(text, cols, card.active, theme);
+            *line = body_line(text, cols, card.active, card.latent, theme);
         }
     }
     add_card_metadata(
@@ -3932,17 +3936,33 @@ fn bottom_border_line(width: usize, active: bool, theme: Option<RenderTheme>) ->
     BorderRow::new(width, BorderKind::Bottom { active }).into_line(theme)
 }
 
-fn body_line(text: &str, width: usize, active: bool, theme: Option<RenderTheme>) -> String {
+fn body_line(
+    text: &str,
+    width: usize,
+    active: bool,
+    latent: bool,
+    theme: Option<RenderTheme>,
+) -> String {
     match width {
         0 => String::new(),
         1 => style_border_text("│".to_owned(), active, theme),
         _ => {
             let inner_width = width - 2;
             let text = truncate_to_width(text, inner_width);
+            let body = if latent {
+                let style = theme
+                    .map(|theme| foreground_style(theme.body_foreground))
+                    .unwrap_or_default();
+                latent_tab_style(style)
+                    .paint(pad_to_width(&text, inner_width))
+                    .to_string()
+            } else {
+                style_body_text(pad_to_width(&text, inner_width), theme)
+            };
             format!(
                 "{}{}{}",
                 style_border_text("│".to_owned(), active, theme),
-                style_body_text(pad_to_width(&text, inner_width), theme),
+                body,
                 style_border_text("│".to_owned(), active, theme)
             )
         }
@@ -5351,19 +5371,23 @@ mod tests {
 
     #[test]
     fn openable_latent_tab_renders_metadata_and_materialize_hit() {
-        let rendered = render_lines(
+        let rendered = render_lines_with_theme(
             Some(&latent_model(Some("flotilla attach latent-tabs"))),
             &[],
             12,
             48,
             true,
+            Some(test_theme()),
         );
 
         assert!(rendered
             .lines
             .iter()
             .any(|line| line.contains("↗ latent tabs")));
-        assert!(rendered.lines.iter().any(|line| line.contains("\u{1b}[2m")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("\u{1b}[2;38;5;7mwaiting")));
         assert!(
             rendered
                 .lines
