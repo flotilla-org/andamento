@@ -4543,6 +4543,12 @@ const TERMINAL_STATUS_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
 const RECOGNIZED_GROUPING_KEYS: &[&str] = &[
     "andamento.project",
     "branch",
+    "flotilla.checkout",
+    "flotilla.convoy",
+    "flotilla.independent",
+    "flotilla.issue",
+    "flotilla.project",
+    "flotilla.vessel",
     "git.branch",
     "git.repo",
     "project",
@@ -4563,6 +4569,48 @@ const VCS_REPO_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
         value: "vcs.repo",
     },
     MetadataPredicate::Exists("vcs.repo"),
+];
+const FLOTILLA_PROJECT_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
+    MetadataPredicate::TextEquals {
+        key: "group.key",
+        value: "flotilla.project",
+    },
+    MetadataPredicate::Exists("flotilla.project"),
+];
+const FLOTILLA_CONVOY_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
+    MetadataPredicate::TextEquals {
+        key: "group.key",
+        value: "flotilla.convoy",
+    },
+    MetadataPredicate::Exists("flotilla.convoy"),
+];
+const FLOTILLA_VESSEL_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
+    MetadataPredicate::TextEquals {
+        key: "group.key",
+        value: "flotilla.vessel",
+    },
+    MetadataPredicate::Exists("flotilla.vessel"),
+];
+const FLOTILLA_INDEPENDENT_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
+    MetadataPredicate::TextEquals {
+        key: "group.key",
+        value: "flotilla.independent",
+    },
+    MetadataPredicate::Exists("flotilla.independent"),
+];
+const FLOTILLA_CHECKOUT_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
+    MetadataPredicate::TextEquals {
+        key: "group.key",
+        value: "flotilla.checkout",
+    },
+    MetadataPredicate::Exists("flotilla.checkout"),
+];
+const FLOTILLA_ISSUE_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
+    MetadataPredicate::TextEquals {
+        key: "group.key",
+        value: "flotilla.issue",
+    },
+    MetadataPredicate::Exists("flotilla.issue"),
 ];
 const FALLBACK_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] =
     &[MetadataPredicate::Exists("group.key")];
@@ -4610,6 +4658,33 @@ const VCS_REPO_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
         sources: &[
             TemplateValueSource::MetadataText("group.segment.label"),
             TemplateValueSource::MetadataTextBasename("group.value"),
+            TemplateValueSource::MetadataText("group.label"),
+        ],
+        prefix: "",
+        suffix: "",
+        condition: TemplateFieldCondition::Always,
+    },
+];
+const FLOTILLA_PROJECT_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
+    GROUP_HEADER_TOGGLE_FIELD,
+    TemplateFieldSpec {
+        class: TemplateFieldClass::Required,
+        sources: &[
+            TemplateValueSource::MetadataText("group.value"),
+            TemplateValueSource::MetadataText("group.label"),
+        ],
+        prefix: "",
+        suffix: "",
+        condition: TemplateFieldCondition::Always,
+    },
+];
+const FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
+    GROUP_HEADER_TOGGLE_FIELD,
+    TemplateFieldSpec {
+        class: TemplateFieldClass::Required,
+        sources: &[
+            TemplateValueSource::MetadataText("group.segment.label"),
+            TemplateValueSource::MetadataText("group.value"),
             TemplateValueSource::MetadataText("group.label"),
         ],
         prefix: "",
@@ -4669,6 +4744,54 @@ const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
         node_kind: RenderNodeKind::Group,
         predicates: VCS_REPO_GROUP_HEADER_TEMPLATE_PREDICATES,
         fields: VCS_REPO_GROUP_HEADER_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
+    },
+    TemplateDefinition {
+        name: "builtin.group-header.flotilla-project",
+        slot: TemplateSlot::GroupHeader,
+        node_kind: RenderNodeKind::Group,
+        predicates: FLOTILLA_PROJECT_GROUP_HEADER_TEMPLATE_PREDICATES,
+        fields: FLOTILLA_PROJECT_GROUP_HEADER_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
+    },
+    TemplateDefinition {
+        name: "builtin.group-header.flotilla-convoy",
+        slot: TemplateSlot::GroupHeader,
+        node_kind: RenderNodeKind::Group,
+        predicates: FLOTILLA_CONVOY_GROUP_HEADER_TEMPLATE_PREDICATES,
+        fields: FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
+    },
+    TemplateDefinition {
+        name: "builtin.group-header.flotilla-vessel",
+        slot: TemplateSlot::GroupHeader,
+        node_kind: RenderNodeKind::Group,
+        predicates: FLOTILLA_VESSEL_GROUP_HEADER_TEMPLATE_PREDICATES,
+        fields: FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
+    },
+    TemplateDefinition {
+        name: "builtin.group-header.flotilla-independent",
+        slot: TemplateSlot::GroupHeader,
+        node_kind: RenderNodeKind::Group,
+        predicates: FLOTILLA_INDEPENDENT_GROUP_HEADER_TEMPLATE_PREDICATES,
+        fields: FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
+    },
+    TemplateDefinition {
+        name: "builtin.group-header.flotilla-checkout",
+        slot: TemplateSlot::GroupHeader,
+        node_kind: RenderNodeKind::Group,
+        predicates: FLOTILLA_CHECKOUT_GROUP_HEADER_TEMPLATE_PREDICATES,
+        fields: FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
+    },
+    TemplateDefinition {
+        name: "builtin.group-header.flotilla-issue",
+        slot: TemplateSlot::GroupHeader,
+        node_kind: RenderNodeKind::Group,
+        predicates: FLOTILLA_ISSUE_GROUP_HEADER_TEMPLATE_PREDICATES,
+        fields: FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS,
         sizing: TemplateSizingHint::Auto,
     },
     TemplateDefinition {
@@ -7542,13 +7665,13 @@ mod tests {
         ] {
             let mut model = grouped_model();
             let path = GroupPath(vec![GroupSegment {
-                key: "flotilla.convoy".to_owned(),
+                key: "experimental.scope".to_owned(),
                 value: MetadataValue::Text("andamento-total-fallback".to_owned()),
                 label: Some("total fallback".to_owned()),
             }]);
             model.rows = vec![
                 RailRow::GroupHeader {
-                    group_id: "flotilla.convoy:andamento-total-fallback".to_owned(),
+                    group_id: "experimental.scope:andamento-total-fallback".to_owned(),
                     path: path.clone(),
                     label: "total fallback".to_owned(),
                     full_label: "total fallback".to_owned(),
@@ -7575,7 +7698,7 @@ mod tests {
 
             assert!(
                 rendered.lines[0]
-                    .starts_with("▼ flotilla.convoy: andamento-total-fallback (group)"),
+                    .starts_with("▼ experimental.scope: andamento-total-fallback (group)"),
                 "unknown grouping key should render plain key, value, and kind: {:?}",
                 rendered.lines[0]
             );
@@ -7723,6 +7846,91 @@ mod tests {
             rendered.lines[0].starts_with("▼ / ─"),
             "repo group should retain a visible fallback label: {:?}",
             rendered.lines[0]
+        );
+    }
+
+    fn assert_flotilla_group_renders_designed_label(
+        key: &str,
+        value: &str,
+        segment_label: Option<&str>,
+        expected: &str,
+    ) {
+        let mut model = grouped_model();
+        let path = GroupPath(vec![GroupSegment {
+            key: key.to_owned(),
+            value: MetadataValue::Text(value.to_owned()),
+            label: segment_label.map(str::to_owned),
+        }]);
+        model.rows = vec![RailRow::GroupHeader {
+            group_id: format!("{key}:{value}"),
+            path,
+            label: segment_label.unwrap_or(value).to_owned(),
+            full_label: segment_label.unwrap_or(value).to_owned(),
+            tab_count: 2,
+            templates: ResolvedTemplateSlots::default(),
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 8, 80, true);
+
+        assert!(
+            rendered.lines[0].starts_with(&format!("{expected} ─")),
+            "{key} should render its designed label without conformance fallback: {:?}",
+            rendered.lines[0]
+        );
+    }
+
+    #[test]
+    fn flotilla_project_group_renders_project_name_only() {
+        assert_flotilla_group_renders_designed_label(
+            "flotilla.project",
+            "andamento",
+            None,
+            "andamento",
+        );
+    }
+
+    #[test]
+    fn flotilla_convoy_group_renders_segment_label() {
+        assert_flotilla_group_renders_designed_label(
+            "flotilla.convoy",
+            "flotilla-template-keys/issue-28",
+            Some("issue-28"),
+            "issue-28",
+        );
+    }
+
+    #[test]
+    fn flotilla_vessel_group_renders_vessel_name() {
+        assert_flotilla_group_renders_designed_label("flotilla.vessel", "work", None, "work");
+    }
+
+    #[test]
+    fn flotilla_independent_group_renders_session_short_name() {
+        assert_flotilla_group_renders_designed_label(
+            "flotilla.independent",
+            "session-28",
+            Some("codex"),
+            "codex",
+        );
+    }
+
+    #[test]
+    fn flotilla_checkout_group_renders_checkout_short_name() {
+        assert_flotilla_group_renders_designed_label(
+            "flotilla.checkout",
+            "checkout/flotilla-org/andamento/issue-28-template-keys",
+            Some("issue-28-template-keys"),
+            "issue-28-template-keys",
+        );
+    }
+
+    #[test]
+    fn flotilla_issue_group_renders_number_and_title() {
+        assert_flotilla_group_renders_designed_label(
+            "flotilla.issue",
+            "issue/flotilla-org/andamento/28",
+            Some("#28 Designed templates for remaining keys"),
+            "#28 Designed templates for remaining keys",
         );
     }
 
