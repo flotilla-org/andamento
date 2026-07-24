@@ -78,6 +78,10 @@ fn tab_index_after_scroll(active_tab_idx: usize, tab_count: usize, delta: isize)
     }
 }
 
+fn should_forward_scroll_to_controller(rail_can_scroll: Option<bool>) -> bool {
+    !matches!(rail_can_scroll, Some(false))
+}
+
 #[cfg(not(test))]
 fn schedule_scroll_flush() {
     set_timeout(0.0);
@@ -664,6 +668,8 @@ mod tests {
         state.render(4, 20);
         let commands_before = HOST_PLUGIN_COMMAND_COUNT.with(|command_count| command_count.get());
 
+        // Empty local tabs make the fallback a no-op, so a new host command
+        // proves that the wheel delta was forwarded to the controller.
         state.handle_mouse(Mouse::ScrollDown(1));
         state.flush_pending_scroll();
 
@@ -672,6 +678,13 @@ mod tests {
             commands_before + 1,
             "unknown scrollability must request controller scrolling, not use the tab fallback"
         );
+    }
+
+    #[test]
+    fn tab_fallback_requires_a_confirmed_fitting_rail() {
+        assert!(should_forward_scroll_to_controller(None));
+        assert!(should_forward_scroll_to_controller(Some(true)));
+        assert!(!should_forward_scroll_to_controller(Some(false)));
     }
 
     #[test]
@@ -1379,7 +1392,7 @@ impl PluginState {
         if delta == 0 {
             return false;
         }
-        if self.rail_can_scroll != Some(false) {
+        if should_forward_scroll_to_controller(self.rail_can_scroll) {
             self.send_rail_ui_action(RailUiAction::ScrollBy { delta });
             return false;
         }
