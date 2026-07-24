@@ -4556,6 +4556,7 @@ const RECOGNIZED_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] =
         key: "group.key",
         values: RECOGNIZED_GROUPING_KEYS,
     }];
+// The existence check makes this template more specific than the generic recognized-key template.
 const VCS_REPO_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
     MetadataPredicate::TextEquals {
         key: "group.key",
