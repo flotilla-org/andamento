@@ -4684,7 +4684,7 @@ const FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
         class: TemplateFieldClass::Required,
         sources: &[
             TemplateValueSource::MetadataText("group.segment.label"),
-            TemplateValueSource::MetadataText("group.value"),
+            TemplateValueSource::MetadataTextBasename("group.value"),
             TemplateValueSource::MetadataText("group.label"),
         ],
         prefix: "",
@@ -7920,6 +7920,16 @@ mod tests {
             "flotilla.checkout",
             "checkout/flotilla-org/andamento/issue-28-template-keys",
             Some("issue-28-template-keys"),
+            "issue-28-template-keys",
+        );
+    }
+
+    #[test]
+    fn flotilla_checkout_group_derives_short_name_when_segment_label_is_missing() {
+        assert_flotilla_group_renders_designed_label(
+            "flotilla.checkout",
+            "checkout/flotilla-org/andamento/issue-28-template-keys",
+            None,
             "issue-28-template-keys",
         );
     }
