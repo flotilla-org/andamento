@@ -70,8 +70,6 @@ pub struct RenderedRail {
     /// back to tab-switching otherwise.
     pub content_height: usize,
     pub available_rows: usize,
-    /// Absolute buffered-content row used as the viewport's top line.
-    pub visible_start: usize,
     /// A new shared absolute offset needed to reveal a newly active tab.
     pub ensure_visible_offset: Option<isize>,
 }
@@ -417,7 +415,6 @@ pub fn render_lines_with_rail_viewport(
             visible_cards: vec![],
             content_height: 0,
             available_rows: 0,
-            visible_start: 0,
             ensure_visible_offset: None,
         };
     }
@@ -484,7 +481,6 @@ pub fn render_lines_with_rail_viewport(
         visible_cards,
         content_height,
         available_rows: card_rows_available,
-        visible_start: viewport.visible_start,
         ensure_visible_offset: viewport.ensure_visible_offset,
     }
 }
@@ -1307,7 +1303,7 @@ fn render_nodes(
         buffered_lines,
         buffered_hits,
         buffered_cards,
-        active_tab_id(nodes),
+        active_ensure_target(nodes),
         available_rows,
         rail_scroll_offset,
         ensure_active_visible,
@@ -2108,7 +2104,7 @@ fn copy_visible_buffer(
     buffered_lines: Vec<String>,
     buffered_hits: Vec<HitRegion>,
     buffered_cards: Vec<VisibleCard>,
-    active_tab_id: Option<u64>,
+    active_ensure_target: Option<NodeKey>,
     available_rows: usize,
     user_scroll_offset: isize,
     ensure_active_visible: bool,
@@ -2119,11 +2115,12 @@ fn copy_visible_buffer(
     let max_start = buffered_lines.len().saturating_sub(available_rows);
     let base_start = absolute_viewport_start(user_scroll_offset, max_start);
     let visible_start = if ensure_active_visible {
-        active_tab_id
-            .and_then(|tab_id| {
+        active_ensure_target
+            .as_ref()
+            .and_then(|target| {
                 buffered_hits
                     .iter()
-                    .find(|hit| hit.action == HitAction::SwitchTab && hit.tab_id == tab_id)
+                    .find(|hit| hit_matches_node(hit, target))
             })
             .map(|hit| {
                 ensure_visible_start(
@@ -2177,6 +2174,27 @@ fn copy_visible_buffer(
         visible_start,
         ensure_visible_offset,
     }
+}
+
+fn hit_matches_node(hit: &HitRegion, node: &NodeKey) -> bool {
+    match node {
+        NodeKey::Tab(tab_id) => hit.action == HitAction::SwitchTab && hit.tab_id == *tab_id,
+        NodeKey::Group(path) => {
+            hit.action == HitAction::ToggleGroup && hit.group_path.as_ref() == Some(path)
+        }
+        NodeKey::Root => false,
+    }
+}
+
+fn active_ensure_target(nodes: &[RenderNode]) -> Option<NodeKey> {
+    nodes.iter().find_map(|node| match node {
+        RenderNode::Tab(tab) if tab.card.active => Some(NodeKey::Tab(tab.card.tab_id)),
+        RenderNode::Tab(_) => None,
+        RenderNode::Group(group) if group.collapsed && contains_active_tab(&group.children) => {
+            Some(NodeKey::Group(group.path.clone()))
+        }
+        RenderNode::Group(group) => active_ensure_target(&group.children),
+    })
 }
 
 fn active_tab_id(nodes: &[RenderNode]) -> Option<u64> {
@@ -5512,7 +5530,7 @@ mod tests {
             (0..12).map(|row| format!("row {row}")).collect(),
             vec![active_hit],
             vec![status_card],
-            Some(2),
+            Some(NodeKey::Tab(2)),
             3,
             4,
             false,
@@ -5547,7 +5565,7 @@ mod tests {
             (0..20).map(|row| format!("row {row}")).collect(),
             vec![active_hit],
             vec![],
-            Some(2),
+            Some(NodeKey::Tab(2)),
             4,
             3,
             true,
@@ -5555,6 +5573,49 @@ mod tests {
 
         assert_eq!(viewport.visible_start, 9);
         assert_eq!(viewport.ensure_visible_offset, Some(9));
+    }
+
+    #[test]
+    fn collapsed_active_tab_ensures_its_visible_group_header() {
+        let model = grouped_model();
+        let group_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("expected group header"),
+        };
+        let nodes = nodes_to_render(Some(&model), &[], std::slice::from_ref(&group_path));
+        let ensure_target = active_ensure_target(&nodes);
+        assert_eq!(ensure_target, Some(NodeKey::Group(group_path.clone())));
+
+        let mut lines = vec![String::new(); 4];
+        let mut visible_hits = vec![];
+        let mut visible_cards = vec![];
+        let header_hit = HitRegion {
+            row_start: 10,
+            row_end: 10,
+            col_start: 0,
+            col_end: 9,
+            tab_id: 0,
+            tab_position: 0,
+            group_path: Some(group_path),
+            inspect_target: None,
+            materialize_request: None,
+            action: HitAction::ToggleGroup,
+        };
+        let viewport = copy_visible_buffer(
+            &mut lines,
+            &mut visible_hits,
+            &mut visible_cards,
+            (0..20).map(|row| format!("row {row}")).collect(),
+            vec![header_hit],
+            vec![],
+            ensure_target,
+            4,
+            3,
+            true,
+        );
+
+        assert_eq!(viewport.visible_start, 7);
+        assert_eq!(viewport.ensure_visible_offset, Some(7));
     }
 
     fn test_theme() -> RenderTheme {
