@@ -2084,6 +2084,7 @@ fn ensure_visible_start(
     available_rows: usize,
     max_start: usize,
 ) -> usize {
+    // Any overlap counts as visible so selecting an already clickable card never shifts the rail.
     let visible_end = visible_start.saturating_add(available_rows);
     if target_end < visible_start {
         target_start.min(max_start)
