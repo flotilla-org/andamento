@@ -998,7 +998,7 @@ fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTarg
         }
         InspectTargetKind::Group => {
             if let NodeKey::Group(path) = &target.node_key {
-                push_key_value(frame, "path", &format_group_path(path));
+                push_group_path(frame, "path", None, path);
             }
         }
         InspectTargetKind::Tab => {
@@ -1009,11 +1009,7 @@ fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTarg
                 push_key_value(frame, "active", if tab.active { "yes" } else { "no" });
                 push_key_value(frame, "pinned", if tab.pinned { "yes" } else { "no" });
                 if let Some(grouping) = tab.grouping.as_ref() {
-                    push_key_value(
-                        frame,
-                        "group",
-                        &format!("{} {}", grouping.label, format_group_path(&grouping.path)),
-                    );
+                    push_group_path(frame, "group", Some(&grouping.label), &grouping.path);
                 } else {
                     push_key_value(frame, "group", "<none>");
                 }
@@ -1191,6 +1187,50 @@ fn push_template_slot_row(
 
 fn push_key_value(frame: &mut ConfigUiFrame, key: &str, value: &str) {
     frame.push_plain(&format!("{key:<9} {value}"));
+}
+
+fn push_group_path(
+    frame: &mut ConfigUiFrame,
+    key: &str,
+    value_prefix: Option<&str>,
+    path: &GroupPath,
+) {
+    if path.0.is_empty() {
+        push_key_value(
+            frame,
+            key,
+            &value_prefix
+                .map(|prefix| format!("{prefix} <none>"))
+                .unwrap_or_else(|| "<none>".to_owned()),
+        );
+        return;
+    }
+
+    let first_prefix = format!("{key:<9} ");
+    let continuation_prefix = " ".repeat(first_prefix.width());
+    let mut line = first_prefix.clone();
+    if let Some(value_prefix) = value_prefix {
+        line.push_str(value_prefix);
+    }
+
+    for (index, segment) in path.0.iter().enumerate() {
+        let mut component = format_group_path_segment(segment);
+        if index + 1 < path.0.len() {
+            component.push_str(" >");
+        }
+        let has_line_value = line.width() > first_prefix.width();
+        let separator_width = usize::from(has_line_value);
+        if has_line_value && line.width() + separator_width + component.width() > frame.cols {
+            frame.push_plain(&line);
+            line = continuation_prefix.clone();
+        }
+        if line.width() > first_prefix.width() {
+            line.push(' ');
+        }
+        line.push_str(&component);
+    }
+
+    frame.push_plain(&line);
 }
 
 fn push_section_header(frame: &mut ConfigUiFrame, title: &str) {
@@ -1535,9 +1575,13 @@ fn format_group_path(path: &GroupPath) -> String {
     }
     path.0
         .iter()
-        .map(|segment| format!("{}={}", segment.key, format_metadata_value(&segment.value)))
+        .map(format_group_path_segment)
         .collect::<Vec<_>>()
         .join(" > ")
+}
+
+fn format_group_path_segment(segment: &andamento_shared::GroupSegment) -> String {
+    format!("{}={}", segment.key, format_metadata_value(&segment.value))
 }
 
 fn format_metadata_value(value: &MetadataValue) -> String {
@@ -2058,6 +2102,126 @@ mod tests {
                 .and_then(|templates| templates.group_header.as_ref())
                 .map(|slot| slot.template_name.as_str()),
             Some("repo-header")
+        );
+    }
+
+    #[test]
+    fn inspect_group_path_wraps_at_components_and_indents_continuations() {
+        let path = GroupPath(vec![
+            GroupSegment {
+                key: "scope".to_owned(),
+                value: MetadataValue::Text("engineering".to_owned()),
+                label: None,
+            },
+            GroupSegment {
+                key: "project".to_owned(),
+                value: MetadataValue::Text("andamento".to_owned()),
+                label: None,
+            },
+            GroupSegment {
+                key: "branch".to_owned(),
+                value: MetadataValue::Text("inspect-path-wrap".to_owned()),
+                label: None,
+            },
+        ]);
+        let model = ControllerViewModel {
+            sort_mode: SortMode::Position,
+            config: RailConfig::default(),
+            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
+            tabs: vec![],
+            rows: vec![RailRow::GroupHeader {
+                group_id: "scope=engineering/project=andamento/branch=inspect-path-wrap".to_owned(),
+                path: path.clone(),
+                label: "inspect-path-wrap".to_owned(),
+                full_label: "inspect-path-wrap".to_owned(),
+                tab_count: 1,
+                templates: ResolvedTemplateSlots::default(),
+            }],
+            resolved_metadata: vec![],
+            observed_identities: vec![],
+            metadata_controls: andamento_shared::MetadataControls::default(),
+            inspected_node: Some(NodeKey::Group(path)),
+            collapsed_groups: vec![],
+        };
+
+        let rendered = render_config_with_scope(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Inspect,
+            None,
+            40,
+            34,
+            &[],
+            false,
+            0,
+        );
+        let identity_lines = rendered
+            .lines
+            .iter()
+            .skip_while(|line| !line.trim().starts_with("── Identity "))
+            .skip(1)
+            .take_while(|line| !line.trim().is_empty())
+            .map(|line| line.trim_end())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            identity_lines,
+            vec![
+                "type      Group",
+                "path      scope=engineering >",
+                "          project=andamento >",
+                "          branch=inspect-path-wrap",
+            ]
+        );
+    }
+
+    #[test]
+    fn inspect_tab_group_path_wraps_without_dropping_the_group_label() {
+        let mut model = model_with_tab(7, "repo");
+        model.tabs[0].grouping = Some(TabGroupingInfo {
+            key: "scope=engineering/project=andamento".to_owned(),
+            path: GroupPath(vec![
+                GroupSegment {
+                    key: "scope".to_owned(),
+                    value: MetadataValue::Text("engineering".to_owned()),
+                    label: None,
+                },
+                GroupSegment {
+                    key: "project".to_owned(),
+                    value: MetadataValue::Text("andamento".to_owned()),
+                    label: None,
+                },
+            ]),
+            label: "repo".to_owned(),
+            full_label: "repo".to_owned(),
+        });
+        model.inspected_node = Some(NodeKey::Tab(7));
+
+        let rendered = render_config_with_scope(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Inspect,
+            None,
+            40,
+            34,
+            &[],
+            false,
+            0,
+        );
+        let group_lines = rendered
+            .lines
+            .iter()
+            .skip_while(|line| !line.trim_start().starts_with("group"))
+            .take(2)
+            .map(|line| line.trim_end())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            group_lines,
+            vec![
+                "group     repo scope=engineering >",
+                "          project=andamento",
+            ]
         );
     }
 
