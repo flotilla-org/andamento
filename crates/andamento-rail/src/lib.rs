@@ -82,6 +82,18 @@ fn should_forward_scroll_to_controller(rail_can_scroll: Option<bool>) -> bool {
     !matches!(rail_can_scroll, Some(false))
 }
 
+#[cfg(test)]
+thread_local! {
+    static SCROLL_TAB_SWITCH_TARGET: std::cell::Cell<Option<u32>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn switch_tab_from_scroll(target: u32) {
+    #[cfg(test)]
+    SCROLL_TAB_SWITCH_TARGET.with(|recorded_target| recorded_target.set(Some(target)));
+    switch_tab_to(target);
+}
+
 #[cfg(not(test))]
 fn schedule_scroll_flush() {
     set_timeout(0.0);
@@ -685,6 +697,37 @@ mod tests {
         assert!(should_forward_scroll_to_controller(None));
         assert!(should_forward_scroll_to_controller(Some(true)));
         assert!(!should_forward_scroll_to_controller(Some(false)));
+    }
+
+    #[test]
+    fn confirmed_fitting_rail_cycles_tabs() {
+        let mut state = PluginState {
+            local_tabs: vec![
+                LocalTab {
+                    tab_id: 1,
+                    position: 0,
+                    name: "one".to_owned(),
+                    active: true,
+                },
+                LocalTab {
+                    tab_id: 2,
+                    position: 1,
+                    name: "two".to_owned(),
+                    active: false,
+                },
+            ],
+            rail_can_scroll: Some(false),
+            ..Default::default()
+        };
+        SCROLL_TAB_SWITCH_TARGET.with(|target| target.set(None));
+
+        state.handle_mouse(Mouse::ScrollDown(1));
+        state.flush_pending_scroll();
+
+        assert_eq!(
+            SCROLL_TAB_SWITCH_TARGET.with(|target| target.get()),
+            Some(2)
+        );
     }
 
     #[test]
@@ -1399,7 +1442,7 @@ impl PluginState {
         if let Some(active_tab_idx) = self.active_tab_idx() {
             let target = tab_index_after_scroll(active_tab_idx, self.local_tabs.len(), delta);
             if target != active_tab_idx {
-                switch_tab_to(target as u32);
+                switch_tab_from_scroll(target as u32);
             }
         }
         false
