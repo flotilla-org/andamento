@@ -180,6 +180,11 @@ impl ZellijPlugin for PluginState {
                 // racing the new rail out of known_rails.
                 let mut state_changed = self.state.update_panes_from_manifest(pane_manifest);
                 for terminal_id in self.state.terminal_panes_for_cwd_refresh() {
+                    // Mark before the call: one attempt per pane lifetime. On
+                    // failure (e.g. host-side timeout) we rely on
+                    // Event::CwdChanged rather than retrying every PaneUpdate.
+                    self.state
+                        .mark_pane_cwd_requested(PaneTarget::Terminal(terminal_id));
                     if let Ok(cwd) = get_pane_cwd(PaneId::Terminal(terminal_id)) {
                         state_changed |= self.state.set_pane_cwd(
                             PaneTarget::Terminal(terminal_id),

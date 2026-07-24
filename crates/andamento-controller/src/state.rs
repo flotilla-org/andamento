@@ -51,6 +51,9 @@ struct ControllerPane {
     is_focused: bool,
     ordinal: i64,
     cwd: Option<String>,
+    // One host-call attempt per pane lifetime; afterwards cwd arrives only
+    // via Event::CwdChanged, so a failed lookup is never retried per event.
+    cwd_requested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,6 +225,9 @@ impl ControllerState {
                         cwd: previous_panes
                             .get(&pane_target)
                             .and_then(|previous| previous.cwd.clone()),
+                        cwd_requested: previous_panes
+                            .get(&pane_target)
+                            .is_some_and(|previous| previous.cwd_requested),
                     },
                 );
             }
@@ -262,6 +268,7 @@ impl ControllerState {
                 is_focused,
                 ordinal,
                 cwd: None,
+                cwd_requested: false,
             },
         );
     }
@@ -280,7 +287,7 @@ impl ControllerState {
             .panes
             .values()
             .filter(|pane| pane.is_selectable)
-            .filter(|pane| pane.cwd.is_none())
+            .filter(|pane| pane.cwd.is_none() && !pane.cwd_requested)
             .filter_map(|pane| match pane.pane_id {
                 PaneTarget::Terminal(id) => Some(id),
                 PaneTarget::Plugin(_) => None,
@@ -288,6 +295,12 @@ impl ControllerState {
             .collect();
         terminal_ids.sort_unstable();
         terminal_ids
+    }
+
+    pub fn mark_pane_cwd_requested(&mut self, pane_id: PaneTarget) {
+        if let Some(pane) = self.panes.get_mut(&pane_id) {
+            pane.cwd_requested = true;
+        }
     }
 
     pub fn set_status(&mut self, mut status: SetPaneStatus) {
@@ -2399,6 +2412,41 @@ mod tests {
         state.set_pane_cwd(PaneTarget::Terminal(11), "/repo/known".into());
 
         assert_eq!(state.terminal_panes_for_cwd_refresh(), vec![10]);
+    }
+
+    #[test]
+    fn cwd_refresh_requests_each_pane_at_most_once() {
+        let mut state = ControllerState::default();
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "work".into(),
+            active: true,
+        }]);
+        let manifest = PaneManifest {
+            panes: HashMap::from([(
+                0,
+                vec![zellij_tile::prelude::PaneInfo {
+                    id: 10,
+                    is_plugin: false,
+                    is_selectable: true,
+                    ..Default::default()
+                }],
+            )]),
+        };
+        state.update_panes_from_manifest(manifest.clone());
+
+        assert_eq!(state.terminal_panes_for_cwd_refresh(), vec![10]);
+        state.mark_pane_cwd_requested(PaneTarget::Terminal(10));
+
+        // A failed lookup must not be retried on the next manifest update.
+        state.update_panes_from_manifest(manifest.clone());
+        assert_eq!(state.terminal_panes_for_cwd_refresh(), Vec::<u32>::new());
+
+        // CwdChanged still lands and keeps the pane out of the refresh set.
+        assert!(state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into()));
+        state.update_panes_from_manifest(manifest);
+        assert_eq!(state.terminal_panes_for_cwd_refresh(), Vec::<u32>::new());
     }
 
     #[test]
