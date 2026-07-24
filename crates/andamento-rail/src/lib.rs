@@ -323,7 +323,9 @@ pub struct PluginState {
     next_icon_asset_id: u32,
     last_graphics_signature: Option<Vec<GraphicsSignatureEntry>>,
     rail_ui_state: RailUiState,
-    rail_can_scroll: bool,
+    // None until a controller-backed render can distinguish overflow from
+    // placeholder content.
+    rail_can_scroll: Option<bool>,
     pending_scroll_delta: isize,
     scroll_flush_scheduled: bool,
     last_pane_manifest: Option<PaneManifest>,
@@ -526,7 +528,7 @@ impl ZellijPlugin for PluginState {
             &metadata_controls,
             self.rail_ui_state.scroll_offset,
         );
-        self.rail_can_scroll = rendered.can_scroll();
+        self.rail_can_scroll = controller_available.then(|| rendered.can_scroll());
         if should_sync_graphics(controller_available) {
             self.sync_graphics(&rendered.visible_cards);
         }
@@ -541,11 +543,18 @@ mod tests {
     use super::*;
     use andamento_shared::RailUiRevision;
     use render::{VisibleCard, VisibleIconRect};
+    use std::cell::Cell;
 
     // Zellij's native shim references this WASM host import when tests exercise
     // mouse handlers that can switch tabs.
+    thread_local! {
+        static HOST_PLUGIN_COMMAND_COUNT: Cell<usize> = const { Cell::new(0) };
+    }
+
     #[no_mangle]
-    extern "C" fn host_run_plugin_command() {}
+    extern "C" fn host_run_plugin_command() {
+        HOST_PLUGIN_COMMAND_COUNT.with(|count| count.set(count.get() + 1));
+    }
 
     fn pipe(name: &str, payload: String) -> PipeMessage {
         PipeMessage {
@@ -650,9 +659,25 @@ mod tests {
     }
 
     #[test]
+    fn wheel_before_first_controller_snapshot_sends_scroll_action() {
+        let mut state = PluginState::default();
+        state.render(4, 20);
+        let commands_before = HOST_PLUGIN_COMMAND_COUNT.with(|command_count| command_count.get());
+
+        state.handle_mouse(Mouse::ScrollDown(1));
+        state.flush_pending_scroll();
+
+        assert_eq!(
+            HOST_PLUGIN_COMMAND_COUNT.with(|command_count| command_count.get()),
+            commands_before + 1,
+            "unknown scrollability must request controller scrolling, not use the tab fallback"
+        );
+    }
+
+    #[test]
     fn wheel_burst_does_not_advance_render_state_event_by_event() {
         let mut state = PluginState {
-            rail_can_scroll: true,
+            rail_can_scroll: Some(true),
             ..Default::default()
         };
 
@@ -678,7 +703,7 @@ mod tests {
                 scroll_offset: 4,
                 ..Default::default()
             },
-            rail_can_scroll: true,
+            rail_can_scroll: Some(true),
             ..Default::default()
         };
         state.handle_mouse(Mouse::ScrollDown(3));
@@ -1354,7 +1379,7 @@ impl PluginState {
         if delta == 0 {
             return false;
         }
-        if self.rail_can_scroll {
+        if self.rail_can_scroll != Some(false) {
             self.send_rail_ui_action(RailUiAction::ScrollBy { delta });
             return false;
         }
