@@ -78,6 +78,22 @@ fn tab_index_after_scroll(active_tab_idx: usize, tab_count: usize, delta: isize)
     }
 }
 
+fn should_forward_scroll_to_controller(rail_can_scroll: Option<bool>) -> bool {
+    !matches!(rail_can_scroll, Some(false))
+}
+
+#[cfg(test)]
+thread_local! {
+    static SCROLL_TAB_SWITCH_TARGET: std::cell::Cell<Option<u32>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn switch_tab_from_scroll(target: u32) {
+    #[cfg(test)]
+    SCROLL_TAB_SWITCH_TARGET.with(|recorded_target| recorded_target.set(Some(target)));
+    switch_tab_to(target);
+}
+
 #[cfg(not(test))]
 fn schedule_scroll_flush() {
     set_timeout(0.0);
@@ -323,7 +339,9 @@ pub struct PluginState {
     next_icon_asset_id: u32,
     last_graphics_signature: Option<Vec<GraphicsSignatureEntry>>,
     rail_ui_state: RailUiState,
-    rail_can_scroll: bool,
+    // None until a controller-backed render can distinguish overflow from
+    // placeholder content.
+    rail_can_scroll: Option<bool>,
     pending_scroll_delta: isize,
     scroll_flush_scheduled: bool,
     last_pane_manifest: Option<PaneManifest>,
@@ -526,7 +544,7 @@ impl ZellijPlugin for PluginState {
             &metadata_controls,
             self.rail_ui_state.scroll_offset,
         );
-        self.rail_can_scroll = rendered.can_scroll();
+        self.rail_can_scroll = controller_available.then(|| rendered.can_scroll());
         if should_sync_graphics(controller_available) {
             self.sync_graphics(&rendered.visible_cards);
         }
@@ -541,11 +559,18 @@ mod tests {
     use super::*;
     use andamento_shared::RailUiRevision;
     use render::{VisibleCard, VisibleIconRect};
+    use std::cell::Cell;
 
     // Zellij's native shim references this WASM host import when tests exercise
     // mouse handlers that can switch tabs.
+    thread_local! {
+        static HOST_PLUGIN_COMMAND_COUNT: Cell<usize> = const { Cell::new(0) };
+    }
+
     #[no_mangle]
-    extern "C" fn host_run_plugin_command() {}
+    extern "C" fn host_run_plugin_command() {
+        HOST_PLUGIN_COMMAND_COUNT.with(|count| count.set(count.get() + 1));
+    }
 
     fn pipe(name: &str, payload: String) -> PipeMessage {
         PipeMessage {
@@ -650,9 +675,65 @@ mod tests {
     }
 
     #[test]
+    fn wheel_before_first_controller_snapshot_sends_scroll_action() {
+        let mut state = PluginState::default();
+        state.render(4, 20);
+        let commands_before = HOST_PLUGIN_COMMAND_COUNT.with(|command_count| command_count.get());
+
+        // Empty local tabs make the fallback a no-op, so a new host command
+        // proves that the wheel delta was forwarded to the controller.
+        state.handle_mouse(Mouse::ScrollDown(1));
+        state.flush_pending_scroll();
+
+        assert_eq!(
+            HOST_PLUGIN_COMMAND_COUNT.with(|command_count| command_count.get()),
+            commands_before + 1,
+            "unknown scrollability must request controller scrolling, not use the tab fallback"
+        );
+    }
+
+    #[test]
+    fn tab_fallback_requires_a_confirmed_fitting_rail() {
+        assert!(should_forward_scroll_to_controller(None));
+        assert!(should_forward_scroll_to_controller(Some(true)));
+        assert!(!should_forward_scroll_to_controller(Some(false)));
+    }
+
+    #[test]
+    fn confirmed_fitting_rail_cycles_tabs() {
+        let mut state = PluginState {
+            local_tabs: vec![
+                LocalTab {
+                    tab_id: 1,
+                    position: 0,
+                    name: "one".to_owned(),
+                    active: true,
+                },
+                LocalTab {
+                    tab_id: 2,
+                    position: 1,
+                    name: "two".to_owned(),
+                    active: false,
+                },
+            ],
+            rail_can_scroll: Some(false),
+            ..Default::default()
+        };
+        SCROLL_TAB_SWITCH_TARGET.with(|target| target.set(None));
+
+        state.handle_mouse(Mouse::ScrollDown(1));
+        state.flush_pending_scroll();
+
+        assert_eq!(
+            SCROLL_TAB_SWITCH_TARGET.with(|target| target.get()),
+            Some(2)
+        );
+    }
+
+    #[test]
     fn wheel_burst_does_not_advance_render_state_event_by_event() {
         let mut state = PluginState {
-            rail_can_scroll: true,
+            rail_can_scroll: Some(true),
             ..Default::default()
         };
 
@@ -678,7 +759,7 @@ mod tests {
                 scroll_offset: 4,
                 ..Default::default()
             },
-            rail_can_scroll: true,
+            rail_can_scroll: Some(true),
             ..Default::default()
         };
         state.handle_mouse(Mouse::ScrollDown(3));
@@ -1354,14 +1435,14 @@ impl PluginState {
         if delta == 0 {
             return false;
         }
-        if self.rail_can_scroll {
+        if should_forward_scroll_to_controller(self.rail_can_scroll) {
             self.send_rail_ui_action(RailUiAction::ScrollBy { delta });
             return false;
         }
         if let Some(active_tab_idx) = self.active_tab_idx() {
             let target = tab_index_after_scroll(active_tab_idx, self.local_tabs.len(), delta);
             if target != active_tab_idx {
-                switch_tab_to(target as u32);
+                switch_tab_from_scroll(target as u32);
             }
         }
         false
