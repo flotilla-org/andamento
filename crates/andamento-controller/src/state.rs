@@ -4394,6 +4394,85 @@ mod tests {
     }
 
     #[test]
+    fn git_watcher_tab_and_flotilla_convoy_join_at_vcs_repo_level() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 7,
+            position: 0,
+            name: "flotilla".to_owned(),
+            active: true,
+        }]);
+        let repo = GroupSegment {
+            key: "vcs.repo".to_owned(),
+            value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
+            label: Some("flotilla".to_owned()),
+        };
+        let repo_path = GroupPath(vec![repo.clone()]);
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Tab(7),
+            source_id: "andamento-git-watcher".to_owned(),
+            set: BTreeMap::from([(
+                KEY_TAB_SCOPE.to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::GroupPath(
+                        group_path_to_metadata_segments(&repo_path).expect("text repo path"),
+                    ),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+        let convoy_path = GroupPath(vec![
+            repo,
+            GroupSegment {
+                key: "flotilla.convoy".to_owned(),
+                value: MetadataValue::Text("dev/fact-dialect".to_owned()),
+                label: Some("fact dialect".to_owned()),
+            },
+        ]);
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Group(convoy_path.clone()),
+            source_id: "flotilla-connector".to_owned(),
+            set: BTreeMap::from([(
+                KEY_FACTORY_ID.to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("flotilla:convoys/dev/fact-dialect".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+
+        assert_eq!(
+            model
+                .rows
+                .iter()
+                .filter(
+                    |row| matches!(row, RailRow::GroupHeader { path, .. } if path == &repo_path)
+                )
+                .count(),
+            1,
+            "both producers share one repository header"
+        );
+        assert!(model.rows.iter().any(
+            |row| matches!(row, RailRow::Tab { tab_id: 7, parent_path, .. } if parent_path.as_ref() == Some(&repo_path))
+        ));
+        assert!(model.rows.iter().any(
+            |row| matches!(row, RailRow::Latent { latent, .. } if latent.path == convoy_path)
+        ));
+    }
+
+    #[test]
     fn latent_and_live_catalog_entries_share_catalog_order() {
         let mut state = ControllerState::default();
         state.set_rail_config(RailConfig {

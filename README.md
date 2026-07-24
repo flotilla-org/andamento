@@ -97,7 +97,7 @@ Example grouping rules:
 grouping "proj-repo-branch" {
     priority 100
     level key="andamento.project" optional=true
-    level key="git.repo" label-key="repo.name"
+    level key="vcs.repo" label-key="repo.name"
     level key="git.branch"
 }
 ```
@@ -121,10 +121,10 @@ Example template:
 
 ```kdl
 template "git.group-header" slot="group-header" node-kind="group" {
-    when exists="git.repo"
+    when exists="vcs.repo"
 
     field priority=100 {
-        value key="git.repo"
+        value key="vcs.repo"
         value key="group.label"
     }
     field key="git.branch" priority=60 prefix=" "
@@ -200,7 +200,7 @@ before falling back to `zellij`.
 
 ```text
 tab.kind = repo-manager
-tab.scope = GroupPath([{ key = git.repo, value = owner/name }])
+tab.scope = GroupPath([{ key = vcs.repo, value = owner/name }])
 ```
 
 The factory tab layout is deliberately a repeated KDL layout for now because
