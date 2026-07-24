@@ -344,6 +344,7 @@ pub struct PluginState {
     rail_can_scroll: Option<bool>,
     pending_scroll_delta: isize,
     scroll_flush_scheduled: bool,
+    ensure_active_visible: bool,
     last_pane_manifest: Option<PaneManifest>,
     stats: PluginStatsRecorder,
     rail_placement: RailPlacement,
@@ -423,8 +424,11 @@ impl ZellijPlugin for PluginState {
                 if self.local_tabs == local_tabs {
                     return false;
                 }
+                let previous_active_tab_id = self.active_tab_id();
                 self.tabs = tabs;
                 self.local_tabs = local_tabs;
+                self.ensure_active_visible |= previous_active_tab_id != self.active_tab_id()
+                    && self.active_tab_id().is_some();
                 if let Some(pane_manifest) = self.last_pane_manifest.clone() {
                     self.observe_own_rail_size(&pane_manifest);
                 }
@@ -529,7 +533,12 @@ impl ZellijPlugin for PluginState {
             .as_ref()
             .map(|model| model.metadata_controls.clone())
             .unwrap_or_default();
-        let rendered = render::render_lines_with_rail_scroll(
+        let should_ensure_active_visible =
+            self.ensure_active_visible && self.own_tab_id() == self.active_tab_id();
+        if should_ensure_active_visible {
+            self.ensure_active_visible = false;
+        }
+        let rendered = render::render_lines_with_rail_viewport(
             self.controller_model.as_ref(),
             &self.local_tabs,
             rows,
@@ -543,7 +552,11 @@ impl ZellijPlugin for PluginState {
             None,
             &metadata_controls,
             self.rail_ui_state.scroll_offset,
+            should_ensure_active_visible,
         );
+        if let Some(offset) = rendered.ensure_visible_offset {
+            self.send_rail_ui_action(RailUiAction::SetScrollOffset { offset });
+        }
         self.rail_can_scroll = controller_available.then(|| rendered.can_scroll());
         if should_sync_graphics(controller_available) {
             self.sync_graphics(&rendered.visible_cards);
@@ -671,6 +684,34 @@ mod tests {
             serde_json::from_str::<RailUiAction>(message.message_payload.as_deref().unwrap())
                 .unwrap(),
             RailUiAction::ScrollBy { delta: 7 }
+        );
+    }
+
+    #[test]
+    fn clicking_a_visible_tab_does_not_reset_the_shared_viewport() {
+        let mut state = PluginState {
+            hit_regions: vec![HitRegion {
+                row_start: 0,
+                row_end: 2,
+                col_start: 0,
+                col_end: 19,
+                tab_id: 2,
+                tab_position: 1,
+                group_path: None,
+                inspect_target: None,
+                materialize_request: None,
+                action: HitAction::SwitchTab,
+            }],
+            ..Default::default()
+        };
+        let commands_before = HOST_PLUGIN_COMMAND_COUNT.with(|count| count.get());
+
+        state.handle_mouse(Mouse::LeftClick(1, 4));
+
+        assert_eq!(
+            HOST_PLUGIN_COMMAND_COUNT.with(|count| count.get()),
+            commands_before + 1,
+            "the click should switch tabs without also sending ResetScroll"
         );
     }
 
@@ -1353,7 +1394,6 @@ impl PluginState {
                 };
                 match hit.action {
                     HitAction::SwitchTab => {
-                        self.reset_scroll_position();
                         switch_tab_to((hit.tab_position + 1) as u32);
                         false
                     }

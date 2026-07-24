@@ -381,6 +381,9 @@ impl ControllerState {
             RailUiAction::ScrollBy { delta } => {
                 self.rail_ui.scroll_offset = self.rail_ui.scroll_offset.saturating_add(delta);
             }
+            RailUiAction::SetScrollOffset { offset } => {
+                self.rail_ui.scroll_offset = offset;
+            }
             RailUiAction::ResetScroll => {
                 self.rail_ui.scroll_offset = 0;
             }

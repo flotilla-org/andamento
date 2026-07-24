@@ -1984,6 +1984,14 @@ mod tests {
         assert!(result.broadcast_rail_ui_state);
         assert_eq!(state.rail_ui_state().scroll_offset, 6);
 
+        let ensure_visible =
+            serde_json::to_string(&RailUiAction::SetScrollOffset { offset: 19 }).unwrap();
+        handle_pipe_message(
+            &mut state,
+            pipe(MSG_RAIL_UI_ACTION, Some(ensure_visible), BTreeMap::new()),
+        );
+        assert_eq!(state.rail_ui_state().scroll_offset, 19);
+
         let reset = serde_json::to_string(&RailUiAction::ResetScroll).unwrap();
         handle_pipe_message(
             &mut state,

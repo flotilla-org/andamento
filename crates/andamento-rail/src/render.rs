@@ -70,6 +70,10 @@ pub struct RenderedRail {
     /// back to tab-switching otherwise.
     pub content_height: usize,
     pub available_rows: usize,
+    /// Absolute buffered-content row used as the viewport's top line.
+    pub visible_start: usize,
+    /// A new shared absolute offset needed to reveal a newly active tab.
+    pub ensure_visible_offset: Option<isize>,
 }
 
 impl RenderedRail {
@@ -376,6 +380,36 @@ pub fn render_lines_with_rail_scroll(
     metadata_controls: &MetadataControls,
     rail_scroll_offset: isize,
 ) -> RenderedRail {
+    render_lines_with_rail_viewport(
+        model,
+        tabs,
+        rows,
+        cols,
+        controller_available,
+        theme,
+        terminal_cell_size,
+        collapsed_groups,
+        template_catalog,
+        metadata_controls,
+        rail_scroll_offset,
+        false,
+    )
+}
+
+pub fn render_lines_with_rail_viewport(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    rows: usize,
+    cols: usize,
+    controller_available: bool,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+    collapsed_groups: &[GroupPath],
+    template_catalog: Option<&TemplateConfigCatalog>,
+    metadata_controls: &MetadataControls,
+    rail_scroll_offset: isize,
+    ensure_active_visible: bool,
+) -> RenderedRail {
     if rows == 0 || cols == 0 {
         return RenderedRail {
             lines: vec![],
@@ -383,6 +417,8 @@ pub fn render_lines_with_rail_scroll(
             visible_cards: vec![],
             content_height: 0,
             available_rows: 0,
+            visible_start: 0,
+            ensure_visible_offset: None,
         };
     }
 
@@ -397,10 +433,11 @@ pub fn render_lines_with_rail_scroll(
     let inspected_node = model.and_then(|model| model.inspected_node.as_ref());
     let root_settings = root_inherited_settings_for_model(model);
     let mut content_height = 0;
+    let mut viewport = Viewport::default();
     if nodes.is_empty() {
         lines[0] = pad_to_width("tabs: waiting for tab state", cols);
     } else {
-        content_height = render_nodes(
+        let rendered_nodes = render_nodes(
             &mut lines,
             &mut hit_regions,
             &mut visible_cards,
@@ -416,7 +453,10 @@ pub fn render_lines_with_rail_scroll(
             inspected_node,
             root_settings,
             rail_scroll_offset,
+            ensure_active_visible,
         );
+        content_height = rendered_nodes.content_height;
+        viewport = rendered_nodes.viewport;
     }
 
     let rail_can_scroll = content_height > card_rows_available;
@@ -444,6 +484,8 @@ pub fn render_lines_with_rail_scroll(
         visible_cards,
         content_height,
         available_rows: card_rows_available,
+        visible_start: viewport.visible_start,
+        ensure_visible_offset: viewport.ensure_visible_offset,
     }
 }
 
@@ -1197,9 +1239,10 @@ fn render_nodes(
     inspected_node: Option<&NodeKey>,
     root_settings: InheritedRailSettings,
     rail_scroll_offset: isize,
-) -> usize {
+    ensure_active_visible: bool,
+) -> RenderedNodes {
     if nodes.is_empty() || available_rows == 0 {
-        return 0;
+        return RenderedNodes::default();
     }
 
     // Root's MetaChildren cascades to descendants.
@@ -1234,7 +1277,7 @@ fn render_nodes(
         );
         // Top-level (ungrouped) path doesn't go through copy_visible_buffer;
         // visible_cells already fits content. No scroll concept here yet.
-        return 0;
+        return RenderedNodes::default();
     }
     let mut buffered_lines = vec![];
     let mut buffered_hits = vec![];
@@ -1257,7 +1300,7 @@ fn render_nodes(
         root_settings,
     );
     let content_height = buffered_lines.len();
-    copy_visible_buffer(
+    let viewport = copy_visible_buffer(
         lines,
         hit_regions,
         visible_cards,
@@ -1267,8 +1310,12 @@ fn render_nodes(
         active_tab_id(nodes),
         available_rows,
         rail_scroll_offset,
+        ensure_active_visible,
     );
-    content_height
+    RenderedNodes {
+        content_height,
+        viewport,
+    }
 }
 
 fn root_inherited_settings_for_model(model: Option<&ControllerViewModel>) -> InheritedRailSettings {
@@ -2018,6 +2065,42 @@ fn generous_card_run_height(cards: &[RenderCard], sizing: RailSizingPreset) -> u
         + 1
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Viewport {
+    visible_start: usize,
+    ensure_visible_offset: Option<isize>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RenderedNodes {
+    content_height: usize,
+    viewport: Viewport,
+}
+
+fn absolute_viewport_start(scroll_offset: isize, max_start: usize) -> usize {
+    scroll_offset.clamp(0, max_start as isize) as usize
+}
+
+fn ensure_visible_start(
+    visible_start: usize,
+    target_start: usize,
+    target_end: usize,
+    available_rows: usize,
+    max_start: usize,
+) -> usize {
+    let visible_end = visible_start.saturating_add(available_rows);
+    if target_end < visible_start {
+        target_start.min(max_start)
+    } else if target_start >= visible_end {
+        target_end
+            .saturating_add(1)
+            .saturating_sub(available_rows)
+            .min(max_start)
+    } else {
+        visible_start
+    }
+}
+
 fn copy_visible_buffer(
     lines: &mut [String],
     hit_regions: &mut Vec<HitRegion>,
@@ -2028,34 +2111,34 @@ fn copy_visible_buffer(
     active_tab_id: Option<u64>,
     available_rows: usize,
     user_scroll_offset: isize,
-) {
+    ensure_active_visible: bool,
+) -> Viewport {
     if buffered_lines.is_empty() || available_rows == 0 {
-        return;
+        return Viewport::default();
     }
-    let active_row = active_tab_id
-        .and_then(|tab_id| {
-            buffered_hits
-                .iter()
-                .find(|hit| hit.action == HitAction::SwitchTab && hit.tab_id == tab_id)
-                .map(|hit| hit.row_start)
-        })
-        .or_else(|| {
-            buffered_cards
-                .iter()
-                .find(|card| card.status_priority.is_some() || card.status_row.is_some())
-                .map(|card| card.row_start)
-        })
-        .or_else(|| {
-            buffered_hits
-                .iter()
-                .find(|hit| hit.action == HitAction::SwitchTab)
-                .map(|hit| hit.row_start)
-        })
-        .unwrap_or(0);
     let max_start = buffered_lines.len().saturating_sub(available_rows);
-    let auto_start = active_row.saturating_sub(available_rows / 2).min(max_start);
-    let visible_start =
-        ((auto_start as isize) + user_scroll_offset).clamp(0, max_start as isize) as usize;
+    let base_start = absolute_viewport_start(user_scroll_offset, max_start);
+    let visible_start = if ensure_active_visible {
+        active_tab_id
+            .and_then(|tab_id| {
+                buffered_hits
+                    .iter()
+                    .find(|hit| hit.action == HitAction::SwitchTab && hit.tab_id == tab_id)
+            })
+            .map(|hit| {
+                ensure_visible_start(
+                    base_start,
+                    hit.row_start,
+                    hit.row_end,
+                    available_rows,
+                    max_start,
+                )
+            })
+            .unwrap_or(base_start)
+    } else {
+        base_start
+    };
+    let ensure_visible_offset = (visible_start != base_start).then_some(visible_start as isize);
     let visible_end = buffered_lines.len().min(visible_start + available_rows);
 
     for (output_row, line) in buffered_lines[visible_start..visible_end]
@@ -2090,6 +2173,10 @@ fn copy_visible_buffer(
         }
         Some(visible_card)
     }));
+    Viewport {
+        visible_start,
+        ensure_visible_offset,
+    }
 }
 
 fn active_tab_id(nodes: &[RenderNode]) -> Option<u64> {
@@ -5376,6 +5463,100 @@ mod tests {
         }
     }
 
+    #[test]
+    fn absolute_viewport_base_clamps_to_content_bounds() {
+        assert_eq!(absolute_viewport_start(-4, 12), 0);
+        assert_eq!(absolute_viewport_start(7, 12), 7);
+        assert_eq!(absolute_viewport_start(40, 12), 12);
+    }
+
+    #[test]
+    fn ensure_visible_moves_only_far_enough_to_reveal_target() {
+        assert_eq!(ensure_visible_start(10, 5, 7, 6, 30), 5);
+        assert_eq!(ensure_visible_start(10, 18, 20, 6, 30), 15);
+        assert_eq!(ensure_visible_start(10, 9, 10, 6, 30), 10);
+        assert_eq!(ensure_visible_start(10, 15, 17, 6, 30), 10);
+    }
+
+    #[test]
+    fn active_and_status_rows_do_not_move_the_absolute_viewport() {
+        let mut lines = vec![String::new(); 3];
+        let mut visible_hits = vec![];
+        let mut visible_cards = vec![];
+        let active_hit = HitRegion {
+            row_start: 8,
+            row_end: 10,
+            col_start: 0,
+            col_end: 9,
+            tab_id: 2,
+            tab_position: 1,
+            group_path: None,
+            inspect_target: None,
+            materialize_request: None,
+            action: HitAction::SwitchTab,
+        };
+        let status_card = VisibleCard {
+            tab_id: 1,
+            tab_position: 0,
+            row_start: 0,
+            status_row: Some(1),
+            status_icon_rect: None,
+            status_priority: Some(Priority::Waiting),
+            status_icon: None,
+        };
+
+        let viewport = copy_visible_buffer(
+            &mut lines,
+            &mut visible_hits,
+            &mut visible_cards,
+            (0..12).map(|row| format!("row {row}")).collect(),
+            vec![active_hit],
+            vec![status_card],
+            Some(2),
+            3,
+            4,
+            false,
+        );
+
+        assert_eq!(viewport.visible_start, 4);
+        assert_eq!(viewport.ensure_visible_offset, None);
+    }
+
+    #[test]
+    fn activation_ensure_visible_requests_a_minimal_absolute_offset() {
+        let mut lines = vec![String::new(); 4];
+        let mut visible_hits = vec![];
+        let mut visible_cards = vec![];
+        let active_hit = HitRegion {
+            row_start: 10,
+            row_end: 12,
+            col_start: 0,
+            col_end: 9,
+            tab_id: 2,
+            tab_position: 1,
+            group_path: None,
+            inspect_target: None,
+            materialize_request: None,
+            action: HitAction::SwitchTab,
+        };
+
+        let viewport = copy_visible_buffer(
+            &mut lines,
+            &mut visible_hits,
+            &mut visible_cards,
+            (0..20).map(|row| format!("row {row}")).collect(),
+            vec![active_hit],
+            vec![],
+            Some(2),
+            4,
+            3,
+            true,
+        );
+
+        assert_eq!(viewport.visible_start, 9);
+        assert_eq!(viewport.ensure_visible_offset, Some(9));
+    }
+
     fn test_theme() -> RenderTheme {
         RenderTheme {
             active_border: PaletteColor::EightBit(2),
@@ -5913,6 +6094,7 @@ mod tests {
             None,
             InheritedRailSettings::default(),
             0,
+            false,
         );
 
         assert!(lines[0].starts_with("▼ parent"));

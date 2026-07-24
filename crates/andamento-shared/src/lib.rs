@@ -159,6 +159,7 @@ pub struct ChildLayoutSetRequest {
 pub enum RailUiAction {
     ToggleGroup { path: GroupPath },
     ScrollBy { delta: isize },
+    SetScrollOffset { offset: isize },
     ResetScroll,
 }
 
