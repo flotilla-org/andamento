@@ -49,8 +49,18 @@ const CONFIG_ORIGIN_TAB_ID: &str = "origin_tab_id";
 const CONFIG_PANE_KIND: &str = "pane_kind";
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
 
-fn command_for_materialize_recipe(recipe: &str) -> CommandToRun {
-    CommandToRun::new_with_args("/bin/sh", vec!["-c", recipe])
+fn command_for_materialize_recipe(
+    recipe: &str,
+    checkout_path: Option<&str>,
+    home_dir: Option<&std::path::Path>,
+) -> Option<CommandToRun> {
+    let mut command = CommandToRun::new_with_args("/bin/sh", vec!["-c", recipe]);
+    command.cwd = Some(
+        checkout_path
+            .map(PathBuf::from)
+            .or_else(|| home_dir.map(std::path::Path::to_path_buf))?,
+    );
+    Some(command)
 }
 
 fn rail_ui_state_broadcast_message(state: &RailUiState) -> Option<MessageToPlugin> {
@@ -641,13 +651,27 @@ impl PluginState {
             self.stats.increment("latent.materialize.rejected-stale");
             return false;
         }
+        let home_dir = request
+            .checkout_path
+            .is_none()
+            .then(|| {
+                get_session_environment_variables()
+                    .get("HOME")
+                    .map(PathBuf::from)
+            })
+            .flatten();
+        let Some(command) = command_for_materialize_recipe(
+            &request.recipe,
+            request.checkout_path.as_deref(),
+            home_dir.as_deref(),
+        ) else {
+            self.stats.increment("latent.materialize.missing-home");
+            return self.state.abort_latent_materialization(&request);
+        };
         // Publish the opener-owned identity as pending before entering Zellij's
         // create call. Duplicate gestures now observe a non-openable latent.
         self.push_view_model_to_rails_with_pending(ViewModelPushReason::PipeMaterializeLatent);
-        let (Some(tab_id), _) = open_command_pane_in_new_tab(
-            command_for_materialize_recipe(&request.recipe),
-            BTreeMap::new(),
-        ) else {
+        let (Some(tab_id), _) = open_command_pane_in_new_tab(command, BTreeMap::new()) else {
             self.stats.increment("latent.materialize.open-failed");
             return self.state.abort_latent_materialization(&request);
         };
@@ -1589,6 +1613,7 @@ mod tests {
             }]),
             name: "latent tabs".to_owned(),
             recipe: "flotilla attach latent-tabs".to_owned(),
+            checkout_path: Some("/work/andamento".to_owned()),
         };
         let payload = serde_json::to_string(&request).unwrap();
 
@@ -1603,11 +1628,38 @@ mod tests {
     }
 
     #[test]
-    fn materialize_recipe_runs_verbatim_through_a_login_free_shell() {
-        let command = command_for_materialize_recipe("flotilla attach 'latent tabs'");
+    fn materialize_recipe_uses_checkout_path_as_cwd() {
+        let command = command_for_materialize_recipe(
+            "flotilla attach 'latent tabs'",
+            Some("/work/andamento"),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(command.path.to_string_lossy(), "/bin/sh");
         assert_eq!(command.args, vec!["-c", "flotilla attach 'latent tabs'"]);
+        assert_eq!(command.cwd, Some(PathBuf::from("/work/andamento")));
+    }
+
+    #[test]
+    fn materialize_recipe_uses_home_as_cwd_without_checkout_path() {
+        let command = command_for_materialize_recipe(
+            "flotilla attach 'latent tabs'",
+            None,
+            Some(std::path::Path::new("/home/robert")),
+        )
+        .unwrap();
+
+        assert_eq!(command.path.to_string_lossy(), "/bin/sh");
+        assert_eq!(command.args, vec!["-c", "flotilla attach 'latent tabs'"]);
+        assert_eq!(command.cwd, Some(PathBuf::from("/home/robert")));
+    }
+
+    #[test]
+    fn materialize_recipe_requires_home_without_checkout_path() {
+        assert!(
+            command_for_materialize_recipe("flotilla attach latent-tabs", None, None).is_none()
+        );
     }
 
     #[test]

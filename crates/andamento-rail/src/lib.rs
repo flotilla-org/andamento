@@ -896,6 +896,7 @@ mod tests {
             }]),
             name: "latent tabs".to_owned(),
             recipe: "flotilla attach latent-tabs".to_owned(),
+            checkout_path: Some("/work/andamento".to_owned()),
         };
 
         let message =
