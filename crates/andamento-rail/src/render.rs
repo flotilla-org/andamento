@@ -72,6 +72,8 @@ pub struct RenderedRail {
     pub available_rows: usize,
     /// A new shared absolute offset needed to reveal a newly active tab.
     pub ensure_visible_offset: Option<isize>,
+    /// Whether an ensure-visible request found its renderable tab or group header.
+    pub ensure_active_resolved: bool,
 }
 
 impl RenderedRail {
@@ -416,6 +418,7 @@ pub fn render_lines_with_rail_viewport(
             content_height: 0,
             available_rows: 0,
             ensure_visible_offset: None,
+            ensure_active_resolved: false,
         };
     }
 
@@ -482,6 +485,7 @@ pub fn render_lines_with_rail_viewport(
         content_height,
         available_rows: card_rows_available,
         ensure_visible_offset: viewport.ensure_visible_offset,
+        ensure_active_resolved: viewport.ensure_active_resolved,
     }
 }
 
@@ -1273,7 +1277,13 @@ fn render_nodes(
         );
         // Top-level (ungrouped) path doesn't go through copy_visible_buffer;
         // visible_cells already fits content. No scroll concept here yet.
-        return RenderedNodes::default();
+        return RenderedNodes {
+            viewport: Viewport {
+                ensure_active_resolved: ensure_active_visible && controller_available,
+                ..Viewport::default()
+            },
+            ..RenderedNodes::default()
+        };
     }
     let mut buffered_lines = vec![];
     let mut buffered_hits = vec![];
@@ -2065,6 +2075,7 @@ fn generous_card_run_height(cards: &[RenderCard], sizing: RailSizingPreset) -> u
 struct Viewport {
     visible_start: usize,
     ensure_visible_offset: Option<isize>,
+    ensure_active_resolved: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2115,14 +2126,17 @@ fn copy_visible_buffer(
     }
     let max_start = buffered_lines.len().saturating_sub(available_rows);
     let base_start = absolute_viewport_start(user_scroll_offset, max_start);
+    let active_hit = ensure_active_visible
+        .then_some(active_ensure_target.as_ref())
+        .flatten()
+        .and_then(|target| {
+            buffered_hits
+                .iter()
+                .find(|hit| hit_matches_node(hit, target))
+        });
+    let ensure_active_resolved = active_hit.is_some();
     let visible_start = if ensure_active_visible {
-        active_ensure_target
-            .as_ref()
-            .and_then(|target| {
-                buffered_hits
-                    .iter()
-                    .find(|hit| hit_matches_node(hit, target))
-            })
+        active_hit
             .map(|hit| {
                 ensure_visible_start(
                     base_start,
@@ -2174,6 +2188,7 @@ fn copy_visible_buffer(
     Viewport {
         visible_start,
         ensure_visible_offset,
+        ensure_active_resolved,
     }
 }
 
@@ -5539,6 +5554,7 @@ mod tests {
 
         assert_eq!(viewport.visible_start, 4);
         assert_eq!(viewport.ensure_visible_offset, None);
+        assert!(!viewport.ensure_active_resolved);
     }
 
     #[test]
@@ -5574,6 +5590,7 @@ mod tests {
 
         assert_eq!(viewport.visible_start, 9);
         assert_eq!(viewport.ensure_visible_offset, Some(9));
+        assert!(viewport.ensure_active_resolved);
     }
 
     #[test]
@@ -5617,6 +5634,7 @@ mod tests {
 
         assert_eq!(viewport.visible_start, 7);
         assert_eq!(viewport.ensure_visible_offset, Some(7));
+        assert!(viewport.ensure_active_resolved);
     }
 
     fn test_theme() -> RenderTheme {

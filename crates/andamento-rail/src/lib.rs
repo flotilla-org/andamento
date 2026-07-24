@@ -535,9 +535,6 @@ impl ZellijPlugin for PluginState {
             .unwrap_or_default();
         let should_ensure_active_visible =
             self.ensure_active_visible && self.own_tab_id() == self.active_tab_id();
-        if should_ensure_active_visible {
-            self.ensure_active_visible = false;
-        }
         let rendered = render::render_lines_with_rail_viewport(
             self.controller_model.as_ref(),
             &self.local_tabs,
@@ -554,6 +551,9 @@ impl ZellijPlugin for PluginState {
             self.rail_ui_state.scroll_offset,
             should_ensure_active_visible,
         );
+        if should_ensure_active_visible && rendered.ensure_active_resolved {
+            self.ensure_active_visible = false;
+        }
         if let Some(offset) = rendered.ensure_visible_offset {
             self.send_rail_ui_action(RailUiAction::SetScrollOffset { offset });
         }
@@ -713,6 +713,28 @@ mod tests {
             commands_before + 1,
             "the click should switch tabs without also sending ResetScroll"
         );
+    }
+
+    #[test]
+    fn ensure_visible_latch_survives_until_controller_render_can_resolve_target() {
+        let mut state = PluginState {
+            local_tabs: vec![LocalTab {
+                tab_id: 1,
+                position: 0,
+                name: "work".to_owned(),
+                active: true,
+            }],
+            own_plugin_placement: Some(PluginPlacement::Tab {
+                tab_id: 1,
+                pane_kind: PluginPaneKind::Tiled,
+            }),
+            ensure_active_visible: true,
+            ..Default::default()
+        };
+
+        state.render(4, 20);
+
+        assert!(state.ensure_active_visible);
     }
 
     #[test]
