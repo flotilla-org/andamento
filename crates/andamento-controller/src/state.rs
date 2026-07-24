@@ -22,6 +22,7 @@ const KEY_PANE_CWD: &str = "zellij.pane.cwd";
 const KEY_TAB_SCOPE: &str = "tab.scope";
 const KEY_FACTORY_ID: &str = "factory.id";
 const KEY_MATERIALIZE_RECIPE: &str = "materialize.recipe";
+const KEY_CHECKOUT_PATH: &str = "git.root";
 const KEY_STATUS_STATE: &str = "status.state";
 const KEY_SUMMARY_TEXT: &str = "summary.text";
 const FOCUSED_CWD_PRECEDENCE: i64 = 100;
@@ -1149,6 +1150,8 @@ impl ControllerState {
                     summary: metadata_entry_text(values, KEY_SUMMARY_TEXT).map(str::to_owned),
                     materialize_recipe: metadata_entry_text(values, KEY_MATERIALIZE_RECIPE)
                         .map(str::to_owned),
+                    checkout_path: metadata_entry_text(values, KEY_CHECKOUT_PATH)
+                        .map(str::to_owned),
                 })
             })
             .collect()
@@ -2252,6 +2255,7 @@ mod tests {
                 _ => None,
             })
             .expect("openable latent");
+        assert_eq!(request.checkout_path, None);
 
         (state, request, path)
     }
@@ -2747,6 +2751,7 @@ mod tests {
                 status_state: None,
                 summary: None,
                 materialize_recipe: None,
+                checkout_path: None,
             }],
         );
 
@@ -4086,6 +4091,15 @@ mod tests {
                         ordinal: None,
                     },
                 ),
+                (
+                    KEY_CHECKOUT_PATH.to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("/work/andamento".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
             ]),
             unset: vec![],
         });
@@ -4109,6 +4123,7 @@ mod tests {
                     && latent.summary.as_deref() == Some("1 vessel ready")
                     && latent.materialize_recipe.as_deref()
                         == Some("flotilla attach latent-tabs")
+                    && latent.checkout_path.as_deref() == Some("/work/andamento")
                     && parent_path.as_ref() == Some(&path)
         ));
     }

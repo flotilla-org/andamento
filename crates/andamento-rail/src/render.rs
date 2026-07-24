@@ -5403,6 +5403,7 @@ mod tests {
             status_state: Some("waiting".to_owned()),
             summary: Some("1 vessel ready".to_owned()),
             materialize_recipe: recipe.map(str::to_owned),
+            checkout_path: Some("/work/andamento".to_owned()),
         };
         ControllerViewModel {
             sort_mode: SortMode::Position,

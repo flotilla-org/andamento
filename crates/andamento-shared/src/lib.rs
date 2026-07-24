@@ -295,6 +295,8 @@ pub struct LatentTab {
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub materialize_recipe: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -303,6 +305,8 @@ pub struct MaterializeLatentRequest {
     pub path: GroupPath,
     pub name: String,
     pub recipe: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout_path: Option<String>,
 }
 
 impl LatentTab {
@@ -315,6 +319,7 @@ impl LatentTab {
             path: self.path.clone(),
             name: self.name.clone(),
             recipe: self.materialize_recipe.clone()?,
+            checkout_path: self.checkout_path.clone(),
         })
     }
 }
@@ -1218,6 +1223,7 @@ mod tests {
                         status_state: Some("waiting".to_owned()),
                         summary: Some("1 vessel ready".to_owned()),
                         materialize_recipe: Some("flotilla attach latent-tabs".to_owned()),
+                        checkout_path: Some("/work/andamento".to_owned()),
                     },
                     indent: 2,
                     parent_path: Some(group_path.clone()),
