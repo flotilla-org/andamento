@@ -261,11 +261,17 @@ impl ZellijPlugin for PluginState {
             unblock_cli_pipe_input(pipe_id);
         }
         if result.state_changed {
-            self.push_view_model_to_rails_with_pending(
-                result
-                    .view_model_push_reason
-                    .unwrap_or(ViewModelPushReason::PipeUnknown),
-            );
+            let reason = result
+                .view_model_push_reason
+                .unwrap_or(ViewModelPushReason::PipeUnknown);
+            match pipe_view_model_delivery(reason) {
+                PipeViewModelDelivery::Immediate => {
+                    self.push_view_model_to_rails_with_pending(reason);
+                }
+                PipeViewModelDelivery::Coalesced => {
+                    self.queue_view_model_push(reason);
+                }
+            }
         }
         false
     }
@@ -501,23 +507,26 @@ impl PluginState {
             "view-model.targets.config-editors",
             config_editor_target_count as u64,
         );
-        for rail in targets {
+        for (client_id, client_targets) in group_view_model_targets(targets) {
             let started_at = Instant::now();
-            let Ok(payload) =
-                serde_json::to_string(&self.state.view_model_for_client(rail.client_id))
+            let Ok(payload) = serde_json::to_string(&self.state.view_model_for_client(client_id))
             else {
                 continue;
             };
             self.stats
                 .record_span_elapsed("json.encode-view-model", started_at);
-            self.stats
-                .add("view-model.payload-bytes", payload.len() as u64);
-            pipe_message_to_plugin(
-                MessageToPlugin::new(MSG_VIEW_MODEL)
-                    .with_destination_plugin_id(rail.plugin_id)
-                    .with_destination_client_id(rail.client_id)
-                    .with_payload(payload.clone()),
+            self.stats.add(
+                "view-model.payload-bytes",
+                (payload.len() as u64).saturating_mul(client_targets.len() as u64),
             );
+            for target in client_targets {
+                pipe_message_to_plugin(
+                    MessageToPlugin::new(MSG_VIEW_MODEL)
+                        .with_destination_plugin_id(target.plugin_id)
+                        .with_destination_client_id(target.client_id)
+                        .with_payload(payload.clone()),
+                );
+            }
         }
     }
 
@@ -692,6 +701,34 @@ impl ViewModelPushReason {
             Self::PipeUnknown => "view-model.push.reason.pipe.unknown",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipeViewModelDelivery {
+    Immediate,
+    Coalesced,
+}
+
+fn pipe_view_model_delivery(reason: ViewModelPushReason) -> PipeViewModelDelivery {
+    match reason {
+        ViewModelPushReason::PipeMetadata => PipeViewModelDelivery::Coalesced,
+        _ => PipeViewModelDelivery::Immediate,
+    }
+}
+
+fn group_view_model_targets(targets: Vec<RendererHello>) -> Vec<(u16, Vec<RendererHello>)> {
+    let mut grouped = Vec::<(u16, Vec<RendererHello>)>::new();
+    for target in targets {
+        if let Some((_, client_targets)) = grouped
+            .iter_mut()
+            .find(|(client_id, _)| *client_id == target.client_id)
+        {
+            client_targets.push(target);
+        } else {
+            grouped.push((target.client_id, vec![target]));
+        }
+    }
+    grouped
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -2287,6 +2324,55 @@ mod tests {
         );
         assert!(!pending.is_pending());
         assert!(pending.queue(ViewModelPushReason::UpdateCwd));
+    }
+
+    #[test]
+    fn metadata_pipe_bursts_defer_full_view_model_fanout() {
+        let mut pending = PendingViewModelPush::default();
+        let timers_scheduled = (0..100)
+            .filter(|_| {
+                assert_eq!(
+                    pipe_view_model_delivery(ViewModelPushReason::PipeMetadata),
+                    PipeViewModelDelivery::Coalesced
+                );
+                pending.queue(ViewModelPushReason::PipeMetadata)
+            })
+            .count();
+
+        assert_eq!(timers_scheduled, 1);
+        assert_eq!(pending.take(), vec![ViewModelPushReason::PipeMetadata]);
+        assert_eq!(
+            pipe_view_model_delivery(ViewModelPushReason::PipeRendererHello),
+            PipeViewModelDelivery::Immediate
+        );
+        assert_eq!(
+            pipe_view_model_delivery(ViewModelPushReason::PipeRequestState),
+            PipeViewModelDelivery::Immediate
+        );
+    }
+
+    #[test]
+    fn view_models_are_built_once_per_client() {
+        let grouped = group_view_model_targets(vec![
+            RendererHello {
+                plugin_id: 10,
+                client_id: 1,
+            },
+            RendererHello {
+                plugin_id: 11,
+                client_id: 1,
+            },
+            RendererHello {
+                plugin_id: 20,
+                client_id: 2,
+            },
+        ]);
+
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].0, 1);
+        assert_eq!(grouped[0].1.len(), 2);
+        assert_eq!(grouped[1].0, 2);
+        assert_eq!(grouped[1].1.len(), 1);
     }
 
     #[test]
