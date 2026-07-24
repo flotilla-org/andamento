@@ -3089,6 +3089,12 @@ fn metadata_for_group_header(
             MetadataValue::Text(segment.key.clone()),
         );
         metadata.insert("group.value".to_owned(), segment.value.clone());
+        if let Some(label) = segment.label.as_ref() {
+            metadata.insert(
+                "group.segment.label".to_owned(),
+                MetadataValue::Text(label.clone()),
+            );
+        }
     }
     metadata
 }
@@ -4438,6 +4444,7 @@ enum TemplateFieldCondition {
 enum TemplateValueSource {
     Literal(&'static str),
     MetadataText(&'static str),
+    MetadataTextBasename(&'static str),
     MetadataDisplay(&'static str),
     TabNumberFromPosition,
     ActiveTabName,
@@ -4549,6 +4556,14 @@ const RECOGNIZED_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] =
         key: "group.key",
         values: RECOGNIZED_GROUPING_KEYS,
     }];
+// The existence check makes this template more specific than the generic recognized-key template.
+const VCS_REPO_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
+    MetadataPredicate::TextEquals {
+        key: "group.key",
+        value: "vcs.repo",
+    },
+    MetadataPredicate::Exists("vcs.repo"),
+];
 const FALLBACK_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] =
     &[MetadataPredicate::Exists("group.key")];
 const GROUP_HEADER_TOGGLE_FIELD: TemplateFieldSpec = TemplateFieldSpec {
@@ -4586,6 +4601,20 @@ const GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
         prefix: ": ",
         suffix: "",
         condition: TemplateFieldCondition::Collapsed,
+    },
+];
+const VCS_REPO_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
+    GROUP_HEADER_TOGGLE_FIELD,
+    TemplateFieldSpec {
+        class: TemplateFieldClass::Required,
+        sources: &[
+            TemplateValueSource::MetadataText("group.segment.label"),
+            TemplateValueSource::MetadataTextBasename("group.value"),
+            TemplateValueSource::MetadataText("group.label"),
+        ],
+        prefix: "",
+        suffix: "",
+        condition: TemplateFieldCondition::Always,
     },
 ];
 const FALLBACK_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
@@ -4634,6 +4663,14 @@ const STATUS_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
 ];
 
 const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
+    TemplateDefinition {
+        name: "builtin.group-header.vcs-repo",
+        slot: TemplateSlot::GroupHeader,
+        node_kind: RenderNodeKind::Group,
+        predicates: VCS_REPO_GROUP_HEADER_TEMPLATE_PREDICATES,
+        fields: VCS_REPO_GROUP_HEADER_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
+    },
     TemplateDefinition {
         name: "builtin.group-header",
         slot: TemplateSlot::GroupHeader,
@@ -4855,6 +4892,11 @@ impl TemplateValueSource {
             TemplateValueSource::MetadataText(key) => {
                 metadata_text(context.metadata, key)?.to_owned()
             }
+            TemplateValueSource::MetadataTextBasename(key) => metadata_text(context.metadata, key)?
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()?
+                .to_owned(),
             TemplateValueSource::MetadataDisplay(key) => {
                 metadata_display_value(context.metadata, key)?
             }
@@ -7553,6 +7595,135 @@ mod tests {
             resolve_group_header_template_fields(&metadata, false, true, None, None);
 
         assert_eq!(text_style, GroupHeaderTextStyle::Themed);
+    }
+
+    #[test]
+    fn vcs_repo_group_renders_the_producer_label_only() {
+        let mut model = grouped_model();
+        let path = GroupPath(vec![GroupSegment {
+            key: "vcs.repo".to_owned(),
+            value: MetadataValue::Text("ghostty-org/ghostty".to_owned()),
+            label: Some("ghostty".to_owned()),
+        }]);
+        let collapsed_path = path.clone();
+        model.rows = vec![
+            RailRow::GroupHeader {
+                group_id: "vcs.repo:ghostty-org/ghostty".to_owned(),
+                path: path.clone(),
+                label: "ghostty".to_owned(),
+                full_label: "ghostty".to_owned(),
+                tab_count: 2,
+                templates: ResolvedTemplateSlots::default(),
+            },
+            RailRow::Tab {
+                tab_id: 1,
+                indent: 2,
+                parent_path: Some(path.clone()),
+            },
+            RailRow::Tab {
+                tab_id: 2,
+                indent: 2,
+                parent_path: Some(path),
+            },
+        ];
+
+        let rendered = render_lines(Some(&model), &[], 8, 56, true);
+
+        assert!(
+            rendered.lines[0].starts_with("▼ ghostty ─"),
+            "repo group should render only its short label before rail chrome: {:?}",
+            rendered.lines[0]
+        );
+
+        let collapsed =
+            render_lines_with_collapsed_groups(Some(&model), &[], 8, 56, true, &[collapsed_path]);
+
+        assert!(
+            collapsed.lines[0].starts_with("▶ ghostty ─"),
+            "collapsed repo group should still render only its short label: {:?}",
+            collapsed.lines[0]
+        );
+        assert!(
+            !collapsed.lines[0].contains("tests"),
+            "repo template should not add generic collapsed-group context: {:?}",
+            collapsed.lines[0]
+        );
+    }
+
+    #[test]
+    fn vcs_repo_group_derives_short_label_when_producer_omits_it() {
+        let mut model = grouped_model();
+        let path = GroupPath(vec![GroupSegment {
+            key: "vcs.repo".to_owned(),
+            value: MetadataValue::Text("ghostty-org/ghostty".to_owned()),
+            label: None,
+        }]);
+        model.rows = vec![
+            RailRow::GroupHeader {
+                group_id: "vcs.repo:ghostty-org/ghostty".to_owned(),
+                path: path.clone(),
+                label: "ghostty-org/ghostty".to_owned(),
+                full_label: "ghostty-org/ghostty".to_owned(),
+                tab_count: 2,
+                templates: ResolvedTemplateSlots::default(),
+            },
+            RailRow::Tab {
+                tab_id: 1,
+                indent: 2,
+                parent_path: Some(path.clone()),
+            },
+            RailRow::Tab {
+                tab_id: 2,
+                indent: 2,
+                parent_path: Some(path),
+            },
+        ];
+
+        let rendered = render_lines(Some(&model), &[], 8, 56, true);
+
+        assert!(
+            rendered.lines[0].starts_with("▼ ghostty ─"),
+            "repo group should derive a short label from its slug: {:?}",
+            rendered.lines[0]
+        );
+    }
+
+    #[test]
+    fn vcs_repo_group_falls_back_to_group_label_for_an_empty_basename() {
+        let mut model = grouped_model();
+        let path = GroupPath(vec![GroupSegment {
+            key: "vcs.repo".to_owned(),
+            value: MetadataValue::Text("/".to_owned()),
+            label: None,
+        }]);
+        model.rows = vec![
+            RailRow::GroupHeader {
+                group_id: "vcs.repo:/".to_owned(),
+                path: path.clone(),
+                label: "/".to_owned(),
+                full_label: "/".to_owned(),
+                tab_count: 2,
+                templates: ResolvedTemplateSlots::default(),
+            },
+            RailRow::Tab {
+                tab_id: 1,
+                indent: 2,
+                parent_path: Some(path.clone()),
+            },
+            RailRow::Tab {
+                tab_id: 2,
+                indent: 2,
+                parent_path: Some(path),
+            },
+        ];
+
+        let rendered = render_lines(Some(&model), &[], 8, 56, true);
+
+        assert!(
+            rendered.lines[0].starts_with("▼ / ─"),
+            "repo group should retain a visible fallback label: {:?}",
+            rendered.lines[0]
+        );
     }
 
     #[test]
