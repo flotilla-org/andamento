@@ -4540,6 +4540,7 @@ const RECOGNIZED_GROUPING_KEYS: &[&str] = &[
     "git.repo",
     "project",
     "repo",
+    "vcs.repo",
     "worktree",
     "zellij.pane.cwd",
 ];
@@ -7537,6 +7538,21 @@ mod tests {
                 rendered.lines[0]
             );
         }
+    }
+
+    #[test]
+    fn vcs_repo_grouping_key_uses_themed_builtin_header() {
+        let path = GroupPath(vec![GroupSegment {
+            key: "vcs.repo".to_owned(),
+            value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
+            label: Some("flotilla".to_owned()),
+        }]);
+        let metadata = metadata_for_group_header(&path, "flotilla", "flotilla", 2);
+
+        let (_, text_style) =
+            resolve_group_header_template_fields(&metadata, false, true, None, None);
+
+        assert_eq!(text_style, GroupHeaderTextStyle::Themed);
     }
 
     #[test]
