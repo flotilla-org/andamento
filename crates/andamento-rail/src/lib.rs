@@ -951,7 +951,7 @@ mod tests {
     #[test]
     fn latent_open_builds_an_identity_bearing_controller_request() {
         let request = andamento_shared::MaterializeLatentRequest {
-            factory_id: "flotilla:convoys/dev/latent-tabs".to_owned(),
+            action_target: "flotilla:convoys/dev/latent-tabs".to_owned(),
             path: andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
                 key: "flotilla.convoy".to_owned(),
                 value: andamento_shared::MetadataValue::Text("dev/latent-tabs".to_owned()),

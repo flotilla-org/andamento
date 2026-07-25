@@ -10,10 +10,10 @@ use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
     ChildLayoutSetting, ControllerViewModel, GroupPath, GroupSegment, LatentMaterializationState,
     LatentTab, MaterializeLatentRequest, MetadataControls, MetadataEntry, MetadataSourceEntry,
-    MetadataTarget, MetadataValue, NodeKey, PaneTarget, Priority, RailConfig, RailRgbColor,
-    RailRow, RailSizingPreset, RailStructure, ReachableMetadataIdentity, ResolvedMetadata,
-    ResolvedTemplateFieldSource, ResolvedTemplateSlot, ResolvedTemplateSlots, StatusIcon, TabCard,
-    TabGroupingInfo, TabStatusSummary,
+    MetadataValue, NodeKey, PaneTarget, Priority, RailConfig, RailRgbColor, RailRow,
+    RailSizingPreset, RailStructure, ReachableMetadataIdentity, ResolvedMetadata,
+    ResolvedMetadataTarget, ResolvedTemplateFieldSource, ResolvedTemplateSlot,
+    ResolvedTemplateSlots, StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
 };
 use ansi_term::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -1331,7 +1331,7 @@ fn root_inherited_settings_for_model(model: Option<&ControllerViewModel>) -> Inh
     let Some(metadata) = model
         .resolved_metadata
         .iter()
-        .find(|metadata| metadata.target == MetadataTarget::Root)
+        .find(|metadata| metadata.target == ResolvedMetadataTarget::Root)
     else {
         return InheritedRailSettings::default();
     };
@@ -3131,14 +3131,14 @@ fn shift_render_node_indents(nodes: &mut [RenderNode], delta: usize) {
 
 fn merge_resolved_metadata_into_nodes(
     nodes: &mut [RenderNode],
-    by_target: &HashMap<MetadataTarget, RenderMetadata>,
-    sources_by_target: &HashMap<MetadataTarget, RenderMetadataSources>,
-    identities_by_target: &HashMap<MetadataTarget, RenderReachableIdentities>,
+    by_target: &HashMap<ResolvedMetadataTarget, RenderMetadata>,
+    sources_by_target: &HashMap<ResolvedMetadataTarget, RenderMetadataSources>,
+    identities_by_target: &HashMap<ResolvedMetadataTarget, RenderReachableIdentities>,
 ) {
     for node in nodes {
         match node {
             RenderNode::Tab(tab) => {
-                let target = MetadataTarget::Tab(tab.card.tab_id);
+                let target = ResolvedMetadataTarget::Tab(tab.card.tab_id);
                 if let Some(metadata) = by_target.get(&target) {
                     tab.card.metadata.extend(metadata.clone());
                 }
@@ -3152,7 +3152,7 @@ fn merge_resolved_metadata_into_nodes(
                 }
             }
             RenderNode::Group(group) => {
-                let target = MetadataTarget::Group(group.path.clone());
+                let target = ResolvedMetadataTarget::Group(group.path.clone());
                 if let Some(metadata) = by_target.get(&target) {
                     group.metadata.extend(metadata.clone());
                 }
@@ -3264,8 +3264,8 @@ fn render_card_from_latent(latent: &LatentTab) -> RenderCard {
     let name = format!("{marker} {}", latent.name);
     let mut metadata = RenderMetadata::from([
         (
-            "factory.id".to_owned(),
-            MetadataValue::Text(latent.factory_id.clone()),
+            "action.primary.target".to_owned(),
+            MetadataValue::Text(latent.action_target.clone()),
         ),
         ("rail.tab.latent".to_owned(), MetadataValue::Bool(true)),
         (
@@ -3291,9 +3291,12 @@ fn render_card_from_latent(latent: &LatentTab) -> RenderCard {
             MetadataValue::Text(summary.to_owned()),
         );
     }
+    if let Some(source) = latent.source.as_ref() {
+        metadata.insert("source".to_owned(), MetadataValue::Text(source.clone()));
+    }
     if let Some(recipe) = latent.materialize_recipe.as_ref() {
         metadata.insert(
-            "materialize.recipe".to_owned(),
+            "action.primary.recipe".to_owned(),
             MetadataValue::Text(recipe.clone()),
         );
     }
@@ -4719,6 +4722,13 @@ const FLOTILLA_INDEPENDENT_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate
     },
     MetadataPredicate::Exists("flotilla.independent"),
 ];
+const FLOTILLA_SESSION_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
+    MetadataPredicate::TextEquals {
+        key: "group.key",
+        value: "flotilla.session",
+    },
+    MetadataPredicate::Exists("flotilla.session"),
+];
 const FLOTILLA_CHECKOUT_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
     MetadataPredicate::TextEquals {
         key: "group.key",
@@ -4743,6 +4753,13 @@ const GROUP_HEADER_TOGGLE_FIELD: TemplateFieldSpec = TemplateFieldSpec {
     }],
     prefix: "",
     suffix: "",
+    condition: TemplateFieldCondition::Always,
+};
+const SOURCE_BADGE_FIELD: TemplateFieldSpec = TemplateFieldSpec {
+    class: TemplateFieldClass::Optional,
+    sources: &[TemplateValueSource::MetadataText("source")],
+    prefix: "[",
+    suffix: "]",
     condition: TemplateFieldCondition::Always,
 };
 const GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
@@ -4785,12 +4802,14 @@ const VCS_REPO_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
         suffix: "",
         condition: TemplateFieldCondition::Always,
     },
+    SOURCE_BADGE_FIELD,
 ];
 const FLOTILLA_PROJECT_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
     GROUP_HEADER_TOGGLE_FIELD,
     TemplateFieldSpec {
         class: TemplateFieldClass::Required,
         sources: &[
+            TemplateValueSource::MetadataText("group.segment.label"),
             TemplateValueSource::MetadataText("group.value"),
             TemplateValueSource::MetadataText("group.label"),
         ],
@@ -4798,6 +4817,7 @@ const FLOTILLA_PROJECT_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
         suffix: "",
         condition: TemplateFieldCondition::Always,
     },
+    SOURCE_BADGE_FIELD,
 ];
 const FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
     GROUP_HEADER_TOGGLE_FIELD,
@@ -4812,6 +4832,7 @@ const FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
         suffix: "",
         condition: TemplateFieldCondition::Always,
     },
+    SOURCE_BADGE_FIELD,
 ];
 const FALLBACK_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
     GROUP_HEADER_TOGGLE_FIELD,
@@ -4830,17 +4851,20 @@ const FALLBACK_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
         condition: TemplateFieldCondition::Always,
     },
 ];
-const TAB_TITLE_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
-    class: TemplateFieldClass::Required,
-    sources: &[
-        TemplateValueSource::MetadataText("zellij.tab.name"),
-        TemplateValueSource::TabNumberFromPosition,
-        TemplateValueSource::Literal("Tab"),
-    ],
-    prefix: "",
-    suffix: "",
-    condition: TemplateFieldCondition::Always,
-}];
+const TAB_TITLE_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
+    TemplateFieldSpec {
+        class: TemplateFieldClass::Required,
+        sources: &[
+            TemplateValueSource::MetadataText("zellij.tab.name"),
+            TemplateValueSource::TabNumberFromPosition,
+            TemplateValueSource::Literal("Tab"),
+        ],
+        prefix: "",
+        suffix: "",
+        condition: TemplateFieldCondition::Always,
+    },
+    SOURCE_BADGE_FIELD,
+];
 const STATUS_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
     TemplateFieldSpec {
         class: TemplateFieldClass::Required,
@@ -4896,6 +4920,14 @@ const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
         slot: TemplateSlot::GroupHeader,
         node_kind: RenderNodeKind::Group,
         predicates: FLOTILLA_INDEPENDENT_GROUP_HEADER_TEMPLATE_PREDICATES,
+        fields: FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS,
+        sizing: TemplateSizingHint::Auto,
+    },
+    TemplateDefinition {
+        name: "builtin.group-header.flotilla-session",
+        slot: TemplateSlot::GroupHeader,
+        node_kind: RenderNodeKind::Group,
+        predicates: FLOTILLA_SESSION_GROUP_HEADER_TEMPLATE_PREDICATES,
         fields: FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS,
         sizing: TemplateSizingHint::Auto,
     },
@@ -5606,9 +5638,9 @@ fn blank(cols: usize) -> String {
 mod tests {
     use super::*;
     use andamento_shared::{
-        GroupPath, GroupSegment, LatentTab, MetadataEntry, MetadataTarget, MetadataTriState,
-        MetadataValue, PaneTarget, RailConfig, RailGroupingMode, RailRow, RailSizingPreset,
-        RailStructure, ResolvedMetadata, SortMode, StatusIcon,
+        GroupPath, GroupSegment, LatentTab, MetadataEntry, MetadataTriState, MetadataValue,
+        PaneTarget, RailConfig, RailGroupingMode, RailRow, RailSizingPreset, RailStructure,
+        ResolvedMetadata, ResolvedMetadataTarget, SortMode, StatusIcon,
     };
 
     fn local_tab(tab_id: u64, position: usize, active: bool) -> LocalTab {
@@ -5780,12 +5812,13 @@ mod tests {
             label: Some("latent tabs".to_owned()),
         }]);
         let latent = LatentTab {
-            factory_id: "flotilla:convoys/dev/latent-tabs".to_owned(),
+            action_target: "flotilla:convoys/dev/latent-tabs".to_owned(),
             path: path.clone(),
             name: "latent tabs".to_owned(),
             materialization: LatentMaterializationState::Ready,
             status_state: Some("waiting".to_owned()),
             summary: Some("1 vessel ready".to_owned()),
+            source: Some("flotilla".to_owned()),
             materialize_recipe: recipe.map(str::to_owned),
             checkout_path: Some("/work/andamento".to_owned()),
         };
@@ -5835,6 +5868,13 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.contains("↗ latent tabs")));
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.contains("[flotilla]")),
+            "the source fact is rendered as a compact badge"
+        );
         assert!(rendered
             .lines
             .iter()
@@ -5852,7 +5892,7 @@ mod tests {
                 return false;
             };
             hit.action == HitAction::Materialize
-                && request.factory_id == "flotilla:convoys/dev/latent-tabs"
+                && request.action_target == "flotilla:convoys/dev/latent-tabs"
                 && request.name == "latent tabs"
                 && request.recipe == "flotilla attach latent-tabs"
                 && request.path.0[0].key == "flotilla.convoy"
@@ -6450,7 +6490,7 @@ mod tests {
             },
         ];
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Group(GroupPath(vec![GroupSegment {
+            target: ResolvedMetadataTarget::Group(GroupPath(vec![GroupSegment {
                 key: "project".to_owned(),
                 value: MetadataValue::Text("project-a".to_owned()),
                 label: None,
@@ -6526,7 +6566,7 @@ mod tests {
             _ => panic!("first row should be parent group"),
         };
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Group(parent_path),
+            target: ResolvedMetadataTarget::Group(parent_path),
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -6594,7 +6634,7 @@ mod tests {
             _ => panic!("first row should be parent group"),
         };
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Group(parent_path),
+            target: ResolvedMetadataTarget::Group(parent_path),
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -6627,7 +6667,7 @@ mod tests {
     fn group_header_absorbs_one_child_group_path_into_niche() {
         let mut model = nested_group_model();
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Root,
+            target: ResolvedMetadataTarget::Root,
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -6678,7 +6718,7 @@ mod tests {
     fn absorbed_child_group_label_is_not_a_toggle_hit() {
         let mut model = nested_group_model();
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Root,
+            target: ResolvedMetadataTarget::Root,
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -6732,7 +6772,7 @@ mod tests {
             _ => panic!("first row should be parent group"),
         };
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Group(parent_path),
+            target: ResolvedMetadataTarget::Group(parent_path),
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -6765,7 +6805,7 @@ mod tests {
     fn right_aligned_absorbed_tabs_do_not_leave_separator_artifact_after_group_label() {
         let mut model = nested_group_model();
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Root,
+            target: ResolvedMetadataTarget::Root,
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -6818,7 +6858,7 @@ mod tests {
             );
         }
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Root,
+            target: ResolvedMetadataTarget::Root,
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -6869,7 +6909,7 @@ mod tests {
     fn fully_absorbed_group_body_does_not_show_a_collapse_toggle() {
         let mut model = grouped_model();
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Root,
+            target: ResolvedMetadataTarget::Root,
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -6941,7 +6981,7 @@ mod tests {
             });
         }
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Root,
+            target: ResolvedMetadataTarget::Root,
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -6987,7 +7027,7 @@ mod tests {
             _ => panic!("first row should be child group"),
         };
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Root,
+            target: ResolvedMetadataTarget::Root,
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -7030,7 +7070,7 @@ mod tests {
     fn root_child_layout_metadata_is_inherited_by_groups() {
         let mut model = mixed_child_group_model();
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Root,
+            target: ResolvedMetadataTarget::Root,
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -7070,7 +7110,7 @@ mod tests {
             _ => panic!("first row should be parent group"),
         };
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Group(parent_path),
+            target: ResolvedMetadataTarget::Group(parent_path),
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -7134,7 +7174,7 @@ mod tests {
             _ => panic!("first row should be parent group"),
         };
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Group(parent_path),
+            target: ResolvedMetadataTarget::Group(parent_path),
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -7199,7 +7239,7 @@ mod tests {
             _ => panic!("first row should be parent group"),
         };
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Group(parent_path),
+            target: ResolvedMetadataTarget::Group(parent_path),
             values: BTreeMap::from([(
                 "rail.child_layout".to_owned(),
                 MetadataEntry {
@@ -8146,9 +8186,50 @@ mod tests {
     fn flotilla_project_group_renders_project_name_only() {
         assert_flotilla_group_renders_designed_label(
             "flotilla.project",
+            "dev/andamento@feta",
+            Some("andamento"),
             "andamento",
-            None,
-            "andamento",
+        );
+    }
+
+    #[test]
+    fn flotilla_group_renders_source_fact_as_a_badge() {
+        let mut model = grouped_model();
+        let path = GroupPath(vec![GroupSegment {
+            key: "flotilla.convoy".to_owned(),
+            value: MetadataValue::Text("dev/cutover@feta".to_owned()),
+            label: Some("cutover".to_owned()),
+        }]);
+        model.rows = vec![RailRow::GroupHeader {
+            group_id: "flotilla.convoy:dev/cutover@feta".to_owned(),
+            path: path.clone(),
+            label: "cutover".to_owned(),
+            full_label: "cutover".to_owned(),
+            tab_count: 1,
+            templates: ResolvedTemplateSlots::default(),
+        }];
+        model.resolved_metadata = vec![ResolvedMetadata {
+            target: ResolvedMetadataTarget::Group(path),
+            values: BTreeMap::from([(
+                "source".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("flotilla".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+
+        let rendered = render_lines(Some(&model), &[], 8, 80, true);
+
+        assert!(
+            rendered.lines[0].starts_with("cutover [flotilla]"),
+            "{:?}",
+            rendered.lines
         );
     }
 
@@ -8174,6 +8255,16 @@ mod tests {
             "session-28",
             Some("codex"),
             "codex",
+        );
+    }
+
+    #[test]
+    fn flotilla_session_group_renders_session_label() {
+        assert_flotilla_group_renders_designed_label(
+            "flotilla.session",
+            "feta/dev/terminal-coder",
+            Some("coder"),
+            "coder",
         );
     }
 
@@ -8315,7 +8406,7 @@ mod tests {
             label: None,
         }]);
         model.resolved_metadata = vec![ResolvedMetadata {
-            target: MetadataTarget::Group(group_path),
+            target: ResolvedMetadataTarget::Group(group_path),
             values: BTreeMap::from([
                 (
                     "git.repo".to_owned(),

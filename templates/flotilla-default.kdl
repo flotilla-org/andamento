@@ -1,0 +1,21 @@
+version 1
+
+grouping "flotilla.default" priority=-1000 {
+  filter key="entity.kind"
+
+  presence kind="convoy" class="tab"
+  presence kind="vessel" class="tab"
+  presence kind="session" class="tab"
+  presence kind="issue" class="section"
+  presence kind="project" class="section"
+  presence kind="repo" class="section"
+  presence kind="checkout" class="section"
+
+  level key="flotilla.project" label-key="flotilla.project.name" optional=true
+  level key="vcs.repo" label-key="vcs.repo.name" optional=true
+  level key="flotilla.convoy" label-key="flotilla.convoy.name" optional=true collapse-single-member=true
+  level key="flotilla.vessel" label-key="flotilla.vessel.name" optional=true
+  level key="flotilla.session" label-key="display.label" optional=true
+  level key="flotilla.issue" label-key="display.label" optional=true show-empty=true
+  level key="flotilla.checkout" label-key="display.label" optional=true show-empty=true
+}

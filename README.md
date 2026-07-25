@@ -83,7 +83,19 @@ plugin location="andamento-controller" {
 
 ## External Grouping Rules
 
-The controller can also load grouping rules from a real filesystem path exposed to the plugin. Rules are tried by priority and project a tab's resolved metadata into a hierarchical `GroupPath`; if a rule cannot produce any segment, the next rule is tried. The local example points both config loaders at one KDL file:
+The controller derives presentation paths from flat entity facts. Producers
+publish `MetadataTarget::Entity({ kind, id })` patches with facts such as
+`flotilla.project`, `vcs.repo`, and `flotilla.convoy`; they do not publish
+group targets or paths. The bundled `flotilla.default` template orders the
+spine as project → repo → convoy → vessel → session → issue → checkout.
+Convoys and vessels are tab candidates, issues are section-only, and a
+single vessel collapses into its convoy because both expose the same primary
+action target.
+
+The controller can also load named grouping templates from a real filesystem
+path exposed to the plugin. Rules are tried by priority and project resolved
+metadata into a hierarchical `GroupPath`; absent facts are skipped rather
+than invented. The local example points both config loaders at one KDL file:
 
 ```kdl
 plugin location="andamento-controller" {
@@ -96,13 +108,27 @@ Example grouping rules:
 ```kdl
 grouping "proj-repo-branch" {
     priority 100
+    filter key="entity.kind"
+    presence kind="repo" class="tab"
     level key="andamento.project" optional=true
-    level key="vcs.repo" label-key="repo.name"
+    level key="vcs.repo" label-key="vcs.repo.name"
     level key="git.branch"
 }
 ```
 
-Missing optional levels are skipped. Missing later required levels stop at the deepest known level once a rule has produced a segment. If no external rule matches, `rail_grouping "directory"` still falls back to the built-in exact-cwd grouping. Use `rail_grouping "none"` or omit the setting for the flat tab rail.
+Each level also accepts `collapse-single-member=true` and `show-empty=true`.
+Presence mappings classify an entity kind as `tab`, `section`, or `hidden`.
+The built-in entity renderers show the flat `source` fact as a compact
+`[producer]` badge on group and tab labels.
+The bundled template is available as
+`templates/flotilla-default.kdl`. Switch named templates at runtime by
+sending `andamento-set-grouping-template` a JSON payload such as
+`{"name":"flotilla.default"}`; send `{"name":null}` to resume priority
+selection. Stored entity facts are unchanged.
+
+If no entity template matches, `rail_grouping "directory"` still falls back
+to the built-in exact-cwd grouping. Use `rail_grouping "none"` or omit the
+setting for the flat tab rail.
 
 ## External Rail Templates
 
@@ -192,15 +218,18 @@ The example git watcher can also create managed tabs from the scripting side:
 
 When enabled, the watcher dedupes by tab name, creates one `repo: owner/name`
 tab per observed git repository, captures the tab id printed by
-`zellij action new-tab`, and patches that tab with typed metadata:
+`zellij action new-tab`, and stamps that tab with canonical entity identity
+and flat facts:
 
 Like the status helper, the watcher uses `$ZELLIJ_BIN` when set and otherwise
 prefers the sibling fork build at `/Users/robert/dev/zellij/target/dev-opt/zellij`
 before falling back to `zellij`.
 
 ```text
-tab.kind = repo-manager
-tab.scope = GroupPath([{ key = vcs.repo, value = owner/name }])
+entity.kind = repo
+entity.id = owner/name
+vcs.repo = owner/name
+action.primary.target = repo-manager:owner/name
 ```
 
 The factory tab layout is deliberately a repeated KDL layout for now because

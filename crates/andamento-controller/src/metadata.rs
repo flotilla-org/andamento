@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use andamento_shared::{
     MetadataEntry, MetadataPatch, MetadataSourceEntry, MetadataTarget, MetadataValue,
-    MetadataValueUpdate,
+    MetadataValueUpdate, ResolvedMetadataTarget,
 };
 
-pub type EntityId = MetadataTarget;
+pub type EntityId = ResolvedMetadataTarget;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateEntry {
@@ -83,8 +83,9 @@ impl MetadataStore {
     #[allow(dead_code)]
     pub fn apply_patch(&mut self, patch: MetadataPatch, now: u64) -> MetadataPatchOutcome {
         let mut outcome = MetadataPatchOutcome::default();
+        let target = EntityId::from(patch.target);
         for key in patch.unset {
-            if let Some(entry) = self.unset(&patch.target, &key, &patch.source_id) {
+            if let Some(entry) = self.unset(&target, &key, &patch.source_id) {
                 outcome.touched = true;
                 outcome.view_changed |= entry_is_live(&entry, now);
             }
@@ -99,7 +100,7 @@ impl MetadataStore {
             };
             let existing_entry = self
                 .entries
-                .get(&patch.target)
+                .get(&target)
                 .and_then(|entity_entries| entity_entries.get(&key))
                 .and_then(|source_entries| source_entries.get(&patch.source_id))
                 .cloned();
@@ -110,32 +111,17 @@ impl MetadataStore {
                         && entry_is_live(&existing, now) =>
                 {
                     if existing.ttl_ms.is_some() {
-                        self.set(
-                            patch.target.clone(),
-                            key,
-                            patch.source_id.clone(),
-                            next_entry,
-                        );
+                        self.set(target.clone(), key, patch.source_id.clone(), next_entry);
                         outcome.touched = true;
                     }
                 }
                 Some(existing) if metadata_entry_payload_matches(&existing, &next_entry) => {
-                    self.set(
-                        patch.target.clone(),
-                        key,
-                        patch.source_id.clone(),
-                        next_entry,
-                    );
+                    self.set(target.clone(), key, patch.source_id.clone(), next_entry);
                     outcome.touched = true;
                     outcome.view_changed = true;
                 }
                 _ => {
-                    self.set(
-                        patch.target.clone(),
-                        key,
-                        patch.source_id.clone(),
-                        next_entry,
-                    );
+                    self.set(target.clone(), key, patch.source_id.clone(), next_entry);
                     outcome.touched = true;
                     outcome.view_changed = true;
                 }
@@ -229,11 +215,21 @@ impl MetadataStore {
         }
         patches
             .into_iter()
-            .map(|((target, source_id), set)| MetadataPatch {
-                target,
-                source_id,
-                set,
-                unset: vec![],
+            .filter_map(|((target, source_id), set)| {
+                let target = match target {
+                    EntityId::Root => MetadataTarget::Root,
+                    EntityId::Pane(pane) => MetadataTarget::Pane(pane),
+                    EntityId::Tab(tab) => MetadataTarget::Tab(tab),
+                    EntityId::Entity(entity) => MetadataTarget::Entity(entity),
+                    EntityId::Identity(identity) => MetadataTarget::Identity(identity),
+                    EntityId::Group(_) => return None,
+                };
+                Some(MetadataPatch {
+                    target,
+                    source_id,
+                    set,
+                    unset: vec![],
+                })
             })
             .collect()
     }
@@ -420,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn group_targets_are_distinct_metadata_entities() {
+    fn derived_group_targets_are_distinct_internal_metadata_entities() {
         let mut store = MetadataStore::default();
         let group = GroupPath(vec![GroupSegment {
             key: "project.name".to_owned(),
@@ -446,14 +442,14 @@ mod tests {
     #[test]
     fn metadata_patch_sets_values_with_controller_timestamp() {
         let mut store = MetadataStore::default();
-        let target = EntityId::Group(GroupPath(vec![GroupSegment {
-            key: "project.name".to_owned(),
-            value: MetadataValue::Text("zellij".to_owned()),
-            label: None,
-        }]));
+        let entity = andamento_shared::EntityRef {
+            kind: andamento_shared::EntityKind::Project,
+            id: "zellij".to_owned(),
+        };
+        let target = EntityId::Entity(entity.clone());
         store.apply_patch(
             MetadataPatch {
-                target: target.clone(),
+                target: MetadataTarget::Entity(entity),
                 source_id: "flotilla".to_owned(),
                 set: BTreeMap::from([(
                     "summary.local_llm".to_owned(),
@@ -484,7 +480,7 @@ mod tests {
         let mut store = MetadataStore::default();
         let target = EntityId::Pane(PaneTarget::Terminal(1));
         let patch = MetadataPatch {
-            target: target.clone(),
+            target: MetadataTarget::Pane(PaneTarget::Terminal(1)),
             source_id: "watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
@@ -514,7 +510,7 @@ mod tests {
         let mut store = MetadataStore::default();
         let target = EntityId::Pane(PaneTarget::Terminal(1));
         let patch = MetadataPatch {
-            target: target.clone(),
+            target: MetadataTarget::Pane(PaneTarget::Terminal(1)),
             source_id: "watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
@@ -552,7 +548,7 @@ mod tests {
 
         store.apply_patch(
             MetadataPatch {
-                target: target.clone(),
+                target: MetadataTarget::Pane(PaneTarget::Terminal(1)),
                 source_id: "zellij".to_owned(),
                 set: BTreeMap::from([(
                     "zellij.pane.title".to_owned(),
@@ -594,7 +590,7 @@ mod tests {
 
         store.apply_patch(
             MetadataPatch {
-                target: target.clone(),
+                target: MetadataTarget::Pane(PaneTarget::Terminal(1)),
                 source_id: "zellij".to_owned(),
                 set: BTreeMap::new(),
                 unset: vec!["zellij.pane.cwd".to_owned()],

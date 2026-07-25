@@ -7,10 +7,10 @@ use andamento_shared::segment_bar;
 use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
     ChildLayoutSetRequest, ChildLayoutSetting, ConfigInspectRequest, ControllerViewModel,
-    GroupPath, MetadataEntry, MetadataSourceEntry, MetadataTarget, MetadataTriState, MetadataValue,
+    GroupPath, MetadataEntry, MetadataSourceEntry, MetadataTriState, MetadataValue,
     MetadataVisibilitySetRequest, NodeKey, PluginPaneKind, PluginPlacement,
     PluginRegistrationHello, PluginStatsSnapshot, RailConfig, RailGroupingMode, RailRow,
-    RailSizingPreset, RailStructure, ResolvedTemplateSlots, TabCard,
+    RailSizingPreset, RailStructure, ResolvedMetadataTarget, ResolvedTemplateSlots, TabCard,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -813,9 +813,9 @@ fn resolved_metadata_for_node<'a>(
     node_key: &NodeKey,
 ) -> Option<&'a andamento_shared::ResolvedMetadata> {
     let target = match node_key {
-        NodeKey::Root => MetadataTarget::Root,
-        NodeKey::Tab(tab_id) => MetadataTarget::Tab(*tab_id),
-        NodeKey::Group(path) => MetadataTarget::Group(path.clone()),
+        NodeKey::Root => ResolvedMetadataTarget::Root,
+        NodeKey::Tab(tab_id) => ResolvedMetadataTarget::Tab(*tab_id),
+        NodeKey::Group(path) => ResolvedMetadataTarget::Group(path.clone()),
     };
     model
         .resolved_metadata
@@ -2443,7 +2443,7 @@ mod tests {
             ordinal: 2,
         };
         model.resolved_metadata = vec![andamento_shared::ResolvedMetadata {
-            target: MetadataTarget::Tab(7),
+            target: ResolvedMetadataTarget::Tab(7),
             values: BTreeMap::from([("git.repo".to_owned(), entry.clone())]),
             source_entries: BTreeMap::from([(
                 "git.repo".to_owned(),
@@ -2494,7 +2494,7 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         model.resolved_metadata = vec![andamento_shared::ResolvedMetadata {
-            target: MetadataTarget::Tab(7),
+            target: ResolvedMetadataTarget::Tab(7),
             values,
             source_entries: BTreeMap::new(),
             reachable_identities: vec![],

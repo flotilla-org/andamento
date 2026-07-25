@@ -17,15 +17,16 @@ use andamento_shared::MSG_VIEW_MODEL;
 use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
     ChildLayoutSetRequest, ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage,
-    MetadataPatch, MetadataTarget, MetadataValueUpdate, MetadataVisibilitySetRequest,
-    PluginRegistrationHello, RailConfig, RailGroupingMode, RailRgbColor, RailSize,
-    RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RailUiAction, RailUiState,
-    RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS,
-    MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST,
-    MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED,
-    MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO, MSG_REQUEST_RAIL_UI_STATE,
-    MSG_REQUEST_STATE, MSG_SET_CHILD_LAYOUT, MSG_SET_METADATA_VISIBILITY, MSG_SET_PANE_STATUS,
-    MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
+    GroupingTemplateSetRequest, MetadataPatch, MetadataTarget, MetadataValueUpdate,
+    MetadataVisibilitySetRequest, PluginRegistrationHello, RailConfig, RailGroupingMode,
+    RailRgbColor, RailSize, RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure,
+    RailUiAction, RailUiState, RendererHello, SortMode, StatsCollectRequest,
+    MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT,
+    MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES,
+    MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO,
+    MSG_REQUEST_RAIL_UI_STATE, MSG_REQUEST_STATE, MSG_SET_CHILD_LAYOUT, MSG_SET_GROUPING_TEMPLATE,
+    MSG_SET_METADATA_VISIBILITY, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE,
+    MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
@@ -960,6 +961,14 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
                 ..HandlePipeResult::default()
             }
         }
+        Ok(Some(ControllerMessage::SetGroupingTemplate(request))) => {
+            let state_changed = state.set_active_grouping_template(request.name);
+            HandlePipeResult {
+                state_changed,
+                view_model_push_reason: state_changed.then_some(ViewModelPushReason::PipeConfig),
+                ..HandlePipeResult::default()
+            }
+        }
         Ok(Some(ControllerMessage::RequestState)) => HandlePipeResult {
             state_changed: true,
             view_model_push_reason: Some(ViewModelPushReason::PipeRequestState),
@@ -1022,7 +1031,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             ..HandlePipeResult::default()
         },
         Ok(Some(ControllerMessage::SetChildLayout(request))) => {
-            let state_changed = child_layout_patch(request)
+            let state_changed = child_layout_patch(state, request)
                 .map(|patch| state.apply_metadata_patch(patch))
                 .unwrap_or(false);
             HandlePipeResult {
@@ -1056,11 +1065,16 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
     result
 }
 
-fn child_layout_patch(request: ChildLayoutSetRequest) -> Option<MetadataPatch> {
+fn child_layout_patch(
+    state: &ControllerState,
+    request: ChildLayoutSetRequest,
+) -> Option<MetadataPatch> {
     let target = match request.node_key {
         andamento_shared::NodeKey::Root => MetadataTarget::Root,
-        andamento_shared::NodeKey::Group(path) => MetadataTarget::Group(path),
-        andamento_shared::NodeKey::Tab(_) => return None,
+        andamento_shared::NodeKey::Tab(tab_id) => MetadataTarget::Tab(tab_id),
+        andamento_shared::NodeKey::Group(path) => {
+            MetadataTarget::Entity(state.entity_for_presentation_path(&path)?)
+        }
     };
     let (set, unset) = match request.layout {
         Some(layout) => (
@@ -1283,6 +1297,7 @@ enum ControllerMessage {
     TogglePin(u64),
     SetSortMode(SortMode),
     SetRailConfig(RailConfig),
+    SetGroupingTemplate(GroupingTemplateSetRequest),
     RequestState,
     BootstrapRequest(RendererHello),
     BootstrapState(ControllerBootstrapSnapshot),
@@ -1362,6 +1377,16 @@ fn parse_controller_message(
                     .map_err(|e| format!("invalid rail config: {e}"))
             })
             .map(ControllerMessage::SetRailConfig)
+            .map(Some),
+        MSG_SET_GROUPING_TEMPLATE => pipe_message
+            .payload
+            .as_deref()
+            .ok_or_else(|| "set-grouping-template requires payload".to_owned())
+            .and_then(|payload| {
+                serde_json::from_str::<GroupingTemplateSetRequest>(payload)
+                    .map_err(|e| format!("invalid grouping template request: {e}"))
+            })
+            .map(ControllerMessage::SetGroupingTemplate)
             .map(Some),
         MSG_SET_METADATA_VISIBILITY => pipe_message
             .payload
@@ -1605,7 +1630,7 @@ mod tests {
     #[test]
     fn parses_materialize_latent_request() {
         let request = andamento_shared::MaterializeLatentRequest {
-            factory_id: "flotilla:convoys/dev/latent-tabs".to_owned(),
+            action_target: "flotilla:convoys/dev/latent-tabs".to_owned(),
             path: andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
                 key: "flotilla.convoy".to_owned(),
                 value: andamento_shared::MetadataValue::Text("dev/latent-tabs".to_owned()),
@@ -2148,8 +2173,8 @@ mod tests {
     #[test]
     fn child_layout_request_patches_group_metadata() {
         let group_path = andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
-            key: "zellij.pane.cwd".to_owned(),
-            value: andamento_shared::MetadataValue::Text("/repo".to_owned()),
+            key: "vcs.repo".to_owned(),
+            value: andamento_shared::MetadataValue::Text("example/repo".to_owned()),
             label: Some("repo".to_owned()),
         }]);
         let request = andamento_shared::ChildLayoutSetRequest {
@@ -2162,6 +2187,43 @@ mod tests {
         state.set_rail_config(RailConfig {
             grouping: RailGroupingMode::Directory,
             ..RailConfig::default()
+        });
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: andamento_shared::MetadataTarget::Entity(andamento_shared::EntityRef {
+                kind: andamento_shared::EntityKind::Repo,
+                id: "example/repo".to_owned(),
+            }),
+            source_id: "test".to_owned(),
+            set: BTreeMap::from([
+                (
+                    "entity.kind".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: andamento_shared::MetadataValue::Text("repo".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "entity.id".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: andamento_shared::MetadataValue::Text("example/repo".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "vcs.repo".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: andamento_shared::MetadataValue::Text("example/repo".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+            ]),
+            unset: vec![],
         });
         state.update_tabs(vec![state::ControllerTab {
             tab_id: 1,
@@ -2186,7 +2248,8 @@ mod tests {
             .resolved_metadata
             .iter()
             .find(|metadata| {
-                metadata.target == andamento_shared::MetadataTarget::Group(group_path.clone())
+                metadata.target
+                    == andamento_shared::ResolvedMetadataTarget::Group(group_path.clone())
             })
             .expect("group metadata");
         assert!(changed.state_changed);
@@ -2228,7 +2291,7 @@ mod tests {
         let root_metadata = model
             .resolved_metadata
             .iter()
-            .find(|metadata| metadata.target == andamento_shared::MetadataTarget::Root)
+            .find(|metadata| metadata.target == andamento_shared::ResolvedMetadataTarget::Root)
             .expect("root metadata");
         assert!(changed.state_changed);
         assert_eq!(
@@ -2271,6 +2334,26 @@ mod tests {
     }
 
     #[test]
+    fn grouping_template_message_switches_projection_without_metadata_changes() {
+        let request = GroupingTemplateSetRequest {
+            name: Some("flotilla.default".to_owned()),
+        };
+        let payload = serde_json::to_string(&request).unwrap();
+        let mut state = ControllerState::default();
+
+        let changed = handle_pipe_message(
+            &mut state,
+            pipe(MSG_SET_GROUPING_TEMPLATE, Some(payload), BTreeMap::new()),
+        );
+
+        assert!(changed.state_changed);
+        assert_eq!(
+            changed.view_model_push_reason,
+            Some(ViewModelPushReason::PipeConfig)
+        );
+    }
+
+    #[test]
     fn metadata_patch_message_updates_resolved_tab_metadata() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![state::ControllerTab {
@@ -2304,7 +2387,7 @@ mod tests {
         let tab_metadata = model
             .resolved_metadata
             .iter()
-            .find(|metadata| metadata.target == andamento_shared::MetadataTarget::Tab(1))
+            .find(|metadata| metadata.target == andamento_shared::ResolvedMetadataTarget::Tab(1))
             .expect("tab metadata");
         assert!(result.state_changed);
         assert_eq!(
