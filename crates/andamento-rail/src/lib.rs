@@ -721,6 +721,38 @@ mod tests {
     }
 
     #[test]
+    fn detail_hover_updates_live_and_click_remains_as_selection_fallback() {
+        let entity = andamento_shared::EntityRef {
+            kind: andamento_shared::EntityKind::Issue,
+            id: "github/flotilla-org/andamento#27".to_owned(),
+        };
+        let target = NodeKey::Entity(entity);
+        let mut state = PluginState {
+            hit_regions: vec![HitRegion {
+                row_start: 1,
+                row_end: 1,
+                col_start: 2,
+                col_end: 8,
+                tab_id: 0,
+                tab_position: 0,
+                group_path: None,
+                inspect_target: Some(target.clone()),
+                materialize_request: None,
+                action: HitAction::ShowDetail,
+            }],
+            ..Default::default()
+        };
+
+        assert!(state.handle_mouse(Mouse::Hover(1, 3)));
+        assert_eq!(state.hovered_detail_target, Some(target.clone()));
+        assert!(state.handle_mouse(Mouse::LeftClick(1, 3)));
+        assert_eq!(state.selected_detail_target, Some(target.clone()));
+        assert!(state.handle_mouse(Mouse::Hover(2, 3)));
+        assert_eq!(state.hovered_detail_target, None);
+        assert_eq!(state.selected_detail_target, Some(target));
+    }
+
+    #[test]
     fn ensure_visible_latch_survives_until_controller_render_can_resolve_target() {
         let mut state = PluginState {
             local_tabs: vec![LocalTab {

@@ -344,6 +344,9 @@ impl ZellijPlugin for PluginState {
         if let Some(error) = diagnostics.last_error.as_ref() {
             lines.push(format!("template error: {error}"));
         }
+        for warning in &diagnostics.warnings {
+            lines.push(format!("template warning: {warning}"));
+        }
         if !self.recent_pipe_log.is_empty() {
             lines.push(String::new());
             lines.push(format!("recent pipes ({}):", self.recent_pipe_log.len()));
@@ -395,6 +398,7 @@ impl PluginState {
             self.state.set_template_catalog(None);
             self.state
                 .set_template_config_diagnostics(TemplateConfigDiagnostics::default());
+            self.state.refresh_display_variable_warnings();
             return true;
         };
         match andamento_shared::template_config::load_template_catalog_from_file(path) {
@@ -405,9 +409,11 @@ impl PluginState {
                     template_count: catalog.len(),
                     template_names: catalog.template_names(),
                     last_error: None,
+                    warnings: vec![],
                 };
                 self.state.set_template_catalog(Some(catalog));
                 self.state.set_template_config_diagnostics(diagnostics);
+                self.state.refresh_display_variable_warnings();
                 true
             }
             Err(error) => {
@@ -426,6 +432,7 @@ impl PluginState {
     fn reload_grouping_catalog(&mut self) -> bool {
         let Some(path) = self.grouping_config_path.as_deref() else {
             self.state.set_grouping_catalog(None);
+            self.state.refresh_display_variable_warnings();
             self.grouping_rule_count = 0;
             self.grouping_config_error = None;
             return true;
@@ -435,6 +442,7 @@ impl PluginState {
                 self.grouping_rule_count = catalog.rules.len();
                 self.grouping_config_error = None;
                 self.state.set_grouping_catalog(Some(catalog));
+                self.state.refresh_display_variable_warnings();
                 true
             }
             Err(error) => {
@@ -1162,6 +1170,7 @@ fn initial_template_config_diagnostics(path: Option<String>) -> TemplateConfigDi
         template_count: 0,
         template_names: vec![],
         last_error: None,
+        warnings: vec![],
     }
 }
 
@@ -1175,6 +1184,7 @@ fn template_config_error_diagnostics(
         template_count: 0,
         template_names: vec![],
         last_error: Some(error),
+        warnings: vec![],
     }
 }
 

@@ -1451,6 +1451,12 @@ fn push_templates_page(frame: &mut ConfigUiFrame, model: Option<&ControllerViewM
         frame.push_plain("last error");
         frame.push_plain(&format!("  {error}"));
     }
+    if !diagnostics.warnings.is_empty() {
+        frame.push_plain("warnings");
+        for warning in &diagnostics.warnings {
+            frame.push_plain(&format!("  {warning}"));
+        }
+    }
     frame.push_blank();
     frame.push_plain("resolved slots");
     for row in &model.rows {
@@ -2616,6 +2622,7 @@ mod tests {
                 template_count: 1,
                 template_names: vec!["andamento.git.group-header".to_owned()],
                 last_error: None,
+                warnings: vec![],
             },
             tabs: vec![],
             rows: vec![],

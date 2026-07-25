@@ -389,17 +389,19 @@ impl ControllerState {
     }
 
     pub fn apply_rail_ui_action(&mut self, action: RailUiAction) -> bool {
-        if let RailUiAction::ToggleVariable { name } = &action {
-            let declared = self.template_catalog.as_ref().is_some_and(|catalog| {
-                catalog
-                    .variables()
-                    .iter()
-                    .any(|variable| &variable.name == name)
-            });
-            if !declared {
+        let toggle_definition = if let RailUiAction::ToggleVariable { name } = &action {
+            let Some(definition) = self
+                .template_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.variables().iter().find(|item| &item.name == name))
+                .cloned()
+            else {
                 return false;
-            }
-        }
+            };
+            Some(definition)
+        } else {
+            None
+        };
         self.rail_ui.revision = RailUiRevision {
             sequence: self.rail_ui.revision.sequence.saturating_add(1),
             writer_client_id: self.rail_ui_writer_client_id,
@@ -411,40 +413,33 @@ impl ControllerState {
                 }
             }
             RailUiAction::ToggleVariable { name } => {
-                let definition = self
-                    .template_catalog
-                    .as_ref()
-                    .and_then(|catalog| catalog.variables().iter().find(|item| item.name == name));
-                if let Some(definition) = definition {
-                    let current = self
-                        .rail_ui
-                        .variables
-                        .get(&name)
-                        .unwrap_or(&definition.default);
-                    let next = match (&definition.variable_type, current) {
-                        (
-                            andamento_shared::template_config::TemplateVariableType::Bool,
-                            DisplayVariableValue::Bool(value),
-                        ) => DisplayVariableValue::Bool(!value),
-                        (
-                            andamento_shared::template_config::TemplateVariableType::Enum {
-                                values,
-                            },
-                            DisplayVariableValue::Enum(value),
-                        ) => {
-                            let next = values
-                                .iter()
-                                .position(|candidate| candidate == value)
-                                .map(|index| (index + 1) % values.len())
-                                .unwrap_or(0);
-                            DisplayVariableValue::Enum(
-                                values.get(next).cloned().unwrap_or_else(|| value.clone()),
-                            )
-                        }
-                        _ => definition.default.clone(),
-                    };
-                    self.rail_ui.variables.insert(name, next);
-                }
+                let definition = toggle_definition.expect("toggle definition resolved above");
+                let current = self
+                    .rail_ui
+                    .variables
+                    .get(&name)
+                    .unwrap_or(&definition.default);
+                let next = match (&definition.variable_type, current) {
+                    (
+                        andamento_shared::template_config::TemplateVariableType::Bool,
+                        DisplayVariableValue::Bool(value),
+                    ) => DisplayVariableValue::Bool(!value),
+                    (
+                        andamento_shared::template_config::TemplateVariableType::Enum { values },
+                        DisplayVariableValue::Enum(value),
+                    ) => {
+                        let next = values
+                            .iter()
+                            .position(|candidate| candidate == value)
+                            .map(|index| (index + 1) % values.len())
+                            .unwrap_or(0);
+                        DisplayVariableValue::Enum(
+                            values.get(next).cloned().unwrap_or_else(|| value.clone()),
+                        )
+                    }
+                    _ => definition.default.clone(),
+                };
+                self.rail_ui.variables.insert(name, next);
             }
             RailUiAction::ScrollBy { delta } => {
                 self.rail_ui.scroll_offset = self.rail_ui.scroll_offset.saturating_add(delta);
@@ -526,6 +521,42 @@ impl ControllerState {
 
     pub fn template_config_diagnostics(&self) -> &TemplateConfigDiagnostics {
         &self.template_config
+    }
+
+    pub fn refresh_display_variable_warnings(&mut self) {
+        let default_grouping_catalog = GroupingConfigCatalog::default();
+        let grouping_catalog = self
+            .grouping_catalog
+            .as_ref()
+            .unwrap_or(&default_grouping_catalog);
+        let declared = self
+            .template_catalog
+            .as_ref()
+            .map(|catalog| {
+                catalog
+                    .variables()
+                    .iter()
+                    .map(|variable| (variable.name.as_str(), &variable.variable_type))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        self.template_config.warnings = grouping_catalog
+            .rules
+            .iter()
+            .flat_map(|rule| &rule.presence)
+            .filter_map(|mapping| {
+                let name = mapping.visible_when.as_deref()?;
+                match declared.get(name) {
+                    Some(andamento_shared::template_config::TemplateVariableType::Bool) => None,
+                    Some(_) => Some(format!("visible-when references non-bool variable {name}")),
+                    None => Some(format!(
+                        "visible-when references undeclared variable {name}"
+                    )),
+                }
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
     }
 
     pub fn apply_metadata_patch(&mut self, patch: andamento_shared::MetadataPatch) -> bool {
@@ -2779,6 +2810,46 @@ mod tests {
             .rows
             .iter()
             .any(|row| matches!(row, RailRow::Entity { .. })));
+    }
+
+    #[test]
+    fn visible_when_mismatches_are_reported_without_breaking_fallback_rendering() {
+        let mut state = directory_entity_state();
+        state.refresh_display_variable_warnings();
+        assert_eq!(
+            state.template_config_diagnostics().warnings,
+            vec!["visible-when references undeclared variable show-issues"]
+        );
+
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(
+                andamento_shared::template_config::parse_template_config_kdl(
+                    r#"
+                    variable "show-issues" type="enum" default="all" label="Issues" icon="I" {
+                      value "all"
+                      value "none"
+                    }
+                    "#,
+                )
+                .unwrap(),
+            ),
+        ));
+        state.refresh_display_variable_warnings();
+        assert_eq!(
+            state.template_config_diagnostics().warnings,
+            vec!["visible-when references non-bool variable show-issues"]
+        );
+
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(
+                andamento_shared::template_config::parse_template_config_kdl(
+                    r#"variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
+                )
+                .unwrap(),
+            ),
+        ));
+        state.refresh_display_variable_warnings();
+        assert!(state.template_config_diagnostics().warnings.is_empty());
     }
 
     #[test]
