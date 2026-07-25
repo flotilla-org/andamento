@@ -723,6 +723,7 @@ enum ViewModelPushReason {
     PipeRequestState,
     PipeBootstrap,
     PipeMetadataControls,
+    PipeDisplayVariable,
     PipeMaterializeLatent,
     PipeUnknown,
 }
@@ -745,6 +746,7 @@ impl ViewModelPushReason {
             Self::PipeRequestState => "view-model.push.reason.pipe.request-state",
             Self::PipeBootstrap => "view-model.push.reason.pipe.bootstrap",
             Self::PipeMetadataControls => "view-model.push.reason.pipe.metadata-controls",
+            Self::PipeDisplayVariable => "view-model.push.reason.pipe.display-variable",
             Self::PipeMaterializeLatent => "view-model.push.reason.pipe.materialize-latent",
             Self::PipeUnknown => "view-model.push.reason.pipe.unknown",
         }
@@ -1016,9 +1018,14 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             }
         }
         Ok(Some(ControllerMessage::RailUiAction(action))) => {
-            state.apply_rail_ui_action(action);
+            let display_variable_action = matches!(action, RailUiAction::ToggleVariable { .. });
+            let changed = state.apply_rail_ui_action(action);
+            let display_variable_changed = display_variable_action && changed;
             HandlePipeResult {
-                broadcast_rail_ui_state: true,
+                state_changed: display_variable_changed,
+                broadcast_rail_ui_state: changed,
+                view_model_push_reason: display_variable_changed
+                    .then_some(ViewModelPushReason::PipeDisplayVariable),
                 ..HandlePipeResult::default()
             }
         }
@@ -1075,6 +1082,7 @@ fn child_layout_patch(
         andamento_shared::NodeKey::Group(path) => {
             MetadataTarget::Entity(state.entity_for_presentation_path(&path)?)
         }
+        andamento_shared::NodeKey::Entity(entity) => MetadataTarget::Entity(entity),
     };
     let (set, unset) = match request.layout {
         Some(layout) => (
@@ -1218,6 +1226,9 @@ fn inspect_scope_label(key: &andamento_shared::NodeKey) -> String {
         andamento_shared::NodeKey::Root => "root".to_owned(),
         andamento_shared::NodeKey::Tab(tab_id) => format!("tab:{tab_id}"),
         andamento_shared::NodeKey::Group(_) => "group".to_owned(),
+        andamento_shared::NodeKey::Entity(entity) => {
+            format!("entity:{}:{}", entity.kind.as_str(), entity.id)
+        }
     }
 }
 
@@ -2088,6 +2099,7 @@ mod tests {
             },
             collapsed_groups: vec![],
             scroll_offset: 11,
+            variables: BTreeMap::new(),
         };
         let winner = RailUiState {
             revision: RailUiRevision {
@@ -2096,6 +2108,7 @@ mod tests {
             },
             collapsed_groups: vec![],
             scroll_offset: 13,
+            variables: BTreeMap::new(),
         };
         let stale = RailUiState {
             revision: RailUiRevision {
@@ -2104,6 +2117,7 @@ mod tests {
             },
             collapsed_groups: vec![],
             scroll_offset: 1,
+            variables: BTreeMap::new(),
         };
 
         handle_pipe_message(
@@ -2166,7 +2180,41 @@ mod tests {
                 },
                 collapsed_groups: vec![],
                 scroll_offset: 4,
+                variables: BTreeMap::new(),
             }
+        );
+    }
+
+    #[test]
+    fn display_variable_action_broadcasts_state_and_pushes_a_new_view_model() {
+        let mut state = ControllerState::default();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(
+                andamento_shared::template_config::parse_template_config_kdl(
+                    r#"variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
+                )
+                .unwrap(),
+            ),
+        ));
+        let action = serde_json::to_string(&RailUiAction::ToggleVariable {
+            name: "show-issues".to_owned(),
+        })
+        .unwrap();
+
+        let result = handle_pipe_message(
+            &mut state,
+            pipe(MSG_RAIL_UI_ACTION, Some(action), BTreeMap::new()),
+        );
+
+        assert!(result.broadcast_rail_ui_state);
+        assert!(result.state_changed);
+        assert_eq!(
+            result.view_model_push_reason,
+            Some(ViewModelPushReason::PipeDisplayVariable)
+        );
+        assert_eq!(
+            state.rail_ui_state().variables.get("show-issues"),
+            Some(&andamento_shared::DisplayVariableValue::Bool(false))
         );
     }
 

@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::Path;
 
 use kdl::{KdlDocument, KdlNode, KdlValue};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{MetadataValue, ResolvedTemplateFieldSource};
 
@@ -34,7 +34,17 @@ pub fn parse_template_config_kdl(
         .filter(|node| node.name().value() == "template")
         .map(parse_kdl_template)
         .collect::<Result<Vec<_>, _>>()?;
-    let config = ExternalTemplateConfig { version, templates };
+    let variables = document
+        .nodes()
+        .iter()
+        .filter(|node| node.name().value() == "variable")
+        .map(parse_kdl_variable)
+        .collect::<Result<Vec<_>, _>>()?;
+    let config = ExternalTemplateConfig {
+        version,
+        templates,
+        variables,
+    };
     config.validate()?;
     Ok(config)
 }
@@ -75,6 +85,8 @@ pub struct ExternalTemplateConfig {
     pub version: u32,
     #[serde(default)]
     pub templates: Vec<TemplateConfigDefinition>,
+    #[serde(default)]
+    pub variables: Vec<TemplateVariableDefinition>,
 }
 
 impl ExternalTemplateConfig {
@@ -113,6 +125,21 @@ impl ExternalTemplateConfig {
                 }
             }
         }
+        let mut variable_names = BTreeSet::new();
+        for variable in &self.variables {
+            if variable.name.trim().is_empty() {
+                return Err(TemplateConfigError::Validation(
+                    "variable name cannot be empty".to_owned(),
+                ));
+            }
+            if !variable_names.insert(variable.name.clone()) {
+                return Err(TemplateConfigError::Validation(format!(
+                    "duplicate variable name: {}",
+                    variable.name
+                )));
+            }
+            variable.validate()?;
+        }
         Ok(())
     }
 }
@@ -120,12 +147,14 @@ impl ExternalTemplateConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateConfigCatalog {
     templates: Vec<TemplateConfigDefinition>,
+    variables: Vec<TemplateVariableDefinition>,
 }
 
 impl TemplateConfigCatalog {
     pub fn from_config(config: ExternalTemplateConfig) -> Self {
         Self {
             templates: config.templates,
+            variables: config.variables,
         }
     }
 
@@ -162,6 +191,10 @@ impl TemplateConfigCatalog {
             .iter()
             .map(|template| template.name.clone())
             .collect()
+    }
+
+    pub fn variables(&self) -> &[TemplateVariableDefinition] {
+        &self.variables
     }
 
     fn matching_candidates(
@@ -260,6 +293,8 @@ pub enum TemplateConfigSlot {
     GroupHeader,
     TabTitle,
     TabStatus,
+    Compact,
+    Detail,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -267,6 +302,50 @@ pub enum TemplateConfigSlot {
 pub enum TemplateConfigNodeKind {
     Group,
     Tab,
+    Entity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct TemplateVariableDefinition {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub variable_type: TemplateVariableType,
+    pub default: crate::DisplayVariableValue,
+    pub label: String,
+    pub icon: String,
+    #[serde(default = "default_true")]
+    pub persist: bool,
+}
+
+impl TemplateVariableDefinition {
+    fn validate(&self) -> Result<(), TemplateConfigError> {
+        let valid_default = match (&self.variable_type, &self.default) {
+            (TemplateVariableType::Bool, crate::DisplayVariableValue::Bool(_)) => true,
+            (TemplateVariableType::Enum { values }, crate::DisplayVariableValue::Enum(value)) => {
+                !values.is_empty() && values.contains(value)
+            }
+            _ => false,
+        };
+        if !valid_default {
+            return Err(TemplateConfigError::Validation(format!(
+                "variable {} has a default incompatible with its type",
+                self.name
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum TemplateVariableType {
+    Bool,
+    Enum { values: Vec<String> },
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -403,6 +482,7 @@ pub enum TemplateConfigValueSource {
     Literal { value: String },
     MetadataText { key: String },
     MetadataDisplay { key: String },
+    MetadataFirstToken { key: String },
     TabNumberFromPosition,
     ActiveTabName,
     CollapsedToggle { collapsed: String, expanded: String },
@@ -432,6 +512,21 @@ impl TemplateConfigValueSource {
                     source: Some(ResolvedTemplateFieldSource {
                         key: key.clone(),
                         value,
+                    }),
+                });
+            }
+            TemplateConfigValueSource::MetadataFirstToken { key } => {
+                let value = metadata_text(context.metadata, key)?
+                    .split_whitespace()
+                    .next()?
+                    .to_owned();
+                return Some(TemplateConfigResolvedValue {
+                    value,
+                    source: context.metadata.get(key).cloned().map(|value| {
+                        ResolvedTemplateFieldSource {
+                            key: key.clone(),
+                            value,
+                        }
                     }),
                 });
             }
@@ -498,6 +593,61 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
         sizing: parse_kdl_sizing(kdl_prop_string(node, "sizing").as_deref().unwrap_or("auto"))?,
         fields,
     })
+}
+
+fn parse_kdl_variable(node: &KdlNode) -> Result<TemplateVariableDefinition, TemplateConfigError> {
+    let name = kdl_required_arg_string(node, 0, "variable name")?;
+    let variable_type_name = kdl_required_prop_string(node, "type")?;
+    let (variable_type, default) = match variable_type_name.as_str() {
+        "bool" => (
+            TemplateVariableType::Bool,
+            crate::DisplayVariableValue::Bool(
+                node.get("default")
+                    .and_then(|entry| entry.value().as_bool())
+                    .ok_or_else(|| {
+                        TemplateConfigError::Validation(format!(
+                            "variable {name} must have a boolean default"
+                        ))
+                    })?,
+            ),
+        ),
+        "enum" => {
+            let values = node
+                .children()
+                .map(|children| {
+                    children
+                        .nodes()
+                        .iter()
+                        .filter(|child| child.name().value() == "value")
+                        .filter_map(|child| kdl_node_arg_string(child, 0).map(str::to_owned))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let default = kdl_required_prop_string(node, "default")?;
+            (
+                TemplateVariableType::Enum { values },
+                crate::DisplayVariableValue::Enum(default),
+            )
+        }
+        other => {
+            return Err(TemplateConfigError::Validation(format!(
+                "unsupported variable type: {other}"
+            )))
+        }
+    };
+    let variable = TemplateVariableDefinition {
+        name,
+        variable_type,
+        default,
+        label: kdl_required_prop_string(node, "label")?,
+        icon: kdl_required_prop_string(node, "icon")?,
+        persist: node
+            .get("persist")
+            .and_then(|entry| entry.value().as_bool())
+            .unwrap_or(true),
+    };
+    variable.validate()?;
+    Ok(variable)
 }
 
 fn parse_kdl_when(node: &KdlNode) -> Result<TemplateConfigPredicate, TemplateConfigError> {
@@ -584,6 +734,9 @@ fn parse_kdl_value_source(
             "metadata-display" => Ok(TemplateConfigValueSource::MetadataDisplay {
                 key: kdl_required_prop_string(node, "key")?,
             }),
+            "metadata-first-token" => Ok(TemplateConfigValueSource::MetadataFirstToken {
+                key: kdl_required_prop_string(node, "key")?,
+            }),
             "literal" => Ok(TemplateConfigValueSource::Literal {
                 value: kdl_required_prop_string(node, "value")?,
             }),
@@ -610,6 +763,8 @@ fn parse_kdl_slot(value: &str) -> Result<TemplateConfigSlot, TemplateConfigError
         "group-header" => Ok(TemplateConfigSlot::GroupHeader),
         "tab-title" => Ok(TemplateConfigSlot::TabTitle),
         "tab-status" => Ok(TemplateConfigSlot::TabStatus),
+        "compact" => Ok(TemplateConfigSlot::Compact),
+        "detail" => Ok(TemplateConfigSlot::Detail),
         other => Err(TemplateConfigError::Validation(format!(
             "unsupported template slot: {other}"
         ))),
@@ -620,6 +775,7 @@ fn parse_kdl_node_kind(value: &str) -> Result<TemplateConfigNodeKind, TemplateCo
     match value {
         "group" => Ok(TemplateConfigNodeKind::Group),
         "tab" => Ok(TemplateConfigNodeKind::Tab),
+        "entity" => Ok(TemplateConfigNodeKind::Entity),
         other => Err(TemplateConfigError::Validation(format!(
             "unsupported template node-kind: {other}"
         ))),
@@ -760,6 +916,43 @@ mod tests {
             config.templates[0].fields[0].sources[0],
             TemplateConfigValueSource::MetadataText {
                 key: "zellij.tab.name".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn parses_typed_display_variables_and_entity_forms() {
+        let config = parse_template_config_kdl(
+            r##"
+            version 1
+            variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
+            template "issue.compact" slot="compact" node-kind="entity" {
+              field source="metadata-first-token" key="display.label"
+            }
+            template "issue.detail" slot="detail" node-kind="entity" {
+              field key="display.label"
+            }
+            "##,
+        )
+        .expect("display model parses");
+
+        assert_eq!(
+            config.variables,
+            vec![TemplateVariableDefinition {
+                name: "show-issues".to_owned(),
+                variable_type: TemplateVariableType::Bool,
+                default: crate::DisplayVariableValue::Bool(true),
+                label: "Issues".to_owned(),
+                icon: "I".to_owned(),
+                persist: true,
+            }]
+        );
+        assert_eq!(config.templates[0].slot, TemplateConfigSlot::Compact);
+        assert_eq!(config.templates[1].slot, TemplateConfigSlot::Detail);
+        assert_eq!(
+            config.templates[0].fields[0].sources[0],
+            TemplateConfigValueSource::MetadataFirstToken {
+                key: "display.label".to_owned()
             }
         );
     }

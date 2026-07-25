@@ -352,6 +352,8 @@ pub struct PluginState {
     observed_rail_size: Option<RailSize>,
     latest_rail_size_target: Option<RailSizeTarget>,
     applied_rail_size_version: u64,
+    hovered_detail_target: Option<NodeKey>,
+    selected_detail_target: Option<NodeKey>,
 }
 
 #[cfg(feature = "native-plugin-factory")]
@@ -535,7 +537,7 @@ impl ZellijPlugin for PluginState {
             .unwrap_or_default();
         let should_ensure_active_visible =
             self.ensure_active_visible && self.own_tab_id() == self.active_tab_id();
-        let rendered = render::render_lines_with_rail_viewport(
+        let rendered = render::render_lines_with_detail_surface(
             self.controller_model.as_ref(),
             &self.local_tabs,
             rows,
@@ -550,6 +552,9 @@ impl ZellijPlugin for PluginState {
             &metadata_controls,
             self.rail_ui_state.scroll_offset,
             should_ensure_active_visible,
+            self.hovered_detail_target
+                .as_ref()
+                .or(self.selected_detail_target.as_ref()),
         );
         if should_ensure_active_visible && rendered.ensure_active_resolved {
             self.ensure_active_visible = false;
@@ -820,6 +825,7 @@ mod tests {
         let mut state = PluginState {
             rail_ui_state: RailUiState {
                 scroll_offset: 4,
+                variables: BTreeMap::new(),
                 ..Default::default()
             },
             rail_can_scroll: Some(true),
@@ -1022,6 +1028,7 @@ mod tests {
             },
             collapsed_groups: vec![path],
             scroll_offset: 9,
+            variables: BTreeMap::new(),
         };
         let payload = serde_json::to_string(&snapshot).unwrap();
         let mut existing = PluginState::default();
@@ -1044,6 +1051,7 @@ mod tests {
             },
             collapsed_groups: vec![],
             scroll_offset: 12,
+            variables: BTreeMap::new(),
         };
         let winner = RailUiState {
             revision: RailUiRevision {
@@ -1052,6 +1060,7 @@ mod tests {
             },
             collapsed_groups: vec![],
             scroll_offset: 14,
+            variables: BTreeMap::new(),
         };
         let stale = RailUiState {
             revision: RailUiRevision {
@@ -1060,6 +1069,7 @@ mod tests {
             },
             collapsed_groups: vec![],
             scroll_offset: 1,
+            variables: BTreeMap::new(),
         };
 
         assert!(rail.pipe(pipe(
@@ -1463,6 +1473,32 @@ impl PluginState {
                         }
                         false
                     }
+                    HitAction::ShowDetail => {
+                        self.selected_detail_target = hit.inspect_target;
+                        true
+                    }
+                    HitAction::ToggleVariable(index) => {
+                        if let Some(name) = self
+                            .controller_model
+                            .as_ref()
+                            .and_then(|model| model.display_variables.get(index))
+                            .map(|variable| variable.name.clone())
+                        {
+                            self.send_rail_ui_action(RailUiAction::ToggleVariable { name });
+                        }
+                        false
+                    }
+                }
+            }
+            Mouse::Hover(row, col) if row >= 0 => {
+                let target = hit_at(&self.hit_regions, row as usize, col)
+                    .filter(|hit| hit.action == HitAction::ShowDetail)
+                    .and_then(|hit| hit.inspect_target.clone());
+                if self.hovered_detail_target == target {
+                    false
+                } else {
+                    self.hovered_detail_target = target;
+                    true
                 }
             }
             Mouse::ScrollUp(lines) => self.queue_scroll_delta(

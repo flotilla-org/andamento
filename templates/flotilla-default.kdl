@@ -1,12 +1,14 @@
 version 1
 
+variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
+
 grouping "flotilla.default" priority=-1000 {
   filter key="entity.kind"
 
   presence kind="convoy" class="tab"
   presence kind="vessel" class="tab"
   presence kind="session" class="tab"
-  presence kind="issue" class="section"
+  presence kind="issue" class="section" form="compact" visible-when="show-issues"
   presence kind="project" class="section"
   presence kind="repo" class="section"
   presence kind="checkout" class="section"
@@ -18,4 +20,17 @@ grouping "flotilla.default" priority=-1000 {
   level key="flotilla.session" label-key="display.label" optional=true
   level key="flotilla.issue" label-key="display.label" optional=true show-empty=true
   level key="flotilla.checkout" label-key="display.label" optional=true show-empty=true
+}
+
+template "flotilla.issue.compact" slot="compact" node-kind="entity" {
+  when text-equals="entity.kind" value="issue"
+  field {
+    value source="metadata-first-token" key="display.label"
+  }
+}
+
+template "flotilla.issue.detail" slot="detail" node-kind="entity" {
+  when text-equals="entity.kind" value="issue"
+  field key="display.label"
+  field key="summary.text" priority=50
 }

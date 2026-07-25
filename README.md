@@ -118,6 +118,10 @@ grouping "proj-repo-branch" {
 
 Each level also accepts `collapse-single-member=true` and `show-empty=true`.
 Presence mappings classify an entity kind as `tab`, `section`, or `hidden`.
+Section entities can select `form="compact"` to reuse the rail's wrapped
+Zellij-ribbon collection rendering. `visible-when="variable-name"` gates the
+whole class through a declared display variable; it does not introduce a
+kind-specific switch in the renderer.
 The built-in entity renderers show the flat `source` fact as a compact
 `[producer]` badge on group and tab labels.
 The bundled template is available as
@@ -142,6 +146,30 @@ plugin location="andamento-controller" {
 
 Template load status, errors, and resolved slots are visible in the config
 plugin's `templates` tab.
+
+Display variables and entity forms live in the same template model. Boolean
+and enum variables have a default, label, icon, and persistence policy. Their
+controls are projected into the fixed footer, and values are shared by all
+rails through the session rail-state broadcast:
+
+```kdl
+variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
+
+template "issue.compact" slot="compact" node-kind="entity" {
+    when text-equals="entity.kind" value="issue"
+    field source="metadata-first-token" key="display.label"
+}
+
+template "issue.detail" slot="detail" node-kind="entity" {
+    when text-equals="entity.kind" value="issue"
+    field key="display.label"
+    field key="summary.text" priority=50
+}
+```
+
+Compact entities expose their `detail` form in the rail's fixed detail row.
+Pointer hover updates it immediately; clicking an entity keeps it as the
+selection fallback when the pointer leaves.
 
 Example template:
 
