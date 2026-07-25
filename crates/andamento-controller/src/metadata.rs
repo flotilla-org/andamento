@@ -25,6 +25,7 @@ impl CandidateEntry {
 #[derive(Debug, Default)]
 pub struct MetadataStore {
     entries: HashMap<EntityId, HashMap<String, BTreeMap<String, MetadataEntry>>>,
+    target_ordinals: HashMap<EntityId, i64>,
 }
 
 impl MetadataStore {
@@ -39,6 +40,9 @@ impl MetadataStore {
         source_id: impl Into<String>,
         entry: MetadataEntry,
     ) {
+        self.target_ordinals
+            .entry(entity_id.clone())
+            .or_insert(entry.ordinal);
         self.entries
             .entry(entity_id)
             .or_default()
@@ -65,8 +69,13 @@ impl MetadataStore {
         }
         if entity_entries.is_empty() {
             self.entries.remove(entity_id);
+            self.target_ordinals.remove(entity_id);
         }
         removed
+    }
+
+    pub fn target_ordinal(&self, entity_id: &EntityId) -> Option<i64> {
+        self.target_ordinals.get(entity_id).copied()
     }
 
     pub fn source_entry(
@@ -88,6 +97,16 @@ impl MetadataStore {
             if let Some(entry) = self.unset(&target, &key, &patch.source_id) {
                 outcome.touched = true;
                 outcome.view_changed |= entry_is_live(&entry, now);
+            }
+        }
+        if !self.entries.contains_key(&target) {
+            if let Some(ordinal) = patch
+                .set
+                .values()
+                .map(|update| update.ordinal.unwrap_or_default())
+                .min()
+            {
+                self.target_ordinals.insert(target.clone(), ordinal);
             }
         }
         for (key, update) in patch.set {
@@ -473,6 +492,36 @@ mod tests {
         assert_eq!(entries[0].entry.ttl_ms, Some(30_000));
         assert_eq!(entries[0].entry.precedence, 10);
         assert_eq!(entries[0].entry.ordinal, 2);
+    }
+
+    #[test]
+    fn target_ordinal_comes_from_the_patch_without_an_identity_value() {
+        let mut store = MetadataStore::default();
+        let entity = andamento_shared::EntityRef {
+            kind: andamento_shared::EntityKind::Issue,
+            id: "github/flotilla-org/andamento#37".to_owned(),
+        };
+        let target = EntityId::Entity(entity.clone());
+
+        store.apply_patch(
+            MetadataPatch {
+                target: MetadataTarget::Entity(entity),
+                source_id: "flotilla".to_owned(),
+                set: BTreeMap::from([(
+                    "display.label".to_owned(),
+                    MetadataValueUpdate {
+                        value: MetadataValue::Text("#37".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: Some(7),
+                    },
+                )]),
+                unset: vec![],
+            },
+            1,
+        );
+
+        assert_eq!(store.target_ordinal(&target), Some(7));
     }
 
     #[test]
