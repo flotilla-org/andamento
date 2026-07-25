@@ -344,6 +344,9 @@ impl ZellijPlugin for PluginState {
         if let Some(error) = diagnostics.last_error.as_ref() {
             lines.push(format!("template error: {error}"));
         }
+        for warning in &diagnostics.warnings {
+            lines.push(format!("template warning: {warning}"));
+        }
         if !self.recent_pipe_log.is_empty() {
             lines.push(String::new());
             lines.push(format!("recent pipes ({}):", self.recent_pipe_log.len()));
@@ -392,9 +395,9 @@ impl PluginState {
 
     fn reload_template_catalog(&mut self) -> bool {
         let Some(path) = self.template_config_path.as_deref() else {
-            self.state.set_template_catalog(None);
             self.state
                 .set_template_config_diagnostics(TemplateConfigDiagnostics::default());
+            self.state.set_template_catalog(None);
             return true;
         };
         match andamento_shared::template_config::load_template_catalog_from_file(path) {
@@ -405,19 +408,20 @@ impl PluginState {
                     template_count: catalog.len(),
                     template_names: catalog.template_names(),
                     last_error: None,
+                    warnings: vec![],
                 };
-                self.state.set_template_catalog(Some(catalog));
                 self.state.set_template_config_diagnostics(diagnostics);
+                self.state.set_template_catalog(Some(catalog));
                 true
             }
             Err(error) => {
                 eprintln!("andamento-controller: failed to load template config: {error}");
-                self.state.set_template_catalog(None);
                 self.state
                     .set_template_config_diagnostics(template_config_error_diagnostics(
                         Some(path.to_owned()),
                         error.to_string(),
                     ));
+                self.state.set_template_catalog(None);
                 false
             }
         }
@@ -723,6 +727,7 @@ enum ViewModelPushReason {
     PipeRequestState,
     PipeBootstrap,
     PipeMetadataControls,
+    PipeDisplayVariable,
     PipeMaterializeLatent,
     PipeUnknown,
 }
@@ -745,6 +750,7 @@ impl ViewModelPushReason {
             Self::PipeRequestState => "view-model.push.reason.pipe.request-state",
             Self::PipeBootstrap => "view-model.push.reason.pipe.bootstrap",
             Self::PipeMetadataControls => "view-model.push.reason.pipe.metadata-controls",
+            Self::PipeDisplayVariable => "view-model.push.reason.pipe.display-variable",
             Self::PipeMaterializeLatent => "view-model.push.reason.pipe.materialize-latent",
             Self::PipeUnknown => "view-model.push.reason.pipe.unknown",
         }
@@ -1016,9 +1022,14 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             }
         }
         Ok(Some(ControllerMessage::RailUiAction(action))) => {
-            state.apply_rail_ui_action(action);
+            let display_variable_action = matches!(action, RailUiAction::ToggleVariable { .. });
+            let changed = state.apply_rail_ui_action(action);
+            let display_variable_changed = display_variable_action && changed;
             HandlePipeResult {
-                broadcast_rail_ui_state: true,
+                state_changed: display_variable_changed,
+                broadcast_rail_ui_state: changed,
+                view_model_push_reason: display_variable_changed
+                    .then_some(ViewModelPushReason::PipeDisplayVariable),
                 ..HandlePipeResult::default()
             }
         }
@@ -1075,6 +1086,7 @@ fn child_layout_patch(
         andamento_shared::NodeKey::Group(path) => {
             MetadataTarget::Entity(state.entity_for_presentation_path(&path)?)
         }
+        andamento_shared::NodeKey::Entity(entity) => MetadataTarget::Entity(entity),
     };
     let (set, unset) = match request.layout {
         Some(layout) => (
@@ -1154,6 +1166,7 @@ fn initial_template_config_diagnostics(path: Option<String>) -> TemplateConfigDi
         template_count: 0,
         template_names: vec![],
         last_error: None,
+        warnings: vec![],
     }
 }
 
@@ -1167,6 +1180,7 @@ fn template_config_error_diagnostics(
         template_count: 0,
         template_names: vec![],
         last_error: Some(error),
+        warnings: vec![],
     }
 }
 
@@ -1218,6 +1232,9 @@ fn inspect_scope_label(key: &andamento_shared::NodeKey) -> String {
         andamento_shared::NodeKey::Root => "root".to_owned(),
         andamento_shared::NodeKey::Tab(tab_id) => format!("tab:{tab_id}"),
         andamento_shared::NodeKey::Group(_) => "group".to_owned(),
+        andamento_shared::NodeKey::Entity(entity) => {
+            format!("entity:{}:{}", entity.kind.as_str(), entity.id)
+        }
     }
 }
 
@@ -2088,6 +2105,7 @@ mod tests {
             },
             collapsed_groups: vec![],
             scroll_offset: 11,
+            variables: BTreeMap::new(),
         };
         let winner = RailUiState {
             revision: RailUiRevision {
@@ -2096,6 +2114,7 @@ mod tests {
             },
             collapsed_groups: vec![],
             scroll_offset: 13,
+            variables: BTreeMap::new(),
         };
         let stale = RailUiState {
             revision: RailUiRevision {
@@ -2104,6 +2123,7 @@ mod tests {
             },
             collapsed_groups: vec![],
             scroll_offset: 1,
+            variables: BTreeMap::new(),
         };
 
         handle_pipe_message(
@@ -2166,7 +2186,41 @@ mod tests {
                 },
                 collapsed_groups: vec![],
                 scroll_offset: 4,
+                variables: BTreeMap::new(),
             }
+        );
+    }
+
+    #[test]
+    fn display_variable_action_broadcasts_state_and_pushes_a_new_view_model() {
+        let mut state = ControllerState::default();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(
+                andamento_shared::template_config::parse_template_config_kdl(
+                    r#"variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
+                )
+                .unwrap(),
+            ),
+        ));
+        let action = serde_json::to_string(&RailUiAction::ToggleVariable {
+            name: "show-issues".to_owned(),
+        })
+        .unwrap();
+
+        let result = handle_pipe_message(
+            &mut state,
+            pipe(MSG_RAIL_UI_ACTION, Some(action), BTreeMap::new()),
+        );
+
+        assert!(result.broadcast_rail_ui_state);
+        assert!(result.state_changed);
+        assert_eq!(
+            result.view_model_push_reason,
+            Some(ViewModelPushReason::PipeDisplayVariable)
+        );
+        assert_eq!(
+            state.rail_ui_state().variables.get("show-issues"),
+            Some(&andamento_shared::DisplayVariableValue::Bool(false))
         );
     }
 

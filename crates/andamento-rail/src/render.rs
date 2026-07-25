@@ -44,6 +44,8 @@ pub enum HitAction {
     ScrollRailUp,
     ScrollRailDown,
     InspectNode,
+    ShowDetail,
+    ToggleVariable(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +168,8 @@ struct RenderCard {
     /// Populated by `append_tab_run`/`render_nodes` based on
     /// `MetadataControls`; the card grows by `meta_panel.len()` rows.
     meta_panel: Option<Vec<String>>,
+    entity: Option<andamento_shared::EntityRef>,
+    compact_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -461,7 +465,7 @@ pub fn render_lines_with_rail_viewport(
 
     let rail_can_scroll = content_height > card_rows_available;
     if controller_available {
-        render_footer(
+        render_footer_with_variables(
             &mut lines,
             &mut hit_regions,
             rows - 1,
@@ -470,6 +474,10 @@ pub fn render_lines_with_rail_viewport(
             metadata_controls,
             inspected_node,
             rail_can_scroll,
+            model
+                .map(|model| model.display_variables.as_slice())
+                .unwrap_or_default(),
+            model.map(|model| &model.display_variable_values),
         );
     } else {
         lines[rows - 1] = style_body_text(
@@ -487,6 +495,105 @@ pub fn render_lines_with_rail_viewport(
         ensure_visible_offset: viewport.ensure_visible_offset,
         ensure_active_resolved: viewport.ensure_active_resolved,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_lines_with_detail_surface(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    rows: usize,
+    cols: usize,
+    controller_available: bool,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+    collapsed_groups: &[GroupPath],
+    template_catalog: Option<&TemplateConfigCatalog>,
+    metadata_controls: &MetadataControls,
+    rail_scroll_offset: isize,
+    ensure_active_visible: bool,
+    detail_target: Option<&NodeKey>,
+) -> RenderedRail {
+    if rows < 2 || !controller_available {
+        return render_lines_with_rail_viewport(
+            model,
+            tabs,
+            rows,
+            cols,
+            controller_available,
+            theme,
+            terminal_cell_size,
+            collapsed_groups,
+            template_catalog,
+            metadata_controls,
+            rail_scroll_offset,
+            ensure_active_visible,
+        );
+    }
+    let mut rendered = render_lines_with_rail_viewport(
+        model,
+        tabs,
+        rows - 1,
+        cols,
+        controller_available,
+        theme,
+        terminal_cell_size,
+        collapsed_groups,
+        template_catalog,
+        metadata_controls,
+        rail_scroll_offset,
+        ensure_active_visible,
+    );
+    let footer_row = rows - 2;
+    let footer = rendered.lines.pop().unwrap_or_else(|| blank(cols));
+    for hit in &mut rendered.hit_regions {
+        if hit.row_start == footer_row {
+            hit.row_start += 1;
+            hit.row_end += 1;
+        }
+    }
+    rendered
+        .lines
+        .push(render_detail_surface(model, detail_target, cols, theme));
+    rendered.lines.push(footer);
+    rendered
+}
+
+fn render_detail_surface(
+    model: Option<&ControllerViewModel>,
+    target: Option<&NodeKey>,
+    width: usize,
+    theme: Option<RenderTheme>,
+) -> String {
+    let detail = match (model, target) {
+        (Some(model), Some(NodeKey::Entity(target))) => model.rows.iter().find_map(|row| {
+            let RailRow::Entity { entity, .. } = row else {
+                return None;
+            };
+            if &entity.entity != target {
+                return None;
+            }
+            let text = entity
+                .templates
+                .detail
+                .as_ref()
+                .map(|slot| {
+                    slot.fields
+                        .iter()
+                        .map(|field| field.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                })
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| entity.label.clone());
+            Some(format!("[{}] {text}", entity.entity.kind.as_str()))
+        }),
+        _ => None,
+    }
+    .unwrap_or_default();
+    style_body_text(
+        pad_to_width(&truncate_to_width(&detail, width), width),
+        theme,
+    )
 }
 
 /// Push N rows to `lines` rendering the meta panel for a node. Each row is:
@@ -1353,7 +1460,7 @@ fn top_level_tabs(nodes: &[RenderNode]) -> Option<Vec<&RenderTab>> {
     nodes
         .iter()
         .map(|node| match node {
-            RenderNode::Tab(tab) if tab.indent == 0 => Some(tab),
+            RenderNode::Tab(tab) if tab.indent == 0 && !tab.card.compact_only => Some(tab),
             _ => None,
         })
         .collect()
@@ -1381,7 +1488,7 @@ fn render_nodes_to_buffer(
         match node {
             RenderNode::Tab(tab) => pending_tabs.push(tab.clone()),
             RenderNode::Group(group) => {
-                let _tab_allocations = append_tab_run(
+                flush_render_tabs(
                     lines,
                     hit_regions,
                     visible_cards,
@@ -1494,7 +1601,7 @@ fn render_nodes_to_buffer(
             }
         }
     }
-    let _trailing_tab_allocations = append_tab_run(
+    flush_render_tabs(
         lines,
         hit_regions,
         visible_cards,
@@ -1509,6 +1616,42 @@ fn render_nodes_to_buffer(
         inspected_node,
         ancestor_meta_children,
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flush_render_tabs(
+    lines: &mut Vec<String>,
+    hit_regions: &mut Vec<HitRegion>,
+    visible_cards: &mut Vec<VisibleCard>,
+    tabs: &[RenderTab],
+    cols: usize,
+    controller_available: bool,
+    config: RailConfig,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+    template_catalog: Option<&TemplateConfigCatalog>,
+    metadata_controls: &MetadataControls,
+    inspected_node: Option<&NodeKey>,
+    ancestor_meta_children: bool,
+) {
+    let (compact, full): (Vec<_>, Vec<_>) =
+        tabs.iter().cloned().partition(|tab| tab.card.compact_only);
+    let _ = append_tab_run(
+        lines,
+        hit_regions,
+        visible_cards,
+        &full,
+        cols,
+        controller_available,
+        config,
+        theme,
+        terminal_cell_size,
+        template_catalog,
+        metadata_controls,
+        inspected_node,
+        ancestor_meta_children,
+    );
+    append_compact_tab_strip(lines, hit_regions, &compact, cols, theme, template_catalog);
 }
 
 #[derive(Debug, Clone)]
@@ -1757,7 +1900,7 @@ fn append_compact_tab_strip(
         let Some(tab) = tabs.get(hit.index) else {
             continue;
         };
-        if tab.card.latent && tab.card.materialize_request.is_none() {
+        if tab.card.latent && tab.card.materialize_request.is_none() && tab.card.entity.is_none() {
             continue;
         }
         hit_regions.push(HitRegion {
@@ -1768,9 +1911,11 @@ fn append_compact_tab_strip(
             tab_id: tab.card.tab_id,
             tab_position: tab.card.position,
             group_path: tab.parent_path.clone(),
-            inspect_target: None,
+            inspect_target: tab.card.entity.clone().map(NodeKey::Entity),
             materialize_request: tab.card.materialize_request.clone(),
-            action: if tab.card.latent {
+            action: if tab.card.entity.is_some() {
+                HitAction::ShowDetail
+            } else if tab.card.latent {
                 HitAction::Materialize
             } else {
                 HitAction::SwitchTab
@@ -2199,6 +2344,10 @@ fn hit_matches_node(hit: &HitRegion, node: &NodeKey) -> bool {
             hit.action == HitAction::ToggleGroup && hit.group_path.as_ref() == Some(path)
         }
         NodeKey::Root => false,
+        NodeKey::Entity(entity) => {
+            hit.action == HitAction::ShowDetail
+                && hit.inspect_target.as_ref() == Some(&NodeKey::Entity(entity.clone()))
+        }
     }
 }
 
@@ -2656,6 +2805,8 @@ fn nodes_to_render(
                         materialize_request: None,
                         latent_summary: None,
                         meta_panel: None,
+                        entity: None,
+                        compact_only: false,
                     },
                     indent: 0,
                     grouping: None,
@@ -2716,6 +2867,16 @@ fn nodes_to_render(
                     parent_path,
                 } => Some(PendingRenderNode::Tab(RenderTab {
                     card: render_card_from_latent(latent),
+                    indent: *indent,
+                    grouping: None,
+                    parent_path: parent_path.clone(),
+                })),
+                RailRow::Entity {
+                    entity,
+                    indent,
+                    parent_path,
+                } => Some(PendingRenderNode::Tab(RenderTab {
+                    card: render_card_from_entity(entity),
                     indent: *indent,
                     grouping: None,
                     parent_path: parent_path.clone(),
@@ -3138,7 +3299,12 @@ fn merge_resolved_metadata_into_nodes(
     for node in nodes {
         match node {
             RenderNode::Tab(tab) => {
-                let target = ResolvedMetadataTarget::Tab(tab.card.tab_id);
+                let target = tab
+                    .card
+                    .entity
+                    .clone()
+                    .map(ResolvedMetadataTarget::Entity)
+                    .unwrap_or(ResolvedMetadataTarget::Tab(tab.card.tab_id));
                 if let Some(metadata) = by_target.get(&target) {
                     tab.card.metadata.extend(metadata.clone());
                 }
@@ -3243,6 +3409,8 @@ fn render_card_from_model(card: &TabCard, local_by_id: &HashMap<u64, &LocalTab>)
         materialize_request: None,
         latent_summary: None,
         meta_panel: None,
+        entity: None,
+        compact_only: false,
     }
 }
 
@@ -3337,6 +3505,38 @@ fn render_card_from_latent(latent: &LatentTab) -> RenderCard {
         materialize_request,
         latent_summary,
         meta_panel: None,
+        entity: None,
+        compact_only: false,
+    }
+}
+
+fn render_card_from_entity(entity: &andamento_shared::DisplayEntity) -> RenderCard {
+    RenderCard {
+        tab_id: 0,
+        position: 0,
+        name: entity.label.clone(),
+        active: false,
+        pinned: false,
+        status: None,
+        metadata: RenderMetadata::from([
+            (
+                "entity.kind".to_owned(),
+                MetadataValue::Text(entity.entity.kind.as_str().to_owned()),
+            ),
+            (
+                "entity.id".to_owned(),
+                MetadataValue::Text(entity.entity.id.clone()),
+            ),
+        ]),
+        metadata_sources: RenderMetadataSources::new(),
+        reachable_identities: RenderReachableIdentities::new(),
+        templates: entity.templates.clone(),
+        latent: true,
+        materialize_request: None,
+        latent_summary: None,
+        meta_panel: None,
+        entity: Some(entity.entity.clone()),
+        compact_only: entity.form == andamento_shared::grouping_config::DisplayForm::Compact,
     }
 }
 
@@ -3591,14 +3791,15 @@ fn tab_title_with_template_catalog(
     card: &RenderCard,
     template_catalog: Option<&TemplateConfigCatalog>,
 ) -> String {
-    let fields = card
-        .templates
-        .tab_title
-        .as_ref()
-        .map(template_fields_from_resolved_slot)
-        .unwrap_or_else(|| {
-            tab_title_template_fields_with_template_catalog(&card.metadata, template_catalog)
-        });
+    let fields = (if card.compact_only {
+        card.templates.compact.as_ref()
+    } else {
+        card.templates.tab_title.as_ref()
+    })
+    .map(template_fields_from_resolved_slot)
+    .unwrap_or_else(|| {
+        tab_title_template_fields_with_template_catalog(&card.metadata, template_catalog)
+    });
     let rendered = join_template_fields(&fields, true);
     if rendered.trim().is_empty() {
         format!("{} (tab)", card.name)
@@ -4120,6 +4321,7 @@ fn body_line(
     }
 }
 
+#[cfg(test)]
 fn render_footer(
     lines: &mut [String],
     hit_regions: &mut Vec<HitRegion>,
@@ -4129,6 +4331,33 @@ fn render_footer(
     _metadata_controls: &MetadataControls,
     inspected_node: Option<&NodeKey>,
     rail_can_scroll: bool,
+) {
+    render_footer_with_variables(
+        lines,
+        hit_regions,
+        row,
+        width,
+        theme,
+        _metadata_controls,
+        inspected_node,
+        rail_can_scroll,
+        &[],
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_footer_with_variables(
+    lines: &mut [String],
+    hit_regions: &mut Vec<HitRegion>,
+    row: usize,
+    width: usize,
+    theme: Option<RenderTheme>,
+    _metadata_controls: &MetadataControls,
+    inspected_node: Option<&NodeKey>,
+    rail_can_scroll: bool,
+    variables: &[andamento_shared::template_config::TemplateVariableDefinition],
+    values: Option<&BTreeMap<String, andamento_shared::DisplayVariableValue>>,
 ) {
     if width == 0 {
         return;
@@ -4140,6 +4369,23 @@ fn render_footer(
         Some((HitAction::OpenConfig, BorderHitPayload::none())),
         "footer_gear",
     );
+    for (index, variable) in variables.iter().enumerate() {
+        let Some(mut icon) = variable.icon.chars().next() else {
+            continue;
+        };
+        if matches!(
+            values.and_then(|values| values.get(&variable.name)),
+            Some(andamento_shared::DisplayVariableValue::Bool(false))
+        ) {
+            icon = '·';
+        }
+        footer.place_left(
+            index + 1,
+            icon,
+            Some((HitAction::ToggleVariable(index), BorderHitPayload::none())),
+            "footer_variable",
+        );
+    }
     if width >= 2 && rail_can_scroll {
         footer.place_right(
             1,
@@ -5850,6 +6096,8 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         }
     }
 
@@ -5994,6 +6242,8 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         }
     }
 
@@ -6059,6 +6309,8 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         }
     }
 
@@ -6079,6 +6331,8 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         };
         for (tab_id, worktree) in [(1, "worktree-a"), (2, "worktree-b")] {
             let path = GroupPath(vec![
@@ -6203,6 +6457,8 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         }
     }
 
@@ -6311,6 +6567,8 @@ mod tests {
                         materialize_request: None,
                         latent_summary: None,
                         meta_panel: None,
+                        entity: None,
+                        compact_only: false,
                     },
                     indent: 4,
                     grouping: None,
@@ -6624,6 +6882,73 @@ mod tests {
             "inherited compact-strip should avoid full child tab cards: {:?}",
             rendered.lines
         );
+    }
+
+    #[test]
+    fn compact_entity_uses_ribbon_form_and_detail_surface() {
+        let mut model = grouped_model();
+        let path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("expected group"),
+        };
+        let entity_ref = andamento_shared::EntityRef {
+            kind: andamento_shared::EntityKind::Issue,
+            id: "github/flotilla-org/flotilla#982".to_owned(),
+        };
+        model.tabs.clear();
+        model.rows.truncate(1);
+        model.rows.push(RailRow::Entity {
+            entity: andamento_shared::DisplayEntity {
+                entity: entity_ref.clone(),
+                label: "#982 entities-only cutover".to_owned(),
+                form: andamento_shared::grouping_config::DisplayForm::Compact,
+                templates: ResolvedTemplateSlots {
+                    compact: Some(ResolvedTemplateSlot {
+                        template_name: "issue.compact".to_owned(),
+                        fields: vec![andamento_shared::ResolvedTemplateField {
+                            text: "#982".to_owned(),
+                            priority: 100,
+                            source: None,
+                        }],
+                    }),
+                    detail: Some(ResolvedTemplateSlot {
+                        template_name: "issue.detail".to_owned(),
+                        fields: vec![andamento_shared::ResolvedTemplateField {
+                            text: "#982 entities-only cutover".to_owned(),
+                            priority: 100,
+                            source: None,
+                        }],
+                    }),
+                    ..Default::default()
+                },
+            },
+            indent: 2,
+            parent_path: Some(path),
+        });
+
+        let target = NodeKey::Entity(entity_ref.clone());
+        let rendered = render_lines_with_detail_surface(
+            Some(&model),
+            &[],
+            7,
+            40,
+            true,
+            None,
+            None,
+            &[],
+            None,
+            &MetadataControls::default(),
+            0,
+            false,
+            Some(&target),
+        );
+
+        assert!(rendered.lines.iter().any(|line| line.contains("#982")));
+        assert!(rendered.lines[5].contains("[issue] #982 entities-only cutover"));
+        assert!(rendered.hit_regions.iter().any(|hit| {
+            hit.action == HitAction::ShowDetail
+                && hit.inspect_target == Some(NodeKey::Entity(entity_ref.clone()))
+        }));
     }
 
     #[test]
@@ -7905,6 +8230,8 @@ mod tests {
             materialize_request: None,
             latent_summary: None,
             meta_panel: None,
+            entity: None,
+            compact_only: false,
         };
 
         assert_eq!(
@@ -9149,6 +9476,38 @@ mod tests {
     }
 
     #[test]
+    fn footer_projects_declared_variable_control_and_false_state() {
+        let config = andamento_shared::template_config::parse_template_config_kdl(
+            r#"variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
+        )
+        .unwrap();
+        let mut lines = vec![blank(20)];
+        let mut hits = vec![];
+        let values = BTreeMap::from([(
+            "show-issues".to_owned(),
+            andamento_shared::DisplayVariableValue::Bool(false),
+        )]);
+
+        render_footer_with_variables(
+            &mut lines,
+            &mut hits,
+            0,
+            20,
+            None,
+            &MetadataControls::default(),
+            None,
+            false,
+            &config.variables,
+            Some(&values),
+        );
+
+        assert_eq!(lines[0].chars().nth(1), Some('·'));
+        assert!(hits
+            .iter()
+            .any(|hit| hit.action == HitAction::ToggleVariable(0)));
+    }
+
+    #[test]
     fn footer_shows_selected_root_inspect_glyph() {
         let mut lines = vec![blank(20); 1];
         let mut hits = vec![];
@@ -9248,6 +9607,8 @@ mod tests {
             materialize_request: None,
             latent_summary: None,
             meta_panel: None,
+            entity: None,
+            compact_only: false,
         };
         write_tab_top_border(
             &mut lines,
@@ -9290,6 +9651,8 @@ mod tests {
             materialize_request: None,
             latent_summary: None,
             meta_panel: None,
+            entity: None,
+            compact_only: false,
         };
         write_tab_top_border(
             &mut lines, &mut hits, 0, "tab", 20, true, &card, None, &controls, None,
@@ -9405,6 +9768,8 @@ mod tests {
             materialize_request: None,
             latent_summary: None,
             meta_panel: None,
+            entity: None,
+            compact_only: false,
         };
         let base = cell_height(&card, RailSizingPreset::Compact, false);
         card.meta_panel = Some(vec!["a".into(), "b".into(), "c".into()]);
@@ -9502,6 +9867,8 @@ mod tests {
                 materialize_request: None,
                 latent_summary: None,
                 meta_panel: None,
+                entity: None,
+                compact_only: false,
             },
             indent: 0,
             grouping: None,

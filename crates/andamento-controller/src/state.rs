@@ -4,16 +4,18 @@ use std::path::Path;
 use crate::metadata::{
     select_primary_entry, select_primary_value, CandidateEntry, EntityId, MetadataStore,
 };
-use andamento_shared::grouping_config::{GroupingConfigCatalog, GroupingRule, PresenceClass};
+use andamento_shared::grouping_config::{
+    DisplayForm, GroupingConfigCatalog, GroupingRule, PresenceClass,
+};
 use andamento_shared::{
-    ControllerBootstrapSnapshot, ControllerViewModel, EntityKind, EntityRef, GroupPath,
-    GroupSegment, LatentMaterializationState, LatentTab, MetadataControls, MetadataEntry,
-    MetadataIdentity, MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey,
-    ObservedMetadataIdentity, PaneTarget, PluginPlacement, PluginRegistrationHello, Priority,
-    RailConfig, RailGroupingMode, RailRow, RailUiAction, RailUiRevision, RailUiState,
-    ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateField,
-    ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabGroupingInfo,
-    TabStatusSummary, TemplateConfigDiagnostics,
+    ControllerBootstrapSnapshot, ControllerViewModel, DisplayEntity, DisplayVariableValue,
+    EntityKind, EntityRef, GroupPath, GroupSegment, LatentMaterializationState, LatentTab,
+    MetadataControls, MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataTriState,
+    MetadataValue, NodeKey, ObservedMetadataIdentity, PaneTarget, PluginPlacement,
+    PluginRegistrationHello, Priority, RailConfig, RailGroupingMode, RailRow, RailUiAction,
+    RailUiRevision, RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata,
+    ResolvedTemplateField, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode,
+    TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -73,6 +75,8 @@ struct CatalogEntity {
     values: BTreeMap<String, MetadataEntry>,
     path: GroupPath,
     presence: PresenceClass,
+    form: DisplayForm,
+    visible_when: Option<String>,
     collapse_single_member: bool,
     show_empty: bool,
 }
@@ -82,6 +86,7 @@ struct ControllerRailUiState {
     revision: RailUiRevision,
     collapsed_groups: BTreeSet<GroupPath>,
     scroll_offset: isize,
+    variables: BTreeMap<String, DisplayVariableValue>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -383,7 +388,20 @@ impl ControllerState {
         self.rail_ui_writer_client_id = client_id;
     }
 
-    pub fn apply_rail_ui_action(&mut self, action: RailUiAction) {
+    pub fn apply_rail_ui_action(&mut self, action: RailUiAction) -> bool {
+        let toggle_definition = if let RailUiAction::ToggleVariable { name } = &action {
+            let Some(definition) = self
+                .template_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.variables().iter().find(|item| &item.name == name))
+                .cloned()
+            else {
+                return false;
+            };
+            Some(definition)
+        } else {
+            None
+        };
         self.rail_ui.revision = RailUiRevision {
             sequence: self.rail_ui.revision.sequence.saturating_add(1),
             writer_client_id: self.rail_ui_writer_client_id,
@@ -393,6 +411,35 @@ impl ControllerState {
                 if !self.rail_ui.collapsed_groups.insert(path.clone()) {
                     self.rail_ui.collapsed_groups.remove(&path);
                 }
+            }
+            RailUiAction::ToggleVariable { name } => {
+                let definition = toggle_definition.expect("toggle definition resolved above");
+                let current = self
+                    .rail_ui
+                    .variables
+                    .get(&name)
+                    .unwrap_or(&definition.default);
+                let next = match (&definition.variable_type, current) {
+                    (
+                        andamento_shared::template_config::TemplateVariableType::Bool,
+                        DisplayVariableValue::Bool(value),
+                    ) => DisplayVariableValue::Bool(!value),
+                    (
+                        andamento_shared::template_config::TemplateVariableType::Enum { values },
+                        DisplayVariableValue::Enum(value),
+                    ) => {
+                        let next = values
+                            .iter()
+                            .position(|candidate| candidate == value)
+                            .map(|index| (index + 1) % values.len())
+                            .unwrap_or(0);
+                        DisplayVariableValue::Enum(
+                            values.get(next).cloned().unwrap_or_else(|| value.clone()),
+                        )
+                    }
+                    _ => definition.default.clone(),
+                };
+                self.rail_ui.variables.insert(name, next);
             }
             RailUiAction::ScrollBy { delta } => {
                 self.rail_ui.scroll_offset = self.rail_ui.scroll_offset.saturating_add(delta);
@@ -404,6 +451,7 @@ impl ControllerState {
                 self.rail_ui.scroll_offset = 0;
             }
         }
+        true
     }
 
     pub fn rail_ui_state(&self) -> RailUiState {
@@ -411,6 +459,7 @@ impl ControllerState {
             revision: self.rail_ui.revision,
             collapsed_groups: self.rail_ui.collapsed_groups.iter().cloned().collect(),
             scroll_offset: self.rail_ui.scroll_offset,
+            variables: self.rail_ui.variables.clone(),
         }
     }
 
@@ -422,6 +471,7 @@ impl ControllerState {
             revision: state.revision,
             collapsed_groups: state.collapsed_groups.into_iter().collect(),
             scroll_offset: state.scroll_offset,
+            variables: state.variables,
         };
         true
     }
@@ -430,11 +480,21 @@ impl ControllerState {
         &mut self,
         catalog: Option<andamento_shared::template_config::TemplateConfigCatalog>,
     ) {
-        self.template_catalog = catalog;
+        self.template_catalog = Some(catalog.unwrap_or_default());
+        if let Some(catalog) = self.template_catalog.as_ref() {
+            for variable in catalog.variables() {
+                self.rail_ui
+                    .variables
+                    .entry(variable.name.clone())
+                    .or_insert_with(|| variable.default.clone());
+            }
+        }
+        self.refresh_display_variable_warnings();
     }
 
     pub fn set_grouping_catalog(&mut self, catalog: Option<GroupingConfigCatalog>) {
         self.grouping_catalog = Some(catalog.unwrap_or_default());
+        self.refresh_display_variable_warnings();
     }
 
     #[allow(dead_code)]
@@ -465,6 +525,42 @@ impl ControllerState {
         &self.template_config
     }
 
+    pub fn refresh_display_variable_warnings(&mut self) {
+        let default_grouping_catalog = GroupingConfigCatalog::default();
+        let grouping_catalog = self
+            .grouping_catalog
+            .as_ref()
+            .unwrap_or(&default_grouping_catalog);
+        let declared = self
+            .template_catalog
+            .as_ref()
+            .map(|catalog| {
+                catalog
+                    .variables()
+                    .iter()
+                    .map(|variable| (variable.name.as_str(), &variable.variable_type))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        self.template_config.warnings = grouping_catalog
+            .rules
+            .iter()
+            .flat_map(|rule| &rule.presence)
+            .filter_map(|mapping| {
+                let name = mapping.visible_when.as_deref()?;
+                match declared.get(name) {
+                    Some(andamento_shared::template_config::TemplateVariableType::Bool) => None,
+                    Some(_) => Some(format!("visible-when references non-bool variable {name}")),
+                    None => Some(format!(
+                        "visible-when references undeclared variable {name}"
+                    )),
+                }
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+    }
+
     pub fn apply_metadata_patch(&mut self, patch: andamento_shared::MetadataPatch) -> bool {
         let next_receive_counter = self.receive_counter.saturating_add(1);
         let outcome = self.metadata.apply_patch(patch, next_receive_counter);
@@ -490,7 +586,27 @@ impl ControllerState {
             pinned_tabs,
             pane_statuses,
             metadata_patches: self.metadata.snapshot_patches(self.receive_counter),
-            rail_ui_state: self.rail_ui_state(),
+            rail_ui_state: RailUiState {
+                variables: self
+                    .template_catalog
+                    .as_ref()
+                    .map(|catalog| {
+                        catalog
+                            .variables()
+                            .iter()
+                            .filter(|variable| variable.persist)
+                            .filter_map(|variable| {
+                                self.rail_ui
+                                    .variables
+                                    .get(&variable.name)
+                                    .cloned()
+                                    .map(|value| (variable.name.clone(), value))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                ..self.rail_ui_state()
+            },
         }
     }
 
@@ -795,6 +911,12 @@ impl ControllerState {
                 .unwrap_or_default(),
             inspected_node: None,
             collapsed_groups: self.rail_ui.collapsed_groups.iter().cloned().collect(),
+            display_variables: self
+                .template_catalog
+                .as_ref()
+                .map(|catalog| catalog.variables().to_vec())
+                .unwrap_or_default(),
+            display_variable_values: self.rail_ui.variables.clone(),
         }
     }
 
@@ -927,11 +1049,21 @@ impl ControllerState {
                 templates: ResolvedTemplateSlots::default(),
             }
         }));
+        rows.extend(
+            self.compact_entities()
+                .iter()
+                .map(|entity| RailRow::Entity {
+                    entity: self.display_entity(entity),
+                    indent: 0,
+                    parent_path: None,
+                }),
+        );
         rows
     }
 
     fn directory_group_rows(&self, tabs: &[TabCard], latent_tabs: &[LatentTab]) -> Vec<RailRow> {
         let section_entities = self.visible_section_entities();
+        let compact_entities = self.compact_entities();
         let mut path_to_tabs: BTreeMap<GroupPath, Vec<TabCard>> = BTreeMap::new();
         let mut grouping_by_path: BTreeMap<GroupPath, TabGroupingInfo> = BTreeMap::new();
         for tab in tabs {
@@ -959,6 +1091,11 @@ impl ControllerState {
                 *tab_count_by_prefix.entry(prefix).or_default() += 1;
             }
         }
+        for entity in &compact_entities {
+            for prefix in group_path_prefixes(&compact_parent_path(&entity.path)) {
+                *tab_count_by_prefix.entry(prefix).or_default() += 1;
+            }
+        }
         let latent_by_path = latent_tabs
             .iter()
             .cloned()
@@ -972,10 +1109,15 @@ impl ControllerState {
                     .or_insert(index);
             }
         }
+        let compact_parent_paths = compact_entities
+            .iter()
+            .map(|entity| compact_parent_path(&entity.path))
+            .collect::<Vec<_>>();
         let mut ordered_paths = path_to_tabs
             .keys()
             .chain(latent_by_path.keys())
             .chain(section_entities.iter().map(|entity| &entity.path))
+            .chain(compact_parent_paths.iter())
             .cloned()
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -1068,9 +1210,19 @@ impl ControllerState {
                 rows.push(RailRow::Latent {
                     latent: latent.clone(),
                     indent: path.0.len() * 2,
-                    parent_path: Some(path),
+                    parent_path: Some(path.clone()),
                 });
             }
+            rows.extend(
+                compact_entities
+                    .iter()
+                    .filter(|entity| compact_parent_path(&entity.path) == path)
+                    .map(|entity| RailRow::Entity {
+                        entity: self.display_entity(entity),
+                        indent: path.0.len() * 2,
+                        parent_path: Some(path.clone()),
+                    }),
+            );
         }
         rows.extend(
             ungrouped_tabs[next_ungrouped..]
@@ -1082,6 +1234,35 @@ impl ControllerState {
                 }),
         );
         rows
+    }
+
+    fn display_entity(&self, entity: &CatalogEntity) -> DisplayEntity {
+        let metadata = entity
+            .values
+            .iter()
+            .map(|(key, entry)| (key.clone(), entry.value.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let templates = ResolvedTemplateSlots {
+            compact: self.resolve_template_slot(
+                andamento_shared::template_config::TemplateConfigSlot::Compact,
+                andamento_shared::template_config::TemplateConfigNodeKind::Entity,
+                &metadata,
+            ),
+            detail: self.resolve_template_slot(
+                andamento_shared::template_config::TemplateConfigSlot::Detail,
+                andamento_shared::template_config::TemplateConfigNodeKind::Entity,
+                &metadata,
+            ),
+            ..Default::default()
+        };
+        DisplayEntity {
+            entity: entity.entity.clone(),
+            label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL)
+                .map(str::to_owned)
+                .unwrap_or_else(|| entity.entity.id.clone()),
+            form: entity.form,
+            templates,
+        }
     }
 
     fn catalog_group_ordinal(&self, path: &GroupPath) -> Option<i64> {
@@ -1142,6 +1323,15 @@ impl ControllerState {
                     parent_path,
                 } => RailRow::Latent {
                     latent,
+                    indent,
+                    parent_path,
+                },
+                RailRow::Entity {
+                    entity,
+                    indent,
+                    parent_path,
+                } => RailRow::Entity {
+                    entity,
                     indent,
                     parent_path,
                 },
@@ -1225,18 +1415,23 @@ impl ControllerState {
                     })
                 }?;
                 let (path, level_index) = grouping_path_for_facts(rule, &facts)?;
-                let presence = rule
+                let mapping = rule
                     .presence
                     .iter()
-                    .find(|mapping| mapping.kind == entity.kind)
+                    .find(|mapping| mapping.kind == entity.kind);
+                let presence = mapping
                     .map(|mapping| mapping.class)
                     .unwrap_or(PresenceClass::Hidden);
+                let form = mapping.map(|mapping| mapping.form).unwrap_or_default();
+                let visible_when = mapping.and_then(|mapping| mapping.visible_when.clone());
                 let level = &rule.levels[level_index];
                 Some(CatalogEntity {
                     entity: entity.clone(),
                     values,
                     path,
                     presence,
+                    form,
+                    visible_when,
                     collapse_single_member: level.collapse_single_member,
                     show_empty: level.show_empty,
                 })
@@ -1280,6 +1475,8 @@ impl ControllerState {
         entities
             .iter()
             .filter(|entity| entity.presence == PresenceClass::Section)
+            .filter(|entity| entity.form == DisplayForm::Full)
+            .filter(|entity| self.entity_is_visible(entity))
             .filter(|entity| {
                 entity.show_empty
                     || entities.iter().any(|candidate| {
@@ -1290,6 +1487,25 @@ impl ControllerState {
             })
             .cloned()
             .collect()
+    }
+
+    fn compact_entities(&self) -> Vec<CatalogEntity> {
+        self.catalog_entities()
+            .into_iter()
+            .filter(|entity| entity.presence == PresenceClass::Section)
+            .filter(|entity| entity.form == DisplayForm::Compact)
+            .filter(|entity| self.entity_is_visible(entity))
+            .collect()
+    }
+
+    fn entity_is_visible(&self, entity: &CatalogEntity) -> bool {
+        entity
+            .visible_when
+            .as_ref()
+            .is_none_or(|name| match self.rail_ui.variables.get(name) {
+                Some(DisplayVariableValue::Bool(value)) => *value,
+                _ => true,
+            })
     }
 
     fn tab_entity_ref(&self, tab_id: u64) -> Option<EntityRef> {
@@ -2145,6 +2361,10 @@ fn group_path_prefixes(path: &GroupPath) -> Vec<GroupPath> {
         .collect()
 }
 
+fn compact_parent_path(path: &GroupPath) -> GroupPath {
+    GroupPath(path.0[..path.0.len().saturating_sub(1)].to_vec())
+}
+
 fn metadata_entry_text<'a>(
     values: &'a BTreeMap<String, MetadataEntry>,
     key: &str,
@@ -2451,6 +2671,7 @@ mod tests {
 
     fn directory_entity_state() -> ControllerState {
         let mut state = ControllerState::default();
+        state.set_template_catalog(None);
         state.set_rail_config(RailConfig {
             grouping: RailGroupingMode::Directory,
             ..RailConfig::default()
@@ -2545,7 +2766,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_entities_are_sections_and_never_tab_candidates() {
+    fn issue_entities_use_the_bundled_compact_form_and_class_toggle() {
         let mut state = directory_entity_state();
         apply_entity(
             &mut state,
@@ -2560,14 +2781,76 @@ mod tests {
             ],
         );
 
-        let rows = state.view_model().rows;
+        let model = state.view_model();
 
-        assert!(rows.iter().any(|row| matches!(
+        assert!(model.rows.iter().any(|row| matches!(
             row,
-            RailRow::GroupHeader { path, .. }
-                if path.0.last().is_some_and(|segment| segment.key == "flotilla.issue")
+            RailRow::Entity { entity, .. }
+                if entity.label == "#982 entities-only cutover"
+                    && entity.form == DisplayForm::Compact
+                    && entity.templates.compact.is_some()
+                    && entity.templates.detail.is_some()
         )));
-        assert!(!rows.iter().any(|row| matches!(row, RailRow::Latent { .. })));
+        assert!(!model
+            .rows
+            .iter()
+            .any(|row| matches!(row, RailRow::Latent { .. })));
+
+        state.apply_rail_ui_action(RailUiAction::ToggleVariable {
+            name: "show-issues".to_owned(),
+        });
+
+        assert!(!state
+            .view_model()
+            .rows
+            .iter()
+            .any(|row| matches!(row, RailRow::Entity { .. })));
+    }
+
+    #[test]
+    fn visible_when_mismatches_are_reported_without_breaking_fallback_rendering() {
+        let mut state = directory_entity_state();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(
+                andamento_shared::template_config::ExternalTemplateConfig {
+                    version: 1,
+                    templates: vec![],
+                    variables: vec![],
+                },
+            ),
+        ));
+        assert_eq!(
+            state.template_config_diagnostics().warnings,
+            vec!["visible-when references undeclared variable show-issues"]
+        );
+
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(
+                andamento_shared::template_config::parse_template_config_kdl(
+                    r#"
+                    variable "show-issues" type="enum" default="all" label="Issues" icon="I" {
+                      value "all"
+                      value "none"
+                    }
+                    "#,
+                )
+                .unwrap(),
+            ),
+        ));
+        assert_eq!(
+            state.template_config_diagnostics().warnings,
+            vec!["visible-when references non-bool variable show-issues"]
+        );
+
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(
+                andamento_shared::template_config::parse_template_config_kdl(
+                    r#"variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
+                )
+                .unwrap(),
+            ),
+        ));
+        assert!(state.template_config_diagnostics().warnings.is_empty());
     }
 
     #[test]
@@ -2624,6 +2907,8 @@ mod tests {
                     presence: vec![PresenceMapping {
                         kind: andamento_shared::EntityKind::Convoy,
                         class: PresenceClass::Tab,
+                        form: DisplayForm::Full,
+                        visible_when: None,
                     }],
                     levels: vec![GroupingLevel {
                         key: "flotilla.convoy".to_owned(),
@@ -3592,7 +3877,7 @@ mod tests {
             .iter()
             .find_map(|row| match row {
                 RailRow::GroupHeader { templates, .. } => templates.group_header.as_ref(),
-                RailRow::Tab { .. } | RailRow::Latent { .. } => None,
+                RailRow::Tab { .. } | RailRow::Latent { .. } | RailRow::Entity { .. } => None,
             })
             .expect("group header template");
 
@@ -3902,7 +4187,36 @@ mod tests {
                 },
                 collapsed_groups: vec![],
                 scroll_offset: 8,
+                variables: BTreeMap::new(),
             }
+        );
+    }
+
+    #[test]
+    fn bootstrap_snapshot_keeps_only_persistent_display_variables() {
+        let mut state = ControllerState::default();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(
+                andamento_shared::template_config::parse_template_config_kdl(
+                    r#"
+                    version 1
+                    variable "persistent" type="bool" default=true label="Persistent" icon="P"
+                    variable "ephemeral" type="bool" default=true label="Ephemeral" icon="E" persist=false
+                    "#,
+                )
+                .unwrap(),
+            ),
+        ));
+        state.apply_rail_ui_action(RailUiAction::ToggleVariable {
+            name: "persistent".to_owned(),
+        });
+        state.apply_rail_ui_action(RailUiAction::ToggleVariable {
+            name: "ephemeral".to_owned(),
+        });
+
+        assert_eq!(
+            state.bootstrap_snapshot().rail_ui_state.variables,
+            BTreeMap::from([("persistent".to_owned(), DisplayVariableValue::Bool(false))])
         );
     }
 
@@ -3919,6 +4233,7 @@ mod tests {
             },
             collapsed_groups: vec![],
             scroll_offset: 99,
+            variables: BTreeMap::new(),
         }));
         assert_eq!(
             state.rail_ui_state(),
@@ -3929,6 +4244,7 @@ mod tests {
                 },
                 collapsed_groups: vec![],
                 scroll_offset: 10,
+                variables: BTreeMap::new(),
             }
         );
     }
@@ -4094,6 +4410,7 @@ mod tests {
                 },
                 collapsed_groups: vec![path],
                 scroll_offset: 7,
+                variables: BTreeMap::new(),
             }
         );
     }

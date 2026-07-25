@@ -76,11 +76,23 @@ pub enum PresenceClass {
     Hidden,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DisplayForm {
+    #[default]
+    Full,
+    Compact,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct PresenceMapping {
     pub kind: EntityKind,
     pub class: PresenceClass,
+    #[serde(default)]
+    pub form: DisplayForm,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,30 +169,44 @@ pub fn bundled_default_rule() -> GroupingRule {
             PresenceMapping {
                 kind: EntityKind::Convoy,
                 class: PresenceClass::Tab,
+                form: DisplayForm::Full,
+                visible_when: None,
             },
             PresenceMapping {
                 kind: EntityKind::Vessel,
                 class: PresenceClass::Tab,
+                form: DisplayForm::Full,
+                visible_when: None,
             },
             PresenceMapping {
                 kind: EntityKind::Session,
                 class: PresenceClass::Tab,
+                form: DisplayForm::Full,
+                visible_when: None,
             },
             PresenceMapping {
                 kind: EntityKind::Issue,
                 class: PresenceClass::Section,
+                form: DisplayForm::Compact,
+                visible_when: Some("show-issues".to_owned()),
             },
             PresenceMapping {
                 kind: EntityKind::Project,
                 class: PresenceClass::Section,
+                form: DisplayForm::Full,
+                visible_when: None,
             },
             PresenceMapping {
                 kind: EntityKind::Repo,
                 class: PresenceClass::Section,
+                form: DisplayForm::Full,
+                visible_when: None,
             },
             PresenceMapping {
                 kind: EntityKind::Checkout,
                 class: PresenceClass::Section,
+                form: DisplayForm::Full,
+                visible_when: None,
             },
         ],
     }
@@ -357,7 +383,29 @@ fn parse_kdl_presence(node: &KdlNode) -> Result<PresenceMapping, GroupingConfigE
             )))
         }
     };
-    Ok(PresenceMapping { kind, class })
+    let form = match node
+        .get("form")
+        .and_then(|entry| entry.value().as_string())
+        .unwrap_or("full")
+    {
+        "full" => DisplayForm::Full,
+        "compact" => DisplayForm::Compact,
+        other => {
+            return Err(GroupingConfigError::Validation(format!(
+                "unknown display form: {other}"
+            )))
+        }
+    };
+    let visible_when = node
+        .get("visible-when")
+        .and_then(|entry| entry.value().as_string())
+        .map(str::to_owned);
+    Ok(PresenceMapping {
+        kind,
+        class,
+        form,
+        visible_when,
+    })
 }
 
 fn string_property(
@@ -505,7 +553,9 @@ mod tests {
             rule.presence,
             vec![PresenceMapping {
                 kind: EntityKind::Issue,
-                class: PresenceClass::Section
+                class: PresenceClass::Section,
+                form: DisplayForm::Full,
+                visible_when: None,
             }]
         );
     }
@@ -532,8 +582,12 @@ mod tests {
             rule.presence
                 .iter()
                 .find(|mapping| mapping.kind == EntityKind::Issue)
-                .map(|mapping| mapping.class),
-            Some(PresenceClass::Section)
+                .map(|mapping| (mapping.class, mapping.form, mapping.visible_when.as_deref())),
+            Some((
+                PresenceClass::Section,
+                DisplayForm::Compact,
+                Some("show-issues")
+            ))
         );
         assert!(rule.levels[2].collapse_single_member);
     }

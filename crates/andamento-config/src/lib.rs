@@ -610,6 +610,7 @@ impl PluginState {
             NodeKey::Root => NodeKey::Root,
             NodeKey::Group(path) => NodeKey::Group(path),
             NodeKey::Tab(_) => return,
+            NodeKey::Entity(_) => return,
         };
         let Ok(payload) = serde_json::to_string(&ChildLayoutSetRequest {
             client_id,
@@ -709,6 +710,7 @@ fn inspect_scope_label(key: &NodeKey) -> String {
         NodeKey::Root => "root".to_owned(),
         NodeKey::Tab(tab_id) => format!("tab:{tab_id}"),
         NodeKey::Group(_) => "group".to_owned(),
+        NodeKey::Entity(entity) => format!("entity:{}:{}", entity.kind.as_str(), entity.id),
     }
 }
 
@@ -717,6 +719,7 @@ enum InspectTargetKind {
     Root,
     Group,
     Tab,
+    Entity,
     Missing,
 }
 
@@ -780,6 +783,21 @@ fn inspect_target_for<'a>(
             metadata,
             sources,
         },
+        NodeKey::Entity(entity) => InspectTargetView {
+            label: format!("{} {}", entity.kind.as_str(), entity.id),
+            kind: InspectTargetKind::Entity,
+            node_key,
+            tab: None,
+            group_templates: model.rows.iter().find_map(|row| match row {
+                RailRow::Entity {
+                    entity: display_entity,
+                    ..
+                } if display_entity.entity == entity => Some(&display_entity.templates),
+                _ => None,
+            }),
+            metadata,
+            sources,
+        },
     }
 }
 
@@ -816,6 +834,7 @@ fn resolved_metadata_for_node<'a>(
         NodeKey::Root => ResolvedMetadataTarget::Root,
         NodeKey::Tab(tab_id) => ResolvedMetadataTarget::Tab(*tab_id),
         NodeKey::Group(path) => ResolvedMetadataTarget::Group(path.clone()),
+        NodeKey::Entity(entity) => ResolvedMetadataTarget::Entity(entity.clone()),
     };
     model
         .resolved_metadata
@@ -1021,6 +1040,12 @@ fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTarg
         InspectTargetKind::Missing => {
             push_key_value(frame, "state", "missing");
         }
+        InspectTargetKind::Entity => {
+            if let NodeKey::Entity(entity) = &target.node_key {
+                push_key_value(frame, "kind", entity.kind.as_str());
+                push_key_value(frame, "id", &entity.id);
+            }
+        }
     }
 }
 
@@ -1168,6 +1193,14 @@ fn push_inspect_templates_section(frame: &mut ConfigUiFrame, target: &InspectTar
             };
             push_template_slot_row(frame, "group hdr", templates.group_header.as_ref());
         }
+        InspectTargetKind::Entity => {
+            let Some(templates) = target.group_templates else {
+                frame.push_plain("  <none>");
+                return;
+            };
+            push_template_slot_row(frame, "compact", templates.compact.as_ref());
+            push_template_slot_row(frame, "detail", templates.detail.as_ref());
+        }
         InspectTargetKind::Root | InspectTargetKind::Missing => {
             frame.push_plain("  <none>");
         }
@@ -1262,6 +1295,7 @@ fn inspect_target_kind_label(kind: InspectTargetKind) -> &'static str {
         InspectTargetKind::Group => "Group",
         InspectTargetKind::Tab => "Tab",
         InspectTargetKind::Missing => "Missing",
+        InspectTargetKind::Entity => "Entity",
     }
 }
 
@@ -1417,6 +1451,12 @@ fn push_templates_page(frame: &mut ConfigUiFrame, model: Option<&ControllerViewM
         frame.push_plain("last error");
         frame.push_plain(&format!("  {error}"));
     }
+    if !diagnostics.warnings.is_empty() {
+        frame.push_plain("warnings");
+        for warning in &diagnostics.warnings {
+            frame.push_plain(&format!("  {warning}"));
+        }
+    }
     frame.push_blank();
     frame.push_plain("resolved slots");
     for row in &model.rows {
@@ -1445,6 +1485,20 @@ fn push_templates_page(frame: &mut ConfigUiFrame, model: Option<&ControllerViewM
                 }
             }
             andamento_shared::RailRow::Latent { .. } => {}
+            andamento_shared::RailRow::Entity { entity, .. } => {
+                push_tab_template_slot(
+                    frame,
+                    &entity.label,
+                    "compact",
+                    entity.templates.compact.as_ref(),
+                );
+                push_tab_template_slot(
+                    frame,
+                    &entity.label,
+                    "detail",
+                    entity.templates.detail.as_ref(),
+                );
+            }
         }
     }
 }
@@ -2089,6 +2143,8 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path.clone())),
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         };
 
         let target = inspect_target_for(model.inspected_node.as_ref(), None, &model);
@@ -2142,6 +2198,8 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path)),
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         };
 
         let rendered = render_config_with_scope(
@@ -2268,6 +2326,8 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         };
         model.inspected_node = Some(NodeKey::Tab(7));
 
@@ -2350,6 +2410,8 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path)),
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         };
 
         let rendered = render_config_with_scope(
@@ -2560,6 +2622,7 @@ mod tests {
                 template_count: 1,
                 template_names: vec!["andamento.git.group-header".to_owned()],
                 last_error: None,
+                warnings: vec![],
             },
             tabs: vec![],
             rows: vec![],
@@ -2568,6 +2631,8 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         };
 
         let rendered = render_config(
@@ -2724,6 +2789,8 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         };
 
         let rendered = render_config(
@@ -2773,6 +2840,8 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         }
     }
 

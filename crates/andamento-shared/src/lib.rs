@@ -159,6 +159,7 @@ pub struct ChildLayoutSetRequest {
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum RailUiAction {
     ToggleGroup { path: GroupPath },
+    ToggleVariable { name: String },
     ScrollBy { delta: isize },
     SetScrollOffset { offset: isize },
     ResetScroll,
@@ -178,6 +179,15 @@ pub struct RailUiState {
     pub collapsed_groups: Vec<GroupPath>,
     #[serde(default)]
     pub scroll_offset: isize,
+    #[serde(default)]
+    pub variables: BTreeMap<String, DisplayVariableValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DisplayVariableValue {
+    Bool(bool),
+    Enum(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -669,6 +679,21 @@ pub enum RailRow {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_path: Option<GroupPath>,
     },
+    Entity {
+        entity: DisplayEntity,
+        indent: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_path: Option<GroupPath>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayEntity {
+    pub entity: EntityRef,
+    pub label: String,
+    pub form: grouping_config::DisplayForm,
+    #[serde(default)]
+    pub templates: ResolvedTemplateSlots,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -679,6 +704,10 @@ pub struct ResolvedTemplateSlots {
     pub tab_title: Option<ResolvedTemplateSlot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_status: Option<ResolvedTemplateSlot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact: Option<ResolvedTemplateSlot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<ResolvedTemplateSlot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -714,6 +743,8 @@ pub struct TemplateConfigDiagnostics {
     pub template_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -775,6 +806,10 @@ pub struct ControllerViewModel {
     pub inspected_node: Option<NodeKey>,
     #[serde(default)]
     pub collapsed_groups: Vec<GroupPath>,
+    #[serde(default)]
+    pub display_variables: Vec<template_config::TemplateVariableDefinition>,
+    #[serde(default)]
+    pub display_variable_values: BTreeMap<String, DisplayVariableValue>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -791,6 +826,7 @@ pub enum NodeKey {
     Root,
     Group(GroupPath),
     Tab(u64),
+    Entity(EntityRef),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -882,7 +918,7 @@ impl ControllerViewModel {
     pub fn tab_for_row(&self, row: &RailRow) -> Option<&TabCard> {
         match row {
             RailRow::Tab { tab_id, .. } => self.tab_by_id(*tab_id),
-            RailRow::GroupHeader { .. } | RailRow::Latent { .. } => None,
+            RailRow::GroupHeader { .. } | RailRow::Latent { .. } | RailRow::Entity { .. } => None,
         }
     }
 }
@@ -1070,6 +1106,8 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         };
         let encoded = serde_json::to_string(&model).unwrap();
         let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
@@ -1312,6 +1350,8 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
         };
 
         let encoded = serde_json::to_string(&model).unwrap();
