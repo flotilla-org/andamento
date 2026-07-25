@@ -38,21 +38,6 @@ def text_value(value):
     return {"type": "text", "value": value}
 
 
-def path_text_value(value):
-    return {"type": "text", "value": value}
-
-
-def group_path_value(segments):
-    return {"type": "group-path", "value": segments}
-
-
-def group_path_segment(key, value, label=None):
-    segment = {"key": key, "value": path_text_value(value)}
-    if label:
-        segment["label"] = label
-    return segment
-
-
 def metadata_value_update(value, ttl_ms=DEFAULT_TTL_MS):
     return {
         "value": value,
@@ -253,13 +238,11 @@ def create_repo_manager_tab(repo, root, layout_path, zellij_bin="zellij", name_p
 def repo_manager_tab_metadata(repo):
     name = repo_name(repo)
     return {
-        "factory.id": text_value(f"repo-manager:{repo}"),
+        "entity.kind": text_value("repo"),
+        "entity.id": text_value(repo),
         "vcs.repo": text_value(repo),
-        "repo.name": text_value(name),
-        "tab.kind": text_value("repo-manager"),
-        "tab.scope": group_path_value([
-            group_path_segment("vcs.repo", repo, label=name),
-        ]),
+        "vcs.repo.name": text_value(name),
+        "action.primary.target": text_value(f"repo-manager:{repo}"),
     }
 
 
@@ -353,15 +336,26 @@ def scope_target_tab_id(zellij_bin="zellij", pane_id=None):
 
 def scope_current_tab(scope_key, scope_value, scope_label, dry_run, zellij_bin="zellij", pane_id=None):
     tab_id = scope_target_tab_id(zellij_bin=zellij_bin, pane_id=pane_id)
+    entity_kind = {
+        "flotilla.project": "project",
+        "vcs.repo": "repo",
+        "flotilla.convoy": "convoy",
+        "flotilla.vessel": "vessel",
+        "flotilla.issue": "issue",
+        "flotilla.session": "session",
+        "flotilla.checkout": "checkout",
+    }.get(scope_key)
+    metadata = {
+        scope_key: text_value(scope_value),
+        "display.label": text_value(scope_label),
+    }
+    if entity_kind is not None:
+        metadata["entity.kind"] = text_value(entity_kind)
+        metadata["entity.id"] = text_value(scope_value)
     publish_patch(
         metadata_patch_for_target(
             tab_target(tab_id),
-            {
-                "tab.kind": text_value("andamento-control"),
-                "tab.scope": group_path_value([
-                    group_path_segment(scope_key, scope_value, label=scope_label),
-                ]),
-            },
+            metadata,
             ttl_ms=None,
         ),
         dry_run=dry_run,
@@ -503,17 +497,12 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(parse_tab_ids("12\n13\n"), [12, 13])
         self.assertEqual(parse_tab_ids("created\n12\n"), [12])
 
-    def test_repo_manager_tab_metadata_sets_typed_scope(self):
+    def test_repo_manager_tab_metadata_sets_entity_identity(self):
         metadata = repo_manager_tab_metadata("rjwittams/katzensteg")
 
-        self.assertEqual(metadata["tab.kind"], text_value("repo-manager"))
-        self.assertEqual(metadata["repo.name"], text_value("katzensteg"))
-        self.assertEqual(
-            metadata["tab.scope"],
-            group_path_value([
-                group_path_segment("vcs.repo", "rjwittams/katzensteg", label="katzensteg")
-            ]),
-        )
+        self.assertEqual(metadata["entity.kind"], text_value("repo"))
+        self.assertEqual(metadata["entity.id"], text_value("rjwittams/katzensteg"))
+        self.assertEqual(metadata["vcs.repo.name"], text_value("katzensteg"))
 
     def test_tab_metadata_patch_uses_tab_target_and_no_ttl(self):
         patch = metadata_patch_for_target(
@@ -523,7 +512,7 @@ class WatcherTests(unittest.TestCase):
         )
 
         self.assertEqual(patch["target"], tab_target(7))
-        self.assertIsNone(patch["set"]["tab.scope"]["ttl_ms"])
+        self.assertIsNone(patch["set"]["entity.id"]["ttl_ms"])
 
     def test_tab_id_for_terminal_pane_reads_list_panes_json(self):
         panes = [

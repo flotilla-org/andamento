@@ -15,6 +15,7 @@ pub const MSG_VIEW_MODEL: &str = "andamento-view-model";
 pub const MSG_TOGGLE_PIN: &str = "andamento-toggle-pin";
 pub const MSG_SET_SORT_MODE: &str = "andamento-set-sort-mode";
 pub const MSG_SET_RAIL_CONFIG: &str = "andamento-set-rail-config";
+pub const MSG_SET_GROUPING_TEMPLATE: &str = "andamento-set-grouping-template";
 pub const MSG_SET_PANE_STATUS: &str = "andamento-set-pane-status";
 pub const MSG_CLEAR_PANE_STATUS: &str = "andamento-clear-pane-status";
 pub const MSG_APPLY_METADATA_PATCH: &str = "andamento-apply-metadata-patch";
@@ -284,7 +285,7 @@ pub enum LatentMaterializationState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LatentTab {
     /// Stable producer-owned identity used to deduplicate materializations.
-    pub factory_id: String,
+    pub action_target: String,
     pub path: GroupPath,
     pub name: String,
     /// The opener-owned lifecycle while this catalog entry has no live tab.
@@ -294,6 +295,9 @@ pub struct LatentTab {
     pub status_state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Producer provenance rendered as a compact source badge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub materialize_recipe: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -302,12 +306,18 @@ pub struct LatentTab {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MaterializeLatentRequest {
-    pub factory_id: String,
+    pub action_target: String,
     pub path: GroupPath,
     pub name: String,
     pub recipe: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupingTemplateSetRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl LatentTab {
@@ -316,7 +326,7 @@ impl LatentTab {
             return None;
         }
         Some(MaterializeLatentRequest {
-            factory_id: self.factory_id.clone(),
+            action_target: self.action_target.clone(),
             path: self.path.clone(),
             name: self.name.clone(),
             recipe: self.materialize_recipe.clone()?,
@@ -488,14 +498,80 @@ pub struct MetadataIdentity {
     pub value: MetadataValue,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EntityKind {
+    Project,
+    Repo,
+    Convoy,
+    Vessel,
+    Issue,
+    Session,
+    Checkout,
+}
+
+impl EntityKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Repo => "repo",
+            Self::Convoy => "convoy",
+            Self::Vessel => "vessel",
+            Self::Issue => "issue",
+            Self::Session => "session",
+            Self::Checkout => "checkout",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct EntityRef {
+    pub kind: EntityKind,
+    pub id: String,
+}
+
+impl EntityRef {
+    pub fn action_target(&self) -> String {
+        format!("{}:{}", self.kind.as_str(), self.id)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
 pub enum MetadataTarget {
     Root,
     Pane(PaneTarget),
     Tab(u64),
-    Group(GroupPath),
+    Entity(EntityRef),
     Identity(MetadataIdentity),
+}
+
+/// Controller-internal target space used in resolved view-model metadata.
+///
+/// Group paths are derived presentation nodes, never metadata-patch wire
+/// targets. Keeping them here lets inspect/config address a rendered group
+/// without making group assertions representable on the external wire.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
+pub enum ResolvedMetadataTarget {
+    Root,
+    Pane(PaneTarget),
+    Tab(u64),
+    Entity(EntityRef),
+    Identity(MetadataIdentity),
+    Group(GroupPath),
+}
+
+impl From<MetadataTarget> for ResolvedMetadataTarget {
+    fn from(target: MetadataTarget) -> Self {
+        match target {
+            MetadataTarget::Root => Self::Root,
+            MetadataTarget::Pane(pane) => Self::Pane(pane),
+            MetadataTarget::Tab(tab) => Self::Tab(tab),
+            MetadataTarget::Entity(entity) => Self::Entity(entity),
+            MetadataTarget::Identity(identity) => Self::Identity(identity),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -527,7 +603,7 @@ pub struct MetadataEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedMetadata {
-    pub target: MetadataTarget,
+    pub target: ResolvedMetadataTarget,
     #[serde(default)]
     pub values: BTreeMap<String, MetadataEntry>,
     #[serde(default)]
@@ -1217,12 +1293,13 @@ mod tests {
                 },
                 RailRow::Latent {
                     latent: LatentTab {
-                        factory_id: "flotilla:convoys/dev/latent-tabs".to_owned(),
+                        action_target: "flotilla:convoys/dev/latent-tabs".to_owned(),
                         path: group_path.clone(),
                         name: "latent tabs".to_owned(),
                         materialization: LatentMaterializationState::Ready,
                         status_state: Some("waiting".to_owned()),
                         summary: Some("1 vessel ready".to_owned()),
+                        source: Some("flotilla".to_owned()),
                         materialize_recipe: Some("flotilla attach latent-tabs".to_owned()),
                         checkout_path: Some("/work/andamento".to_owned()),
                     },
@@ -1305,17 +1382,20 @@ mod tests {
     }
 
     #[test]
-    fn metadata_target_group_round_trips_json() {
-        let target = MetadataTarget::Group(GroupPath(vec![GroupSegment {
-            key: "project.name".to_owned(),
-            value: MetadataValue::Text("zellij".to_owned()),
-            label: None,
-        }]));
+    fn metadata_target_entity_round_trips_json() {
+        let target = MetadataTarget::Entity(EntityRef {
+            kind: EntityKind::Convoy,
+            id: "dev/cutover@kiwi".to_owned(),
+        });
 
         let encoded = serde_json::to_string(&target).unwrap();
         let decoded: MetadataTarget = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, target);
+        assert_eq!(
+            encoded,
+            r#"{"kind":"entity","value":{"kind":"convoy","id":"dev/cutover@kiwi"}}"#
+        );
     }
 
     #[test]
@@ -1334,11 +1414,10 @@ mod tests {
     #[test]
     fn metadata_patch_round_trips_json() {
         let patch = MetadataPatch {
-            target: MetadataTarget::Group(GroupPath(vec![GroupSegment {
-                key: "project.name".to_owned(),
-                value: MetadataValue::Text("zellij".to_owned()),
-                label: None,
-            }])),
+            target: MetadataTarget::Entity(EntityRef {
+                kind: EntityKind::Project,
+                id: "dev/zellij@fleet".to_owned(),
+            }),
             source_id: "flotilla".to_owned(),
             set: std::collections::BTreeMap::from([(
                 "summary.local_llm".to_owned(),
