@@ -395,10 +395,9 @@ impl PluginState {
 
     fn reload_template_catalog(&mut self) -> bool {
         let Some(path) = self.template_config_path.as_deref() else {
-            self.state.set_template_catalog(None);
             self.state
                 .set_template_config_diagnostics(TemplateConfigDiagnostics::default());
-            self.state.refresh_display_variable_warnings();
+            self.state.set_template_catalog(None);
             return true;
         };
         match andamento_shared::template_config::load_template_catalog_from_file(path) {
@@ -411,19 +410,18 @@ impl PluginState {
                     last_error: None,
                     warnings: vec![],
                 };
-                self.state.set_template_catalog(Some(catalog));
                 self.state.set_template_config_diagnostics(diagnostics);
-                self.state.refresh_display_variable_warnings();
+                self.state.set_template_catalog(Some(catalog));
                 true
             }
             Err(error) => {
                 eprintln!("andamento-controller: failed to load template config: {error}");
-                self.state.set_template_catalog(None);
                 self.state
                     .set_template_config_diagnostics(template_config_error_diagnostics(
                         Some(path.to_owned()),
                         error.to_string(),
                     ));
+                self.state.set_template_catalog(None);
                 false
             }
         }
@@ -432,7 +430,6 @@ impl PluginState {
     fn reload_grouping_catalog(&mut self) -> bool {
         let Some(path) = self.grouping_config_path.as_deref() else {
             self.state.set_grouping_catalog(None);
-            self.state.refresh_display_variable_warnings();
             self.grouping_rule_count = 0;
             self.grouping_config_error = None;
             return true;
@@ -442,7 +439,6 @@ impl PluginState {
                 self.grouping_rule_count = catalog.rules.len();
                 self.grouping_config_error = None;
                 self.state.set_grouping_catalog(Some(catalog));
-                self.state.refresh_display_variable_warnings();
                 true
             }
             Err(error) => {

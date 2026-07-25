@@ -57,7 +57,7 @@ pub fn load_template_catalog_from_json_file(
     let content = std::fs::read_to_string(&resolved).map_err(|source| {
         TemplateConfigError::Io(format!("failed to read {}: {source}", resolved.display()))
     })?;
-    parse_template_config_json(&content).map(TemplateConfigCatalog::from_config)
+    parse_template_config_json(&content).map(TemplateConfigCatalog::with_bundled_defaults)
 }
 
 pub fn load_template_catalog_from_file(
@@ -72,9 +72,9 @@ pub fn load_template_catalog_from_file(
         .extension()
         .is_some_and(|extension| extension == "kdl")
     {
-        parse_template_config_kdl(&content).map(TemplateConfigCatalog::from_config)
+        parse_template_config_kdl(&content).map(TemplateConfigCatalog::with_bundled_defaults)
     } else {
-        parse_template_config_json(&content).map(TemplateConfigCatalog::from_config)
+        parse_template_config_json(&content).map(TemplateConfigCatalog::with_bundled_defaults)
     }
 }
 
@@ -150,12 +150,42 @@ pub struct TemplateConfigCatalog {
     variables: Vec<TemplateVariableDefinition>,
 }
 
+impl Default for TemplateConfigCatalog {
+    fn default() -> Self {
+        Self::from_config(bundled_default_config())
+    }
+}
+
 impl TemplateConfigCatalog {
     pub fn from_config(config: ExternalTemplateConfig) -> Self {
         Self {
             templates: config.templates,
             variables: config.variables,
         }
+    }
+
+    pub fn with_bundled_defaults(mut config: ExternalTemplateConfig) -> Self {
+        let mut bundled = bundled_default_config();
+        let configured_template_names = config
+            .templates
+            .iter()
+            .map(|template| template.name.clone())
+            .collect::<BTreeSet<_>>();
+        bundled
+            .templates
+            .retain(|template| !configured_template_names.contains(&template.name));
+        bundled.templates.append(&mut config.templates);
+
+        let configured_variable_names = config
+            .variables
+            .iter()
+            .map(|variable| variable.name.clone())
+            .collect::<BTreeSet<_>>();
+        bundled
+            .variables
+            .retain(|variable| !configured_variable_names.contains(&variable.name));
+        bundled.variables.append(&mut config.variables);
+        Self::from_config(bundled)
     }
 
     pub fn resolve<'a>(
@@ -210,6 +240,11 @@ impl TemplateConfigCatalog {
             })
             .collect()
     }
+}
+
+fn bundled_default_config() -> ExternalTemplateConfig {
+    parse_template_config_kdl(include_str!("../../../templates/flotilla-default.kdl"))
+        .expect("bundled template config must remain valid")
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -874,6 +909,31 @@ impl Error for TemplateConfigError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_catalog_supplies_compact_issue_templates_and_toggle() {
+        let catalog = TemplateConfigCatalog::default();
+        let metadata = BTreeMap::from([(
+            "entity.kind".to_owned(),
+            MetadataValue::Text("issue".to_owned()),
+        )]);
+
+        assert!(catalog.variables().iter().any(|variable| {
+            variable.name == "show-issues"
+                && variable.default == crate::DisplayVariableValue::Bool(true)
+        }));
+        for slot in [TemplateConfigSlot::Compact, TemplateConfigSlot::Detail] {
+            assert!(catalog
+                .resolve(TemplateConfigMatchContext {
+                    slot,
+                    node_kind: TemplateConfigNodeKind::Entity,
+                    metadata: &metadata,
+                    collapsed: false,
+                    active_tab_name: None,
+                })
+                .is_some());
+        }
+    }
 
     #[test]
     fn parses_external_template_config_json() {

@@ -480,7 +480,7 @@ impl ControllerState {
         &mut self,
         catalog: Option<andamento_shared::template_config::TemplateConfigCatalog>,
     ) {
-        self.template_catalog = catalog;
+        self.template_catalog = Some(catalog.unwrap_or_default());
         if let Some(catalog) = self.template_catalog.as_ref() {
             for variable in catalog.variables() {
                 self.rail_ui
@@ -489,10 +489,12 @@ impl ControllerState {
                     .or_insert_with(|| variable.default.clone());
             }
         }
+        self.refresh_display_variable_warnings();
     }
 
     pub fn set_grouping_catalog(&mut self, catalog: Option<GroupingConfigCatalog>) {
         self.grouping_catalog = Some(catalog.unwrap_or_default());
+        self.refresh_display_variable_warnings();
     }
 
     #[allow(dead_code)]
@@ -2669,6 +2671,7 @@ mod tests {
 
     fn directory_entity_state() -> ControllerState {
         let mut state = ControllerState::default();
+        state.set_template_catalog(None);
         state.set_rail_config(RailConfig {
             grouping: RailGroupingMode::Directory,
             ..RailConfig::default()
@@ -2763,16 +2766,8 @@ mod tests {
     }
 
     #[test]
-    fn issue_entities_use_the_configured_compact_form_and_class_toggle() {
+    fn issue_entities_use_the_bundled_compact_form_and_class_toggle() {
         let mut state = directory_entity_state();
-        state.set_template_catalog(Some(
-            andamento_shared::template_config::TemplateConfigCatalog::from_config(
-                andamento_shared::template_config::parse_template_config_kdl(include_str!(
-                    "../../../templates/flotilla-default.kdl"
-                ))
-                .unwrap(),
-            ),
-        ));
         apply_entity(
             &mut state,
             andamento_shared::EntityKind::Issue,
@@ -2815,7 +2810,15 @@ mod tests {
     #[test]
     fn visible_when_mismatches_are_reported_without_breaking_fallback_rendering() {
         let mut state = directory_entity_state();
-        state.refresh_display_variable_warnings();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(
+                andamento_shared::template_config::ExternalTemplateConfig {
+                    version: 1,
+                    templates: vec![],
+                    variables: vec![],
+                },
+            ),
+        ));
         assert_eq!(
             state.template_config_diagnostics().warnings,
             vec!["visible-when references undeclared variable show-issues"]
@@ -2834,7 +2837,6 @@ mod tests {
                 .unwrap(),
             ),
         ));
-        state.refresh_display_variable_warnings();
         assert_eq!(
             state.template_config_diagnostics().warnings,
             vec!["visible-when references non-bool variable show-issues"]
@@ -2848,7 +2850,6 @@ mod tests {
                 .unwrap(),
             ),
         ));
-        state.refresh_display_variable_warnings();
         assert!(state.template_config_diagnostics().warnings.is_empty());
     }
 
