@@ -1237,11 +1237,7 @@ impl ControllerState {
     }
 
     fn display_entity(&self, entity: &CatalogEntity) -> DisplayEntity {
-        let metadata = entity
-            .values
-            .iter()
-            .map(|(key, entry)| (key.clone(), entry.value.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let metadata = entity_facts(&entity.entity, &entity.values);
         let templates = ResolvedTemplateSlots {
             compact: self.resolve_template_slot(
                 andamento_shared::template_config::TemplateConfigSlot::Compact,
@@ -1397,24 +1393,29 @@ impl ControllerState {
                 let values = self
                     .metadata
                     .resolved_entries_for(target, self.receive_counter);
-                let facts = values
-                    .iter()
-                    .map(|(key, entry)| (key.clone(), entry.value.clone()))
-                    .collect::<BTreeMap<_, _>>();
-                let rule = if let Some(name) = self.active_grouping_template.as_deref() {
-                    catalog.named(name).filter(|rule| {
-                        rule.filter
-                            .as_ref()
-                            .is_none_or(|filter| filter.matches(&facts))
-                    })
-                } else {
-                    catalog.rules.iter().find(|rule| {
-                        rule.filter
-                            .as_ref()
-                            .is_none_or(|filter| filter.matches(&facts))
-                    })
-                }?;
-                let (path, level_index) = grouping_path_for_facts(rule, &facts)?;
+                let facts = entity_facts(entity, &values);
+                let (rule, path, level_index) =
+                    if let Some(name) = self.active_grouping_template.as_deref() {
+                        let rule = catalog.named(name).filter(|rule| {
+                            rule.filter
+                                .as_ref()
+                                .is_none_or(|filter| filter.matches(&facts))
+                        })?;
+                        let (path, level_index) = grouping_path_for_facts(rule, &facts)?;
+                        (rule, path, level_index)
+                    } else {
+                        catalog.rules.iter().find_map(|rule| {
+                            if !rule
+                                .filter
+                                .as_ref()
+                                .is_none_or(|filter| filter.matches(&facts))
+                            {
+                                return None;
+                            }
+                            grouping_path_for_facts(rule, &facts)
+                                .map(|(path, level_index)| (rule, path, level_index))
+                        })?
+                    };
                 let mapping = rule
                     .presence
                     .iter()
@@ -2285,6 +2286,27 @@ fn grouping_path_for_facts(
         last_level = Some(index);
     }
     Some((GroupPath(segments), last_level?))
+}
+
+fn entity_facts(
+    entity: &EntityRef,
+    values: &BTreeMap<String, MetadataEntry>,
+) -> BTreeMap<String, MetadataValue> {
+    let mut facts = values
+        .iter()
+        .map(|(key, entry)| (key.clone(), entry.value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    // The target is the canonical entity identity. Producers must not have to
+    // duplicate it in every patch's set map for grouping filters and templates.
+    facts.insert(
+        KEY_ENTITY_KIND.to_owned(),
+        MetadataValue::Text(entity.kind.as_str().to_owned()),
+    );
+    facts.insert(
+        KEY_ENTITY_ID.to_owned(),
+        MetadataValue::Text(entity.id.clone()),
+    );
+    facts
 }
 
 fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {

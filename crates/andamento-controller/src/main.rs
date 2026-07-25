@@ -1068,7 +1068,12 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
         },
         Ok(None) => HandlePipeResult::default(),
         Err(error) => {
-            eprintln!("andamento-controller: {error}");
+            let message = format!(
+                "andamento-controller: rejected pipe message {}: {error}",
+                pipe_message.name
+            );
+            log::error!("{message}");
+            eprintln!("{message}");
             HandlePipeResult::default()
         }
     };
@@ -2465,6 +2470,224 @@ mod tests {
                 .map(|entry| entry.source_id.as_str()),
             Some("test")
         );
+    }
+
+    #[test]
+    fn entity_target_patch_stream_renders_latent_nodes_without_live_panes() {
+        let mut state = ControllerState::default();
+        state.set_template_catalog(None);
+        let live_grouping_config = andamento_shared::grouping_config::parse_grouping_config_kdl(
+            include_str!("../../../templates/andamento-git.kdl"),
+        )
+        .unwrap();
+        state.set_grouping_catalog(Some(
+            andamento_shared::grouping_config::GroupingConfigCatalog::with_bundled_defaults(
+                live_grouping_config,
+            ),
+        ));
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        let project_patch = serde_json::json!({
+            "type": "metadata-patch",
+            "target": {
+                "kind": "entity",
+                "value": {
+                    "kind": "project",
+                    "id": "flotilla/andamento@fleet"
+                }
+            },
+            "source_id": "flotilla-connector",
+            "set": {
+                "flotilla.project": {
+                    "value": {
+                        "type": "text",
+                        "value": "flotilla/andamento@fleet"
+                    },
+                    "ttl_ms": null,
+                    "precedence": null,
+                    "ordinal": 1
+                },
+                "flotilla.project.name": {
+                    "value": {
+                        "type": "text",
+                        "value": "andamento"
+                    },
+                    "ttl_ms": null,
+                    "precedence": null,
+                    "ordinal": 1
+                },
+                "action.primary.key": {
+                    "value": {
+                        "type": "text",
+                        "value": "open"
+                    },
+                    "ttl_ms": null,
+                    "precedence": null,
+                    "ordinal": 1
+                },
+                "count.convoys": {
+                    "value": {
+                        "type": "integer",
+                        "value": 1
+                    },
+                    "ttl_ms": null,
+                    "precedence": null,
+                    "ordinal": 1
+                }
+            }
+        })
+        .to_string();
+        let convoy_patch = serde_json::json!({
+            "type": "metadata-patch",
+            "target": {
+                "kind": "entity",
+                "value": {
+                    "kind": "convoy",
+                    "id": "andamento/fix-entity-patches-vanish@fleet"
+                }
+            },
+            "source_id": "flotilla-connector",
+            "set": {
+                "flotilla.project": {
+                    "value": {
+                        "type": "text",
+                        "value": "flotilla/andamento@fleet"
+                    },
+                    "ttl_ms": null,
+                    "precedence": null,
+                    "ordinal": 2
+                },
+                "flotilla.project.name": {
+                    "value": {
+                        "type": "text",
+                        "value": "andamento"
+                    },
+                    "ttl_ms": null,
+                    "precedence": null,
+                    "ordinal": 2
+                },
+                "flotilla.convoy": {
+                    "value": {
+                        "type": "text",
+                        "value": "andamento/fix-entity-patches-vanish@fleet"
+                    },
+                    "ttl_ms": null,
+                    "precedence": null,
+                    "ordinal": 2
+                },
+                "flotilla.convoy.name": {
+                    "value": {
+                        "type": "text",
+                        "value": "fix entity patches vanish"
+                    },
+                    "ttl_ms": null,
+                    "precedence": null,
+                    "ordinal": 2
+                },
+                "display.label": {
+                    "value": {
+                        "type": "text",
+                        "value": "fix entity patches vanish"
+                    },
+                    "ttl_ms": null,
+                    "precedence": null,
+                    "ordinal": 2
+                }
+            }
+        })
+        .to_string();
+        let issue_patch = serde_json::json!({
+            "type": "metadata-patch",
+            "target": {
+                "kind": "entity",
+                "value": {
+                    "kind": "issue",
+                    "id": "github/flotilla-org/andamento#37"
+                }
+            },
+            "source_id": "flotilla-connector",
+            "set": {
+                "flotilla.project": {
+                    "value": {
+                        "type": "text",
+                        "value": "flotilla/andamento@fleet"
+                    },
+                    "ttl_ms": null,
+                    "precedence": null,
+                    "ordinal": 3
+                },
+                "flotilla.project.name": {
+                    "value": {
+                        "type": "text",
+                        "value": "andamento"
+                    },
+                    "ttl_ms": null,
+                    "precedence": null,
+                    "ordinal": 3
+                },
+                "flotilla.issue": {
+                    "value": {
+                        "type": "text",
+                        "value": "github/flotilla-org/andamento#37"
+                    },
+                    "ttl_ms": null,
+                    "precedence": null,
+                    "ordinal": 3
+                },
+                "display.label": {
+                    "value": {
+                        "type": "text",
+                        "value": "#37 entity patches vanish"
+                    },
+                    "ttl_ms": null,
+                    "precedence": null,
+                    "ordinal": 3
+                }
+            }
+        })
+        .to_string();
+
+        for payload in [project_patch, convoy_patch, issue_patch] {
+            let result = handle_pipe_message(
+                &mut state,
+                pipe(MSG_APPLY_METADATA_PATCH, Some(payload), BTreeMap::new()),
+            );
+            assert!(result.state_changed);
+            assert_eq!(
+                result.view_model_push_reason,
+                Some(ViewModelPushReason::PipeMetadata)
+            );
+        }
+
+        let model = state.view_model();
+        assert!(model.tabs.is_empty());
+        assert!(model.rows.iter().any(|row| matches!(
+            row,
+            andamento_shared::RailRow::GroupHeader { path, .. }
+                if path.0.iter().any(|segment| {
+                    segment.key == "flotilla.project"
+                        && segment.value
+                            == andamento_shared::MetadataValue::Text(
+                                "flotilla/andamento@fleet".to_owned()
+                            )
+                })
+        )));
+        assert!(model.rows.iter().any(|row| matches!(
+            row,
+            andamento_shared::RailRow::Latent { latent, .. }
+                if latent.name == "fix entity patches vanish"
+                    && latent.path.0.iter().any(|segment| segment.key == "flotilla.convoy")
+        )));
+        assert!(model.rows.iter().any(|row| matches!(
+            row,
+            andamento_shared::RailRow::Entity { entity, .. }
+                if entity.entity.kind == andamento_shared::EntityKind::Issue
+                    && entity.label == "#37 entity patches vanish"
+                    && entity.templates.compact.is_some()
+                    && entity.templates.detail.is_some()
+        )));
     }
 
     #[test]
