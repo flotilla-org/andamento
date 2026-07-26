@@ -80,6 +80,7 @@ struct CatalogEntity {
     visible_when: Option<String>,
     template: Option<String>,
     group_templates: BTreeMap<String, String>,
+    grouping_priority: i64,
     collapse_single_member: bool,
     show_empty: bool,
 }
@@ -1466,6 +1467,7 @@ impl ControllerState {
                     visible_when,
                     template,
                     group_templates,
+                    grouping_priority: rule.priority,
                     collapse_single_member: level.collapse_single_member,
                     show_empty: level.show_empty,
                 })
@@ -1481,7 +1483,7 @@ impl ControllerState {
 
     fn declared_group_templates(&self) -> BTreeMap<GroupPath, String> {
         let entities = self.catalog_entities();
-        let mut declarations = BTreeMap::new();
+        let mut declarations: BTreeMap<GroupPath, (i64, String)> = BTreeMap::new();
         for entity in &entities {
             for depth in 1..=entity.path.0.len() {
                 let prefix = GroupPath(entity.path.0[..depth].to_vec());
@@ -1489,7 +1491,13 @@ impl ControllerState {
                 if let Some(template) = entity.group_templates.get(key) {
                     declarations
                         .entry(prefix)
-                        .or_insert_with(|| template.clone());
+                        .and_modify(|(priority, selected)| {
+                            if entity.grouping_priority > *priority {
+                                *priority = entity.grouping_priority;
+                                *selected = template.clone();
+                            }
+                        })
+                        .or_insert_with(|| (entity.grouping_priority, template.clone()));
                 }
             }
         }
@@ -1523,7 +1531,13 @@ impl ControllerState {
                 {
                     declarations
                         .entry(prefix)
-                        .or_insert_with(|| template.clone());
+                        .and_modify(|(priority, selected)| {
+                            if rule.priority > *priority {
+                                *priority = rule.priority;
+                                *selected = template.clone();
+                            }
+                        })
+                        .or_insert_with(|| (rule.priority, template.clone()));
                 }
             }
         }
@@ -1533,11 +1547,14 @@ impl ControllerState {
         for entity in entities {
             if entity.form == DisplayForm::Full {
                 if let Some(template) = entity.template {
-                    declarations.insert(entity.path, template);
+                    declarations.insert(entity.path, (i64::MAX, template));
                 }
             }
         }
         declarations
+            .into_iter()
+            .map(|(path, (_, template))| (path, template))
+            .collect()
     }
 
     fn materialized_action_targets(&self, entities: &[CatalogEntity]) -> BTreeSet<String> {
@@ -3197,6 +3214,79 @@ mod tests {
                 .as_ref()
                 .map(|slot| slot.template_name.as_str()),
             Some("right/full")
+        );
+    }
+
+    #[test]
+    fn colliding_group_paths_choose_the_higher_priority_rule_template() {
+        let mut state = directory_entity_state();
+        let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
+            r#"
+            grouping "issues" priority=200 {
+              filter key="entity.kind" equals="issue"
+              presence kind="issue" class="tab"
+              level key="vcs.repo" template="high/full"
+            }
+            grouping "convoys" priority=100 {
+              filter key="entity.kind" equals="convoy"
+              presence kind="convoy" class="tab"
+              level key="vcs.repo" template="low/full"
+            }
+            "#,
+        )
+        .expect("grouping config");
+        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
+        let templates = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            template "high/full" slot="group-header" node-kind="group" {
+              field "label" source="literal" value="high"
+            }
+            template "low/full" slot="group-header" node-kind="group" {
+              field "label" source="literal" value="low"
+            }
+            "#,
+        )
+        .expect("template config");
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(templates),
+        ));
+        apply_entity(
+            &mut state,
+            andamento_shared::EntityKind::Convoy,
+            "flotilla/low@fleet",
+            1,
+            &[
+                ("vcs.repo", "flotilla-org/andamento"),
+                (KEY_DISPLAY_LABEL, "low"),
+            ],
+        );
+        apply_entity(
+            &mut state,
+            andamento_shared::EntityKind::Issue,
+            "github/flotilla-org/andamento#41",
+            2,
+            &[
+                ("vcs.repo", "flotilla-org/andamento"),
+                (KEY_DISPLAY_LABEL, "high"),
+            ],
+        );
+
+        let repo_template = state
+            .view_model()
+            .rows
+            .into_iter()
+            .find_map(|row| match row {
+                RailRow::GroupHeader {
+                    path, templates, ..
+                } if path.0.len() == 1 && path.0[0].key == "vcs.repo" => templates.group_header,
+                _ => None,
+            });
+
+        assert_eq!(
+            repo_template
+                .as_ref()
+                .map(|slot| slot.template_name.as_str()),
+            Some("high/full")
         );
     }
 
