@@ -186,6 +186,9 @@ template "git.group-header" slot="group-header" node-kind="group" {
 ```
 
 Templates are matched by `slot`, `node-kind`, and `when` predicates. Field order is the render order; numeric `priority` controls which fields are dropped first when the sidebar is narrow. A `key=` value reads metadata and renders it by value type.
+The complete namespaced fallback template pack is published in
+`templates/flotilla-default.kdl`; configured user templates are resolved before
+that bundled layer.
 
 Switch the rail into the generic metadata inspection projection:
 

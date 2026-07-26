@@ -148,29 +148,41 @@ impl ExternalTemplateConfig {
 pub struct TemplateConfigCatalog {
     templates: Vec<TemplateConfigDefinition>,
     variables: Vec<TemplateVariableDefinition>,
+    configured_template_names: BTreeSet<String>,
 }
 
 impl Default for TemplateConfigCatalog {
     fn default() -> Self {
-        Self::from_config(bundled_default_config())
+        let config = bundled_default_config();
+        Self {
+            templates: config.templates,
+            variables: config.variables,
+            configured_template_names: BTreeSet::new(),
+        }
     }
 }
 
 impl TemplateConfigCatalog {
     pub fn from_config(config: ExternalTemplateConfig) -> Self {
+        let configured_template_names = config
+            .templates
+            .iter()
+            .map(|template| template.name.clone())
+            .collect();
         Self {
             templates: config.templates,
             variables: config.variables,
+            configured_template_names,
         }
     }
 
     pub fn with_bundled_defaults(mut config: ExternalTemplateConfig) -> Self {
-        let mut bundled = bundled_default_config();
         let configured_template_names = config
             .templates
             .iter()
             .map(|template| template.name.clone())
             .collect::<BTreeSet<_>>();
+        let mut bundled = bundled_default_config();
         bundled
             .templates
             .retain(|template| !configured_template_names.contains(&template.name));
@@ -185,7 +197,11 @@ impl TemplateConfigCatalog {
             .variables
             .retain(|variable| !configured_variable_names.contains(&variable.name));
         bundled.variables.append(&mut config.variables);
-        Self::from_config(bundled)
+        Self {
+            templates: bundled.templates,
+            variables: bundled.variables,
+            configured_template_names,
+        }
     }
 
     pub fn resolve<'a>(
@@ -195,7 +211,13 @@ impl TemplateConfigCatalog {
         let candidates = self.matching_candidates(context);
         let template = candidates
             .iter()
-            .max_by_key(|candidate| candidate.specificity)
+            .max_by_key(|candidate| {
+                (
+                    context.slot.is_rail_local()
+                        && self.configured_template_names.contains(&candidate.name),
+                    candidate.specificity,
+                )
+            })
             .and_then(|candidate| {
                 self.templates
                     .iter()
@@ -205,6 +227,7 @@ impl TemplateConfigCatalog {
             template,
             specificity: template.specificity(),
             candidates,
+            is_bundled: !self.configured_template_names.contains(&template.name),
         })
     }
 
@@ -253,6 +276,7 @@ pub struct TemplateConfigMatchContext<'a> {
     pub node_kind: TemplateConfigNodeKind,
     pub metadata: &'a BTreeMap<String, MetadataValue>,
     pub collapsed: bool,
+    pub collapsible: bool,
     pub active_tab_name: Option<&'a str>,
 }
 
@@ -261,6 +285,7 @@ pub struct TemplateConfigResolved<'a> {
     pub template: &'a TemplateConfigDefinition,
     pub specificity: usize,
     pub candidates: Vec<TemplateConfigCandidate>,
+    pub is_bundled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -332,6 +357,12 @@ pub enum TemplateConfigSlot {
     Detail,
 }
 
+impl TemplateConfigSlot {
+    pub fn is_rail_local(self) -> bool {
+        matches!(self, Self::GroupHeader | Self::TabTitle | Self::TabStatus)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TemplateConfigNodeKind {
@@ -389,6 +420,14 @@ pub enum TemplateConfigSizingHint {
     Auto,
 }
 
+impl TemplateConfigSizingHint {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+        }
+    }
+}
+
 fn default_template_config_sizing() -> TemplateConfigSizingHint {
     TemplateConfigSizingHint::Auto
 }
@@ -398,6 +437,7 @@ fn default_template_config_sizing() -> TemplateConfigSizingHint {
 pub enum TemplateConfigPredicate {
     Exists { key: String },
     TextEquals { key: String, value: String },
+    TextOneOf { key: String, values: Vec<String> },
     TextPrefix { key: String, prefix: String },
 }
 
@@ -408,6 +448,8 @@ impl TemplateConfigPredicate {
             TemplateConfigPredicate::TextEquals { key, value } => {
                 metadata_text(metadata, key) == Some(value.as_str())
             }
+            TemplateConfigPredicate::TextOneOf { key, values } => metadata_text(metadata, key)
+                .is_some_and(|value| values.iter().any(|candidate| candidate == value)),
             TemplateConfigPredicate::TextPrefix { key, prefix } => {
                 metadata_text(metadata, key).is_some_and(|value| value.starts_with(prefix))
             }
@@ -418,7 +460,19 @@ impl TemplateConfigPredicate {
         match self {
             TemplateConfigPredicate::Exists { .. } => 1,
             TemplateConfigPredicate::TextPrefix { .. } => 2,
-            TemplateConfigPredicate::TextEquals { .. } => 3,
+            TemplateConfigPredicate::TextEquals { .. }
+            | TemplateConfigPredicate::TextOneOf { .. } => 3,
+        }
+    }
+
+    pub fn as_text(&self) -> String {
+        match self {
+            Self::Exists { key } => format!("exists({key})"),
+            Self::TextEquals { key, value } => format!("{key} == {value}"),
+            Self::TextOneOf { key, values } => {
+                format!("{key} in [{}]", values.join(", "))
+            }
+            Self::TextPrefix { key, prefix } => format!("{key} starts_with {prefix}"),
         }
     }
 }
@@ -516,6 +570,7 @@ impl TemplateConfigFieldCondition {
 pub enum TemplateConfigValueSource {
     Literal { value: String },
     MetadataText { key: String },
+    MetadataTextBasename { key: String },
     MetadataDisplay { key: String },
     MetadataFirstToken { key: String },
     TabNumberFromPosition,
@@ -537,6 +592,19 @@ impl TemplateConfigValueSource {
                     source: Some(ResolvedTemplateFieldSource {
                         key: key.clone(),
                         value,
+                    }),
+                });
+            }
+            TemplateConfigValueSource::MetadataTextBasename { key } => {
+                let raw = metadata_text(context.metadata, key)?;
+                let value = raw.trim_end_matches('/').rsplit('/').next()?.to_owned();
+                return (!value.is_empty()).then(|| TemplateConfigResolvedValue {
+                    value,
+                    source: context.metadata.get(key).cloned().map(|value| {
+                        ResolvedTemplateFieldSource {
+                            key: key.clone(),
+                            value,
+                        }
                     }),
                 });
             }
@@ -578,6 +646,9 @@ impl TemplateConfigValueSource {
                 collapsed,
                 expanded,
             } => {
+                if !context.collapsible {
+                    return None;
+                }
                 if context.collapsed {
                     collapsed.clone()
                 } else {
@@ -695,6 +766,25 @@ fn parse_kdl_when(node: &KdlNode) -> Result<TemplateConfigPredicate, TemplateCon
             value: kdl_required_prop_string(node, "value")?,
         });
     }
+    if let Some(key) = kdl_prop_string(node, "text-one-of") {
+        let values = node
+            .children()
+            .map(|children| {
+                children
+                    .nodes()
+                    .iter()
+                    .filter(|child| child.name().value() == "value")
+                    .filter_map(|child| kdl_node_arg_string(child, 0).map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if values.is_empty() {
+            return Err(TemplateConfigError::Validation(
+                "when text-one-of must define at least one value".to_owned(),
+            ));
+        }
+        return Ok(TemplateConfigPredicate::TextOneOf { key, values });
+    }
     if let Some(key) = kdl_prop_string(node, "text-prefix") {
         return Ok(TemplateConfigPredicate::TextPrefix {
             key,
@@ -702,7 +792,7 @@ fn parse_kdl_when(node: &KdlNode) -> Result<TemplateConfigPredicate, TemplateCon
         });
     }
     Err(TemplateConfigError::Validation(
-        "when must set exists, text-equals, or text-prefix".to_owned(),
+        "when must set exists, text-equals, text-one-of, or text-prefix".to_owned(),
     ))
 }
 
@@ -715,6 +805,28 @@ fn parse_kdl_predicate(node: &KdlNode) -> Result<TemplateConfigPredicate, Templa
             key: kdl_required_prop_string(node, "key")?,
             value: kdl_required_prop_string(node, "value")?,
         }),
+        "text-one-of" => {
+            let values = node
+                .children()
+                .map(|children| {
+                    children
+                        .nodes()
+                        .iter()
+                        .filter(|child| child.name().value() == "value")
+                        .filter_map(|child| kdl_node_arg_string(child, 0).map(str::to_owned))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if values.is_empty() {
+                return Err(TemplateConfigError::Validation(
+                    "text-one-of predicate must define at least one value".to_owned(),
+                ));
+            }
+            Ok(TemplateConfigPredicate::TextOneOf {
+                key: kdl_required_prop_string(node, "key")?,
+                values,
+            })
+        }
         "text-prefix" => Ok(TemplateConfigPredicate::TextPrefix {
             key: kdl_required_prop_string(node, "key")?,
             prefix: kdl_required_prop_string(node, "prefix")?,
@@ -736,9 +848,21 @@ fn parse_kdl_field(node: &KdlNode) -> Result<TemplateConfigFieldSpec, TemplateCo
     } else {
         vec![parse_kdl_value_source(node)?]
     };
+    let explicit_class = kdl_prop_string(node, "class");
+    let class = explicit_class
+        .as_deref()
+        .map(parse_kdl_field_class)
+        .transpose()?
+        .unwrap_or(TemplateConfigFieldClass::Required);
+    // Class-less KDL predates explicit field classes and treated every field as priority 100.
+    let priority = if explicit_class.is_some() {
+        kdl_prop_i64(node, "priority")
+    } else {
+        kdl_prop_i64(node, "priority").or(Some(100))
+    };
     Ok(TemplateConfigFieldSpec {
-        class: TemplateConfigFieldClass::Required,
-        priority: kdl_prop_i64(node, "priority").or(Some(100)),
+        class,
+        priority,
         sources,
         prefix: kdl_prop_string(node, "prefix").unwrap_or_default(),
         suffix: kdl_prop_string(node, "suffix").unwrap_or_default(),
@@ -764,6 +888,9 @@ fn parse_kdl_value_source(
                 expanded: kdl_required_prop_string(node, "expanded")?,
             }),
             "metadata-text" => Ok(TemplateConfigValueSource::MetadataText {
+                key: kdl_required_prop_string(node, "key")?,
+            }),
+            "metadata-text-basename" => Ok(TemplateConfigValueSource::MetadataTextBasename {
                 key: kdl_required_prop_string(node, "key")?,
             }),
             "metadata-display" => Ok(TemplateConfigValueSource::MetadataDisplay {
@@ -832,6 +959,17 @@ fn parse_kdl_condition(value: &str) -> Result<TemplateConfigFieldCondition, Temp
         "collapsed" => Ok(TemplateConfigFieldCondition::Collapsed),
         other => Err(TemplateConfigError::Validation(format!(
             "unsupported field condition: {other}"
+        ))),
+    }
+}
+
+fn parse_kdl_field_class(value: &str) -> Result<TemplateConfigFieldClass, TemplateConfigError> {
+    match value {
+        "required" => Ok(TemplateConfigFieldClass::Required),
+        "optional" => Ok(TemplateConfigFieldClass::Optional),
+        "priority" => Ok(TemplateConfigFieldClass::Priority),
+        other => Err(TemplateConfigError::Validation(format!(
+            "unsupported field class: {other}"
         ))),
     }
 }
@@ -911,6 +1049,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn text_one_of_matches_list_members_and_has_exact_match_specificity() {
+        let predicate = TemplateConfigPredicate::TextOneOf {
+            key: "group.key".to_owned(),
+            values: vec!["vcs.repo".to_owned(), "flotilla.project".to_owned()],
+        };
+
+        assert!(predicate.matches(&BTreeMap::from([(
+            "group.key".to_owned(),
+            MetadataValue::Text("vcs.repo".to_owned()),
+        )])));
+        assert!(!predicate.matches(&BTreeMap::from([(
+            "group.key".to_owned(),
+            MetadataValue::Text("session".to_owned()),
+        )])));
+        assert_eq!(predicate.specificity(), 3);
+    }
+
+    #[test]
     fn bundled_catalog_supplies_compact_issue_templates_and_toggle() {
         let catalog = TemplateConfigCatalog::default();
         let metadata = BTreeMap::from([(
@@ -929,10 +1085,122 @@ mod tests {
                     node_kind: TemplateConfigNodeKind::Entity,
                     metadata: &metadata,
                     collapsed: false,
+                    collapsible: true,
                     active_tab_name: None,
                 })
                 .is_some());
         }
+    }
+
+    #[test]
+    fn published_default_template_kdl_matches_the_bundled_catalog() {
+        let published =
+            parse_template_config_kdl(include_str!("../../../templates/flotilla-default.kdl"))
+                .expect("published default template KDL parses");
+        let published_names = published
+            .templates
+            .iter()
+            .map(|template| template.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            published_names,
+            vec![
+                "flotilla.issue.compact",
+                "flotilla.issue.detail",
+                "flotilla/group-header/vcs-repo",
+                "flotilla/group-header/project",
+                "flotilla/group-header/convoy",
+                "flotilla/group-header/vessel",
+                "flotilla/group-header/independent",
+                "flotilla/group-header/session",
+                "flotilla/group-header/checkout",
+                "flotilla/group-header/issue",
+                "flotilla/group-header/recognized",
+                "flotilla/group-header/fallback",
+                "flotilla/group-header/legacy",
+                "flotilla/tab-title",
+                "flotilla/tab-status",
+                "flotilla/tab-status/waiting",
+                "flotilla/tab-status/terminal-source",
+            ]
+        );
+
+        let catalog = TemplateConfigCatalog::default();
+        assert_eq!(
+            catalog.template_names(),
+            published_names
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn configured_templates_override_more_specific_bundled_templates() {
+        let configured = parse_template_config_kdl(
+            r#"
+            template "user.group-header" slot="group-header" node-kind="group" {
+              field source="literal" value="user"
+            }
+            "#,
+        )
+        .expect("user template parses");
+        let catalog = TemplateConfigCatalog::with_bundled_defaults(configured);
+        let metadata = BTreeMap::from([
+            (
+                "group.key".to_owned(),
+                MetadataValue::Text("vcs.repo".to_owned()),
+            ),
+            (
+                "vcs.repo".to_owned(),
+                MetadataValue::Text("flotilla-org/andamento".to_owned()),
+            ),
+        ]);
+
+        let resolved = catalog
+            .resolve(TemplateConfigMatchContext {
+                slot: TemplateConfigSlot::GroupHeader,
+                node_kind: TemplateConfigNodeKind::Group,
+                metadata: &metadata,
+                collapsed: false,
+                collapsible: true,
+                active_tab_name: None,
+            })
+            .expect("group template resolves");
+
+        assert_eq!(resolved.template.name, "user.group-header");
+        assert!(!resolved.is_bundled);
+    }
+
+    #[test]
+    fn entity_template_specificity_is_unchanged_by_rail_slot_layering() {
+        let configured = parse_template_config_kdl(
+            r#"
+            template "user.compact" slot="compact" node-kind="entity" {
+              field source="literal" value="user"
+            }
+            "#,
+        )
+        .expect("user template parses");
+        let catalog = TemplateConfigCatalog::with_bundled_defaults(configured);
+        let metadata = BTreeMap::from([(
+            "entity.kind".to_owned(),
+            MetadataValue::Text("issue".to_owned()),
+        )]);
+
+        let resolved = catalog
+            .resolve(TemplateConfigMatchContext {
+                slot: TemplateConfigSlot::Compact,
+                node_kind: TemplateConfigNodeKind::Entity,
+                metadata: &metadata,
+                collapsed: false,
+                collapsible: false,
+                active_tab_name: None,
+            })
+            .expect("compact template resolves");
+
+        assert_eq!(resolved.template.name, "flotilla.issue.compact");
+        assert!(resolved.is_bundled);
     }
 
     #[test]
@@ -1155,6 +1423,7 @@ mod tests {
                 node_kind: TemplateConfigNodeKind::Tab,
                 metadata: &metadata,
                 collapsed: false,
+                collapsible: true,
                 active_tab_name: None,
             })
             .expect("matching template");
@@ -1222,6 +1491,7 @@ mod tests {
             node_kind: TemplateConfigNodeKind::Tab,
             metadata: &metadata,
             collapsed: false,
+            collapsible: true,
             active_tab_name: None,
         };
 
@@ -1292,6 +1562,7 @@ mod tests {
                 node_kind: TemplateConfigNodeKind::Tab,
                 metadata: &metadata,
                 collapsed: false,
+                collapsible: true,
                 active_tab_name: None,
             })
             .expect("matching template");
