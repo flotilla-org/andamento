@@ -108,10 +108,9 @@ Example grouping rules:
 ```kdl
 grouping "proj-repo-branch" {
     priority 100
-    filter key="entity.kind"
-    presence kind="repo" class="tab"
+    filter key="git.branch"
     level key="andamento.project" optional=true
-    level key="vcs.repo" label-key="vcs.repo.name" template="repo/full"
+    level key="vcs.repo" label-key="repo.name" template="repo/full"
     level key="git.branch"
 }
 ```
@@ -162,7 +161,7 @@ template "issue/compact" slot="compact" node-kind="entity" {
 
 template "issue/detail" slot="detail" node-kind="entity" {
     field "label" key="display.label"
-    field "summary" key="summary.text" priority=50
+    field "summary" class="priority" key="summary.text" priority=50
 }
 ```
 
@@ -170,7 +169,7 @@ Compact entities expose their `detail` form in the rail's fixed detail row.
 Pointer hover updates it immediately; clicking an entity keeps it as the
 selection fallback when the pointer leaves.
 
-Example template:
+A custom pack can factor shared fields into fragments:
 
 ```kdl
 fragment "repo/status" {

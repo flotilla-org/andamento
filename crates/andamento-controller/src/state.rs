@@ -1478,17 +1478,64 @@ impl ControllerState {
         }
         let default_catalog = GroupingConfigCatalog::default();
         let catalog = self.grouping_catalog.as_ref().unwrap_or(&default_catalog);
-        if let Some(name) = self.active_grouping_template.as_deref() {
-            return catalog
-                .named(name)
-                .and_then(|rule| rule.levels.iter().find(|level| &level.key == key))
-                .and_then(|level| level.template.clone());
+        self.selected_grouping_rule_for_path(path, catalog)
+            .and_then(|rule| rule.levels.iter().find(|level| &level.key == key))
+            .and_then(|level| level.template.clone())
+    }
+
+    fn selected_grouping_rule_for_path<'a>(
+        &self,
+        path: &GroupPath,
+        catalog: &'a GroupingConfigCatalog,
+    ) -> Option<&'a GroupingRule> {
+        let selected_entity_rule = |facts: &BTreeMap<String, MetadataValue>| {
+            if let Some(name) = self.active_grouping_template.as_deref() {
+                return catalog.named(name).filter(|rule| {
+                    rule.filter
+                        .as_ref()
+                        .is_none_or(|filter| filter.matches(facts))
+                        && grouping_path_for_facts(rule, facts)
+                            .is_some_and(|(candidate, _)| candidate.0.starts_with(&path.0))
+                });
+            }
+            catalog.rules.iter().find(|rule| {
+                rule.filter
+                    .as_ref()
+                    .is_none_or(|filter| filter.matches(facts))
+                    && grouping_path_for_facts(rule, facts)
+                        .is_some_and(|(candidate, _)| candidate.0.starts_with(&path.0))
+            })
+        };
+        for target in self.metadata.targets() {
+            let EntityId::Entity(entity) = target else {
+                continue;
+            };
+            let values = self
+                .metadata
+                .resolved_entries_for(target, self.receive_counter);
+            let facts = entity_facts(entity, &values);
+            if let Some(rule) = selected_entity_rule(&facts) {
+                return Some(rule);
+            }
         }
-        catalog
-            .rules
-            .iter()
-            .filter_map(|rule| rule.levels.iter().find(|level| &level.key == key))
-            .find_map(|level| level.template.clone())
+        for tab in &self.tabs {
+            let metadata = self.tab_resolved_metadata_values(tab.tab_id);
+            let rule = if let Some(name) = self.active_grouping_template.as_deref() {
+                catalog.named(name)
+            } else {
+                catalog
+                    .rules
+                    .iter()
+                    .find(|rule| self.tab_grouping_for_rule(rule, &metadata).is_some())
+            };
+            if let Some(rule) = rule.filter(|rule| {
+                self.tab_grouping_for_rule(rule, &metadata)
+                    .is_some_and(|grouping| grouping.path.0.starts_with(&path.0))
+            }) {
+                return Some(rule);
+            }
+        }
+        None
     }
 
     fn materialized_action_targets(&self, entities: &[CatalogEntity]) -> BTreeSet<String> {
@@ -3082,6 +3129,72 @@ mod tests {
                 .as_ref()
                 .map(|slot| slot.template_name.as_str()),
             Some("issue/detail")
+        );
+    }
+
+    #[test]
+    fn group_template_comes_from_the_rule_that_produced_the_path() {
+        let mut state = directory_entity_state();
+        let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
+            r#"
+            grouping "issues" priority=200 {
+              filter key="entity.kind" equals="issue"
+              level key="vcs.repo" template="wrong/full"
+              level key="flotilla.issue"
+            }
+            grouping "convoys" priority=100 {
+              filter key="entity.kind" equals="convoy"
+              presence kind="convoy" class="tab"
+              level key="vcs.repo" template="right/full"
+              level key="flotilla.convoy"
+            }
+            "#,
+        )
+        .expect("grouping config");
+        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
+        let templates = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            template "wrong/full" slot="group-header" node-kind="group" {
+              field "label" source="literal" value="wrong"
+            }
+            template "right/full" slot="group-header" node-kind="group" {
+              field "label" source="literal" value="right"
+            }
+            "#,
+        )
+        .expect("template config");
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(templates),
+        ));
+        apply_entity(
+            &mut state,
+            andamento_shared::EntityKind::Convoy,
+            "flotilla/review-regression@fleet",
+            1,
+            &[
+                ("vcs.repo", "flotilla-org/andamento"),
+                ("flotilla.convoy", "flotilla/review-regression@fleet"),
+                ("flotilla.convoy.name", "review-regression"),
+                (KEY_DISPLAY_LABEL, "review-regression"),
+            ],
+        );
+
+        let repo_template = state
+            .view_model()
+            .rows
+            .into_iter()
+            .find_map(|row| match row {
+                RailRow::GroupHeader {
+                    path, templates, ..
+                } if path.0.len() == 1 && path.0[0].key == "vcs.repo" => templates.group_header,
+                _ => None,
+            });
+
+        assert_eq!(
+            repo_template
+                .as_ref()
+                .map(|slot| slot.template_name.as_str()),
+            Some("right/full")
         );
     }
 

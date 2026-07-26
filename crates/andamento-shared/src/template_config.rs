@@ -125,8 +125,15 @@ impl ExternalTemplateConfig {
                     template.name
                 )));
             }
+            let mut field_names = BTreeSet::new();
             for operation in &template.operations {
                 if let TemplateConfigFieldOperation::Set { field } = operation {
+                    if !field_names.insert(field.name.clone()) {
+                        return Err(TemplateConfigError::Validation(format!(
+                            "template {} has duplicate field name: {}",
+                            template.name, field.name
+                        )));
+                    }
                     if field.sources.is_empty() {
                         return Err(TemplateConfigError::Validation(format!(
                             "template {} has a field with no sources",
@@ -148,6 +155,23 @@ impl ExternalTemplateConfig {
                     "duplicate fragment name: {}",
                     fragment.name
                 )));
+            }
+            let mut field_names = BTreeSet::new();
+            for operation in &fragment.operations {
+                if let TemplateConfigFieldOperation::Set { field } = operation {
+                    if !field_names.insert(field.name.clone()) {
+                        return Err(TemplateConfigError::Validation(format!(
+                            "fragment {} has duplicate field name: {}",
+                            fragment.name, field.name
+                        )));
+                    }
+                    if field.sources.is_empty() {
+                        return Err(TemplateConfigError::Validation(format!(
+                            "fragment {} has a field with no sources",
+                            fragment.name
+                        )));
+                    }
+                }
             }
         }
         let mut variable_names = BTreeSet::new();
@@ -220,8 +244,8 @@ impl TemplateConfigOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateConfigLayer {
-    pub origin: TemplateConfigOrigin,
-    pub config: ExternalTemplateConfig,
+    origin: TemplateConfigOrigin,
+    config: ExternalTemplateConfig,
 }
 
 impl TemplateConfigLayer {
@@ -1872,5 +1896,89 @@ mod tests {
             cycle.resolve(entity_context(&metadata)),
             Err(TemplateConfigResolveError::TemplateCycle(_))
         ));
+
+        let self_cycle = TemplateConfigCatalog::from_config(
+            parse_template_config_kdl(
+                r#"
+                template "issue/compact" extends="issue/compact" {}
+                "#,
+            )
+            .expect("self-cycle is a resolution concern"),
+        );
+        assert!(matches!(
+            self_cycle.resolve(entity_context(&metadata)),
+            Err(TemplateConfigResolveError::TemplateCycle(chain))
+                if chain == vec!["issue/compact", "issue/compact"]
+        ));
+
+        let fragment_cycle = TemplateConfigCatalog::from_config(
+            parse_template_config_kdl(
+                r#"
+                fragment "a" {
+                  use "b"
+                }
+                fragment "b" {
+                  use "a"
+                }
+                template "issue/compact" slot="compact" node-kind="entity" {
+                  use "a"
+                }
+                "#,
+            )
+            .expect("fragment cycle is a resolution concern"),
+        );
+        assert!(matches!(
+            fragment_cycle.resolve(entity_context(&metadata)),
+            Err(TemplateConfigResolveError::FragmentCycle(chain))
+                if chain == vec!["a", "b", "a"]
+        ));
+
+        let remove_unknown = TemplateConfigCatalog::from_config(
+            parse_template_config_kdl(
+                r#"
+                template "issue/compact" slot="compact" node-kind="entity" {
+                  remove "missing"
+                }
+                "#,
+            )
+            .expect("unknown remove target is a resolution concern"),
+        );
+        assert!(matches!(
+            remove_unknown.resolve(entity_context(&metadata)),
+            Err(TemplateConfigResolveError::RemoveUnknownField { field, .. })
+                if field == "missing"
+        ));
+
+        let binding_mismatch = TemplateConfigCatalog::from_config(
+            parse_template_config_kdl(
+                r#"
+                template "issue/compact" slot="detail" node-kind="entity" {
+                  field "label" source="literal" value="issue"
+                }
+                "#,
+            )
+            .expect("binding mismatch is a resolution concern"),
+        );
+        assert!(matches!(
+            binding_mismatch.resolve(entity_context(&metadata)),
+            Err(TemplateConfigResolveError::BindingMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn duplicate_direct_field_names_are_rejected() {
+        let error = parse_template_config_kdl(
+            r#"
+            template "issue/compact" slot="compact" node-kind="entity" {
+              field "label" source="literal" value="first"
+              field "label" source="literal" value="second"
+            }
+            "#,
+        )
+        .expect_err("duplicate field names make override intent ambiguous");
+
+        assert!(error
+            .to_string()
+            .contains("template issue/compact has duplicate field name: label"));
     }
 }
