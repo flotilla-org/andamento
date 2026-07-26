@@ -1730,14 +1730,7 @@ impl ControllerState {
             active_tab_name: None,
         };
         let resolved = catalog.resolve(context)?;
-        if resolved.is_bundled
-            && matches!(
-                slot,
-                andamento_shared::template_config::TemplateConfigSlot::GroupHeader
-                    | andamento_shared::template_config::TemplateConfigSlot::TabTitle
-                    | andamento_shared::template_config::TemplateConfigSlot::TabStatus
-            )
-        {
+        if resolved.is_bundled && slot.is_rail_local() {
             // These slots depend on rail-local state such as collapse and available width.
             // Leave bundled resolution to the rail; configured overrides remain resolved here.
             return None;

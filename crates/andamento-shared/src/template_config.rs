@@ -209,17 +209,11 @@ impl TemplateConfigCatalog {
         context: TemplateConfigMatchContext<'_>,
     ) -> Option<TemplateConfigResolved<'a>> {
         let candidates = self.matching_candidates(context);
-        let configured_layer_precedes_bundled = matches!(
-            context.slot,
-            TemplateConfigSlot::GroupHeader
-                | TemplateConfigSlot::TabTitle
-                | TemplateConfigSlot::TabStatus
-        );
         let template = candidates
             .iter()
             .max_by_key(|candidate| {
                 (
-                    configured_layer_precedes_bundled
+                    context.slot.is_rail_local()
                         && self.configured_template_names.contains(&candidate.name),
                     candidate.specificity,
                 )
@@ -361,6 +355,12 @@ pub enum TemplateConfigSlot {
     TabStatus,
     Compact,
     Detail,
+}
+
+impl TemplateConfigSlot {
+    pub fn is_rail_local(self) -> bool {
+        matches!(self, Self::GroupHeader | Self::TabTitle | Self::TabStatus)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -854,6 +854,7 @@ fn parse_kdl_field(node: &KdlNode) -> Result<TemplateConfigFieldSpec, TemplateCo
         .map(parse_kdl_field_class)
         .transpose()?
         .unwrap_or(TemplateConfigFieldClass::Required);
+    // Class-less KDL predates explicit field classes and treated every field as priority 100.
     let priority = if explicit_class.is_some() {
         kdl_prop_i64(node, "priority")
     } else {
@@ -1046,6 +1047,24 @@ impl Error for TemplateConfigError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_one_of_matches_list_members_and_has_exact_match_specificity() {
+        let predicate = TemplateConfigPredicate::TextOneOf {
+            key: "group.key".to_owned(),
+            values: vec!["vcs.repo".to_owned(), "flotilla.project".to_owned()],
+        };
+
+        assert!(predicate.matches(&BTreeMap::from([(
+            "group.key".to_owned(),
+            MetadataValue::Text("vcs.repo".to_owned()),
+        )])));
+        assert!(!predicate.matches(&BTreeMap::from([(
+            "group.key".to_owned(),
+            MetadataValue::Text("session".to_owned()),
+        )])));
+        assert_eq!(predicate.specificity(), 3);
+    }
 
     #[test]
     fn bundled_catalog_supplies_compact_issue_templates_and_toggle() {
