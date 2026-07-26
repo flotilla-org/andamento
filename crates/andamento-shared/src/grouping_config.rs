@@ -386,7 +386,7 @@ fn parse_kdl_presence(node: &KdlNode) -> Result<PresenceMapping, GroupingConfigE
     let form = node
         .get("form")
         .and_then(|entry| entry.value().as_string())
-        .unwrap_or("full")
+        .unwrap_or(DISPLAY_FORM_FULL)
         .to_owned();
     let visible_when = node
         .get("visible-when")
