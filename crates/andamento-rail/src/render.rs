@@ -5001,13 +5001,6 @@ const GROUP_HEADER_TOGGLE_FIELD: TemplateFieldSpec = TemplateFieldSpec {
     suffix: "",
     condition: TemplateFieldCondition::Always,
 };
-const SOURCE_BADGE_FIELD: TemplateFieldSpec = TemplateFieldSpec {
-    class: TemplateFieldClass::Optional,
-    sources: &[TemplateValueSource::MetadataText("source")],
-    prefix: "[",
-    suffix: "]",
-    condition: TemplateFieldCondition::Always,
-};
 const GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
     GROUP_HEADER_TOGGLE_FIELD,
     TemplateFieldSpec {
@@ -5048,7 +5041,6 @@ const VCS_REPO_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
         suffix: "",
         condition: TemplateFieldCondition::Always,
     },
-    SOURCE_BADGE_FIELD,
 ];
 const FLOTILLA_PROJECT_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
     GROUP_HEADER_TOGGLE_FIELD,
@@ -5063,7 +5055,6 @@ const FLOTILLA_PROJECT_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
         suffix: "",
         condition: TemplateFieldCondition::Always,
     },
-    SOURCE_BADGE_FIELD,
 ];
 const FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
     GROUP_HEADER_TOGGLE_FIELD,
@@ -5078,7 +5069,6 @@ const FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
         suffix: "",
         condition: TemplateFieldCondition::Always,
     },
-    SOURCE_BADGE_FIELD,
 ];
 const FALLBACK_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
     GROUP_HEADER_TOGGLE_FIELD,
@@ -5109,7 +5099,6 @@ const TAB_TITLE_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
         suffix: "",
         condition: TemplateFieldCondition::Always,
     },
-    SOURCE_BADGE_FIELD,
 ];
 const STATUS_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
     TemplateFieldSpec {
@@ -6117,11 +6106,8 @@ mod tests {
             .iter()
             .any(|line| line.contains("↗ latent tabs")));
         assert!(
-            rendered
-                .lines
-                .iter()
-                .any(|line| line.contains("[flotilla]")),
-            "the source fact is rendered as a compact badge"
+            !rendered.lines.iter().any(|line| line.contains("[flotilla]")),
+            "the source fact must not render as a suffix badge: names are variable width, so anything tightly bound after them is visually unmoored"
         );
         assert!(rendered
             .lines
@@ -8520,7 +8506,7 @@ mod tests {
     }
 
     #[test]
-    fn flotilla_group_renders_source_fact_as_a_badge() {
+    fn flotilla_group_does_not_render_source_fact_as_a_badge() {
         let mut model = grouped_model();
         let path = GroupPath(vec![GroupSegment {
             key: "flotilla.convoy".to_owned(),
@@ -8554,7 +8540,7 @@ mod tests {
         let rendered = render_lines(Some(&model), &[], 8, 80, true);
 
         assert!(
-            rendered.lines[0].starts_with("cutover [flotilla]"),
+            rendered.lines[0].starts_with("cutover") && !rendered.lines[0].contains("[flotilla]"),
             "{:?}",
             rendered.lines
         );
