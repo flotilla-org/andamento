@@ -208,6 +208,10 @@ template "tab/title" slot="tab-title" node-kind="tab" {
 appears. The renderer still owns terminal glyph/style mechanics. Resolved
 chrome and field programs travel with the controller view model, while the
 flattened KDL remains inspect evidence; the rail does not parse KDL per frame.
+Chrome is opt-in for replacement templates: a template that replaces
+`tab/title` or a group header without `extends=` must declare the primitives
+it wants. Extend the corresponding bundled template or reuse its fragment to
+preserve the previous box, indentation, dimming, toggle, and fill treatment.
 
 `extends=` names one parent. A child field with the same name replaces its
 parent in place; `remove "field-name"` deletes one; new fields are interleaved

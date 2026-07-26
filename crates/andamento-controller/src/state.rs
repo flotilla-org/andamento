@@ -13,7 +13,7 @@ use andamento_shared::{
     RailConfig, RailGroupingMode, RailRow, RailUiAction, RailUiRevision, RailUiState,
     ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateSlot,
     ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
-    TemplateConfigDiagnostics,
+    TemplateConfigDiagnostics, DISPLAY_FORM_COMPACT, DISPLAY_FORM_FULL,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -29,8 +29,6 @@ const KEY_STATUS_STATE: &str = "status.state";
 const KEY_SUMMARY_TEXT: &str = "summary.text";
 const KEY_SOURCE: &str = "source";
 const KEY_DISPLAY_LABEL: &str = "display.label";
-const FORM_COMPACT: &str = "compact";
-const FORM_FULL: &str = "full";
 const FOCUSED_CWD_PRECEDENCE: i64 = 100;
 const NORMAL_CWD_PRECEDENCE: i64 = 0;
 // Opener-owned identity must outrank observational discovery such as cwd grouping.
@@ -1243,7 +1241,7 @@ impl ControllerState {
     fn display_entity(&self, entity: &CatalogEntity) -> DisplayEntity {
         let metadata = entity_facts(&entity.entity, &entity.values);
         let mut compact_metadata = metadata.clone();
-        if entity.form == FORM_COMPACT {
+        if entity.form == DISPLAY_FORM_COMPACT {
             if let Some(template) = entity.template.as_ref() {
                 compact_metadata.insert(
                     "presentation.template".to_owned(),
@@ -1448,7 +1446,7 @@ impl ControllerState {
                     .unwrap_or(PresenceClass::Hidden);
                 let form = mapping
                     .map(|mapping| mapping.form.clone())
-                    .unwrap_or_else(|| FORM_FULL.to_owned());
+                    .unwrap_or_else(|| DISPLAY_FORM_FULL.to_owned());
                 let visible_when = mapping.and_then(|mapping| mapping.visible_when.clone());
                 let template = mapping.and_then(|mapping| mapping.template.clone());
                 let level = &rule.levels[level_index];
@@ -1547,10 +1545,10 @@ impl ControllerState {
             }
         }
 
-        // A full-form presence declaration owns its exact surface and takes
-        // precedence over the grouping level's default for that same path.
+        // A non-compact presence declaration owns its exact full surface and
+        // takes precedence over the grouping level's default for that path.
         for entity in entities {
-            if entity.form == FORM_FULL {
+            if entity.form != DISPLAY_FORM_COMPACT {
                 if let Some(template) = entity.template {
                     declarations.insert(entity.path, (i64::MAX, template));
                 }
@@ -1582,7 +1580,7 @@ impl ControllerState {
         entities
             .iter()
             .filter(|entity| entity.presence == PresenceClass::Inline)
-            .filter(|entity| entity.form == FORM_FULL)
+            .filter(|entity| entity.form != DISPLAY_FORM_COMPACT)
             .filter(|entity| self.entity_is_visible(entity))
             .filter(|entity| {
                 entity.show_empty
@@ -1600,7 +1598,7 @@ impl ControllerState {
         self.catalog_entities()
             .into_iter()
             .filter(|entity| entity.presence == PresenceClass::Inline)
-            .filter(|entity| entity.form == FORM_COMPACT)
+            .filter(|entity| entity.form == DISPLAY_FORM_COMPACT)
             .filter(|entity| self.entity_is_visible(entity))
             .collect()
     }
@@ -2875,7 +2873,7 @@ mod tests {
                         presence: vec![PresenceMapping {
                             kind: "issue".to_owned(),
                             class: PresenceClass::Inline,
-                            form: FORM_COMPACT.to_owned(),
+                            form: DISPLAY_FORM_COMPACT.to_owned(),
                             visible_when: None,
                             template: None,
                         }],
@@ -3044,7 +3042,7 @@ mod tests {
             row,
             RailRow::Entity { entity, .. }
                 if entity.label == "#982 entities-only cutover"
-                    && entity.form == FORM_COMPACT
+                    && entity.form == DISPLAY_FORM_COMPACT
                     && entity.templates.compact.is_some()
                     && entity.templates.detail.is_some()
         )));
@@ -3110,6 +3108,43 @@ mod tests {
         assert_eq!(compact.template_name, "deployment/compact");
         assert!(compact.effective_kdl.contains("flotilla/entity/compact"));
         assert!(compact.render_ready.is_some());
+    }
+
+    #[test]
+    fn novel_inline_form_uses_the_full_surface_instead_of_disappearing() {
+        let mut state = directory_entity_state();
+        let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
+            r#"
+            grouping "deployments" priority=100 {
+              filter key="entity.kind"
+              presence kind="deployment" class="inline" form="ribbon"
+              level key="deployment.name" label-key="display.label" show-empty=true
+            }
+            "#,
+        )
+        .expect("grouping config");
+        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
+        apply_entity(
+            &mut state,
+            "deployment",
+            "prod/api",
+            1,
+            &[
+                ("deployment.name", "api"),
+                (KEY_DISPLAY_LABEL, "API deployment"),
+            ],
+        );
+
+        let model = state.view_model();
+
+        assert!(model.rows.iter().any(|row| matches!(
+            row,
+            RailRow::GroupHeader { label, .. } if label == "API deployment"
+        )));
+        assert!(!model
+            .rows
+            .iter()
+            .any(|row| matches!(row, RailRow::Entity { .. })));
     }
 
     #[test]
@@ -3467,7 +3502,7 @@ mod tests {
                     presence: vec![PresenceMapping {
                         kind: "convoy".to_owned(),
                         class: PresenceClass::Tab,
-                        form: FORM_FULL.to_owned(),
+                        form: DISPLAY_FORM_FULL.to_owned(),
                         visible_when: None,
                         template: None,
                     }],

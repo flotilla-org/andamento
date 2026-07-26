@@ -15,6 +15,7 @@ use andamento_shared::{
     RailSizingPreset, RailStructure, ReachableMetadataIdentity, ResolvedMetadata,
     ResolvedMetadataTarget, ResolvedTemplateFieldSource, ResolvedTemplateSlot,
     ResolvedTemplateSlots, StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
+    DISPLAY_FORM_COMPACT,
 };
 use ansi_term::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -3609,7 +3610,7 @@ fn render_card_from_entity(entity: &andamento_shared::DisplayEntity) -> RenderCa
         latent_summary: None,
         meta_panel: None,
         entity: Some(entity.entity.clone()),
-        compact_only: entity.form == "compact",
+        compact_only: entity.form == DISPLAY_FORM_COMPACT,
     }
 }
 

@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, error::Error, fmt, path::Path};
 use kdl::{KdlDocument, KdlNode, KdlValue};
 use serde::{Deserialize, Serialize};
 
-use crate::MetadataValue;
+use crate::{MetadataValue, DISPLAY_FORM_FULL};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
@@ -92,7 +92,7 @@ pub struct PresenceMapping {
 }
 
 fn default_display_form() -> String {
-    "full".to_owned()
+    DISPLAY_FORM_FULL.to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

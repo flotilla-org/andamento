@@ -674,6 +674,15 @@ pub struct DisplayEntity {
     pub templates: ResolvedTemplateSlots,
 }
 
+/// Conventional form that uses the rail's wrapped ribbon layout.
+///
+/// Form names remain an open string vocabulary; only this form has distinct
+/// built-in geometry. Other names use the full surface.
+pub const DISPLAY_FORM_COMPACT: &str = "compact";
+
+/// Conventional name for the default full surface.
+pub const DISPLAY_FORM_FULL: &str = "full";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedTemplateSlots {
     #[serde(default, skip_serializing_if = "Option::is_none")]
