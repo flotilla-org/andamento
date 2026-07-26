@@ -5087,19 +5087,17 @@ const FALLBACK_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
         condition: TemplateFieldCondition::Always,
     },
 ];
-const TAB_TITLE_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
-    TemplateFieldSpec {
-        class: TemplateFieldClass::Required,
-        sources: &[
-            TemplateValueSource::MetadataText("zellij.tab.name"),
-            TemplateValueSource::TabNumberFromPosition,
-            TemplateValueSource::Literal("Tab"),
-        ],
-        prefix: "",
-        suffix: "",
-        condition: TemplateFieldCondition::Always,
-    },
-];
+const TAB_TITLE_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
+    class: TemplateFieldClass::Required,
+    sources: &[
+        TemplateValueSource::MetadataText("zellij.tab.name"),
+        TemplateValueSource::TabNumberFromPosition,
+        TemplateValueSource::Literal("Tab"),
+    ],
+    prefix: "",
+    suffix: "",
+    condition: TemplateFieldCondition::Always,
+}];
 const STATUS_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
     TemplateFieldSpec {
         class: TemplateFieldClass::Required,
