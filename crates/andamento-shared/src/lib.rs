@@ -671,6 +671,8 @@ pub struct DisplayEntity {
     pub label: String,
     pub form: String,
     #[serde(default)]
+    pub metadata: BTreeMap<String, MetadataValue>,
+    #[serde(default)]
     pub templates: ResolvedTemplateSlots,
 }
 

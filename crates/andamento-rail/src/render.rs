@@ -579,20 +579,7 @@ fn render_detail_surface(
                 .detail
                 .as_ref()
                 .map(|slot| {
-                    let metadata = RenderMetadata::from([
-                        (
-                            "entity.kind".to_owned(),
-                            MetadataValue::Text(entity.entity.kind.clone()),
-                        ),
-                        (
-                            "entity.id".to_owned(),
-                            MetadataValue::Text(entity.entity.id.clone()),
-                        ),
-                        (
-                            "display.label".to_owned(),
-                            MetadataValue::Text(entity.label.clone()),
-                        ),
-                    ]);
+                    let metadata = display_entity_metadata(entity);
                     let fields = template_fields_from_resolved_slot(
                         slot,
                         TemplateConfigMatchContext {
@@ -3592,16 +3579,7 @@ fn render_card_from_entity(entity: &andamento_shared::DisplayEntity) -> RenderCa
         active: false,
         pinned: false,
         status: None,
-        metadata: RenderMetadata::from([
-            (
-                "entity.kind".to_owned(),
-                MetadataValue::Text(entity.entity.kind.clone()),
-            ),
-            (
-                "entity.id".to_owned(),
-                MetadataValue::Text(entity.entity.id.clone()),
-            ),
-        ]),
+        metadata: display_entity_metadata(entity),
         metadata_sources: RenderMetadataSources::new(),
         reachable_identities: RenderReachableIdentities::new(),
         templates: entity.templates.clone(),
@@ -3612,6 +3590,22 @@ fn render_card_from_entity(entity: &andamento_shared::DisplayEntity) -> RenderCa
         entity: Some(entity.entity.clone()),
         compact_only: entity.form == DISPLAY_FORM_COMPACT,
     }
+}
+
+fn display_entity_metadata(entity: &andamento_shared::DisplayEntity) -> RenderMetadata {
+    let mut metadata = entity.metadata.clone();
+    metadata.insert(
+        "entity.kind".to_owned(),
+        MetadataValue::Text(entity.entity.kind.clone()),
+    );
+    metadata.insert(
+        "entity.id".to_owned(),
+        MetadataValue::Text(entity.entity.id.clone()),
+    );
+    metadata
+        .entry("display.label".to_owned())
+        .or_insert_with(|| MetadataValue::Text(entity.label.clone()));
+    metadata
 }
 
 fn metadata_for_local_tab(tab: &LocalTab) -> RenderMetadata {
@@ -6592,6 +6586,44 @@ mod tests {
             kind: "issue".to_owned(),
             id: "github/flotilla-org/flotilla#982".to_owned(),
         };
+        let metadata = RenderMetadata::from([
+            (
+                "entity.kind".to_owned(),
+                MetadataValue::Text(entity_ref.kind.clone()),
+            ),
+            (
+                "entity.id".to_owned(),
+                MetadataValue::Text(entity_ref.id.clone()),
+            ),
+            (
+                "display.label".to_owned(),
+                MetadataValue::Text("#982 entities-only cutover".to_owned()),
+            ),
+            (
+                "summary.text".to_owned(),
+                MetadataValue::Text("Cached entity metadata survives".to_owned()),
+            ),
+        ]);
+        let resolve_slot = |slot| {
+            let resolved = bundled_template_catalog()
+                .resolve(TemplateConfigMatchContext {
+                    slot,
+                    node_kind: TemplateConfigNodeKind::Entity,
+                    metadata: &metadata,
+                    collapsed: false,
+                    collapsible: false,
+                    active_tab_name: None,
+                })
+                .expect("template resolution succeeds")
+                .expect("bundled entity template");
+            ResolvedTemplateSlot {
+                template_name: resolved.name.clone(),
+                fields: vec![],
+                render_ready: Some(resolved.render_ready()),
+                effective_kdl: resolved.dump_kdl(),
+                resolve_error: None,
+            }
+        };
         model.tabs.clear();
         model.rows.truncate(1);
         model.rows.push(RailRow::Entity {
@@ -6599,29 +6631,10 @@ mod tests {
                 entity: entity_ref.clone(),
                 label: "#982 entities-only cutover".to_owned(),
                 form: "compact".to_owned(),
+                metadata: metadata.clone(),
                 templates: ResolvedTemplateSlots {
-                    compact: Some(ResolvedTemplateSlot {
-                        template_name: "issue.compact".to_owned(),
-                        fields: vec![andamento_shared::ResolvedTemplateField {
-                            text: "#982".to_owned(),
-                            priority: 100,
-                            source: None,
-                        }],
-                        render_ready: None,
-                        effective_kdl: String::new(),
-                        resolve_error: None,
-                    }),
-                    detail: Some(ResolvedTemplateSlot {
-                        template_name: "issue.detail".to_owned(),
-                        fields: vec![andamento_shared::ResolvedTemplateField {
-                            text: "#982 entities-only cutover".to_owned(),
-                            priority: 100,
-                            source: None,
-                        }],
-                        render_ready: None,
-                        effective_kdl: String::new(),
-                        resolve_error: None,
-                    }),
+                    compact: Some(resolve_slot(TemplateConfigSlot::Compact)),
+                    detail: Some(resolve_slot(TemplateConfigSlot::Detail)),
                     ..Default::default()
                 },
             },
@@ -6634,7 +6647,7 @@ mod tests {
             Some(&model),
             &[],
             7,
-            40,
+            80,
             true,
             None,
             None,
@@ -6647,7 +6660,16 @@ mod tests {
         );
 
         assert!(rendered.lines.iter().any(|line| line.contains("#982")));
-        assert!(rendered.lines[5].contains("[issue] #982 entities-only cutover"));
+        assert!(
+            !rendered
+                .lines
+                .iter()
+                .any(|line| line.contains("#982 (tab)")),
+            "compact template should resolve display.label from carried metadata: {:?}",
+            rendered.lines
+        );
+        assert!(rendered.lines[5]
+            .contains("[issue] #982 entities-only cutover Cached entity metadata survives"));
         assert!(rendered.hit_regions.iter().any(|hit| {
             hit.action == HitAction::ShowDetail
                 && hit.inspect_target == Some(NodeKey::Entity(entity_ref.clone()))
@@ -9566,6 +9588,7 @@ mod tests {
             },
             label: "#1058".into(),
             form: "compact".to_owned(),
+            metadata: BTreeMap::new(),
             templates: ResolvedTemplateSlots {
                 compact: Some(ResolvedTemplateSlot {
                     template_name: resolved.name.clone(),

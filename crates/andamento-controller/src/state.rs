@@ -1268,6 +1268,7 @@ impl ControllerState {
                 .map(str::to_owned)
                 .unwrap_or_else(|| entity.entity.id.clone()),
             form: entity.form.clone(),
+            metadata,
             templates,
         }
     }
@@ -3033,6 +3034,7 @@ mod tests {
                 ("flotilla.project.name", "dev"),
                 ("flotilla.issue", "github/flotilla-org/flotilla#982"),
                 (KEY_DISPLAY_LABEL, "#982 entities-only cutover"),
+                ("summary.text", "Cached entity metadata survives"),
             ],
         );
 
@@ -3045,6 +3047,11 @@ mod tests {
                     && entity.form == DISPLAY_FORM_COMPACT
                     && entity.templates.compact.is_some()
                     && entity.templates.detail.is_some()
+                    && matches!(
+                        entity.metadata.get("summary.text"),
+                        Some(MetadataValue::Text(summary))
+                            if summary == "Cached entity metadata survives"
+                    )
         )));
         assert!(!model
             .rows
