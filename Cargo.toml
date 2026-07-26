@@ -33,3 +33,4 @@ unicode-width = "0.1.14"
 zellij-tile = { path = "../zellij/zellij-tile" }
 zellij-tile-utils = { path = "../zellij/zellij-tile-utils" }
 andamento-shared = { path = "crates/andamento-shared" }
+andamento-rail = { path = "crates/andamento-rail" }

@@ -1,5 +1,5 @@
 mod inline_layout;
-mod render;
+pub mod render;
 
 fn should_sync_graphics(controller_available: bool) -> bool {
     controller_available

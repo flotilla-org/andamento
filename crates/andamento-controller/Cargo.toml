@@ -21,3 +21,8 @@ serde.workspace = true
 serde_json.workspace = true
 andamento-shared.workspace = true
 zellij-tile.workspace = true
+
+# Native-only: the render harness (`cargo run -p andamento-controller -- <patches>`)
+# renders derived rows through the real rail renderer. Not linked into the wasm plugin.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+andamento-rail.workspace = true

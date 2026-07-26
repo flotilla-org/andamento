@@ -152,7 +152,7 @@ pub fn bundled_default_rule() -> GroupingRule {
         name: "flotilla.default".to_owned(),
         priority: -1_000,
         levels: vec![
-            level("flotilla.project", "flotilla.project.name", false, false),
+            level("flotilla.project", "flotilla.project.name", false, true),
             level("vcs.repo", "vcs.repo.name", false, false),
             level("flotilla.convoy", "flotilla.convoy.name", true, false),
             level("flotilla.vessel", "flotilla.vessel.name", false, false),
@@ -192,7 +192,7 @@ pub fn bundled_default_rule() -> GroupingRule {
             },
             PresenceMapping {
                 kind: EntityKind::Project,
-                class: PresenceClass::Section,
+                class: PresenceClass::Tab,
                 form: DisplayForm::Full,
                 visible_when: None,
             },

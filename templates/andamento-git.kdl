@@ -1,18 +1,22 @@
 version 1
 
 grouping "proj-repo-branch" {
+  filter key="git.branch"
   priority 100
   level key="andamento.project" optional=true
   level key="vcs.repo" label-key="repo.name"
   level key="git.branch"
 }
 
+// Scoped to repo-level groups only: matching on fact existence (`when
+// exists="vcs.repo"`) also captured every group *under* the repo, because
+// facts inherit downward — convoy headers rendered label-less. The group's
+// own level key is the right selector.
 template "andamento.git.group-header" slot="group-header" node-kind="group" {
-  when exists="vcs.repo"
+  when text-equals="group.key" value="vcs.repo"
 
   field priority=100 {
     value key="vcs.repo"
     value key="group.label"
   }
-  field key="git.branch" priority=60 prefix=" "
 }

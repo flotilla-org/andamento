@@ -68,8 +68,135 @@ fn rail_ui_state_broadcast_message(state: &RailUiState) -> Option<MessageToPlugi
     Some(MessageToPlugin::new(MSG_RAIL_UI_STATE).with_payload(serde_json::to_string(state).ok()?))
 }
 
+/// Native-target harness: replay captured connector patches through the real
+/// controller pipeline and print the derived rail — the presentation stack's
+/// composition, testable in seconds without zellij (andamento#37 postmortem).
+///
+///   cargo run -p andamento-controller -- <patches.jsonl> [grouping.kdl]
 #[cfg(not(target_family = "wasm"))]
-fn main() {}
+fn main() {
+    let mut args = std::env::args().skip(1);
+    let Some(patches_path) = args.next() else {
+        std::eprintln!("usage: render-harness <patches.jsonl> [grouping.kdl]");
+        std::process::exit(2);
+    };
+    let grouping_kdl = match args.next() {
+        Some(path) => std::fs::read_to_string(&path).expect("read grouping kdl"),
+        None => include_str!("../../../templates/andamento-git.kdl").to_owned(),
+    };
+
+    let mut state = ControllerState::default();
+    state.set_template_catalog(None);
+    let live = andamento_shared::grouping_config::parse_grouping_config_kdl(&grouping_kdl)
+        .expect("parse grouping kdl");
+    state.set_grouping_catalog(Some(
+        andamento_shared::grouping_config::GroupingConfigCatalog::with_bundled_defaults(live),
+    ));
+    state.set_rail_config(RailConfig {
+        grouping: RailGroupingMode::Directory,
+        ..RailConfig::default()
+    });
+
+    let raw = std::fs::read_to_string(&patches_path).expect("read patches file");
+    let (mut applied, mut failed) = (0usize, 0usize);
+    for line in raw.lines().filter(|l| !l.trim().is_empty()) {
+        let message = PipeMessage {
+            source: PipeSource::Cli("render-harness".to_owned()),
+            name: MSG_APPLY_METADATA_PATCH.to_owned(),
+            payload: Some(line.to_owned()),
+            args: BTreeMap::new(),
+            is_private: false,
+        };
+        let result = handle_pipe_message(&mut state, message);
+        if result.state_changed {
+            applied += 1;
+        } else {
+            failed += 1;
+            std::eprintln!(
+                "no-op patch: {}",
+                line.chars().take(160).collect::<String>()
+            );
+        }
+    }
+
+    let model = state.view_model();
+    std::println!(
+        "=== rail ({} patches applied, {} no-op; {} tabs, {} rows) ===",
+        applied,
+        failed,
+        model.tabs.len(),
+        model.rows.len()
+    );
+    for row in &model.rows {
+        match row {
+            andamento_shared::RailRow::GroupHeader {
+                label,
+                full_label,
+                tab_count,
+                ..
+            } => {
+                std::println!("[group] {label}  ({full_label}, tabs={tab_count})");
+            }
+            andamento_shared::RailRow::Tab { tab_id, indent, .. } => {
+                std::println!("{}tab #{tab_id}", "  ".repeat(*indent));
+            }
+            andamento_shared::RailRow::Latent { latent, indent, .. } => {
+                std::println!("{}(latent) {:?}", "  ".repeat(*indent), latent);
+            }
+            andamento_shared::RailRow::Entity { entity, indent, .. } => {
+                std::println!(
+                    "{}(entity:{}:{:?}) {}",
+                    "  ".repeat(*indent),
+                    entity.entity.id,
+                    entity.form,
+                    entity.label
+                );
+            }
+        }
+    }
+
+    render_rail_lines(&model, &grouping_kdl);
+}
+
+/// Render the derived rows through the real rail renderer — actual template
+/// selection, actual field composition, actual truncation — so template-level
+/// questions are answerable here instead of only in a running zellij.
+#[cfg(not(target_family = "wasm"))]
+fn render_rail_lines(model: &andamento_shared::ControllerViewModel, config_kdl: &str) {
+    use andamento_shared::template_config::TemplateConfigCatalog;
+    let templates = match andamento_shared::template_config::parse_template_config_kdl(config_kdl) {
+        Ok(config) => Some(TemplateConfigCatalog::with_bundled_defaults(config)),
+        Err(error) => {
+            std::eprintln!(
+                "template config parse failed (rendering with builtins only): {error:?}"
+            );
+            None
+        }
+    };
+    let cols = std::env::var("HARNESS_COLS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(46usize);
+    let rows = model.rows.len() * 4 + 8;
+    let rendered = andamento_rail::render::render_lines_with_template_catalog(
+        Some(model),
+        &[],
+        rows,
+        cols,
+        true,
+        templates.as_ref(),
+    );
+    std::println!(
+        "=== rendered ({} lines @ {cols} cols) ===",
+        rendered.lines.len()
+    );
+    for line in &rendered.lines {
+        std::println!("{line}");
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn render_rail_lines(_model: &andamento_shared::ControllerViewModel, _config_kdl: &str) {}
 
 #[derive(Default)]
 pub struct PluginState {
@@ -2688,6 +2815,107 @@ mod tests {
                     && entity.templates.compact.is_some()
                     && entity.templates.detail.is_some()
         )));
+    }
+
+    // The live andamento-git.kdl group-header template must stay scoped to
+    // repo-level groups: `when exists="vcs.repo"` also matched every group
+    // *under* the repo (facts inherit downward) and rendered convoy headers
+    // label-less. Native-only because it renders through andamento-rail.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn git_group_header_template_stays_scoped_to_repo_level_groups() {
+        let config_kdl = include_str!("../../../templates/andamento-git.kdl");
+        let mut state = ControllerState::default();
+        state.set_template_catalog(None);
+        let live_grouping_config =
+            andamento_shared::grouping_config::parse_grouping_config_kdl(config_kdl).unwrap();
+        state.set_grouping_catalog(Some(
+            andamento_shared::grouping_config::GroupingConfigCatalog::with_bundled_defaults(
+                live_grouping_config,
+            ),
+        ));
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        // Two convoys under one repo, so single-member conflation cannot fold
+        // the repo group away and its header genuinely renders.
+        for (index, name) in [(1, "scoping-regression"), (2, "second-convoy")] {
+            let convoy_patch = serde_json::json!({
+                "type": "metadata-patch",
+                "target": {
+                    "kind": "entity",
+                    "value": { "kind": "convoy", "id": format!("flotilla/{name}@fleet") }
+                },
+                "source_id": "flotilla-connector",
+                "set": {
+                    "vcs.repo": {
+                        "value": { "type": "text", "value": "flotilla-org/andamento" },
+                        "ttl_ms": null, "precedence": null, "ordinal": index
+                    },
+                    "repo.name": {
+                        "value": { "type": "text", "value": "andamento" },
+                        "ttl_ms": null, "precedence": null, "ordinal": index
+                    },
+                    "flotilla.convoy": {
+                        "value": { "type": "text", "value": format!("flotilla/{name}@fleet") },
+                        "ttl_ms": null, "precedence": null, "ordinal": index
+                    },
+                    "flotilla.convoy.name": {
+                        "value": { "type": "text", "value": name },
+                        "ttl_ms": null, "precedence": null, "ordinal": index
+                    },
+                    "display.label": {
+                        "value": { "type": "text", "value": name },
+                        "ttl_ms": null, "precedence": null, "ordinal": index
+                    }
+                }
+            })
+            .to_string();
+            let result = handle_pipe_message(
+                &mut state,
+                pipe(
+                    MSG_APPLY_METADATA_PATCH,
+                    Some(convoy_patch),
+                    BTreeMap::new(),
+                ),
+            );
+            assert!(result.state_changed);
+        }
+
+        let model = state.view_model();
+        let templates =
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
+                andamento_shared::template_config::parse_template_config_kdl(config_kdl).unwrap(),
+            );
+        let rendered = andamento_rail::render::render_lines_with_template_catalog(
+            Some(&model),
+            &[],
+            model.rows.len() * 4 + 8,
+            60,
+            true,
+            Some(&templates),
+        );
+
+        // Repo-level group header renders the repo through the git template.
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.contains("flotilla-org/andamento")),
+            "repo-level header should render the vcs.repo value: {:?}",
+            rendered.lines
+        );
+        // The convoy-level group header must keep its own label rather than
+        // being captured label-less by the repo template.
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.contains("scoping-regression")),
+            "convoy-level header must not be captured label-less by the git group-header template: {:?}",
+            rendered.lines
+        );
     }
 
     #[test]
