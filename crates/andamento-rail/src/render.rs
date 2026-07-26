@@ -4394,12 +4394,34 @@ fn write_tab_top_border(
     let dimmed = card_dimmed(card, chrome);
     if !chrome.boxed() {
         if let Some(slot) = lines.get_mut(row) {
-            let title = pad_to_width(&truncate_to_width(title, width), width);
-            *slot = if dimmed {
+            let show_inspect = width > 0 && !card.latent;
+            let title_width = width.saturating_sub(usize::from(show_inspect));
+            let title = pad_to_width(&truncate_to_width(title, title_width), title_width);
+            let mut line = if dimmed {
                 latent_tab_style(Style::new()).paint(title).to_string()
             } else {
                 style_body_text(title, theme)
             };
+            if show_inspect {
+                let key = NodeKey::Tab(card.tab_id);
+                line.push_str(&style_body_text(
+                    inspect_node_glyph(inspected_node, &key).to_string(),
+                    theme,
+                ));
+                hit_regions.push(HitRegion {
+                    row_start: row,
+                    row_end: row,
+                    col_start: width - 1,
+                    col_end: width - 1,
+                    tab_id: card.tab_id,
+                    tab_position: card.position,
+                    group_path: None,
+                    inspect_target: Some(key),
+                    materialize_request: None,
+                    action: HitAction::InspectNode,
+                });
+            }
+            *slot = line;
         }
         return;
     }
@@ -9300,6 +9322,53 @@ mod tests {
         );
         assert!(lines[0].ends_with("○┐"), "got {:?}", lines[0]);
         assert!(hits.iter().any(|h| h.action == HitAction::InspectNode));
+    }
+
+    #[test]
+    fn unboxed_tab_title_keeps_the_inspect_affordance() {
+        let mut lines = vec![blank(20); 1];
+        let mut hits = vec![];
+        let card = RenderCard {
+            tab_id: 7,
+            position: 3,
+            name: "tab".into(),
+            active: false,
+            pinned: false,
+            status: None,
+            metadata: BTreeMap::new(),
+            metadata_sources: BTreeMap::new(),
+            reachable_identities: vec![],
+            templates: ResolvedTemplateSlots::default(),
+            latent: false,
+            materialize_request: None,
+            latent_summary: None,
+            meta_panel: None,
+            entity: None,
+            compact_only: false,
+        };
+
+        write_tab_top_border(
+            &mut lines,
+            &mut hits,
+            0,
+            "flat tab",
+            20,
+            true,
+            &card,
+            None,
+            &MetadataControls::default(),
+            None,
+            &ChromeSpec::default(),
+        );
+
+        assert!(lines[0].ends_with('○'), "got {:?}", lines[0]);
+        let inspect = hits
+            .iter()
+            .find(|hit| hit.action == HitAction::InspectNode)
+            .expect("unboxed title retains inspect hit");
+        assert_eq!(inspect.col_start, 19);
+        assert_eq!(inspect.tab_id, 7);
+        assert_eq!(inspect.tab_position, 3);
     }
 
     #[test]

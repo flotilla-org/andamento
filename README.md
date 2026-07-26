@@ -212,6 +212,10 @@ Chrome is opt-in for replacement templates: a template that replaces
 `tab/title` or a group header without `extends=` must declare the primitives
 it wants. Extend the corresponding bundled template or reuse its fragment to
 preserve the previous box, indentation, dimming, toggle, and fill treatment.
+Wholesale `tab/title` replacements should also render the
+`materialize.glyph` metadata field if they want the latent-state marker.
+A matched template wins even when its fields render no text, because a
+chrome-only or intentionally empty template is itself a complete result.
 
 `extends=` names one parent. A child field with the same name replaces its
 parent in place; `remove "field-name"` deletes one; new fields are interleaved
