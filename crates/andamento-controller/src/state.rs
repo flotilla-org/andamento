@@ -73,6 +73,7 @@ struct PendingLatentMaterialization {
 struct CatalogEntity {
     entity: EntityRef,
     values: BTreeMap<String, MetadataEntry>,
+    ordinal: i64,
     path: GroupPath,
     presence: PresenceClass,
     form: DisplayForm,
@@ -1237,11 +1238,7 @@ impl ControllerState {
     }
 
     fn display_entity(&self, entity: &CatalogEntity) -> DisplayEntity {
-        let metadata = entity
-            .values
-            .iter()
-            .map(|(key, entry)| (key.clone(), entry.value.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let metadata = entity_facts(&entity.entity, &entity.values);
         let templates = ResolvedTemplateSlots {
             compact: self.resolve_template_slot(
                 andamento_shared::template_config::TemplateConfigSlot::Compact,
@@ -1269,7 +1266,7 @@ impl ControllerState {
         self.catalog_entities()
             .into_iter()
             .find(|entity| &entity.path == path)
-            .and_then(|entity| entity.values.get(KEY_ENTITY_ID).map(|entry| entry.ordinal))
+            .map(|entity| entity.ordinal)
     }
 
     fn rows_with_group_templates(
@@ -1397,24 +1394,29 @@ impl ControllerState {
                 let values = self
                     .metadata
                     .resolved_entries_for(target, self.receive_counter);
-                let facts = values
-                    .iter()
-                    .map(|(key, entry)| (key.clone(), entry.value.clone()))
-                    .collect::<BTreeMap<_, _>>();
-                let rule = if let Some(name) = self.active_grouping_template.as_deref() {
-                    catalog.named(name).filter(|rule| {
-                        rule.filter
-                            .as_ref()
-                            .is_none_or(|filter| filter.matches(&facts))
-                    })
-                } else {
-                    catalog.rules.iter().find(|rule| {
-                        rule.filter
-                            .as_ref()
-                            .is_none_or(|filter| filter.matches(&facts))
-                    })
-                }?;
-                let (path, level_index) = grouping_path_for_facts(rule, &facts)?;
+                let facts = entity_facts(entity, &values);
+                let (rule, path, level_index) =
+                    if let Some(name) = self.active_grouping_template.as_deref() {
+                        let rule = catalog.named(name).filter(|rule| {
+                            rule.filter
+                                .as_ref()
+                                .is_none_or(|filter| filter.matches(&facts))
+                        })?;
+                        let (path, level_index) = grouping_path_for_facts(rule, &facts)?;
+                        (rule, path, level_index)
+                    } else {
+                        catalog.rules.iter().find_map(|rule| {
+                            if !rule
+                                .filter
+                                .as_ref()
+                                .is_none_or(|filter| filter.matches(&facts))
+                            {
+                                return None;
+                            }
+                            grouping_path_for_facts(rule, &facts)
+                                .map(|(path, level_index)| (rule, path, level_index))
+                        })?
+                    };
                 let mapping = rule
                     .presence
                     .iter()
@@ -1428,6 +1430,7 @@ impl ControllerState {
                 Some(CatalogEntity {
                     entity: entity.clone(),
                     values,
+                    ordinal: self.metadata.target_ordinal(target).unwrap_or_default(),
                     path,
                     presence,
                     form,
@@ -1438,18 +1441,8 @@ impl ControllerState {
             })
             .collect::<Vec<_>>();
         entities.sort_by(|left, right| {
-            let left_ordinal = left
-                .values
-                .get(KEY_ENTITY_ID)
-                .map(|entry| entry.ordinal)
-                .unwrap_or_default();
-            let right_ordinal = right
-                .values
-                .get(KEY_ENTITY_ID)
-                .map(|entry| entry.ordinal)
-                .unwrap_or_default();
-            left_ordinal
-                .cmp(&right_ordinal)
+            left.ordinal
+                .cmp(&right.ordinal)
                 .then_with(|| left.path.cmp(&right.path))
         });
         entities
@@ -2287,6 +2280,27 @@ fn grouping_path_for_facts(
     Some((GroupPath(segments), last_level?))
 }
 
+fn entity_facts(
+    entity: &EntityRef,
+    values: &BTreeMap<String, MetadataEntry>,
+) -> BTreeMap<String, MetadataValue> {
+    let mut facts = values
+        .iter()
+        .map(|(key, entry)| (key.clone(), entry.value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    // The target is the canonical entity identity. Producers must not have to
+    // duplicate it in every patch's set map for grouping filters and templates.
+    facts.insert(
+        KEY_ENTITY_KIND.to_owned(),
+        MetadataValue::Text(entity.kind.as_str().to_owned()),
+    );
+    facts.insert(
+        KEY_ENTITY_ID.to_owned(),
+        MetadataValue::Text(entity.id.clone()),
+    );
+    facts
+}
+
 fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
     let kind = match metadata_entry_text(entries, KEY_ENTITY_KIND)? {
         "project" => EntityKind::Project,
@@ -2669,6 +2683,34 @@ mod tests {
         });
     }
 
+    fn apply_target_only_entity(
+        state: &mut ControllerState,
+        kind: andamento_shared::EntityKind,
+        id: &str,
+        ordinal: i64,
+        facts: &[(&str, &str)],
+    ) {
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: andamento_shared::MetadataTarget::Entity(entity_ref(kind, id)),
+            source_id: "flotilla-connector".to_owned(),
+            set: facts
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        (*key).to_owned(),
+                        andamento_shared::MetadataValueUpdate {
+                            value: MetadataValue::Text((*value).to_owned()),
+                            ttl_ms: None,
+                            precedence: None,
+                            ordinal: Some(ordinal),
+                        },
+                    )
+                })
+                .collect(),
+            unset: vec![],
+        });
+    }
+
     fn directory_entity_state() -> ControllerState {
         let mut state = ControllerState::default();
         state.set_template_catalog(None);
@@ -2677,6 +2719,96 @@ mod tests {
             ..RailConfig::default()
         });
         state
+    }
+
+    #[test]
+    fn automatic_grouping_skips_a_matching_rule_without_a_derivable_path() {
+        use andamento_shared::grouping_config::{
+            ExternalGroupingConfig, GroupingLevel, GroupingRule, PresenceMapping,
+        };
+
+        let mut state = directory_entity_state();
+        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(
+            ExternalGroupingConfig {
+                version: 1,
+                rules: vec![
+                    GroupingRule {
+                        name: "missing-facts".to_owned(),
+                        priority: 100,
+                        filter: None,
+                        presence: vec![],
+                        levels: vec![GroupingLevel {
+                            key: "git.repo".to_owned(),
+                            optional: false,
+                            label_key: None,
+                            collapse_single_member: false,
+                            show_empty: false,
+                        }],
+                    },
+                    GroupingRule {
+                        name: "entity-target".to_owned(),
+                        priority: 50,
+                        filter: None,
+                        presence: vec![PresenceMapping {
+                            kind: andamento_shared::EntityKind::Issue,
+                            class: PresenceClass::Section,
+                            form: DisplayForm::Compact,
+                            visible_when: None,
+                        }],
+                        levels: vec![GroupingLevel {
+                            key: KEY_ENTITY_ID.to_owned(),
+                            optional: false,
+                            label_key: None,
+                            collapse_single_member: false,
+                            show_empty: false,
+                        }],
+                    },
+                ],
+            },
+        )));
+        apply_target_only_entity(
+            &mut state,
+            andamento_shared::EntityKind::Issue,
+            "github/flotilla-org/andamento#37",
+            7,
+            &[(KEY_DISPLAY_LABEL, "#37")],
+        );
+
+        let entities = state.catalog_entities();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].path.0[0].key, KEY_ENTITY_ID);
+        assert_eq!(
+            entities[0].path.0[0].value,
+            MetadataValue::Text("github/flotilla-org/andamento#37".to_owned())
+        );
+    }
+
+    #[test]
+    fn target_only_entities_keep_patch_ordinals_for_catalog_ordering() {
+        let mut state = directory_entity_state();
+        apply_entity(
+            &mut state,
+            andamento_shared::EntityKind::Issue,
+            "later",
+            10,
+            &[("flotilla.project", "dev"), ("flotilla.issue", "later")],
+        );
+        apply_target_only_entity(
+            &mut state,
+            andamento_shared::EntityKind::Issue,
+            "earlier",
+            2,
+            &[("flotilla.project", "dev"), ("flotilla.issue", "earlier")],
+        );
+
+        let entities = state.catalog_entities();
+        assert_eq!(
+            entities
+                .iter()
+                .map(|entity| (entity.entity.id.as_str(), entity.ordinal))
+                .collect::<Vec<_>>(),
+            vec![("earlier", 2), ("later", 10)]
+        );
     }
 
     #[test]
