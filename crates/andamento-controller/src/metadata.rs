@@ -462,7 +462,7 @@ mod tests {
     fn metadata_patch_sets_values_with_controller_timestamp() {
         let mut store = MetadataStore::default();
         let entity = andamento_shared::EntityRef {
-            kind: andamento_shared::EntityKind::Project,
+            kind: "project".to_owned(),
             id: "zellij".to_owned(),
         };
         let target = EntityId::Entity(entity.clone());
@@ -498,7 +498,7 @@ mod tests {
     fn target_ordinal_comes_from_the_patch_without_an_identity_value() {
         let mut store = MetadataStore::default();
         let entity = andamento_shared::EntityRef {
-            kind: andamento_shared::EntityKind::Issue,
+            kind: "issue".to_owned(),
             id: "github/flotilla-org/andamento#37".to_owned(),
         };
         let target = EntityId::Entity(entity.clone());

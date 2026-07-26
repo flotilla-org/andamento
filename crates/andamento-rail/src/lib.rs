@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn detail_hover_updates_live_and_click_remains_as_selection_fallback() {
         let entity = andamento_shared::EntityRef {
-            kind: andamento_shared::EntityKind::Issue,
+            kind: "issue".to_owned(),
             id: "github/flotilla-org/andamento#27".to_owned(),
         };
         let target = NodeKey::Entity(entity);

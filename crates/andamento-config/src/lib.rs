@@ -710,7 +710,7 @@ fn inspect_scope_label(key: &NodeKey) -> String {
         NodeKey::Root => "root".to_owned(),
         NodeKey::Tab(tab_id) => format!("tab:{tab_id}"),
         NodeKey::Group(_) => "group".to_owned(),
-        NodeKey::Entity(entity) => format!("entity:{}:{}", entity.kind.as_str(), entity.id),
+        NodeKey::Entity(entity) => format!("entity:{}:{}", entity.kind, entity.id),
     }
 }
 
@@ -784,7 +784,7 @@ fn inspect_target_for<'a>(
             sources,
         },
         NodeKey::Entity(entity) => InspectTargetView {
-            label: format!("{} {}", entity.kind.as_str(), entity.id),
+            label: format!("{} {}", entity.kind, entity.id),
             kind: InspectTargetKind::Entity,
             node_key,
             tab: None,
@@ -1042,7 +1042,7 @@ fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTarg
         }
         InspectTargetKind::Entity => {
             if let NodeKey::Entity(entity) = &target.node_key {
-                push_key_value(frame, "kind", entity.kind.as_str());
+                push_key_value(frame, "kind", &entity.kind);
                 push_key_value(frame, "id", &entity.id);
             }
         }
@@ -2134,6 +2134,7 @@ mod tests {
                     group_header: Some(andamento_shared::ResolvedTemplateSlot {
                         template_name: "repo-header".to_owned(),
                         fields: vec![],
+                        render_ready: None,
                         effective_kdl: String::new(),
                         resolve_error: None,
                     }),

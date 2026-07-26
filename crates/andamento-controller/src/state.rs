@@ -4,18 +4,16 @@ use std::path::Path;
 use crate::metadata::{
     select_primary_entry, select_primary_value, CandidateEntry, EntityId, MetadataStore,
 };
-use andamento_shared::grouping_config::{
-    DisplayForm, GroupingConfigCatalog, GroupingRule, PresenceClass,
-};
+use andamento_shared::grouping_config::{GroupingConfigCatalog, GroupingRule, PresenceClass};
 use andamento_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, DisplayEntity, DisplayVariableValue,
-    EntityKind, EntityRef, GroupPath, GroupSegment, LatentMaterializationState, LatentTab,
-    MetadataControls, MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataTriState,
-    MetadataValue, NodeKey, ObservedMetadataIdentity, PaneTarget, PluginPlacement,
-    PluginRegistrationHello, Priority, RailConfig, RailGroupingMode, RailRow, RailUiAction,
-    RailUiRevision, RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata,
-    ResolvedTemplateField, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode,
-    TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics,
+    EntityRef, GroupPath, GroupSegment, LatentMaterializationState, LatentTab, MetadataControls,
+    MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey,
+    ObservedMetadataIdentity, PaneTarget, PluginPlacement, PluginRegistrationHello, Priority,
+    RailConfig, RailGroupingMode, RailRow, RailUiAction, RailUiRevision, RailUiState,
+    ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateSlot,
+    ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
+    TemplateConfigDiagnostics, DISPLAY_FORM_COMPACT, DISPLAY_FORM_FULL,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -76,7 +74,7 @@ struct CatalogEntity {
     ordinal: i64,
     path: GroupPath,
     presence: PresenceClass,
-    form: DisplayForm,
+    form: String,
     visible_when: Option<String>,
     template: Option<String>,
     group_templates: BTreeMap<String, String>,
@@ -1042,7 +1040,7 @@ impl ControllerState {
                 }
             }
         }
-        rows.extend(self.visible_section_entities().into_iter().map(|entity| {
+        rows.extend(self.visible_inline_entities().into_iter().map(|entity| {
             let (group_id, label, full_label) = group_header_identity_for_path(&entity.path);
             RailRow::GroupHeader {
                 group_id,
@@ -1066,7 +1064,7 @@ impl ControllerState {
     }
 
     fn directory_group_rows(&self, tabs: &[TabCard], latent_tabs: &[LatentTab]) -> Vec<RailRow> {
-        let section_entities = self.visible_section_entities();
+        let inline_entities = self.visible_inline_entities();
         let compact_entities = self.compact_entities();
         let mut path_to_tabs: BTreeMap<GroupPath, Vec<TabCard>> = BTreeMap::new();
         let mut grouping_by_path: BTreeMap<GroupPath, TabGroupingInfo> = BTreeMap::new();
@@ -1090,8 +1088,8 @@ impl ControllerState {
                 *tab_count_by_prefix.entry(prefix).or_default() += 1;
             }
         }
-        for section in &section_entities {
-            for prefix in group_path_prefixes(&section.path) {
+        for inline in &inline_entities {
+            for prefix in group_path_prefixes(&inline.path) {
                 *tab_count_by_prefix.entry(prefix).or_default() += 1;
             }
         }
@@ -1120,7 +1118,7 @@ impl ControllerState {
         let mut ordered_paths = path_to_tabs
             .keys()
             .chain(latent_by_path.keys())
-            .chain(section_entities.iter().map(|entity| &entity.path))
+            .chain(inline_entities.iter().map(|entity| &entity.path))
             .chain(compact_parent_paths.iter())
             .cloned()
             .collect::<BTreeSet<_>>()
@@ -1243,7 +1241,7 @@ impl ControllerState {
     fn display_entity(&self, entity: &CatalogEntity) -> DisplayEntity {
         let metadata = entity_facts(&entity.entity, &entity.values);
         let mut compact_metadata = metadata.clone();
-        if entity.form == DisplayForm::Compact {
+        if entity.form == DISPLAY_FORM_COMPACT {
             if let Some(template) = entity.template.as_ref() {
                 compact_metadata.insert(
                     "presentation.template".to_owned(),
@@ -1269,7 +1267,8 @@ impl ControllerState {
             label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL)
                 .map(str::to_owned)
                 .unwrap_or_else(|| entity.entity.id.clone()),
-            form: entity.form,
+            form: entity.form.clone(),
+            metadata,
             templates,
         }
     }
@@ -1364,6 +1363,7 @@ impl ControllerState {
             .filter(|entity| entity.presence == PresenceClass::Tab)
             .filter(|entity| !collapsed.contains(&entity.entity))
             .filter_map(|entity| {
+                let display = self.display_entity(entity);
                 let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity.entity.action_target());
@@ -1375,6 +1375,7 @@ impl ControllerState {
                     .or_else(|| entity.path.0.last().map(group_segment_label))
                     .unwrap_or_else(|| entity.entity.id.clone());
                 Some(LatentTab {
+                    entity: entity.entity.clone(),
                     materialization: if self
                         .pending_latent_materializations
                         .contains_key(&action_target)
@@ -1395,6 +1396,7 @@ impl ControllerState {
                         .map(str::to_owned),
                     checkout_path: metadata_entry_text(&entity.values, KEY_CHECKOUT_PATH)
                         .map(str::to_owned),
+                    templates: display.templates,
                 })
             })
             .collect()
@@ -1443,7 +1445,9 @@ impl ControllerState {
                 let presence = mapping
                     .map(|mapping| mapping.class)
                     .unwrap_or(PresenceClass::Hidden);
-                let form = mapping.map(|mapping| mapping.form).unwrap_or_default();
+                let form = mapping
+                    .map(|mapping| mapping.form.clone())
+                    .unwrap_or_else(|| DISPLAY_FORM_FULL.to_owned());
                 let visible_when = mapping.and_then(|mapping| mapping.visible_when.clone());
                 let template = mapping.and_then(|mapping| mapping.template.clone());
                 let level = &rule.levels[level_index];
@@ -1542,10 +1546,10 @@ impl ControllerState {
             }
         }
 
-        // A full-form presence declaration owns its exact surface and takes
-        // precedence over the grouping level's default for that same path.
+        // A non-compact presence declaration owns its exact full surface and
+        // takes precedence over the grouping level's default for that path.
         for entity in entities {
-            if entity.form == DisplayForm::Full {
+            if entity.form != DISPLAY_FORM_COMPACT {
                 if let Some(template) = entity.template {
                     declarations.insert(entity.path, (i64::MAX, template));
                 }
@@ -1572,12 +1576,12 @@ impl ControllerState {
             .collect()
     }
 
-    fn visible_section_entities(&self) -> Vec<CatalogEntity> {
+    fn visible_inline_entities(&self) -> Vec<CatalogEntity> {
         let entities = self.catalog_entities();
         entities
             .iter()
-            .filter(|entity| entity.presence == PresenceClass::Section)
-            .filter(|entity| entity.form == DisplayForm::Full)
+            .filter(|entity| entity.presence == PresenceClass::Inline)
+            .filter(|entity| entity.form != DISPLAY_FORM_COMPACT)
             .filter(|entity| self.entity_is_visible(entity))
             .filter(|entity| {
                 entity.show_empty
@@ -1594,8 +1598,8 @@ impl ControllerState {
     fn compact_entities(&self) -> Vec<CatalogEntity> {
         self.catalog_entities()
             .into_iter()
-            .filter(|entity| entity.presence == PresenceClass::Section)
-            .filter(|entity| entity.form == DisplayForm::Compact)
+            .filter(|entity| entity.presence == PresenceClass::Inline)
+            .filter(|entity| entity.form == DISPLAY_FORM_COMPACT)
             .filter(|entity| self.entity_is_visible(entity))
             .collect()
     }
@@ -1785,7 +1789,7 @@ impl ControllerState {
                 (
                     KEY_ENTITY_KIND.to_owned(),
                     andamento_shared::MetadataValueUpdate {
-                        value: MetadataValue::Text(entity.kind.as_str().to_owned()),
+                        value: MetadataValue::Text(entity.kind.clone()),
                         ttl_ms: None,
                         precedence: Some(LATENT_MATERIALIZER_PRECEDENCE),
                         ordinal: None,
@@ -1845,6 +1849,7 @@ impl ControllerState {
                 return Some(ResolvedTemplateSlot {
                     template_name: "<resolve-error>".to_owned(),
                     fields: vec![],
+                    render_ready: None,
                     effective_kdl: format!("// error: {error}\n"),
                     resolve_error: Some(error.to_string()),
                 });
@@ -1855,22 +1860,10 @@ impl ControllerState {
             // Leave bundled resolution to the rail; configured overrides remain resolved here.
             return None;
         }
-        let fields = resolved
-            .render_fields(context)
-            .into_iter()
-            .map(|field| ResolvedTemplateField {
-                text: field.value,
-                priority: field.priority.unwrap_or(match field.class {
-                    andamento_shared::template_config::TemplateConfigFieldClass::Optional => 0,
-                    andamento_shared::template_config::TemplateConfigFieldClass::Required
-                    | andamento_shared::template_config::TemplateConfigFieldClass::Priority => 100,
-                }),
-                source: field.source,
-            })
-            .collect::<Vec<_>>();
         Some(ResolvedTemplateSlot {
             template_name: resolved.name.clone(),
-            fields,
+            fields: vec![],
+            render_ready: Some(resolved.render_ready()),
             effective_kdl: resolved.dump_kdl(),
             resolve_error: None,
         })
@@ -2419,7 +2412,7 @@ fn entity_facts(
     // duplicate it in every patch's set map for grouping filters and templates.
     facts.insert(
         KEY_ENTITY_KIND.to_owned(),
-        MetadataValue::Text(entity.kind.as_str().to_owned()),
+        MetadataValue::Text(entity.kind.clone()),
     );
     facts.insert(
         KEY_ENTITY_ID.to_owned(),
@@ -2429,18 +2422,8 @@ fn entity_facts(
 }
 
 fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
-    let kind = match metadata_entry_text(entries, KEY_ENTITY_KIND)? {
-        "project" => EntityKind::Project,
-        "repo" => EntityKind::Repo,
-        "convoy" => EntityKind::Convoy,
-        "vessel" => EntityKind::Vessel,
-        "issue" => EntityKind::Issue,
-        "session" => EntityKind::Session,
-        "checkout" => EntityKind::Checkout,
-        _ => return None,
-    };
     Some(EntityRef {
-        kind,
+        kind: metadata_entry_text(entries, KEY_ENTITY_KIND)?.to_owned(),
         id: metadata_entry_text(entries, KEY_ENTITY_ID)?.to_owned(),
     })
 }
@@ -2767,16 +2750,16 @@ mod tests {
         }
     }
 
-    fn entity_ref(kind: andamento_shared::EntityKind, id: &str) -> andamento_shared::EntityRef {
+    fn entity_ref(kind: &str, id: &str) -> andamento_shared::EntityRef {
         andamento_shared::EntityRef {
-            kind,
+            kind: kind.to_owned(),
             id: id.to_owned(),
         }
     }
 
     fn apply_entity(
         state: &mut ControllerState,
-        kind: andamento_shared::EntityKind,
+        kind: &str,
         id: &str,
         ordinal: i64,
         facts: &[(&str, &str)],
@@ -2786,7 +2769,7 @@ mod tests {
             (
                 KEY_ENTITY_KIND.to_owned(),
                 andamento_shared::MetadataValueUpdate {
-                    value: MetadataValue::Text(kind.as_str().to_owned()),
+                    value: MetadataValue::Text(kind.to_owned()),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: Some(ordinal),
@@ -2823,7 +2806,7 @@ mod tests {
 
     fn apply_target_only_entity(
         state: &mut ControllerState,
-        kind: andamento_shared::EntityKind,
+        kind: &str,
         id: &str,
         ordinal: i64,
         facts: &[(&str, &str)],
@@ -2889,9 +2872,9 @@ mod tests {
                         priority: 50,
                         filter: None,
                         presence: vec![PresenceMapping {
-                            kind: andamento_shared::EntityKind::Issue,
-                            class: PresenceClass::Section,
-                            form: DisplayForm::Compact,
+                            kind: "issue".to_owned(),
+                            class: PresenceClass::Inline,
+                            form: DISPLAY_FORM_COMPACT.to_owned(),
                             visible_when: None,
                             template: None,
                         }],
@@ -2909,7 +2892,7 @@ mod tests {
         )));
         apply_target_only_entity(
             &mut state,
-            andamento_shared::EntityKind::Issue,
+            "issue",
             "github/flotilla-org/andamento#37",
             7,
             &[(KEY_DISPLAY_LABEL, "#37")],
@@ -2929,14 +2912,14 @@ mod tests {
         let mut state = directory_entity_state();
         apply_entity(
             &mut state,
-            andamento_shared::EntityKind::Issue,
+            "issue",
             "later",
             10,
             &[("flotilla.project", "dev"), ("flotilla.issue", "later")],
         );
         apply_target_only_entity(
             &mut state,
-            andamento_shared::EntityKind::Issue,
+            "issue",
             "earlier",
             2,
             &[("flotilla.project", "dev"), ("flotilla.issue", "earlier")],
@@ -2958,7 +2941,7 @@ mod tests {
         let shared_target = "flotilla:attach:dev/only@lab";
         apply_entity(
             &mut state,
-            andamento_shared::EntityKind::Convoy,
+            "convoy",
             "dev/only@lab",
             1,
             &[
@@ -2973,7 +2956,7 @@ mod tests {
         );
         apply_entity(
             &mut state,
-            andamento_shared::EntityKind::Vessel,
+            "vessel",
             "dev/only/worker@lab",
             2,
             &[
@@ -3012,7 +2995,7 @@ mod tests {
         let mut state = directory_entity_state();
         apply_entity(
             &mut state,
-            andamento_shared::EntityKind::Vessel,
+            "vessel",
             "dev/solo/worker@lab",
             1,
             &[
@@ -3043,7 +3026,7 @@ mod tests {
         let mut state = directory_entity_state();
         apply_entity(
             &mut state,
-            andamento_shared::EntityKind::Issue,
+            "issue",
             "github/flotilla-org/flotilla#982",
             1,
             &[
@@ -3051,6 +3034,7 @@ mod tests {
                 ("flotilla.project.name", "dev"),
                 ("flotilla.issue", "github/flotilla-org/flotilla#982"),
                 (KEY_DISPLAY_LABEL, "#982 entities-only cutover"),
+                ("summary.text", "Cached entity metadata survives"),
             ],
         );
 
@@ -3060,9 +3044,14 @@ mod tests {
             row,
             RailRow::Entity { entity, .. }
                 if entity.label == "#982 entities-only cutover"
-                    && entity.form == DisplayForm::Compact
+                    && entity.form == DISPLAY_FORM_COMPACT
                     && entity.templates.compact.is_some()
                     && entity.templates.detail.is_some()
+                    && matches!(
+                        entity.metadata.get("summary.text"),
+                        Some(MetadataValue::Text(summary))
+                            if summary == "Cached entity metadata survives"
+                    )
         )));
         assert!(!model
             .rows
@@ -3081,13 +3070,98 @@ mod tests {
     }
 
     #[test]
+    fn novel_wire_kind_reaches_the_generic_compact_template() {
+        let mut state = directory_entity_state();
+        let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
+            r#"
+            grouping "deployments" priority=100 {
+              filter key="entity.kind"
+              presence kind="deployment" class="inline" form="compact"
+              level key="deployment.name" label-key="display.label"
+            }
+            "#,
+        )
+        .expect("grouping config");
+        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::default(),
+        ));
+        apply_entity(
+            &mut state,
+            "deployment",
+            "prod/api",
+            1,
+            &[
+                ("deployment.name", "api"),
+                (KEY_DISPLAY_LABEL, "API deployment"),
+            ],
+        );
+
+        let entity = state
+            .view_model()
+            .rows
+            .into_iter()
+            .find_map(|row| match row {
+                RailRow::Entity { entity, .. } => Some(entity),
+                _ => None,
+            })
+            .expect("novel entity renders inline");
+        let compact = entity
+            .templates
+            .compact
+            .expect("generic compact template resolves");
+
+        assert_eq!(entity.entity.kind, "deployment");
+        assert_eq!(compact.template_name, "deployment/compact");
+        assert!(compact.effective_kdl.contains("flotilla/entity/compact"));
+        assert!(compact.render_ready.is_some());
+    }
+
+    #[test]
+    fn novel_inline_form_uses_the_full_surface_instead_of_disappearing() {
+        let mut state = directory_entity_state();
+        let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
+            r#"
+            grouping "deployments" priority=100 {
+              filter key="entity.kind"
+              presence kind="deployment" class="inline" form="ribbon"
+              level key="deployment.name" label-key="display.label" show-empty=true
+            }
+            "#,
+        )
+        .expect("grouping config");
+        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
+        apply_entity(
+            &mut state,
+            "deployment",
+            "prod/api",
+            1,
+            &[
+                ("deployment.name", "api"),
+                (KEY_DISPLAY_LABEL, "API deployment"),
+            ],
+        );
+
+        let model = state.view_model();
+
+        assert!(model.rows.iter().any(|row| matches!(
+            row,
+            RailRow::GroupHeader { label, .. } if label == "API deployment"
+        )));
+        assert!(!model
+            .rows
+            .iter()
+            .any(|row| matches!(row, RailRow::Entity { .. })));
+    }
+
+    #[test]
     fn presence_template_overrides_the_selected_form_without_leaking_to_detail() {
         let mut state = directory_entity_state();
         let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
             r#"
                 grouping "issues" priority=100 {
                   filter key="entity.kind"
-                  presence kind="issue" class="section" form="compact" template="issue/attention"
+                  presence kind="issue" class="inline" form="compact" template="issue/attention"
                   level key="flotilla.project" optional=true
                   level key="flotilla.issue"
                 }
@@ -3113,7 +3187,7 @@ mod tests {
         ));
         apply_entity(
             &mut state,
-            andamento_shared::EntityKind::Issue,
+            "issue",
             "github/flotilla-org/flotilla#1058",
             1,
             &[
@@ -3187,7 +3261,7 @@ mod tests {
         ));
         apply_entity(
             &mut state,
-            andamento_shared::EntityKind::Convoy,
+            "convoy",
             "flotilla/review-regression@fleet",
             1,
             &[
@@ -3252,7 +3326,7 @@ mod tests {
         ));
         apply_entity(
             &mut state,
-            andamento_shared::EntityKind::Convoy,
+            "convoy",
             "flotilla/low@fleet",
             1,
             &[
@@ -3262,7 +3336,7 @@ mod tests {
         );
         apply_entity(
             &mut state,
-            andamento_shared::EntityKind::Issue,
+            "issue",
             "github/flotilla-org/andamento#41",
             2,
             &[
@@ -3386,7 +3460,7 @@ mod tests {
         let mut state = directory_entity_state();
         apply_entity(
             &mut state,
-            andamento_shared::EntityKind::Convoy,
+            "convoy",
             "dev/no-repo@lab",
             1,
             &[
@@ -3433,9 +3507,9 @@ mod tests {
                     priority: 100,
                     filter: None,
                     presence: vec![PresenceMapping {
-                        kind: andamento_shared::EntityKind::Convoy,
+                        kind: "convoy".to_owned(),
                         class: PresenceClass::Tab,
-                        form: DisplayForm::Full,
+                        form: DISPLAY_FORM_FULL.to_owned(),
                         visible_when: None,
                         template: None,
                     }],
@@ -3453,7 +3527,7 @@ mod tests {
         assert!(state.set_active_grouping_template(Some("flotilla.default".to_owned())));
         apply_entity(
             &mut state,
-            andamento_shared::EntityKind::Convoy,
+            "convoy",
             "dev/regroup@lab",
             1,
             &[
@@ -3489,7 +3563,7 @@ mod tests {
         let shared_target = "flotilla:attach:dev/focus@lab";
         apply_entity(
             &mut state,
-            andamento_shared::EntityKind::Vessel,
+            "vessel",
             "dev/focus/worker@lab",
             1,
             &[
@@ -4100,7 +4174,7 @@ mod tests {
         state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/zellij".into());
         apply_entity(
             &mut state,
-            andamento_shared::EntityKind::Repo,
+            "repo",
             "zellij-org/zellij",
             1,
             &[
@@ -4418,11 +4492,14 @@ mod tests {
         assert_eq!(group_slot.template_name, "group/full");
         assert_eq!(
             group_slot
+                .render_ready
+                .as_ref()
+                .expect("render-ready template")
                 .fields
                 .iter()
-                .map(|field| (field.text.as_str(), field.priority))
+                .map(|field| (field.name.as_str(), field.priority))
                 .collect::<Vec<_>>(),
-            vec![("rjwittams/katzensteg", 100), ("main", 60)]
+            vec![("repo", Some(100)), ("branch", Some(60))]
         );
         assert!(group_slot
             .effective_kdl

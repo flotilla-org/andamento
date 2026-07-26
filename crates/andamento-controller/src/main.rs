@@ -1448,7 +1448,7 @@ fn inspect_scope_label(key: &andamento_shared::NodeKey) -> String {
         andamento_shared::NodeKey::Tab(tab_id) => format!("tab:{tab_id}"),
         andamento_shared::NodeKey::Group(_) => "group".to_owned(),
         andamento_shared::NodeKey::Entity(entity) => {
-            format!("entity:{}:{}", entity.kind.as_str(), entity.id)
+            format!("entity:{}:{}", entity.kind, entity.id)
         }
     }
 }
@@ -2459,7 +2459,7 @@ mod tests {
         });
         state.apply_metadata_patch(andamento_shared::MetadataPatch {
             target: andamento_shared::MetadataTarget::Entity(andamento_shared::EntityRef {
-                kind: andamento_shared::EntityKind::Repo,
+                kind: "repo".to_owned(),
                 id: "example/repo".to_owned(),
             }),
             source_id: "test".to_owned(),
@@ -2893,7 +2893,7 @@ mod tests {
         assert!(model.rows.iter().any(|row| matches!(
             row,
             andamento_shared::RailRow::Entity { entity, .. }
-                if entity.entity.kind == andamento_shared::EntityKind::Issue
+                if entity.entity.kind == "issue"
                     && entity.label == "#37 entity patches vanish"
                     && entity.templates.compact.is_some()
                     && entity.templates.detail.is_some()
