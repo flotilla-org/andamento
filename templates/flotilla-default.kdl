@@ -22,190 +22,89 @@ grouping "flotilla.default" priority=-1000 {
   level key="flotilla.checkout" label-key="display.label" optional=true show-empty=true
 }
 
-template "flotilla.issue.compact" slot="compact" node-kind="entity" {
-  when text-equals="entity.kind" value="issue"
-  field {
-    value source="metadata-first-token" key="display.label"
-  }
+fragment "flotilla/group-toggle" {
+  field "toggle" class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
 }
 
-template "flotilla.issue.detail" slot="detail" node-kind="entity" {
-  when text-equals="entity.kind" value="issue"
-  field key="display.label"
-  field key="summary.text" priority=50
-}
-
-// Bundled rail templates. The flotilla/ namespace distinguishes this
-// inspectable fallback layer from user-authored template names.
-template "flotilla/group-header/vcs-repo" slot="group-header" node-kind="group" {
-  when text-equals="group.key" value="vcs.repo"
-  when exists="vcs.repo"
-
-  field class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
-  field class="required" {
+fragment "flotilla/group-label" {
+  field "label" class="required" {
     value source="metadata-text" key="group.segment.label"
     value source="metadata-text-basename" key="group.value"
     value source="metadata-text" key="group.label"
   }
 }
 
-template "flotilla/group-header/project" slot="group-header" node-kind="group" {
-  when text-equals="group.key" value="flotilla.project"
-  when exists="flotilla.project"
-
-  field class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
-  field class="required" {
+fragment "flotilla/group-label-verbatim" {
+  field "label" class="required" {
     value source="metadata-text" key="group.segment.label"
     value source="metadata-text" key="group.value"
     value source="metadata-text" key="group.label"
   }
 }
 
-template "flotilla/group-header/convoy" slot="group-header" node-kind="group" {
-  when text-equals="group.key" value="flotilla.convoy"
-  when exists="flotilla.convoy"
-
-  field class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
-  field class="required" {
-    value source="metadata-text" key="group.segment.label"
-    value source="metadata-text-basename" key="group.value"
-    value source="metadata-text" key="group.label"
-  }
+template "flotilla/project/full" slot="group-header" node-kind="group" {
+  use "flotilla/group-toggle"
+  use "flotilla/group-label-verbatim"
 }
 
-template "flotilla/group-header/vessel" slot="group-header" node-kind="group" {
-  when text-equals="group.key" value="flotilla.vessel"
-  when exists="flotilla.vessel"
-
-  field class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
-  field class="required" {
-    value source="metadata-text" key="group.segment.label"
-    value source="metadata-text-basename" key="group.value"
-    value source="metadata-text" key="group.label"
-  }
+template "flotilla/repo/full" slot="group-header" node-kind="group" {
+  use "flotilla/group-toggle"
+  use "flotilla/group-label"
 }
 
-template "flotilla/group-header/independent" slot="group-header" node-kind="group" {
-  when text-equals="group.key" value="flotilla.independent"
-  when exists="flotilla.independent"
-
-  field class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
-  field class="required" {
-    value source="metadata-text" key="group.segment.label"
-    value source="metadata-text-basename" key="group.value"
-    value source="metadata-text" key="group.label"
-  }
+template "flotilla/convoy/full" slot="group-header" node-kind="group" {
+  use "flotilla/group-toggle"
+  use "flotilla/group-label"
 }
 
-template "flotilla/group-header/session" slot="group-header" node-kind="group" {
-  when text-equals="group.key" value="flotilla.session"
-  when exists="flotilla.session"
-
-  field class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
-  field class="required" {
-    value source="metadata-text" key="group.segment.label"
-    value source="metadata-text-basename" key="group.value"
-    value source="metadata-text" key="group.label"
-  }
+template "flotilla/vessel/full" slot="group-header" node-kind="group" {
+  use "flotilla/group-toggle"
+  use "flotilla/group-label"
 }
 
-template "flotilla/group-header/checkout" slot="group-header" node-kind="group" {
-  when text-equals="group.key" value="flotilla.checkout"
-  when exists="flotilla.checkout"
-
-  field class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
-  field class="required" {
-    value source="metadata-text" key="group.segment.label"
-    value source="metadata-text-basename" key="group.value"
-    value source="metadata-text" key="group.label"
-  }
+template "flotilla/session/full" slot="group-header" node-kind="group" {
+  use "flotilla/group-toggle"
+  use "flotilla/group-label"
 }
 
-template "flotilla/group-header/issue" slot="group-header" node-kind="group" {
-  when text-equals="group.key" value="flotilla.issue"
-  when exists="flotilla.issue"
-
-  field class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
-  field class="required" {
-    value source="metadata-text" key="group.segment.label"
-    value source="metadata-text-basename" key="group.value"
-    value source="metadata-text" key="group.label"
-  }
+template "flotilla/issue/full" slot="group-header" node-kind="group" {
+  use "flotilla/group-toggle"
+  use "flotilla/group-label"
 }
 
-template "flotilla/group-header/recognized" slot="group-header" node-kind="group" {
-  when text-one-of="group.key" {
-    value "andamento.project"
-    value "branch"
-    value "flotilla.checkout"
-    value "flotilla.convoy"
-    value "flotilla.independent"
-    value "flotilla.issue"
-    value "flotilla.project"
-    value "flotilla.vessel"
-    value "git.branch"
-    value "git.repo"
-    value "project"
-    value "repo"
-    value "vcs.repo"
-    value "worktree"
-    value "zellij.pane.cwd"
-  }
+template "flotilla/checkout/full" slot="group-header" node-kind="group" {
+  use "flotilla/group-toggle"
+  use "flotilla/group-label"
+}
 
-  field class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
-  field class="required" {
+template "flotilla/group/full" slot="group-header" node-kind="group" {
+  use "flotilla/group-toggle"
+  field "label" class="required" {
     value source="metadata-text" key="group.label"
     value source="literal" value="group"
   }
-  field class="optional" source="metadata-display" key="group.tab_count" prefix="(" suffix=")"
-  field class="priority" source="active-tab-name" prefix=": " condition="collapsed"
+  field "count" class="optional" source="metadata-display" key="group.tab_count" prefix="(" suffix=")"
+  field "active" class="priority" source="active-tab-name" prefix=": " condition="collapsed"
 }
 
-template "flotilla/group-header/fallback" slot="group-header" node-kind="group" {
-  when exists="group.key"
-
-  field class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
-  field class="required" source="metadata-text" key="group.key" suffix=":"
-  field class="required" source="metadata-display" key="group.value" suffix=" (group)"
-}
-
-template "flotilla/group-header/legacy" slot="group-header" node-kind="group" {
-  field class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
-  field class="required" {
-    value source="metadata-text" key="group.label"
-    value source="literal" value="group"
-  }
-  field class="optional" source="metadata-display" key="group.tab_count" prefix="(" suffix=")"
-  field class="priority" source="active-tab-name" prefix=": " condition="collapsed"
-}
-
-template "flotilla/tab-title" slot="tab-title" node-kind="tab" {
-  field class="required" {
+template "flotilla/tab/title" slot="tab-title" node-kind="tab" {
+  field "title" class="required" {
     value source="metadata-text" key="zellij.tab.name"
     value source="tab-number"
     value source="literal" value="Tab"
   }
 }
 
-template "flotilla/tab-status" slot="tab-status" node-kind="tab" {
-  when exists="status.title"
-
-  field class="required" source="metadata-text" key="status.title"
-  field class="priority" source="metadata-text" key="status.detail" prefix=": "
+template "flotilla/tab/status" slot="tab-status" node-kind="tab" {
+  field "title" class="required" source="metadata-text" key="status.title"
+  field "detail" class="priority" source="metadata-text" key="status.detail" prefix=": "
 }
 
-template "flotilla/tab-status/waiting" slot="tab-status" node-kind="tab" {
-  when exists="status.title"
-  when text-equals="status.priority" value="waiting"
-
-  field class="required" source="metadata-text" key="status.title"
-  field class="priority" source="metadata-text" key="status.detail" prefix=": "
+template "flotilla/issue/compact" slot="compact" node-kind="entity" {
+  field "label" class="required" source="metadata-first-token" key="display.label"
 }
 
-template "flotilla/tab-status/terminal-source" slot="tab-status" node-kind="tab" {
-  when exists="status.title"
-  when text-prefix="status.source_pane" prefix="terminal:"
-
-  field class="required" source="metadata-text" key="status.title"
-  field class="priority" source="metadata-text" key="status.detail" prefix=": "
+template "flotilla/issue/detail" slot="detail" node-kind="entity" {
+  field "label" class="required" key="display.label"
+  field "summary" class="priority" key="summary.text" priority=50
 }

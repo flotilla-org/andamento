@@ -715,6 +715,10 @@ pub struct ResolvedTemplateSlot {
     pub template_name: String,
     #[serde(default)]
     pub fields: Vec<ResolvedTemplateField>,
+    #[serde(default)]
+    pub effective_kdl: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolve_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

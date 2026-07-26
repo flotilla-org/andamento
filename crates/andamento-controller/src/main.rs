@@ -73,20 +73,37 @@ fn rail_ui_state_broadcast_message(state: &RailUiState) -> Option<MessageToPlugi
 /// composition, testable in seconds without zellij (andamento#37 postmortem).
 ///
 ///   cargo run -p andamento-controller -- <patches.jsonl> [grouping.kdl]
+///       [--dump-template <group-header|tab-title|tab-status|compact|detail>]
 #[cfg(not(target_family = "wasm"))]
 fn main() {
     let mut args = std::env::args().skip(1);
     let Some(patches_path) = args.next() else {
-        std::eprintln!("usage: render-harness <patches.jsonl> [grouping.kdl]");
+        std::eprintln!(
+            "usage: render-harness <patches.jsonl> [grouping.kdl] \
+             [--dump-template <slot>]"
+        );
         std::process::exit(2);
     };
-    let grouping_kdl = match args.next() {
+    let mut grouping_path = None;
+    let mut dump_template = None;
+    while let Some(argument) = args.next() {
+        if argument == "--dump-template" {
+            dump_template = Some(args.next().expect("--dump-template requires a slot"));
+        } else if grouping_path.replace(argument).is_some() {
+            panic!("only one grouping/template KDL path may be supplied");
+        }
+    }
+    let grouping_kdl = match grouping_path {
         Some(path) => std::fs::read_to_string(&path).expect("read grouping kdl"),
         None => include_str!("../../../templates/andamento-git.kdl").to_owned(),
     };
 
     let mut state = ControllerState::default();
-    state.set_template_catalog(None);
+    let templates = andamento_shared::template_config::parse_template_config_kdl(&grouping_kdl)
+        .expect("parse template kdl");
+    state.set_template_catalog(Some(
+        andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(templates),
+    ));
     let live = andamento_shared::grouping_config::parse_grouping_config_kdl(&grouping_kdl)
         .expect("parse grouping kdl");
     state.set_grouping_catalog(Some(
@@ -156,6 +173,9 @@ fn main() {
     }
 
     render_rail_lines(&model, &grouping_kdl);
+    if let Some(slot) = dump_template.as_deref() {
+        dump_effective_templates(&model, slot);
+    }
 }
 
 /// Render the derived rows through the real rail renderer — actual template
@@ -192,6 +212,69 @@ fn render_rail_lines(model: &andamento_shared::ControllerViewModel, config_kdl: 
     );
     for line in &rendered.lines {
         std::println!("{line}");
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn dump_effective_templates(model: &andamento_shared::ControllerViewModel, requested_slot: &str) {
+    use andamento_shared::{RailRow, ResolvedTemplateSlot};
+
+    fn print_dump(label: &str, slot: Option<&ResolvedTemplateSlot>) -> bool {
+        let Some(slot) = slot else {
+            return false;
+        };
+        std::println!("=== effective template: {label} ===");
+        if slot.effective_kdl.is_empty() {
+            std::println!("// resolved template: {}", slot.template_name);
+        } else {
+            std::print!("{}", slot.effective_kdl);
+        }
+        true
+    }
+
+    let mut dumped = false;
+    match requested_slot {
+        "group-header" => {
+            for row in &model.rows {
+                if let RailRow::GroupHeader {
+                    full_label,
+                    templates,
+                    ..
+                } = row
+                {
+                    dumped |= print_dump(full_label, templates.group_header.as_ref());
+                }
+            }
+        }
+        "compact" | "detail" => {
+            for row in &model.rows {
+                if let RailRow::Entity { entity, .. } = row {
+                    let slot = if requested_slot == "compact" {
+                        entity.templates.compact.as_ref()
+                    } else {
+                        entity.templates.detail.as_ref()
+                    };
+                    dumped |= print_dump(&entity.label, slot);
+                }
+            }
+        }
+        "tab-title" | "tab-status" => {
+            for tab in &model.tabs {
+                let slot = if requested_slot == "tab-title" {
+                    tab.templates.tab_title.as_ref()
+                } else {
+                    tab.templates.tab_status.as_ref()
+                };
+                dumped |= print_dump(&tab.name, slot);
+            }
+        }
+        other => {
+            std::eprintln!("unknown template slot: {other}");
+            return;
+        }
+    }
+    if !dumped {
+        std::eprintln!("no resolved {requested_slot} templates in the captured model");
     }
 }
 
@@ -2817,16 +2900,20 @@ mod tests {
         )));
     }
 
-    // The live andamento-git.kdl group-header template must stay scoped to
-    // repo-level groups: `when exists="vcs.repo"` also matched every group
-    // *under* the repo (facts inherit downward) and rendered convoy headers
-    // label-less. Native-only because it renders through andamento-rail.
+    // The live andamento-git.kdl declaration must stay scoped to the repo
+    // level. Inherited repository facts are also present below that level,
+    // but must not redirect convoy headers to the repo template.
+    // Native-only because it renders through andamento-rail.
     #[cfg(not(target_family = "wasm"))]
     #[test]
     fn git_group_header_template_stays_scoped_to_repo_level_groups() {
         let config_kdl = include_str!("../../../templates/andamento-git.kdl");
         let mut state = ControllerState::default();
-        state.set_template_catalog(None);
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
+                andamento_shared::template_config::parse_template_config_kdl(config_kdl).unwrap(),
+            ),
+        ));
         let live_grouping_config =
             andamento_shared::grouping_config::parse_grouping_config_kdl(config_kdl).unwrap();
         state.set_grouping_catalog(Some(
@@ -2903,8 +2990,9 @@ mod tests {
                 .lines
                 .iter()
                 .any(|line| line.contains("flotilla-org/andamento")),
-            "repo-level header should render the vcs.repo value: {:?}",
-            rendered.lines
+            "repo-level header should render the vcs.repo value; rows={:?}, lines={:?}",
+            model.rows,
+            rendered.lines,
         );
         // The convoy-level group header must keep its own label rather than
         // being captured label-less by the repo template.

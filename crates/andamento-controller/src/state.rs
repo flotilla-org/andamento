@@ -78,6 +78,9 @@ struct CatalogEntity {
     presence: PresenceClass,
     form: DisplayForm,
     visible_when: Option<String>,
+    template: Option<String>,
+    group_templates: BTreeMap<String, String>,
+    grouping_priority: i64,
     collapse_single_member: bool,
     show_empty: bool,
 }
@@ -1239,11 +1242,20 @@ impl ControllerState {
 
     fn display_entity(&self, entity: &CatalogEntity) -> DisplayEntity {
         let metadata = entity_facts(&entity.entity, &entity.values);
+        let mut compact_metadata = metadata.clone();
+        if entity.form == DisplayForm::Compact {
+            if let Some(template) = entity.template.as_ref() {
+                compact_metadata.insert(
+                    "presentation.template".to_owned(),
+                    MetadataValue::Text(template.clone()),
+                );
+            }
+        }
         let templates = ResolvedTemplateSlots {
             compact: self.resolve_template_slot(
                 andamento_shared::template_config::TemplateConfigSlot::Compact,
                 andamento_shared::template_config::TemplateConfigNodeKind::Entity,
-                &metadata,
+                &compact_metadata,
             ),
             detail: self.resolve_template_slot(
                 andamento_shared::template_config::TemplateConfigSlot::Detail,
@@ -1274,6 +1286,7 @@ impl ControllerState {
         rows: Vec<RailRow>,
         resolved_metadata: &[ResolvedMetadata],
     ) -> Vec<RailRow> {
+        let declared_templates = self.declared_group_templates();
         rows.into_iter()
             .map(|row| match row {
                 RailRow::GroupHeader {
@@ -1284,13 +1297,19 @@ impl ControllerState {
                     tab_count,
                     mut templates,
                 } => {
-                    let metadata = group_template_metadata(
+                    let mut metadata = group_template_metadata(
                         &path,
                         &label,
                         &full_label,
                         tab_count,
                         resolved_metadata,
                     );
+                    if let Some(template) = declared_templates.get(&path) {
+                        metadata.insert(
+                            "presentation.template".to_owned(),
+                            MetadataValue::Text(template.clone()),
+                        );
+                    }
                     templates.group_header = self.resolve_template_slot(
                         andamento_shared::template_config::TemplateConfigSlot::GroupHeader,
                         andamento_shared::template_config::TemplateConfigNodeKind::Group,
@@ -1426,7 +1445,18 @@ impl ControllerState {
                     .unwrap_or(PresenceClass::Hidden);
                 let form = mapping.map(|mapping| mapping.form).unwrap_or_default();
                 let visible_when = mapping.and_then(|mapping| mapping.visible_when.clone());
+                let template = mapping.and_then(|mapping| mapping.template.clone());
                 let level = &rule.levels[level_index];
+                let group_templates = rule
+                    .levels
+                    .iter()
+                    .filter_map(|level| {
+                        level
+                            .template
+                            .as_ref()
+                            .map(|template| (level.key.clone(), template.clone()))
+                    })
+                    .collect();
                 Some(CatalogEntity {
                     entity: entity.clone(),
                     values,
@@ -1435,6 +1465,9 @@ impl ControllerState {
                     presence,
                     form,
                     visible_when,
+                    template,
+                    group_templates,
+                    grouping_priority: rule.priority,
                     collapse_single_member: level.collapse_single_member,
                     show_empty: level.show_empty,
                 })
@@ -1446,6 +1479,82 @@ impl ControllerState {
                 .then_with(|| left.path.cmp(&right.path))
         });
         entities
+    }
+
+    fn declared_group_templates(&self) -> BTreeMap<GroupPath, String> {
+        let entities = self.catalog_entities();
+        let mut declarations: BTreeMap<GroupPath, (i64, String)> = BTreeMap::new();
+        for entity in &entities {
+            for depth in 1..=entity.path.0.len() {
+                let prefix = GroupPath(entity.path.0[..depth].to_vec());
+                let key = &entity.path.0[depth - 1].key;
+                if let Some(template) = entity.group_templates.get(key) {
+                    declarations
+                        .entry(prefix)
+                        .and_modify(|(priority, selected)| {
+                            if entity.grouping_priority > *priority {
+                                *priority = entity.grouping_priority;
+                                *selected = template.clone();
+                            }
+                        })
+                        .or_insert_with(|| (entity.grouping_priority, template.clone()));
+                }
+            }
+        }
+
+        let default_catalog = GroupingConfigCatalog::default();
+        let catalog = self.grouping_catalog.as_ref().unwrap_or(&default_catalog);
+        for tab in &self.tabs {
+            let metadata = self.tab_resolved_metadata_values(tab.tab_id);
+            let selected = if let Some(name) = self.active_grouping_template.as_deref() {
+                catalog.named(name).and_then(|rule| {
+                    self.tab_grouping_for_rule(rule, &metadata)
+                        .map(|path| (rule, path))
+                })
+            } else {
+                catalog.rules.iter().find_map(|rule| {
+                    self.tab_grouping_for_rule(rule, &metadata)
+                        .map(|path| (rule, path))
+                })
+            };
+            let Some((rule, grouping)) = selected else {
+                continue;
+            };
+            for depth in 1..=grouping.path.0.len() {
+                let prefix = GroupPath(grouping.path.0[..depth].to_vec());
+                let key = &grouping.path.0[depth - 1].key;
+                if let Some(template) = rule
+                    .levels
+                    .iter()
+                    .find(|level| &level.key == key)
+                    .and_then(|level| level.template.as_ref())
+                {
+                    declarations
+                        .entry(prefix)
+                        .and_modify(|(priority, selected)| {
+                            if rule.priority > *priority {
+                                *priority = rule.priority;
+                                *selected = template.clone();
+                            }
+                        })
+                        .or_insert_with(|| (rule.priority, template.clone()));
+                }
+            }
+        }
+
+        // A full-form presence declaration owns its exact surface and takes
+        // precedence over the grouping level's default for that same path.
+        for entity in entities {
+            if entity.form == DisplayForm::Full {
+                if let Some(template) = entity.template {
+                    declarations.insert(entity.path, (i64::MAX, template));
+                }
+            }
+        }
+        declarations
+            .into_iter()
+            .map(|(path, (_, template))| (path, template))
+            .collect()
     }
 
     fn materialized_action_targets(&self, entities: &[CatalogEntity]) -> BTreeSet<String> {
@@ -1729,14 +1838,24 @@ impl ControllerState {
             collapsible: true,
             active_tab_name: None,
         };
-        let resolved = catalog.resolve(context)?;
+        let resolved = match catalog.resolve(context) {
+            Ok(Some(resolved)) => resolved,
+            Ok(None) => return None,
+            Err(error) => {
+                return Some(ResolvedTemplateSlot {
+                    template_name: "<resolve-error>".to_owned(),
+                    fields: vec![],
+                    effective_kdl: format!("// error: {error}\n"),
+                    resolve_error: Some(error.to_string()),
+                });
+            }
+        };
         if resolved.is_bundled && slot.is_rail_local() {
             // These slots depend on rail-local state such as collapse and available width.
             // Leave bundled resolution to the rail; configured overrides remain resolved here.
             return None;
         }
         let fields = resolved
-            .template
             .render_fields(context)
             .into_iter()
             .map(|field| ResolvedTemplateField {
@@ -1749,9 +1868,11 @@ impl ControllerState {
                 source: field.source,
             })
             .collect::<Vec<_>>();
-        (!fields.is_empty()).then_some(ResolvedTemplateSlot {
-            template_name: resolved.template.name.clone(),
+        Some(ResolvedTemplateSlot {
+            template_name: resolved.name.clone(),
             fields,
+            effective_kdl: resolved.dump_kdl(),
+            resolve_error: None,
         })
     }
 
@@ -2468,6 +2589,17 @@ fn group_template_metadata(
         "group.tab_count".to_owned(),
         MetadataValue::Integer(tab_count as i64),
     );
+    if let Some(segment) = path.0.last() {
+        metadata.insert(
+            "group.key".to_owned(),
+            MetadataValue::Text(segment.key.clone()),
+        );
+        metadata.insert("group.value".to_owned(), segment.value.clone());
+        metadata.insert(
+            "group.segment.label".to_owned(),
+            MetadataValue::Text(group_segment_label(segment)),
+        );
+    }
     for segment in &path.0 {
         metadata.insert(segment.key.clone(), segment.value.clone());
     }
@@ -2749,6 +2881,7 @@ mod tests {
                             label_key: None,
                             collapse_single_member: false,
                             show_empty: false,
+                            template: None,
                         }],
                     },
                     GroupingRule {
@@ -2760,6 +2893,7 @@ mod tests {
                             class: PresenceClass::Section,
                             form: DisplayForm::Compact,
                             visible_when: None,
+                            template: None,
                         }],
                         levels: vec![GroupingLevel {
                             key: KEY_ENTITY_ID.to_owned(),
@@ -2767,6 +2901,7 @@ mod tests {
                             label_key: None,
                             collapse_single_member: false,
                             show_empty: false,
+                            template: None,
                         }],
                     },
                 ],
@@ -2946,6 +3081,216 @@ mod tests {
     }
 
     #[test]
+    fn presence_template_overrides_the_selected_form_without_leaking_to_detail() {
+        let mut state = directory_entity_state();
+        let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
+            r#"
+                grouping "issues" priority=100 {
+                  filter key="entity.kind"
+                  presence kind="issue" class="section" form="compact" template="issue/attention"
+                  level key="flotilla.project" optional=true
+                  level key="flotilla.issue"
+                }
+                "#,
+        )
+        .expect("grouping config");
+        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
+        let templates = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            template "issue/attention" slot="compact" node-kind="entity" {
+              field "label" source="literal" value="attention"
+            }
+            template "issue/detail" slot="detail" node-kind="entity" {
+              field "label" key="display.label"
+            }
+            "#,
+        )
+        .expect("template config");
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
+                templates,
+            ),
+        ));
+        apply_entity(
+            &mut state,
+            andamento_shared::EntityKind::Issue,
+            "github/flotilla-org/flotilla#1058",
+            1,
+            &[
+                ("flotilla.project", "dev"),
+                ("flotilla.issue", "github/flotilla-org/flotilla#1058"),
+                (KEY_DISPLAY_LABEL, "#1058 template binding"),
+            ],
+        );
+
+        let entity = state
+            .view_model()
+            .rows
+            .into_iter()
+            .find_map(|row| match row {
+                RailRow::Entity { entity, .. } => Some(entity),
+                _ => None,
+            })
+            .expect("compact issue entity");
+
+        assert_eq!(
+            entity
+                .templates
+                .compact
+                .as_ref()
+                .map(|slot| slot.template_name.as_str()),
+            Some("issue/attention")
+        );
+        assert_eq!(
+            entity
+                .templates
+                .detail
+                .as_ref()
+                .map(|slot| slot.template_name.as_str()),
+            Some("issue/detail")
+        );
+    }
+
+    #[test]
+    fn group_template_comes_from_the_rule_that_produced_the_path() {
+        let mut state = directory_entity_state();
+        let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
+            r#"
+            grouping "issues" priority=200 {
+              filter key="entity.kind" equals="issue"
+              level key="vcs.repo" template="wrong/full"
+              level key="flotilla.issue"
+            }
+            grouping "convoys" priority=100 {
+              filter key="entity.kind" equals="convoy"
+              presence kind="convoy" class="tab"
+              level key="vcs.repo" template="right/full"
+              level key="flotilla.convoy"
+            }
+            "#,
+        )
+        .expect("grouping config");
+        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
+        let templates = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            template "wrong/full" slot="group-header" node-kind="group" {
+              field "label" source="literal" value="wrong"
+            }
+            template "right/full" slot="group-header" node-kind="group" {
+              field "label" source="literal" value="right"
+            }
+            "#,
+        )
+        .expect("template config");
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(templates),
+        ));
+        apply_entity(
+            &mut state,
+            andamento_shared::EntityKind::Convoy,
+            "flotilla/review-regression@fleet",
+            1,
+            &[
+                ("vcs.repo", "flotilla-org/andamento"),
+                ("flotilla.convoy", "flotilla/review-regression@fleet"),
+                ("flotilla.convoy.name", "review-regression"),
+                (KEY_DISPLAY_LABEL, "review-regression"),
+            ],
+        );
+
+        let repo_template = state
+            .view_model()
+            .rows
+            .into_iter()
+            .find_map(|row| match row {
+                RailRow::GroupHeader {
+                    path, templates, ..
+                } if path.0.len() == 1 && path.0[0].key == "vcs.repo" => templates.group_header,
+                _ => None,
+            });
+
+        assert_eq!(
+            repo_template
+                .as_ref()
+                .map(|slot| slot.template_name.as_str()),
+            Some("right/full")
+        );
+    }
+
+    #[test]
+    fn colliding_group_paths_choose_the_higher_priority_rule_template() {
+        let mut state = directory_entity_state();
+        let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
+            r#"
+            grouping "issues" priority=200 {
+              filter key="entity.kind" equals="issue"
+              presence kind="issue" class="tab"
+              level key="vcs.repo" template="high/full"
+            }
+            grouping "convoys" priority=100 {
+              filter key="entity.kind" equals="convoy"
+              presence kind="convoy" class="tab"
+              level key="vcs.repo" template="low/full"
+            }
+            "#,
+        )
+        .expect("grouping config");
+        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
+        let templates = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            template "high/full" slot="group-header" node-kind="group" {
+              field "label" source="literal" value="high"
+            }
+            template "low/full" slot="group-header" node-kind="group" {
+              field "label" source="literal" value="low"
+            }
+            "#,
+        )
+        .expect("template config");
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(templates),
+        ));
+        apply_entity(
+            &mut state,
+            andamento_shared::EntityKind::Convoy,
+            "flotilla/low@fleet",
+            1,
+            &[
+                ("vcs.repo", "flotilla-org/andamento"),
+                (KEY_DISPLAY_LABEL, "low"),
+            ],
+        );
+        apply_entity(
+            &mut state,
+            andamento_shared::EntityKind::Issue,
+            "github/flotilla-org/andamento#41",
+            2,
+            &[
+                ("vcs.repo", "flotilla-org/andamento"),
+                (KEY_DISPLAY_LABEL, "high"),
+            ],
+        );
+
+        let repo_template = state
+            .view_model()
+            .rows
+            .into_iter()
+            .find_map(|row| match row {
+                RailRow::GroupHeader {
+                    path, templates, ..
+                } if path.0.len() == 1 && path.0[0].key == "vcs.repo" => templates.group_header,
+                _ => None,
+            });
+
+        assert_eq!(
+            repo_template
+                .as_ref()
+                .map(|slot| slot.template_name.as_str()),
+            Some("high/full")
+        );
+    }
+
+    #[test]
     fn visible_when_mismatches_are_reported_without_breaking_fallback_rendering() {
         let mut state = directory_entity_state();
         state.set_template_catalog(Some(
@@ -2953,6 +3298,7 @@ mod tests {
                 andamento_shared::template_config::ExternalTemplateConfig {
                     version: 1,
                     templates: vec![],
+                    fragments: vec![],
                     variables: vec![],
                 },
             ),
@@ -3091,6 +3437,7 @@ mod tests {
                         class: PresenceClass::Tab,
                         form: DisplayForm::Full,
                         visible_when: None,
+                        template: None,
                     }],
                     levels: vec![GroupingLevel {
                         key: "flotilla.convoy".to_owned(),
@@ -3098,6 +3445,7 @@ mod tests {
                         label_key: Some("flotilla.convoy.name".to_owned()),
                         collapse_single_member: false,
                         show_empty: false,
+                        template: None,
                     }],
                 }],
             },
@@ -3583,6 +3931,7 @@ mod tests {
                                     label_key: None,
                                     collapse_single_member: false,
                                     show_empty: false,
+                                    template: None,
                                 },
                                 andamento_shared::grouping_config::GroupingLevel {
                                     key: "git.repo".to_owned(),
@@ -3590,6 +3939,7 @@ mod tests {
                                     label_key: Some("repo.name".to_owned()),
                                     collapse_single_member: false,
                                     show_empty: false,
+                                    template: None,
                                 },
                                 andamento_shared::grouping_config::GroupingLevel {
                                     key: "git.branch".to_owned(),
@@ -3597,6 +3947,7 @@ mod tests {
                                     label_key: None,
                                     collapse_single_member: false,
                                     show_empty: false,
+                                    template: None,
                                 },
                             ],
                         },
@@ -3611,6 +3962,7 @@ mod tests {
                                 label_key: None,
                                 collapse_single_member: false,
                                 show_empty: false,
+                                template: None,
                             }],
                         },
                     ],
@@ -3712,6 +4064,7 @@ mod tests {
                             label_key: None,
                             collapse_single_member: false,
                             show_empty: false,
+                            template: None,
                         }],
                     }],
                 },
@@ -4005,10 +4358,9 @@ mod tests {
             andamento_shared::template_config::TemplateConfigCatalog::from_config(
                 andamento_shared::template_config::parse_template_config_kdl(
                     r#"
-                    template "git.group-header" slot="group-header" node-kind="group" {
-                      when exists="git.repo"
-                      field key="git.repo" priority=100
-                      field key="git.branch" priority=60
+                    template "group/full" slot="group-header" node-kind="group" {
+                      field "repo" key="git.repo" priority=100
+                      field "branch" key="git.branch" priority=60
                     }
                     "#,
                 )
@@ -4063,7 +4415,7 @@ mod tests {
             })
             .expect("group header template");
 
-        assert_eq!(group_slot.template_name, "git.group-header");
+        assert_eq!(group_slot.template_name, "group/full");
         assert_eq!(
             group_slot
                 .fields
@@ -4072,6 +4424,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("rjwittams/katzensteg", 100), ("main", 60)]
         );
+        assert!(group_slot
+            .effective_kdl
+            .contains("// origin: user (<memory>)"));
+        assert!(group_slot.effective_kdl.contains("template \"group/full\""));
     }
 
     #[test]
@@ -4097,6 +4453,7 @@ mod tests {
                                 label_key: None,
                                 collapse_single_member: false,
                                 show_empty: false,
+                                template: None,
                             },
                             andamento_shared::grouping_config::GroupingLevel {
                                 key: "git.branch".to_owned(),
@@ -4104,6 +4461,7 @@ mod tests {
                                 label_key: None,
                                 collapse_single_member: false,
                                 show_empty: false,
+                                template: None,
                             },
                         ],
                     }],
