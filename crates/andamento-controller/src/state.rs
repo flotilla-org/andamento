@@ -1726,9 +1726,22 @@ impl ControllerState {
             node_kind,
             metadata,
             collapsed: false,
+            collapsible: true,
             active_tab_name: None,
         };
         let resolved = catalog.resolve(context)?;
+        if resolved.is_bundled
+            && matches!(
+                slot,
+                andamento_shared::template_config::TemplateConfigSlot::GroupHeader
+                    | andamento_shared::template_config::TemplateConfigSlot::TabTitle
+                    | andamento_shared::template_config::TemplateConfigSlot::TabStatus
+            )
+        {
+            // These slots depend on rail-local state such as collapse and available width.
+            // Leave bundled resolution to the rail; configured overrides remain resolved here.
+            return None;
+        }
         let fields = resolved
             .template
             .render_fields(context)
@@ -2983,6 +2996,50 @@ mod tests {
             ),
         ));
         assert!(state.template_config_diagnostics().warnings.is_empty());
+    }
+
+    #[test]
+    fn bundled_rail_templates_stay_unresolved_until_the_rail_has_local_state() {
+        let mut state = ControllerState::default();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::default(),
+        ));
+
+        let group_metadata = BTreeMap::from([
+            (
+                "group.key".to_owned(),
+                MetadataValue::Text("vcs.repo".to_owned()),
+            ),
+            (
+                "vcs.repo".to_owned(),
+                MetadataValue::Text("flotilla-org/andamento".to_owned()),
+            ),
+        ]);
+        assert!(state
+            .resolve_template_slot(
+                andamento_shared::template_config::TemplateConfigSlot::GroupHeader,
+                andamento_shared::template_config::TemplateConfigNodeKind::Group,
+                &group_metadata,
+            )
+            .is_none());
+
+        let entity_metadata = BTreeMap::from([
+            (
+                "entity.kind".to_owned(),
+                MetadataValue::Text("issue".to_owned()),
+            ),
+            (
+                "display.label".to_owned(),
+                MetadataValue::Text("#1057 template KDL migration".to_owned()),
+            ),
+        ]);
+        assert!(state
+            .resolve_template_slot(
+                andamento_shared::template_config::TemplateConfigSlot::Compact,
+                andamento_shared::template_config::TemplateConfigNodeKind::Entity,
+                &entity_metadata,
+            )
+            .is_some());
     }
 
     #[test]

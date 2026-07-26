@@ -168,7 +168,7 @@ fn render_rail_lines(model: &andamento_shared::ControllerViewModel, config_kdl: 
         Ok(config) => Some(TemplateConfigCatalog::with_bundled_defaults(config)),
         Err(error) => {
             std::eprintln!(
-                "template config parse failed (rendering with builtins only): {error:?}"
+                "template config parse failed (rendering with bundled templates only): {error:?}"
             );
             None
         }

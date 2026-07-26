@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::OnceLock;
 
 use crate::inline_layout::{InlineHit, InlineItem, InlineRun};
 use andamento_shared::segment_bar::{self, SegmentItem};
@@ -671,8 +672,8 @@ fn group_metadata_block(group: &RenderGroup) -> Vec<String> {
         "group_header",
         group.templates.group_header.as_ref(),
         TemplateRenderContext {
-            slot: TemplateSlot::GroupHeader,
-            node_kind: RenderNodeKind::Group,
+            slot: TemplateConfigSlot::GroupHeader,
+            node_kind: TemplateConfigNodeKind::Group,
             metadata: &group.metadata,
             collapsed: group.collapsed,
             collapsible: true,
@@ -761,8 +762,8 @@ fn tab_metadata_block(tab: &RenderTab) -> Vec<String> {
         "tab_title",
         card.templates.tab_title.as_ref(),
         TemplateRenderContext {
-            slot: TemplateSlot::TabTitle,
-            node_kind: RenderNodeKind::Tab,
+            slot: TemplateConfigSlot::TabTitle,
+            node_kind: TemplateConfigNodeKind::Tab,
             metadata: &card.metadata,
             collapsed: false,
             collapsible: false,
@@ -776,8 +777,8 @@ fn tab_metadata_block(tab: &RenderTab) -> Vec<String> {
             "tab_status",
             card.templates.tab_status.as_ref(),
             TemplateRenderContext {
-                slot: TemplateSlot::TabStatus,
-                node_kind: RenderNodeKind::Tab,
+                slot: TemplateConfigSlot::TabStatus,
+                node_kind: TemplateConfigNodeKind::Tab,
                 metadata: &card.metadata,
                 collapsed: false,
                 collapsible: false,
@@ -1093,18 +1094,33 @@ fn template_diagnostic_row(
             String::new(),
         ]);
     }
-    if let Some(template) = matched_template(context) {
-        return Some(vec![
-            slot_name.to_owned(),
-            template.name.to_owned(),
-            String::new(),
-            template.sizing.as_text().to_owned(),
-            template.specificity().to_string(),
-            template.predicates_text(),
-            matched_template_candidates_text(context),
-        ]);
-    }
-    None
+    let resolved = bundled_template_catalog().resolve(template_match_context(context))?;
+    let predicates = if resolved.template.predicates.is_empty() {
+        "none".to_owned()
+    } else {
+        resolved
+            .template
+            .predicates
+            .iter()
+            .map(|predicate| predicate.as_text())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let candidates = resolved
+        .candidates
+        .iter()
+        .map(|candidate| format!("{}({})", candidate.name, candidate.specificity))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(vec![
+        slot_name.to_owned(),
+        resolved.template.name.clone(),
+        String::new(),
+        resolved.template.sizing.as_str().to_owned(),
+        resolved.specificity.to_string(),
+        predicates,
+        candidates,
+    ])
 }
 
 const TEMPLATE_TABLE_COLUMNS: &[TableColumn] = &[
@@ -3733,8 +3749,8 @@ fn status_template_fields_with_template_catalog(
     template_catalog: Option<&TemplateConfigCatalog>,
 ) -> Vec<TemplateField> {
     let context = TemplateRenderContext {
-        slot: TemplateSlot::TabStatus,
-        node_kind: RenderNodeKind::Tab,
+        slot: TemplateConfigSlot::TabStatus,
+        node_kind: TemplateConfigNodeKind::Tab,
         metadata,
         collapsed: false,
         collapsible: false,
@@ -3744,8 +3760,8 @@ fn status_template_fields_with_template_catalog(
         return fields;
     }
     template_fields_for(TemplateRenderContext {
-        slot: TemplateSlot::TabStatus,
-        node_kind: RenderNodeKind::Tab,
+        slot: TemplateConfigSlot::TabStatus,
+        node_kind: TemplateConfigNodeKind::Tab,
         metadata,
         collapsed: false,
         collapsible: false,
@@ -3818,8 +3834,8 @@ fn tab_title_template_fields_with_template_catalog(
     template_catalog: Option<&TemplateConfigCatalog>,
 ) -> Vec<TemplateField> {
     let context = TemplateRenderContext {
-        slot: TemplateSlot::TabTitle,
-        node_kind: RenderNodeKind::Tab,
+        slot: TemplateConfigSlot::TabTitle,
+        node_kind: TemplateConfigNodeKind::Tab,
         metadata,
         collapsed: false,
         collapsible: false,
@@ -3829,8 +3845,8 @@ fn tab_title_template_fields_with_template_catalog(
         return fields;
     }
     template_fields_for(TemplateRenderContext {
-        slot: TemplateSlot::TabTitle,
-        node_kind: RenderNodeKind::Tab,
+        slot: TemplateConfigSlot::TabTitle,
+        node_kind: TemplateConfigNodeKind::Tab,
         metadata,
         collapsed: false,
         collapsible: false,
@@ -4451,13 +4467,15 @@ fn group_header_line(
                 GroupHeaderTextStyle::Themed,
             )
         }
-        Some(_) if unknown_grouping_key(metadata) => resolve_group_header_template_fields(
-            metadata,
-            collapsed,
-            collapsible,
-            active_tab_name,
-            None,
-        ),
+        Some(_) if uses_bundled_group_header_fallback(metadata) => {
+            resolve_group_header_template_fields(
+                metadata,
+                collapsed,
+                collapsible,
+                active_tab_name,
+                None,
+            )
+        }
         Some(_) => (
             group_identity_fallback_fields(metadata, collapsed, collapsible),
             GroupHeaderTextStyle::Plain,
@@ -4798,449 +4816,24 @@ enum TemplateField {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TemplateFieldClass {
-    Required,
-    Optional,
-    Priority,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TemplateFieldCondition {
-    Always,
-    Collapsed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TemplateValueSource {
-    Literal(&'static str),
-    MetadataText(&'static str),
-    MetadataTextBasename(&'static str),
-    MetadataDisplay(&'static str),
-    TabNumberFromPosition,
-    ActiveTabName,
-    CollapsedToggle {
-        collapsed: &'static str,
-        expanded: &'static str,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TemplateFieldSpec {
-    class: TemplateFieldClass,
-    sources: &'static [TemplateValueSource],
-    prefix: &'static str,
-    suffix: &'static str,
-    condition: TemplateFieldCondition,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TemplateSizingHint {
-    Auto,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RenderNodeKind {
-    Group,
-    Tab,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TemplateSlot {
-    GroupHeader,
-    TabTitle,
-    TabStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GroupHeaderTextStyle {
     Themed,
     Plain,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MetadataPredicate {
-    Exists(&'static str),
-    TextEquals {
-        key: &'static str,
-        value: &'static str,
-    },
-    TextOneOf {
-        key: &'static str,
-        values: &'static [&'static str],
-    },
-    TextPrefix {
-        key: &'static str,
-        prefix: &'static str,
-    },
-}
-
-#[derive(Debug, Clone, Copy)]
-struct TemplateDefinition<'a> {
-    name: &'static str,
-    slot: TemplateSlot,
-    node_kind: RenderNodeKind,
-    predicates: &'a [MetadataPredicate],
-    fields: &'a [TemplateFieldSpec],
-    sizing: TemplateSizingHint,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct TemplateRenderContext<'a> {
-    slot: TemplateSlot,
-    node_kind: RenderNodeKind,
+    slot: TemplateConfigSlot,
+    node_kind: TemplateConfigNodeKind,
     metadata: &'a RenderMetadata,
     collapsed: bool,
     collapsible: bool,
     active_tab_name: Option<&'a str>,
 }
 
-const STATUS_TEMPLATE_PREDICATES: &[MetadataPredicate] =
-    &[MetadataPredicate::Exists("status.title")];
-const WAITING_STATUS_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
-    MetadataPredicate::Exists("status.title"),
-    MetadataPredicate::TextEquals {
-        key: "status.priority",
-        value: "waiting",
-    },
-];
-const TERMINAL_STATUS_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
-    MetadataPredicate::Exists("status.title"),
-    MetadataPredicate::TextPrefix {
-        key: "status.source_pane",
-        prefix: "terminal:",
-    },
-];
-const RECOGNIZED_GROUPING_KEYS: &[&str] = &[
-    "andamento.project",
-    "branch",
-    "flotilla.checkout",
-    "flotilla.convoy",
-    "flotilla.independent",
-    "flotilla.issue",
-    "flotilla.project",
-    "flotilla.vessel",
-    "git.branch",
-    "git.repo",
-    "project",
-    "repo",
-    "vcs.repo",
-    "worktree",
-    "zellij.pane.cwd",
-];
-const RECOGNIZED_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] =
-    &[MetadataPredicate::TextOneOf {
-        key: "group.key",
-        values: RECOGNIZED_GROUPING_KEYS,
-    }];
-// The existence check makes this template more specific than the generic recognized-key template.
-const VCS_REPO_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
-    MetadataPredicate::TextEquals {
-        key: "group.key",
-        value: "vcs.repo",
-    },
-    MetadataPredicate::Exists("vcs.repo"),
-];
-const FLOTILLA_PROJECT_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
-    MetadataPredicate::TextEquals {
-        key: "group.key",
-        value: "flotilla.project",
-    },
-    MetadataPredicate::Exists("flotilla.project"),
-];
-const FLOTILLA_CONVOY_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
-    MetadataPredicate::TextEquals {
-        key: "group.key",
-        value: "flotilla.convoy",
-    },
-    MetadataPredicate::Exists("flotilla.convoy"),
-];
-const FLOTILLA_VESSEL_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
-    MetadataPredicate::TextEquals {
-        key: "group.key",
-        value: "flotilla.vessel",
-    },
-    MetadataPredicate::Exists("flotilla.vessel"),
-];
-const FLOTILLA_INDEPENDENT_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
-    MetadataPredicate::TextEquals {
-        key: "group.key",
-        value: "flotilla.independent",
-    },
-    MetadataPredicate::Exists("flotilla.independent"),
-];
-const FLOTILLA_SESSION_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
-    MetadataPredicate::TextEquals {
-        key: "group.key",
-        value: "flotilla.session",
-    },
-    MetadataPredicate::Exists("flotilla.session"),
-];
-const FLOTILLA_CHECKOUT_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
-    MetadataPredicate::TextEquals {
-        key: "group.key",
-        value: "flotilla.checkout",
-    },
-    MetadataPredicate::Exists("flotilla.checkout"),
-];
-const FLOTILLA_ISSUE_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] = &[
-    MetadataPredicate::TextEquals {
-        key: "group.key",
-        value: "flotilla.issue",
-    },
-    MetadataPredicate::Exists("flotilla.issue"),
-];
-const FALLBACK_GROUP_HEADER_TEMPLATE_PREDICATES: &[MetadataPredicate] =
-    &[MetadataPredicate::Exists("group.key")];
-const GROUP_HEADER_TOGGLE_FIELD: TemplateFieldSpec = TemplateFieldSpec {
-    class: TemplateFieldClass::Required,
-    sources: &[TemplateValueSource::CollapsedToggle {
-        collapsed: "▶",
-        expanded: "▼",
-    }],
-    prefix: "",
-    suffix: "",
-    condition: TemplateFieldCondition::Always,
-};
-const GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
-    GROUP_HEADER_TOGGLE_FIELD,
-    TemplateFieldSpec {
-        class: TemplateFieldClass::Required,
-        sources: &[
-            TemplateValueSource::MetadataText("group.label"),
-            TemplateValueSource::Literal("group"),
-        ],
-        prefix: "",
-        suffix: "",
-        condition: TemplateFieldCondition::Always,
-    },
-    TemplateFieldSpec {
-        class: TemplateFieldClass::Optional,
-        sources: &[TemplateValueSource::MetadataDisplay("group.tab_count")],
-        prefix: "(",
-        suffix: ")",
-        condition: TemplateFieldCondition::Always,
-    },
-    TemplateFieldSpec {
-        class: TemplateFieldClass::Priority,
-        sources: &[TemplateValueSource::ActiveTabName],
-        prefix: ": ",
-        suffix: "",
-        condition: TemplateFieldCondition::Collapsed,
-    },
-];
-const VCS_REPO_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
-    GROUP_HEADER_TOGGLE_FIELD,
-    TemplateFieldSpec {
-        class: TemplateFieldClass::Required,
-        sources: &[
-            TemplateValueSource::MetadataText("group.segment.label"),
-            TemplateValueSource::MetadataTextBasename("group.value"),
-            TemplateValueSource::MetadataText("group.label"),
-        ],
-        prefix: "",
-        suffix: "",
-        condition: TemplateFieldCondition::Always,
-    },
-];
-const FLOTILLA_PROJECT_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
-    GROUP_HEADER_TOGGLE_FIELD,
-    TemplateFieldSpec {
-        class: TemplateFieldClass::Required,
-        sources: &[
-            TemplateValueSource::MetadataText("group.segment.label"),
-            TemplateValueSource::MetadataText("group.value"),
-            TemplateValueSource::MetadataText("group.label"),
-        ],
-        prefix: "",
-        suffix: "",
-        condition: TemplateFieldCondition::Always,
-    },
-];
-const FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
-    GROUP_HEADER_TOGGLE_FIELD,
-    TemplateFieldSpec {
-        class: TemplateFieldClass::Required,
-        sources: &[
-            TemplateValueSource::MetadataText("group.segment.label"),
-            TemplateValueSource::MetadataTextBasename("group.value"),
-            TemplateValueSource::MetadataText("group.label"),
-        ],
-        prefix: "",
-        suffix: "",
-        condition: TemplateFieldCondition::Always,
-    },
-];
-const FALLBACK_GROUP_HEADER_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
-    GROUP_HEADER_TOGGLE_FIELD,
-    TemplateFieldSpec {
-        class: TemplateFieldClass::Required,
-        sources: &[TemplateValueSource::MetadataText("group.key")],
-        prefix: "",
-        suffix: ":",
-        condition: TemplateFieldCondition::Always,
-    },
-    TemplateFieldSpec {
-        class: TemplateFieldClass::Required,
-        sources: &[TemplateValueSource::MetadataDisplay("group.value")],
-        prefix: "",
-        suffix: " (group)",
-        condition: TemplateFieldCondition::Always,
-    },
-];
-const TAB_TITLE_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
-    class: TemplateFieldClass::Required,
-    sources: &[
-        TemplateValueSource::MetadataText("zellij.tab.name"),
-        TemplateValueSource::TabNumberFromPosition,
-        TemplateValueSource::Literal("Tab"),
-    ],
-    prefix: "",
-    suffix: "",
-    condition: TemplateFieldCondition::Always,
-}];
-const STATUS_TEMPLATE_FIELDS: &[TemplateFieldSpec] = &[
-    TemplateFieldSpec {
-        class: TemplateFieldClass::Required,
-        sources: &[TemplateValueSource::MetadataText("status.title")],
-        prefix: "",
-        suffix: "",
-        condition: TemplateFieldCondition::Always,
-    },
-    TemplateFieldSpec {
-        class: TemplateFieldClass::Priority,
-        sources: &[TemplateValueSource::MetadataText("status.detail")],
-        prefix: ": ",
-        suffix: "",
-        condition: TemplateFieldCondition::Always,
-    },
-];
-
-const BUILTIN_TEMPLATES: &[TemplateDefinition<'static>] = &[
-    TemplateDefinition {
-        name: "builtin.group-header.vcs-repo",
-        slot: TemplateSlot::GroupHeader,
-        node_kind: RenderNodeKind::Group,
-        predicates: VCS_REPO_GROUP_HEADER_TEMPLATE_PREDICATES,
-        fields: VCS_REPO_GROUP_HEADER_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.group-header.flotilla-project",
-        slot: TemplateSlot::GroupHeader,
-        node_kind: RenderNodeKind::Group,
-        predicates: FLOTILLA_PROJECT_GROUP_HEADER_TEMPLATE_PREDICATES,
-        fields: FLOTILLA_PROJECT_GROUP_HEADER_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.group-header.flotilla-convoy",
-        slot: TemplateSlot::GroupHeader,
-        node_kind: RenderNodeKind::Group,
-        predicates: FLOTILLA_CONVOY_GROUP_HEADER_TEMPLATE_PREDICATES,
-        fields: FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.group-header.flotilla-vessel",
-        slot: TemplateSlot::GroupHeader,
-        node_kind: RenderNodeKind::Group,
-        predicates: FLOTILLA_VESSEL_GROUP_HEADER_TEMPLATE_PREDICATES,
-        fields: FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.group-header.flotilla-independent",
-        slot: TemplateSlot::GroupHeader,
-        node_kind: RenderNodeKind::Group,
-        predicates: FLOTILLA_INDEPENDENT_GROUP_HEADER_TEMPLATE_PREDICATES,
-        fields: FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.group-header.flotilla-session",
-        slot: TemplateSlot::GroupHeader,
-        node_kind: RenderNodeKind::Group,
-        predicates: FLOTILLA_SESSION_GROUP_HEADER_TEMPLATE_PREDICATES,
-        fields: FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.group-header.flotilla-checkout",
-        slot: TemplateSlot::GroupHeader,
-        node_kind: RenderNodeKind::Group,
-        predicates: FLOTILLA_CHECKOUT_GROUP_HEADER_TEMPLATE_PREDICATES,
-        fields: FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.group-header.flotilla-issue",
-        slot: TemplateSlot::GroupHeader,
-        node_kind: RenderNodeKind::Group,
-        predicates: FLOTILLA_ISSUE_GROUP_HEADER_TEMPLATE_PREDICATES,
-        fields: FLOTILLA_LABELED_GROUP_HEADER_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.group-header",
-        slot: TemplateSlot::GroupHeader,
-        node_kind: RenderNodeKind::Group,
-        predicates: RECOGNIZED_GROUP_HEADER_TEMPLATE_PREDICATES,
-        fields: GROUP_HEADER_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.group-header.fallback",
-        slot: TemplateSlot::GroupHeader,
-        node_kind: RenderNodeKind::Group,
-        predicates: FALLBACK_GROUP_HEADER_TEMPLATE_PREDICATES,
-        fields: FALLBACK_GROUP_HEADER_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.group-header.legacy",
-        slot: TemplateSlot::GroupHeader,
-        node_kind: RenderNodeKind::Group,
-        predicates: &[],
-        fields: GROUP_HEADER_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.tab-title",
-        slot: TemplateSlot::TabTitle,
-        node_kind: RenderNodeKind::Tab,
-        predicates: &[],
-        fields: TAB_TITLE_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.tab-status",
-        slot: TemplateSlot::TabStatus,
-        node_kind: RenderNodeKind::Tab,
-        predicates: STATUS_TEMPLATE_PREDICATES,
-        fields: STATUS_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.tab-status.waiting",
-        slot: TemplateSlot::TabStatus,
-        node_kind: RenderNodeKind::Tab,
-        predicates: WAITING_STATUS_TEMPLATE_PREDICATES,
-        fields: STATUS_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-    TemplateDefinition {
-        name: "builtin.tab-status.terminal-source",
-        slot: TemplateSlot::TabStatus,
-        node_kind: RenderNodeKind::Tab,
-        predicates: TERMINAL_STATUS_TEMPLATE_PREDICATES,
-        fields: STATUS_TEMPLATE_FIELDS,
-        sizing: TemplateSizingHint::Auto,
-    },
-];
-
 fn template_fields_for(context: TemplateRenderContext<'_>) -> Vec<TemplateField> {
-    resolve_template(BUILTIN_TEMPLATES, &context)
-        .map(|template| template.build_fields(&context))
+    resolved_render_template(None, context)
+        .map(|template| template.fields)
         .unwrap_or_default()
 }
 
@@ -5248,18 +4841,63 @@ fn external_template_fields(
     catalog: Option<&TemplateConfigCatalog>,
     context: TemplateRenderContext<'_>,
 ) -> Option<Vec<TemplateField>> {
-    let catalog = catalog?;
-    let context = TemplateConfigMatchContext {
-        slot: template_config_slot(context.slot),
-        node_kind: template_config_node_kind(context.node_kind),
+    resolved_render_template(catalog, context).map(|template| template.fields)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedRenderTemplate {
+    name: String,
+    fields: Vec<TemplateField>,
+}
+
+fn bundled_template_catalog() -> &'static TemplateConfigCatalog {
+    static CATALOG: OnceLock<TemplateConfigCatalog> = OnceLock::new();
+    CATALOG.get_or_init(TemplateConfigCatalog::default)
+}
+
+fn template_match_context<'a>(
+    context: TemplateRenderContext<'a>,
+) -> TemplateConfigMatchContext<'a> {
+    TemplateConfigMatchContext {
+        slot: context.slot,
+        node_kind: context.node_kind,
         metadata: context.metadata,
         collapsed: context.collapsed,
+        collapsible: true,
         active_tab_name: context.active_tab_name,
+    }
+}
+
+fn resolved_render_template(
+    catalog: Option<&TemplateConfigCatalog>,
+    context: TemplateRenderContext<'_>,
+) -> Option<ResolvedRenderTemplate> {
+    if let Some(template) =
+        catalog.and_then(|catalog| render_template_from_catalog(catalog, context))
+    {
+        return Some(template);
+    }
+    render_template_from_catalog(bundled_template_catalog(), context)
+}
+
+fn render_template_from_catalog(
+    catalog: &TemplateConfigCatalog,
+    context: TemplateRenderContext<'_>,
+) -> Option<ResolvedRenderTemplate> {
+    let match_context = template_match_context(context);
+    let resolved = catalog.resolve(match_context)?;
+    let render_context = if resolved.is_bundled {
+        TemplateConfigMatchContext {
+            collapsed: context.collapsed && context.collapsible,
+            collapsible: context.collapsible,
+            ..match_context
+        }
+    } else {
+        match_context
     };
-    let resolved = catalog.resolve(context)?;
     let fields = resolved
         .template
-        .render_fields(context)
+        .render_fields(render_context)
         .into_iter()
         .map(|field| match field.class {
             _ if field.priority.is_some() => TemplateField::Prioritized {
@@ -5272,222 +4910,10 @@ fn external_template_fields(
             TemplateConfigFieldClass::Priority => TemplateField::Priority(field.value),
         })
         .collect::<Vec<_>>();
-    (!fields.is_empty()).then_some(fields)
-}
-
-fn template_config_slot(slot: TemplateSlot) -> TemplateConfigSlot {
-    match slot {
-        TemplateSlot::GroupHeader => TemplateConfigSlot::GroupHeader,
-        TemplateSlot::TabTitle => TemplateConfigSlot::TabTitle,
-        TemplateSlot::TabStatus => TemplateConfigSlot::TabStatus,
-    }
-}
-
-fn template_config_node_kind(node_kind: RenderNodeKind) -> TemplateConfigNodeKind {
-    match node_kind {
-        RenderNodeKind::Group => TemplateConfigNodeKind::Group,
-        RenderNodeKind::Tab => TemplateConfigNodeKind::Tab,
-    }
-}
-
-fn matched_template(
-    context: TemplateRenderContext<'_>,
-) -> Option<&'static TemplateDefinition<'static>> {
-    resolve_template(BUILTIN_TEMPLATES, &context)
-}
-
-fn matched_template_candidates_text(context: TemplateRenderContext<'_>) -> String {
-    let candidates = matching_templates(BUILTIN_TEMPLATES, &context)
-        .into_iter()
-        .map(|template| format!("{}({})", template.name, template.specificity()))
-        .collect::<Vec<_>>();
-    if candidates.is_empty() {
-        "none".to_owned()
-    } else {
-        candidates.join(", ")
-    }
-}
-
-fn resolve_template<'a>(
-    templates: &'a [TemplateDefinition<'a>],
-    context: &TemplateRenderContext<'_>,
-) -> Option<&'a TemplateDefinition<'a>> {
-    let mut best: Option<(&TemplateDefinition<'a>, usize)> = None;
-    for template in templates {
-        if !template.matches(context) {
-            continue;
-        }
-        let specificity = template.specificity();
-        if best.is_none_or(|(_, best_specificity)| specificity > best_specificity) {
-            best = Some((template, specificity));
-        }
-    }
-    best.map(|(template, _)| template)
-}
-
-fn matching_templates<'a>(
-    templates: &'a [TemplateDefinition<'a>],
-    context: &TemplateRenderContext<'_>,
-) -> Vec<&'a TemplateDefinition<'a>> {
-    templates
-        .iter()
-        .filter(|template| template.matches(context))
-        .collect()
-}
-
-impl TemplateDefinition<'_> {
-    fn build_fields(&self, context: &TemplateRenderContext<'_>) -> Vec<TemplateField> {
-        self.fields
-            .iter()
-            .filter_map(|field| field.render(context))
-            .collect()
-    }
-
-    fn matches(&self, context: &TemplateRenderContext<'_>) -> bool {
-        self.slot == context.slot
-            && self.node_kind == context.node_kind
-            && self
-                .predicates
-                .iter()
-                .all(|predicate| predicate.matches(context.metadata))
-    }
-
-    fn specificity(&self) -> usize {
-        self.predicates
-            .iter()
-            .map(MetadataPredicate::specificity)
-            .sum()
-    }
-
-    fn predicates_text(&self) -> String {
-        if self.predicates.is_empty() {
-            return "none".to_owned();
-        }
-        self.predicates
-            .iter()
-            .map(MetadataPredicate::as_text)
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-}
-
-impl TemplateFieldSpec {
-    fn render(&self, context: &TemplateRenderContext<'_>) -> Option<TemplateField> {
-        if !self.condition.matches(context) {
-            return None;
-        }
-        let value = self
-            .sources
-            .iter()
-            .find_map(|source| source.resolve(context))?;
-        let value = format!("{}{}{}", self.prefix, value, self.suffix);
-        Some(self.class.field(value))
-    }
-}
-
-impl TemplateFieldCondition {
-    fn matches(&self, context: &TemplateRenderContext<'_>) -> bool {
-        match self {
-            TemplateFieldCondition::Always => true,
-            TemplateFieldCondition::Collapsed => context.collapsed && context.collapsible,
-        }
-    }
-}
-
-impl TemplateValueSource {
-    fn resolve(&self, context: &TemplateRenderContext<'_>) -> Option<String> {
-        let value = match self {
-            TemplateValueSource::Literal(value) => (*value).to_owned(),
-            TemplateValueSource::MetadataText(key) => {
-                metadata_text(context.metadata, key)?.to_owned()
-            }
-            TemplateValueSource::MetadataTextBasename(key) => metadata_text(context.metadata, key)?
-                .trim_end_matches('/')
-                .rsplit('/')
-                .next()?
-                .to_owned(),
-            TemplateValueSource::MetadataDisplay(key) => {
-                metadata_display_value(context.metadata, key)?
-            }
-            TemplateValueSource::TabNumberFromPosition => {
-                let MetadataValue::Integer(position) =
-                    context.metadata.get("zellij.tab.position")?
-                else {
-                    return None;
-                };
-                format!("Tab {}", position + 1)
-            }
-            TemplateValueSource::ActiveTabName => context.active_tab_name?.to_owned(),
-            TemplateValueSource::CollapsedToggle {
-                collapsed,
-                expanded,
-            } => {
-                if !context.collapsible {
-                    return None;
-                }
-                if context.collapsed {
-                    (*collapsed).to_owned()
-                } else {
-                    (*expanded).to_owned()
-                }
-            }
-        };
-        (!value.is_empty()).then_some(value)
-    }
-}
-
-impl TemplateFieldClass {
-    fn field(&self, value: String) -> TemplateField {
-        match self {
-            TemplateFieldClass::Required => TemplateField::Required(value),
-            TemplateFieldClass::Optional => TemplateField::Optional(value),
-            TemplateFieldClass::Priority => TemplateField::Priority(value),
-        }
-    }
-}
-
-impl TemplateSizingHint {
-    fn as_text(&self) -> &'static str {
-        match self {
-            TemplateSizingHint::Auto => "auto",
-        }
-    }
-}
-
-impl MetadataPredicate {
-    fn matches(&self, metadata: &RenderMetadata) -> bool {
-        match self {
-            MetadataPredicate::Exists(key) => metadata.contains_key(*key),
-            MetadataPredicate::TextEquals { key, value } => {
-                metadata_text(metadata, key) == Some(*value)
-            }
-            MetadataPredicate::TextOneOf { key, values } => {
-                metadata_text(metadata, key).is_some_and(|value| values.contains(&value))
-            }
-            MetadataPredicate::TextPrefix { key, prefix } => {
-                metadata_text(metadata, key).is_some_and(|value| value.starts_with(prefix))
-            }
-        }
-    }
-
-    fn specificity(&self) -> usize {
-        match self {
-            MetadataPredicate::Exists(_) => 1,
-            MetadataPredicate::TextPrefix { .. } => 2,
-            MetadataPredicate::TextEquals { .. } | MetadataPredicate::TextOneOf { .. } => 3,
-        }
-    }
-
-    fn as_text(&self) -> String {
-        match self {
-            MetadataPredicate::Exists(key) => format!("exists({key})"),
-            MetadataPredicate::TextEquals { key, value } => format!("{key} == {value}"),
-            MetadataPredicate::TextOneOf { key, values } => {
-                format!("{key} in [{}]", values.join(", "))
-            }
-            MetadataPredicate::TextPrefix { key, prefix } => format!("{key} starts_with {prefix}"),
-        }
-    }
+    (!fields.is_empty()).then(|| ResolvedRenderTemplate {
+        name: resolved.template.name.clone(),
+        fields,
+    })
 }
 
 #[cfg(test)]
@@ -5531,29 +4957,36 @@ fn resolve_group_header_template_fields(
     template_catalog: Option<&TemplateConfigCatalog>,
 ) -> (Vec<TemplateField>, GroupHeaderTextStyle) {
     let context = TemplateRenderContext {
-        slot: TemplateSlot::GroupHeader,
-        node_kind: RenderNodeKind::Group,
+        slot: TemplateConfigSlot::GroupHeader,
+        node_kind: TemplateConfigNodeKind::Group,
         metadata,
         collapsed,
         collapsible,
         active_tab_name,
     };
-    if let Some(fields) = external_template_fields(template_catalog, context) {
-        return (fields, GroupHeaderTextStyle::Themed);
-    }
-    let Some(template) = resolve_template(BUILTIN_TEMPLATES, &context) else {
+    let Some(template) = resolved_render_template(template_catalog, context) else {
         return (vec![], GroupHeaderTextStyle::Plain);
     };
-    let text_style = if unknown_grouping_key(metadata) {
+    let text_style = if template.name == "flotilla/group-header/fallback" {
         GroupHeaderTextStyle::Plain
     } else {
         GroupHeaderTextStyle::Themed
     };
-    (template.build_fields(&context), text_style)
+    (template.fields, text_style)
 }
 
-fn unknown_grouping_key(metadata: &RenderMetadata) -> bool {
-    metadata_text(metadata, "group.key").is_some_and(|key| !RECOGNIZED_GROUPING_KEYS.contains(&key))
+fn uses_bundled_group_header_fallback(metadata: &RenderMetadata) -> bool {
+    let context = TemplateRenderContext {
+        slot: TemplateConfigSlot::GroupHeader,
+        node_kind: TemplateConfigNodeKind::Group,
+        metadata,
+        collapsed: false,
+        collapsible: true,
+        active_tab_name: None,
+    };
+    bundled_template_catalog()
+        .resolve(template_match_context(context))
+        .is_some_and(|resolved| resolved.template.name == "flotilla/group-header/fallback")
 }
 
 fn group_header_toggle_field(collapsed: bool, collapsible: bool) -> Option<TemplateField> {
@@ -7920,161 +7353,7 @@ mod tests {
     }
 
     #[test]
-    fn template_matcher_prefers_more_specific_metadata_match() {
-        const GENERIC_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
-            class: TemplateFieldClass::Required,
-            sources: &[TemplateValueSource::Literal("generic")],
-            prefix: "",
-            suffix: "",
-            condition: TemplateFieldCondition::Always,
-        }];
-        const SPECIFIC_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
-            class: TemplateFieldClass::Required,
-            sources: &[TemplateValueSource::Literal("specific")],
-            prefix: "",
-            suffix: "",
-            condition: TemplateFieldCondition::Always,
-        }];
-        let templates = [
-            TemplateDefinition {
-                name: "test.generic",
-                slot: TemplateSlot::TabStatus,
-                node_kind: RenderNodeKind::Tab,
-                predicates: &[],
-                fields: GENERIC_FIELDS,
-                sizing: TemplateSizingHint::Auto,
-            },
-            TemplateDefinition {
-                name: "test.specific",
-                slot: TemplateSlot::TabStatus,
-                node_kind: RenderNodeKind::Tab,
-                predicates: &[MetadataPredicate::TextEquals {
-                    key: "status.priority",
-                    value: "waiting",
-                }],
-                fields: SPECIFIC_FIELDS,
-                sizing: TemplateSizingHint::Auto,
-            },
-        ];
-        let mut metadata = RenderMetadata::new();
-        metadata.insert(
-            "status.priority".to_owned(),
-            MetadataValue::Text("waiting".to_owned()),
-        );
-        let context = TemplateRenderContext {
-            slot: TemplateSlot::TabStatus,
-            node_kind: RenderNodeKind::Tab,
-            metadata: &metadata,
-            collapsed: false,
-            collapsible: false,
-            active_tab_name: None,
-        };
-
-        let template = resolve_template(&templates, &context).expect("matching template");
-
-        assert_eq!(
-            template.build_fields(&context),
-            vec![TemplateField::Required("specific".to_owned())]
-        );
-    }
-
-    #[test]
-    fn template_matcher_supports_text_prefix_predicates() {
-        const GENERIC_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
-            class: TemplateFieldClass::Required,
-            sources: &[TemplateValueSource::Literal("generic")],
-            prefix: "",
-            suffix: "",
-            condition: TemplateFieldCondition::Always,
-        }];
-        const SPECIFIC_FIELDS: &[TemplateFieldSpec] = &[TemplateFieldSpec {
-            class: TemplateFieldClass::Required,
-            sources: &[TemplateValueSource::Literal("specific")],
-            prefix: "",
-            suffix: "",
-            condition: TemplateFieldCondition::Always,
-        }];
-        let templates = [
-            TemplateDefinition {
-                name: "test.generic",
-                slot: TemplateSlot::TabStatus,
-                node_kind: RenderNodeKind::Tab,
-                predicates: &[],
-                fields: GENERIC_FIELDS,
-                sizing: TemplateSizingHint::Auto,
-            },
-            TemplateDefinition {
-                name: "test.specific",
-                slot: TemplateSlot::TabStatus,
-                node_kind: RenderNodeKind::Tab,
-                predicates: &[MetadataPredicate::TextPrefix {
-                    key: "status.source_pane",
-                    prefix: "terminal:",
-                }],
-                fields: SPECIFIC_FIELDS,
-                sizing: TemplateSizingHint::Auto,
-            },
-        ];
-        let mut metadata = RenderMetadata::new();
-        metadata.insert(
-            "status.source_pane".to_owned(),
-            MetadataValue::Text("terminal:42".to_owned()),
-        );
-        let context = TemplateRenderContext {
-            slot: TemplateSlot::TabStatus,
-            node_kind: RenderNodeKind::Tab,
-            metadata: &metadata,
-            collapsed: false,
-            collapsible: false,
-            active_tab_name: None,
-        };
-
-        let template = resolve_template(&templates, &context).expect("matching template");
-
-        assert_eq!(
-            template.build_fields(&context),
-            vec![TemplateField::Required("specific".to_owned())]
-        );
-    }
-
-    #[test]
-    fn template_field_specs_coalesce_sources_and_apply_wrappers() {
-        let mut metadata = RenderMetadata::new();
-        metadata.insert("zellij.tab.position".to_owned(), MetadataValue::Integer(6));
-        let context = TemplateRenderContext {
-            slot: TemplateSlot::TabTitle,
-            node_kind: RenderNodeKind::Tab,
-            metadata: &metadata,
-            collapsed: false,
-            collapsible: false,
-            active_tab_name: None,
-        };
-        let spec = TemplateFieldSpec {
-            class: TemplateFieldClass::Optional,
-            sources: &[
-                TemplateValueSource::MetadataText("zellij.tab.name"),
-                TemplateValueSource::TabNumberFromPosition,
-            ],
-            prefix: "[",
-            suffix: "]",
-            condition: TemplateFieldCondition::Always,
-        };
-
-        assert_eq!(
-            spec.render(&context),
-            Some(TemplateField::Optional("[Tab 7]".to_owned()))
-        );
-    }
-
-    #[test]
-    fn builtin_templates_carry_auto_sizing_hints() {
-        assert!(BUILTIN_TEMPLATES
-            .iter()
-            .all(|template| template.sizing == TemplateSizingHint::Auto));
-    }
-
-    #[test]
-    fn tab_status_fields_are_resolved_through_builtin_template() {
+    fn tab_status_fields_are_resolved_through_bundled_template() {
         let mut metadata = RenderMetadata::new();
         metadata.insert(
             "status.title".to_owned(),
@@ -8086,8 +7365,8 @@ mod tests {
         );
 
         let fields = template_fields_for(TemplateRenderContext {
-            slot: TemplateSlot::TabStatus,
-            node_kind: RenderNodeKind::Tab,
+            slot: TemplateConfigSlot::TabStatus,
+            node_kind: TemplateConfigNodeKind::Tab,
             metadata: &metadata,
             collapsed: false,
             collapsible: false,
@@ -8320,7 +7599,7 @@ mod tests {
     }
 
     #[test]
-    fn vcs_repo_grouping_key_uses_themed_builtin_header() {
+    fn vcs_repo_grouping_key_uses_themed_bundled_header() {
         let path = GroupPath(vec![GroupSegment {
             key: "vcs.repo".to_owned(),
             value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
@@ -8610,7 +7889,7 @@ mod tests {
     }
 
     #[test]
-    fn group_with_no_resolved_fields_uses_its_builtin_fallback() {
+    fn group_with_no_resolved_fields_uses_its_bundled_fallback() {
         let mut model = grouped_model();
         let RailRow::GroupHeader { templates, .. } = &mut model.rows[0] else {
             panic!("expected group header");
