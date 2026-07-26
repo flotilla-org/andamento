@@ -40,6 +40,8 @@ pub struct GroupingLevel {
     pub collapse_single_member: bool,
     #[serde(default)]
     pub show_empty: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +95,8 @@ pub struct PresenceMapping {
     pub form: DisplayForm,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible_when: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +150,7 @@ pub fn bundled_default_rule() -> GroupingRule {
             label_key: Some(label_key.to_owned()),
             collapse_single_member,
             show_empty,
+            template: None,
         }
     };
     GroupingRule {
@@ -171,42 +176,49 @@ pub fn bundled_default_rule() -> GroupingRule {
                 class: PresenceClass::Tab,
                 form: DisplayForm::Full,
                 visible_when: None,
+                template: None,
             },
             PresenceMapping {
                 kind: EntityKind::Vessel,
                 class: PresenceClass::Tab,
                 form: DisplayForm::Full,
                 visible_when: None,
+                template: None,
             },
             PresenceMapping {
                 kind: EntityKind::Session,
                 class: PresenceClass::Tab,
                 form: DisplayForm::Full,
                 visible_when: None,
+                template: None,
             },
             PresenceMapping {
                 kind: EntityKind::Issue,
                 class: PresenceClass::Section,
                 form: DisplayForm::Compact,
                 visible_when: Some("show-issues".to_owned()),
+                template: None,
             },
             PresenceMapping {
                 kind: EntityKind::Project,
                 class: PresenceClass::Tab,
                 form: DisplayForm::Full,
                 visible_when: None,
+                template: None,
             },
             PresenceMapping {
                 kind: EntityKind::Repo,
                 class: PresenceClass::Section,
                 form: DisplayForm::Full,
                 visible_when: None,
+                template: None,
             },
             PresenceMapping {
                 kind: EntityKind::Checkout,
                 class: PresenceClass::Section,
                 form: DisplayForm::Full,
                 visible_when: None,
+                template: None,
             },
         ],
     }
@@ -335,12 +347,17 @@ fn parse_kdl_grouping_level(node: &KdlNode) -> Result<GroupingLevel, GroupingCon
         .and_then(|entry| entry.value().as_string().map(str::to_owned));
     let collapse_single_member = bool_property(node, "collapse-single-member")?.unwrap_or(false);
     let show_empty = bool_property(node, "show-empty")?.unwrap_or(false);
+    let template = node
+        .get("template")
+        .and_then(|entry| entry.value().as_string())
+        .map(str::to_owned);
     Ok(GroupingLevel {
         key,
         optional,
         label_key,
         collapse_single_member,
         show_empty,
+        template,
     })
 }
 
@@ -400,11 +417,16 @@ fn parse_kdl_presence(node: &KdlNode) -> Result<PresenceMapping, GroupingConfigE
         .get("visible-when")
         .and_then(|entry| entry.value().as_string())
         .map(str::to_owned);
+    let template = node
+        .get("template")
+        .and_then(|entry| entry.value().as_string())
+        .map(str::to_owned);
     Ok(PresenceMapping {
         kind,
         class,
         form,
         visible_when,
+        template,
     })
 }
 
@@ -532,8 +554,8 @@ mod tests {
             version 1
             grouping "active" priority=10 {
               filter key="status.state" equals="active"
-              presence kind="issue" class="section"
-              level key="flotilla.project" label-key="flotilla.project.name" show-empty=false
+              presence kind="issue" class="section" template="issue/attention"
+              level key="flotilla.project" label-key="flotilla.project.name" show-empty=false template="project/heading"
               level key="flotilla.convoy" label-key="flotilla.convoy.name" collapse-single-member=true
             }
             "#,
@@ -549,6 +571,7 @@ mod tests {
             })
         );
         assert!(rule.levels[1].collapse_single_member);
+        assert_eq!(rule.levels[0].template.as_deref(), Some("project/heading"));
         assert_eq!(
             rule.presence,
             vec![PresenceMapping {
@@ -556,6 +579,7 @@ mod tests {
                 class: PresenceClass::Section,
                 form: DisplayForm::Full,
                 visible_when: None,
+                template: Some("issue/attention".to_owned()),
             }]
         );
     }

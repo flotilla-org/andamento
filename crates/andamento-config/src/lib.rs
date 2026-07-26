@@ -2134,6 +2134,8 @@ mod tests {
                     group_header: Some(andamento_shared::ResolvedTemplateSlot {
                         template_name: "repo-header".to_owned(),
                         fields: vec![],
+                        effective_kdl: String::new(),
+                        resolve_error: None,
                     }),
                     ..Default::default()
                 },

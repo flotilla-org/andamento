@@ -111,7 +111,7 @@ grouping "proj-repo-branch" {
     filter key="entity.kind"
     presence kind="repo" class="tab"
     level key="andamento.project" optional=true
-    level key="vcs.repo" label-key="vcs.repo.name"
+    level key="vcs.repo" label-key="vcs.repo.name" template="repo/full"
     level key="git.branch"
 }
 ```
@@ -121,7 +121,8 @@ Presence mappings classify an entity kind as `tab`, `section`, or `hidden`.
 Section entities can select `form="compact"` to reuse the rail's wrapped
 Zellij-ribbon collection rendering. `visible-when="variable-name"` gates the
 whole class through a declared display variable; it does not introduce a
-kind-specific switch in the renderer.
+kind-specific switch in the renderer. Both `level` and `presence` declarations
+accept `template="..."` when they need to override convention binding.
 The built-in entity renderers show the flat `source` fact as a compact
 `[producer]` badge on group and tab labels.
 The bundled template is available as
@@ -155,15 +156,13 @@ rails through the session rail-state broadcast:
 ```kdl
 variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
 
-template "issue.compact" slot="compact" node-kind="entity" {
-    when text-equals="entity.kind" value="issue"
-    field source="metadata-first-token" key="display.label"
+template "issue/compact" slot="compact" node-kind="entity" {
+    field "label" source="metadata-first-token" key="display.label"
 }
 
-template "issue.detail" slot="detail" node-kind="entity" {
-    when text-equals="entity.kind" value="issue"
-    field key="display.label"
-    field key="summary.text" priority=50
+template "issue/detail" slot="detail" node-kind="entity" {
+    field "label" key="display.label"
+    field "summary" key="summary.text" priority=50
 }
 ```
 
@@ -174,21 +173,53 @@ selection fallback when the pointer leaves.
 Example template:
 
 ```kdl
-template "git.group-header" slot="group-header" node-kind="group" {
-    when exists="vcs.repo"
+fragment "repo/status" {
+    field "branch" key="git.branch" priority=60 prefix=" "
+}
 
-    field priority=100 {
+template "repo/full" extends="flotilla/repo/full" {
+    field "label" priority=100 {
         value key="vcs.repo"
         value key="group.label"
     }
-    field key="git.branch" priority=60 prefix=" "
+    use "repo/status"
 }
 ```
 
-Templates are matched by `slot`, `node-kind`, and `when` predicates. Field order is the render order; numeric `priority` controls which fields are dropped first when the sidebar is narrow. A `key=` value reads metadata and renders it by value type.
-The complete namespaced fallback template pack is published in
-`templates/flotilla-default.kdl`; configured user templates are resolved before
-that bundled layer.
+Templates bind by name instead of predicates. Entity forms use
+`<entity.kind>/<compact|detail>`, groups use `<kind>/full`, and tabs use
+`tab/title` or `tab/status`. A grouping or presence declaration's `template=`
+value overrides that convention for the affected node.
+
+`extends=` names one parent. A child field with the same name replaces its
+parent in place; `remove "field-name"` deletes one; new fields are interleaved
+by numeric priority. `use "fragment-name"` expands a reusable fragment.
+Same-named templates in a more specific layer replace the lower layer
+definition unless they explicitly extend it. Fields therefore require stable
+names. Field order is render order, and lower numeric `priority` fields are
+dropped first when the sidebar is narrow. A `key=` value reads metadata and
+renders it by value type.
+
+The resolver walks user → repository → project → fleet → bundled layers for
+each node. Repository and project layers participate only when that node's
+`vcs.repo` or `flotilla.project` membership matches, preventing configuration
+from leaking across nodes. The complete namespaced fallback pack is published
+in `templates/flotilla-default.kdl`.
+
+Select a row's inspect glyph to see the effective flattened KDL. Its comments
+show the inheritance chain and the source layer/file for every field; missing
+parents, fragments, declaration targets, and inheritance cycles are shown as
+resolution errors.
+
+The native harness replays connector-format JSONL through the controller and
+real rail renderer. It can also print the effective document for each resolved
+slot in the captured model:
+
+```sh
+cargo run -p andamento-controller --target "$(rustc -vV | sed -n 's/^host: //p')" -- \
+  fixtures/flotilla-connector-patches.jsonl templates/andamento-git.kdl \
+  --dump-template group-header
+```
 
 Switch the rail into the generic metadata inspection projection:
 

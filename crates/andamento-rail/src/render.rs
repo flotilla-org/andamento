@@ -668,25 +668,22 @@ fn group_metadata_block(group: &RenderGroup) -> Vec<String> {
     push_additional_metadata_lines(&mut lines, 4, &group.metadata, &excluded_keys);
     push_metadata_source_detail_lines(&mut lines, 2, &group.metadata_sources);
     push_reachable_identity_lines(&mut lines, 2, &group.reachable_identities);
-    let template_rows: Vec<Vec<String>> = [(
-        "group_header",
-        group.templates.group_header.as_ref(),
-        TemplateRenderContext {
-            slot: TemplateConfigSlot::GroupHeader,
-            node_kind: TemplateConfigNodeKind::Group,
-            metadata: &group.metadata,
-            collapsed: group.collapsed,
-            collapsible: true,
-            active_tab_name: active_tab_name(&group.children),
-        },
-    )]
-    .into_iter()
-    .filter_map(|(name, slot, ctx)| template_diagnostic_row(name, slot, ctx))
-    .collect();
-    if !template_rows.is_empty() {
-        push_metadata_section_header(&mut lines, 2, "templates");
-        push_aligned_table(&mut lines, 4, TEMPLATE_TABLE_COLUMNS, &template_rows);
-    }
+    push_effective_template_section(
+        &mut lines,
+        2,
+        [(
+            "group_header",
+            group.templates.group_header.as_ref(),
+            TemplateRenderContext {
+                slot: TemplateConfigSlot::GroupHeader,
+                node_kind: TemplateConfigNodeKind::Group,
+                metadata: &group.metadata,
+                collapsed: group.collapsed,
+                collapsible: true,
+                active_tab_name: active_tab_name(&group.children),
+            },
+        )],
+    );
     push_metadata_section_header(&mut lines, 2, "group_path");
     push_group_path_metadata(&mut lines, 4, &group.path);
     if group.conflated_paths.len() > 1 {
@@ -757,46 +754,63 @@ fn tab_metadata_block(tab: &RenderTab) -> Vec<String> {
     );
     push_metadata_source_detail_lines(&mut lines, indent + 2, &card.metadata_sources);
     push_reachable_identity_lines(&mut lines, indent + 2, &card.reachable_identities);
-    let mut template_rows: Vec<Vec<String>> = vec![];
-    if let Some(row) = template_diagnostic_row(
-        "tab_title",
-        card.templates.tab_title.as_ref(),
-        TemplateRenderContext {
-            slot: TemplateConfigSlot::TabTitle,
-            node_kind: TemplateConfigNodeKind::Tab,
-            metadata: &card.metadata,
-            collapsed: false,
-            collapsible: false,
-            active_tab_name: None,
-        },
-    ) {
-        template_rows.push(row);
-    }
-    if card.status.is_some() {
-        if let Some(row) = template_diagnostic_row(
-            "tab_status",
-            card.templates.tab_status.as_ref(),
+    let template_contexts = if card.entity.is_some() {
+        vec![
+            (
+                "compact",
+                card.templates.compact.as_ref(),
+                TemplateRenderContext {
+                    slot: TemplateConfigSlot::Compact,
+                    node_kind: TemplateConfigNodeKind::Entity,
+                    metadata: &card.metadata,
+                    collapsed: false,
+                    collapsible: false,
+                    active_tab_name: None,
+                },
+            ),
+            (
+                "detail",
+                card.templates.detail.as_ref(),
+                TemplateRenderContext {
+                    slot: TemplateConfigSlot::Detail,
+                    node_kind: TemplateConfigNodeKind::Entity,
+                    metadata: &card.metadata,
+                    collapsed: false,
+                    collapsible: false,
+                    active_tab_name: None,
+                },
+            ),
+        ]
+    } else {
+        let mut contexts = vec![(
+            "tab_title",
+            card.templates.tab_title.as_ref(),
             TemplateRenderContext {
-                slot: TemplateConfigSlot::TabStatus,
+                slot: TemplateConfigSlot::TabTitle,
                 node_kind: TemplateConfigNodeKind::Tab,
                 metadata: &card.metadata,
                 collapsed: false,
                 collapsible: false,
                 active_tab_name: None,
             },
-        ) {
-            template_rows.push(row);
+        )];
+        if card.status.is_some() {
+            contexts.push((
+                "tab_status",
+                card.templates.tab_status.as_ref(),
+                TemplateRenderContext {
+                    slot: TemplateConfigSlot::TabStatus,
+                    node_kind: TemplateConfigNodeKind::Tab,
+                    metadata: &card.metadata,
+                    collapsed: false,
+                    collapsible: false,
+                    active_tab_name: None,
+                },
+            ));
         }
-    }
-    if !template_rows.is_empty() {
-        push_metadata_section_header(&mut lines, indent + 2, "templates");
-        push_aligned_table(
-            &mut lines,
-            indent + 4,
-            TEMPLATE_TABLE_COLUMNS,
-            &template_rows,
-        );
-    }
+        contexts
+    };
+    push_effective_template_section(&mut lines, indent + 2, template_contexts);
     if let Some(grouping) = tab.grouping.as_ref() {
         push_metadata_section_header(&mut lines, indent + 2, "grouping");
         push_metadata_text_line(&mut lines, indent + 4, "group.label", &grouping.label);
@@ -1067,92 +1081,48 @@ fn format_metadata_value(value: &MetadataValue) -> String {
     }
 }
 
-/// Returns a row of cells for a single template slot's diagnostic, suitable
-/// for stacking in a slot-rowed templates table. Columns:
-/// [slot, template, fields, sizing, specificity, predicates, candidates].
-/// Returns None when there's nothing to show for that slot. Empty cells
-/// where N/A; `push_aligned_table` drops fully-empty columns.
-fn template_diagnostic_row(
-    slot_name: &str,
-    resolved_slot: Option<&ResolvedTemplateSlot>,
-    context: TemplateRenderContext<'_>,
-) -> Option<Vec<String>> {
-    if let Some(slot) = resolved_slot {
-        let fields = slot
-            .fields
-            .iter()
-            .map(|field| format!("{}({})", field.text, field.priority))
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Some(vec![
-            slot_name.to_owned(),
-            slot.template_name.clone(),
-            fields,
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-        ]);
+fn push_effective_template_section<'a>(
+    lines: &mut Vec<String>,
+    indent: usize,
+    templates: impl IntoIterator<
+        Item = (
+            &'a str,
+            Option<&'a ResolvedTemplateSlot>,
+            TemplateRenderContext<'a>,
+        ),
+    >,
+) {
+    let dumps = templates
+        .into_iter()
+        .filter_map(|(slot_name, slot, context)| {
+            let dump = if let Some(slot) = slot {
+                if slot.effective_kdl.is_empty() {
+                    format!("// resolved template: {}\n", slot.template_name)
+                } else {
+                    slot.effective_kdl.clone()
+                }
+            } else {
+                match bundled_template_catalog().resolve(template_match_context(context)) {
+                    Ok(Some(resolved)) => resolved.dump_kdl(),
+                    Ok(None) => return None,
+                    Err(error) => format!("// error: {error}\n"),
+                }
+            };
+            Some((slot_name, dump))
+        })
+        .collect::<Vec<_>>();
+    if dumps.is_empty() {
+        return;
     }
-    let resolved = bundled_template_catalog().resolve(template_match_context(context))?;
-    let predicates = if resolved.template.predicates.is_empty() {
-        "none".to_owned()
-    } else {
-        resolved
-            .template
-            .predicates
-            .iter()
-            .map(|predicate| predicate.as_text())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let candidates = resolved
-        .candidates
-        .iter()
-        .map(|candidate| format!("{}({})", candidate.name, candidate.specificity))
-        .collect::<Vec<_>>()
-        .join(", ");
-    Some(vec![
-        slot_name.to_owned(),
-        resolved.template.name.clone(),
-        String::new(),
-        resolved.template.sizing.as_str().to_owned(),
-        resolved.specificity.to_string(),
-        predicates,
-        candidates,
-    ])
+    push_metadata_section_header(lines, indent, "resolved_template");
+    for (slot_name, dump) in dumps {
+        lines.push(format!("{}// slot: {slot_name}", " ".repeat(indent + 2)));
+        lines.extend(
+            dump.lines()
+                .map(|line| format!("{}{}", " ".repeat(indent + 2), line)),
+        );
+    }
 }
-
-const TEMPLATE_TABLE_COLUMNS: &[TableColumn] = &[
-    TableColumn {
-        header: "slot",
-        align: ColumnAlign::Left,
-    },
-    TableColumn {
-        header: "template",
-        align: ColumnAlign::Left,
-    },
-    TableColumn {
-        header: "fields",
-        align: ColumnAlign::Left,
-    },
-    TableColumn {
-        header: "sizing",
-        align: ColumnAlign::Left,
-    },
-    TableColumn {
-        header: "specificity",
-        align: ColumnAlign::Right,
-    },
-    TableColumn {
-        header: "predicates",
-        align: ColumnAlign::Left,
-    },
-    TableColumn {
-        header: "candidates",
-        align: ColumnAlign::Left,
-    },
-];
 
 fn bool_text(value: bool) -> &'static str {
     if value {
@@ -1376,7 +1346,11 @@ fn render_nodes(
             .iter()
             .map(|tab| {
                 let mut card = tab.card.clone();
-                let key = NodeKey::Tab(card.tab_id);
+                let key = card
+                    .entity
+                    .clone()
+                    .map(NodeKey::Entity)
+                    .unwrap_or(NodeKey::Tab(card.tab_id));
                 if metadata_controls.effective_show(&key, root_meta_children) {
                     card.meta_panel = Some(tab_metadata_block(tab));
                 }
@@ -2156,7 +2130,11 @@ fn append_tab_run(
         .iter()
         .map(|tab| {
             let mut card = tab.card.clone();
-            let key = NodeKey::Tab(card.tab_id);
+            let key = card
+                .entity
+                .clone()
+                .map(NodeKey::Entity)
+                .unwrap_or(NodeKey::Tab(card.tab_id));
             if metadata_controls.effective_show(&key, ancestor_meta_children) {
                 card.meta_panel = Some(tab_metadata_block(tab));
             }
@@ -4451,35 +4429,31 @@ fn group_header_line(
     niche_child_groups: &[RenderGroup],
 ) -> RenderedTemplateLine {
     let (fields, text_style) = match resolved_slot {
-        Some(slot)
-            if slot
-                .fields
-                .iter()
-                .any(|field| !field.text.trim().is_empty()) =>
-        {
-            (
-                group_header_fields_from_resolved_slot(
-                    slot,
-                    collapsed,
-                    collapsible,
-                    active_tab_name,
-                ),
-                GroupHeaderTextStyle::Themed,
-            )
-        }
-        Some(_) if uses_bundled_group_header_fallback(metadata) => {
-            resolve_group_header_template_fields(
+        Some(slot) => {
+            let fields = group_header_fields_from_resolved_slot(
+                slot,
                 metadata,
                 collapsed,
                 collapsible,
                 active_tab_name,
-                None,
-            )
+            );
+            if fields
+                .iter()
+                .any(|field| !template_field_value(field).trim().is_empty())
+            {
+                (fields, GroupHeaderTextStyle::Themed)
+            } else if uses_bundled_group_header_fallback(metadata) {
+                (
+                    group_label_fallback_fields(metadata, collapsed, collapsible),
+                    GroupHeaderTextStyle::Plain,
+                )
+            } else {
+                (
+                    group_identity_fallback_fields(metadata, collapsed, collapsible),
+                    GroupHeaderTextStyle::Plain,
+                )
+            }
         }
-        Some(_) => (
-            group_identity_fallback_fields(metadata, collapsed, collapsible),
-            GroupHeaderTextStyle::Plain,
-        ),
         None => resolve_group_header_template_fields(
             metadata,
             collapsed,
@@ -4885,7 +4859,7 @@ fn render_template_from_catalog(
     context: TemplateRenderContext<'_>,
 ) -> Option<ResolvedRenderTemplate> {
     let match_context = template_match_context(context);
-    let resolved = catalog.resolve(match_context)?;
+    let resolved = catalog.resolve(match_context).ok()??;
     let render_context = if resolved.is_bundled {
         TemplateConfigMatchContext {
             collapsed: context.collapsed && context.collapsible,
@@ -4896,7 +4870,6 @@ fn render_template_from_catalog(
         match_context
     };
     let fields = resolved
-        .template
         .render_fields(render_context)
         .into_iter()
         .map(|field| match field.class {
@@ -4911,7 +4884,7 @@ fn render_template_from_catalog(
         })
         .collect::<Vec<_>>();
     (!fields.is_empty()).then(|| ResolvedRenderTemplate {
-        name: resolved.template.name.clone(),
+        name: resolved.name.clone(),
         fields,
     })
 }
@@ -4965,7 +4938,10 @@ fn resolve_group_header_template_fields(
         active_tab_name,
     };
     let Some(template) = resolved_render_template(template_catalog, context) else {
-        return (vec![], GroupHeaderTextStyle::Plain);
+        return (
+            group_identity_fallback_fields(metadata, collapsed, collapsible),
+            GroupHeaderTextStyle::Plain,
+        );
     };
     let text_style = if template.name == "flotilla/group-header/fallback" {
         GroupHeaderTextStyle::Plain
@@ -4973,6 +4949,33 @@ fn resolve_group_header_template_fields(
         GroupHeaderTextStyle::Themed
     };
     (template.fields, text_style)
+}
+
+fn group_header_toggle_field(collapsed: bool, collapsible: bool) -> Option<TemplateField> {
+    collapsible.then(|| TemplateField::Required(if collapsed { "▶" } else { "▼" }.to_owned()))
+}
+
+fn group_identity_fallback_fields(
+    metadata: &RenderMetadata,
+    collapsed: bool,
+    collapsible: bool,
+) -> Vec<TemplateField> {
+    let mut fields = group_header_toggle_field(collapsed, collapsible)
+        .into_iter()
+        .collect::<Vec<_>>();
+    if let (Some(key), Some(value)) = (
+        metadata_text(metadata, "group.key"),
+        metadata_display_value(metadata, "group.value"),
+    ) {
+        fields.push(TemplateField::Required(format!("{key}:")));
+        fields.push(TemplateField::Required(format!("{value} (group)")));
+        return fields;
+    }
+    let label = metadata_text(metadata, "group.label")
+        .filter(|label| !label.trim().is_empty())
+        .unwrap_or("group");
+    fields.push(TemplateField::Required(format!("{label} (group)")));
+    fields
 }
 
 fn uses_bundled_group_header_fallback(metadata: &RenderMetadata) -> bool {
@@ -4984,16 +4987,13 @@ fn uses_bundled_group_header_fallback(metadata: &RenderMetadata) -> bool {
         collapsible: true,
         active_tab_name: None,
     };
-    bundled_template_catalog()
-        .resolve(template_match_context(context))
-        .is_some_and(|resolved| resolved.template.name == "flotilla/group-header/fallback")
+    matches!(
+        bundled_template_catalog().resolve(template_match_context(context)),
+        Ok(Some(resolved)) if resolved.name == "group/full"
+    )
 }
 
-fn group_header_toggle_field(collapsed: bool, collapsible: bool) -> Option<TemplateField> {
-    collapsible.then(|| TemplateField::Required(if collapsed { "▶" } else { "▼" }.to_owned()))
-}
-
-fn group_identity_fallback_fields(
+fn group_label_fallback_fields(
     metadata: &RenderMetadata,
     collapsed: bool,
     collapsible: bool,
@@ -5010,10 +5010,41 @@ fn group_identity_fallback_fields(
 
 fn group_header_fields_from_resolved_slot(
     slot: &ResolvedTemplateSlot,
+    metadata: &RenderMetadata,
     collapsed: bool,
     collapsible: bool,
     active_tab_name: Option<&str>,
 ) -> Vec<TemplateField> {
+    if !slot.effective_kdl.is_empty() && slot.resolve_error.is_none() {
+        let mut declared_metadata = metadata.clone();
+        declared_metadata.insert(
+            "presentation.template".to_owned(),
+            MetadataValue::Text(slot.template_name.clone()),
+        );
+        let context = TemplateRenderContext {
+            slot: TemplateConfigSlot::GroupHeader,
+            node_kind: TemplateConfigNodeKind::Group,
+            metadata: &declared_metadata,
+            collapsed,
+            collapsible,
+            active_tab_name,
+        };
+        if let Ok(config) =
+            andamento_shared::template_config::parse_template_config_kdl(&slot.effective_kdl)
+        {
+            let catalog = TemplateConfigCatalog::from_config(config);
+            if let Some(template) = render_template_from_catalog(&catalog, context) {
+                return template.fields;
+            }
+        }
+    }
+
+    // Older controller payloads contain rendered fields but no effective KDL.
+    // Preserve their implicit local toggle while current payloads render the
+    // complete flattened template in the rail's live collapse context.
+    if slot.fields.is_empty() {
+        return vec![];
+    }
     let mut fields = group_header_toggle_field(collapsed, collapsible)
         .into_iter()
         .collect::<Vec<_>>();
@@ -6327,6 +6358,8 @@ mod tests {
                             priority: 100,
                             source: None,
                         }],
+                        effective_kdl: String::new(),
+                        resolve_error: None,
                     }),
                     detail: Some(ResolvedTemplateSlot {
                         template_name: "issue.detail".to_owned(),
@@ -6335,6 +6368,8 @@ mod tests {
                             priority: 100,
                             source: None,
                         }],
+                        effective_kdl: String::new(),
+                        resolve_error: None,
                     }),
                     ..Default::default()
                 },
@@ -6892,19 +6927,10 @@ mod tests {
 
     #[test]
     fn themed_compact_strip_uses_template_catalog_tab_titles() {
-        let config = andamento_shared::template_config::parse_template_config_json(
+        let config = andamento_shared::template_config::parse_template_config_kdl(
             r#"
-            {
-              "templates": [
-                {
-                  "name": "custom.tab-title",
-                  "slot": "tab-title",
-                  "node-kind": "tab",
-                  "fields": [
-                    { "class": "required", "sources": [{ "kind": "literal", "value": "External" }] }
-                  ]
-                }
-              ]
+            template "tab/title" slot="tab-title" node-kind="tab" {
+              field "title" class="required" source="literal" value="External"
             }
             "#,
         )
@@ -7024,6 +7050,8 @@ mod tests {
                     priority: 100,
                     source: Some(repo_source.clone()),
                 }],
+                effective_kdl: String::new(),
+                resolve_error: None,
             });
         }
         if let RailRow::GroupHeader { templates, .. } = &mut model.rows[1] {
@@ -7041,6 +7069,8 @@ mod tests {
                         source: Some(branch_source),
                     },
                 ],
+                effective_kdl: String::new(),
+                resolve_error: None,
             });
         }
 
@@ -7505,19 +7535,10 @@ mod tests {
 
     #[test]
     fn external_template_catalog_can_override_tab_title_rendering() {
-        let config = andamento_shared::template_config::parse_template_config_json(
+        let config = andamento_shared::template_config::parse_template_config_kdl(
             r#"
-            {
-              "templates": [
-                {
-                  "name": "custom.tab-title",
-                  "slot": "tab-title",
-                  "node-kind": "tab",
-                  "fields": [
-                    { "class": "required", "sources": [{ "kind": "literal", "value": "External" }] }
-                  ]
-                }
-              ]
+            template "tab/title" slot="tab-title" node-kind="tab" {
+              field "title" class="required" source="literal" value="External"
             }
             "#,
         )
@@ -7536,6 +7557,8 @@ mod tests {
         model.tabs[0].templates.tab_title = Some(ResolvedTemplateSlot {
             template_name: "future.entry".to_owned(),
             fields: vec![],
+            effective_kdl: String::new(),
+            resolve_error: None,
         });
 
         let rendered = render_lines(Some(&model), &[], 7, 24, true);
@@ -7554,6 +7577,8 @@ mod tests {
             Some(ResolvedTemplateSlot {
                 template_name: "future.group".to_owned(),
                 fields: vec![],
+                effective_kdl: String::new(),
+                resolve_error: None,
             }),
         ] {
             let mut model = grouped_model();
@@ -7897,6 +7922,8 @@ mod tests {
         templates.group_header = Some(ResolvedTemplateSlot {
             template_name: "future.group".to_owned(),
             fields: vec![],
+            effective_kdl: String::new(),
+            resolve_error: None,
         });
 
         let rendered = render_lines(Some(&model), &[], 8, 24, true);
@@ -7909,17 +7936,61 @@ mod tests {
     }
 
     #[test]
+    fn effective_group_template_renders_once_in_the_live_collapse_context() {
+        let mut model = grouped_model();
+        let RailRow::GroupHeader {
+            path, templates, ..
+        } = &mut model.rows[0]
+        else {
+            panic!("expected group header");
+        };
+        let collapsed_path = path.clone();
+        templates.group_header = Some(ResolvedTemplateSlot {
+            template_name: "group/full".to_owned(),
+            fields: vec![
+                andamento_shared::ResolvedTemplateField {
+                    text: "▼".to_owned(),
+                    priority: 100,
+                    source: None,
+                },
+                andamento_shared::ResolvedTemplateField {
+                    text: "stale".to_owned(),
+                    priority: 100,
+                    source: None,
+                },
+            ],
+            effective_kdl: r#"
+                template "group/full" slot="group-header" node-kind="group" {
+                  field "toggle" class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
+                  field "label" class="required" source="literal" value="effective"
+                }
+            "#
+            .to_owned(),
+            resolve_error: None,
+        });
+
+        let rendered =
+            render_lines_with_collapsed_groups(Some(&model), &[], 8, 24, true, &[collapsed_path]);
+
+        assert!(
+            rendered.lines[0].starts_with("▶ effective"),
+            "the flattened template should render with live collapse state: {:?}",
+            rendered.lines[0]
+        );
+        assert_eq!(rendered.lines[0].matches('▶').count(), 1);
+        assert!(!rendered.lines[0].contains("stale"));
+    }
+
+    #[test]
     fn external_kdl_template_catalog_can_render_numeric_priority_fields() {
         let config = andamento_shared::template_config::parse_template_config_kdl(
             r#"
-            template "git.group-header" slot="group-header" node-kind="group" {
-              when exists="git.repo"
-
-              field priority=100 {
+            template "group/full" slot="group-header" node-kind="group" {
+              field "toggle" priority=100 {
                 value source="collapsed-toggle" collapsed="▶" expanded="▼"
               }
-              field key="git.repo" priority=100
-              field key="git.branch" priority=10
+              field "repo" key="git.repo" priority=100
+              field "branch" key="git.branch" priority=10
             }
             "#,
         )
@@ -7933,6 +8004,10 @@ mod tests {
             (
                 "git.branch".to_owned(),
                 MetadataValue::Text("main".to_owned()),
+            ),
+            (
+                "group.key".to_owned(),
+                MetadataValue::Text("zellij.pane.cwd".to_owned()),
             ),
         ]);
 
@@ -7973,17 +8048,66 @@ mod tests {
     }
 
     #[test]
+    fn repo_template_extends_the_bundled_header_without_losing_its_label() {
+        let config = andamento_shared::template_config::parse_template_config_kdl(include_str!(
+            "../../../templates/andamento-git.kdl"
+        ))
+        .expect("example template config");
+        let catalog =
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(config);
+        let metadata = RenderMetadata::from([
+            (
+                "group.key".to_owned(),
+                MetadataValue::Text("vcs.repo".to_owned()),
+            ),
+            (
+                "group.value".to_owned(),
+                MetadataValue::Text("flotilla-org/andamento".to_owned()),
+            ),
+            (
+                "group.label".to_owned(),
+                MetadataValue::Text("andamento".to_owned()),
+            ),
+            (
+                "vcs.repo".to_owned(),
+                MetadataValue::Text("flotilla-org/andamento".to_owned()),
+            ),
+        ]);
+
+        let fields = group_header_template_fields_with_template_catalog(
+            &metadata,
+            false,
+            true,
+            None,
+            Some(&catalog),
+        );
+
+        assert_eq!(
+            fields,
+            vec![
+                TemplateField::Required("▼".to_owned()),
+                TemplateField::Prioritized {
+                    value: "flotilla-org/andamento".to_owned(),
+                    priority: 100,
+                    source: Some(ResolvedTemplateFieldSource {
+                        key: "vcs.repo".to_owned(),
+                        value: MetadataValue::Text("flotilla-org/andamento".to_owned()),
+                    }),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn external_kdl_group_header_template_uses_resolved_group_metadata() {
         let config = andamento_shared::template_config::parse_template_config_kdl(
             r#"
-            template "git.group-header" slot="group-header" node-kind="group" {
-              when exists="git.repo"
-
-              field priority=100 {
+            template "group/full" slot="group-header" node-kind="group" {
+              field "toggle" priority=100 {
                 value source="collapsed-toggle" collapsed="▶" expanded="▼"
               }
-              field key="git.repo" priority=100
-              field key="git.branch" priority=60
+              field "repo" key="git.repo" priority=100
+              field "branch" key="git.branch" priority=60
             }
             "#,
         )
@@ -9057,6 +9181,93 @@ mod tests {
             "got {:?}",
             lines[1]
         );
+    }
+
+    #[test]
+    fn inspect_blocks_show_origin_annotated_effective_templates_for_groups_and_entities() {
+        let group = RenderGroup {
+            path: GroupPath(vec![GroupSegment {
+                key: "vcs.repo".into(),
+                value: MetadataValue::Text("flotilla-org/andamento".into()),
+                label: Some("andamento".into()),
+            }]),
+            conflated_paths: vec![],
+            label: "andamento".into(),
+            full_label: "andamento".into(),
+            tab_count: 1,
+            collapsed: false,
+            indent: 0,
+            metadata: metadata_for_group_header(
+                &GroupPath(vec![GroupSegment {
+                    key: "vcs.repo".into(),
+                    value: MetadataValue::Text("flotilla-org/andamento".into()),
+                    label: Some("andamento".into()),
+                }]),
+                "andamento",
+                "andamento",
+                1,
+            ),
+            metadata_sources: BTreeMap::new(),
+            reachable_identities: vec![],
+            templates: ResolvedTemplateSlots::default(),
+            children: vec![],
+        };
+        let group_lines = group_metadata_block(&group);
+        assert!(group_lines
+            .iter()
+            .any(|line| line.trim() == "[resolved_template]"));
+        assert!(group_lines
+            .iter()
+            .any(|line| line.contains("// origin: bundled")));
+
+        let metadata = BTreeMap::from([(
+            "entity.kind".to_owned(),
+            MetadataValue::Text("issue".to_owned()),
+        )]);
+        let context = TemplateConfigMatchContext {
+            slot: TemplateConfigSlot::Compact,
+            node_kind: TemplateConfigNodeKind::Entity,
+            metadata: &metadata,
+            collapsed: false,
+            collapsible: false,
+            active_tab_name: None,
+        };
+        let resolved = bundled_template_catalog()
+            .resolve(context)
+            .expect("resolution succeeds")
+            .expect("issue compact template");
+        let entity = andamento_shared::DisplayEntity {
+            entity: andamento_shared::EntityRef {
+                kind: andamento_shared::EntityKind::Issue,
+                id: "flotilla#1058".into(),
+            },
+            label: "#1058".into(),
+            form: andamento_shared::grouping_config::DisplayForm::Compact,
+            templates: ResolvedTemplateSlots {
+                compact: Some(ResolvedTemplateSlot {
+                    template_name: resolved.name.clone(),
+                    fields: vec![],
+                    effective_kdl: resolved.dump_kdl(),
+                    resolve_error: None,
+                }),
+                ..ResolvedTemplateSlots::default()
+            },
+        };
+        let entity_lines = tab_metadata_block(&RenderTab {
+            card: render_card_from_entity(&entity),
+            indent: 0,
+            grouping: None,
+            parent_path: None,
+        });
+        assert!(entity_lines
+            .iter()
+            .any(|line| line.trim() == "[resolved_template]"));
+        assert!(entity_lines
+            .iter()
+            .any(|line| line.contains("flotilla/issue/compact")));
+        assert!(entity_lines
+            .iter()
+            .any(|line| line.contains("// origin: bundled")));
     }
 
     #[test]
