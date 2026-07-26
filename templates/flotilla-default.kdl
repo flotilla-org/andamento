@@ -8,10 +8,10 @@ grouping "flotilla.default" priority=-1000 {
   presence kind="convoy" class="tab"
   presence kind="vessel" class="tab"
   presence kind="session" class="tab"
-  presence kind="issue" class="section" form="compact" visible-when="show-issues"
+  presence kind="issue" class="inline" form="compact" visible-when="show-issues"
   presence kind="project" class="tab"
-  presence kind="repo" class="section"
-  presence kind="checkout" class="section"
+  presence kind="repo" class="inline"
+  presence kind="checkout" class="inline"
 
   level key="flotilla.project" label-key="flotilla.project.name" optional=true show-empty=true
   level key="vcs.repo" label-key="vcs.repo.name" optional=true
@@ -23,7 +23,9 @@ grouping "flotilla.default" priority=-1000 {
 }
 
 fragment "flotilla/group-toggle" {
-  field "toggle" class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
+  indent level=2
+  toggle collapsed="▶" expanded="▼"
+  fill glyph="─"
 }
 
 fragment "flotilla/group-label" {
@@ -88,6 +90,10 @@ template "flotilla/group/full" slot="group-header" node-kind="group" {
 }
 
 template "flotilla/tab/title" slot="tab-title" node-kind="tab" {
+  box border="single"
+  indent level=2
+  dim when="rail.tab.latent"
+  field "latent-glyph" class="required" source="metadata-text" key="materialize.glyph"
   field "title" class="required" {
     value source="metadata-text" key="zellij.tab.name"
     value source="tab-number"
@@ -106,5 +112,21 @@ template "flotilla/issue/compact" slot="compact" node-kind="entity" {
 
 template "flotilla/issue/detail" slot="detail" node-kind="entity" {
   field "label" class="required" key="display.label"
+  field "summary" class="priority" key="summary.text" priority=50
+}
+
+template "flotilla/entity/compact" slot="compact" node-kind="entity" {
+  field "label" class="required" {
+    value source="metadata-text" key="display.label"
+    value source="metadata-text" key="entity.id"
+  }
+  field "summary" class="priority" key="summary.text" priority=50
+}
+
+template "flotilla/entity/detail" slot="detail" node-kind="entity" {
+  field "label" class="required" {
+    value source="metadata-text" key="display.label"
+    value source="metadata-text" key="entity.id"
+  }
   field "summary" class="priority" key="summary.text" priority=50
 }

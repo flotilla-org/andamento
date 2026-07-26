@@ -369,7 +369,15 @@ impl TemplateConfigCatalog {
         let found = find_template(&stack, &requested_name).or_else(|| {
             (!declared).then(|| {
                 let bundled_name = format!("flotilla/{requested_name}");
-                find_bundled_template(&stack, &bundled_name)
+                find_bundled_template(&stack, &bundled_name).or_else(|| {
+                    (context.node_kind == TemplateConfigNodeKind::Entity)
+                        .then(|| {
+                            let fallback_name =
+                                format!("flotilla/entity/{}", context.slot.convention_form()?);
+                            find_bundled_template(&stack, &fallback_name)
+                        })
+                        .flatten()
+                })
             })?
         });
         let Some((layer, template)) = found else {
@@ -453,8 +461,8 @@ pub struct TemplateConfigResolved {
     pub name: String,
     pub slot: TemplateConfigSlot,
     pub node_kind: TemplateConfigNodeKind,
-    pub sizing: TemplateConfigSizingHint,
     pub fields: Vec<TemplateConfigResolvedField>,
+    pub chrome: ChromeSpec,
     pub chain: Vec<TemplateConfigChainEntry>,
     pub is_bundled: bool,
 }
@@ -470,6 +478,13 @@ impl TemplateConfigResolved {
             .collect()
     }
 
+    pub fn render_ready(&self) -> TemplateConfigRenderReady {
+        TemplateConfigRenderReady {
+            fields: self.fields.iter().map(|field| field.spec.clone()).collect(),
+            chrome: self.chrome.clone(),
+        }
+    }
+
     pub fn dump_kdl(&self) -> String {
         let chain = self
             .chain
@@ -479,12 +494,14 @@ impl TemplateConfigResolved {
             .join(" -> ");
         let mut output = format!("// chain: {chain}\n");
         output.push_str(&format!(
-            "template {} slot={} node-kind={} sizing={} {{\n",
+            "template {} slot={} node-kind={} {{\n",
             quote_kdl(&self.name),
             quote_kdl(self.slot.as_str()),
             quote_kdl(self.node_kind.as_str()),
-            quote_kdl(self.sizing.as_str()),
         ));
+        for primitive in &self.chrome.primitives {
+            output.push_str(&primitive.to_kdl(2));
+        }
         for field in &self.fields {
             output.push_str(&format!("  // origin: {}\n", field.origin.label()));
             output.push_str(&field.spec.to_kdl(2));
@@ -712,14 +729,14 @@ fn flatten_template(
             template: template.name.clone(),
             property: "node-kind",
         })?;
-    let sizing = template
-        .sizing
-        .or_else(|| parent.as_ref().map(|parent| parent.sizing))
-        .unwrap_or_default();
     let interleave_new_fields = parent.is_some();
     let mut fields = parent
         .as_ref()
         .map(|parent| parent.fields.clone())
+        .unwrap_or_default();
+    let mut chrome = parent
+        .as_ref()
+        .map(|parent| parent.chrome.clone())
         .unwrap_or_default();
     apply_operations(
         stack,
@@ -727,6 +744,7 @@ fn flatten_template(
         &template.operations,
         &layer.origin,
         &mut fields,
+        &mut chrome,
         fragment_stack,
         interleave_new_fields,
     )?;
@@ -742,8 +760,8 @@ fn flatten_template(
         name: template.name.clone(),
         slot,
         node_kind,
-        sizing,
         fields,
+        chrome,
         chain,
         is_bundled: layer.origin.layer == TemplateConfigLayerKind::Bundled,
     })
@@ -755,6 +773,7 @@ fn apply_operations(
     operations: &[TemplateConfigFieldOperation],
     origin: &TemplateConfigOrigin,
     fields: &mut Vec<TemplateConfigResolvedField>,
+    chrome: &mut ChromeSpec,
     fragment_stack: &mut Vec<String>,
     interleave_new_fields: bool,
 ) -> Result<(), TemplateConfigResolveError> {
@@ -815,10 +834,14 @@ fn apply_operations(
                     &fragment.operations,
                     &fragment_layer.origin,
                     fields,
+                    chrome,
                     fragment_stack,
                     interleave_new_fields,
                 )?;
                 fragment_stack.pop();
+            }
+            TemplateConfigFieldOperation::Chrome { primitive } => {
+                chrome.set(primitive.clone());
             }
         }
     }
@@ -837,11 +860,172 @@ pub struct TemplateConfigRenderedField {
     pub source: Option<ResolvedTemplateFieldSource>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChromeSpec {
+    #[serde(default)]
+    pub primitives: Vec<ChromePrimitive>,
+}
+
+impl ChromeSpec {
+    fn set(&mut self, primitive: ChromePrimitive) {
+        let kind = primitive.kind();
+        if let Some(existing) = self
+            .primitives
+            .iter_mut()
+            .find(|existing| existing.kind() == kind)
+        {
+            *existing = primitive;
+        } else {
+            self.primitives.push(primitive);
+        }
+    }
+
+    pub fn boxed(&self) -> bool {
+        self.primitives
+            .iter()
+            .any(|primitive| matches!(primitive, ChromePrimitive::Box { .. }))
+    }
+
+    pub fn toggle(&self) -> Option<(&str, &str)> {
+        self.primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                ChromePrimitive::Toggle {
+                    collapsed,
+                    expanded,
+                } => Some((collapsed.as_str(), expanded.as_str())),
+                _ => None,
+            })
+    }
+
+    pub fn fill(&self) -> Option<char> {
+        self.primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                ChromePrimitive::Fill { glyph } => Some(*glyph),
+                _ => None,
+            })
+    }
+
+    pub fn dimmed(&self, metadata: &BTreeMap<String, MetadataValue>) -> bool {
+        self.primitives.iter().any(|primitive| match primitive {
+            ChromePrimitive::Dim { when } => when
+                .as_deref()
+                .is_none_or(|key| matches!(metadata.get(key), Some(MetadataValue::Bool(true)))),
+            _ => false,
+        })
+    }
+
+    pub fn indent_width(&self) -> Option<usize> {
+        self.primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                ChromePrimitive::Indent { level } => Some(*level),
+                _ => None,
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ChromePrimitive {
+    Box {
+        #[serde(default)]
+        border: BoxBorderStyle,
+    },
+    Toggle {
+        collapsed: String,
+        expanded: String,
+    },
+    Fill {
+        glyph: char,
+    },
+    Dim {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        when: Option<String>,
+    },
+    Indent {
+        level: usize,
+    },
+}
+
+impl ChromePrimitive {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Box { .. } => "box",
+            Self::Toggle { .. } => "toggle",
+            Self::Fill { .. } => "fill",
+            Self::Dim { .. } => "dim",
+            Self::Indent { .. } => "indent",
+        }
+    }
+
+    fn to_kdl(&self, indent: usize) -> String {
+        let pad = " ".repeat(indent);
+        match self {
+            Self::Box { border } => {
+                format!("{pad}box border={}\n", quote_kdl(border.as_str()))
+            }
+            Self::Toggle {
+                collapsed,
+                expanded,
+            } => format!(
+                "{pad}toggle collapsed={} expanded={}\n",
+                quote_kdl(collapsed),
+                quote_kdl(expanded)
+            ),
+            Self::Fill { glyph } => {
+                format!("{pad}fill glyph={}\n", quote_kdl(&glyph.to_string()))
+            }
+            Self::Dim { when } => match when {
+                Some(when) => format!("{pad}dim when={}\n", quote_kdl(when)),
+                None => format!("{pad}dim\n"),
+            },
+            Self::Indent { level } => format!("{pad}indent level={level}\n"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BoxBorderStyle {
+    #[default]
+    Single,
+}
+
+impl BoxBorderStyle {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateConfigRenderReady {
+    #[serde(default)]
+    pub fields: Vec<TemplateConfigFieldSpec>,
+    #[serde(default)]
+    pub chrome: ChromeSpec,
+}
+
+impl TemplateConfigRenderReady {
+    pub fn render_fields(
+        &self,
+        context: TemplateConfigMatchContext<'_>,
+    ) -> Vec<TemplateConfigRenderedField> {
+        self.fields
+            .iter()
+            .filter_map(|field| field.render(context))
+            .collect()
+    }
+}
+
 fn default_template_config_version() -> u32 {
     1
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct TemplateConfigDefinition {
     pub name: String,
@@ -852,12 +1036,10 @@ pub struct TemplateConfigDefinition {
     #[serde(default)]
     pub node_kind: Option<TemplateConfigNodeKind>,
     #[serde(default)]
-    pub sizing: Option<TemplateConfigSizingHint>,
-    #[serde(default)]
     pub operations: Vec<TemplateConfigFieldOperation>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct TemplateConfigFragmentDefinition {
     pub name: String,
@@ -865,12 +1047,13 @@ pub struct TemplateConfigFragmentDefinition {
     pub operations: Vec<TemplateConfigFieldOperation>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum TemplateConfigFieldOperation {
     Set { field: TemplateConfigFieldSpec },
     Remove { name: String },
     Use { name: String },
+    Chrome { primitive: ChromePrimitive },
 }
 
 impl TemplateConfigFieldOperation {
@@ -879,7 +1062,7 @@ impl TemplateConfigFieldOperation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TemplateConfigSlot {
     GroupHeader,
@@ -913,7 +1096,7 @@ impl TemplateConfigSlot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TemplateConfigNodeKind {
     Group,
@@ -974,21 +1157,6 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum TemplateConfigSizingHint {
-    #[default]
-    Auto,
-}
-
-impl TemplateConfigSizingHint {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-        }
-    }
-}
-
 fn metadata_text<'a>(metadata: &'a BTreeMap<String, MetadataValue>, key: &str) -> Option<&'a str> {
     match metadata.get(key) {
         Some(MetadataValue::Text(value)) => Some(value),
@@ -1015,7 +1183,7 @@ fn format_metadata_value(value: &MetadataValue) -> String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct TemplateConfigFieldSpec {
     pub name: String,
@@ -1032,7 +1200,7 @@ pub struct TemplateConfigFieldSpec {
 }
 
 impl TemplateConfigFieldSpec {
-    fn render(
+    pub fn render(
         &self,
         context: TemplateConfigMatchContext<'_>,
     ) -> Option<TemplateConfigRenderedField> {
@@ -1091,7 +1259,7 @@ impl TemplateConfigFieldSpec {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TemplateConfigFieldClass {
     Required,
@@ -1109,7 +1277,7 @@ impl TemplateConfigFieldClass {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TemplateConfigFieldCondition {
     #[default]
@@ -1133,7 +1301,7 @@ impl TemplateConfigFieldCondition {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum TemplateConfigValueSource {
     Literal { value: String },
@@ -1283,7 +1451,9 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
                         .to_owned(),
                 ));
             }
-            "field" | "remove" | "use" => operations.push(parse_kdl_field_operation(child)?),
+            "field" | "remove" | "use" | "box" | "toggle" | "fill" | "dim" | "indent" => {
+                operations.push(parse_kdl_field_operation(child)?)
+            }
             other => {
                 return Err(TemplateConfigError::Validation(format!(
                     "template {} has unsupported child node: {other}",
@@ -1300,9 +1470,6 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
             .transpose()?,
         node_kind: kdl_prop_string(node, "node-kind")
             .map(|value| parse_kdl_node_kind(&value))
-            .transpose()?,
-        sizing: kdl_prop_string(node, "sizing")
-            .map(|value| parse_kdl_sizing(&value))
             .transpose()?,
         operations,
     })
@@ -1334,8 +1501,70 @@ fn parse_kdl_field_operation(
         "use" => Ok(TemplateConfigFieldOperation::Use {
             name: kdl_required_arg_string(node, 0, "fragment name")?,
         }),
+        "box" | "toggle" | "fill" | "dim" | "indent" => Ok(TemplateConfigFieldOperation::Chrome {
+            primitive: parse_kdl_chrome(node)?,
+        }),
         other => Err(TemplateConfigError::Validation(format!(
             "unsupported fragment/template operation: {other}"
+        ))),
+    }
+}
+
+fn parse_kdl_chrome(node: &KdlNode) -> Result<ChromePrimitive, TemplateConfigError> {
+    match node.name().value() {
+        "box" => {
+            let border = match kdl_prop_string(node, "border")
+                .as_deref()
+                .unwrap_or("single")
+            {
+                "single" => BoxBorderStyle::Single,
+                other => {
+                    return Err(TemplateConfigError::Validation(format!(
+                        "unsupported box border: {other}"
+                    )))
+                }
+            };
+            Ok(ChromePrimitive::Box { border })
+        }
+        "toggle" => Ok(ChromePrimitive::Toggle {
+            collapsed: kdl_required_prop_string(node, "collapsed")?,
+            expanded: kdl_required_prop_string(node, "expanded")?,
+        }),
+        "fill" => {
+            let glyph = kdl_required_prop_string(node, "glyph")?;
+            let mut chars = glyph.chars();
+            let glyph = chars.next().ok_or_else(|| {
+                TemplateConfigError::Validation("fill glyph cannot be empty".to_owned())
+            })?;
+            if chars.next().is_some() {
+                return Err(TemplateConfigError::Validation(
+                    "fill glyph must be exactly one character".to_owned(),
+                ));
+            }
+            Ok(ChromePrimitive::Fill { glyph })
+        }
+        "dim" => Ok(ChromePrimitive::Dim {
+            when: kdl_prop_string(node, "when"),
+        }),
+        "indent" => {
+            let level = node
+                .get("level")
+                .and_then(|entry| entry.value().as_i64())
+                .ok_or_else(|| {
+                    TemplateConfigError::Validation(
+                        "indent node must include integer property level".to_owned(),
+                    )
+                })?;
+            Ok(ChromePrimitive::Indent {
+                level: usize::try_from(level).map_err(|_| {
+                    TemplateConfigError::Validation(
+                        "indent level must be a non-negative integer".to_owned(),
+                    )
+                })?,
+            })
+        }
+        other => Err(TemplateConfigError::Validation(format!(
+            "unsupported chrome primitive: {other}"
         ))),
     }
 }
@@ -1499,15 +1728,6 @@ fn parse_kdl_node_kind(value: &str) -> Result<TemplateConfigNodeKind, TemplateCo
         "entity" => Ok(TemplateConfigNodeKind::Entity),
         other => Err(TemplateConfigError::Validation(format!(
             "unsupported template node-kind: {other}"
-        ))),
-    }
-}
-
-fn parse_kdl_sizing(value: &str) -> Result<TemplateConfigSizingHint, TemplateConfigError> {
-    match value {
-        "auto" => Ok(TemplateConfigSizingHint::Auto),
-        other => Err(TemplateConfigError::Validation(format!(
-            "unsupported template sizing: {other}"
         ))),
     }
 }
@@ -1676,6 +1896,108 @@ mod tests {
         .expect_err("template predicates are removed")
         .to_string()
         .contains("template-level when"));
+    }
+
+    #[test]
+    fn novel_entity_kind_uses_bundled_generic_form_fallback() {
+        let catalog = TemplateConfigCatalog::default();
+        let metadata = BTreeMap::from([
+            (
+                "entity.kind".to_owned(),
+                MetadataValue::Text("deployment".to_owned()),
+            ),
+            (
+                "entity.id".to_owned(),
+                MetadataValue::Text("prod/api".to_owned()),
+            ),
+            (
+                "display.label".to_owned(),
+                MetadataValue::Text("api".to_owned()),
+            ),
+        ]);
+
+        let resolved = catalog
+            .resolve(entity_context(&metadata))
+            .expect("resolution succeeds")
+            .expect("generic entity template resolves");
+
+        assert_eq!(resolved.name, "deployment/compact");
+        assert!(resolved.is_bundled);
+        assert_eq!(
+            resolved.render_fields(entity_context(&metadata))[0].value,
+            "api"
+        );
+        assert!(resolved
+            .chain
+            .iter()
+            .any(|entry| entry.name == "flotilla/entity/compact"));
+    }
+
+    #[test]
+    fn user_template_for_novel_entity_kind_wins_without_code_registration() {
+        let user = parse_template_config_kdl(
+            r#"
+            template "deployment/compact" slot="compact" node-kind="entity" {
+              field "label" source="literal" value="custom deployment"
+            }
+            "#,
+        )
+        .expect("user template parses");
+        let catalog = TemplateConfigCatalog::with_bundled_defaults(user);
+        let metadata = BTreeMap::from([(
+            "entity.kind".to_owned(),
+            MetadataValue::Text("deployment".to_owned()),
+        )]);
+
+        let resolved = catalog
+            .resolve(entity_context(&metadata))
+            .expect("resolution succeeds")
+            .expect("user template resolves");
+
+        assert_eq!(
+            resolved.render_fields(entity_context(&metadata))[0].value,
+            "custom deployment"
+        );
+        assert!(!resolved.is_bundled);
+    }
+
+    #[test]
+    fn chrome_primitives_survive_flattening_and_explain_the_effective_document() {
+        let config = parse_template_config_kdl(
+            r#"
+            template "tab/title" slot="tab-title" node-kind="tab" {
+              box border="single"
+              toggle collapsed=">" expanded="v"
+              fill glyph="-"
+              dim when="rail.tab.latent"
+              indent level=2
+              field "title" source="literal" value="title"
+            }
+            "#,
+        )
+        .expect("template parses");
+        let catalog = TemplateConfigCatalog::from_config(config);
+        let metadata = BTreeMap::new();
+        let context = TemplateConfigMatchContext {
+            slot: TemplateConfigSlot::TabTitle,
+            node_kind: TemplateConfigNodeKind::Tab,
+            metadata: &metadata,
+            collapsed: false,
+            collapsible: false,
+            active_tab_name: None,
+        };
+        let resolved = catalog
+            .resolve(context)
+            .expect("resolution succeeds")
+            .expect("template resolves");
+
+        let dump = resolved.dump_kdl();
+        assert!(dump.contains("box border=\"single\""));
+        assert!(dump.contains("toggle collapsed=\">\" expanded=\"v\""));
+        assert!(dump.contains("fill glyph=\"-\""));
+        assert!(dump.contains("dim when=\"rail.tab.latent\""));
+        assert!(dump.contains("indent level=2"));
+        assert_eq!(resolved.render_ready().chrome, resolved.chrome);
     }
 
     #[test]

@@ -4,8 +4,8 @@ use std::sync::OnceLock;
 use crate::inline_layout::{InlineHit, InlineItem, InlineRun};
 use andamento_shared::segment_bar::{self, SegmentItem};
 use andamento_shared::template_config::{
-    TemplateConfigCatalog, TemplateConfigFieldClass, TemplateConfigMatchContext,
-    TemplateConfigNodeKind, TemplateConfigSlot,
+    ChromeSpec, TemplateConfigCatalog, TemplateConfigFieldClass, TemplateConfigMatchContext,
+    TemplateConfigNodeKind, TemplateConfigRenderReady, TemplateConfigSlot,
 };
 use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
@@ -578,15 +578,36 @@ fn render_detail_surface(
                 .detail
                 .as_ref()
                 .map(|slot| {
-                    slot.fields
-                        .iter()
-                        .map(|field| field.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" · ")
+                    let metadata = RenderMetadata::from([
+                        (
+                            "entity.kind".to_owned(),
+                            MetadataValue::Text(entity.entity.kind.clone()),
+                        ),
+                        (
+                            "entity.id".to_owned(),
+                            MetadataValue::Text(entity.entity.id.clone()),
+                        ),
+                        (
+                            "display.label".to_owned(),
+                            MetadataValue::Text(entity.label.clone()),
+                        ),
+                    ]);
+                    let fields = template_fields_from_resolved_slot(
+                        slot,
+                        TemplateConfigMatchContext {
+                            slot: TemplateConfigSlot::Detail,
+                            node_kind: TemplateConfigNodeKind::Entity,
+                            metadata: &metadata,
+                            collapsed: false,
+                            collapsible: false,
+                            active_tab_name: None,
+                        },
+                    );
+                    join_template_fields(&fields, true)
                 })
                 .filter(|text| !text.is_empty())
                 .unwrap_or_else(|| entity.label.clone());
-            Some(format!("[{}] {text}", entity.entity.kind.as_str()))
+            Some(format!("[{}] {text}", entity.entity.kind))
         }),
         _ => None,
     }
@@ -1670,7 +1691,20 @@ fn append_group_header(
     HeaderNicheConsumption,
 ) {
     let row = lines.len();
-    let indent = group.indent.min(cols);
+    let chrome = group_header_chrome(
+        &group.metadata,
+        group.collapsed,
+        true,
+        active_tab_name(&group.children),
+        group.templates.group_header.as_ref(),
+        template_catalog,
+    );
+    let hierarchy_depth = group.indent / 2;
+    let indent = chrome
+        .indent_width()
+        .map(|width| hierarchy_depth.saturating_mul(width))
+        .unwrap_or_default()
+        .min(cols);
     let inner_width = cols.saturating_sub(indent);
     // Reserve the last 2 cells when the metadata root toggle is on: glyph
     // at width-2 (vertically aligning with the tab cards' glyphs, which sit
@@ -1859,7 +1893,13 @@ fn append_compact_tab_strip(
     }
     let indent = tabs
         .iter()
-        .map(|tab| tab.indent)
+        .map(|tab| {
+            let hierarchy_depth = tab.indent / 2;
+            card_chrome(&tab.card, template_catalog)
+                .indent_width()
+                .map(|width| hierarchy_depth.saturating_mul(width))
+                .unwrap_or_default()
+        })
         .min()
         .unwrap_or(0)
         .min(cols.saturating_sub(1));
@@ -2396,6 +2436,7 @@ fn render_joined_cells(
     let visible = visible_cells(cards, available_rows, sizing);
     for (visible_index, (card_index, cell_height)) in visible.iter().copied().enumerate() {
         let card = &cards[card_index];
+        let chrome = card_chrome(card, template_catalog);
         let row = visible
             .iter()
             .take(visible_index)
@@ -2412,6 +2453,7 @@ fn render_joined_cells(
             theme,
             metadata_controls,
             inspected_node,
+            &chrome,
         );
         render_card_body(
             lines,
@@ -2425,6 +2467,7 @@ fn render_joined_cells(
             theme,
             terminal_cell_size,
             template_catalog,
+            &chrome,
         );
     }
     if let Some(last_line) = lines.get_mut(visible.iter().map(|(_, height)| *height).sum::<usize>())
@@ -2433,7 +2476,11 @@ fn render_joined_cells(
             .last()
             .map(|(card_index, _)| cards[*card_index].active)
             .unwrap_or(false);
-        *last_line = bottom_border_line(cols, bottom_border_active, theme);
+        let chrome = visible
+            .last()
+            .map(|(card_index, _)| card_chrome(&cards[*card_index], template_catalog))
+            .unwrap_or_default();
+        *last_line = bottom_border_line(cols, bottom_border_active, theme, &chrome);
     }
 }
 
@@ -2473,6 +2520,7 @@ fn render_split_around_active(
     let mut row = 0;
     for (visible_index, (card_index, cell_height)) in visible.iter().copied().enumerate() {
         let card = &cards[card_index];
+        let chrome = card_chrome(card, template_catalog);
         if row >= lines.len() {
             break;
         }
@@ -2511,6 +2559,7 @@ fn render_split_around_active(
             theme,
             metadata_controls,
             inspected_node,
+            &chrome,
         );
         render_card_body(
             lines,
@@ -2524,6 +2573,7 @@ fn render_split_around_active(
             theme,
             terminal_cell_size,
             template_catalog,
+            &chrome,
         );
         row += cell_height;
         let run_ends = visible
@@ -2532,7 +2582,7 @@ fn render_split_around_active(
             .unwrap_or(true);
         if run_ends {
             if let Some(last_line) = lines.get_mut(row) {
-                *last_line = bottom_border_line(cols, false, theme);
+                *last_line = bottom_border_line(cols, false, theme, &chrome);
             }
             row += 1;
         }
@@ -2593,6 +2643,7 @@ fn render_standalone_box(
     if row >= lines.len() || box_height < 2 {
         return row;
     }
+    let chrome = card_chrome(card, template_catalog);
     write_tab_top_border(
         lines,
         hit_regions,
@@ -2604,6 +2655,7 @@ fn render_standalone_box(
         theme,
         metadata_controls,
         inspected_node,
+        &chrome,
     );
     let total_body_rows = box_height.saturating_sub(2);
     let meta_lines = card.meta_panel.as_ref();
@@ -2630,11 +2682,18 @@ fn render_standalone_box(
                 .unwrap_or_default()
         };
         if let Some(line) = lines.get_mut(row + 1 + body_index) {
-            *line = body_line(text, cols, card.active, card.latent, theme);
+            *line = body_line(
+                text,
+                cols,
+                card.active,
+                card_dimmed(card, &chrome),
+                theme,
+                &chrome,
+            );
         }
     }
     if let Some(line) = lines.get_mut(row + box_height - 1) {
-        *line = bottom_border_line(cols, card.active, theme);
+        *line = bottom_border_line(cols, card.active, theme, &chrome);
     }
     let body_rows = total_body_rows;
     add_card_metadata(
@@ -2663,6 +2722,7 @@ fn render_card_body(
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
+    chrome: &ChromeSpec,
 ) {
     let total_body_rows = cell_height.saturating_sub(1);
     let meta_lines = card.meta_panel.as_ref();
@@ -2689,7 +2749,14 @@ fn render_card_body(
                 .unwrap_or_default()
         };
         if let Some(line) = lines.get_mut(row + 1 + body_index) {
-            *line = body_line(text, cols, card.active, card.latent, theme);
+            *line = body_line(
+                text,
+                cols,
+                card.active,
+                card_dimmed(card, chrome),
+                theme,
+                chrome,
+            );
         }
     }
     add_card_metadata(
@@ -3423,7 +3490,7 @@ fn render_card_from_latent(latent: &LatentTab) -> RenderCard {
             None,
         ),
     };
-    let name = format!("{marker} {}", latent.name);
+    let name = latent.name.clone();
     let mut metadata = RenderMetadata::from([
         (
             "action.primary.target".to_owned(),
@@ -3433,6 +3500,18 @@ fn render_card_from_latent(latent: &LatentTab) -> RenderCard {
         (
             "zellij.tab.name".to_owned(),
             MetadataValue::Text(name.clone()),
+        ),
+        (
+            "materialize.glyph".to_owned(),
+            MetadataValue::Text(marker.to_owned()),
+        ),
+        (
+            "entity.kind".to_owned(),
+            MetadataValue::Text(latent.entity.kind.clone()),
+        ),
+        (
+            "entity.id".to_owned(),
+            MetadataValue::Text(latent.entity.id.clone()),
         ),
     ]);
     if let Some(materialize_state) = materialize_state {
@@ -3494,12 +3573,12 @@ fn render_card_from_latent(latent: &LatentTab) -> RenderCard {
         metadata,
         metadata_sources: RenderMetadataSources::new(),
         reachable_identities: RenderReachableIdentities::new(),
-        templates: ResolvedTemplateSlots::default(),
+        templates: latent.templates.clone(),
         latent: true,
         materialize_request,
         latent_summary,
         meta_panel: None,
-        entity: None,
+        entity: Some(latent.entity.clone()),
         compact_only: false,
     }
 }
@@ -3515,7 +3594,7 @@ fn render_card_from_entity(entity: &andamento_shared::DisplayEntity) -> RenderCa
         metadata: RenderMetadata::from([
             (
                 "entity.kind".to_owned(),
-                MetadataValue::Text(entity.entity.kind.as_str().to_owned()),
+                MetadataValue::Text(entity.entity.kind.clone()),
             ),
             (
                 "entity.id".to_owned(),
@@ -3530,7 +3609,7 @@ fn render_card_from_entity(entity: &andamento_shared::DisplayEntity) -> RenderCa
         latent_summary: None,
         meta_panel: None,
         entity: Some(entity.entity.clone()),
-        compact_only: entity.form == andamento_shared::grouping_config::DisplayForm::Compact,
+        compact_only: entity.form == "compact",
     }
 }
 
@@ -3710,7 +3789,19 @@ fn format_status_with_template_catalog(
         .templates
         .tab_status
         .as_ref()
-        .map(template_fields_from_resolved_slot)
+        .map(|slot| {
+            template_fields_from_resolved_slot(
+                slot,
+                TemplateConfigMatchContext {
+                    slot: TemplateConfigSlot::TabStatus,
+                    node_kind: TemplateConfigNodeKind::Tab,
+                    metadata: &card.metadata,
+                    collapsed: false,
+                    collapsible: false,
+                    active_tab_name: None,
+                },
+            )
+        })
         .unwrap_or_else(|| {
             status_template_fields_with_template_catalog(&card.metadata, template_catalog)
         });
@@ -3790,7 +3881,27 @@ fn tab_title_with_template_catalog(
     } else {
         card.templates.tab_title.as_ref()
     })
-    .map(template_fields_from_resolved_slot)
+    .map(|slot| {
+        template_fields_from_resolved_slot(
+            slot,
+            TemplateConfigMatchContext {
+                slot: if card.compact_only {
+                    TemplateConfigSlot::Compact
+                } else {
+                    TemplateConfigSlot::TabTitle
+                },
+                node_kind: if card.compact_only {
+                    TemplateConfigNodeKind::Entity
+                } else {
+                    TemplateConfigNodeKind::Tab
+                },
+                metadata: &card.metadata,
+                collapsed: false,
+                collapsible: false,
+                active_tab_name: None,
+            },
+        )
+    })
     .unwrap_or_else(|| {
         tab_title_template_fields_with_template_catalog(&card.metadata, template_catalog)
     });
@@ -3800,6 +3911,41 @@ fn tab_title_with_template_catalog(
     } else {
         rendered
     }
+}
+
+fn card_chrome(card: &RenderCard, template_catalog: Option<&TemplateConfigCatalog>) -> ChromeSpec {
+    let (resolved_slot, slot, node_kind) = if card.compact_only {
+        (
+            card.templates.compact.as_ref(),
+            TemplateConfigSlot::Compact,
+            TemplateConfigNodeKind::Entity,
+        )
+    } else {
+        (
+            card.templates.tab_title.as_ref(),
+            TemplateConfigSlot::TabTitle,
+            TemplateConfigNodeKind::Tab,
+        )
+    };
+    if let Some(chrome) = resolved_slot
+        .and_then(|slot| slot.render_ready.as_ref())
+        .map(|render_ready| render_ready.chrome.clone())
+    {
+        return chrome;
+    }
+    resolved_render_template(
+        template_catalog,
+        TemplateRenderContext {
+            slot,
+            node_kind,
+            metadata: &card.metadata,
+            collapsed: false,
+            collapsible: false,
+            active_tab_name: None,
+        },
+    )
+    .map(|template| template.chrome)
+    .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -4242,7 +4388,20 @@ fn write_tab_top_border(
     theme: Option<RenderTheme>,
     _metadata_controls: &MetadataControls,
     inspected_node: Option<&NodeKey>,
+    chrome: &ChromeSpec,
 ) {
+    let dimmed = card_dimmed(card, chrome);
+    if !chrome.boxed() {
+        if let Some(slot) = lines.get_mut(row) {
+            let title = pad_to_width(&truncate_to_width(title, width), width);
+            *slot = if dimmed {
+                latent_tab_style(Style::new()).paint(title).to_string()
+            } else {
+                style_body_text(title, theme)
+            };
+        }
+        return;
+    }
     let mut border = BorderRow::new(
         width,
         BorderKind::Top {
@@ -4266,7 +4425,7 @@ fn write_tab_top_border(
             "tab_inspect",
         );
     }
-    if card.latent {
+    if dimmed {
         border.title_with_dim(title, true);
     } else {
         border.title(title);
@@ -4278,24 +4437,42 @@ fn write_tab_top_border(
     hit_regions.extend(hits);
 }
 
-fn bottom_border_line(width: usize, active: bool, theme: Option<RenderTheme>) -> String {
-    BorderRow::new(width, BorderKind::Bottom { active }).into_line(theme)
+fn bottom_border_line(
+    width: usize,
+    active: bool,
+    theme: Option<RenderTheme>,
+    chrome: &ChromeSpec,
+) -> String {
+    if chrome.boxed() {
+        BorderRow::new(width, BorderKind::Bottom { active }).into_line(theme)
+    } else {
+        blank(width)
+    }
 }
 
 fn body_line(
     text: &str,
     width: usize,
     active: bool,
-    latent: bool,
+    dimmed: bool,
     theme: Option<RenderTheme>,
+    chrome: &ChromeSpec,
 ) -> String {
+    if !chrome.boxed() {
+        let text = pad_to_width(&truncate_to_width(text, width), width);
+        return if dimmed {
+            latent_tab_style(Style::new()).paint(text).to_string()
+        } else {
+            style_body_text(text, theme)
+        };
+    }
     match width {
         0 => String::new(),
         1 => style_border_text("│".to_owned(), active, theme),
         _ => {
             let inner_width = width - 2;
             let text = truncate_to_width(text, inner_width);
-            let body = if latent {
+            let body = if dimmed {
                 let style = theme
                     .map(|theme| foreground_style(theme.body_foreground))
                     .unwrap_or_default();
@@ -4313,6 +4490,10 @@ fn body_line(
             )
         }
     }
+}
+
+fn card_dimmed(card: &RenderCard, chrome: &ChromeSpec) -> bool {
+    chrome.dimmed(&card.metadata)
 }
 
 #[cfg(test)]
@@ -4428,7 +4609,7 @@ fn group_header_line(
     niche_tabs: &[RenderTab],
     niche_child_groups: &[RenderGroup],
 ) -> RenderedTemplateLine {
-    let (fields, text_style) = match resolved_slot {
+    let (mut fields, text_style) = match resolved_slot {
         Some(slot) => {
             let fields = group_header_fields_from_resolved_slot(
                 slot,
@@ -4462,6 +4643,29 @@ fn group_header_line(
             template_catalog,
         ),
     };
+    let chrome = group_header_chrome(
+        metadata,
+        collapsed,
+        collapsible,
+        active_tab_name,
+        resolved_slot,
+        template_catalog,
+    );
+    if collapsible {
+        if let Some((collapsed_glyph, expanded_glyph)) = chrome.toggle() {
+            fields.insert(
+                0,
+                TemplateField::Required(
+                    if collapsed {
+                        collapsed_glyph
+                    } else {
+                        expanded_glyph
+                    }
+                    .to_owned(),
+                ),
+            );
+        }
+    }
     let rendered_fields =
         render_template_fields_inline_with_suppression(&fields, width, ancestor_template_fields);
     let mut text = rendered_fields.text;
@@ -4500,13 +4704,15 @@ fn group_header_line(
         visible_width += separator.width() + niche_projection.visible_width;
     }
     let remaining = width.saturating_sub(visible_width);
-    let suffix = if remaining >= 2 {
-        format!(" {}", "─".repeat(remaining - 1))
-    } else if remaining == 1 {
-        " ".to_owned()
-    } else {
-        String::new()
-    };
+    let suffix = chrome.fill().map_or_else(String::new, |glyph| {
+        if remaining >= 2 {
+            format!(" {}", glyph.to_string().repeat(remaining - 1))
+        } else if remaining == 1 {
+            " ".to_owned()
+        } else {
+            String::new()
+        }
+    });
     let style_header = |text| match text_style {
         GroupHeaderTextStyle::Themed => style_group_header_text(text, contains_active_tab, theme),
         GroupHeaderTextStyle::Plain => text,
@@ -4525,6 +4731,35 @@ fn group_header_line(
         niche_hits,
         niche_consumption: niche_projection.consumption,
     }
+}
+
+fn group_header_chrome(
+    metadata: &RenderMetadata,
+    collapsed: bool,
+    collapsible: bool,
+    active_tab_name: Option<&str>,
+    resolved_slot: Option<&ResolvedTemplateSlot>,
+    template_catalog: Option<&TemplateConfigCatalog>,
+) -> ChromeSpec {
+    if let Some(chrome) = resolved_slot
+        .and_then(|slot| slot.render_ready.as_ref())
+        .map(|render_ready| render_ready.chrome.clone())
+    {
+        return chrome;
+    }
+    resolved_render_template(
+        template_catalog,
+        TemplateRenderContext {
+            slot: TemplateConfigSlot::GroupHeader,
+            node_kind: TemplateConfigNodeKind::Group,
+            metadata,
+            collapsed,
+            collapsible,
+            active_tab_name,
+        },
+    )
+    .map(|template| template.chrome)
+    .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -4822,6 +5057,7 @@ fn external_template_fields(
 struct ResolvedRenderTemplate {
     name: String,
     fields: Vec<TemplateField>,
+    chrome: ChromeSpec,
 }
 
 fn bundled_template_catalog() -> &'static TemplateConfigCatalog {
@@ -4869,7 +5105,8 @@ fn render_template_from_catalog(
     } else {
         match_context
     };
-    let fields = resolved
+    let render_ready = resolved.render_ready();
+    let fields = render_ready
         .render_fields(render_context)
         .into_iter()
         .map(|field| match field.class {
@@ -4883,9 +5120,10 @@ fn render_template_from_catalog(
             TemplateConfigFieldClass::Priority => TemplateField::Priority(field.value),
         })
         .collect::<Vec<_>>();
-    (!fields.is_empty()).then(|| ResolvedRenderTemplate {
+    Some(ResolvedRenderTemplate {
         name: resolved.name.clone(),
         fields,
+        chrome: render_ready.chrome,
     })
 }
 
@@ -4951,18 +5189,12 @@ fn resolve_group_header_template_fields(
     (template.fields, text_style)
 }
 
-fn group_header_toggle_field(collapsed: bool, collapsible: bool) -> Option<TemplateField> {
-    collapsible.then(|| TemplateField::Required(if collapsed { "▶" } else { "▼" }.to_owned()))
-}
-
 fn group_identity_fallback_fields(
     metadata: &RenderMetadata,
-    collapsed: bool,
-    collapsible: bool,
+    _collapsed: bool,
+    _collapsible: bool,
 ) -> Vec<TemplateField> {
-    let mut fields = group_header_toggle_field(collapsed, collapsible)
-        .into_iter()
-        .collect::<Vec<_>>();
+    let mut fields = Vec::new();
     if let (Some(key), Some(value)) = (
         metadata_text(metadata, "group.key"),
         metadata_display_value(metadata, "group.value"),
@@ -4995,12 +5227,10 @@ fn uses_bundled_group_header_fallback(metadata: &RenderMetadata) -> bool {
 
 fn group_label_fallback_fields(
     metadata: &RenderMetadata,
-    collapsed: bool,
-    collapsible: bool,
+    _collapsed: bool,
+    _collapsible: bool,
 ) -> Vec<TemplateField> {
-    let mut fields = group_header_toggle_field(collapsed, collapsible)
-        .into_iter()
-        .collect::<Vec<_>>();
+    let mut fields = Vec::new();
     let label = metadata_text(metadata, "group.label")
         .filter(|label| !label.trim().is_empty())
         .unwrap_or("group");
@@ -5015,65 +5245,56 @@ fn group_header_fields_from_resolved_slot(
     collapsible: bool,
     active_tab_name: Option<&str>,
 ) -> Vec<TemplateField> {
-    if !slot.effective_kdl.is_empty() && slot.resolve_error.is_none() {
-        let mut declared_metadata = metadata.clone();
-        declared_metadata.insert(
-            "presentation.template".to_owned(),
-            MetadataValue::Text(slot.template_name.clone()),
-        );
-        let context = TemplateRenderContext {
+    template_fields_from_resolved_slot(
+        slot,
+        TemplateConfigMatchContext {
             slot: TemplateConfigSlot::GroupHeader,
             node_kind: TemplateConfigNodeKind::Group,
-            metadata: &declared_metadata,
+            metadata,
             collapsed,
             collapsible,
             active_tab_name,
-        };
-        if let Ok(config) =
-            andamento_shared::template_config::parse_template_config_kdl(&slot.effective_kdl)
-        {
-            let catalog = TemplateConfigCatalog::from_config(config);
-            if let Some(template) = render_template_from_catalog(&catalog, context) {
-                return template.fields;
-            }
-        }
-    }
-
-    // Older controller payloads contain rendered fields but no effective KDL.
-    // Preserve their implicit local toggle while current payloads render the
-    // complete flattened template in the rail's live collapse context.
-    if slot.fields.is_empty() {
-        return vec![];
-    }
-    let mut fields = group_header_toggle_field(collapsed, collapsible)
-        .into_iter()
-        .collect::<Vec<_>>();
-    fields.extend(slot.fields.iter().map(|field| TemplateField::Prioritized {
-        value: field.text.clone(),
-        priority: field.priority,
-        source: field.source.clone(),
-    }));
-    if collapsed && collapsible {
-        if let Some(active_tab_name) = active_tab_name {
-            fields.push(TemplateField::Prioritized {
-                value: format!(": {active_tab_name}"),
-                priority: 80,
-                source: None,
-            });
-        }
-    }
-    fields
+        },
+    )
 }
 
-fn template_fields_from_resolved_slot(slot: &ResolvedTemplateSlot) -> Vec<TemplateField> {
-    slot.fields
-        .iter()
-        .map(|field| TemplateField::Prioritized {
-            value: field.text.clone(),
-            priority: field.priority,
-            source: field.source.clone(),
+fn render_ready_fields(
+    render_ready: &TemplateConfigRenderReady,
+    context: TemplateConfigMatchContext<'_>,
+) -> Vec<TemplateField> {
+    render_ready
+        .render_fields(context)
+        .into_iter()
+        .map(|field| match field.class {
+            _ if field.priority.is_some() => TemplateField::Prioritized {
+                value: field.value,
+                priority: field.priority.unwrap_or(100),
+                source: field.source,
+            },
+            TemplateConfigFieldClass::Required => TemplateField::Required(field.value),
+            TemplateConfigFieldClass::Optional => TemplateField::Optional(field.value),
+            TemplateConfigFieldClass::Priority => TemplateField::Priority(field.value),
         })
         .collect()
+}
+
+fn template_fields_from_resolved_slot(
+    slot: &ResolvedTemplateSlot,
+    context: TemplateConfigMatchContext<'_>,
+) -> Vec<TemplateField> {
+    slot.render_ready
+        .as_ref()
+        .map(|render_ready| render_ready_fields(render_ready, context))
+        .unwrap_or_else(|| {
+            slot.fields
+                .iter()
+                .map(|field| TemplateField::Prioritized {
+                    value: field.text.clone(),
+                    priority: field.priority,
+                    source: field.source.clone(),
+                })
+                .collect()
+        })
 }
 
 #[cfg(test)]
@@ -5509,6 +5730,10 @@ mod tests {
             label: Some("latent tabs".to_owned()),
         }]);
         let latent = LatentTab {
+            entity: andamento_shared::EntityRef {
+                kind: "convoy".to_owned(),
+                id: "dev/latent-tabs@fleet".to_owned(),
+            },
             action_target: "flotilla:convoys/dev/latent-tabs".to_owned(),
             path: path.clone(),
             name: "latent tabs".to_owned(),
@@ -5518,6 +5743,7 @@ mod tests {
             source: Some("flotilla".to_owned()),
             materialize_recipe: recipe.map(str::to_owned),
             checkout_path: Some("/work/andamento".to_owned()),
+            templates: ResolvedTemplateSlots::default(),
         };
         ControllerViewModel {
             sort_mode: SortMode::Position,
@@ -6340,7 +6566,7 @@ mod tests {
             _ => panic!("expected group"),
         };
         let entity_ref = andamento_shared::EntityRef {
-            kind: andamento_shared::EntityKind::Issue,
+            kind: "issue".to_owned(),
             id: "github/flotilla-org/flotilla#982".to_owned(),
         };
         model.tabs.clear();
@@ -6349,7 +6575,7 @@ mod tests {
             entity: andamento_shared::DisplayEntity {
                 entity: entity_ref.clone(),
                 label: "#982 entities-only cutover".to_owned(),
-                form: andamento_shared::grouping_config::DisplayForm::Compact,
+                form: "compact".to_owned(),
                 templates: ResolvedTemplateSlots {
                     compact: Some(ResolvedTemplateSlot {
                         template_name: "issue.compact".to_owned(),
@@ -6358,6 +6584,7 @@ mod tests {
                             priority: 100,
                             source: None,
                         }],
+                        render_ready: None,
                         effective_kdl: String::new(),
                         resolve_error: None,
                     }),
@@ -6368,6 +6595,7 @@ mod tests {
                             priority: 100,
                             source: None,
                         }],
+                        render_ready: None,
                         effective_kdl: String::new(),
                         resolve_error: None,
                     }),
@@ -7050,6 +7278,7 @@ mod tests {
                     priority: 100,
                     source: Some(repo_source.clone()),
                 }],
+                render_ready: None,
                 effective_kdl: String::new(),
                 resolve_error: None,
             });
@@ -7069,6 +7298,7 @@ mod tests {
                         source: Some(branch_source),
                     },
                 ],
+                render_ready: None,
                 effective_kdl: String::new(),
                 resolve_error: None,
             });
@@ -7330,7 +7560,6 @@ mod tests {
         assert_eq!(
             fields,
             vec![
-                TemplateField::Required("▶".to_owned()),
                 TemplateField::Required("zellij".to_owned()),
                 TemplateField::Optional("(2)".to_owned()),
                 TemplateField::Priority(": tests".to_owned()),
@@ -7548,7 +7777,7 @@ mod tests {
         let rendered =
             render_lines_with_template_catalog(Some(&model()), &[], 7, 24, true, Some(&catalog));
 
-        assert!(rendered.lines[0].starts_with("┌ External"));
+        assert!(rendered.lines[0].starts_with("External"));
     }
 
     #[test]
@@ -7557,6 +7786,7 @@ mod tests {
         model.tabs[0].templates.tab_title = Some(ResolvedTemplateSlot {
             template_name: "future.entry".to_owned(),
             fields: vec![],
+            render_ready: None,
             effective_kdl: String::new(),
             resolve_error: None,
         });
@@ -7577,6 +7807,7 @@ mod tests {
             Some(ResolvedTemplateSlot {
                 template_name: "future.group".to_owned(),
                 fields: vec![],
+                render_ready: None,
                 effective_kdl: String::new(),
                 resolve_error: None,
             }),
@@ -7616,7 +7847,7 @@ mod tests {
 
             assert!(
                 rendered.lines[0]
-                    .starts_with("▼ experimental.scope: andamento-total-fallback (group)"),
+                    .starts_with("experimental.scope: andamento-total-fallback (group)"),
                 "unknown grouping key should render plain key, value, and kind: {:?}",
                 rendered.lines[0]
             );
@@ -7922,6 +8153,7 @@ mod tests {
         templates.group_header = Some(ResolvedTemplateSlot {
             template_name: "future.group".to_owned(),
             fields: vec![],
+            render_ready: None,
             effective_kdl: String::new(),
             resolve_error: None,
         });
@@ -7936,8 +8168,34 @@ mod tests {
     }
 
     #[test]
-    fn effective_group_template_renders_once_in_the_live_collapse_context() {
+    fn cached_group_template_renders_in_the_live_collapse_context_without_reparsing_kdl() {
         let mut model = grouped_model();
+        let config = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            template "group/full" slot="group-header" node-kind="group" {
+              toggle collapsed="▶" expanded="▼"
+              fill glyph="─"
+              field "label" class="required" source="literal" value="effective"
+            }
+            "#,
+        )
+        .expect("template parses");
+        let catalog = TemplateConfigCatalog::from_config(config);
+        let metadata = BTreeMap::from([(
+            "presentation.template".to_owned(),
+            MetadataValue::Text("group/full".to_owned()),
+        )]);
+        let resolved = catalog
+            .resolve(TemplateConfigMatchContext {
+                slot: TemplateConfigSlot::GroupHeader,
+                node_kind: TemplateConfigNodeKind::Group,
+                metadata: &metadata,
+                collapsed: false,
+                collapsible: true,
+                active_tab_name: None,
+            })
+            .expect("resolution succeeds")
+            .expect("template resolves");
         let RailRow::GroupHeader {
             path, templates, ..
         } = &mut model.rows[0]
@@ -7959,13 +8217,8 @@ mod tests {
                     source: None,
                 },
             ],
-            effective_kdl: r#"
-                template "group/full" slot="group-header" node-kind="group" {
-                  field "toggle" class="required" source="collapsed-toggle" collapsed="▶" expanded="▼"
-                  field "label" class="required" source="literal" value="effective"
-                }
-            "#
-            .to_owned(),
+            render_ready: Some(resolved.render_ready()),
+            effective_kdl: "// deliberately not parseable; inspect evidence only".to_owned(),
             resolve_error: None,
         });
 
@@ -8084,17 +8337,14 @@ mod tests {
 
         assert_eq!(
             fields,
-            vec![
-                TemplateField::Required("▼".to_owned()),
-                TemplateField::Prioritized {
-                    value: "flotilla-org/andamento".to_owned(),
-                    priority: 100,
-                    source: Some(ResolvedTemplateFieldSource {
-                        key: "vcs.repo".to_owned(),
-                        value: MetadataValue::Text("flotilla-org/andamento".to_owned()),
-                    }),
-                },
-            ]
+            vec![TemplateField::Prioritized {
+                value: "flotilla-org/andamento".to_owned(),
+                priority: 100,
+                source: Some(ResolvedTemplateFieldSource {
+                    key: "vcs.repo".to_owned(),
+                    value: MetadataValue::Text("flotilla-org/andamento".to_owned()),
+                }),
+            },]
         );
     }
 
@@ -8997,6 +9247,7 @@ mod tests {
             entity: None,
             compact_only: false,
         };
+        let chrome = card_chrome(&card, None);
         write_tab_top_border(
             &mut lines,
             &mut hits,
@@ -9008,6 +9259,7 @@ mod tests {
             None,
             &controls,
             Some(&NodeKey::Tab(7)),
+            &chrome,
         );
         assert!(lines[0].ends_with("●┐"), "got {:?}", lines[0]);
         let cycle_hit = hits
@@ -9041,8 +9293,9 @@ mod tests {
             entity: None,
             compact_only: false,
         };
+        let chrome = card_chrome(&card, None);
         write_tab_top_border(
-            &mut lines, &mut hits, 0, "tab", 20, true, &card, None, &controls, None,
+            &mut lines, &mut hits, 0, "tab", 20, true, &card, None, &controls, None, &chrome,
         );
         assert!(lines[0].ends_with("○┐"), "got {:?}", lines[0]);
         assert!(hits.iter().any(|h| h.action == HitAction::InspectNode));
@@ -9238,15 +9491,16 @@ mod tests {
             .expect("issue compact template");
         let entity = andamento_shared::DisplayEntity {
             entity: andamento_shared::EntityRef {
-                kind: andamento_shared::EntityKind::Issue,
+                kind: "issue".to_owned(),
                 id: "flotilla#1058".into(),
             },
             label: "#1058".into(),
-            form: andamento_shared::grouping_config::DisplayForm::Compact,
+            form: "compact".to_owned(),
             templates: ResolvedTemplateSlots {
                 compact: Some(ResolvedTemplateSlot {
                     template_name: resolved.name.clone(),
                     fields: vec![],
+                    render_ready: Some(resolved.render_ready()),
                     effective_kdl: resolved.dump_kdl(),
                     resolve_error: None,
                 }),

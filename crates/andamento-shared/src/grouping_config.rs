@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, error::Error, fmt, path::Path};
 use kdl::{KdlDocument, KdlNode, KdlValue};
 use serde::{Deserialize, Serialize};
 
-use crate::{EntityKind, MetadataValue};
+use crate::MetadataValue;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
@@ -74,29 +74,25 @@ fn default_filter_exists() -> bool {
 #[serde(rename_all = "kebab-case")]
 pub enum PresenceClass {
     Tab,
-    Section,
+    Inline,
     Hidden,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum DisplayForm {
-    #[default]
-    Full,
-    Compact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct PresenceMapping {
-    pub kind: EntityKind,
+    pub kind: String,
     pub class: PresenceClass,
-    #[serde(default)]
-    pub form: DisplayForm,
+    #[serde(default = "default_display_form")]
+    pub form: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible_when: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
+}
+
+fn default_display_form() -> String {
+    "full".to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,51 +168,51 @@ pub fn bundled_default_rule() -> GroupingRule {
         }),
         presence: vec![
             PresenceMapping {
-                kind: EntityKind::Convoy,
+                kind: "convoy".to_owned(),
                 class: PresenceClass::Tab,
-                form: DisplayForm::Full,
+                form: "full".to_owned(),
                 visible_when: None,
                 template: None,
             },
             PresenceMapping {
-                kind: EntityKind::Vessel,
+                kind: "vessel".to_owned(),
                 class: PresenceClass::Tab,
-                form: DisplayForm::Full,
+                form: "full".to_owned(),
                 visible_when: None,
                 template: None,
             },
             PresenceMapping {
-                kind: EntityKind::Session,
+                kind: "session".to_owned(),
                 class: PresenceClass::Tab,
-                form: DisplayForm::Full,
+                form: "full".to_owned(),
                 visible_when: None,
                 template: None,
             },
             PresenceMapping {
-                kind: EntityKind::Issue,
-                class: PresenceClass::Section,
-                form: DisplayForm::Compact,
+                kind: "issue".to_owned(),
+                class: PresenceClass::Inline,
+                form: "compact".to_owned(),
                 visible_when: Some("show-issues".to_owned()),
                 template: None,
             },
             PresenceMapping {
-                kind: EntityKind::Project,
+                kind: "project".to_owned(),
                 class: PresenceClass::Tab,
-                form: DisplayForm::Full,
+                form: "full".to_owned(),
                 visible_when: None,
                 template: None,
             },
             PresenceMapping {
-                kind: EntityKind::Repo,
-                class: PresenceClass::Section,
-                form: DisplayForm::Full,
+                kind: "repo".to_owned(),
+                class: PresenceClass::Inline,
+                form: "full".to_owned(),
                 visible_when: None,
                 template: None,
             },
             PresenceMapping {
-                kind: EntityKind::Checkout,
-                class: PresenceClass::Section,
-                form: DisplayForm::Full,
+                kind: "checkout".to_owned(),
+                class: PresenceClass::Inline,
+                form: "full".to_owned(),
                 visible_when: None,
                 template: None,
             },
@@ -376,23 +372,10 @@ fn parse_kdl_filter(node: &KdlNode) -> Result<EntityFilter, GroupingConfigError>
 }
 
 fn parse_kdl_presence(node: &KdlNode) -> Result<PresenceMapping, GroupingConfigError> {
-    let kind = match string_property(node, "kind", "presence must have kind=\"...\"")?.as_str() {
-        "project" => EntityKind::Project,
-        "repo" => EntityKind::Repo,
-        "convoy" => EntityKind::Convoy,
-        "vessel" => EntityKind::Vessel,
-        "issue" => EntityKind::Issue,
-        "session" => EntityKind::Session,
-        "checkout" => EntityKind::Checkout,
-        other => {
-            return Err(GroupingConfigError::Validation(format!(
-                "unknown entity kind: {other}"
-            )))
-        }
-    };
+    let kind = string_property(node, "kind", "presence must have kind=\"...\"")?;
     let class = match string_property(node, "class", "presence must have class=\"...\"")?.as_str() {
         "tab" => PresenceClass::Tab,
-        "section" => PresenceClass::Section,
+        "inline" => PresenceClass::Inline,
         "hidden" => PresenceClass::Hidden,
         other => {
             return Err(GroupingConfigError::Validation(format!(
@@ -400,19 +383,11 @@ fn parse_kdl_presence(node: &KdlNode) -> Result<PresenceMapping, GroupingConfigE
             )))
         }
     };
-    let form = match node
+    let form = node
         .get("form")
         .and_then(|entry| entry.value().as_string())
         .unwrap_or("full")
-    {
-        "full" => DisplayForm::Full,
-        "compact" => DisplayForm::Compact,
-        other => {
-            return Err(GroupingConfigError::Validation(format!(
-                "unknown display form: {other}"
-            )))
-        }
-    };
+        .to_owned();
     let visible_when = node
         .get("visible-when")
         .and_then(|entry| entry.value().as_string())
@@ -554,7 +529,7 @@ mod tests {
             version 1
             grouping "active" priority=10 {
               filter key="status.state" equals="active"
-              presence kind="issue" class="section" template="issue/attention"
+              presence kind="issue" class="inline" template="issue/attention"
               level key="flotilla.project" label-key="flotilla.project.name" show-empty=false template="project/heading"
               level key="flotilla.convoy" label-key="flotilla.convoy.name" collapse-single-member=true
             }
@@ -575,9 +550,9 @@ mod tests {
         assert_eq!(
             rule.presence,
             vec![PresenceMapping {
-                kind: EntityKind::Issue,
-                class: PresenceClass::Section,
-                form: DisplayForm::Full,
+                kind: "issue".to_owned(),
+                class: PresenceClass::Inline,
+                form: "full".to_owned(),
                 visible_when: None,
                 template: Some("issue/attention".to_owned()),
             }]
@@ -605,13 +580,13 @@ mod tests {
         assert_eq!(
             rule.presence
                 .iter()
-                .find(|mapping| mapping.kind == EntityKind::Issue)
-                .map(|mapping| (mapping.class, mapping.form, mapping.visible_when.as_deref())),
-            Some((
-                PresenceClass::Section,
-                DisplayForm::Compact,
-                Some("show-issues")
-            ))
+                .find(|mapping| mapping.kind == "issue")
+                .map(|mapping| (
+                    mapping.class,
+                    mapping.form.as_str(),
+                    mapping.visible_when.as_deref()
+                )),
+            Some((PresenceClass::Inline, "compact", Some("show-issues")))
         );
         assert!(rule.levels[2].collapse_single_member);
     }

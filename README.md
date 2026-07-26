@@ -88,7 +88,7 @@ publish `MetadataTarget::Entity({ kind, id })` patches with facts such as
 `flotilla.project`, `vcs.repo`, and `flotilla.convoy`; they do not publish
 group targets or paths. The bundled `flotilla.default` template orders the
 spine as project → repo → convoy → vessel → session → issue → checkout.
-Convoys and vessels are tab candidates, issues are section-only, and a
+Convoys and vessels are tab candidates, issues are inline-only, and a
 single vessel collapses into its convoy because both expose the same primary
 action target.
 
@@ -116,8 +116,8 @@ grouping "proj-repo-branch" {
 ```
 
 Each level also accepts `collapse-single-member=true` and `show-empty=true`.
-Presence mappings classify an entity kind as `tab`, `section`, or `hidden`.
-Section entities can select `form="compact"` to reuse the rail's wrapped
+Presence mappings classify an entity kind as `tab`, `inline`, or `hidden`.
+Inline entities can select `form="compact"` to reuse the rail's wrapped
 Zellij-ribbon collection rendering. `visible-when="variable-name"` gates the
 whole class through a declared display variable; it does not introduce a
 kind-specific switch in the renderer. Both `level` and `presence` declarations
@@ -189,6 +189,25 @@ Templates bind by name instead of predicates. Entity forms use
 `<entity.kind>/<compact|detail>`, groups use `<kind>/full`, and tabs use
 `tab/title` or `tab/status`. A grouping or presence declaration's `template=`
 value overrides that convention for the affected node.
+Entity kinds and forms are open strings. A publisher can introduce a new kind
+without a renderer change; a matching user template wins by convention, and
+otherwise the bundled `entity/<form>` template supplies the generic fallback.
+
+Chrome is part of the same effective document:
+
+```kdl
+template "tab/title" slot="tab-title" node-kind="tab" {
+    box border="single"
+    indent level=2
+    dim when="rail.tab.latent"
+    field "title" key="zellij.tab.name"
+}
+```
+
+`box`, `toggle`, `fill`, `dim`, and `indent` decide whether and where chrome
+appears. The renderer still owns terminal glyph/style mechanics. Resolved
+chrome and field programs travel with the controller view model, while the
+flattened KDL remains inspect evidence; the rail does not parse KDL per frame.
 
 `extends=` names one parent. A child field with the same name replaces its
 parent in place; `remove "field-name"` deletes one; new fields are interleaved

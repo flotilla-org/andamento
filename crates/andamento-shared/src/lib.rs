@@ -294,6 +294,8 @@ pub enum LatentMaterializationState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LatentTab {
+    /// Presentation entity whose tab-presence is not currently materialized.
+    pub entity: EntityRef,
     /// Stable producer-owned identity used to deduplicate materializations.
     pub action_target: String,
     pub path: GroupPath,
@@ -312,6 +314,8 @@ pub struct LatentTab {
     pub materialize_recipe: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout_path: Option<String>,
+    #[serde(default)]
+    pub templates: ResolvedTemplateSlots,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -508,41 +512,15 @@ pub struct MetadataIdentity {
     pub value: MetadataValue,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum EntityKind {
-    Project,
-    Repo,
-    Convoy,
-    Vessel,
-    Issue,
-    Session,
-    Checkout,
-}
-
-impl EntityKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Project => "project",
-            Self::Repo => "repo",
-            Self::Convoy => "convoy",
-            Self::Vessel => "vessel",
-            Self::Issue => "issue",
-            Self::Session => "session",
-            Self::Checkout => "checkout",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EntityRef {
-    pub kind: EntityKind,
+    pub kind: String,
     pub id: String,
 }
 
 impl EntityRef {
     pub fn action_target(&self) -> String {
-        format!("{}:{}", self.kind.as_str(), self.id)
+        format!("{}:{}", self.kind, self.id)
     }
 }
 
@@ -691,7 +669,7 @@ pub enum RailRow {
 pub struct DisplayEntity {
     pub entity: EntityRef,
     pub label: String,
-    pub form: grouping_config::DisplayForm,
+    pub form: String,
     #[serde(default)]
     pub templates: ResolvedTemplateSlots,
 }
@@ -715,6 +693,8 @@ pub struct ResolvedTemplateSlot {
     pub template_name: String,
     #[serde(default)]
     pub fields: Vec<ResolvedTemplateField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_ready: Option<template_config::TemplateConfigRenderReady>,
     #[serde(default)]
     pub effective_kdl: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1335,6 +1315,10 @@ mod tests {
                 },
                 RailRow::Latent {
                     latent: LatentTab {
+                        entity: EntityRef {
+                            kind: "convoy".to_owned(),
+                            id: "dev/latent-tabs@fleet".to_owned(),
+                        },
                         action_target: "flotilla:convoys/dev/latent-tabs".to_owned(),
                         path: group_path.clone(),
                         name: "latent tabs".to_owned(),
@@ -1344,6 +1328,7 @@ mod tests {
                         source: Some("flotilla".to_owned()),
                         materialize_recipe: Some("flotilla attach latent-tabs".to_owned()),
                         checkout_path: Some("/work/andamento".to_owned()),
+                        templates: ResolvedTemplateSlots::default(),
                     },
                     indent: 2,
                     parent_path: Some(group_path.clone()),
@@ -1428,7 +1413,7 @@ mod tests {
     #[test]
     fn metadata_target_entity_round_trips_json() {
         let target = MetadataTarget::Entity(EntityRef {
-            kind: EntityKind::Convoy,
+            kind: "convoy".to_owned(),
             id: "dev/cutover@kiwi".to_owned(),
         });
 
@@ -1459,7 +1444,7 @@ mod tests {
     fn metadata_patch_round_trips_json() {
         let patch = MetadataPatch {
             target: MetadataTarget::Entity(EntityRef {
-                kind: EntityKind::Project,
+                kind: "project".to_owned(),
                 id: "dev/zellij@fleet".to_owned(),
             }),
             source_id: "flotilla".to_owned(),
