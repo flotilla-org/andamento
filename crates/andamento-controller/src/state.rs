@@ -79,6 +79,7 @@ struct CatalogEntity {
     form: DisplayForm,
     visible_when: Option<String>,
     template: Option<String>,
+    group_templates: BTreeMap<String, String>,
     collapse_single_member: bool,
     show_empty: bool,
 }
@@ -1284,6 +1285,7 @@ impl ControllerState {
         rows: Vec<RailRow>,
         resolved_metadata: &[ResolvedMetadata],
     ) -> Vec<RailRow> {
+        let declared_templates = self.declared_group_templates();
         rows.into_iter()
             .map(|row| match row {
                 RailRow::GroupHeader {
@@ -1301,10 +1303,10 @@ impl ControllerState {
                         tab_count,
                         resolved_metadata,
                     );
-                    if let Some(template) = self.declared_group_template(&path) {
+                    if let Some(template) = declared_templates.get(&path) {
                         metadata.insert(
                             "presentation.template".to_owned(),
-                            MetadataValue::Text(template),
+                            MetadataValue::Text(template.clone()),
                         );
                     }
                     templates.group_header = self.resolve_template_slot(
@@ -1444,6 +1446,16 @@ impl ControllerState {
                 let visible_when = mapping.and_then(|mapping| mapping.visible_when.clone());
                 let template = mapping.and_then(|mapping| mapping.template.clone());
                 let level = &rule.levels[level_index];
+                let group_templates = rule
+                    .levels
+                    .iter()
+                    .filter_map(|level| {
+                        level
+                            .template
+                            .as_ref()
+                            .map(|template| (level.key.clone(), template.clone()))
+                    })
+                    .collect();
                 Some(CatalogEntity {
                     entity: entity.clone(),
                     values,
@@ -1453,6 +1465,7 @@ impl ControllerState {
                     form,
                     visible_when,
                     template,
+                    group_templates,
                     collapse_single_member: level.collapse_single_member,
                     show_empty: level.show_empty,
                 })
@@ -1466,76 +1479,65 @@ impl ControllerState {
         entities
     }
 
-    fn declared_group_template(&self, path: &GroupPath) -> Option<String> {
-        let key = &path.0.last()?.key;
-        if let Some(template) = self
-            .catalog_entities()
-            .into_iter()
-            .find(|entity| entity.path == *path && entity.form == DisplayForm::Full)
-            .and_then(|entity| entity.template)
-        {
-            return Some(template);
+    fn declared_group_templates(&self) -> BTreeMap<GroupPath, String> {
+        let entities = self.catalog_entities();
+        let mut declarations = BTreeMap::new();
+        for entity in &entities {
+            for depth in 1..=entity.path.0.len() {
+                let prefix = GroupPath(entity.path.0[..depth].to_vec());
+                let key = &entity.path.0[depth - 1].key;
+                if let Some(template) = entity.group_templates.get(key) {
+                    declarations
+                        .entry(prefix)
+                        .or_insert_with(|| template.clone());
+                }
+            }
         }
+
         let default_catalog = GroupingConfigCatalog::default();
         let catalog = self.grouping_catalog.as_ref().unwrap_or(&default_catalog);
-        self.selected_grouping_rule_for_path(path, catalog)
-            .and_then(|rule| rule.levels.iter().find(|level| &level.key == key))
-            .and_then(|level| level.template.clone())
-    }
-
-    fn selected_grouping_rule_for_path<'a>(
-        &self,
-        path: &GroupPath,
-        catalog: &'a GroupingConfigCatalog,
-    ) -> Option<&'a GroupingRule> {
-        let selected_entity_rule = |facts: &BTreeMap<String, MetadataValue>| {
-            if let Some(name) = self.active_grouping_template.as_deref() {
-                return catalog.named(name).filter(|rule| {
-                    rule.filter
-                        .as_ref()
-                        .is_none_or(|filter| filter.matches(facts))
-                        && grouping_path_for_facts(rule, facts)
-                            .is_some_and(|(candidate, _)| candidate.0.starts_with(&path.0))
-                });
-            }
-            catalog.rules.iter().find(|rule| {
-                rule.filter
-                    .as_ref()
-                    .is_none_or(|filter| filter.matches(facts))
-                    && grouping_path_for_facts(rule, facts)
-                        .is_some_and(|(candidate, _)| candidate.0.starts_with(&path.0))
-            })
-        };
-        for target in self.metadata.targets() {
-            let EntityId::Entity(entity) = target else {
-                continue;
-            };
-            let values = self
-                .metadata
-                .resolved_entries_for(target, self.receive_counter);
-            let facts = entity_facts(entity, &values);
-            if let Some(rule) = selected_entity_rule(&facts) {
-                return Some(rule);
-            }
-        }
         for tab in &self.tabs {
             let metadata = self.tab_resolved_metadata_values(tab.tab_id);
-            let rule = if let Some(name) = self.active_grouping_template.as_deref() {
-                catalog.named(name)
+            let selected = if let Some(name) = self.active_grouping_template.as_deref() {
+                catalog.named(name).and_then(|rule| {
+                    self.tab_grouping_for_rule(rule, &metadata)
+                        .map(|path| (rule, path))
+                })
             } else {
-                catalog
-                    .rules
-                    .iter()
-                    .find(|rule| self.tab_grouping_for_rule(rule, &metadata).is_some())
+                catalog.rules.iter().find_map(|rule| {
+                    self.tab_grouping_for_rule(rule, &metadata)
+                        .map(|path| (rule, path))
+                })
             };
-            if let Some(rule) = rule.filter(|rule| {
-                self.tab_grouping_for_rule(rule, &metadata)
-                    .is_some_and(|grouping| grouping.path.0.starts_with(&path.0))
-            }) {
-                return Some(rule);
+            let Some((rule, grouping)) = selected else {
+                continue;
+            };
+            for depth in 1..=grouping.path.0.len() {
+                let prefix = GroupPath(grouping.path.0[..depth].to_vec());
+                let key = &grouping.path.0[depth - 1].key;
+                if let Some(template) = rule
+                    .levels
+                    .iter()
+                    .find(|level| &level.key == key)
+                    .and_then(|level| level.template.as_ref())
+                {
+                    declarations
+                        .entry(prefix)
+                        .or_insert_with(|| template.clone());
+                }
             }
         }
-        None
+
+        // A full-form presence declaration owns its exact surface and takes
+        // precedence over the grouping level's default for that same path.
+        for entity in entities {
+            if entity.form == DisplayForm::Full {
+                if let Some(template) = entity.template {
+                    declarations.insert(entity.path, template);
+                }
+            }
+        }
+        declarations
     }
 
     fn materialized_action_targets(&self, entities: &[CatalogEntity]) -> BTreeSet<String> {
