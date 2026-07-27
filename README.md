@@ -232,6 +232,23 @@ each node. Repository and project layers participate only when that node's
 from leaking across nodes. The complete namespaced fallback pack is published
 in `templates/flotilla-default.kdl`.
 
+The sidebar itself is an ordered stack declared in that same surface config:
+
+```kdl
+region "header" source="header" root-template="flotilla/region/header" form="compact" pinned=true
+region "attention" source="attention" root-template="flotilla/region/attention" form="full" attention-key="status.attention"
+region "tree" source="tree" root-template="flotilla/region/tree" form="compact"
+region "controls" source="controls" root-template="flotilla/region/controls" form="compact" pinned=true
+```
+
+Declaration order is render order. A configured stack replaces the bundled
+stack as one unit, so regions can be reordered without renderer changes. Each
+region selects its root template and entity form independently. Attention
+regions promote entities whose configured boolean fact is true; the bundled
+surface consumes Flotilla's normalized `status.attention` fact and uses the
+full/detail form while the tree defaults to compact. A pinned border-adjacent
+region reserves its rows while the intervening region viewport is clipped.
+
 Select a row's inspect glyph to see the effective flattened KDL. Its comments
 show the inheritance chain and the source layer/file for every field; missing
 parents, fragments, declaration targets, and inheritance cycles are shown as

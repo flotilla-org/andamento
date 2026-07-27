@@ -4,16 +4,17 @@ use std::sync::OnceLock;
 use crate::inline_layout::{InlineHit, InlineItem, InlineRun};
 use andamento_shared::segment_bar::{self, SegmentItem};
 use andamento_shared::template_config::{
-    ChromeSpec, TemplateConfigCatalog, TemplateConfigFieldClass, TemplateConfigMatchContext,
-    TemplateConfigNodeKind, TemplateConfigRenderReady, TemplateConfigSlot,
+    ChromeSpec, SurfaceRegionDefinition, SurfaceRegionSource, TemplateConfigCatalog,
+    TemplateConfigFieldClass, TemplateConfigMatchContext, TemplateConfigNodeKind,
+    TemplateConfigRenderReady, TemplateConfigSlot,
 };
 use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
-    ChildLayoutSetting, ControllerViewModel, GroupPath, GroupSegment, LatentMaterializationState,
-    LatentTab, MaterializeLatentRequest, MetadataControls, MetadataEntry, MetadataSourceEntry,
-    MetadataValue, NodeKey, PaneTarget, Priority, RailConfig, RailRgbColor, RailRow,
-    RailSizingPreset, RailStructure, ReachableMetadataIdentity, ResolvedMetadata,
-    ResolvedMetadataTarget, ResolvedTemplateFieldSource, ResolvedTemplateSlot,
+    ChildLayoutSetting, ControllerViewModel, DisplayRegion, GroupPath, GroupSegment,
+    LatentMaterializationState, LatentTab, MaterializeLatentRequest, MetadataControls,
+    MetadataEntry, MetadataSourceEntry, MetadataValue, NodeKey, PaneTarget, Priority, RailConfig,
+    RailRgbColor, RailRow, RailSizingPreset, RailStructure, ReachableMetadataIdentity,
+    ResolvedMetadata, ResolvedMetadataTarget, ResolvedTemplateFieldSource, ResolvedTemplateSlot,
     ResolvedTemplateSlots, StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
     DISPLAY_FORM_COMPACT,
 };
@@ -416,6 +417,72 @@ pub fn render_lines_with_rail_viewport(
     rail_scroll_offset: isize,
     ensure_active_visible: bool,
 ) -> RenderedRail {
+    let configured_regions = model
+        .map(|model| model.surface_regions.clone())
+        .filter(|regions| !regions.is_empty())
+        .or_else(|| {
+            template_catalog.map(|catalog| {
+                catalog
+                    .regions()
+                    .iter()
+                    .cloned()
+                    .map(|definition| DisplayRegion {
+                        root: resolve_region_root(&definition, catalog),
+                        definition,
+                        entities: vec![],
+                    })
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+    if !configured_regions.is_empty() {
+        return render_region_stack(
+            model,
+            tabs,
+            rows,
+            cols,
+            controller_available,
+            theme,
+            terminal_cell_size,
+            collapsed_groups,
+            &configured_regions,
+            template_catalog,
+            metadata_controls,
+            rail_scroll_offset,
+            ensure_active_visible,
+        );
+    }
+    render_legacy_rail_viewport(
+        model,
+        tabs,
+        rows,
+        cols,
+        controller_available,
+        theme,
+        terminal_cell_size,
+        collapsed_groups,
+        template_catalog,
+        metadata_controls,
+        rail_scroll_offset,
+        ensure_active_visible,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_legacy_rail_viewport(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    rows: usize,
+    cols: usize,
+    controller_available: bool,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+    collapsed_groups: &[GroupPath],
+    template_catalog: Option<&TemplateConfigCatalog>,
+    metadata_controls: &MetadataControls,
+    rail_scroll_offset: isize,
+    ensure_active_visible: bool,
+) -> RenderedRail {
     if rows == 0 || cols == 0 {
         return RenderedRail {
             lines: vec![],
@@ -497,6 +564,334 @@ pub fn render_lines_with_rail_viewport(
         ensure_visible_offset: viewport.ensure_visible_offset,
         ensure_active_resolved: viewport.ensure_active_resolved,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_region_stack(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    rows: usize,
+    cols: usize,
+    controller_available: bool,
+    theme: Option<RenderTheme>,
+    terminal_cell_size: Option<SizeInPixels>,
+    collapsed_groups: &[GroupPath],
+    regions: &[DisplayRegion],
+    catalog: Option<&TemplateConfigCatalog>,
+    metadata_controls: &MetadataControls,
+    rail_scroll_offset: isize,
+    ensure_active_visible: bool,
+) -> RenderedRail {
+    if rows == 0 || cols == 0 {
+        return RenderedRail {
+            lines: vec![],
+            hit_regions: vec![],
+            visible_cards: vec![],
+            content_height: 0,
+            available_rows: 0,
+            ensure_visible_offset: None,
+            ensure_active_resolved: false,
+        };
+    }
+
+    let mut lines = Vec::with_capacity(rows);
+    let mut hit_regions = vec![];
+    let mut visible_cards = vec![];
+    let mut content_height = 0;
+    let mut ensure_visible_offset = None;
+    let mut ensure_active_resolved = false;
+
+    for (region_index, display_region) in regions.iter().enumerate() {
+        let region = &display_region.definition;
+        if lines.len() >= rows {
+            break;
+        }
+        let remaining = rows - lines.len();
+        let later_pinned_rows = regions[region_index + 1..]
+            .iter()
+            .filter(|region| region.definition.pinned)
+            .map(|region| match region.definition.source {
+                SurfaceRegionSource::Controls => 2,
+                _ => 1,
+            })
+            .sum::<usize>();
+        match region.source {
+            SurfaceRegionSource::Header => {
+                lines.push(region_root_line(display_region, cols, theme));
+                content_height += 1;
+            }
+            SurfaceRegionSource::Attention => {
+                lines.push(region_root_line(display_region, cols, theme));
+                content_height += 1;
+                let key = region
+                    .attention_key
+                    .as_deref()
+                    .unwrap_or("status.attention");
+                let attention_entities = if display_region.entities.is_empty() {
+                    model
+                        .into_iter()
+                        .flat_map(|model| model.rows.iter())
+                        .filter_map(|row| match row {
+                            RailRow::Entity { entity, .. } => Some(entity),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    display_region.entities.iter().collect()
+                };
+                for entity in attention_entities
+                    .into_iter()
+                    .filter(|entity| entity.metadata.get(key) == Some(&MetadataValue::Bool(true)))
+                {
+                    content_height += 1;
+                    if lines.len() + later_pinned_rows < rows {
+                        lines.push(region_entity_line(
+                            entity,
+                            &region.form,
+                            catalog,
+                            cols,
+                            theme,
+                        ));
+                    }
+                }
+            }
+            SurfaceRegionSource::Tree => {
+                lines.push(region_root_line(display_region, cols, theme));
+                content_height += 1;
+                if remaining <= 1 {
+                    continue;
+                }
+                let mut region_model = model.cloned();
+                if let Some(model) = &mut region_model {
+                    apply_region_form(&mut model.rows, &region.form, catalog);
+                }
+                let tree_rows = remaining.saturating_sub(1 + later_pinned_rows);
+                if tree_rows == 0 {
+                    continue;
+                }
+                let mut rendered = render_legacy_rail_viewport(
+                    region_model.as_ref(),
+                    tabs,
+                    tree_rows + 1,
+                    cols,
+                    controller_available,
+                    theme,
+                    terminal_cell_size,
+                    collapsed_groups,
+                    catalog,
+                    metadata_controls,
+                    rail_scroll_offset,
+                    ensure_active_visible,
+                );
+                rendered.lines.truncate(tree_rows);
+                let row_offset = lines.len();
+                for hit in &mut rendered.hit_regions {
+                    hit.row_start += row_offset;
+                    hit.row_end += row_offset;
+                }
+                for card in &mut rendered.visible_cards {
+                    card.row_start += row_offset;
+                    card.status_row = card.status_row.map(|row| row + row_offset);
+                }
+                lines.extend(rendered.lines);
+                hit_regions.extend(rendered.hit_regions);
+                visible_cards.extend(rendered.visible_cards);
+                content_height += rendered.content_height;
+                ensure_visible_offset = rendered.ensure_visible_offset;
+                ensure_active_resolved = rendered.ensure_active_resolved;
+            }
+            SurfaceRegionSource::Controls => {
+                lines.push(region_root_line(display_region, cols, theme));
+                content_height += 1;
+                if lines.len() >= rows {
+                    continue;
+                }
+                let mut footer = vec![blank(cols)];
+                render_footer_with_variables(
+                    &mut footer,
+                    &mut hit_regions,
+                    0,
+                    cols,
+                    theme,
+                    metadata_controls,
+                    model.and_then(|model| model.inspected_node.as_ref()),
+                    false,
+                    model
+                        .map(|model| model.display_variables.as_slice())
+                        .unwrap_or_default(),
+                    model.map(|model| &model.display_variable_values),
+                );
+                let row_offset = lines.len();
+                for hit in hit_regions
+                    .iter_mut()
+                    .rev()
+                    .take_while(|hit| hit.row_start == 0)
+                {
+                    hit.row_start += row_offset;
+                    hit.row_end += row_offset;
+                }
+                lines.push(footer.remove(0));
+                content_height += 1;
+            }
+        }
+    }
+    lines.resize_with(rows, || blank(cols));
+    RenderedRail {
+        lines,
+        hit_regions,
+        visible_cards,
+        content_height,
+        available_rows: rows,
+        ensure_visible_offset,
+        ensure_active_resolved,
+    }
+}
+
+fn region_root_line(region: &DisplayRegion, cols: usize, theme: Option<RenderTheme>) -> String {
+    let metadata = BTreeMap::new();
+    let text = region
+        .root
+        .as_ref()
+        .map(|slot| {
+            join_template_fields(
+                &template_fields_from_resolved_slot(
+                    slot,
+                    TemplateConfigMatchContext {
+                        slot: TemplateConfigSlot::Compact,
+                        node_kind: TemplateConfigNodeKind::Entity,
+                        metadata: &metadata,
+                        collapsed: false,
+                        collapsible: false,
+                        active_tab_name: None,
+                    },
+                ),
+                true,
+            )
+        })
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| region.definition.name.clone());
+    style_body_text(pad_to_width(&truncate_to_width(&text, cols), cols), theme)
+}
+
+fn region_entity_line(
+    entity: &andamento_shared::DisplayEntity,
+    form: &str,
+    catalog: Option<&TemplateConfigCatalog>,
+    cols: usize,
+    theme: Option<RenderTheme>,
+) -> String {
+    let slot = if form == DISPLAY_FORM_COMPACT {
+        TemplateConfigSlot::Compact
+    } else {
+        TemplateConfigSlot::Detail
+    };
+    let context = TemplateConfigMatchContext {
+        slot,
+        node_kind: TemplateConfigNodeKind::Entity,
+        metadata: &entity.metadata,
+        collapsed: false,
+        collapsible: false,
+        active_tab_name: None,
+    };
+    let resolved = if slot == TemplateConfigSlot::Compact {
+        entity.templates.compact.as_ref()
+    } else {
+        entity.templates.detail.as_ref()
+    };
+    let fallback;
+    let resolved = match resolved {
+        Some(resolved) => Some(resolved),
+        None => {
+            fallback = catalog.and_then(|catalog| resolve_entity_slot(entity, slot, catalog));
+            fallback.as_ref()
+        }
+    };
+    let text = resolved
+        .map(|resolved| {
+            join_template_fields(&template_fields_from_resolved_slot(resolved, context), true)
+        })
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| entity.label.clone());
+    style_body_text(
+        pad_to_width(&truncate_to_width(&format!("  {text}"), cols), cols),
+        theme,
+    )
+}
+
+fn apply_region_form(rows: &mut [RailRow], form: &str, catalog: Option<&TemplateConfigCatalog>) {
+    for row in rows {
+        let RailRow::Entity { entity, .. } = row else {
+            continue;
+        };
+        entity.form = form.to_owned();
+        let slot = if form == DISPLAY_FORM_COMPACT {
+            TemplateConfigSlot::Compact
+        } else {
+            TemplateConfigSlot::Detail
+        };
+        if slot == TemplateConfigSlot::Compact && entity.templates.compact.is_none() {
+            entity.templates.compact =
+                catalog.and_then(|catalog| resolve_entity_slot(entity, slot, catalog));
+        } else if slot == TemplateConfigSlot::Detail && entity.templates.detail.is_none() {
+            entity.templates.detail =
+                catalog.and_then(|catalog| resolve_entity_slot(entity, slot, catalog));
+        }
+    }
+}
+
+fn resolve_entity_slot(
+    entity: &andamento_shared::DisplayEntity,
+    slot: TemplateConfigSlot,
+    catalog: &TemplateConfigCatalog,
+) -> Option<ResolvedTemplateSlot> {
+    let context = TemplateConfigMatchContext {
+        slot,
+        node_kind: TemplateConfigNodeKind::Entity,
+        metadata: &entity.metadata,
+        collapsed: false,
+        collapsible: false,
+        active_tab_name: None,
+    };
+    catalog
+        .resolve(context)
+        .ok()
+        .flatten()
+        .map(|template| ResolvedTemplateSlot {
+            template_name: template.name.clone(),
+            fields: vec![],
+            render_ready: Some(template.render_ready()),
+            effective_kdl: template.dump_kdl(),
+            resolve_error: None,
+        })
+}
+
+fn resolve_region_root(
+    region: &SurfaceRegionDefinition,
+    catalog: &TemplateConfigCatalog,
+) -> Option<ResolvedTemplateSlot> {
+    let metadata = BTreeMap::from([(
+        "presentation.template".to_owned(),
+        MetadataValue::Text(region.root_template.clone()),
+    )]);
+    let context = TemplateConfigMatchContext {
+        slot: TemplateConfigSlot::Compact,
+        node_kind: TemplateConfigNodeKind::Entity,
+        metadata: &metadata,
+        collapsed: false,
+        collapsible: false,
+        active_tab_name: None,
+    };
+    catalog
+        .resolve(context)
+        .ok()
+        .flatten()
+        .map(|template| ResolvedTemplateSlot {
+            template_name: template.name.clone(),
+            fields: vec![],
+            render_ready: Some(template.render_ready()),
+            effective_kdl: template.dump_kdl(),
+            resolve_error: None,
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5573,9 +5968,10 @@ fn blank(cols: usize) -> String {
 mod tests {
     use super::*;
     use andamento_shared::{
-        GroupPath, GroupSegment, LatentTab, MetadataEntry, MetadataTriState, MetadataValue,
-        PaneTarget, RailConfig, RailGroupingMode, RailRow, RailSizingPreset, RailStructure,
-        ResolvedMetadata, ResolvedMetadataTarget, SortMode, StatusIcon,
+        DisplayEntity, EntityRef, GroupPath, GroupSegment, LatentTab, MetadataEntry,
+        MetadataTriState, MetadataValue, PaneTarget, RailConfig, RailGroupingMode, RailRow,
+        RailSizingPreset, RailStructure, ResolvedMetadata, ResolvedMetadataTarget, SortMode,
+        StatusIcon,
     };
 
     fn local_tab(tab_id: u64, position: usize, active: bool) -> LocalTab {
@@ -5792,6 +6188,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         }
     }
 
@@ -5935,6 +6332,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         }
     }
 
@@ -6002,6 +6400,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         }
     }
 
@@ -6024,6 +6423,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         };
         for (tab_id, worktree) in [(1, "worktree-a"), (2, "worktree-b")] {
             let path = GroupPath(vec![
@@ -6150,6 +6550,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         }
     }
 
@@ -6188,6 +6589,83 @@ mod tests {
                 .iter()
                 .any(|line| line.starts_with("┌ tab-1")),
             "inactive tab should not start a standalone box when structure is joined-cells: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
+    fn configured_regions_drive_order_attention_promotion_and_tree_form() {
+        let config = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            region "attention" source="attention" root-template="region/attention" form="detail" attention-key="status.attention"
+            region "tree" source="tree" root-template="region/tree" form="compact" pinned=true
+            template "region/attention" slot="compact" node-kind="entity" {
+              field "label" source="literal" value="ATTENTION"
+            }
+            template "region/tree" slot="compact" node-kind="entity" {
+              field "label" source="literal" value="TREE"
+            }
+            template "issue/detail" slot="detail" node-kind="entity" {
+              field "label" source="metadata-text" key="display.label"
+              field "summary" source="metadata-text" key="summary.text"
+            }
+            template "issue/compact" slot="compact" node-kind="entity" {
+              field "label" source="metadata-text" key="display.label"
+            }
+            "#,
+        )
+        .expect("region config");
+        let catalog = TemplateConfigCatalog::from_config(config);
+        let mut model = model();
+        model.tabs.clear();
+        model.rows = vec![RailRow::Entity {
+            entity: DisplayEntity {
+                entity: EntityRef {
+                    kind: "issue".to_owned(),
+                    id: "1060".to_owned(),
+                },
+                label: "Issue 1060".to_owned(),
+                form: "full".to_owned(),
+                metadata: BTreeMap::from([
+                    (
+                        "entity.kind".to_owned(),
+                        MetadataValue::Text("issue".to_owned()),
+                    ),
+                    (
+                        "display.label".to_owned(),
+                        MetadataValue::Text("Issue 1060".to_owned()),
+                    ),
+                    (
+                        "summary.text".to_owned(),
+                        MetadataValue::Text("region stack".to_owned()),
+                    ),
+                    ("status.attention".to_owned(), MetadataValue::Bool(true)),
+                ]),
+                templates: ResolvedTemplateSlots::default(),
+            },
+            indent: 0,
+            parent_path: None,
+        }];
+
+        let rendered =
+            render_lines_with_template_catalog(Some(&model), &[], 8, 40, true, Some(&catalog));
+
+        assert!(
+            rendered.lines[0].contains("ATTENTION"),
+            "{:?}",
+            rendered.lines
+        );
+        assert!(
+            rendered.lines[1].contains("Issue 1060 region stack"),
+            "{:?}",
+            rendered.lines
+        );
+        assert!(rendered.lines[2].contains("TREE"), "{:?}", rendered.lines);
+        assert!(
+            rendered.lines[3..]
+                .iter()
+                .any(|line| line.contains("Issue 1060") && !line.contains("region stack")),
+            "tree should use its compact form: {:?}",
             rendered.lines
         );
     }

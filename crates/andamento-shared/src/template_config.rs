@@ -46,11 +46,18 @@ pub fn parse_template_config_kdl(
         .filter(|node| node.name().value() == "variable")
         .map(parse_kdl_variable)
         .collect::<Result<Vec<_>, _>>()?;
+    let regions = document
+        .nodes()
+        .iter()
+        .filter(|node| node.name().value() == "region")
+        .map(parse_kdl_region)
+        .collect::<Result<Vec<_>, _>>()?;
     let config = ExternalTemplateConfig {
         version,
         templates,
         fragments,
         variables,
+        regions,
     };
     config.validate()?;
     Ok(config)
@@ -96,6 +103,8 @@ pub struct ExternalTemplateConfig {
     pub fragments: Vec<TemplateConfigFragmentDefinition>,
     #[serde(default)]
     pub variables: Vec<TemplateVariableDefinition>,
+    #[serde(default)]
+    pub regions: Vec<SurfaceRegionDefinition>,
 }
 
 impl ExternalTemplateConfig {
@@ -188,6 +197,34 @@ impl ExternalTemplateConfig {
                 )));
             }
             variable.validate()?;
+        }
+        let mut region_names = BTreeSet::new();
+        for region in &self.regions {
+            if region.name.trim().is_empty() {
+                return Err(TemplateConfigError::Validation(
+                    "region name cannot be empty".to_owned(),
+                ));
+            }
+            if !region_names.insert(region.name.clone()) {
+                return Err(TemplateConfigError::Validation(format!(
+                    "duplicate region name: {}",
+                    region.name
+                )));
+            }
+            if region.form.trim().is_empty() {
+                return Err(TemplateConfigError::Validation(format!(
+                    "region {} form cannot be empty",
+                    region.name
+                )));
+            }
+            if region.source == SurfaceRegionSource::Attention
+                && region.attention_key.as_deref().is_none_or(str::is_empty)
+            {
+                return Err(TemplateConfigError::Validation(format!(
+                    "attention region {} must declare attention-key",
+                    region.name
+                )));
+            }
         }
         Ok(())
     }
@@ -320,6 +357,7 @@ impl TemplateConfigLayer {
 pub struct TemplateConfigCatalog {
     layers: Vec<TemplateConfigLayer>,
     variables: Vec<TemplateVariableDefinition>,
+    regions: Vec<SurfaceRegionDefinition>,
 }
 
 impl Default for TemplateConfigCatalog {
@@ -355,7 +393,17 @@ impl TemplateConfigCatalog {
             .filter(|variable| seen_variables.insert(variable.name.clone()))
             .cloned()
             .collect();
-        Self { layers, variables }
+        let regions = layers
+            .iter()
+            .find_map(|layer| {
+                (!layer.config.regions.is_empty()).then(|| layer.config.regions.clone())
+            })
+            .unwrap_or_default();
+        Self {
+            layers,
+            variables,
+            regions,
+        }
     }
 
     pub fn resolve(
@@ -433,12 +481,38 @@ impl TemplateConfigCatalog {
         &self.variables
     }
 
+    pub fn regions(&self) -> &[SurfaceRegionDefinition] {
+        &self.regions
+    }
+
     fn layer_stack(&self, metadata: &BTreeMap<String, MetadataValue>) -> Vec<&TemplateConfigLayer> {
         self.layers
             .iter()
             .filter(|layer| layer.applies_to(metadata))
             .collect()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SurfaceRegionSource {
+    Header,
+    Attention,
+    Tree,
+    Controls,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct SurfaceRegionDefinition {
+    pub name: String,
+    pub source: SurfaceRegionSource,
+    pub root_template: String,
+    pub form: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_key: Option<String>,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 fn bundled_default_config() -> ExternalTemplateConfig {
@@ -1475,6 +1549,31 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
     })
 }
 
+fn parse_kdl_region(node: &KdlNode) -> Result<SurfaceRegionDefinition, TemplateConfigError> {
+    let source = match kdl_required_prop_string(node, "source")?.as_str() {
+        "header" => SurfaceRegionSource::Header,
+        "attention" => SurfaceRegionSource::Attention,
+        "tree" => SurfaceRegionSource::Tree,
+        "controls" => SurfaceRegionSource::Controls,
+        other => {
+            return Err(TemplateConfigError::Validation(format!(
+                "unsupported region source: {other}"
+            )))
+        }
+    };
+    Ok(SurfaceRegionDefinition {
+        name: kdl_required_arg_string(node, 0, "region name")?,
+        source,
+        root_template: kdl_required_prop_string(node, "root-template")?,
+        form: kdl_prop_string(node, "form").unwrap_or_else(|| "full".to_owned()),
+        attention_key: kdl_prop_string(node, "attention-key"),
+        pinned: node
+            .get("pinned")
+            .and_then(|entry| entry.value().as_bool())
+            .unwrap_or(false),
+    })
+}
+
 fn parse_kdl_fragment(
     node: &KdlNode,
 ) -> Result<TemplateConfigFragmentDefinition, TemplateConfigError> {
@@ -2131,6 +2230,7 @@ mod tests {
             templates: vec![],
             fragments: vec![],
             variables: vec![],
+            regions: vec![],
         };
         let catalog = TemplateConfigCatalog::from_layers(vec![
             TemplateConfigLayer::bundled("bundled.kdl", empty()),
@@ -2302,5 +2402,52 @@ mod tests {
         assert!(error
             .to_string()
             .contains("template issue/compact has duplicate field name: label"));
+    }
+
+    #[test]
+    fn surface_regions_preserve_declaration_order_and_form_targets() {
+        let config = parse_template_config_kdl(
+            r#"
+            region "attention" source="attention" root-template="my/attention" form="expanded" attention-key="status.attention"
+            region "tree" source="tree" root-template="my/tree" form="compact" pinned=true
+            "#,
+        )
+        .expect("regions parse");
+
+        assert_eq!(
+            config
+                .regions
+                .iter()
+                .map(|region| region.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["attention", "tree"]
+        );
+        assert_eq!(config.regions[0].form, "expanded");
+        assert_eq!(
+            config.regions[0].attention_key.as_deref(),
+            Some("status.attention")
+        );
+        assert!(config.regions[1].pinned);
+    }
+
+    #[test]
+    fn configured_region_stack_replaces_bundled_stack_as_one_ordered_surface() {
+        let config = parse_template_config_kdl(
+            r#"
+            region "tree-first" source="tree" root-template="flotilla/region/tree" form="compact"
+            region "attention-second" source="attention" root-template="flotilla/region/attention" form="full" attention-key="status.attention"
+            "#,
+        )
+        .expect("regions parse");
+        let catalog = TemplateConfigCatalog::with_bundled_defaults(config);
+
+        assert_eq!(
+            catalog
+                .regions()
+                .iter()
+                .map(|region| region.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tree-first", "attention-second"]
+        );
     }
 }

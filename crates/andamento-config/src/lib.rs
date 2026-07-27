@@ -2148,6 +2148,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         };
 
         let target = inspect_target_for(model.inspected_node.as_ref(), None, &model);
@@ -2203,6 +2204,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         };
 
         let rendered = render_config_with_scope(
@@ -2331,6 +2333,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         };
         model.inspected_node = Some(NodeKey::Tab(7));
 
@@ -2415,6 +2418,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         };
 
         let rendered = render_config_with_scope(
@@ -2636,6 +2640,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         };
 
         let rendered = render_config(
@@ -2794,6 +2799,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         };
 
         let rendered = render_config(
@@ -2845,6 +2851,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         }
     }
 
