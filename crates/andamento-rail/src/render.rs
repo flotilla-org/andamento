@@ -669,9 +669,9 @@ fn render_region_stack(
                         ));
                         hit_regions.push(HitRegion {
                             row_start: row,
-                            row_end: row + 1,
+                            row_end: row,
                             col_start: 0,
-                            col_end: cols,
+                            col_end: cols.saturating_sub(1),
                             tab_id: 0,
                             tab_position: 0,
                             group_path: None,
@@ -1035,36 +1035,31 @@ fn render_detail_surface(
     theme: Option<RenderTheme>,
 ) -> String {
     let detail = match (model, target) {
-        (Some(model), Some(NodeKey::Entity(target))) => model.rows.iter().find_map(|row| {
-            let RailRow::Entity { entity, .. } = row else {
-                return None;
-            };
-            if &entity.entity != target {
-                return None;
-            }
-            let text = entity
-                .templates
-                .detail
-                .as_ref()
-                .map(|slot| {
-                    let metadata = display_entity_metadata(entity);
-                    let fields = template_fields_from_resolved_slot(
-                        slot,
-                        TemplateConfigMatchContext {
-                            slot: TemplateConfigSlot::Detail,
-                            node_kind: TemplateConfigNodeKind::Entity,
-                            metadata: &metadata,
-                            collapsed: false,
-                            collapsible: false,
-                            active_tab_name: None,
-                        },
-                    );
-                    join_template_fields(&fields, true)
-                })
-                .filter(|text| !text.is_empty())
-                .unwrap_or_else(|| entity.label.clone());
-            Some(format!("[{}] {text}", entity.entity.kind))
-        }),
+        (Some(model), Some(NodeKey::Entity(target))) => display_entity_for_target(model, target)
+            .map(|entity| {
+                let text = entity
+                    .templates
+                    .detail
+                    .as_ref()
+                    .map(|slot| {
+                        let metadata = display_entity_metadata(entity);
+                        let fields = template_fields_from_resolved_slot(
+                            slot,
+                            TemplateConfigMatchContext {
+                                slot: TemplateConfigSlot::Detail,
+                                node_kind: TemplateConfigNodeKind::Entity,
+                                metadata: &metadata,
+                                collapsed: false,
+                                collapsible: false,
+                                active_tab_name: None,
+                            },
+                        );
+                        join_template_fields(&fields, true)
+                    })
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or_else(|| entity.label.clone());
+                format!("[{}] {text}", entity.entity.kind)
+            }),
         _ => None,
     }
     .unwrap_or_default();
@@ -1072,6 +1067,26 @@ fn render_detail_surface(
         pad_to_width(&truncate_to_width(&detail, width), width),
         theme,
     )
+}
+
+fn display_entity_for_target<'a>(
+    model: &'a ControllerViewModel,
+    target: &andamento_shared::EntityRef,
+) -> Option<&'a andamento_shared::DisplayEntity> {
+    model
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            RailRow::Entity { entity, .. } => Some(entity),
+            _ => None,
+        })
+        .chain(
+            model
+                .surface_regions
+                .iter()
+                .flat_map(|region| region.entities.iter()),
+        )
+        .find(|entity| &entity.entity == target)
 }
 
 /// Push N rows to `lines` rendering the meta panel for a node. Each row is:
@@ -2399,10 +2414,10 @@ fn append_compact_tab_strip(
             group_path: tab.parent_path.clone(),
             inspect_target: tab.card.entity.clone().map(NodeKey::Entity),
             materialize_request: tab.card.materialize_request.clone(),
-            action: if tab.card.entity.is_some() {
-                HitAction::ShowDetail
-            } else if tab.card.latent {
+            action: if tab.card.latent && tab.card.materialize_request.is_some() {
                 HitAction::Materialize
+            } else if tab.card.entity.is_some() {
+                HitAction::ShowDetail
             } else {
                 HitAction::SwitchTab
             },
@@ -3239,7 +3254,7 @@ fn add_card_metadata(
     body_rows: usize,
     terminal_cell_size: Option<SizeInPixels>,
 ) {
-    if !card.latent || card.materialize_request.is_some() {
+    if card.entity.is_some() || !card.latent || card.materialize_request.is_some() {
         hit_regions.push(HitRegion {
             row_start: row,
             row_end: row + height.saturating_sub(1),
@@ -3248,10 +3263,12 @@ fn add_card_metadata(
             tab_id: card.tab_id,
             tab_position: card.position,
             group_path: None,
-            inspect_target: None,
+            inspect_target: card.entity.clone().map(NodeKey::Entity),
             materialize_request: card.materialize_request.clone(),
-            action: if card.latent {
+            action: if card.latent && card.materialize_request.is_some() {
                 HitAction::Materialize
+            } else if card.entity.is_some() {
+                HitAction::ShowDetail
             } else {
                 HitAction::SwitchTab
             },
@@ -6741,6 +6758,62 @@ mod tests {
             "tree should use its compact form: {:?}",
             rendered.lines
         );
+        assert!(rendered.hit_regions.iter().any(|hit| {
+            hit.row_start == 1
+                && hit.inspect_target
+                    == Some(NodeKey::Entity(EntityRef {
+                        kind: "issue".to_owned(),
+                        id: "1060".to_owned(),
+                    }))
+        }));
+    }
+
+    #[test]
+    fn detail_surface_resolves_entity_from_region_catalog() {
+        let config = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            region "attention" source="attention" root-template="region/attention" form="detail" attention-key="status.attention"
+            "#,
+        )
+        .expect("region config");
+        let catalog = TemplateConfigCatalog::from_config(config);
+        let entity_ref = EntityRef {
+            kind: "issue".to_owned(),
+            id: "1095".to_owned(),
+        };
+        let entity = DisplayEntity {
+            entity: entity_ref.clone(),
+            label: "Issue 1095 hover detail".to_owned(),
+            form: "detail".to_owned(),
+            metadata: BTreeMap::from([("status.attention".to_owned(), MetadataValue::Bool(true))]),
+            templates: ResolvedTemplateSlots::default(),
+        };
+        let mut model = model();
+        model.tabs.clear();
+        model.rows.clear();
+        model.surface_regions = vec![andamento_shared::DisplayRegion {
+            definition: catalog.regions()[0].clone(),
+            root: None,
+            entities: vec![entity],
+        }];
+
+        let rendered = render_lines_with_detail_surface(
+            Some(&model),
+            &[],
+            5,
+            40,
+            true,
+            None,
+            None,
+            &[],
+            Some(&catalog),
+            &MetadataControls::default(),
+            0,
+            false,
+            Some(&NodeKey::Entity(entity_ref)),
+        );
+
+        assert!(rendered.lines[3].contains("[issue] Issue 1095 hover detail"));
     }
 
     #[test]
@@ -7338,6 +7411,93 @@ mod tests {
             hit.action == HitAction::ShowDetail
                 && hit.inspect_target == Some(NodeKey::Entity(entity_ref.clone()))
         }));
+    }
+
+    #[test]
+    fn full_entity_row_exposes_its_detail_target() {
+        let entity_ref = andamento_shared::EntityRef {
+            kind: "issue".to_owned(),
+            id: "github/flotilla-org/flotilla#1095".to_owned(),
+        };
+        let mut model = model();
+        model.tabs.clear();
+        model.rows = vec![RailRow::Entity {
+            entity: andamento_shared::DisplayEntity {
+                entity: entity_ref.clone(),
+                label: "#1095 hover detail".to_owned(),
+                form: "full".to_owned(),
+                metadata: RenderMetadata::new(),
+                templates: ResolvedTemplateSlots::default(),
+            },
+            indent: 0,
+            parent_path: None,
+        }];
+
+        let rendered = render_lines_with_detail_surface(
+            Some(&model),
+            &[],
+            8,
+            40,
+            true,
+            None,
+            None,
+            &[],
+            None,
+            &MetadataControls::default(),
+            0,
+            false,
+            None,
+        );
+
+        assert!(rendered.hit_regions.iter().any(|hit| {
+            hit.action == HitAction::ShowDetail
+                && hit.inspect_target == Some(NodeKey::Entity(entity_ref.clone()))
+        }));
+    }
+
+    #[test]
+    fn compact_chips_expose_their_individual_detail_targets() {
+        let first = EntityRef {
+            kind: "action".to_owned(),
+            id: "tui".to_owned(),
+        };
+        let second = EntityRef {
+            kind: "action".to_owned(),
+            id: "governor".to_owned(),
+        };
+        let compact_row = |entity: EntityRef, label: &str| RailRow::Entity {
+            entity: DisplayEntity {
+                entity,
+                label: label.to_owned(),
+                form: "compact".to_owned(),
+                metadata: RenderMetadata::new(),
+                templates: ResolvedTemplateSlots::default(),
+            },
+            indent: 0,
+            parent_path: None,
+        };
+        let mut model = model();
+        model.tabs.clear();
+        model.rows = vec![
+            compact_row(first.clone(), "tui"),
+            compact_row(second.clone(), "gov"),
+        ];
+
+        let rendered = render_lines(Some(&model), &[], 4, 40, true);
+        let hits = rendered
+            .hit_regions
+            .iter()
+            .filter(|hit| hit.action == HitAction::ShowDetail)
+            .collect::<Vec<_>>();
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].row_start, hits[1].row_start);
+        assert_eq!(
+            hits.iter()
+                .map(|hit| hit.inspect_target.clone())
+                .collect::<Vec<_>>(),
+            vec![Some(NodeKey::Entity(first)), Some(NodeKey::Entity(second))]
+        );
     }
 
     #[test]
