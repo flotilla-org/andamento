@@ -805,6 +805,17 @@ pub struct ControllerViewModel {
     pub display_variables: Vec<template_config::TemplateVariableDefinition>,
     #[serde(default)]
     pub display_variable_values: BTreeMap<String, DisplayVariableValue>,
+    #[serde(default)]
+    pub surface_regions: Vec<DisplayRegion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayRegion {
+    pub definition: template_config::SurfaceRegionDefinition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<ResolvedTemplateSlot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entities: Vec<DisplayEntity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1103,6 +1114,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         };
         let encoded = serde_json::to_string(&model).unwrap();
         let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
@@ -1352,6 +1364,7 @@ mod tests {
             collapsed_groups: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
         };
 
         let encoded = serde_json::to_string(&model).unwrap();

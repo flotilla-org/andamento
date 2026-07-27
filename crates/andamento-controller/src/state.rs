@@ -897,6 +897,57 @@ impl ControllerState {
         self.resolve_tab_templates(&mut tabs, &resolved_metadata);
         let rows = self
             .rows_with_group_templates(self.rows_for_tabs(&tabs, &latent_tabs), &resolved_metadata);
+        let region_catalog_entities = self.catalog_entities();
+        let surface_regions = self
+            .template_catalog
+            .as_ref()
+            .map(|catalog| {
+                catalog
+                    .regions()
+                    .iter()
+                    .cloned()
+                    .map(|definition| {
+                        let metadata = BTreeMap::from([(
+                            "presentation.template".to_owned(),
+                            MetadataValue::Text(definition.root_template.clone()),
+                        )]);
+                        let entities = if definition.source
+                            == andamento_shared::template_config::SurfaceRegionSource::Attention
+                        {
+                            let attention_key = definition
+                                .attention_key
+                                .as_deref()
+                                .unwrap_or("status.attention");
+                            region_catalog_entities
+                                .iter()
+                                .filter(|entity| entity.presence != PresenceClass::Hidden)
+                                .filter(|entity| self.entity_is_visible(entity))
+                                .filter(|entity| {
+                                    entity.values.get(attention_key).map(|entry| &entry.value)
+                                        == Some(&MetadataValue::Bool(true))
+                                })
+                                .map(|entity| {
+                                    let mut display = self.display_entity(entity);
+                                    display.form = definition.form.clone();
+                                    display
+                                })
+                                .collect()
+                        } else {
+                            vec![]
+                        };
+                        andamento_shared::DisplayRegion {
+                            definition,
+                            root: self.resolve_template_slot(
+                                andamento_shared::template_config::TemplateConfigSlot::Compact,
+                                andamento_shared::template_config::TemplateConfigNodeKind::Entity,
+                                &metadata,
+                            ),
+                            entities,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
         ControllerViewModel {
             sort_mode: self.sort_mode,
@@ -919,6 +970,7 @@ impl ControllerState {
                 .map(|catalog| catalog.variables().to_vec())
                 .unwrap_or_default(),
             display_variable_values: self.rail_ui.variables.clone(),
+            surface_regions,
         }
     }
 
@@ -3118,6 +3170,108 @@ mod tests {
     }
 
     #[test]
+    fn attention_regions_promote_tab_presence_entities_from_normalized_facts() {
+        let mut state = directory_entity_state();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::default(),
+        ));
+        apply_entity(
+            &mut state,
+            "convoy",
+            "flotilla/sidebar@fleet",
+            1,
+            &[
+                ("flotilla.convoy", "flotilla/sidebar@fleet"),
+                ("flotilla.convoy.name", "sidebar"),
+                (KEY_DISPLAY_LABEL, "Sidebar convoy"),
+            ],
+        );
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: andamento_shared::MetadataTarget::Entity(entity_ref(
+                "convoy",
+                "flotilla/sidebar@fleet",
+            )),
+            source_id: "flotilla-connector".to_owned(),
+            set: BTreeMap::from([(
+                "status.attention".to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::Bool(true),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: Some(1),
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let attention = model
+            .surface_regions
+            .iter()
+            .find(|region| {
+                region.definition.source
+                    == andamento_shared::template_config::SurfaceRegionSource::Attention
+            })
+            .expect("bundled attention region");
+
+        assert!(attention.entities.iter().any(|entity| {
+            entity.entity == entity_ref("convoy", "flotilla/sidebar@fleet")
+                && entity.form == DISPLAY_FORM_FULL
+        }));
+        assert!(
+            !model.rows.iter().any(|row| matches!(row, RailRow::Entity { entity, .. } if entity.entity.kind == "convoy")),
+            "the promoted convoy normally has tab/latent presence, not inline presence"
+        );
+    }
+
+    #[test]
+    fn attention_promotion_highlights_inline_entities_without_removing_tree_navigation() {
+        let mut state = directory_entity_state();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::default(),
+        ));
+        apply_entity(
+            &mut state,
+            "issue",
+            "github/flotilla-org/flotilla#1060",
+            1,
+            &[
+                ("flotilla.issue", "github/flotilla-org/flotilla#1060"),
+                (KEY_DISPLAY_LABEL, "#1060 region stack"),
+            ],
+        );
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: andamento_shared::MetadataTarget::Entity(entity_ref(
+                "issue",
+                "github/flotilla-org/flotilla#1060",
+            )),
+            source_id: "flotilla-connector".to_owned(),
+            set: BTreeMap::from([(
+                "status.attention".to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::Bool(true),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: Some(1),
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let issue = entity_ref("issue", "github/flotilla-org/flotilla#1060");
+        assert!(model
+            .rows
+            .iter()
+            .any(|row| matches!(row, RailRow::Entity { entity, .. } if entity.entity == issue)));
+        assert!(model.surface_regions.iter().any(|region| {
+            region.definition.source
+                == andamento_shared::template_config::SurfaceRegionSource::Attention
+                && region.entities.iter().any(|entity| entity.entity == issue)
+        }));
+    }
+
+    #[test]
     fn novel_inline_form_uses_the_full_surface_instead_of_disappearing() {
         let mut state = directory_entity_state();
         let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
@@ -3374,6 +3528,7 @@ mod tests {
                     templates: vec![],
                     fragments: vec![],
                     variables: vec![],
+                    regions: vec![],
                 },
             ),
         ));

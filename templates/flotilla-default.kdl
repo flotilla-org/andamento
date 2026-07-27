@@ -2,6 +2,11 @@ version 1
 
 variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
 
+region "header" source="header" root-template="flotilla/region/header" form="compact" pinned=true
+region "attention" source="attention" root-template="flotilla/region/attention" form="full" attention-key="status.attention"
+region "tree" source="tree" root-template="flotilla/region/tree" form="compact"
+region "controls" source="controls" root-template="flotilla/region/controls" form="compact" pinned=true
+
 grouping "flotilla.default" priority=-1000 {
   filter key="entity.kind"
 
@@ -26,6 +31,22 @@ fragment "flotilla/group-toggle" {
   indent level=2
   toggle collapsed="▶" expanded="▼"
   fill glyph="─"
+}
+
+template "flotilla/region/header" slot="compact" node-kind="entity" {
+  field "label" class="required" source="literal" value="◉ Overview"
+}
+
+template "flotilla/region/attention" slot="compact" node-kind="entity" {
+  field "label" class="required" source="literal" value="⚠ Attention"
+}
+
+template "flotilla/region/tree" slot="compact" node-kind="entity" {
+  field "label" class="required" source="literal" value="◇ Tree"
+}
+
+template "flotilla/region/controls" slot="compact" node-kind="entity" {
+  field "label" class="required" source="literal" value="Controls"
 }
 
 fragment "flotilla/group-label" {
