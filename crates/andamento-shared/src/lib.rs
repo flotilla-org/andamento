@@ -704,8 +704,13 @@ pub struct ResolvedTemplateSlot {
     pub template_name: String,
     #[serde(default)]
     pub fields: Vec<ResolvedTemplateField>,
+    /// Parsed render data paired with `effective_kdl` by the controller.
+    ///
+    /// Keeping both representations in the snapshot lets the rail render live
+    /// state without reparsing the inspectable KDL on every redraw.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_ready: Option<template_config::TemplateConfigRenderReady>,
+    /// Flattened template evidence shown by inspect.
     #[serde(default)]
     pub effective_kdl: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
