@@ -600,6 +600,7 @@ fn render_region_stack(
     let mut content_height = 0;
     let mut ensure_visible_offset = None;
     let mut ensure_active_resolved = false;
+    let mut region_can_scroll = false;
 
     for (region_index, display_region) in regions.iter().enumerate() {
         let region = &display_region.definition;
@@ -610,10 +611,7 @@ fn render_region_stack(
         let later_pinned_rows = regions[region_index + 1..]
             .iter()
             .filter(|region| region.definition.pinned)
-            .map(|region| match region.definition.source {
-                SurfaceRegionSource::Controls => 2,
-                _ => 1,
-            })
+            .map(|region| pinned_region_rows(region, model))
             .sum::<usize>();
         match region.source {
             SurfaceRegionSource::Header => {
@@ -627,6 +625,9 @@ fn render_region_stack(
                     .attention_key
                     .as_deref()
                     .unwrap_or("status.attention");
+                // Catalog-derived view models carry every presence class here.
+                // The row fallback keeps hand-built/legacy models renderable,
+                // but can only see inline entities.
                 let attention_entities = if display_region.entities.is_empty() {
                     model
                         .into_iter()
@@ -645,6 +646,7 @@ fn render_region_stack(
                 {
                     content_height += 1;
                     if lines.len() + later_pinned_rows < rows {
+                        let row = lines.len();
                         lines.push(region_entity_line(
                             entity,
                             &region.form,
@@ -652,6 +654,18 @@ fn render_region_stack(
                             cols,
                             theme,
                         ));
+                        hit_regions.push(HitRegion {
+                            row_start: row,
+                            row_end: row + 1,
+                            col_start: 0,
+                            col_end: cols,
+                            tab_id: 0,
+                            tab_position: 0,
+                            group_path: None,
+                            inspect_target: Some(NodeKey::Entity(entity.entity.clone())),
+                            materialize_request: None,
+                            action: HitAction::InspectNode,
+                        });
                     }
                 }
             }
@@ -683,7 +697,12 @@ fn render_region_stack(
                     rail_scroll_offset,
                     ensure_active_visible,
                 );
+                region_can_scroll |= rendered.can_scroll();
                 rendered.lines.truncate(tree_rows);
+                rendered.hit_regions.retain(|hit| hit.row_start < tree_rows);
+                rendered
+                    .visible_cards
+                    .retain(|card| card.row_start < tree_rows);
                 let row_offset = lines.len();
                 for hit in &mut rendered.hit_regions {
                     hit.row_start += row_offset;
@@ -715,7 +734,7 @@ fn render_region_stack(
                     theme,
                     metadata_controls,
                     model.and_then(|model| model.inspected_node.as_ref()),
-                    false,
+                    region_can_scroll,
                     model
                         .map(|model| model.display_variables.as_slice())
                         .unwrap_or_default(),
@@ -744,6 +763,40 @@ fn render_region_stack(
         available_rows: rows,
         ensure_visible_offset,
         ensure_active_resolved,
+    }
+}
+
+fn pinned_region_rows(region: &DisplayRegion, model: Option<&ControllerViewModel>) -> usize {
+    match region.definition.source {
+        SurfaceRegionSource::Controls => 2,
+        SurfaceRegionSource::Attention => {
+            let key = region
+                .definition
+                .attention_key
+                .as_deref()
+                .unwrap_or("status.attention");
+            let entity_count = if region.entities.is_empty() {
+                model
+                    .into_iter()
+                    .flat_map(|model| model.rows.iter())
+                    .filter(|row| {
+                        matches!(
+                            row,
+                            RailRow::Entity { entity, .. }
+                                if entity.metadata.get(key) == Some(&MetadataValue::Bool(true))
+                        )
+                    })
+                    .count()
+            } else {
+                region
+                    .entities
+                    .iter()
+                    .filter(|entity| entity.metadata.get(key) == Some(&MetadataValue::Bool(true)))
+                    .count()
+            };
+            1 + entity_count
+        }
+        SurfaceRegionSource::Header | SurfaceRegionSource::Tree => 1,
     }
 }
 
@@ -6668,6 +6721,52 @@ mod tests {
             "tree should use its compact form: {:?}",
             rendered.lines
         );
+    }
+
+    #[test]
+    fn pinned_controls_keep_tree_footer_hits_and_scroll_state_on_visible_footer() {
+        let config = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            region "tree" source="tree" root-template="region/tree" form="compact"
+            region "controls" source="controls" root-template="region/controls" form="compact" pinned=true
+            template "region/tree" slot="compact" node-kind="entity" {
+              field "label" source="literal" value="TREE"
+            }
+            template "region/controls" slot="compact" node-kind="entity" {
+              field "label" source="literal" value="CONTROLS"
+            }
+            "#,
+        )
+        .expect("region config");
+        let catalog = TemplateConfigCatalog::from_config(config);
+
+        let rendered = render_lines_with_template_catalog(
+            Some(&grouped_model()),
+            &[],
+            6,
+            30,
+            true,
+            Some(&catalog),
+        );
+        let controls_row = rendered
+            .lines
+            .iter()
+            .position(|line| line.contains("CONTROLS"))
+            .expect("controls root remains visible");
+
+        assert!(
+            !rendered.hit_regions.iter().any(|hit| {
+                hit.row_start == controls_row && hit.action == HitAction::OpenConfig
+            }),
+            "the truncated tree footer must not leak its gear hit onto the controls root"
+        );
+        assert!(rendered.hit_regions.iter().any(|hit| {
+            hit.row_start == controls_row + 1
+                && matches!(
+                    hit.action,
+                    HitAction::ScrollRailUp | HitAction::ScrollRailDown
+                )
+        }));
     }
 
     #[test]
