@@ -790,6 +790,51 @@ mod tests {
     }
 
     #[test]
+    fn detail_hover_clears_in_a_different_compact_row_gap() {
+        let first = NodeKey::Entity(andamento_shared::EntityRef {
+            kind: "action".to_owned(),
+            id: "tui".to_owned(),
+        });
+        let second_row_target = NodeKey::Entity(andamento_shared::EntityRef {
+            kind: "action".to_owned(),
+            id: "filesystem".to_owned(),
+        });
+        let mut state = PluginState {
+            hit_regions: vec![
+                HitRegion {
+                    row_start: 1,
+                    row_end: 1,
+                    col_start: 2,
+                    col_end: 6,
+                    tab_id: 0,
+                    tab_position: 0,
+                    group_path: None,
+                    inspect_target: Some(first.clone()),
+                    materialize_request: None,
+                    action: HitAction::Materialize,
+                },
+                HitRegion {
+                    row_start: 2,
+                    row_end: 2,
+                    col_start: 8,
+                    col_end: 15,
+                    tab_id: 0,
+                    tab_position: 0,
+                    group_path: None,
+                    inspect_target: Some(second_row_target),
+                    materialize_request: None,
+                    action: HitAction::Materialize,
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert!(state.handle_mouse(Mouse::Hover(1, 4)));
+        assert!(state.handle_mouse(Mouse::Hover(2, 7)));
+        assert_eq!(state.hovered_detail_target, None);
+    }
+
+    #[test]
     fn ensure_visible_latch_survives_until_controller_render_can_resolve_target() {
         let mut state = PluginState {
             local_tabs: vec![LocalTab {
@@ -1570,7 +1615,7 @@ impl PluginState {
                 if target.is_none()
                     && self.hovered_detail_target.is_some()
                     && self.hit_regions.iter().any(|hit| {
-                        matches!(hit.inspect_target, Some(NodeKey::Entity(_)))
+                        hit.inspect_target.as_ref() == self.hovered_detail_target.as_ref()
                             && row >= hit.row_start
                             && row <= hit.row_end
                     })
