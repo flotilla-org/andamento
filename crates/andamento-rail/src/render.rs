@@ -657,8 +657,8 @@ fn render_region_stack(
                 ));
                 content_height += 1;
                 for entity in attention_entities {
-                    content_height += 1;
                     if lines.len() + later_pinned_rows < rows {
+                        content_height += 1;
                         let row = lines.len();
                         lines.push(region_entity_line(
                             entity,
@@ -6849,6 +6849,10 @@ mod tests {
             rendered.lines[0].contains("ATTENTION (+2 more)"),
             "{:?}",
             rendered.lines
+        );
+        assert!(
+            !rendered.can_scroll(),
+            "fixed attention truncation cannot be revealed by scrolling"
         );
     }
 
