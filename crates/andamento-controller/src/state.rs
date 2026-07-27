@@ -4577,7 +4577,7 @@ mod tests {
     }
 
     #[test]
-    fn view_model_resolves_group_header_template_fields_from_group_metadata() {
+    fn view_model_keeps_group_header_render_payload_in_sync_with_effective_template() {
         let mut state = ControllerState::default();
         state.set_rail_config(RailConfig {
             grouping: RailGroupingMode::Directory,
@@ -4660,6 +4660,44 @@ mod tests {
             .effective_kdl
             .contains("// origin: user (<memory>)"));
         assert!(group_slot.effective_kdl.contains("template \"group/full\""));
+
+        let first_effective_kdl = group_slot.effective_kdl.clone();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_config(
+                andamento_shared::template_config::parse_template_config_kdl(
+                    r#"
+                    template "group/full" slot="group-header" node-kind="group" {
+                      field "replacement" class="required" source="literal" value="updated"
+                    }
+                    "#,
+                )
+                .expect("updated template config"),
+            ),
+        ));
+
+        let updated_model = state.view_model();
+        let updated_slot = updated_model
+            .rows
+            .iter()
+            .find_map(|row| match row {
+                RailRow::GroupHeader { templates, .. } => templates.group_header.as_ref(),
+                RailRow::Tab { .. } | RailRow::Latent { .. } | RailRow::Entity { .. } => None,
+            })
+            .expect("updated group header template");
+
+        assert_ne!(updated_slot.effective_kdl, first_effective_kdl);
+        assert!(updated_slot.effective_kdl.contains("value=\"updated\""));
+        assert_eq!(
+            updated_slot
+                .render_ready
+                .as_ref()
+                .expect("updated render-ready template")
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["replacement"]
+        );
     }
 
     #[test]
