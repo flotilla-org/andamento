@@ -601,6 +601,7 @@ fn render_region_stack(
     let mut ensure_visible_offset = None;
     let mut ensure_active_resolved = false;
     let mut region_can_scroll = false;
+    let mut controls_footer_rows = vec![];
 
     for (region_index, display_region) in regions.iter().enumerate() {
         let region = &display_region.definition;
@@ -615,12 +616,10 @@ fn render_region_stack(
             .sum::<usize>();
         match region.source {
             SurfaceRegionSource::Header => {
-                lines.push(region_root_line(display_region, cols, theme));
+                lines.push(region_root_line(display_region, None, cols, theme));
                 content_height += 1;
             }
             SurfaceRegionSource::Attention => {
-                lines.push(region_root_line(display_region, cols, theme));
-                content_height += 1;
                 let key = region
                     .attention_key
                     .as_deref()
@@ -640,10 +639,24 @@ fn render_region_stack(
                 } else {
                     display_region.entities.iter().collect()
                 };
-                for entity in attention_entities
+                let attention_entities = attention_entities
                     .into_iter()
                     .filter(|entity| entity.metadata.get(key) == Some(&MetadataValue::Bool(true)))
-                {
+                    .collect::<Vec<_>>();
+                let available_entity_rows =
+                    rows.saturating_sub(lines.len() + 1 + later_pinned_rows);
+                let hidden_count = attention_entities
+                    .len()
+                    .saturating_sub(available_entity_rows);
+                let suffix = (hidden_count > 0).then(|| format!(" (+{hidden_count} more)"));
+                lines.push(region_root_line(
+                    display_region,
+                    suffix.as_deref(),
+                    cols,
+                    theme,
+                ));
+                content_height += 1;
+                for entity in attention_entities {
                     content_height += 1;
                     if lines.len() + later_pinned_rows < rows {
                         let row = lines.len();
@@ -670,7 +683,7 @@ fn render_region_stack(
                 }
             }
             SurfaceRegionSource::Tree => {
-                lines.push(region_root_line(display_region, cols, theme));
+                lines.push(region_root_line(display_region, None, cols, theme));
                 content_height += 1;
                 if remaining <= 1 {
                     continue;
@@ -720,39 +733,40 @@ fn render_region_stack(
                 ensure_active_resolved = rendered.ensure_active_resolved;
             }
             SurfaceRegionSource::Controls => {
-                lines.push(region_root_line(display_region, cols, theme));
+                lines.push(region_root_line(display_region, None, cols, theme));
                 content_height += 1;
                 if lines.len() >= rows {
                     continue;
                 }
-                let mut footer = vec![blank(cols)];
-                render_footer_with_variables(
-                    &mut footer,
-                    &mut hit_regions,
-                    0,
-                    cols,
-                    theme,
-                    metadata_controls,
-                    model.and_then(|model| model.inspected_node.as_ref()),
-                    region_can_scroll,
-                    model
-                        .map(|model| model.display_variables.as_slice())
-                        .unwrap_or_default(),
-                    model.map(|model| &model.display_variable_values),
-                );
-                let row_offset = lines.len();
-                for hit in hit_regions
-                    .iter_mut()
-                    .rev()
-                    .take_while(|hit| hit.row_start == 0)
-                {
-                    hit.row_start += row_offset;
-                    hit.row_end += row_offset;
-                }
-                lines.push(footer.remove(0));
+                controls_footer_rows.push(lines.len());
+                lines.push(blank(cols));
                 content_height += 1;
             }
         }
+    }
+    for footer_row in controls_footer_rows {
+        let mut footer = vec![blank(cols)];
+        let mut footer_hits = vec![];
+        render_footer_with_variables(
+            &mut footer,
+            &mut footer_hits,
+            0,
+            cols,
+            theme,
+            metadata_controls,
+            model.and_then(|model| model.inspected_node.as_ref()),
+            region_can_scroll,
+            model
+                .map(|model| model.display_variables.as_slice())
+                .unwrap_or_default(),
+            model.map(|model| &model.display_variable_values),
+        );
+        lines[footer_row] = footer.remove(0);
+        for hit in &mut footer_hits {
+            hit.row_start += footer_row;
+            hit.row_end += footer_row;
+        }
+        hit_regions.extend(footer_hits);
     }
     lines.resize_with(rows, || blank(cols));
     RenderedRail {
@@ -800,7 +814,12 @@ fn pinned_region_rows(region: &DisplayRegion, model: Option<&ControllerViewModel
     }
 }
 
-fn region_root_line(region: &DisplayRegion, cols: usize, theme: Option<RenderTheme>) -> String {
+fn region_root_line(
+    region: &DisplayRegion,
+    suffix: Option<&str>,
+    cols: usize,
+    theme: Option<RenderTheme>,
+) -> String {
     let metadata = BTreeMap::new();
     let text = region
         .root
@@ -823,6 +842,7 @@ fn region_root_line(region: &DisplayRegion, cols: usize, theme: Option<RenderThe
         })
         .filter(|text| !text.is_empty())
         .unwrap_or_else(|| region.definition.name.clone());
+    let text = format!("{text}{}", suffix.unwrap_or_default());
     style_body_text(pad_to_width(&truncate_to_width(&text, cols), cols), theme)
 }
 
@@ -6727,8 +6747,9 @@ mod tests {
     fn pinned_controls_keep_tree_footer_hits_and_scroll_state_on_visible_footer() {
         let config = andamento_shared::template_config::parse_template_config_kdl(
             r#"
+            region "controls-before" source="controls" root-template="region/controls" form="compact" pinned=true
             region "tree" source="tree" root-template="region/tree" form="compact"
-            region "controls" source="controls" root-template="region/controls" form="compact" pinned=true
+            region "controls-after" source="controls" root-template="region/controls" form="compact" pinned=true
             template "region/tree" slot="compact" node-kind="entity" {
               field "label" source="literal" value="TREE"
             }
@@ -6743,30 +6764,92 @@ mod tests {
         let rendered = render_lines_with_template_catalog(
             Some(&grouped_model()),
             &[],
-            6,
+            8,
             30,
             true,
             Some(&catalog),
         );
-        let controls_row = rendered
+        let controls_rows = rendered
             .lines
             .iter()
-            .position(|line| line.contains("CONTROLS"))
-            .expect("controls root remains visible");
+            .enumerate()
+            .filter_map(|(row, line)| line.contains("CONTROLS").then_some(row))
+            .collect::<Vec<_>>();
+        assert_eq!(controls_rows.len(), 2, "{:?}", rendered.lines);
 
         assert!(
             !rendered.hit_regions.iter().any(|hit| {
-                hit.row_start == controls_row && hit.action == HitAction::OpenConfig
+                hit.row_start == controls_rows[1] && hit.action == HitAction::OpenConfig
             }),
             "the truncated tree footer must not leak its gear hit onto the controls root"
         );
-        assert!(rendered.hit_regions.iter().any(|hit| {
-            hit.row_start == controls_row + 1
-                && matches!(
-                    hit.action,
-                    HitAction::ScrollRailUp | HitAction::ScrollRailDown
-                )
-        }));
+        for controls_row in controls_rows {
+            assert!(rendered.hit_regions.iter().any(|hit| {
+                hit.row_start == controls_row + 1
+                    && matches!(
+                        hit.action,
+                        HitAction::ScrollRailUp | HitAction::ScrollRailDown
+                    )
+            }));
+        }
+    }
+
+    #[test]
+    fn attention_overflow_is_reported_on_the_region_root() {
+        let config = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            region "attention" source="attention" root-template="region/attention" form="detail" attention-key="status.attention"
+            region "controls" source="controls" root-template="region/controls" form="compact" pinned=true
+            template "region/attention" slot="compact" node-kind="entity" {
+              field "label" source="literal" value="ATTENTION"
+            }
+            template "region/controls" slot="compact" node-kind="entity" {
+              field "label" source="literal" value="CONTROLS"
+            }
+            template "issue/detail" slot="detail" node-kind="entity" {
+              field "label" source="metadata-text" key="display.label"
+            }
+            "#,
+        )
+        .expect("region config");
+        let catalog = TemplateConfigCatalog::from_config(config);
+        let mut model = model();
+        model.tabs.clear();
+        model.rows = (1..=3)
+            .map(|id| RailRow::Entity {
+                entity: DisplayEntity {
+                    entity: EntityRef {
+                        kind: "issue".to_owned(),
+                        id: id.to_string(),
+                    },
+                    label: format!("Issue {id}"),
+                    form: "full".to_owned(),
+                    metadata: BTreeMap::from([
+                        (
+                            "entity.kind".to_owned(),
+                            MetadataValue::Text("issue".to_owned()),
+                        ),
+                        (
+                            "display.label".to_owned(),
+                            MetadataValue::Text(format!("Issue {id}")),
+                        ),
+                        ("status.attention".to_owned(), MetadataValue::Bool(true)),
+                    ]),
+                    templates: ResolvedTemplateSlots::default(),
+                },
+                indent: 0,
+                parent_path: None,
+            })
+            .collect();
+
+        let rendered =
+            render_lines_with_template_catalog(Some(&model), &[], 4, 30, true, Some(&catalog));
+
+        assert!(
+            rendered.lines[0].contains("ATTENTION (+2 more)"),
+            "{:?}",
+            rendered.lines
+        );
     }
 
     #[test]

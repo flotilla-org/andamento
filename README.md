@@ -246,8 +246,10 @@ stack as one unit, so regions can be reordered without renderer changes. Each
 region selects its root template and entity form independently. Attention
 regions promote entities whose configured boolean fact is true; the bundled
 surface consumes Flotilla's normalized `status.attention` fact and uses the
-full/detail form while the tree defaults to compact. A pinned border-adjacent
-region reserves its rows while the intervening region viewport is clipped.
+full/detail form while the tree defaults to compact. Promotion is a highlight
+projection: the entity keeps its stable navigation position in the tree. A
+pinned border-adjacent region reserves its rows while the intervening region
+viewport is clipped.
 
 Select a row's inspect glyph to see the effective flattened KDL. Its comments
 show the inheritance chain and the source layer/file for every field; missing

@@ -3225,6 +3225,53 @@ mod tests {
     }
 
     #[test]
+    fn attention_promotion_highlights_inline_entities_without_removing_tree_navigation() {
+        let mut state = directory_entity_state();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::default(),
+        ));
+        apply_entity(
+            &mut state,
+            "issue",
+            "github/flotilla-org/flotilla#1060",
+            1,
+            &[
+                ("flotilla.issue", "github/flotilla-org/flotilla#1060"),
+                (KEY_DISPLAY_LABEL, "#1060 region stack"),
+            ],
+        );
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: andamento_shared::MetadataTarget::Entity(entity_ref(
+                "issue",
+                "github/flotilla-org/flotilla#1060",
+            )),
+            source_id: "flotilla-connector".to_owned(),
+            set: BTreeMap::from([(
+                "status.attention".to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::Bool(true),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: Some(1),
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let issue = entity_ref("issue", "github/flotilla-org/flotilla#1060");
+        assert!(model
+            .rows
+            .iter()
+            .any(|row| matches!(row, RailRow::Entity { entity, .. } if entity.entity == issue)));
+        assert!(model.surface_regions.iter().any(|region| {
+            region.definition.source
+                == andamento_shared::template_config::SurfaceRegionSource::Attention
+                && region.entities.iter().any(|entity| entity.entity == issue)
+        }));
+    }
+
+    #[test]
     fn novel_inline_form_uses_the_full_surface_instead_of_disappearing() {
         let mut state = directory_entity_state();
         let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
