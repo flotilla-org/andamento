@@ -200,6 +200,13 @@ impl RailFrameFixture {
 
     pub(super) fn snapshot(&self) -> String {
         let rendered = self.render();
+        assert_eq!(
+            rendered.lines.len(),
+            self.rows,
+            "rendered frame has {} rows, expected {}",
+            rendered.lines.len(),
+            self.rows
+        );
         let mut snapshot = format!("frame {}x{}", self.cols, self.rows);
         for (index, line) in rendered.lines.iter().enumerate() {
             let plain = strip_ansi(line);

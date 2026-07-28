@@ -1013,6 +1013,7 @@ pub fn render_lines_with_detail_surface(
         rail_scroll_offset,
         ensure_active_visible,
     );
+    rendered.lines.resize_with(rows - 1, || blank(cols));
     let footer_row = rows - 2;
     let footer = rendered.lines.pop().unwrap_or_else(|| blank(cols));
     for hit in &mut rendered.hit_regions {
