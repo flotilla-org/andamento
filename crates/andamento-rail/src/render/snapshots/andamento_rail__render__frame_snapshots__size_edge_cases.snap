@@ -1,7 +1,7 @@
 ---
 source: crates/andamento-rail/src/render/frame_snapshots.rs
-assertion_line: 69
-expression: "format!(\"one row\\n{one_row}\\n\\nnarrow\\n{narrow}\\n\\nzero width\\n{zero_width}\")"
+assertion_line: 78
+expression: "format!(\"one row\\n{one_row}\\n\\nnarrow\\n{narrow}\\n\\nzero width detail surface\\n{zero_width}\\n\\nzero width one row\\n{zero_width_one_row}\\n\\nzero width unavailable\\n{zero_width_unavailable}\\n\\nzero width configured regions\\n{zero_width_regions}\")"
 ---
 one row
 frame 16x1
