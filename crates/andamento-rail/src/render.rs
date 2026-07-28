@@ -485,11 +485,11 @@ fn render_legacy_rail_viewport(
 ) -> RenderedRail {
     if rows == 0 || cols == 0 {
         return RenderedRail {
-            lines: vec![],
+            lines: vec![blank(cols); rows],
             hit_regions: vec![],
             visible_cards: vec![],
             content_height: 0,
-            available_rows: 0,
+            available_rows: rows.saturating_sub(1),
             ensure_visible_offset: None,
             ensure_active_resolved: false,
         };
@@ -584,11 +584,11 @@ fn render_region_stack(
 ) -> RenderedRail {
     if rows == 0 || cols == 0 {
         return RenderedRail {
-            lines: vec![],
+            lines: vec![blank(cols); rows],
             hit_regions: vec![],
             visible_cards: vec![],
             content_height: 0,
-            available_rows: 0,
+            available_rows: rows,
             ensure_visible_offset: None,
             ensure_active_resolved: false,
         };
@@ -1013,7 +1013,6 @@ pub fn render_lines_with_detail_surface(
         rail_scroll_offset,
         ensure_active_visible,
     );
-    rendered.lines.resize_with(rows - 1, || blank(cols));
     let footer_row = rows - 2;
     let footer = rendered.lines.pop().unwrap_or_else(|| blank(cols));
     for hit in &mut rendered.hit_regions {

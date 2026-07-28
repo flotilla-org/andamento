@@ -1,8 +1,8 @@
 use super::{render_lines_with_detail_surface, LocalTab, RenderedRail};
 use andamento_shared::{
-    ControllerViewModel, DisplayEntity, EntityRef, GroupPath, GroupSegment, MetadataControls,
-    MetadataValue, NodeKey, RailConfig, RailGroupingMode, RailRow, RailSizingPreset,
-    ResolvedTemplateSlots, SortMode, TabCard, TemplateConfigDiagnostics,
+    ControllerViewModel, DisplayEntity, DisplayRegion, EntityRef, GroupPath, GroupSegment,
+    MetadataControls, MetadataValue, NodeKey, RailConfig, RailGroupingMode, RailRow,
+    RailSizingPreset, ResolvedTemplateSlots, SortMode, TabCard, TemplateConfigDiagnostics,
 };
 use std::collections::BTreeMap;
 use unicode_width::UnicodeWidthStr;
@@ -81,6 +81,22 @@ impl ControllerModelFixture {
             entity,
             indent: 0,
             parent_path: None,
+        });
+        self
+    }
+
+    pub(super) fn with_header_region(mut self) -> Self {
+        self.model.surface_regions.push(DisplayRegion {
+            definition: andamento_shared::template_config::SurfaceRegionDefinition {
+                name: "header".to_owned(),
+                source: andamento_shared::template_config::SurfaceRegionSource::Header,
+                root_template: "region/header".to_owned(),
+                form: "full".to_owned(),
+                attention_key: None,
+                pinned: false,
+            },
+            root: None,
+            entities: vec![],
         });
         self
     }
@@ -178,6 +194,12 @@ impl RailFrameFixture {
     }
 
     pub(super) fn render(&self) -> RenderedRail {
+        let default_metadata_controls = MetadataControls::default();
+        let metadata_controls = self
+            .model
+            .as_ref()
+            .map(|model| &model.metadata_controls)
+            .unwrap_or(&default_metadata_controls);
         render_lines_with_detail_surface(
             self.model.as_ref(),
             &self.tabs,
@@ -188,10 +210,7 @@ impl RailFrameFixture {
             None,
             &[],
             None,
-            self.model
-                .as_ref()
-                .map(|model| &model.metadata_controls)
-                .unwrap_or_else(|| empty_metadata_controls()),
+            metadata_controls,
             0,
             false,
             self.detail_surface.target.as_ref(),
@@ -225,11 +244,6 @@ impl RailFrameFixture {
         }
         snapshot
     }
-}
-
-fn empty_metadata_controls() -> &'static MetadataControls {
-    static EMPTY: std::sync::OnceLock<MetadataControls> = std::sync::OnceLock::new();
-    EMPTY.get_or_init(MetadataControls::default)
 }
 
 fn strip_ansi(line: &str) -> String {

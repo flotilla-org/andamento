@@ -15,7 +15,23 @@ frame 8x5
 03 || + 8 spaces
 04 |⚙    ○▲▼|
 
-zero width
+zero width detail surface
+frame 0x3
+00 ||
+01 ||
+02 ||
+
+zero width one row
+frame 0x1
+00 ||
+
+zero width unavailable
+frame 0x3
+00 ||
+01 ||
+02 ||
+
+zero width configured regions
 frame 0x3
 00 ||
 01 ||

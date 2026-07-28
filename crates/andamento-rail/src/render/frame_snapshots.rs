@@ -65,9 +65,20 @@ fn size_edge_cases() {
     let zero_width = RailFrameFixture::new(3, 0)
         .with_model(ControllerModelFixture::project_sidebar(&model_names))
         .snapshot();
+    let zero_width_one_row = RailFrameFixture::new(1, 0)
+        .with_model(ControllerModelFixture::project_sidebar(&model_names))
+        .snapshot();
+    let zero_width_unavailable = RailFrameFixture::new(3, 0)
+        .controller_available(false)
+        .snapshot();
+    let zero_width_regions = RailFrameFixture::new(3, 0)
+        .with_model(ControllerModelFixture::empty().with_header_region())
+        .snapshot();
 
     insta::assert_snapshot!(
         "size_edge_cases",
-        format!("one row\n{one_row}\n\nnarrow\n{narrow}\n\nzero width\n{zero_width}")
+        format!(
+            "one row\n{one_row}\n\nnarrow\n{narrow}\n\nzero width detail surface\n{zero_width}\n\nzero width one row\n{zero_width_one_row}\n\nzero width unavailable\n{zero_width_unavailable}\n\nzero width configured regions\n{zero_width_regions}"
+        )
     );
 }
