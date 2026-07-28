@@ -209,7 +209,7 @@ impl RailFrameFixture {
         assert!(
             state.update(Event::Mouse(Mouse::Hover(
                 hit.row_start as isize,
-                hit.col_start.min(hit.col_end)
+                hit.col_start
             ))),
             "hover event should request a new rendered frame"
         );
