@@ -1036,30 +1036,8 @@ fn render_detail_surface(
 ) -> String {
     let detail = match (model, target) {
         (Some(model), Some(NodeKey::Entity(target))) => display_entity_for_target(model, target)
-            .map(|entity| {
-                let text = entity
-                    .templates
-                    .detail
-                    .as_ref()
-                    .map(|slot| {
-                        let metadata = display_entity_metadata(entity);
-                        let fields = template_fields_from_resolved_slot(
-                            slot,
-                            TemplateConfigMatchContext {
-                                slot: TemplateConfigSlot::Detail,
-                                node_kind: TemplateConfigNodeKind::Entity,
-                                metadata: &metadata,
-                                collapsed: false,
-                                collapsible: false,
-                                active_tab_name: None,
-                            },
-                        );
-                        join_template_fields(&fields, true)
-                    })
-                    .filter(|text| !text.is_empty())
-                    .unwrap_or_else(|| entity.label.clone());
-                format!("[{}] {text}", entity.entity.kind)
-            }),
+            .map(display_entity_detail)
+            .or_else(|| latent_entity_for_target(model, target).map(latent_entity_detail)),
         _ => None,
     }
     .unwrap_or_default();
@@ -1067,6 +1045,48 @@ fn render_detail_surface(
         pad_to_width(&truncate_to_width(&detail, width), width),
         theme,
     )
+}
+
+fn display_entity_detail(entity: &andamento_shared::DisplayEntity) -> String {
+    entity_detail(
+        &entity.entity,
+        &entity.label,
+        &entity.templates,
+        &display_entity_metadata(entity),
+    )
+}
+
+fn latent_entity_detail(latent: &andamento_shared::LatentTab) -> String {
+    let card = render_card_from_latent(latent);
+    entity_detail(&latent.entity, &card.name, &card.templates, &card.metadata)
+}
+
+fn entity_detail(
+    entity: &andamento_shared::EntityRef,
+    label: &str,
+    templates: &ResolvedTemplateSlots,
+    metadata: &RenderMetadata,
+) -> String {
+    let text = templates
+        .detail
+        .as_ref()
+        .map(|slot| {
+            let fields = template_fields_from_resolved_slot(
+                slot,
+                TemplateConfigMatchContext {
+                    slot: TemplateConfigSlot::Detail,
+                    node_kind: TemplateConfigNodeKind::Entity,
+                    metadata,
+                    collapsed: false,
+                    collapsible: false,
+                    active_tab_name: None,
+                },
+            );
+            join_template_fields(&fields, true)
+        })
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| label.to_owned());
+    format!("[{}] {text}", entity.kind)
 }
 
 fn display_entity_for_target<'a>(
@@ -1087,6 +1107,16 @@ fn display_entity_for_target<'a>(
                 .flat_map(|region| region.entities.iter()),
         )
         .find(|entity| &entity.entity == target)
+}
+
+fn latent_entity_for_target<'a>(
+    model: &'a ControllerViewModel,
+    target: &andamento_shared::EntityRef,
+) -> Option<&'a andamento_shared::LatentTab> {
+    model.rows.iter().find_map(|row| match row {
+        RailRow::Latent { latent, .. } if &latent.entity == target => Some(latent),
+        _ => None,
+    })
 }
 
 /// Push N rows to `lines` rendering the meta panel for a node. Each row is:
