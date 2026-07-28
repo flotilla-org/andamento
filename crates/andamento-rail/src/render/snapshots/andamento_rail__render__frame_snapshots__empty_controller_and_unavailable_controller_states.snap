@@ -1,0 +1,22 @@
+---
+source: crates/andamento-rail/src/render/frame_snapshots.rs
+assertion_line: 50
+expression: "format!(\"connected\\n{connected}\\n\\nunavailable\\n{unavailable}\")"
+---
+connected
+frame 32x6
+00 |tabs: waiting for tab state| + 5 spaces
+01 || + 32 spaces
+02 || + 32 spaces
+03 || + 32 spaces
+04 || + 32 spaces
+05 |⚙                              ○|
+
+unavailable
+frame 32x6
+00 |tabs: waiting for tab state| + 5 spaces
+01 || + 32 spaces
+02 || + 32 spaces
+03 || + 32 spaces
+04 || + 32 spaces
+05 |controller unavailable| + 10 spaces

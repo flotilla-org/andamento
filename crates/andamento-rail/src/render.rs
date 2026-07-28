@@ -10560,3 +10560,9 @@ mod tests {
         assert_eq!(tab_ids, vec![1, 2]);
     }
 }
+
+#[cfg(test)]
+mod frame_snapshots;
+
+#[cfg(test)]
+mod test_fixtures;

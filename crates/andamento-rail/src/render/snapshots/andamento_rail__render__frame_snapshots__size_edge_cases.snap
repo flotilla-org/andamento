@@ -1,0 +1,21 @@
+---
+source: crates/andamento-rail/src/render/frame_snapshots.rs
+assertion_line: 69
+expression: "format!(\"one row\\n{one_row}\\n\\nnarrow\\n{narrow}\\n\\nzero width\\n{zero_width}\")"
+---
+one row
+frame 16x1
+00 |⚙              ○|
+
+narrow
+frame 8x5
+00 |▼ and…○─|
+01 |  ┌...○┐|
+02 |  │    │|
+03 || + 8 spaces
+04 |⚙    ○▲▼|
+
+zero width
+frame 0x3
+00 ||
+01 ||

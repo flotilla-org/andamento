@@ -1,0 +1,18 @@
+---
+source: crates/andamento-rail/src/render/frame_snapshots.rs
+assertion_line: 37
+expression: frame
+---
+frame 48x12
+00 |▼ andamento (1) ──────────────────────────────○─|
+01 |  ┌ andamento/work ───────────────────────────○┐|
+02 |  │                                            │|
+03 |  └────────────────────────────────────────────┘|
+04 |┌ Tab ─────────────────────────────────────────┐|
+05 |│                                              │|
+06 |└──────────────────────────────────────────────┘|
+07 || + 48 spaces
+08 || + 48 spaces
+09 || + 48 spaces
+10 |[issue] #49 Keep hover detail visible| + 11 spaces
+11 |⚙                                              ○|
