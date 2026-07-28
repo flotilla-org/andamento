@@ -1,11 +1,11 @@
 version 1
 
 grouping "proj-repo-branch" {
-  filter key="git.branch"
   priority 100
+  presence kind="convoy" class="tab"
   level key="andamento.project" optional=true
   level key="vcs.repo" label-key="repo.name" template="repo/full"
-  level key="git.branch"
+  level key="git.branch" optional=true
 }
 
 // The declaration above makes this choice explicit for repository groups.

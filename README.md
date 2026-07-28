@@ -94,8 +94,9 @@ action target.
 
 The controller can also load named grouping templates from a real filesystem
 path exposed to the plugin. Rules are tried by priority and project resolved
-metadata into a hierarchical `GroupPath`; absent facts are skipped rather
-than invented. The local example points both config loaders at one KDL file:
+metadata into a hierarchical `GroupPath`; missing optional facts are skipped
+rather than invented, while a missing non-optional fact rejects that rule. The
+local example points both config loaders at one KDL file:
 
 ```kdl
 plugin location="andamento-controller" {
@@ -108,14 +109,17 @@ Example grouping rules:
 ```kdl
 grouping "proj-repo-branch" {
     priority 100
-    filter key="git.branch"
+    presence kind="convoy" class="tab"
     level key="andamento.project" optional=true
     level key="vcs.repo" label-key="repo.name" template="repo/full"
-    level key="git.branch"
+    level key="git.branch" optional=true
 }
 ```
 
-Each level also accepts `collapse-single-member=true` and `show-empty=true`.
+Every non-optional level must derive for a rule to capture an entity. A missing
+`optional=true` level keeps the entity captured and places it at the deepest
+derived group. Each level also accepts `collapse-single-member=true` and
+`show-empty=true`.
 Presence mappings classify an entity kind as `tab`, `inline`, or `hidden`.
 Inline entities can select `form="compact"` to reuse the rail's wrapped
 Zellij-ribbon collection rendering. `visible-when="variable-name"` gates the

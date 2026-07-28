@@ -7,13 +7,14 @@ use crate::metadata::{
 use andamento_shared::grouping_config::{GroupingConfigCatalog, GroupingRule, PresenceClass};
 use andamento_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, DisplayEntity, DisplayVariableValue,
-    EntityRef, GroupPath, GroupSegment, LatentMaterializationState, LatentTab, MetadataControls,
-    MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey,
-    ObservedMetadataIdentity, PaneTarget, PluginPlacement, PluginRegistrationHello, Priority,
-    RailConfig, RailGroupingMode, RailRow, RailUiAction, RailUiRevision, RailUiState,
-    ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateSlot,
-    ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
-    TemplateConfigDiagnostics, DISPLAY_FORM_COMPACT, DISPLAY_FORM_FULL,
+    EntityRef, GroupPath, GroupSegment, GroupingRuleDiagnostic, LatentMaterializationState,
+    LatentTab, MetadataControls, MetadataEntry, MetadataIdentity, MetadataSourceEntry,
+    MetadataTriState, MetadataValue, NodeKey, ObservedMetadataIdentity, PaneTarget,
+    PluginPlacement, PluginRegistrationHello, Priority, RailConfig, RailGroupingMode, RailRow,
+    RailUiAction, RailUiRevision, RailUiState, ReachableMetadataIdentity, RendererHello,
+    ResolvedMetadata, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode,
+    TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics, DISPLAY_FORM_COMPACT,
+    DISPLAY_FORM_FULL,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -955,6 +956,7 @@ impl ControllerState {
             template_config: self.template_config.clone(),
             resolved_metadata,
             observed_identities,
+            grouping_diagnostics: self.grouping_diagnostics(),
             rows,
             tabs,
             metadata_controls: self
@@ -1150,11 +1152,13 @@ impl ControllerState {
                 *tab_count_by_prefix.entry(prefix).or_default() += 1;
             }
         }
-        let latent_by_path = latent_tabs
-            .iter()
-            .cloned()
-            .map(|latent| (latent.path.clone(), latent))
-            .collect::<BTreeMap<_, _>>();
+        let mut latent_by_path: BTreeMap<GroupPath, Vec<LatentTab>> = BTreeMap::new();
+        for latent in latent_tabs {
+            latent_by_path
+                .entry(latent.path.clone())
+                .or_default()
+                .push(latent.clone());
+        }
         let mut tab_order_by_path = BTreeMap::new();
         for (index, tab) in tabs.iter().enumerate() {
             if let Some(grouping) = tab.grouping.as_ref() {
@@ -1260,13 +1264,17 @@ impl ControllerState {
                         parent_path: Some(path.clone()),
                     }),
             );
-            if let Some(latent) = latent_by_path.get(&path) {
-                rows.push(RailRow::Latent {
-                    latent: latent.clone(),
-                    indent: path.0.len() * 2,
-                    parent_path: Some(path.clone()),
-                });
-            }
+            rows.extend(
+                latent_by_path
+                    .get(&path)
+                    .into_iter()
+                    .flatten()
+                    .map(|latent| RailRow::Latent {
+                        latent: latent.clone(),
+                        indent: path.0.len() * 2,
+                        parent_path: Some(path.clone()),
+                    }),
+            );
             rows.extend(
                 compact_entities
                     .iter()
@@ -1535,6 +1543,64 @@ impl ControllerState {
                 .then_with(|| left.path.cmp(&right.path))
         });
         entities
+    }
+
+    fn grouping_diagnostics(&self) -> Vec<GroupingRuleDiagnostic> {
+        let default_catalog = GroupingConfigCatalog::default();
+        let catalog = self.grouping_catalog.as_ref().unwrap_or(&default_catalog);
+        self.metadata
+            .targets()
+            .filter_map(|target| {
+                let EntityId::Entity(entity) = target else {
+                    return None;
+                };
+                let values = self
+                    .metadata
+                    .resolved_entries_for(target, self.receive_counter);
+                let facts = entity_facts(entity, &values);
+                let rules = self
+                    .active_grouping_template
+                    .as_deref()
+                    .and_then(|name| catalog.named(name))
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let rules = if rules.is_empty() && self.active_grouping_template.is_none() {
+                    catalog.rules.iter().collect()
+                } else {
+                    rules
+                };
+                Some(
+                    rules
+                        .into_iter()
+                        .filter(|rule| {
+                            rule.filter
+                                .as_ref()
+                                .is_none_or(|filter| filter.matches(&facts))
+                        })
+                        .map_while(|rule| match derive_grouping_path(rule, &facts) {
+                            Ok(_) => None,
+                            Err(GroupingPathError::MissingNonOptionalLevel(key)) => {
+                                Some(GroupingRuleDiagnostic {
+                                    target: NodeKey::Entity(entity.clone()),
+                                    rule: rule.name.clone(),
+                                    message: format!(
+                                        "not captured: `{key}` absent (non-optional level)"
+                                    ),
+                                })
+                            }
+                            Err(GroupingPathError::NoDerivedLevels) => {
+                                Some(GroupingRuleDiagnostic {
+                                    target: NodeKey::Entity(entity.clone()),
+                                    rule: rule.name.clone(),
+                                    message: "not captured: no grouping levels derived".to_owned(),
+                                })
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .flatten()
+            .collect()
     }
 
     fn declared_group_templates(&self) -> BTreeMap<GroupPath, String> {
@@ -2011,39 +2077,12 @@ impl ControllerState {
         {
             return None;
         }
-        let is_entity = metadata.contains_key(KEY_ENTITY_KIND);
-        let mut segments = vec![];
-        let mut labels = vec![];
-        for level in &rule.levels {
-            let Some(value) = metadata.get(&level.key).cloned() else {
-                if level.optional || is_entity {
-                    continue;
-                }
-                if segments.is_empty() {
-                    return None;
-                }
-                break;
-            };
-            let label = level
-                .label_key
-                .as_ref()
-                .and_then(|key| metadata.get(key))
-                .map(metadata_value_display)
-                .unwrap_or_else(|| metadata_value_display(&value));
-            segments.push(GroupSegment {
-                key: level.key.clone(),
-                value,
-                label: level.label_key.as_ref().map(|_| label.clone()),
-            });
-            labels.push(label);
-        }
-        if segments.is_empty() {
-            return None;
-        }
+        let (path, _) = grouping_path_for_facts(rule, metadata)?;
+        let labels = path.0.iter().map(group_segment_label).collect::<Vec<_>>();
         let key = format!(
             "{}:{}",
             rule.name,
-            segments
+            path.0
                 .iter()
                 .map(|segment| format!(
                     "{}={}",
@@ -2056,7 +2095,7 @@ impl ControllerState {
         let label = labels.last().cloned().unwrap_or_else(|| key.clone());
         Some(TabGroupingInfo {
             key,
-            path: GroupPath(segments),
+            path,
             label,
             full_label: labels.join(" / "),
         })
@@ -2431,11 +2470,29 @@ fn grouping_path_for_facts(
     rule: &GroupingRule,
     facts: &BTreeMap<String, MetadataValue>,
 ) -> Option<(GroupPath, usize)> {
+    derive_grouping_path(rule, facts).ok()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GroupingPathError {
+    MissingNonOptionalLevel(String),
+    NoDerivedLevels,
+}
+
+fn derive_grouping_path(
+    rule: &GroupingRule,
+    facts: &BTreeMap<String, MetadataValue>,
+) -> Result<(GroupPath, usize), GroupingPathError> {
     let mut segments = vec![];
     let mut last_level = None;
     for (index, level) in rule.levels.iter().enumerate() {
         let Some(value) = facts.get(&level.key).cloned() else {
-            continue;
+            if level.optional {
+                continue;
+            }
+            return Err(GroupingPathError::MissingNonOptionalLevel(
+                level.key.clone(),
+            ));
         };
         let label = level
             .label_key
@@ -2449,7 +2506,8 @@ fn grouping_path_for_facts(
         });
         last_level = Some(index);
     }
-    Some((GroupPath(segments), last_level?))
+    let last_level = last_level.ok_or(GroupingPathError::NoDerivedLevels)?;
+    Ok((GroupPath(segments), last_level))
 }
 
 fn entity_facts(
@@ -2956,6 +3014,124 @@ mod tests {
         assert_eq!(
             entities[0].path.0[0].value,
             MetadataValue::Text("github/flotilla-org/andamento#37".to_owned())
+        );
+    }
+
+    #[test]
+    fn required_partial_path_falls_through_to_a_later_rule() {
+        let mut state = directory_entity_state();
+        let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
+            r#"
+            grouping "repo-branch" priority=100 {
+              presence kind="convoy" class="tab"
+              level key="vcs.repo"
+              level key="git.branch"
+            }
+            grouping "repo" priority=50 {
+              presence kind="convoy" class="tab"
+              level key="vcs.repo"
+            }
+            "#,
+        )
+        .expect("grouping config");
+        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
+        apply_target_only_entity(
+            &mut state,
+            "convoy",
+            "flotilla/partial-path@fleet",
+            1,
+            &[("vcs.repo", "flotilla-org/flotilla")],
+        );
+
+        let entities = state.catalog_entities();
+
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].grouping_priority, 50);
+        assert_eq!(
+            entities[0]
+                .path
+                .0
+                .iter()
+                .map(|segment| segment.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["vcs.repo"]
+        );
+    }
+
+    #[test]
+    fn rejected_rule_explains_its_missing_non_optional_level() {
+        let mut state = directory_entity_state();
+        let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
+            r#"
+            grouping "repo-branch" priority=100 {
+              presence kind="convoy" class="tab"
+              level key="vcs.repo"
+              level key="git.branch"
+            }
+            grouping "repo" priority=50 {
+              presence kind="convoy" class="tab"
+              level key="vcs.repo"
+            }
+            "#,
+        )
+        .expect("grouping config");
+        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
+        let entity = entity_ref("convoy", "flotilla/inspect-path@fleet");
+        apply_target_only_entity(
+            &mut state,
+            &entity.kind,
+            &entity.id,
+            1,
+            &[("vcs.repo", "flotilla-org/flotilla")],
+        );
+
+        let diagnostics = state.view_model().grouping_diagnostics;
+
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.target == NodeKey::Entity(entity.clone())
+                && diagnostic.rule == "repo-branch"
+                && diagnostic.message == "not captured: `git.branch` absent (non-optional level)"
+        }));
+    }
+
+    #[test]
+    fn optional_missing_level_places_entity_at_the_deepest_derived_group() {
+        let mut state = directory_entity_state();
+        let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
+            r#"
+            grouping "repo-branch" priority=100 {
+              presence kind="convoy" class="tab"
+              level key="vcs.repo"
+              level key="git.branch" optional=true
+            }
+            grouping "repo" priority=50 {
+              presence kind="convoy" class="tab"
+              level key="vcs.repo"
+            }
+            "#,
+        )
+        .expect("grouping config");
+        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
+        apply_target_only_entity(
+            &mut state,
+            "convoy",
+            "flotilla/optional-path@fleet",
+            1,
+            &[("vcs.repo", "flotilla-org/flotilla")],
+        );
+
+        let entities = state.catalog_entities();
+
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].grouping_priority, 100);
+        assert_eq!(
+            entities[0]
+                .path
+                .0
+                .iter()
+                .map(|segment| segment.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["vcs.repo"]
         );
     }
 
@@ -4314,6 +4490,66 @@ mod tests {
         assert_eq!(grouping.key, "cwd:/Users/robert/dev/zellij");
         assert_eq!(grouping.label, "zellij");
         assert_eq!(grouping.full_label, "/Users/robert/dev/zellij");
+    }
+
+    #[test]
+    fn tab_with_required_partial_path_falls_through_to_a_later_rule() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig {
+            grouping: RailGroupingMode::Directory,
+            ..RailConfig::default()
+        });
+        let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
+            r#"
+            grouping "repo-branch" priority=100 {
+              level key="git.repo"
+              level key="git.branch"
+            }
+            grouping "directory" priority=50 {
+              level key="zellij.pane.cwd"
+            }
+            "#,
+        )
+        .expect("grouping config");
+        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
+        state.update_tabs(vec![ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "repo".into(),
+            active: true,
+        }]);
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_pane_cwd(PaneTarget::Terminal(10), "/Users/robert/dev/zellij".into());
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: andamento_shared::MetadataTarget::Tab(1),
+            source_id: "git-watcher".to_owned(),
+            set: BTreeMap::from([(
+                "git.repo".to_owned(),
+                andamento_shared::MetadataValueUpdate {
+                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let grouping = model.tabs[0].grouping.as_ref().expect("tab grouping");
+
+        assert_eq!(
+            grouping.key,
+            "directory:zellij.pane.cwd=/Users/robert/dev/zellij"
+        );
+        assert_eq!(
+            grouping.path,
+            GroupPath(vec![GroupSegment {
+                key: KEY_PANE_CWD.to_owned(),
+                value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
+                label: None,
+            }])
+        );
     }
 
     #[test]

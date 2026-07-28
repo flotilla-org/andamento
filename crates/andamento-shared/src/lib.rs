@@ -801,6 +801,8 @@ pub struct ControllerViewModel {
     #[serde(default)]
     pub observed_identities: Vec<ObservedMetadataIdentity>,
     #[serde(default)]
+    pub grouping_diagnostics: Vec<GroupingRuleDiagnostic>,
+    #[serde(default)]
     pub metadata_controls: MetadataControls,
     #[serde(default)]
     pub inspected_node: Option<NodeKey>,
@@ -838,6 +840,13 @@ pub enum NodeKey {
     Group(GroupPath),
     Tab(u64),
     Entity(EntityRef),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupingRuleDiagnostic {
+    pub target: NodeKey,
+    pub rule: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1114,6 +1123,14 @@ mod tests {
                 target_count: 2,
                 nearest_distance: 1,
             }],
+            grouping_diagnostics: vec![GroupingRuleDiagnostic {
+                target: NodeKey::Entity(EntityRef {
+                    kind: "convoy".to_owned(),
+                    id: "flotilla/partial@fleet".to_owned(),
+                }),
+                rule: "repo-branch".to_owned(),
+                message: "not captured: `git.branch` absent (non-optional level)".to_owned(),
+            }],
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
@@ -1364,6 +1381,7 @@ mod tests {
             ],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            grouping_diagnostics: vec![],
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],

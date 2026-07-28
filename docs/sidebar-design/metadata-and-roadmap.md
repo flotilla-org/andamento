@@ -701,7 +701,10 @@ Scope:
 - try rules by priority, preserving file order as the tie-break.
 - let each rule define ordered metadata levels.
 - allow optional levels, especially higher-level project/workspace labels.
-- when a later required level is missing, use the deepest known prefix once at least one segment has been produced.
+- capture an entity only when every non-optional level derives; otherwise let
+  later rules or the catch-all try it.
+- when an optional level is missing, keep the rule captured and place the entity
+  at its deepest derived level, beside any deeper sibling groups.
 - keep different rules independent; they do not mingle into one hierarchy.
 - keep segment identity as `key=value`, with an optional display label such as `repo.name`.
 - retain the built-in directory fallback when no external grouping rule applies.
@@ -713,11 +716,15 @@ grouping "proj-repo-branch" {
   priority 100
   level key="andamento.project" optional=true
   level key="git.repo" label-key="repo.name"
-  level key="git.branch"
+  level key="git.branch" optional=true
 }
 ```
 
-Status: started. The shared crate parses grouping rules, the controller evaluates them against resolved tab metadata, identity-enriched cwd facts can now produce repo/branch hierarchies, and group segments can carry display labels without changing their identity.
+Status: started. The shared crate parses grouping rules, the controller evaluates
+them against resolved tab metadata, identity-enriched cwd facts can now produce
+repo/branch hierarchies, and group segments can carry display labels without
+changing their identity. Capture requires every non-optional level to derive;
+missing optional levels collapse placement to the deepest derived level.
 
 ### 5. Group Metadata Targets
 
