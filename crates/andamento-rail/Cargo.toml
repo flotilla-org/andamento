@@ -23,3 +23,6 @@ andamento-shared.workspace = true
 unicode-width.workspace = true
 zellij-tile.workspace = true
 zellij-tile-utils.workspace = true
+
+[dev-dependencies]
+insta = "1"

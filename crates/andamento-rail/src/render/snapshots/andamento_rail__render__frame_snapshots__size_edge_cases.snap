@@ -1,0 +1,38 @@
+---
+source: crates/andamento-rail/src/render/frame_snapshots.rs
+assertion_line: 78
+expression: "format!(\"one row\\n{one_row}\\n\\nnarrow\\n{narrow}\\n\\nzero width detail surface\\n{zero_width}\\n\\nzero width one row\\n{zero_width_one_row}\\n\\nzero width unavailable\\n{zero_width_unavailable}\\n\\nzero width configured regions\\n{zero_width_regions}\")"
+---
+one row
+frame 16x1
+00 |⚙              ○|
+
+narrow
+frame 8x5
+00 |▼ and…○─|
+01 |  ┌...○┐|
+02 |  │    │|
+03 || + 8 spaces
+04 |⚙    ○▲▼|
+
+zero width detail surface
+frame 0x3
+00 ||
+01 ||
+02 ||
+
+zero width one row
+frame 0x1
+00 ||
+
+zero width unavailable
+frame 0x3
+00 ||
+01 ||
+02 ||
+
+zero width configured regions
+frame 0x3
+00 ||
+01 ||
+02 ||

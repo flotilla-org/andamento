@@ -485,11 +485,11 @@ fn render_legacy_rail_viewport(
 ) -> RenderedRail {
     if rows == 0 || cols == 0 {
         return RenderedRail {
-            lines: vec![],
+            lines: vec![blank(cols); rows],
             hit_regions: vec![],
             visible_cards: vec![],
             content_height: 0,
-            available_rows: 0,
+            available_rows: rows.saturating_sub(1),
             ensure_visible_offset: None,
             ensure_active_resolved: false,
         };
@@ -584,11 +584,11 @@ fn render_region_stack(
 ) -> RenderedRail {
     if rows == 0 || cols == 0 {
         return RenderedRail {
-            lines: vec![],
+            lines: vec![blank(cols); rows],
             hit_regions: vec![],
             visible_cards: vec![],
             content_height: 0,
-            available_rows: 0,
+            available_rows: rows,
             ensure_visible_offset: None,
             ensure_active_resolved: false,
         };
@@ -10560,3 +10560,9 @@ mod tests {
         assert_eq!(tab_ids, vec![1, 2]);
     }
 }
+
+#[cfg(test)]
+mod frame_snapshots;
+
+#[cfg(test)]
+mod test_fixtures;
