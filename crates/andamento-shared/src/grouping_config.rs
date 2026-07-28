@@ -604,4 +604,29 @@ mod tests {
         assert_eq!(published.presence, bundled.presence);
         assert_eq!(published.filter, bundled.filter);
     }
+
+    #[test]
+    fn published_git_template_uses_an_optional_branch_level_without_a_filter_dodge() {
+        let config =
+            parse_grouping_config_kdl(include_str!("../../../templates/andamento-git.kdl"))
+                .expect("published git template parses");
+        let rule = config
+            .rules
+            .iter()
+            .find(|rule| rule.name == "proj-repo-branch")
+            .expect("project-repo-branch rule");
+
+        assert_eq!(rule.filter, None);
+        assert_eq!(
+            rule.levels
+                .iter()
+                .find(|level| level.key == "git.branch")
+                .map(|level| level.optional),
+            Some(true)
+        );
+        assert!(rule
+            .presence
+            .iter()
+            .any(|mapping| { mapping.kind == "convoy" && mapping.class == PresenceClass::Tab }));
+    }
 }

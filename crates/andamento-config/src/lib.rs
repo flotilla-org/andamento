@@ -991,6 +991,8 @@ fn push_inspect_page(
     frame.push_blank();
     push_inspect_identity_section(frame, &target);
     frame.push_blank();
+    push_inspect_grouping_section(frame, model, &target);
+    frame.push_blank();
     push_inspect_options_section(frame, model, &target);
     frame.push_blank();
     push_inspect_metadata_section(frame, &target);
@@ -1046,6 +1048,26 @@ fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTarg
                 push_key_value(frame, "id", &entity.id);
             }
         }
+    }
+}
+
+fn push_inspect_grouping_section(
+    frame: &mut ConfigUiFrame,
+    model: &ControllerViewModel,
+    target: &InspectTargetView<'_>,
+) {
+    push_section_header(frame, "Grouping");
+    let mut diagnostics = model
+        .grouping_diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.target == target.node_key)
+        .peekable();
+    if diagnostics.peek().is_none() {
+        frame.push_plain("  <none>");
+        return;
+    }
+    for diagnostic in diagnostics {
+        frame.push_plain(&format!("{}: {}", diagnostic.rule, diagnostic.message));
     }
 }
 
@@ -2113,6 +2135,36 @@ mod tests {
     }
 
     #[test]
+    fn inspect_entity_explains_rule_non_capture() {
+        let entity = andamento_shared::EntityRef {
+            kind: "convoy".to_owned(),
+            id: "flotilla/inspect-path@fleet".to_owned(),
+        };
+        let mut model = model_with_tab(7, "repo");
+        model.inspected_node = Some(NodeKey::Entity(entity.clone()));
+        model.grouping_diagnostics = vec![andamento_shared::GroupingRuleDiagnostic {
+            target: NodeKey::Entity(entity),
+            rule: "repo-branch".to_owned(),
+            message: "not captured: `git.branch` absent (non-optional level)".to_owned(),
+        }];
+
+        let rendered = render_config(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Inspect,
+            24,
+            80,
+            &[],
+            false,
+            0,
+        );
+
+        assert!(rendered.lines.iter().any(|line| {
+            line.trim() == "repo-branch: not captured: `git.branch` absent (non-optional level)"
+        }));
+    }
+
+    #[test]
     fn inspect_target_resolves_group() {
         let path = GroupPath(vec![GroupSegment {
             key: "git.repo".to_owned(),
@@ -2143,6 +2195,7 @@ mod tests {
             }],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            grouping_diagnostics: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path.clone())),
             collapsed_groups: vec![],
@@ -2199,6 +2252,7 @@ mod tests {
             }],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            grouping_diagnostics: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path)),
             collapsed_groups: vec![],
@@ -2328,6 +2382,7 @@ mod tests {
             rows: vec![],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            grouping_diagnostics: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
@@ -2413,6 +2468,7 @@ mod tests {
             }],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            grouping_diagnostics: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path)),
             collapsed_groups: vec![],
@@ -2587,7 +2643,7 @@ mod tests {
             80,
             &[],
             false,
-            25,
+            usize::MAX,
         );
 
         assert!(top.lines.join("\n").contains("Inspect: Tab \"repo\" #7"));
@@ -2635,6 +2691,7 @@ mod tests {
             rows: vec![],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            grouping_diagnostics: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
@@ -2794,6 +2851,7 @@ mod tests {
             rows: vec![],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            grouping_diagnostics: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
@@ -2846,6 +2904,7 @@ mod tests {
             rows: vec![],
             resolved_metadata: vec![],
             observed_identities: vec![],
+            grouping_diagnostics: vec![],
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],

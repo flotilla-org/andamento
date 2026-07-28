@@ -2900,13 +2900,11 @@ mod tests {
         )));
     }
 
-    // The live andamento-git.kdl declaration must stay scoped to the repo
-    // level. Inherited repository facts are also present below that level,
-    // but must not redirect convoy headers to the repo template.
-    // Native-only because it renders through andamento-rail.
+    // Native-only because this is the captured render-harness scenario and
+    // renders through andamento-rail.
     #[cfg(not(target_family = "wasm"))]
     #[test]
-    fn git_group_header_template_stays_scoped_to_repo_level_groups() {
+    fn git_rule_keeps_branchless_convoy_siblings_visible_under_their_repo() {
         let config_kdl = include_str!("../../../templates/andamento-git.kdl");
         let mut state = ControllerState::default();
         state.set_template_catalog(Some(
@@ -2971,6 +2969,28 @@ mod tests {
         }
 
         let model = state.view_model();
+        let repo_path = andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
+            key: "vcs.repo".to_owned(),
+            value: andamento_shared::MetadataValue::Text("flotilla-org/andamento".to_owned()),
+            label: Some("andamento".to_owned()),
+        }]);
+        let latent_rows = model
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                andamento_shared::RailRow::Latent {
+                    latent,
+                    parent_path,
+                    ..
+                } => Some((latent, parent_path)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(latent_rows.len(), 2);
+        assert!(latent_rows.iter().all(|(latent, parent_path)| {
+            latent.path == repo_path && parent_path.as_ref() == Some(&repo_path)
+        }));
+
         let templates =
             andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
                 andamento_shared::template_config::parse_template_config_kdl(config_kdl).unwrap(),
@@ -2994,16 +3014,13 @@ mod tests {
             model.rows,
             rendered.lines,
         );
-        // The convoy-level group header must keep its own label rather than
-        // being captured label-less by the repo template.
-        assert!(
-            rendered
-                .lines
-                .iter()
-                .any(|line| line.contains("scoping-regression")),
-            "convoy-level header must not be captured label-less by the git group-header template: {:?}",
-            rendered.lines
-        );
+        for label in ["scoping-regression", "second-convoy"] {
+            assert!(
+                rendered.lines.iter().any(|line| line.contains(label)),
+                "branchless convoy {label} must render directly beneath its repo: {:?}",
+                rendered.lines
+            );
+        }
     }
 
     #[test]
