@@ -19,6 +19,7 @@ jobs:
   wasm:
     name: WASM plugin trio
     runs-on: feta
+    timeout-minutes: 45
     steps:
       - name: Verify fleet runner
         run: |
