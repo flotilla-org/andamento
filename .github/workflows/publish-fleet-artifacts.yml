@@ -8,27 +8,27 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: fleet-release-${{ github.repository }}-${{ github.sha }}
+  cancel-in-progress: false
+
 env:
   CARGO_INCREMENTAL: "0"
-  FORGEJO_SERVER_URL: ${{ forgejo.server_url }}
-  FORGEJO_PACKAGE_OWNER: robert
-  FORGEJO_PACKAGE_NAME: andamento
   ZELLIJ_REVISION: d262df58ebdea2549666a5060663d017545bb5cb
 
 jobs:
   wasm:
     name: WASM plugin trio
-    runs-on: feta
+    runs-on: [self-hosted, Linux, X64, fleet-release]
     timeout-minutes: 45
     steps:
-      - name: Verify fleet runner
+      - name: Verify release runner capability
         run: |
-          test "$(hostname -s)" = feta
           test "$(uname -s)" = Linux
           test "$(uname -m)" = x86_64
 
       - name: Check out source
-        uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
       - name: Prepare pinned Zellij dependency
         run: |
@@ -51,9 +51,8 @@ jobs:
           cargo +stable build --workspace --target wasm32-wasip1 --release --locked -j1
 
       - name: Stage and describe artifacts
-        env:
-          COMMIT_SHA: ${{ forgejo.sha }}
         run: |
+          RELEASE_TAG="fleet-$GITHUB_SHA"
           mkdir -p dist
           for plugin in andamento-controller andamento-rail andamento-config; do
             install -m 0644 \
@@ -63,11 +62,36 @@ jobs:
             scripts/write-artifact-metadata.sh \
               "dist/${plugin}-wasm32-wasip1.wasm" \
               "dist/${plugin}-wasm32-wasip1.wasm.json" \
-              flotilla-org/andamento "$COMMIT_SHA" wasm32-wasip1 "" false
+              "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$RELEASE_TAG" \
+              wasm32-wasip1 "" false
           done
 
-      - name: Publish immutable package version
+      - name: Transfer release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fleet-wasm-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish GitHub Release
+    needs: wasm
+    runs-on: [self-hosted, Linux, X64, fleet-release]
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out publisher
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Collect release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: fleet-wasm-${{ github.sha }}
+          path: dist
+
+      - name: Publish immutable GitHub Release
         env:
-          FORGEJO_PACKAGE_VERSION: ${{ forgejo.sha }}
-          FORGEJO_PACKAGE_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
-        run: scripts/publish-forgejo-generic.sh dist/*
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/publish-github-release.sh dist/*
