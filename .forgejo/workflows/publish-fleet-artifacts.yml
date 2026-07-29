@@ -5,6 +5,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 env:
   CARGO_INCREMENTAL: "0"
   FORGEJO_SERVER_URL: ${{ forgejo.server_url }}
@@ -28,9 +31,18 @@ jobs:
 
       - name: Prepare pinned Zellij dependency
         run: |
-          git clone https://github.com/rjwittams/zellij.git zellij
-          git -C zellij checkout --detach "$ZELLIJ_REVISION"
-          ln -s "$PWD/zellij" "$PWD/../zellij"
+          git init zellij
+          git -C zellij remote add origin https://github.com/rjwittams/zellij.git
+          git -C zellij fetch --depth 1 origin "$ZELLIJ_REVISION"
+          git -C zellij checkout --detach FETCH_HEAD
+          sibling_zellij="$PWD/../zellij"
+          if test -L "$sibling_zellij"; then
+            rm "$sibling_zellij"
+          elif test -e "$sibling_zellij"; then
+            echo "refusing to replace non-symlink sibling: $sibling_zellij" >&2
+            exit 1
+          fi
+          ln -s "$PWD/zellij" "$sibling_zellij"
 
       - name: Build release plugins
         run: |
