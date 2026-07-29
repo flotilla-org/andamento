@@ -1,0 +1,60 @@
+name: Publish fleet artifacts
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  CARGO_INCREMENTAL: "0"
+  FORGEJO_SERVER_URL: ${{ forgejo.server_url }}
+  FORGEJO_PACKAGE_OWNER: robert
+  FORGEJO_PACKAGE_NAME: andamento
+  ZELLIJ_REVISION: d262df58ebdea2549666a5060663d017545bb5cb
+
+jobs:
+  wasm:
+    name: WASM plugin trio
+    runs-on: feta
+    steps:
+      - name: Verify fleet runner
+        run: |
+          test "$(hostname -s)" = feta
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+
+      - name: Check out source
+        uses: https://data.forgejo.org/actions/checkout@v6
+
+      - name: Prepare pinned Zellij dependency
+        run: |
+          git clone https://github.com/rjwittams/zellij.git zellij
+          git -C zellij checkout --detach "$ZELLIJ_REVISION"
+          ln -s "$PWD/zellij" "$PWD/../zellij"
+
+      - name: Build release plugins
+        run: |
+          rustup target add wasm32-wasip1 --toolchain stable
+          cargo +stable build --workspace --target wasm32-wasip1 --release --locked -j1
+
+      - name: Stage and describe artifacts
+        env:
+          COMMIT_SHA: ${{ forgejo.sha }}
+        run: |
+          mkdir -p dist
+          for plugin in andamento-controller andamento-rail andamento-config; do
+            install -m 0644 \
+              "target/wasm32-wasip1/release/${plugin}.wasm" \
+              "dist/${plugin}-wasm32-wasip1.wasm"
+            test -s "dist/${plugin}-wasm32-wasip1.wasm"
+            scripts/write-artifact-metadata.sh \
+              "dist/${plugin}-wasm32-wasip1.wasm" \
+              "dist/${plugin}-wasm32-wasip1.wasm.json" \
+              flotilla-org/andamento "$COMMIT_SHA" wasm32-wasip1 "" false
+          done
+
+      - name: Publish immutable package version
+        env:
+          FORGEJO_PACKAGE_VERSION: ${{ forgejo.sha }}
+          FORGEJO_PACKAGE_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
+        run: scripts/publish-forgejo-generic.sh dist/*
