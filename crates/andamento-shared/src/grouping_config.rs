@@ -651,6 +651,14 @@ mod tests {
         let config =
             parse_grouping_config_kdl(include_str!("../../../templates/andamento-git.kdl"))
                 .expect("published git template parses");
+        let mut expected_rule = bundled_git_fallback_rule();
+        expected_rule
+            .levels
+            .iter_mut()
+            .find(|level| level.key == "vcs.repo")
+            .expect("repo level")
+            .template = Some("repo/full".to_owned());
+        assert_eq!(config.rules, vec![expected_rule]);
         let rule = config
             .rules
             .iter()

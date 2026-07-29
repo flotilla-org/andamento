@@ -17,6 +17,7 @@ use zellij_tile::prelude::{PaneManifest, TabInfo};
 
 const SOURCE_ZELLIJ: &str = "zellij";
 const SOURCE_LATENT_MATERIALIZER: &str = "andamento-latent-materializer";
+const DIRECTORY_GROUPING_RULE: &str = "zellij.directory";
 const KEY_PANE_CWD: &str = "zellij.pane.cwd";
 const KEY_PANE_CWD_LABEL: &str = "zellij.pane.cwd.label";
 const KEY_ENTITY_KIND: &str = "entity.kind";
@@ -1890,6 +1891,22 @@ impl ControllerState {
                     .map(|grouping| (tab.tab_id, grouping))
             })
             .collect();
+        let directory_tab_ids = groupings
+            .iter()
+            .filter_map(|(tab_id, grouping)| {
+                grouping_uses_rule(grouping, DIRECTORY_GROUPING_RULE).then_some(*tab_id)
+            })
+            .collect::<HashSet<_>>();
+        if !directory_tab_ids.is_empty() {
+            let directory_seed_metadata = self.tab_seed_metadata_entries_for(&directory_tab_ids);
+            for tab_id in &directory_tab_ids {
+                if let Some(grouping) =
+                    self.tab_rule_grouping(*tab_id, grouping_catalog, &directory_seed_metadata)
+                {
+                    groupings.insert(*tab_id, grouping);
+                }
+            }
+        }
         groupings.extend(tab_entities);
         groupings
     }
@@ -1986,7 +2003,16 @@ impl ControllerState {
     }
 
     fn resolved_metadata_for_tabs(&self, tabs: &[TabCard]) -> Vec<ResolvedMetadata> {
-        let tab_seed_metadata = self.tab_seed_metadata_entries();
+        let directory_tab_ids = tabs
+            .iter()
+            .filter_map(|tab| {
+                tab.grouping
+                    .as_ref()
+                    .filter(|grouping| grouping_uses_rule(grouping, DIRECTORY_GROUPING_RULE))
+                    .map(|_| tab.tab_id)
+            })
+            .collect::<HashSet<_>>();
+        let tab_seed_metadata = self.tab_seed_metadata_entries_for(&directory_tab_ids);
         let mut by_target: BTreeMap<EntityId, BTreeMap<String, MetadataEntry>> = BTreeMap::new();
         let mut sources_by_target: BTreeMap<EntityId, BTreeMap<String, Vec<MetadataSourceEntry>>> =
             BTreeMap::new();
@@ -2146,6 +2172,10 @@ impl ControllerState {
     }
 
     fn tab_seed_metadata_entries(&self) -> TabSeedMetadata {
+        self.tab_seed_metadata_entries_for(&HashSet::new())
+    }
+
+    fn tab_seed_metadata_entries_for(&self, directory_tab_ids: &HashSet<u64>) -> TabSeedMetadata {
         let cwd_entries = self
             .tabs
             .iter()
@@ -2155,10 +2185,15 @@ impl ControllerState {
             })
             .collect::<HashMap<_, _>>();
         let all_group_cwds = cwd_entries
-            .values()
-            .filter_map(|entry| match &entry.value {
-                MetadataValue::Text(cwd) => Some(cwd.clone()),
-                _ => None,
+            .iter()
+            .filter_map(|(tab_id, entry)| {
+                if !directory_tab_ids.contains(tab_id) {
+                    return None;
+                }
+                match &entry.value {
+                    MetadataValue::Text(cwd) => Some(cwd.clone()),
+                    _ => None,
+                }
             })
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -2494,6 +2529,13 @@ fn group_segment_label(segment: &GroupSegment) -> String {
         .label
         .clone()
         .unwrap_or_else(|| metadata_value_display(&segment.value))
+}
+
+fn grouping_uses_rule(grouping: &TabGroupingInfo, rule_name: &str) -> bool {
+    grouping
+        .key
+        .split_once(':')
+        .is_some_and(|(selected_rule, _)| selected_rule == rule_name)
 }
 
 fn cwd_group_label(cwd: &str, all_group_cwds: &[String]) -> String {
@@ -4160,6 +4202,68 @@ mod tests {
                 .as_ref()
                 .map(|grouping| grouping.label.as_str()),
             Some("b/app")
+        );
+    }
+
+    #[test]
+    fn directory_fallback_ignores_matching_cwd_basename_in_a_git_group() {
+        let mut state = ControllerState::default();
+        state.update_tabs(vec![
+            ControllerTab {
+                tab_id: 1,
+                position: 0,
+                name: "repo".into(),
+                active: true,
+            },
+            ControllerTab {
+                tab_id: 2,
+                position: 1,
+                name: "shell".into(),
+                active: false,
+            },
+        ]);
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_test_pane(PaneTarget::Terminal(20), 2, true, false, 0);
+        state.set_pane_cwd(PaneTarget::Terminal(10), "/work/foo".into());
+        state.set_pane_cwd(PaneTarget::Terminal(20), "/tmp/foo".into());
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Tab(1),
+            source_id: "git-watcher".to_owned(),
+            set: BTreeMap::from([
+                (
+                    "vcs.repo".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("example/foo".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "repo.name".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("foo".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+            ]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+
+        assert!(model.tabs[0]
+            .grouping
+            .as_ref()
+            .is_some_and(|grouping| grouping_uses_rule(grouping, "andamento.git")));
+        assert_eq!(
+            model.tabs[1]
+                .grouping
+                .as_ref()
+                .map(|grouping| grouping.label.as_str()),
+            Some("foo")
         );
     }
 
