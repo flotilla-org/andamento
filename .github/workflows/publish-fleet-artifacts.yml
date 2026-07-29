@@ -21,28 +21,28 @@ jobs:
     name: WASM plugin trio
     runs-on: [self-hosted, Linux, X64, fleet-release]
     timeout-minutes: 45
+    permissions:
+      contents: write
     steps:
       - name: Verify release runner capability
         run: |
           test "$(uname -s)" = Linux
           test "$(uname -m)" = x86_64
 
-      - name: Check out source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          persist-credentials: false
-
-      - name: Restore Cargo cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-fleet-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-fleet-
+      - name: Check out exact source revision
+        env:
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}.git
+        run: |
+          git init .
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "$SOURCE_URL"
+          else
+            git remote add origin "$SOURCE_URL"
+          fi
+          git fetch --force --no-tags --depth=1 origin "$GITHUB_SHA"
+          git checkout --force --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git clean -ffdx
 
       - name: Prepare pinned Zellij dependency
         run: |
@@ -64,7 +64,7 @@ jobs:
           rustup target add wasm32-wasip1 --toolchain stable
           cargo +stable build --workspace --target wasm32-wasip1 --release --locked -j1
 
-      - name: Stage and describe artifacts
+      - name: Test and describe artifacts
         run: |
           RELEASE_TAG="fleet-$GITHUB_SHA"
           mkdir -p dist
@@ -80,34 +80,16 @@ jobs:
               wasm32-wasip1 "" false
           done
 
-      - name: Transfer release assets
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: fleet-wasm-${{ github.sha }}
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 1
-
-  publish:
-    name: Publish GitHub Release
-    needs: wasm
-    runs-on: [self-hosted, Linux, X64, fleet-release]
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - name: Check out publisher
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          persist-credentials: false
-
-      - name: Collect release assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: fleet-wasm-${{ github.sha }}
-          path: dist
-
-      - name: Publish immutable GitHub Release
+      # Publishing adapter: a Forgejo fork replaces only this step.
+      - name: Publish GitHub Release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: scripts/publish-github-release.sh dist/*
+        run: |
+          scripts/publish-github-release.sh \
+            --expect andamento-controller-wasm32-wasip1.wasm \
+            --expect andamento-controller-wasm32-wasip1.wasm.json \
+            --expect andamento-rail-wasm32-wasip1.wasm \
+            --expect andamento-rail-wasm32-wasip1.wasm.json \
+            --expect andamento-config-wasm32-wasip1.wasm \
+            --expect andamento-config-wasm32-wasip1.wasm.json \
+            -- dist/*
