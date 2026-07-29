@@ -2,8 +2,7 @@ use super::{render_lines_with_detail_surface, LocalTab, RenderedRail};
 use andamento_shared::{
     ControllerViewModel, DisplayEntity, DisplayRegion, EntityRef, GroupPath, GroupSegment,
     LatentMaterializationState, LatentTab, MetadataControls, MetadataValue, NodeKey, RailConfig,
-    RailGroupingMode, RailRow, RailSizingPreset, ResolvedTemplateSlots, SortMode, TabCard,
-    TemplateConfigDiagnostics,
+    RailRow, RailSizingPreset, ResolvedTemplateSlots, SortMode, TabCard, TemplateConfigDiagnostics,
 };
 use std::collections::BTreeMap;
 use unicode_width::UnicodeWidthStr;
@@ -39,7 +38,6 @@ impl ControllerModelFixture {
 
     pub(super) fn project_sidebar(project_names: &[&str]) -> Self {
         let mut fixture = Self::empty();
-        fixture.model.config.grouping = RailGroupingMode::Directory;
         fixture.model.config.sizing = RailSizingPreset::Compact;
 
         for (position, project_name) in project_names.iter().enumerate() {

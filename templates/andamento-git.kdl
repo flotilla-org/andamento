@@ -1,10 +1,8 @@
 version 1
 
-grouping "proj-repo-branch" {
-  priority 100
-  presence kind="convoy" class="tab"
+grouping "andamento.git" priority=-2000 {
   level key="andamento.project" optional=true
-  level key="vcs.repo" label-key="repo.name" template="repo/full"
+  level key="vcs.repo" label-key="vcs.repo.name" template="repo/full"
   level key="git.branch" optional=true
 }
 

@@ -50,6 +50,7 @@ version = "0.1.0"
 dependencies = [
  "andamento-rail",
  "andamento-shared",
+ "insta",
  "log",
  "serde",
  "serde_json",

@@ -1,0 +1,25 @@
+---
+source: crates/andamento-controller/src/main.rs
+expression: "rail_frame_snapshot(&rendered.lines, 48)"
+---
+frame 48x20
+00 |◉ Overview| + 38 spaces
+01 |⚠ Attention| + 37 spaces
+02 |◇ Tree| + 42 spaces
+03 |▼ Andamento ──────────────────────────────────○─|
+04 |  ┌ ○ Andamento ───────────────────────────────┐|
+05 |  │                                            │|
+06 |  └────────────────────────────────────────────┘|
+07 |  ▼ work ─────────────────────────────────────○─|
+08 |    ┌ work ───────────────────────────────────○┐|
+09 |    │                                          │|
+10 |    │                                          │|
+11 |    │                                          │|
+12 |    │                                          │|
+13 |    └──────────────────────────────────────────┘|
+14 || + 48 spaces
+15 || + 48 spaces
+16 || + 48 spaces
+17 || + 48 spaces
+18 |Controls| + 40 spaces
+19 |⚙I                                             ○|

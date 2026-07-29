@@ -9,8 +9,8 @@ use andamento_shared::{
     ChildLayoutSetRequest, ChildLayoutSetting, ConfigInspectRequest, ControllerViewModel,
     GroupPath, MetadataEntry, MetadataSourceEntry, MetadataTriState, MetadataValue,
     MetadataVisibilitySetRequest, NodeKey, PluginPaneKind, PluginPlacement,
-    PluginRegistrationHello, PluginStatsSnapshot, RailConfig, RailGroupingMode, RailRow,
-    RailSizingPreset, RailStructure, ResolvedMetadataTarget, ResolvedTemplateSlots, TabCard,
+    PluginRegistrationHello, PluginStatsSnapshot, RailConfig, RailRow, RailSizingPreset,
+    RailStructure, ResolvedMetadataTarget, ResolvedTemplateSlots, TabCard,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -97,7 +97,6 @@ enum ConfigAction {
     SetPage(ConfigPage),
     SetStructure(RailStructure),
     SetSizing(RailSizingPreset),
-    SetGrouping(RailGroupingMode),
     CollectStats,
     SetInspectedMetadata(Option<MetadataTriState>),
     SetChildLayout(Option<ChildLayoutSetting>),
@@ -640,7 +639,6 @@ fn apply_config_action(mut config: RailConfig, action: ConfigAction) -> RailConf
         ConfigAction::SetPage(_) => {}
         ConfigAction::SetStructure(structure) => config.structure = structure,
         ConfigAction::SetSizing(sizing) => config.sizing = sizing,
-        ConfigAction::SetGrouping(grouping) => config.grouping = grouping,
         ConfigAction::CollectStats
         | ConfigAction::SetInspectedMetadata(_)
         | ConfigAction::SetChildLayout(_) => {}
@@ -1401,22 +1399,6 @@ fn push_settings_page(
     );
     push_segmented_choice(
         frame,
-        "grouping",
-        &[
-            (
-                "ungrouped",
-                config.grouping == RailGroupingMode::None,
-                ConfigAction::SetGrouping(RailGroupingMode::None),
-            ),
-            (
-                "directory",
-                config.grouping == RailGroupingMode::Directory,
-                ConfigAction::SetGrouping(RailGroupingMode::Directory),
-            ),
-        ],
-    );
-    push_segmented_choice(
-        frame,
         "sizing",
         &[
             (
@@ -1772,7 +1754,6 @@ mod tests {
             RailConfig {
                 structure: RailStructure::BoxPerTab,
                 sizing: RailSizingPreset::Compact,
-                grouping: RailGroupingMode::Directory,
                 segment_between_color: None,
             },
             None,
@@ -1792,10 +1773,6 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.trim().contains("● compact")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim().ends_with("● directory")));
     }
 
     #[test]
@@ -1819,10 +1796,6 @@ mod tests {
             .hit_regions
             .iter()
             .any(|hit| hit.action == ConfigAction::SetSizing(RailSizingPreset::PinnedLarge)));
-        assert!(rendered
-            .hit_regions
-            .iter()
-            .any(|hit| hit.action == ConfigAction::SetGrouping(RailGroupingMode::Directory)));
     }
 
     #[test]
@@ -1831,7 +1804,6 @@ mod tests {
             RailConfig {
                 structure: RailStructure::BoxPerTab,
                 sizing: RailSizingPreset::Compact,
-                grouping: RailGroupingMode::Directory,
                 segment_between_color: None,
             },
             None,
@@ -1848,10 +1820,6 @@ mod tests {
             .iter()
             .any(|line| line.trim()
                 == "structure  ○ joined cells  ○ split around active  ● box per tab"));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim() == "grouping   ○ ungrouped  ● directory"));
         assert!(rendered
             .lines
             .iter()
@@ -2661,17 +2629,6 @@ mod tests {
 
         assert_eq!(updated.structure, RailStructure::BoxPerTab);
         assert_eq!(updated.sizing, RailSizingPreset::ActiveLarge);
-        assert_eq!(updated.grouping, RailGroupingMode::None);
-    }
-
-    #[test]
-    fn grouping_click_action_updates_config_locally() {
-        let updated = apply_config_action(
-            RailConfig::default(),
-            ConfigAction::SetGrouping(RailGroupingMode::Directory),
-        );
-
-        assert_eq!(updated.grouping, RailGroupingMode::Directory);
     }
 
     #[test]
