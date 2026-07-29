@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::path::Path;
 
 use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataStore};
 use andamento_shared::grouping_config::{GroupingConfigCatalog, GroupingRule, PresenceClass};
@@ -17,6 +18,7 @@ use zellij_tile::prelude::{PaneManifest, TabInfo};
 const SOURCE_ZELLIJ: &str = "zellij";
 const SOURCE_LATENT_MATERIALIZER: &str = "andamento-latent-materializer";
 const KEY_PANE_CWD: &str = "zellij.pane.cwd";
+const KEY_PANE_CWD_LABEL: &str = "zellij.pane.cwd.label";
 const KEY_ENTITY_KIND: &str = "entity.kind";
 const KEY_ENTITY_ID: &str = "entity.id";
 const KEY_ACTION_TARGET: &str = "action.primary.target";
@@ -2118,9 +2120,33 @@ impl ControllerState {
     }
 
     fn tab_seed_metadata_entries(&self, tab_id: u64) -> BTreeMap<String, MetadataEntry> {
-        self.tab_primary_metadata_entry(tab_id, KEY_PANE_CWD)
-            .map(|entry| BTreeMap::from([(KEY_PANE_CWD.to_owned(), entry)]))
-            .unwrap_or_default()
+        let Some(cwd_entry) = self.tab_primary_metadata_entry(tab_id, KEY_PANE_CWD) else {
+            return BTreeMap::new();
+        };
+        let mut entries = BTreeMap::from([(KEY_PANE_CWD.to_owned(), cwd_entry.clone())]);
+        if let MetadataValue::Text(cwd) = &cwd_entry.value {
+            let all_group_cwds = self
+                .tabs
+                .iter()
+                .filter_map(|tab| {
+                    self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD)
+                        .and_then(|entry| match entry.value {
+                            MetadataValue::Text(cwd) => Some(cwd),
+                            _ => None,
+                        })
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            entries.insert(
+                KEY_PANE_CWD_LABEL.to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text(cwd_group_label(cwd, &all_group_cwds)),
+                    ..cwd_entry
+                },
+            );
+        }
+        entries
     }
 
     fn group_path_seed_metadata_entries(
@@ -2435,6 +2461,32 @@ fn group_segment_label(segment: &GroupSegment) -> String {
         .label
         .clone()
         .unwrap_or_else(|| metadata_value_display(&segment.value))
+}
+
+fn cwd_group_label(cwd: &str, all_group_cwds: &[String]) -> String {
+    let basename = Path::new(cwd)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(cwd);
+    let duplicate_basename_count = all_group_cwds
+        .iter()
+        .filter(|candidate| {
+            Path::new(candidate)
+                .file_name()
+                .and_then(|name| name.to_str())
+                == Some(basename)
+        })
+        .count();
+    if duplicate_basename_count <= 1 {
+        return basename.to_owned();
+    }
+    Path::new(cwd)
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|parent| parent.to_str())
+        .map(|parent| format!("{parent}/{basename}"))
+        .unwrap_or_else(|| cwd.to_owned())
 }
 
 fn group_template_metadata(
@@ -3739,7 +3791,7 @@ mod tests {
 
         assert!(matches!(
             &model.rows[0],
-            RailRow::GroupHeader { full_label, .. } if full_label == "/repo/focused"
+            RailRow::GroupHeader { full_label, .. } if full_label == "focused"
         ));
     }
 
@@ -3929,7 +3981,7 @@ mod tests {
 
         assert!(matches!(
             &model.rows[0],
-            RailRow::GroupHeader { full_label, .. } if full_label == "/repo/b"
+            RailRow::GroupHeader { full_label, .. } if full_label == "b"
         ));
     }
 
@@ -4034,8 +4086,48 @@ mod tests {
         let grouping = model.tabs[0].grouping.as_ref().unwrap();
 
         assert_eq!(grouping.key, "zellij.directory:zellij.pane.cwd=/repo/a");
-        assert_eq!(grouping.label, "/repo/a");
-        assert_eq!(grouping.full_label, "/repo/a");
+        assert_eq!(grouping.label, "a");
+        assert_eq!(grouping.full_label, "a");
+    }
+
+    #[test]
+    fn directory_fallback_rule_disambiguates_duplicate_cwd_basenames() {
+        let mut state = ControllerState::default();
+        state.update_tabs(vec![
+            ControllerTab {
+                tab_id: 1,
+                position: 0,
+                name: "one".into(),
+                active: true,
+            },
+            ControllerTab {
+                tab_id: 2,
+                position: 1,
+                name: "two".into(),
+                active: false,
+            },
+        ]);
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_test_pane(PaneTarget::Terminal(20), 2, true, false, 0);
+        state.set_pane_cwd(PaneTarget::Terminal(10), "/workspace/a/app".into());
+        state.set_pane_cwd(PaneTarget::Terminal(20), "/workspace/b/app".into());
+
+        let model = state.view_model();
+
+        assert_eq!(
+            model.tabs[0]
+                .grouping
+                .as_ref()
+                .map(|grouping| grouping.label.as_str()),
+            Some("a/app")
+        );
+        assert_eq!(
+            model.tabs[1]
+                .grouping
+                .as_ref()
+                .map(|grouping| grouping.label.as_str()),
+            Some("b/app")
+        );
     }
 
     #[test]
@@ -4055,7 +4147,7 @@ mod tests {
         let expected_path = GroupPath(vec![GroupSegment {
             key: KEY_PANE_CWD.to_owned(),
             value: MetadataValue::Text("/repo/a".to_owned()),
-            label: None,
+            label: Some("a".to_owned()),
         }]);
 
         assert_eq!(
@@ -4244,8 +4336,8 @@ mod tests {
             grouping.key,
             "zellij.directory:zellij.pane.cwd=/Users/robert/dev/zellij"
         );
-        assert_eq!(grouping.label, "/Users/robert/dev/zellij");
-        assert_eq!(grouping.full_label, "/Users/robert/dev/zellij");
+        assert_eq!(grouping.label, "zellij");
+        assert_eq!(grouping.full_label, "zellij");
     }
 
     #[test]
@@ -4399,7 +4491,7 @@ mod tests {
             GroupPath(vec![GroupSegment {
                 key: KEY_PANE_CWD.to_owned(),
                 value: MetadataValue::Text("/repo/zellij".to_owned()),
-                label: None,
+                label: Some("zellij".to_owned()),
             }])
         );
     }

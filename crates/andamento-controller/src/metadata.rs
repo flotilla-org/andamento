@@ -274,11 +274,6 @@ fn entry_is_live(entry: &MetadataEntry, now: u64) -> bool {
         .unwrap_or(true)
 }
 
-#[cfg(test)]
-pub fn select_primary_value(entries: &[CandidateEntry]) -> Option<MetadataValue> {
-    select_primary_entry(entries).map(|candidate| candidate.entry.value)
-}
-
 pub fn select_primary_entry(entries: &[CandidateEntry]) -> Option<CandidateEntry> {
     let max_precedence = entries
         .iter()
@@ -327,6 +322,10 @@ pub fn select_primary_entry(entries: &[CandidateEntry]) -> Option<CandidateEntry
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn select_primary_value(entries: &[CandidateEntry]) -> Option<MetadataValue> {
+        select_primary_entry(entries).map(|candidate| candidate.entry.value)
+    }
     use andamento_shared::{
         GroupPath, GroupSegment, MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate,
         PaneTarget,

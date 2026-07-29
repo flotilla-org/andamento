@@ -242,7 +242,7 @@ pub fn bundled_git_fallback_rule() -> GroupingRule {
         priority: -2_000,
         levels: vec![
             level("andamento.project", None, true),
-            level("vcs.repo", Some("vcs.repo.name"), false),
+            level("vcs.repo", Some("repo.name"), false),
             level("git.branch", None, true),
         ],
         filter: None,
@@ -257,7 +257,7 @@ pub fn bundled_directory_fallback_rule() -> GroupingRule {
         levels: vec![GroupingLevel {
             key: "zellij.pane.cwd".to_owned(),
             optional: false,
-            label_key: None,
+            label_key: Some("zellij.pane.cwd.label".to_owned()),
             collapse_single_member: false,
             show_empty: false,
             template: None,
@@ -665,6 +665,13 @@ mod tests {
                 .find(|level| level.key == "git.branch")
                 .map(|level| level.optional),
             Some(true)
+        );
+        assert_eq!(
+            rule.levels
+                .iter()
+                .find(|level| level.key == "vcs.repo")
+                .and_then(|level| level.label_key.as_deref()),
+            Some("repo.name")
         );
         assert!(rule
             .levels

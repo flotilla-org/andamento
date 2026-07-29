@@ -114,10 +114,14 @@ Example grouping rules:
 ```kdl
 grouping "andamento.git" priority=-2000 {
     level key="andamento.project" optional=true
-    level key="vcs.repo" label-key="vcs.repo.name" template="repo/full"
+    level key="vcs.repo" label-key="repo.name" template="repo/full"
     level key="git.branch" optional=true
 }
 ```
+
+`templates/andamento-git.kdl` remains available as an optional standalone git
+override and focused catalog fixture; the shipped layouts bind
+`templates/flotilla-default.kdl`.
 
 Every non-optional level must derive for a rule to capture an entity. A missing
 `optional=true` level keeps the entity captured and places it at the deepest

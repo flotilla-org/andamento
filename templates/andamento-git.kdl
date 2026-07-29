@@ -1,8 +1,10 @@
 version 1
 
+// Optional standalone git override and focused catalog fixture. The shipped
+// layouts bind flotilla-default.kdl, which bundles this rule as a fallback.
 grouping "andamento.git" priority=-2000 {
   level key="andamento.project" optional=true
-  level key="vcs.repo" label-key="vcs.repo.name" template="repo/full"
+  level key="vcs.repo" label-key="repo.name" template="repo/full"
   level key="git.branch" optional=true
 }
 
