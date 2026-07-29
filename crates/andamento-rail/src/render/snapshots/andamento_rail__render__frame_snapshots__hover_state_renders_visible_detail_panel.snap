@@ -1,6 +1,5 @@
 ---
 source: crates/andamento-rail/src/render/frame_snapshots.rs
-assertion_line: 37
 expression: frame
 ---
 frame 48x12
@@ -8,7 +7,7 @@ frame 48x12
 01 |  ┌ andamento/work ───────────────────────────○┐|
 02 |  │                                            │|
 03 |  └────────────────────────────────────────────┘|
-04 |┌ Tab ─────────────────────────────────────────┐|
+04 |┌ ○ #49 Keep hover detail visible ─────────────┐|
 05 |│                                              │|
 06 |└──────────────────────────────────────────────┘|
 07 || + 48 spaces

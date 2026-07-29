@@ -1,11 +1,15 @@
 use super::{render_lines_with_detail_surface, LocalTab, RenderedRail};
 use andamento_shared::{
     ControllerViewModel, DisplayEntity, DisplayRegion, EntityRef, GroupPath, GroupSegment,
-    MetadataControls, MetadataValue, NodeKey, RailConfig, RailGroupingMode, RailRow,
-    RailSizingPreset, ResolvedTemplateSlots, SortMode, TabCard, TemplateConfigDiagnostics,
+    LatentMaterializationState, LatentTab, MetadataControls, MetadataValue, NodeKey, RailConfig,
+    RailGroupingMode, RailRow, RailSizingPreset, ResolvedTemplateSlots, SortMode, TabCard,
+    TemplateConfigDiagnostics,
 };
 use std::collections::BTreeMap;
 use unicode_width::UnicodeWidthStr;
+use zellij_tile::prelude::{Event, Mouse, ZellijPlugin};
+
+use crate::PluginState;
 
 pub(super) struct ControllerModelFixture {
     model: ControllerViewModel,
@@ -76,9 +80,21 @@ impl ControllerModelFixture {
         fixture
     }
 
-    pub(super) fn with_entity(mut self, entity: DisplayEntity) -> Self {
-        self.model.rows.push(RailRow::Entity {
-            entity,
+    pub(super) fn with_latent_entity(mut self, entity: DisplayEntity) -> Self {
+        self.model.rows.push(RailRow::Latent {
+            latent: LatentTab {
+                entity: entity.entity,
+                action_target: "github/open-issue".to_owned(),
+                path: GroupPath::default(),
+                name: entity.label,
+                materialization: LatentMaterializationState::Ready,
+                status_state: None,
+                summary: None,
+                source: Some("github".to_owned()),
+                materialize_recipe: None,
+                checkout_path: None,
+                templates: entity.templates,
+            },
             indent: 0,
             parent_path: None,
         });
@@ -131,12 +147,6 @@ impl DetailSurfaceFixture {
     pub(super) fn hidden() -> Self {
         Self { target: None }
     }
-
-    pub(super) fn hovering(entity: &DisplayEntity) -> Self {
-        Self {
-            target: Some(NodeKey::Entity(entity.entity.clone())),
-        }
-    }
 }
 
 pub(super) fn entity(kind: &str, id: &str, label: &str) -> DisplayEntity {
@@ -183,8 +193,27 @@ impl RailFrameFixture {
         self
     }
 
-    pub(super) fn with_detail_surface(mut self, detail_surface: DetailSurfaceFixture) -> Self {
-        self.detail_surface = detail_surface;
+    pub(super) fn hover_entity(mut self, entity: &DisplayEntity) -> Self {
+        let initial = self.render();
+        let target = NodeKey::Entity(entity.entity.clone());
+        let hit = initial
+            .hit_regions
+            .iter()
+            .find(|hit| hit.inspect_target.as_ref() == Some(&target))
+            .unwrap_or_else(|| panic!("rendered frame has no hit region for {target:?}"));
+        let mut state = PluginState {
+            hit_regions: initial.hit_regions.clone(),
+            ..Default::default()
+        };
+
+        assert!(
+            state.update(Event::Mouse(Mouse::Hover(
+                hit.row_start as isize,
+                hit.col_start
+            ))),
+            "hover event should request a new rendered frame"
+        );
+        self.detail_surface.target = state.hovered_detail_target;
         self
     }
 

@@ -1,6 +1,4 @@
-use super::test_fixtures::{
-    entity, ControllerModelFixture, DetailSurfaceFixture, LocalTabsFixture, RailFrameFixture,
-};
+use super::test_fixtures::{entity, ControllerModelFixture, LocalTabsFixture, RailFrameFixture};
 
 #[test]
 fn sidebar_with_three_projects() {
@@ -25,9 +23,9 @@ fn hover_state_renders_visible_detail_panel() {
     let frame = RailFrameFixture::new(12, 48)
         .with_model(
             ControllerModelFixture::project_sidebar(&["andamento"])
-                .with_entity(hovered_issue.clone()),
+                .with_latent_entity(hovered_issue.clone()),
         )
-        .with_detail_surface(DetailSurfaceFixture::hovering(&hovered_issue))
+        .hover_entity(&hovered_issue)
         .snapshot();
 
     assert!(
