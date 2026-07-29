@@ -25,4 +25,4 @@ zellij-tile.workspace = true
 zellij-tile-utils.workspace = true
 
 [dev-dependencies]
-insta = "1"
+insta.workspace = true

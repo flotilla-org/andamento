@@ -33,6 +33,8 @@ const NORMAL_CWD_PRECEDENCE: i64 = 0;
 // Opener-owned identity must outrank observational discovery such as cwd grouping.
 const LATENT_MATERIALIZER_PRECEDENCE: i64 = 1_000;
 
+type TabSeedMetadata = HashMap<u64, BTreeMap<String, MetadataEntry>>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControllerTab {
     pub tab_id: u64,
@@ -1496,8 +1498,9 @@ impl ControllerState {
 
         let default_catalog = GroupingConfigCatalog::default();
         let catalog = self.grouping_catalog.as_ref().unwrap_or(&default_catalog);
+        let tab_seed_metadata = self.tab_seed_metadata_entries();
         for tab in &self.tabs {
-            let metadata = self.tab_resolved_metadata_values(tab.tab_id);
+            let metadata = self.tab_resolved_metadata_values(tab.tab_id, &tab_seed_metadata);
             let selected = if let Some(name) = self.active_grouping_template.as_deref() {
                 catalog.named(name).and_then(|rule| {
                     self.tab_grouping_for_rule(rule, &metadata)
@@ -1550,9 +1553,10 @@ impl ControllerState {
     }
 
     fn materialized_action_targets(&self, entities: &[CatalogEntity]) -> BTreeSet<String> {
+        let tab_seed_metadata = self.tab_seed_metadata_entries();
         self.tabs
             .iter()
-            .filter_map(|tab| self.tab_entity_ref(tab.tab_id))
+            .filter_map(|tab| self.tab_entity_ref(tab.tab_id, &tab_seed_metadata))
             .map(|entity| {
                 entities
                     .iter()
@@ -1602,9 +1606,13 @@ impl ControllerState {
             })
     }
 
-    fn tab_entity_ref(&self, tab_id: u64) -> Option<EntityRef> {
+    fn tab_entity_ref(
+        &self,
+        tab_id: u64,
+        tab_seed_metadata: &TabSeedMetadata,
+    ) -> Option<EntityRef> {
         let target = EntityId::Tab(tab_id);
-        let seed_values = self.tab_seed_metadata_entries(tab_id);
+        let seed_values = tab_seed_metadata.get(&tab_id).cloned().unwrap_or_default();
         let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
         entity_ref_from_entries(&values)
     }
@@ -1710,9 +1718,13 @@ impl ControllerState {
         &self,
         request: &andamento_shared::MaterializeLatentRequest,
     ) -> Option<usize> {
+        let tab_seed_metadata = self.tab_seed_metadata_entries();
         self.tabs.iter().find_map(|tab| {
             let target = EntityId::Tab(tab.tab_id);
-            let seed_values = self.tab_seed_metadata_entries(tab.tab_id);
+            let seed_values = tab_seed_metadata
+                .get(&tab.tab_id)
+                .cloned()
+                .unwrap_or_default();
             let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
             let entity_target =
                 entity_ref_from_entries(&values).map(|entity| entity.action_target());
@@ -1858,11 +1870,12 @@ impl ControllerState {
     }
 
     fn tab_grouping_infos(&self) -> HashMap<u64, TabGroupingInfo> {
+        let tab_seed_metadata = self.tab_seed_metadata_entries();
         let tab_entities: HashMap<u64, TabGroupingInfo> = self
             .tabs
             .iter()
             .filter_map(|tab| {
-                self.tab_entity_grouping(tab.tab_id)
+                self.tab_entity_grouping(tab.tab_id, &tab_seed_metadata)
                     .map(|grouping| (tab.tab_id, grouping))
             })
             .collect();
@@ -1873,7 +1886,7 @@ impl ControllerState {
             .iter()
             .filter(|tab| !tab_entities.contains_key(&tab.tab_id))
             .filter_map(|tab| {
-                self.tab_rule_grouping(tab.tab_id, grouping_catalog)
+                self.tab_rule_grouping(tab.tab_id, grouping_catalog, &tab_seed_metadata)
                     .map(|grouping| (tab.tab_id, grouping))
             })
             .collect();
@@ -1885,8 +1898,9 @@ impl ControllerState {
         &self,
         tab_id: u64,
         catalog: &GroupingConfigCatalog,
+        tab_seed_metadata: &TabSeedMetadata,
     ) -> Option<TabGroupingInfo> {
-        let metadata = self.tab_resolved_metadata_values(tab_id);
+        let metadata = self.tab_resolved_metadata_values(tab_id, tab_seed_metadata);
         if let Some(name) = self.active_grouping_template.as_deref() {
             return catalog
                 .named(name)
@@ -1934,9 +1948,13 @@ impl ControllerState {
         })
     }
 
-    fn tab_resolved_metadata_values(&self, tab_id: u64) -> BTreeMap<String, MetadataValue> {
+    fn tab_resolved_metadata_values(
+        &self,
+        tab_id: u64,
+        tab_seed_metadata: &TabSeedMetadata,
+    ) -> BTreeMap<String, MetadataValue> {
         let target = EntityId::Tab(tab_id);
-        let seed_values = self.tab_seed_metadata_entries(tab_id);
+        let seed_values = tab_seed_metadata.get(&tab_id).cloned().unwrap_or_default();
         let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
         values
             .into_iter()
@@ -1944,8 +1962,12 @@ impl ControllerState {
             .collect()
     }
 
-    fn tab_entity_grouping(&self, tab_id: u64) -> Option<TabGroupingInfo> {
-        let entity = self.tab_entity_ref(tab_id)?;
+    fn tab_entity_grouping(
+        &self,
+        tab_id: u64,
+        tab_seed_metadata: &TabSeedMetadata,
+    ) -> Option<TabGroupingInfo> {
+        let entity = self.tab_entity_ref(tab_id, tab_seed_metadata)?;
         let path = self.presentation_path_for_entity(&entity)?;
         tab_grouping_info_for_entity_path(path)
     }
@@ -1964,6 +1986,7 @@ impl ControllerState {
     }
 
     fn resolved_metadata_for_tabs(&self, tabs: &[TabCard]) -> Vec<ResolvedMetadata> {
+        let tab_seed_metadata = self.tab_seed_metadata_entries();
         let mut by_target: BTreeMap<EntityId, BTreeMap<String, MetadataEntry>> = BTreeMap::new();
         let mut sources_by_target: BTreeMap<EntityId, BTreeMap<String, Vec<MetadataSourceEntry>>> =
             BTreeMap::new();
@@ -1997,7 +2020,10 @@ impl ControllerState {
         }
         for tab in tabs {
             let tab_target = EntityId::Tab(tab.tab_id);
-            let tab_seed_values = self.tab_seed_metadata_entries(tab.tab_id);
+            let tab_seed_values = tab_seed_metadata
+                .get(&tab.tab_id)
+                .cloned()
+                .unwrap_or_default();
             let (tab_values, tab_sources, tab_identities) =
                 self.resolve_target_metadata(&tab_target, tab_seed_values);
             by_target
@@ -2119,34 +2145,41 @@ impl ControllerState {
         (values, source_entries, reachable_identities)
     }
 
-    fn tab_seed_metadata_entries(&self, tab_id: u64) -> BTreeMap<String, MetadataEntry> {
-        let Some(cwd_entry) = self.tab_primary_metadata_entry(tab_id, KEY_PANE_CWD) else {
-            return BTreeMap::new();
-        };
-        let mut entries = BTreeMap::from([(KEY_PANE_CWD.to_owned(), cwd_entry.clone())]);
-        if let MetadataValue::Text(cwd) = &cwd_entry.value {
-            let all_group_cwds = self
-                .tabs
-                .iter()
-                .filter_map(|tab| {
-                    self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD)
-                        .and_then(|entry| match entry.value {
-                            MetadataValue::Text(cwd) => Some(cwd),
-                            _ => None,
-                        })
-                })
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            entries.insert(
-                KEY_PANE_CWD_LABEL.to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text(cwd_group_label(cwd, &all_group_cwds)),
-                    ..cwd_entry
-                },
-            );
-        }
-        entries
+    fn tab_seed_metadata_entries(&self) -> TabSeedMetadata {
+        let cwd_entries = self
+            .tabs
+            .iter()
+            .filter_map(|tab| {
+                self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD)
+                    .map(|entry| (tab.tab_id, entry))
+            })
+            .collect::<HashMap<_, _>>();
+        let all_group_cwds = cwd_entries
+            .values()
+            .filter_map(|entry| match &entry.value {
+                MetadataValue::Text(cwd) => Some(cwd.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        cwd_entries
+            .into_iter()
+            .map(|(tab_id, cwd_entry)| {
+                let mut entries = BTreeMap::from([(KEY_PANE_CWD.to_owned(), cwd_entry.clone())]);
+                if let MetadataValue::Text(cwd) = &cwd_entry.value {
+                    entries.insert(
+                        KEY_PANE_CWD_LABEL.to_owned(),
+                        MetadataEntry {
+                            value: MetadataValue::Text(cwd_group_label(cwd, &all_group_cwds)),
+                            ..cwd_entry
+                        },
+                    );
+                }
+                (tab_id, entries)
+            })
+            .collect()
     }
 
     fn group_path_seed_metadata_entries(

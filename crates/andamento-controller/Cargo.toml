@@ -28,4 +28,4 @@ zellij-tile.workspace = true
 andamento-rail.workspace = true
 
 [dev-dependencies]
-insta = "1"
+insta.workspace = true
