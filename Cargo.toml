@@ -25,6 +25,7 @@ license = "MIT"
 
 [workspace.dependencies]
 ansi_term = "0.12"
+insta = "1"
 kdl = { version = "4.7.1", default-features = false }
 ratatui = { version = "0.30.0", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }

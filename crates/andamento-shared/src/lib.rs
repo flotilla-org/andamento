@@ -619,19 +619,6 @@ pub struct ObservedMetadataIdentity {
     pub nearest_distance: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RailGroupingMode {
-    None,
-    Directory,
-}
-
-impl Default for RailGroupingMode {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum RailRow {
@@ -771,8 +758,6 @@ pub struct RailConfig {
     #[serde(default)]
     pub sizing: RailSizingPreset,
     #[serde(default)]
-    pub grouping: RailGroupingMode,
-    #[serde(default)]
     pub segment_between_color: Option<RailRgbColor>,
 }
 
@@ -781,7 +766,6 @@ impl Default for RailConfig {
         Self {
             structure: RailStructure::default(),
             sizing: RailSizingPreset::default(),
-            grouping: RailGroupingMode::default(),
             segment_between_color: None,
         }
     }
@@ -1238,13 +1222,6 @@ mod tests {
     }
 
     #[test]
-    fn rail_config_defaults_to_directory_grouping_off() {
-        let config = RailConfig::default();
-
-        assert_eq!(config.grouping, RailGroupingMode::None);
-    }
-
-    #[test]
     fn plugin_stats_snapshot_round_trips_json() {
         let mut counters = BTreeMap::new();
         counters.insert("pipe.view-model".to_owned(), 3);
@@ -1324,7 +1301,6 @@ mod tests {
             config: RailConfig {
                 structure: RailStructure::JoinedCells,
                 sizing: RailSizingPreset::Compact,
-                grouping: RailGroupingMode::Directory,
                 segment_between_color: None,
             },
             template_config: TemplateConfigDiagnostics::default(),
@@ -1575,7 +1551,6 @@ mod tests {
         let config = RailConfig {
             structure: RailStructure::BoxPerTab,
             sizing: RailSizingPreset::Compact,
-            grouping: RailGroupingMode::None,
             segment_between_color: Some(RailRgbColor {
                 red: 1,
                 green: 2,

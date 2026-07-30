@@ -1,26 +1,25 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
-use crate::metadata::{
-    select_primary_entry, select_primary_value, CandidateEntry, EntityId, MetadataStore,
-};
+use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataStore};
 use andamento_shared::grouping_config::{GroupingConfigCatalog, GroupingRule, PresenceClass};
 use andamento_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, DisplayEntity, DisplayVariableValue,
     EntityRef, GroupPath, GroupSegment, GroupingRuleDiagnostic, LatentMaterializationState,
     LatentTab, MetadataControls, MetadataEntry, MetadataIdentity, MetadataSourceEntry,
     MetadataTriState, MetadataValue, NodeKey, ObservedMetadataIdentity, PaneTarget,
-    PluginPlacement, PluginRegistrationHello, Priority, RailConfig, RailGroupingMode, RailRow,
-    RailUiAction, RailUiRevision, RailUiState, ReachableMetadataIdentity, RendererHello,
-    ResolvedMetadata, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode,
-    TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics, DISPLAY_FORM_COMPACT,
-    DISPLAY_FORM_FULL,
+    PluginPlacement, PluginRegistrationHello, Priority, RailConfig, RailRow, RailUiAction,
+    RailUiRevision, RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata,
+    ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabGroupingInfo,
+    TabStatusSummary, TemplateConfigDiagnostics, DISPLAY_FORM_COMPACT, DISPLAY_FORM_FULL,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
 const SOURCE_ZELLIJ: &str = "zellij";
 const SOURCE_LATENT_MATERIALIZER: &str = "andamento-latent-materializer";
+const DIRECTORY_GROUPING_RULE: &str = "zellij.directory";
 const KEY_PANE_CWD: &str = "zellij.pane.cwd";
+const KEY_PANE_CWD_LABEL: &str = "zellij.pane.cwd.label";
 const KEY_ENTITY_KIND: &str = "entity.kind";
 const KEY_ENTITY_ID: &str = "entity.id";
 const KEY_ACTION_TARGET: &str = "action.primary.target";
@@ -34,6 +33,8 @@ const FOCUSED_CWD_PRECEDENCE: i64 = 100;
 const NORMAL_CWD_PRECEDENCE: i64 = 0;
 // Opener-owned identity must outrank observational discovery such as cwd grouping.
 const LATENT_MATERIALIZER_PRECEDENCE: i64 = 1_000;
+
+type TabSeedMetadata = HashMap<u64, BTreeMap<String, MetadataEntry>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControllerTab {
@@ -986,138 +987,10 @@ impl ControllerState {
     }
 
     fn rows_for_tabs(&self, tabs: &[TabCard], latent_tabs: &[LatentTab]) -> Vec<RailRow> {
-        match self.rail_config.grouping {
-            RailGroupingMode::None => self.ungrouped_rows(tabs, latent_tabs),
-            RailGroupingMode::Directory => self.directory_group_rows(tabs, latent_tabs),
-        }
+        self.catalog_group_rows(tabs, latent_tabs)
     }
 
-    fn ungrouped_rows(&self, tabs: &[TabCard], latent_tabs: &[LatentTab]) -> Vec<RailRow> {
-        let catalog_ordinal_by_path = tabs
-            .iter()
-            .filter_map(|tab| tab.grouping.as_ref().map(|grouping| grouping.path.clone()))
-            .chain(latent_tabs.iter().map(|latent| latent.path.clone()))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .map(|path| {
-                let ordinal = self.catalog_group_ordinal(&path);
-                (path, ordinal)
-            })
-            .collect::<BTreeMap<_, _>>();
-        let mut catalog_rows = tabs
-            .iter()
-            .enumerate()
-            .filter_map(|(index, tab)| {
-                let grouping = tab.grouping.as_ref()?;
-                let ordinal = catalog_ordinal_by_path
-                    .get(&grouping.path)
-                    .copied()
-                    .flatten()?;
-                Some((
-                    (ordinal, grouping.path.clone()),
-                    index,
-                    true,
-                    RailRow::Tab {
-                        tab_id: tab.tab_id,
-                        indent: 0,
-                        parent_path: None,
-                    },
-                ))
-            })
-            .chain(latent_tabs.iter().enumerate().map(|(index, latent)| {
-                (
-                    (
-                        catalog_ordinal_by_path
-                            .get(&latent.path)
-                            .copied()
-                            .flatten()
-                            .unwrap_or_default(),
-                        latent.path.clone(),
-                    ),
-                    tabs.len() + index,
-                    false,
-                    RailRow::Latent {
-                        latent: latent.clone(),
-                        indent: 0,
-                        parent_path: None,
-                    },
-                )
-            }))
-            .collect::<Vec<_>>();
-        catalog_rows.sort_by(
-            |(left_catalog, left_index, _, _), (right_catalog, right_index, _, _)| {
-                left_catalog
-                    .cmp(right_catalog)
-                    .then_with(|| left_index.cmp(right_index))
-            },
-        );
-
-        let mut catalog_rows = catalog_rows.into_iter().peekable();
-        let mut catalog_slots = tabs
-            .iter()
-            .filter(|tab| {
-                tab.grouping.as_ref().is_some_and(|grouping| {
-                    catalog_ordinal_by_path
-                        .get(&grouping.path)
-                        .copied()
-                        .flatten()
-                        .is_some()
-                })
-            })
-            .count();
-        let mut rows = vec![];
-        if catalog_slots == 0 {
-            rows.extend(catalog_rows.by_ref().map(|(_, _, _, row)| row));
-        }
-        for tab in tabs {
-            let is_catalog = tab.grouping.as_ref().is_some_and(|grouping| {
-                catalog_ordinal_by_path
-                    .get(&grouping.path)
-                    .copied()
-                    .flatten()
-                    .is_some()
-            });
-            if !is_catalog {
-                rows.push(RailRow::Tab {
-                    tab_id: tab.tab_id,
-                    indent: 0,
-                    parent_path: None,
-                });
-                continue;
-            }
-
-            catalog_slots -= 1;
-            while let Some((_, _, is_live, row)) = catalog_rows.next() {
-                rows.push(row);
-                if is_live && catalog_slots > 0 {
-                    break;
-                }
-            }
-        }
-        rows.extend(self.visible_inline_entities().into_iter().map(|entity| {
-            let (group_id, label, full_label) = group_header_identity_for_path(&entity.path);
-            RailRow::GroupHeader {
-                group_id,
-                path: entity.path,
-                label,
-                full_label,
-                tab_count: 0,
-                templates: ResolvedTemplateSlots::default(),
-            }
-        }));
-        rows.extend(
-            self.compact_entities()
-                .iter()
-                .map(|entity| RailRow::Entity {
-                    entity: self.display_entity(entity),
-                    indent: 0,
-                    parent_path: None,
-                }),
-        );
-        rows
-    }
-
-    fn directory_group_rows(&self, tabs: &[TabCard], latent_tabs: &[LatentTab]) -> Vec<RailRow> {
+    fn catalog_group_rows(&self, tabs: &[TabCard], latent_tabs: &[LatentTab]) -> Vec<RailRow> {
         let inline_entities = self.visible_inline_entities();
         let compact_entities = self.compact_entities();
         let mut path_to_tabs: BTreeMap<GroupPath, Vec<TabCard>> = BTreeMap::new();
@@ -1626,8 +1499,9 @@ impl ControllerState {
 
         let default_catalog = GroupingConfigCatalog::default();
         let catalog = self.grouping_catalog.as_ref().unwrap_or(&default_catalog);
+        let tab_seed_metadata = self.tab_seed_metadata_entries();
         for tab in &self.tabs {
-            let metadata = self.tab_resolved_metadata_values(tab.tab_id);
+            let metadata = self.tab_resolved_metadata_values(tab.tab_id, &tab_seed_metadata);
             let selected = if let Some(name) = self.active_grouping_template.as_deref() {
                 catalog.named(name).and_then(|rule| {
                     self.tab_grouping_for_rule(rule, &metadata)
@@ -1680,9 +1554,10 @@ impl ControllerState {
     }
 
     fn materialized_action_targets(&self, entities: &[CatalogEntity]) -> BTreeSet<String> {
+        let tab_seed_metadata = self.tab_seed_metadata_entries();
         self.tabs
             .iter()
-            .filter_map(|tab| self.tab_entity_ref(tab.tab_id))
+            .filter_map(|tab| self.tab_entity_ref(tab.tab_id, &tab_seed_metadata))
             .map(|entity| {
                 entities
                     .iter()
@@ -1732,9 +1607,13 @@ impl ControllerState {
             })
     }
 
-    fn tab_entity_ref(&self, tab_id: u64) -> Option<EntityRef> {
+    fn tab_entity_ref(
+        &self,
+        tab_id: u64,
+        tab_seed_metadata: &TabSeedMetadata,
+    ) -> Option<EntityRef> {
         let target = EntityId::Tab(tab_id);
-        let seed_values = self.tab_seed_metadata_entries(tab_id);
+        let seed_values = tab_seed_metadata.get(&tab_id).cloned().unwrap_or_default();
         let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
         entity_ref_from_entries(&values)
     }
@@ -1840,9 +1719,13 @@ impl ControllerState {
         &self,
         request: &andamento_shared::MaterializeLatentRequest,
     ) -> Option<usize> {
+        let tab_seed_metadata = self.tab_seed_metadata_entries();
         self.tabs.iter().find_map(|tab| {
             let target = EntityId::Tab(tab.tab_id);
-            let seed_values = self.tab_seed_metadata_entries(tab.tab_id);
+            let seed_values = tab_seed_metadata
+                .get(&tab.tab_id)
+                .cloned()
+                .unwrap_or_default();
             let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
             let entity_target =
                 entity_ref_from_entries(&values).map(|entity| entity.action_target());
@@ -1988,62 +1871,42 @@ impl ControllerState {
     }
 
     fn tab_grouping_infos(&self) -> HashMap<u64, TabGroupingInfo> {
+        let tab_seed_metadata = self.tab_seed_metadata_entries();
         let tab_entities: HashMap<u64, TabGroupingInfo> = self
             .tabs
             .iter()
             .filter_map(|tab| {
-                self.tab_entity_grouping(tab.tab_id)
+                self.tab_entity_grouping(tab.tab_id, &tab_seed_metadata)
                     .map(|grouping| (tab.tab_id, grouping))
             })
             .collect();
         let default_catalog = GroupingConfigCatalog::default();
         let grouping_catalog = self.grouping_catalog.as_ref().unwrap_or(&default_catalog);
-        let tab_configured_groupings: HashMap<u64, TabGroupingInfo> = (!grouping_catalog
-            .is_empty())
-        .then(|| {
-            self.tabs
-                .iter()
-                .filter(|tab| !tab_entities.contains_key(&tab.tab_id))
-                .filter_map(|tab| {
-                    self.tab_rule_grouping(tab.tab_id, grouping_catalog)
-                        .map(|grouping| (tab.tab_id, grouping))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-        let tab_cwds: HashMap<u64, String> = self
+        let mut groupings: HashMap<u64, TabGroupingInfo> = self
             .tabs
             .iter()
             .filter(|tab| !tab_entities.contains_key(&tab.tab_id))
-            .filter(|tab| !tab_configured_groupings.contains_key(&tab.tab_id))
             .filter_map(|tab| {
-                self.tab_primary_cwd(tab.tab_id)
-                    .map(|cwd| (tab.tab_id, cwd))
+                self.tab_rule_grouping(tab.tab_id, grouping_catalog, &tab_seed_metadata)
+                    .map(|grouping| (tab.tab_id, grouping))
             })
             .collect();
-        let all_group_cwds: Vec<String> = tab_cwds
-            .values()
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-
-        let mut groupings: HashMap<u64, TabGroupingInfo> = tab_cwds
-            .into_iter()
-            .map(|(tab_id, cwd)| {
-                let label = self.group_label_for_cwd(&cwd, &all_group_cwds);
-                (
-                    tab_id,
-                    TabGroupingInfo {
-                        key: format!("cwd:{cwd}"),
-                        path: cwd_group_path(&cwd),
-                        label,
-                        full_label: cwd,
-                    },
-                )
+        let directory_tab_ids = groupings
+            .iter()
+            .filter_map(|(tab_id, grouping)| {
+                grouping_uses_rule(grouping, DIRECTORY_GROUPING_RULE).then_some(*tab_id)
             })
-            .collect();
-        groupings.extend(tab_configured_groupings);
+            .collect::<HashSet<_>>();
+        if !directory_tab_ids.is_empty() {
+            let directory_seed_metadata = self.tab_seed_metadata_entries_for(&directory_tab_ids);
+            for tab_id in &directory_tab_ids {
+                if let Some(grouping) =
+                    self.tab_rule_grouping(*tab_id, grouping_catalog, &directory_seed_metadata)
+                {
+                    groupings.insert(*tab_id, grouping);
+                }
+            }
+        }
         groupings.extend(tab_entities);
         groupings
     }
@@ -2052,8 +1915,9 @@ impl ControllerState {
         &self,
         tab_id: u64,
         catalog: &GroupingConfigCatalog,
+        tab_seed_metadata: &TabSeedMetadata,
     ) -> Option<TabGroupingInfo> {
-        let metadata = self.tab_resolved_metadata_values(tab_id);
+        let metadata = self.tab_resolved_metadata_values(tab_id, tab_seed_metadata);
         if let Some(name) = self.active_grouping_template.as_deref() {
             return catalog
                 .named(name)
@@ -2101,9 +1965,13 @@ impl ControllerState {
         })
     }
 
-    fn tab_resolved_metadata_values(&self, tab_id: u64) -> BTreeMap<String, MetadataValue> {
+    fn tab_resolved_metadata_values(
+        &self,
+        tab_id: u64,
+        tab_seed_metadata: &TabSeedMetadata,
+    ) -> BTreeMap<String, MetadataValue> {
         let target = EntityId::Tab(tab_id);
-        let seed_values = self.tab_seed_metadata_entries(tab_id);
+        let seed_values = tab_seed_metadata.get(&tab_id).cloned().unwrap_or_default();
         let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
         values
             .into_iter()
@@ -2111,32 +1979,14 @@ impl ControllerState {
             .collect()
     }
 
-    fn tab_entity_grouping(&self, tab_id: u64) -> Option<TabGroupingInfo> {
-        let entity = self.tab_entity_ref(tab_id)?;
+    fn tab_entity_grouping(
+        &self,
+        tab_id: u64,
+        tab_seed_metadata: &TabSeedMetadata,
+    ) -> Option<TabGroupingInfo> {
+        let entity = self.tab_entity_ref(tab_id, tab_seed_metadata)?;
         let path = self.presentation_path_for_entity(&entity)?;
         tab_grouping_info_for_entity_path(path)
-    }
-
-    fn tab_primary_cwd(&self, tab_id: u64) -> Option<String> {
-        let entries: Vec<CandidateEntry> = self
-            .panes
-            .values()
-            .filter(|pane| pane.tab_id == tab_id)
-            .filter_map(|pane| {
-                self.metadata
-                    .entries_for(
-                        &EntityId::Pane(pane.pane_id),
-                        KEY_PANE_CWD,
-                        self.receive_counter,
-                    )
-                    .into_iter()
-                    .next()
-            })
-            .collect();
-        match select_primary_value(&entries) {
-            Some(MetadataValue::Text(cwd)) => Some(cwd),
-            _ => None,
-        }
     }
 
     fn tab_primary_metadata_entry(&self, tab_id: u64, key: &str) -> Option<MetadataEntry> {
@@ -2153,6 +2003,16 @@ impl ControllerState {
     }
 
     fn resolved_metadata_for_tabs(&self, tabs: &[TabCard]) -> Vec<ResolvedMetadata> {
+        let directory_tab_ids = tabs
+            .iter()
+            .filter_map(|tab| {
+                tab.grouping
+                    .as_ref()
+                    .filter(|grouping| grouping_uses_rule(grouping, DIRECTORY_GROUPING_RULE))
+                    .map(|_| tab.tab_id)
+            })
+            .collect::<HashSet<_>>();
+        let tab_seed_metadata = self.tab_seed_metadata_entries_for(&directory_tab_ids);
         let mut by_target: BTreeMap<EntityId, BTreeMap<String, MetadataEntry>> = BTreeMap::new();
         let mut sources_by_target: BTreeMap<EntityId, BTreeMap<String, Vec<MetadataSourceEntry>>> =
             BTreeMap::new();
@@ -2186,7 +2046,10 @@ impl ControllerState {
         }
         for tab in tabs {
             let tab_target = EntityId::Tab(tab.tab_id);
-            let tab_seed_values = self.tab_seed_metadata_entries(tab.tab_id);
+            let tab_seed_values = tab_seed_metadata
+                .get(&tab.tab_id)
+                .cloned()
+                .unwrap_or_default();
             let (tab_values, tab_sources, tab_identities) =
                 self.resolve_target_metadata(&tab_target, tab_seed_values);
             by_target
@@ -2308,10 +2171,50 @@ impl ControllerState {
         (values, source_entries, reachable_identities)
     }
 
-    fn tab_seed_metadata_entries(&self, tab_id: u64) -> BTreeMap<String, MetadataEntry> {
-        self.tab_primary_metadata_entry(tab_id, KEY_PANE_CWD)
-            .map(|entry| BTreeMap::from([(KEY_PANE_CWD.to_owned(), entry)]))
-            .unwrap_or_default()
+    fn tab_seed_metadata_entries(&self) -> TabSeedMetadata {
+        self.tab_seed_metadata_entries_for(&HashSet::new())
+    }
+
+    fn tab_seed_metadata_entries_for(&self, directory_tab_ids: &HashSet<u64>) -> TabSeedMetadata {
+        let cwd_entries = self
+            .tabs
+            .iter()
+            .filter_map(|tab| {
+                self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD)
+                    .map(|entry| (tab.tab_id, entry))
+            })
+            .collect::<HashMap<_, _>>();
+        let all_group_cwds = cwd_entries
+            .iter()
+            .filter_map(|(tab_id, entry)| {
+                if !directory_tab_ids.contains(tab_id) {
+                    return None;
+                }
+                match &entry.value {
+                    MetadataValue::Text(cwd) => Some(cwd.clone()),
+                    _ => None,
+                }
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        cwd_entries
+            .into_iter()
+            .map(|(tab_id, cwd_entry)| {
+                let mut entries = BTreeMap::from([(KEY_PANE_CWD.to_owned(), cwd_entry.clone())]);
+                if let MetadataValue::Text(cwd) = &cwd_entry.value {
+                    entries.insert(
+                        KEY_PANE_CWD_LABEL.to_owned(),
+                        MetadataEntry {
+                            value: MetadataValue::Text(cwd_group_label(cwd, &all_group_cwds)),
+                            ..cwd_entry
+                        },
+                    );
+                }
+                (tab_id, entries)
+            })
+            .collect()
     }
 
     fn group_path_seed_metadata_entries(
@@ -2337,32 +2240,6 @@ impl ControllerState {
             precedence: 0,
             ordinal: 0,
         }
-    }
-
-    fn group_label_for_cwd(&self, cwd: &str, all_group_cwds: &[String]) -> String {
-        let basename = Path::new(cwd)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or(cwd);
-        let duplicate_basename_count = all_group_cwds
-            .iter()
-            .filter(|candidate| {
-                Path::new(candidate)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    == Some(basename)
-            })
-            .count();
-        if duplicate_basename_count <= 1 {
-            return basename.to_owned();
-        }
-        Path::new(cwd)
-            .parent()
-            .and_then(|parent| parent.file_name())
-            .and_then(|parent| parent.to_str())
-            .map(|parent| format!("{parent}/{basename}"))
-            .unwrap_or_else(|| cwd.to_owned())
     }
 
     fn refresh_pane_cwd_metadata(&mut self, pane_id: PaneTarget) -> bool {
@@ -2560,14 +2437,6 @@ fn collapsed_child_entities(entities: &[CatalogEntity]) -> BTreeSet<EntityRef> {
     collapsed
 }
 
-fn cwd_group_path(cwd: &str) -> GroupPath {
-    GroupPath(vec![GroupSegment {
-        key: KEY_PANE_CWD.to_owned(),
-        value: MetadataValue::Text(cwd.to_owned()),
-        label: None,
-    }])
-}
-
 fn tab_grouping_info_for_entity_path(path: GroupPath) -> Option<TabGroupingInfo> {
     if path.0.is_empty() {
         return None;
@@ -2660,6 +2529,39 @@ fn group_segment_label(segment: &GroupSegment) -> String {
         .label
         .clone()
         .unwrap_or_else(|| metadata_value_display(&segment.value))
+}
+
+fn grouping_uses_rule(grouping: &TabGroupingInfo, rule_name: &str) -> bool {
+    grouping
+        .key
+        .split_once(':')
+        .is_some_and(|(selected_rule, _)| selected_rule == rule_name)
+}
+
+fn cwd_group_label(cwd: &str, all_group_cwds: &[String]) -> String {
+    let basename = Path::new(cwd)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(cwd);
+    let duplicate_basename_count = all_group_cwds
+        .iter()
+        .filter(|candidate| {
+            Path::new(candidate)
+                .file_name()
+                .and_then(|name| name.to_str())
+                == Some(basename)
+        })
+        .count();
+    if duplicate_basename_count <= 1 {
+        return basename.to_owned();
+    }
+    Path::new(cwd)
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|parent| parent.to_str())
+        .map(|parent| format!("{parent}/{basename}"))
+        .unwrap_or_else(|| cwd.to_owned())
 }
 
 fn group_template_metadata(
@@ -2815,8 +2717,8 @@ fn observed_metadata_identities(
 mod tests {
     use super::*;
     use andamento_shared::{
-        GroupPath, GroupSegment, PluginPaneKind, PluginPlacement, PluginRegistrationHello,
-        RailGroupingMode, RailRow, RailSizingPreset, RailStructure, StatusIcon,
+        GroupPath, GroupSegment, PluginPaneKind, PluginPlacement, PluginRegistrationHello, RailRow,
+        RailSizingPreset, RailStructure, StatusIcon,
     };
 
     type EntityId = andamento_shared::MetadataTarget;
@@ -2945,10 +2847,7 @@ mod tests {
     fn directory_entity_state() -> ControllerState {
         let mut state = ControllerState::default();
         state.set_template_catalog(None);
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         state
     }
 
@@ -3949,10 +3848,7 @@ mod tests {
     #[test]
     fn focused_pane_cwd_beats_more_common_cwd_for_tab_grouping() {
         let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         state.update_tabs(vec![ControllerTab {
             tab_id: 1,
             position: 0,
@@ -3970,7 +3866,7 @@ mod tests {
 
         assert!(matches!(
             &model.rows[0],
-            RailRow::GroupHeader { full_label, .. } if full_label == "/repo/focused"
+            RailRow::GroupHeader { full_label, .. } if full_label == "focused"
         ));
     }
 
@@ -4142,10 +4038,7 @@ mod tests {
     #[test]
     fn count_breaks_ties_within_same_precedence() {
         let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         state.update_tabs(vec![ControllerTab {
             tab_id: 1,
             position: 0,
@@ -4163,17 +4056,14 @@ mod tests {
 
         assert!(matches!(
             &model.rows[0],
-            RailRow::GroupHeader { full_label, .. } if full_label == "/repo/b"
+            RailRow::GroupHeader { full_label, .. } if full_label == "b"
         ));
     }
 
     #[test]
-    fn directory_grouping_compacts_tabs_and_leaves_missing_cwd_ungrouped() {
+    fn directory_fallback_rule_compacts_tabs_and_leaves_missing_cwd_ungrouped() {
         let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         state.update_tabs(vec![
             ControllerTab {
                 tab_id: 1,
@@ -4233,7 +4123,7 @@ mod tests {
     }
 
     #[test]
-    fn grouping_none_returns_flat_rows() {
+    fn tabs_without_facts_for_any_grouping_rule_remain_flat() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
             tab_id: 1,
@@ -4256,7 +4146,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_cards_include_selected_cwd_grouping_metadata_even_when_ungrouped() {
+    fn directory_fallback_rule_adds_cwd_grouping_metadata() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
             tab_id: 1,
@@ -4270,19 +4160,117 @@ mod tests {
         let model = state.view_model();
         let grouping = model.tabs[0].grouping.as_ref().unwrap();
 
-        assert_eq!(model.config.grouping, RailGroupingMode::None);
-        assert_eq!(grouping.key, "cwd:/repo/a");
+        assert_eq!(grouping.key, "zellij.directory:zellij.pane.cwd=/repo/a");
         assert_eq!(grouping.label, "a");
-        assert_eq!(grouping.full_label, "/repo/a");
+        assert_eq!(grouping.full_label, "a");
     }
 
     #[test]
-    fn directory_grouping_uses_cwd_group_path_identity() {
+    fn directory_fallback_rule_disambiguates_duplicate_cwd_basenames() {
         let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
+        state.update_tabs(vec![
+            ControllerTab {
+                tab_id: 1,
+                position: 0,
+                name: "one".into(),
+                active: true,
+            },
+            ControllerTab {
+                tab_id: 2,
+                position: 1,
+                name: "two".into(),
+                active: false,
+            },
+        ]);
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_test_pane(PaneTarget::Terminal(20), 2, true, false, 0);
+        state.set_pane_cwd(PaneTarget::Terminal(10), "/workspace/a/app".into());
+        state.set_pane_cwd(PaneTarget::Terminal(20), "/workspace/b/app".into());
+
+        let model = state.view_model();
+
+        assert_eq!(
+            model.tabs[0]
+                .grouping
+                .as_ref()
+                .map(|grouping| grouping.label.as_str()),
+            Some("a/app")
+        );
+        assert_eq!(
+            model.tabs[1]
+                .grouping
+                .as_ref()
+                .map(|grouping| grouping.label.as_str()),
+            Some("b/app")
+        );
+    }
+
+    #[test]
+    fn directory_fallback_ignores_matching_cwd_basename_in_a_git_group() {
+        let mut state = ControllerState::default();
+        state.update_tabs(vec![
+            ControllerTab {
+                tab_id: 1,
+                position: 0,
+                name: "repo".into(),
+                active: true,
+            },
+            ControllerTab {
+                tab_id: 2,
+                position: 1,
+                name: "shell".into(),
+                active: false,
+            },
+        ]);
+        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_test_pane(PaneTarget::Terminal(20), 2, true, false, 0);
+        state.set_pane_cwd(PaneTarget::Terminal(10), "/work/foo".into());
+        state.set_pane_cwd(PaneTarget::Terminal(20), "/tmp/foo".into());
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: EntityId::Tab(1),
+            source_id: "git-watcher".to_owned(),
+            set: BTreeMap::from([
+                (
+                    "vcs.repo".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("example/foo".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "repo.name".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: MetadataValue::Text("foo".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+            ]),
+            unset: vec![],
         });
+
+        let model = state.view_model();
+
+        assert!(model.tabs[0]
+            .grouping
+            .as_ref()
+            .is_some_and(|grouping| grouping_uses_rule(grouping, "andamento.git")));
+        assert_eq!(
+            model.tabs[1]
+                .grouping
+                .as_ref()
+                .map(|grouping| grouping.label.as_str()),
+            Some("foo")
+        );
+    }
+
+    #[test]
+    fn directory_fallback_rule_uses_cwd_group_path_identity() {
+        let mut state = ControllerState::default();
+        state.set_rail_config(RailConfig::default());
         state.update_tabs(vec![ControllerTab {
             tab_id: 1,
             position: 0,
@@ -4296,7 +4284,7 @@ mod tests {
         let expected_path = GroupPath(vec![GroupSegment {
             key: KEY_PANE_CWD.to_owned(),
             value: MetadataValue::Text("/repo/a".to_owned()),
-            label: None,
+            label: Some("a".to_owned()),
         }]);
 
         assert_eq!(
@@ -4315,10 +4303,7 @@ mod tests {
     #[test]
     fn configured_grouping_rule_uses_resolved_identity_metadata_before_directory_fallback() {
         let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         state.set_grouping_catalog(Some(
             andamento_shared::grouping_config::GroupingConfigCatalog::from_config(
                 andamento_shared::grouping_config::ExternalGroupingConfig {
@@ -4448,14 +4433,11 @@ mod tests {
     }
 
     #[test]
-    fn configured_grouping_rules_fall_back_to_builtin_directory_grouping() {
+    fn configured_grouping_rules_include_the_bundled_directory_fallback() {
         let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         state.set_grouping_catalog(Some(
-            andamento_shared::grouping_config::GroupingConfigCatalog::from_config(
+            andamento_shared::grouping_config::GroupingConfigCatalog::with_bundled_defaults(
                 andamento_shared::grouping_config::ExternalGroupingConfig {
                     version: 1,
                     rules: vec![andamento_shared::grouping_config::GroupingRule {
@@ -4487,18 +4469,18 @@ mod tests {
         let model = state.view_model();
         let grouping = model.tabs[0].grouping.as_ref().expect("tab grouping");
 
-        assert_eq!(grouping.key, "cwd:/Users/robert/dev/zellij");
+        assert_eq!(
+            grouping.key,
+            "zellij.directory:zellij.pane.cwd=/Users/robert/dev/zellij"
+        );
         assert_eq!(grouping.label, "zellij");
-        assert_eq!(grouping.full_label, "/Users/robert/dev/zellij");
+        assert_eq!(grouping.full_label, "zellij");
     }
 
     #[test]
     fn tab_with_required_partial_path_falls_through_to_a_later_rule() {
         let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         let grouping = andamento_shared::grouping_config::parse_grouping_config_kdl(
             r#"
             grouping "repo-branch" priority=100 {
@@ -4610,10 +4592,7 @@ mod tests {
     #[test]
     fn arbitrary_path_like_metadata_does_not_override_grouping() {
         let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         state.update_tabs(vec![ControllerTab {
             tab_id: 1,
             position: 0,
@@ -4640,8 +4619,18 @@ mod tests {
         let model = state.view_model();
         let grouping = model.tabs[0].grouping.as_ref().expect("tab grouping");
 
-        assert_eq!(grouping.key, "cwd:/repo/zellij");
-        assert_eq!(grouping.path, cwd_group_path("/repo/zellij"));
+        assert_eq!(
+            grouping.key,
+            "zellij.directory:zellij.pane.cwd=/repo/zellij"
+        );
+        assert_eq!(
+            grouping.path,
+            GroupPath(vec![GroupSegment {
+                key: KEY_PANE_CWD.to_owned(),
+                value: MetadataValue::Text("/repo/zellij".to_owned()),
+                label: Some("zellij".to_owned()),
+            }])
+        );
     }
 
     #[test]
@@ -4815,10 +4804,7 @@ mod tests {
     #[test]
     fn view_model_keeps_group_header_render_payload_in_sync_with_effective_template() {
         let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         state.set_template_catalog(Some(
             andamento_shared::template_config::TemplateConfigCatalog::from_config(
                 andamento_shared::template_config::parse_template_config_kdl(
@@ -4939,10 +4925,7 @@ mod tests {
     #[test]
     fn grouped_rows_anchor_tabs_to_their_exact_group_path() {
         let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         state.set_grouping_catalog(Some(
             andamento_shared::grouping_config::GroupingConfigCatalog::from_config(
                 andamento_shared::grouping_config::ExternalGroupingConfig {
@@ -5083,10 +5066,7 @@ mod tests {
     #[test]
     fn view_model_exposes_observed_metadata_identity_index() {
         let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         state.update_tabs(vec![ControllerTab {
             tab_id: 1,
             position: 0,
@@ -5202,7 +5182,6 @@ mod tests {
         source.set_rail_config(RailConfig {
             structure: RailStructure::BoxPerTab,
             sizing: RailSizingPreset::Compact,
-            grouping: RailGroupingMode::Directory,
             segment_between_color: None,
         });
         source.toggle_pin(7);

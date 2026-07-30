@@ -27,6 +27,16 @@ grouping "flotilla.default" priority=-1000 {
   level key="flotilla.checkout" label-key="display.label" optional=true show-empty=true
 }
 
+grouping "andamento.git" priority=-2000 {
+  level key="andamento.project" optional=true
+  level key="vcs.repo" label-key="repo.name"
+  level key="git.branch" optional=true
+}
+
+grouping "zellij.directory" priority=-3000 {
+  level key="zellij.pane.cwd" label-key="zellij.pane.cwd.label"
+}
+
 fragment "flotilla/group-toggle" {
   indent level=2
   toggle collapsed="▶" expanded="▼"

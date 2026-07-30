@@ -6089,9 +6089,8 @@ mod tests {
     use super::*;
     use andamento_shared::{
         DisplayEntity, EntityRef, GroupPath, GroupSegment, LatentTab, MetadataEntry,
-        MetadataTriState, MetadataValue, PaneTarget, RailConfig, RailGroupingMode, RailRow,
-        RailSizingPreset, RailStructure, ResolvedMetadata, ResolvedMetadataTarget, SortMode,
-        StatusIcon,
+        MetadataTriState, MetadataValue, PaneTarget, RailConfig, RailRow, RailSizingPreset,
+        RailStructure, ResolvedMetadata, ResolvedMetadataTarget, SortMode, StatusIcon,
     };
 
     fn local_tab(tab_id: u64, position: usize, active: bool) -> LocalTab {
@@ -6280,10 +6279,7 @@ mod tests {
         };
         ControllerViewModel {
             sort_mode: SortMode::Position,
-            config: RailConfig {
-                grouping: RailGroupingMode::Directory,
-                ..RailConfig::default()
-            },
+            config: RailConfig::default(),
             template_config: andamento_shared::TemplateConfigDiagnostics::default(),
             tabs: vec![],
             rows: vec![
@@ -6489,7 +6485,6 @@ mod tests {
         ControllerViewModel {
             sort_mode: SortMode::Position,
             config: RailConfig {
-                grouping: RailGroupingMode::Directory,
                 sizing: RailSizingPreset::Compact,
                 ..RailConfig::default()
             },
@@ -6531,7 +6526,6 @@ mod tests {
         let mut model = ControllerViewModel {
             sort_mode: SortMode::PinnedFirst,
             config: RailConfig {
-                grouping: RailGroupingMode::Directory,
                 structure: RailStructure::JoinedCells,
                 sizing: RailSizingPreset::Compact,
                 segment_between_color: None,
@@ -6609,7 +6603,6 @@ mod tests {
         ControllerViewModel {
             sort_mode: SortMode::Position,
             config: RailConfig {
-                grouping: RailGroupingMode::Directory,
                 structure: RailStructure::JoinedCells,
                 sizing: RailSizingPreset::Compact,
                 segment_between_color: None,

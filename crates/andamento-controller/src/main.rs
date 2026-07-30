@@ -18,13 +18,13 @@ use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
     ChildLayoutSetRequest, ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage,
     GroupingTemplateSetRequest, MetadataPatch, MetadataTarget, MetadataValueUpdate,
-    MetadataVisibilitySetRequest, PluginRegistrationHello, RailConfig, RailGroupingMode,
-    RailRgbColor, RailSize, RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure,
-    RailUiAction, RailUiState, RendererHello, SortMode, StatsCollectRequest,
-    MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT,
-    MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES,
-    MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO,
-    MSG_REQUEST_RAIL_UI_STATE, MSG_REQUEST_STATE, MSG_SET_CHILD_LAYOUT, MSG_SET_GROUPING_TEMPLATE,
+    MetadataVisibilitySetRequest, PluginRegistrationHello, RailConfig, RailRgbColor, RailSize,
+    RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RailUiAction, RailUiState,
+    RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS,
+    MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST,
+    MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED,
+    MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO, MSG_REQUEST_RAIL_UI_STATE,
+    MSG_REQUEST_STATE, MSG_SET_CHILD_LAYOUT, MSG_SET_GROUPING_TEMPLATE,
     MSG_SET_METADATA_VISIBILITY, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE,
     MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
@@ -95,7 +95,7 @@ fn main() {
     }
     let grouping_kdl = match grouping_path {
         Some(path) => std::fs::read_to_string(&path).expect("read grouping kdl"),
-        None => include_str!("../../../templates/andamento-git.kdl").to_owned(),
+        None => include_str!("../../../templates/flotilla-default.kdl").to_owned(),
     };
 
     let mut state = ControllerState::default();
@@ -109,11 +109,6 @@ fn main() {
     state.set_grouping_catalog(Some(
         andamento_shared::grouping_config::GroupingConfigCatalog::with_bundled_defaults(live),
     ));
-    state.set_rail_config(RailConfig {
-        grouping: RailGroupingMode::Directory,
-        ..RailConfig::default()
-    });
-
     let raw = std::fs::read_to_string(&patches_path).expect("read patches file");
     let (mut applied, mut failed) = (0usize, 0usize);
     for line in raw.lines().filter(|l| !l.trim().is_empty()) {
@@ -1339,10 +1334,6 @@ fn parse_rail_config(configuration: &BTreeMap<String, String>) -> RailConfig {
             .get("rail_sizing")
             .and_then(|value| parse_rail_sizing(value))
             .unwrap_or_default(),
-        grouping: configuration
-            .get("rail_grouping")
-            .and_then(|value| parse_rail_grouping(value))
-            .unwrap_or_default(),
         segment_between_color: configuration
             .get("rail_segment_between_color")
             .and_then(|value| parse_rail_rgb_color(value)),
@@ -1497,14 +1488,6 @@ fn parse_rail_sizing(value: &str) -> Option<RailSizingPreset> {
         "large" => Some(RailSizingPreset::Large),
         "active-large" | "active_large" => Some(RailSizingPreset::ActiveLarge),
         "pinned-large" | "pinned_large" => Some(RailSizingPreset::PinnedLarge),
-        _ => None,
-    }
-}
-
-fn parse_rail_grouping(value: &str) -> Option<RailGroupingMode> {
-    match value {
-        "none" | "off" | "false" => Some(RailGroupingMode::None),
-        "directory" | "cwd" | "pane-cwd" | "pane_cwd" => Some(RailGroupingMode::Directory),
         _ => None,
     }
 }
@@ -1755,6 +1738,34 @@ mod tests {
             args: BTreeMap::new(),
             is_private: false,
         }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn rail_frame_snapshot(lines: &[String], cols: usize) -> String {
+        let mut snapshot = format!("frame {cols}x{}", lines.len());
+        for (index, line) in lines.iter().enumerate() {
+            let mut plain = String::new();
+            let mut chars = line.chars().peekable();
+            while let Some(ch) = chars.next() {
+                if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+                    let _ = chars.next();
+                    for code_ch in chars.by_ref() {
+                        if code_ch.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                } else {
+                    plain.push(ch);
+                }
+            }
+            let content = plain.trim_end();
+            let trailing = cols.saturating_sub(content.chars().count());
+            snapshot.push_str(&format!("\n{index:02} |{content}|"));
+            if trailing > 0 {
+                snapshot.push_str(&format!(" + {trailing} spaces"));
+            }
+        }
+        snapshot
     }
 
     #[test]
@@ -2017,16 +2028,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_directory_grouping_from_plugin_configuration() {
-        let mut configuration = BTreeMap::new();
-        configuration.insert("rail_grouping".to_owned(), "directory".to_owned());
-
-        let config = parse_rail_config(&configuration);
-
-        assert_eq!(config.grouping, RailGroupingMode::Directory);
-    }
-
-    #[test]
     fn parses_segment_between_color_from_plugin_configuration() {
         let mut configuration = BTreeMap::new();
         configuration.insert(
@@ -2077,7 +2078,6 @@ mod tests {
         let config = RailConfig {
             structure: RailStructure::SplitAroundActive,
             sizing: RailSizingPreset::PinnedLarge,
-            grouping: RailGroupingMode::None,
             segment_between_color: None,
         };
         let payload = serde_json::to_string(&config).unwrap();
@@ -2114,7 +2114,6 @@ mod tests {
             config: RailConfig {
                 structure: RailStructure::BoxPerTab,
                 sizing: RailSizingPreset::Compact,
-                grouping: RailGroupingMode::Directory,
                 segment_between_color: None,
             },
             pinned_tabs: vec![7],
@@ -2453,10 +2452,7 @@ mod tests {
         };
         let payload = serde_json::to_string(&request).unwrap();
         let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         state.apply_metadata_patch(andamento_shared::MetadataPatch {
             target: andamento_shared::MetadataTarget::Entity(andamento_shared::EntityRef {
                 kind: "repo".to_owned(),
@@ -2583,7 +2579,6 @@ mod tests {
         let config = RailConfig {
             structure: RailStructure::BoxPerTab,
             sizing: RailSizingPreset::Compact,
-            grouping: RailGroupingMode::None,
             segment_between_color: None,
         };
         let payload = serde_json::to_string(&config).unwrap();
@@ -2695,10 +2690,7 @@ mod tests {
                 live_grouping_config,
             ),
         ));
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         let project_patch = serde_json::json!({
             "type": "metadata-patch",
             "target": {
@@ -2919,10 +2911,7 @@ mod tests {
                 live_grouping_config,
             ),
         ));
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         // Two convoys under one repo, so single-member conflation cannot fold
         // the repo group away and its header genuinely renders.
         for (index, name) in [(1, "scoping-regression"), (2, "second-convoy")] {
@@ -2988,7 +2977,13 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(latent_rows.len(), 2);
         assert!(latent_rows.iter().all(|(latent, parent_path)| {
-            latent.path == repo_path && parent_path.as_ref() == Some(&repo_path)
+            latent.path.0.starts_with(&repo_path.0)
+                && latent.path.0.last().is_some_and(|segment| {
+                    segment.key == "flotilla.convoy"
+                        && segment.value
+                            == andamento_shared::MetadataValue::Text(latent.entity.id.clone())
+                })
+                && parent_path.as_ref() == Some(&latent.path)
         }));
 
         let templates =
@@ -3017,10 +3012,192 @@ mod tests {
         for label in ["scoping-regression", "second-convoy"] {
             assert!(
                 rendered.lines.iter().any(|line| line.contains(label)),
-                "branchless convoy {label} must render directly beneath its repo: {:?}",
+                "branchless convoy {label} must render beneath its repo: {:?}",
                 rendered.lines
             );
         }
+    }
+
+    // Native-only because this exercises the #53 frame-snapshot seam through
+    // the controller's real grouping pipeline and the real rail renderer.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn vessel_with_project_facts_renders_under_its_project_before_its_repo() {
+        let git_config_kdl = include_str!("../../../templates/andamento-git.kdl");
+        let mut state = ControllerState::default();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
+                andamento_shared::template_config::parse_template_config_kdl(git_config_kdl)
+                    .unwrap(),
+            ),
+        ));
+        state.set_grouping_catalog(Some(
+            andamento_shared::grouping_config::GroupingConfigCatalog::with_bundled_defaults(
+                andamento_shared::grouping_config::parse_grouping_config_kdl(git_config_kdl)
+                    .unwrap(),
+            ),
+        ));
+        state.set_rail_config(RailConfig::default());
+        state.update_tabs(vec![state::ControllerTab {
+            tab_id: 1,
+            position: 0,
+            name: "work".to_owned(),
+            active: true,
+        }]);
+
+        let project_patch = serde_json::json!({
+            "type": "metadata-patch",
+            "target": {
+                "kind": "entity",
+                "value": { "kind": "project", "id": "flotilla/andamento@fleet" }
+            },
+            "source_id": "flotilla-connector",
+            "set": {
+                "flotilla.project": {
+                    "value": { "type": "text", "value": "flotilla/andamento@fleet" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 0
+                },
+                "flotilla.project.name": {
+                    "value": { "type": "text", "value": "Andamento" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 0
+                },
+                "display.label": {
+                    "value": { "type": "text", "value": "Andamento" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 0
+                }
+            }
+        })
+        .to_string();
+        assert!(
+            handle_pipe_message(
+                &mut state,
+                pipe(
+                    MSG_APPLY_METADATA_PATCH,
+                    Some(project_patch),
+                    BTreeMap::new(),
+                ),
+            )
+            .state_changed
+        );
+
+        let vessel_id = "flotilla/rail-grouping-unification/work@fleet";
+        let vessel_patch = serde_json::json!({
+            "type": "metadata-patch",
+            "target": {
+                "kind": "entity",
+                "value": { "kind": "vessel", "id": vessel_id }
+            },
+            "source_id": "flotilla-connector",
+            "set": {
+                "flotilla.project": {
+                    "value": { "type": "text", "value": "flotilla/andamento@fleet" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "flotilla.project.name": {
+                    "value": { "type": "text", "value": "Andamento" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "vcs.repo": {
+                    "value": { "type": "text", "value": "flotilla-org/andamento" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "vcs.repo.name": {
+                    "value": { "type": "text", "value": "andamento" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "repo.name": {
+                    "value": { "type": "text", "value": "andamento" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "flotilla.vessel": {
+                    "value": { "type": "text", "value": vessel_id },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "flotilla.vessel.name": {
+                    "value": { "type": "text", "value": "work" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "display.label": {
+                    "value": { "type": "text", "value": "work" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                }
+            }
+        })
+        .to_string();
+        assert!(
+            handle_pipe_message(
+                &mut state,
+                pipe(
+                    MSG_APPLY_METADATA_PATCH,
+                    Some(vessel_patch),
+                    BTreeMap::new(),
+                ),
+            )
+            .state_changed
+        );
+        state.apply_metadata_patch(andamento_shared::MetadataPatch {
+            target: andamento_shared::MetadataTarget::Tab(1),
+            source_id: "flotilla-actuator".to_owned(),
+            set: BTreeMap::from([
+                (
+                    "entity.kind".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: andamento_shared::MetadataValue::Text("vessel".to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+                (
+                    "entity.id".to_owned(),
+                    andamento_shared::MetadataValueUpdate {
+                        value: andamento_shared::MetadataValue::Text(vessel_id.to_owned()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                ),
+            ]),
+            unset: vec![],
+        });
+
+        let model = state.view_model();
+        let root_path = model
+            .rows
+            .iter()
+            .find_map(|row| match row {
+                andamento_shared::RailRow::GroupHeader { path, .. } => Some(path),
+                _ => None,
+            })
+            .expect("project root group");
+        assert_eq!(
+            root_path.0.first().map(|segment| segment.key.as_str()),
+            Some("flotilla.project"),
+            "a Flotilla vessel must be rooted under its project, not its vcs repo"
+        );
+
+        let templates =
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
+                andamento_shared::template_config::parse_template_config_kdl(git_config_kdl)
+                    .unwrap(),
+            );
+        let rendered = andamento_rail::render::render_lines_with_template_catalog(
+            Some(&model),
+            &[],
+            20,
+            48,
+            true,
+            Some(&templates),
+        );
+        assert!(
+            rendered.lines.iter().any(|line| line.contains("Andamento")),
+            "the project group must be visible in the rendered frame: {:?}",
+            rendered.lines
+        );
+        insta::assert_snapshot!(
+            "vessel_with_project_facts_renders_under_its_project_before_its_repo",
+            rail_frame_snapshot(&rendered.lines, 48)
+        );
     }
 
     #[test]
@@ -3097,10 +3274,7 @@ mod tests {
     #[test]
     fn observed_identities_cli_request_returns_json_output() {
         let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig {
-            grouping: RailGroupingMode::Directory,
-            ..RailConfig::default()
-        });
+        state.set_rail_config(RailConfig::default());
         state.update_tabs(vec![state::ControllerTab {
             tab_id: 1,
             position: 0,

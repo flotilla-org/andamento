@@ -102,9 +102,7 @@ pub struct GroupingConfigCatalog {
 
 impl Default for GroupingConfigCatalog {
     fn default() -> Self {
-        Self {
-            rules: vec![bundled_default_rule()],
-        }
+        Self::from_rules(bundled_default_rules())
     }
 }
 
@@ -115,8 +113,10 @@ impl GroupingConfigCatalog {
 
     pub fn with_bundled_defaults(config: ExternalGroupingConfig) -> Self {
         let mut rules = config.rules;
-        if !rules.iter().any(|rule| rule.name == "flotilla.default") {
-            rules.push(bundled_default_rule());
+        for bundled in bundled_default_rules() {
+            if !rules.iter().any(|rule| rule.name == bundled.name) {
+                rules.push(bundled);
+            }
         }
         Self::from_rules(rules)
     }
@@ -136,6 +136,14 @@ impl GroupingConfigCatalog {
     pub fn named(&self, name: &str) -> Option<&GroupingRule> {
         self.rules.iter().find(|rule| rule.name == name)
     }
+}
+
+pub fn bundled_default_rules() -> Vec<GroupingRule> {
+    vec![
+        bundled_default_rule(),
+        bundled_git_fallback_rule(),
+        bundled_directory_fallback_rule(),
+    ]
 }
 
 pub fn bundled_default_rule() -> GroupingRule {
@@ -217,6 +225,45 @@ pub fn bundled_default_rule() -> GroupingRule {
                 template: None,
             },
         ],
+    }
+}
+
+pub fn bundled_git_fallback_rule() -> GroupingRule {
+    let level = |key: &str, label_key: Option<&str>, optional: bool| GroupingLevel {
+        key: key.to_owned(),
+        optional,
+        label_key: label_key.map(str::to_owned),
+        collapse_single_member: false,
+        show_empty: false,
+        template: None,
+    };
+    GroupingRule {
+        name: "andamento.git".to_owned(),
+        priority: -2_000,
+        levels: vec![
+            level("andamento.project", None, true),
+            level("vcs.repo", Some("repo.name"), false),
+            level("git.branch", None, true),
+        ],
+        filter: None,
+        presence: vec![],
+    }
+}
+
+pub fn bundled_directory_fallback_rule() -> GroupingRule {
+    GroupingRule {
+        name: "zellij.directory".to_owned(),
+        priority: -3_000,
+        levels: vec![GroupingLevel {
+            key: "zellij.pane.cwd".to_owned(),
+            optional: false,
+            label_key: Some("zellij.pane.cwd.label".to_owned()),
+            collapse_single_member: false,
+            show_empty: false,
+            template: None,
+        }],
+        filter: None,
+        presence: vec![],
     }
 }
 
@@ -596,13 +643,7 @@ mod tests {
         let config =
             parse_grouping_config_kdl(include_str!("../../../templates/flotilla-default.kdl"))
                 .expect("published default parses");
-        let published = &config.rules[0];
-        let bundled = bundled_default_rule();
-
-        assert_eq!(published.name, bundled.name);
-        assert_eq!(published.levels, bundled.levels);
-        assert_eq!(published.presence, bundled.presence);
-        assert_eq!(published.filter, bundled.filter);
+        assert_eq!(config.rules, bundled_default_rules());
     }
 
     #[test]
@@ -610,13 +651,22 @@ mod tests {
         let config =
             parse_grouping_config_kdl(include_str!("../../../templates/andamento-git.kdl"))
                 .expect("published git template parses");
+        let mut expected_rule = bundled_git_fallback_rule();
+        expected_rule
+            .levels
+            .iter_mut()
+            .find(|level| level.key == "vcs.repo")
+            .expect("repo level")
+            .template = Some("repo/full".to_owned());
+        assert_eq!(config.rules, vec![expected_rule]);
         let rule = config
             .rules
             .iter()
-            .find(|rule| rule.name == "proj-repo-branch")
-            .expect("project-repo-branch rule");
+            .find(|rule| rule.name == "andamento.git")
+            .expect("git fallback rule");
 
         assert_eq!(rule.filter, None);
+        assert_eq!(rule.priority, -2_000);
         assert_eq!(
             rule.levels
                 .iter()
@@ -624,9 +674,34 @@ mod tests {
                 .map(|level| level.optional),
             Some(true)
         );
+        assert_eq!(
+            rule.levels
+                .iter()
+                .find(|level| level.key == "vcs.repo")
+                .and_then(|level| level.label_key.as_deref()),
+            Some("repo.name")
+        );
         assert!(rule
-            .presence
+            .levels
             .iter()
-            .any(|mapping| { mapping.kind == "convoy" && mapping.class == PresenceClass::Tab }));
+            .any(|level| level.key == "vcs.repo" && !level.optional));
+    }
+
+    #[test]
+    fn bundled_rules_are_ordered_flotilla_then_git_then_directory() {
+        let catalog = GroupingConfigCatalog::default();
+
+        assert_eq!(
+            catalog
+                .rules
+                .iter()
+                .map(|rule| (rule.name.as_str(), rule.priority))
+                .collect::<Vec<_>>(),
+            vec![
+                ("flotilla.default", -1_000),
+                ("andamento.git", -2_000),
+                ("zellij.directory", -3_000),
+            ]
+        );
     }
 }

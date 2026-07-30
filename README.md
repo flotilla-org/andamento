@@ -68,13 +68,17 @@ scroll position never left the originating rail at all. Rails now send actions
 to the controller, consume one totally ordered collapse/scroll snapshot, and
 request that current snapshot whenever a new instance starts.
 
-## Directory Grouping
+## Grouping Catalog
 
-The controller can group tabs by the exact current working directory of their panes:
+The controller derives every tab and entity group through one ordered rule
+catalog. The bundled catalog tries the Flotilla hierarchy first, then git
+repository/branch facts, then the exact pane cwd as the lowest-priority
+fallback. Tabs without facts for any rule remain flat. There is no independent
+grouping mode or directory-specific rendering path.
 
 ```kdl
 plugin location="andamento-controller" {
-    rail_grouping "directory"
+    grouping_config_path "file:$ANDAMENTO_ROOT/templates/flotilla-default.kdl"
     rail_segment_between_color "#282c34"
 }
 ```
@@ -86,7 +90,7 @@ plugin location="andamento-controller" {
 The controller derives presentation paths from flat entity facts. Producers
 publish `MetadataTarget::Entity({ kind, id })` patches with facts such as
 `flotilla.project`, `vcs.repo`, and `flotilla.convoy`; they do not publish
-group targets or paths. The bundled `flotilla.default` template orders the
+group targets or paths. The bundled `flotilla.default` rule orders the
 spine as project → repo → convoy → vessel → session → issue → checkout.
 Convoys and vessels are tab candidates, issues are inline-only, and a
 single vessel collapses into its convoy because both expose the same primary
@@ -96,25 +100,28 @@ The controller can also load named grouping templates from a real filesystem
 path exposed to the plugin. Rules are tried by priority and project resolved
 metadata into a hierarchical `GroupPath`; missing optional facts are skipped
 rather than invented, while a missing non-optional fact rejects that rule. The
-local example points both config loaders at one KDL file:
+local example binds both config loaders to the Flotilla-first default:
 
 ```kdl
 plugin location="andamento-controller" {
-    grouping_config_path "file:$ANDAMENTO_ROOT/templates/andamento-git.kdl"
+    template_config_path "file:$ANDAMENTO_ROOT/templates/flotilla-default.kdl"
+    grouping_config_path "file:$ANDAMENTO_ROOT/templates/flotilla-default.kdl"
 }
 ```
 
 Example grouping rules:
 
 ```kdl
-grouping "proj-repo-branch" {
-    priority 100
-    presence kind="convoy" class="tab"
+grouping "andamento.git" priority=-2000 {
     level key="andamento.project" optional=true
     level key="vcs.repo" label-key="repo.name" template="repo/full"
     level key="git.branch" optional=true
 }
 ```
+
+`templates/andamento-git.kdl` remains available as an optional standalone git
+override and focused catalog fixture; the shipped layouts bind
+`templates/flotilla-default.kdl`.
 
 Every non-optional level must derive for a rule to capture an entity. A missing
 `optional=true` level keeps the entity captured and places it at the deepest
@@ -134,9 +141,9 @@ sending `andamento-set-grouping-template` a JSON payload such as
 `{"name":"flotilla.default"}`; send `{"name":null}` to resume priority
 selection. Stored entity facts are unchanged.
 
-If no entity template matches, `rail_grouping "directory"` still falls back
-to the built-in exact-cwd grouping. Use `rail_grouping "none"` or omit the
-setting for the flat tab rail.
+`GroupingConfigCatalog::with_bundled_defaults` appends any missing bundled
+rules by name, so a live custom config still retains the lower-priority git
+and cwd fallbacks. Override a bundled rule by declaring the same name.
 
 ## External Rail Templates
 
