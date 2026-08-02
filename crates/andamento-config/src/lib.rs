@@ -9,6 +9,7 @@ use andamento_shared::{
     MetadataTriState, MetadataValue, MetadataVisibilitySetRequest, NodeKey, NodeVariableSetRequest,
     PluginPaneKind, PluginPlacement, PluginRegistrationHello, PluginStatsSnapshot, RailConfig,
     RailRow, RailStructure, ResolvedMetadataTarget, ResolvedTemplateSlots, TabCard,
+    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -1170,7 +1171,7 @@ fn push_inspect_options_section(
             .and_then(|variables| variables.values.get("child-layout"));
         let explicit = child_layout.is_some_and(|value| {
             value.provenance.ancestor == target.node_key
-                && value.provenance.setter == "config override"
+                && value.provenance.setter == NODE_VARIABLE_CONFIG_OVERRIDE_SETTER
         });
         push_segmented_form_choice(
             frame,

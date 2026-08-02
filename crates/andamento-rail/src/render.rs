@@ -3394,16 +3394,12 @@ fn nodes_to_render(
     collapsed_groups: &[GroupPath],
     form_policy: Option<&SurfaceRegionDefinition>,
 ) -> Vec<RenderNode> {
-    let default_catalog;
     let form_policy = match form_policy {
         Some(policy) => Some(policy),
-        None => {
-            default_catalog = TemplateConfigCatalog::default();
-            default_catalog
-                .regions()
-                .iter()
-                .find(|region| region.source == SurfaceRegionSource::Tree)
-        }
+        None => bundled_template_catalog()
+            .regions()
+            .iter()
+            .find(|region| region.source == SurfaceRegionSource::Tree),
     };
     let local_by_id: HashMap<u64, &LocalTab> = tabs.iter().map(|tab| (tab.tab_id, tab)).collect();
     let Some(model) = model else {

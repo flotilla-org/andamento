@@ -13,6 +13,7 @@ use andamento_shared::{
     RendererHello, ResolvedMetadata, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus,
     SortMode, TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics,
     VariableSetterProvenance, DISPLAY_FORM_COMPACT, DISPLAY_FORM_FULL,
+    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -949,7 +950,7 @@ impl ControllerState {
         let rows = self
             .rows_with_group_templates(self.rows_for_tabs(&tabs, &latent_tabs), &resolved_metadata);
         let region_catalog_entities = self.catalog_entities();
-        let effective_variables = self.resolve_effective_variables(
+        let (effective_variables, variable_warnings) = self.resolve_effective_variables(
             &rows,
             &tabs,
             &resolved_metadata,
@@ -957,6 +958,11 @@ impl ControllerState {
         );
         let mut template_config = self.template_config.clone();
         template_config.effective_variables = effective_variables;
+        for warning in variable_warnings {
+            if !template_config.warnings.contains(&warning) {
+                template_config.warnings.push(warning);
+            }
+        }
         let surface_regions = self
             .template_catalog
             .as_ref()
@@ -1350,16 +1356,23 @@ impl ControllerState {
         tabs: &[TabCard],
         resolved_metadata: &[ResolvedMetadata],
         catalog_entities: &[CatalogEntity],
-    ) -> Vec<EffectiveNodeVariables> {
+    ) -> (Vec<EffectiveNodeVariables>, Vec<String>) {
         let Some(catalog) = self.template_catalog.as_ref() else {
-            return vec![];
+            return (vec![], vec![]);
         };
+        let mut variable_warnings = BTreeSet::new();
         let mut resolved_by_node =
             BTreeMap::<NodeKey, BTreeMap<String, EffectiveVariableValue>>::new();
         let root = NodeKey::Root;
         let root_metadata = node_metadata(&root, resolved_metadata);
-        let root_values =
-            self.resolve_variables_at_node(catalog, &root, None, &root_metadata, None);
+        let root_values = self.resolve_variables_at_node(
+            catalog,
+            &root,
+            None,
+            &root_metadata,
+            None,
+            &mut variable_warnings,
+        );
         resolved_by_node.insert(root.clone(), root_values);
 
         let mut groups = rows
@@ -1386,6 +1399,7 @@ impl ControllerState {
                 resolved_by_node.get(&parent),
                 &metadata,
                 template,
+                &mut variable_warnings,
             );
             resolved_by_node.insert(node, values);
         }
@@ -1465,6 +1479,7 @@ impl ControllerState {
                 resolved_by_node.get(&parent),
                 &metadata,
                 template,
+                &mut variable_warnings,
             );
             resolved_by_node.insert(node, values);
         }
@@ -1491,14 +1506,18 @@ impl ControllerState {
                 resolved_by_node.get(&parent),
                 &display.metadata,
                 template,
+                &mut variable_warnings,
             );
             resolved_by_node.insert(node, values);
         }
 
-        resolved_by_node
-            .into_iter()
-            .map(|(node, values)| EffectiveNodeVariables { node, values })
-            .collect()
+        (
+            resolved_by_node
+                .into_iter()
+                .map(|(node, values)| EffectiveNodeVariables { node, values })
+                .collect(),
+            variable_warnings.into_iter().collect(),
+        )
     }
 
     fn resolve_variables_at_node(
@@ -1508,8 +1527,11 @@ impl ControllerState {
         inherited: Option<&BTreeMap<String, EffectiveVariableValue>>,
         metadata: &BTreeMap<String, MetadataValue>,
         template: Option<&ResolvedTemplateSlot>,
+        warnings: &mut BTreeSet<String>,
     ) -> BTreeMap<String, EffectiveVariableValue> {
-        let declarations = catalog.variables(metadata);
+        let scope = catalog.variable_scope(metadata);
+        warnings.extend(scope.warnings);
+        let declarations = scope.declarations;
         let declaration_by_name = declarations
             .iter()
             .map(|resolved| (resolved.definition.name.as_str(), resolved))
@@ -1530,24 +1552,38 @@ impl ControllerState {
         }
         if let Some(template) = template {
             for setter in &template.setters {
-                if declaration_by_name
-                    .get(setter.setter.name.as_str())
-                    .is_some_and(|declaration| declaration.definition.accepts(&setter.setter.value))
-                {
-                    apply_variable_setter(
-                        &mut values,
-                        &setter.setter.name,
-                        &setter.setter.value,
-                        VariableSetterProvenance {
-                            setter: format!("template {}", template.template_name),
-                            ancestor: node.clone(),
-                            origin: setter.origin.clone(),
-                        },
-                    );
+                let Some(declaration) = declaration_by_name.get(setter.setter.name.as_str()) else {
+                    warnings.insert(format!(
+                        "{} template {} sets undeclared node variable {}",
+                        setter.origin.label(),
+                        template.template_name,
+                        setter.setter.name,
+                    ));
+                    continue;
+                };
+                if !declaration.definition.accepts(&setter.setter.value) {
+                    warnings.insert(format!(
+                        "{} template {} sets node variable {} to disallowed value {}",
+                        setter.origin.label(),
+                        template.template_name,
+                        setter.setter.name,
+                        setter.setter.value,
+                    ));
+                    continue;
                 }
+                apply_variable_setter(
+                    &mut values,
+                    &setter.setter.name,
+                    &setter.setter.value,
+                    VariableSetterProvenance {
+                        setter: format!("template {}", template.template_name),
+                        ancestor: node.clone(),
+                        origin: setter.origin.clone(),
+                    },
+                );
             }
         }
-        for setter in catalog.config_variable_setters(metadata) {
+        for setter in scope.setters {
             apply_variable_setter(
                 &mut values,
                 &setter.setter.name,
@@ -1561,26 +1597,32 @@ impl ControllerState {
         }
         if let Some(overrides) = self.node_variable_overrides.get(node) {
             for (name, value) in overrides {
-                if declaration_by_name
-                    .get(name.as_str())
-                    .is_some_and(|declaration| declaration.definition.accepts(value))
-                {
-                    apply_variable_setter(
-                        &mut values,
-                        name,
-                        value,
-                        VariableSetterProvenance {
-                            setter: "config override".to_owned(),
-                            ancestor: node.clone(),
-                            origin: andamento_shared::template_config::TemplateConfigOrigin {
-                                layer:
-                                    andamento_shared::template_config::TemplateConfigLayerKind::User,
-                                membership: None,
-                                source: "andamento-inspector".to_owned(),
-                            },
-                        },
-                    );
+                let Some(declaration) = declaration_by_name.get(name.as_str()) else {
+                    warnings.insert(format!(
+                        "andamento-inspector sets undeclared node variable {name}"
+                    ));
+                    continue;
+                };
+                if !declaration.definition.accepts(value) {
+                    warnings.insert(format!(
+                        "andamento-inspector sets node variable {name} to disallowed value {value}"
+                    ));
+                    continue;
                 }
+                apply_variable_setter(
+                    &mut values,
+                    name,
+                    value,
+                    VariableSetterProvenance {
+                        setter: NODE_VARIABLE_CONFIG_OVERRIDE_SETTER.to_owned(),
+                        ancestor: node.clone(),
+                        origin: andamento_shared::template_config::TemplateConfigOrigin {
+                            layer: andamento_shared::template_config::TemplateConfigLayerKind::User,
+                            membership: None,
+                            source: "andamento-inspector".to_owned(),
+                        },
+                    },
+                );
             }
         }
         values
@@ -3156,6 +3198,7 @@ mod tests {
                 &plain_metadata,
             )
             .expect("user template resolves");
+        let mut warnings = BTreeSet::new();
         let parent = NodeKey::Tab(1);
         let parent_values = state.resolve_variables_at_node(
             &catalog,
@@ -3163,6 +3206,7 @@ mod tests {
             None,
             &plain_metadata,
             Some(&resolved_template),
+            &mut warnings,
         );
         let child = NodeKey::Tab(2);
         let child_values = state.resolve_variables_at_node(
@@ -3171,6 +3215,7 @@ mod tests {
             Some(&parent_values),
             &plain_metadata,
             None,
+            &mut warnings,
         );
         let inherited = child_values
             .get("child-layout")
@@ -3190,6 +3235,7 @@ mod tests {
             None,
             &project_metadata,
             Some(&resolved_template),
+            &mut warnings,
         );
         let configured = project_values
             .get("child-layout")
@@ -3201,6 +3247,40 @@ mod tests {
             Some("flotilla-org/andamento")
         );
         assert_eq!(configured.overridden[0].setter, "template tab/title");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn cross_layer_variable_setter_warnings_reach_template_diagnostics() {
+        let user = andamento_shared::template_config::parse_template_config_kdl(
+            r#"set "child-layout" "compact-strip""#,
+        )
+        .expect("user setter");
+        let bundled = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            variable "child-layout" default="cards" {
+              value "cards"
+              value "strip"
+            }
+            "#,
+        )
+        .expect("bundled declaration");
+        let mut state = ControllerState::default();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::from_layers(vec![
+                andamento_shared::template_config::TemplateConfigLayer::user("user.kdl", user),
+                andamento_shared::template_config::TemplateConfigLayer::bundled(
+                    "bundled.kdl",
+                    bundled,
+                ),
+            ]),
+        ));
+
+        let model = state.view_model();
+
+        assert!(model.template_config.warnings.iter().any(|warning| {
+            warning.contains("child-layout") && warning.contains("disallowed value compact-strip")
+        }));
     }
 
     fn apply_entity(

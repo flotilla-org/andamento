@@ -575,9 +575,18 @@ impl TemplateConfigCatalog {
         &self,
         metadata: &BTreeMap<String, MetadataValue>,
     ) -> Vec<ResolvedNodeVariableDefinition> {
+        self.variable_scope(metadata).declarations
+    }
+
+    pub fn variable_scope(
+        &self,
+        metadata: &BTreeMap<String, MetadataValue>,
+    ) -> ResolvedVariableScope {
+        let stack = self.layer_stack(metadata);
         let mut seen = BTreeSet::new();
-        self.layer_stack(metadata)
-            .into_iter()
+        let declarations = stack
+            .iter()
+            .copied()
             .flat_map(|layer| {
                 layer.config.variables.iter().map(move |definition| {
                     ResolvedNodeVariableDefinition {
@@ -587,38 +596,58 @@ impl TemplateConfigCatalog {
                 })
             })
             .filter(|variable| seen.insert(variable.definition.name.clone()))
-            .collect()
+            .collect::<Vec<_>>();
+        let declaration_by_name = declarations
+            .iter()
+            .map(|resolved| (resolved.definition.name.as_str(), &resolved.definition))
+            .collect::<BTreeMap<_, _>>();
+        let mut setters = vec![];
+        let mut warnings = vec![];
+        let mut seen = BTreeSet::new();
+        for resolved in stack.iter().copied().flat_map(|layer| {
+            layer
+                .config
+                .sets
+                .iter()
+                .map(move |setter| ResolvedVariableSetter {
+                    setter: setter.clone(),
+                    origin: layer.origin.clone(),
+                })
+        }) {
+            if !seen.insert(resolved.setter.name.clone()) {
+                continue;
+            }
+            let Some(declaration) = declaration_by_name.get(resolved.setter.name.as_str()) else {
+                warnings.push(format!(
+                    "{} sets undeclared node variable {}",
+                    resolved.origin.label(),
+                    resolved.setter.name,
+                ));
+                continue;
+            };
+            if !declaration.accepts(&resolved.setter.value) {
+                warnings.push(format!(
+                    "{} sets node variable {} to disallowed value {}",
+                    resolved.origin.label(),
+                    resolved.setter.name,
+                    resolved.setter.value,
+                ));
+                continue;
+            }
+            setters.push(resolved);
+        }
+        ResolvedVariableScope {
+            declarations,
+            setters,
+            warnings,
+        }
     }
 
     pub fn config_variable_setters(
         &self,
         metadata: &BTreeMap<String, MetadataValue>,
     ) -> Vec<ResolvedVariableSetter> {
-        let declarations = self
-            .variables(metadata)
-            .into_iter()
-            .map(|resolved| (resolved.definition.name.clone(), resolved.definition))
-            .collect::<BTreeMap<_, _>>();
-        let mut seen = BTreeSet::new();
-        self.layer_stack(metadata)
-            .into_iter()
-            .flat_map(|layer| {
-                layer
-                    .config
-                    .sets
-                    .iter()
-                    .map(move |setter| ResolvedVariableSetter {
-                        setter: setter.clone(),
-                        origin: layer.origin.clone(),
-                    })
-            })
-            .filter(|resolved| seen.insert(resolved.setter.name.clone()))
-            .filter(|resolved| {
-                declarations
-                    .get(&resolved.setter.name)
-                    .is_some_and(|definition| definition.accepts(&resolved.setter.value))
-            })
-            .collect()
+        self.variable_scope(metadata).setters
     }
 
     pub fn regions(&self) -> &[SurfaceRegionDefinition] {
@@ -1440,6 +1469,13 @@ pub struct ResolvedNodeVariableDefinition {
 pub struct ResolvedVariableSetter {
     pub setter: TemplateVariableSetter,
     pub origin: TemplateConfigOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedVariableScope {
+    pub declarations: Vec<ResolvedNodeVariableDefinition>,
+    pub setters: Vec<ResolvedVariableSetter>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2803,6 +2839,45 @@ mod tests {
         assert!(error
             .to_string()
             .contains("config sets variable child-layout to disallowed value grid"));
+    }
+
+    #[test]
+    fn layered_node_variable_scope_warns_about_invalid_cross_layer_setters() {
+        let bundled = parse_template_config_kdl(
+            r#"
+            variable "child-layout" default="cards" {
+              value "cards"
+              value "strip"
+            }
+            "#,
+        )
+        .expect("bundled declaration");
+        let project = parse_template_config_kdl(
+            r#"
+            set "child-layout" "compact-strip"
+            set "typo-variable" "anything"
+            "#,
+        )
+        .expect("cross-layer setters parse before catalog resolution");
+        let catalog = TemplateConfigCatalog::from_layers(vec![
+            TemplateConfigLayer::project("flotilla-org/andamento", "project.kdl", project),
+            TemplateConfigLayer::bundled("bundled.kdl", bundled),
+        ]);
+        let metadata = BTreeMap::from([(
+            "flotilla.project".to_owned(),
+            MetadataValue::Text("flotilla-org/andamento".to_owned()),
+        )]);
+
+        let scope = catalog.variable_scope(&metadata);
+
+        assert!(scope.setters.is_empty());
+        assert!(scope.warnings.iter().any(|warning| {
+            warning.contains("child-layout") && warning.contains("disallowed value compact-strip")
+        }));
+        assert!(scope
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("undeclared node variable typo-variable")));
     }
 
     #[test]
