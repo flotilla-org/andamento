@@ -8,15 +8,13 @@ use andamento_shared::template_config::{
     TemplateConfigFieldClass, TemplateConfigMatchContext, TemplateConfigNodeKind,
     TemplateConfigRenderReady, TemplateConfigSlot,
 };
-use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
-    ChildLayoutSetting, ControllerViewModel, DisplayRegion, GroupPath, GroupSegment,
-    LatentMaterializationState, LatentTab, MaterializeLatentRequest, MetadataControls,
-    MetadataEntry, MetadataSourceEntry, MetadataValue, NodeKey, PaneTarget, Priority, RailConfig,
-    RailRgbColor, RailRow, RailSizingPreset, RailStructure, ReachableMetadataIdentity,
-    ResolvedMetadata, ResolvedMetadataTarget, ResolvedTemplateFieldSource, ResolvedTemplateSlot,
-    ResolvedTemplateSlots, StatusIcon, TabCard, TabGroupingInfo, TabStatusSummary,
-    DISPLAY_FORM_COMPACT,
+    ControllerViewModel, DisplayRegion, GroupPath, GroupSegment, LatentMaterializationState,
+    LatentTab, MaterializeLatentRequest, MetadataControls, MetadataEntry, MetadataSourceEntry,
+    MetadataValue, NodeKey, PaneTarget, Priority, RailConfig, RailRgbColor, RailRow, RailStructure,
+    ReachableMetadataIdentity, ResolvedMetadata, ResolvedMetadataTarget,
+    ResolvedTemplateFieldSource, ResolvedTemplateSlot, ResolvedTemplateSlots, StatusIcon, TabCard,
+    TabGroupingInfo, TabStatusSummary, DISPLAY_FORM_COMPACT,
 };
 use ansi_term::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -24,6 +22,7 @@ use zellij_tile::prelude::{PaletteColor, SizeInPixels, Styling};
 
 const ACTIVE_CELL_HEIGHT: usize = 5;
 const COMPACT_CELL_HEIGHT: usize = 2;
+const CHILD_LAYOUT_VARIABLE_KEY: &str = "var.child-layout";
 
 type RenderMetadata = BTreeMap<String, MetadataValue>;
 type RenderMetadataSources = BTreeMap<String, Vec<MetadataSourceEntry>>;
@@ -133,7 +132,7 @@ impl From<Styling> for RenderTheme {
             // The plugin API Styling currently does not expose Zellij's top-level
             // theme background. Keep this explicit in RenderTheme so config/API
             // work can supply the real terminal-like background without changing
-            // compact strip rendering.
+            // strip rendering.
             segment_between_background: colors.text_unselected.background,
         }
     }
@@ -173,6 +172,7 @@ struct RenderCard {
     meta_panel: Option<Vec<String>>,
     entity: Option<andamento_shared::EntityRef>,
     compact_only: bool,
+    form: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,13 +227,19 @@ struct CurrentGroupHeader {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct InheritedRailSettings {
-    child_layout: ChildLayoutSetting,
+    child_layout: ChildLayoutMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildLayoutMode {
+    Cards,
+    Strip,
 }
 
 impl Default for InheritedRailSettings {
     fn default() -> Self {
         Self {
-            child_layout: ChildLayoutSetting::Cards,
+            child_layout: ChildLayoutMode::Cards,
         }
     }
 }
@@ -241,7 +247,7 @@ impl Default for InheritedRailSettings {
 impl InheritedRailSettings {
     fn with_node_metadata(self, metadata: &RenderMetadata) -> Self {
         Self {
-            child_layout: child_layout_from_metadata(metadata).unwrap_or(self.child_layout),
+            child_layout: child_layout_from_variables(metadata).unwrap_or(self.child_layout),
         }
     }
 }
@@ -465,6 +471,7 @@ pub fn render_lines_with_rail_viewport(
         metadata_controls,
         rail_scroll_offset,
         ensure_active_visible,
+        None,
     )
 }
 
@@ -482,6 +489,7 @@ fn render_legacy_rail_viewport(
     metadata_controls: &MetadataControls,
     rail_scroll_offset: isize,
     ensure_active_visible: bool,
+    form_policy: Option<&SurfaceRegionDefinition>,
 ) -> RenderedRail {
     if rows == 0 || cols == 0 {
         return RenderedRail {
@@ -500,7 +508,7 @@ fn render_legacy_rail_viewport(
     let mut lines = vec![blank(cols); rows];
     let mut hit_regions = vec![];
     let mut visible_cards = vec![];
-    let nodes = nodes_to_render(model, tabs, collapsed_groups);
+    let nodes = nodes_to_render(model, tabs, collapsed_groups, form_policy);
     let config = model.map(|model| model.config).unwrap_or_default();
     let theme = theme.map(|theme| theme.with_config(config));
     let inspected_node = model.and_then(|model| model.inspected_node.as_ref());
@@ -616,7 +624,7 @@ fn render_region_stack(
             .sum::<usize>();
         match region.source {
             SurfaceRegionSource::Header => {
-                lines.push(region_root_line(display_region, None, cols, theme));
+                lines.push(region_root_line(display_region, None, cols, theme, model));
                 content_height += 1;
             }
             SurfaceRegionSource::Attention => {
@@ -654,6 +662,7 @@ fn render_region_stack(
                     suffix.as_deref(),
                     cols,
                     theme,
+                    model,
                 ));
                 content_height += 1;
                 for entity in attention_entities {
@@ -661,11 +670,7 @@ fn render_region_stack(
                         content_height += 1;
                         let row = lines.len();
                         lines.push(region_entity_line(
-                            entity,
-                            &region.form,
-                            catalog,
-                            cols,
-                            theme,
+                            entity, region, catalog, cols, theme, model,
                         ));
                         hit_regions.push(HitRegion {
                             row_start: row,
@@ -683,14 +688,14 @@ fn render_region_stack(
                 }
             }
             SurfaceRegionSource::Tree => {
-                lines.push(region_root_line(display_region, None, cols, theme));
+                lines.push(region_root_line(display_region, None, cols, theme, model));
                 content_height += 1;
                 if remaining <= 1 {
                     continue;
                 }
                 let mut region_model = model.cloned();
                 if let Some(model) = &mut region_model {
-                    apply_region_form(&mut model.rows, &region.form, catalog);
+                    apply_region_form(&mut model.rows, region, catalog);
                 }
                 let tree_rows = remaining.saturating_sub(1 + later_pinned_rows);
                 if tree_rows == 0 {
@@ -709,6 +714,7 @@ fn render_region_stack(
                     metadata_controls,
                     rail_scroll_offset,
                     ensure_active_visible,
+                    Some(region),
                 );
                 region_can_scroll |= rendered.can_scroll();
                 rendered.lines.truncate(tree_rows);
@@ -733,7 +739,7 @@ fn render_region_stack(
                 ensure_active_resolved = rendered.ensure_active_resolved;
             }
             SurfaceRegionSource::Controls => {
-                lines.push(region_root_line(display_region, None, cols, theme));
+                lines.push(region_root_line(display_region, None, cols, theme, model));
                 content_height += 1;
                 if lines.len() >= rows {
                     continue;
@@ -819,8 +825,9 @@ fn region_root_line(
     suffix: Option<&str>,
     cols: usize,
     theme: Option<RenderTheme>,
+    model: Option<&ControllerViewModel>,
 ) -> String {
-    let metadata = BTreeMap::new();
+    let metadata = metadata_with_effective_variables(BTreeMap::new(), &NodeKey::Root, model);
     let text = region
         .root
         .as_ref()
@@ -848,11 +855,18 @@ fn region_root_line(
 
 fn region_entity_line(
     entity: &andamento_shared::DisplayEntity,
-    form: &str,
+    region: &SurfaceRegionDefinition,
     catalog: Option<&TemplateConfigCatalog>,
     cols: usize,
     theme: Option<RenderTheme>,
+    model: Option<&ControllerViewModel>,
 ) -> String {
+    let metadata = metadata_with_effective_variables(
+        entity.metadata.clone(),
+        &NodeKey::Entity(entity.entity.clone()),
+        model,
+    );
+    let form = form_for_region(region, &metadata);
     let slot = if form == DISPLAY_FORM_COMPACT {
         TemplateConfigSlot::Compact
     } else {
@@ -861,7 +875,7 @@ fn region_entity_line(
     let context = TemplateConfigMatchContext {
         slot,
         node_kind: TemplateConfigNodeKind::Entity,
-        metadata: &entity.metadata,
+        metadata: &metadata,
         collapsed: false,
         collapsible: false,
         active_tab_name: None,
@@ -875,7 +889,7 @@ fn region_entity_line(
     let resolved = match resolved {
         Some(resolved) => Some(resolved),
         None => {
-            fallback = catalog.and_then(|catalog| resolve_entity_slot(entity, slot, catalog));
+            fallback = catalog.and_then(|catalog| resolve_entity_slot(&metadata, slot, catalog));
             fallback.as_ref()
         }
     };
@@ -891,36 +905,69 @@ fn region_entity_line(
     )
 }
 
-fn apply_region_form(rows: &mut [RailRow], form: &str, catalog: Option<&TemplateConfigCatalog>) {
+fn apply_region_form(
+    rows: &mut [RailRow],
+    region: &SurfaceRegionDefinition,
+    catalog: Option<&TemplateConfigCatalog>,
+) {
     for row in rows {
         let RailRow::Entity { entity, .. } = row else {
             continue;
         };
-        entity.form = form.to_owned();
-        let slot = if form == DISPLAY_FORM_COMPACT {
+        entity.form = form_for_region(region, &entity.metadata).to_owned();
+        let slot = if entity.form == DISPLAY_FORM_COMPACT {
             TemplateConfigSlot::Compact
         } else {
             TemplateConfigSlot::Detail
         };
         if slot == TemplateConfigSlot::Compact && entity.templates.compact.is_none() {
             entity.templates.compact =
-                catalog.and_then(|catalog| resolve_entity_slot(entity, slot, catalog));
+                catalog.and_then(|catalog| resolve_entity_slot(&entity.metadata, slot, catalog));
         } else if slot == TemplateConfigSlot::Detail && entity.templates.detail.is_none() {
             entity.templates.detail =
-                catalog.and_then(|catalog| resolve_entity_slot(entity, slot, catalog));
+                catalog.and_then(|catalog| resolve_entity_slot(&entity.metadata, slot, catalog));
         }
     }
 }
 
+fn metadata_with_effective_variables(
+    mut metadata: RenderMetadata,
+    node: &NodeKey,
+    model: Option<&ControllerViewModel>,
+) -> RenderMetadata {
+    let variables = model
+        .into_iter()
+        .flat_map(|model| model.template_config.effective_variables.iter())
+        .find(|variables| &variables.node == node);
+    if let Some(variables) = variables {
+        for (name, effective) in &variables.values {
+            metadata.insert(
+                format!("var.{name}"),
+                MetadataValue::Text(effective.value.clone()),
+            );
+        }
+    }
+    metadata
+}
+
+fn form_for_region<'a>(region: &'a SurfaceRegionDefinition, metadata: &RenderMetadata) -> &'a str {
+    region
+        .promotions
+        .iter()
+        .find(|promotion| metadata.get(&promotion.when) == Some(&MetadataValue::Bool(true)))
+        .map(|promotion| promotion.form.as_str())
+        .unwrap_or(&region.form)
+}
+
 fn resolve_entity_slot(
-    entity: &andamento_shared::DisplayEntity,
+    metadata: &RenderMetadata,
     slot: TemplateConfigSlot,
     catalog: &TemplateConfigCatalog,
 ) -> Option<ResolvedTemplateSlot> {
     let context = TemplateConfigMatchContext {
         slot,
         node_kind: TemplateConfigNodeKind::Entity,
-        metadata: &entity.metadata,
+        metadata,
         collapsed: false,
         collapsible: false,
         active_tab_name: None,
@@ -933,6 +980,7 @@ fn resolve_entity_slot(
             template_name: template.name.clone(),
             fields: vec![],
             render_ready: Some(template.render_ready()),
+            setters: template.setters.clone(),
             effective_kdl: template.dump_kdl(),
             resolve_error: None,
         })
@@ -962,6 +1010,7 @@ fn resolve_region_root(
             template_name: template.name.clone(),
             fields: vec![],
             render_ready: Some(template.render_ready()),
+            setters: template.setters.clone(),
             effective_kdl: template.dump_kdl(),
             resolve_error: None,
         })
@@ -1798,7 +1847,6 @@ fn render_cards(
             available_rows,
             cols,
             controller_available,
-            config.sizing,
             theme,
             terminal_cell_size,
             template_catalog,
@@ -1813,7 +1861,6 @@ fn render_cards(
             available_rows,
             cols,
             controller_available,
-            config.sizing,
             theme,
             terminal_cell_size,
             template_catalog,
@@ -1828,7 +1875,6 @@ fn render_cards(
             available_rows,
             cols,
             controller_available,
-            config.sizing,
             theme,
             terminal_cell_size,
             template_catalog,
@@ -1947,25 +1993,20 @@ fn root_inherited_settings_for_model(model: Option<&ControllerViewModel>) -> Inh
     let Some(model) = model else {
         return InheritedRailSettings::default();
     };
-    let Some(metadata) = model
-        .resolved_metadata
+    let Some(variables) = model
+        .template_config
+        .effective_variables
         .iter()
-        .find(|metadata| metadata.target == ResolvedMetadataTarget::Root)
+        .find(|variables| variables.node == NodeKey::Root)
     else {
         return InheritedRailSettings::default();
     };
-    metadata.values.iter().fold(
-        InheritedRailSettings::default(),
-        |settings, (key, entry)| {
-            if key == RAIL_CHILD_LAYOUT_METADATA_KEY {
-                ChildLayoutSetting::from_metadata_value(&entry.value)
-                    .map(|child_layout| InheritedRailSettings { child_layout })
-                    .unwrap_or(settings)
-            } else {
-                settings
-            }
-        },
-    )
+    variables
+        .values
+        .get("child-layout")
+        .and_then(|value| child_layout_from_text(&value.value))
+        .map(|child_layout| InheritedRailSettings { child_layout })
+        .unwrap_or_default()
 }
 
 fn top_level_tabs(nodes: &[RenderNode]) -> Option<Vec<&RenderTab>> {
@@ -2019,7 +2060,7 @@ fn render_nodes_to_buffer(
                 let group_key = NodeKey::Group(group.path.clone());
                 let child_settings = inherited_settings.with_node_metadata(&group.metadata);
                 let (direct_tabs, child_group_nodes) =
-                    if child_settings.child_layout == ChildLayoutSetting::CompactStrip {
+                    if child_settings.child_layout == ChildLayoutMode::Strip {
                         direct_tabs_and_child_groups(&group.children)
                     } else {
                         (vec![], vec![])
@@ -2060,12 +2101,12 @@ fn render_nodes_to_buffer(
                     child_ancestor_template_fields.extend(visible_header_sources);
                     let child_meta_children = metadata_controls
                         .propagates_to_children(&group_key, ancestor_meta_children);
-                    if child_settings.child_layout == ChildLayoutSetting::CompactStrip {
+                    if child_settings.child_layout == ChildLayoutMode::Strip {
                         let remaining_children =
                             children_after_niche_consumption(&group.children, &niche_consumption);
                         let (remaining_direct_tabs, remaining_child_groups) =
                             direct_tabs_and_child_groups(&remaining_children);
-                        append_compact_tab_strip(
+                        append_tab_strip(
                             lines,
                             hit_regions,
                             &remaining_direct_tabs,
@@ -2163,7 +2204,7 @@ fn flush_render_tabs(
         inspected_node,
         ancestor_meta_children,
     );
-    append_compact_tab_strip(lines, hit_regions, &compact, cols, theme, template_catalog);
+    append_tab_strip(lines, hit_regions, &compact, cols, theme, template_catalog);
 }
 
 #[derive(Debug, Clone)]
@@ -2185,7 +2226,7 @@ fn append_group_header(
     inspected_node: Option<&NodeKey>,
     niche_tabs: &[RenderTab],
     niche_child_groups: &[RenderGroup],
-    child_layout: ChildLayoutSetting,
+    child_layout: ChildLayoutMode,
 ) -> (
     BTreeSet<ResolvedTemplateFieldSource>,
     NodeRowAllocation,
@@ -2316,20 +2357,31 @@ fn append_group_header(
 
 fn group_header_has_revealable_body(
     group: &RenderGroup,
-    child_layout: ChildLayoutSetting,
+    child_layout: ChildLayoutMode,
     niche_consumption: &HeaderNicheConsumption,
 ) -> bool {
     if group.children.is_empty() {
         return false;
     }
-    if child_layout != ChildLayoutSetting::CompactStrip {
+    if child_layout != ChildLayoutMode::Strip {
         return true;
     }
     !children_after_niche_consumption(&group.children, niche_consumption).is_empty()
 }
 
-fn child_layout_from_metadata(metadata: &RenderMetadata) -> Option<ChildLayoutSetting> {
-    ChildLayoutSetting::from_metadata_value(metadata.get(RAIL_CHILD_LAYOUT_METADATA_KEY)?)
+fn child_layout_from_variables(metadata: &RenderMetadata) -> Option<ChildLayoutMode> {
+    let MetadataValue::Text(value) = metadata.get(CHILD_LAYOUT_VARIABLE_KEY)? else {
+        return None;
+    };
+    child_layout_from_text(value)
+}
+
+fn child_layout_from_text(value: &str) -> Option<ChildLayoutMode> {
+    match value {
+        "cards" => Some(ChildLayoutMode::Cards),
+        "strip" => Some(ChildLayoutMode::Strip),
+        _ => None,
+    }
 }
 
 fn direct_tabs_and_child_groups(children: &[RenderNode]) -> (Vec<RenderTab>, Vec<RenderNode>) {
@@ -2381,7 +2433,7 @@ fn children_after_niche_consumption(
     remaining
 }
 
-fn append_compact_tab_strip(
+fn append_tab_strip(
     lines: &mut Vec<String>,
     hit_regions: &mut Vec<HitRegion>,
     tabs: &[RenderTab],
@@ -2417,12 +2469,12 @@ fn append_compact_tab_strip(
             InlineItem::segment(
                 format!("tab:{index}"),
                 label.clone(),
-                compact_segment_width(&label),
+                strip_segment_width(&label),
             )
             .hit(InlineHit::SwitchTab { index })
         })
         .collect::<Vec<_>>();
-    let rendered = render_compact_segment_run(&items, tabs, inner_width, theme);
+    let rendered = render_strip_segment_run(&items, tabs, inner_width, theme);
     let base_row = lines.len();
     for line in rendered.lines {
         lines.push(format!("{}{}", " ".repeat(indent), line));
@@ -2456,27 +2508,27 @@ fn append_compact_tab_strip(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CompactSegmentRun {
+struct StripSegmentRun {
     lines: Vec<String>,
-    hits: Vec<CompactSegmentHitBox>,
+    hits: Vec<StripSegmentHitBox>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CompactSegmentHitBox {
+struct StripSegmentHitBox {
     index: usize,
     row: usize,
     col_start: usize,
     col_end: usize,
 }
 
-fn render_compact_segment_run(
+fn render_strip_segment_run(
     items: &[InlineItem],
     tabs: &[RenderTab],
     width: usize,
     theme: Option<RenderTheme>,
-) -> CompactSegmentRun {
+) -> StripSegmentRun {
     if width == 0 || items.is_empty() {
-        return CompactSegmentRun {
+        return StripSegmentRun {
             lines: vec![],
             hits: vec![],
         };
@@ -2492,12 +2544,12 @@ fn render_compact_segment_run(
             .collect::<Vec<_>>();
         let rendered =
             segment_bar::render_wrapped(&segment_items, &segment_bar::ZellijRibbonStyle, width);
-        return CompactSegmentRun {
+        return StripSegmentRun {
             lines: rendered.lines,
             hits: rendered
                 .hits
                 .into_iter()
-                .map(|hit| CompactSegmentHitBox {
+                .map(|hit| StripSegmentHitBox {
                     index: hit.index,
                     row: hit.row,
                     col_start: hit.col_start,
@@ -2536,13 +2588,13 @@ fn render_compact_segment_run(
                 active: tab.card.active,
             };
             let max_width = item.cols.end.saturating_sub(item.cols.start);
-            let (segment, visible_width) = render_compact_segment(&segment_item, max_width, theme);
+            let (segment, visible_width) = render_strip_segment(&segment_item, max_width, theme);
             if visible_width == 0 {
                 continue;
             }
             line.push_str(&segment);
             col = col.saturating_add(visible_width);
-            hits.push(CompactSegmentHitBox {
+            hits.push(StripSegmentHitBox {
                 index,
                 row,
                 col_start: item.cols.start,
@@ -2554,7 +2606,7 @@ fn render_compact_segment_run(
         }
         lines.push(pad_styled_line_to_width(&line, col, width));
     }
-    CompactSegmentRun { lines, hits }
+    StripSegmentRun { lines, hits }
 }
 
 fn inline_switch_tab_index(hit: Option<InlineHit>) -> Option<usize> {
@@ -2574,11 +2626,11 @@ fn pad_styled_line_to_width(line: &str, visible_width: usize, width: usize) -> S
     out
 }
 
-fn compact_segment_width(label: &str) -> usize {
+fn strip_segment_width(label: &str) -> usize {
     label.width().saturating_add(4)
 }
 
-fn render_compact_segment(
+fn render_strip_segment(
     item: &SegmentItem,
     max_width: usize,
     theme: Option<RenderTheme>,
@@ -2586,7 +2638,7 @@ fn render_compact_segment(
     if max_width == 0 {
         return (String::new(), 0);
     }
-    let visible_width = compact_segment_width(&item.label).min(max_width);
+    let visible_width = strip_segment_width(&item.label).min(max_width);
     if theme.is_none() {
         let plain = format!(" {} ", item.label);
         return (truncate_to_width(&plain, max_width), visible_width);
@@ -2682,7 +2734,7 @@ fn append_tab_run(
             card
         })
         .collect::<Vec<_>>();
-    let run_height = generous_card_run_height(&cards, config.sizing);
+    let run_height = generous_card_run_height(&cards);
     let mut local_lines = vec![blank(inner_cols); run_height];
     let mut local_hits = vec![];
     let mut local_cards = vec![];
@@ -2743,10 +2795,10 @@ fn append_tab_run(
     allocations
 }
 
-fn generous_card_run_height(cards: &[RenderCard], sizing: RailSizingPreset) -> usize {
+fn generous_card_run_height(cards: &[RenderCard]) -> usize {
     cards
         .iter()
-        .map(|card| cell_height(card, sizing, false).max(ACTIVE_CELL_HEIGHT) + 1)
+        .map(|card| cell_height(card, false).max(ACTIVE_CELL_HEIGHT) + 1)
         .sum::<usize>()
         + 1
 }
@@ -2927,14 +2979,13 @@ fn render_joined_cells(
     available_rows: usize,
     cols: usize,
     controller_available: bool,
-    sizing: RailSizingPreset,
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
     metadata_controls: &MetadataControls,
     inspected_node: Option<&NodeKey>,
 ) {
-    let visible = visible_cells(cards, available_rows, sizing);
+    let visible = visible_cells(cards, available_rows);
     for (visible_index, (card_index, cell_height)) in visible.iter().copied().enumerate() {
         let card = &cards[card_index];
         let chrome = card_chrome(card, template_catalog);
@@ -2993,7 +3044,6 @@ fn render_split_around_active(
     available_rows: usize,
     cols: usize,
     controller_available: bool,
-    sizing: RailSizingPreset,
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
@@ -3009,7 +3059,6 @@ fn render_split_around_active(
             available_rows,
             cols,
             controller_available,
-            sizing,
             theme,
             terminal_cell_size,
             template_catalog,
@@ -3017,7 +3066,7 @@ fn render_split_around_active(
             inspected_node,
         );
     };
-    let visible = visible_cells(cards, available_rows, sizing);
+    let visible = visible_cells(cards, available_rows);
     let mut row = 0;
     for (visible_index, (card_index, cell_height)) in visible.iter().copied().enumerate() {
         let card = &cards[card_index];
@@ -3098,14 +3147,13 @@ fn render_box_per_tab(
     available_rows: usize,
     cols: usize,
     controller_available: bool,
-    sizing: RailSizingPreset,
     theme: Option<RenderTheme>,
     terminal_cell_size: Option<SizeInPixels>,
     template_catalog: Option<&TemplateConfigCatalog>,
     metadata_controls: &MetadataControls,
     inspected_node: Option<&NodeKey>,
 ) {
-    let visible = visible_boxes(cards, available_rows, sizing);
+    let visible = visible_boxes(cards, available_rows);
     let mut row = 0;
     for (card_index, box_height) in visible {
         row = render_standalone_box(
@@ -3344,7 +3392,15 @@ fn nodes_to_render(
     model: Option<&ControllerViewModel>,
     tabs: &[LocalTab],
     collapsed_groups: &[GroupPath],
+    form_policy: Option<&SurfaceRegionDefinition>,
 ) -> Vec<RenderNode> {
+    let form_policy = match form_policy {
+        Some(policy) => Some(policy),
+        None => bundled_template_catalog()
+            .regions()
+            .iter()
+            .find(|region| region.source == SurfaceRegionSource::Tree),
+    };
     let local_by_id: HashMap<u64, &LocalTab> = tabs.iter().map(|tab| (tab.tab_id, tab)).collect();
     let Some(model) = model else {
         let mut tabs = tabs.to_vec();
@@ -3371,6 +3427,7 @@ fn nodes_to_render(
                         meta_panel: None,
                         entity: None,
                         compact_only: false,
+                        form: "full".to_owned(),
                     },
                     indent: 0,
                     grouping: None,
@@ -3450,8 +3507,71 @@ fn nodes_to_render(
     };
     let mut nodes = pending_nodes_to_render_nodes(pending_rows, collapsed_groups);
     merge_resolved_metadata(&mut nodes, &model.resolved_metadata);
+    merge_effective_variables(&mut nodes, &model.template_config.effective_variables);
+    if let Some(region) = form_policy {
+        apply_region_form_to_nodes(&mut nodes, region);
+    }
     conflate_spindly_groups(&mut nodes, root_inherited_settings_for_model(Some(model)));
     nodes
+}
+
+fn apply_region_form_to_nodes(nodes: &mut [RenderNode], region: &SurfaceRegionDefinition) {
+    for node in nodes {
+        match node {
+            RenderNode::Tab(tab) => {
+                tab.card.form = form_for_region(region, &tab.card.metadata).to_owned();
+            }
+            RenderNode::Group(group) => {
+                apply_region_form_to_nodes(&mut group.children, region);
+            }
+        }
+    }
+}
+
+fn merge_effective_variables(
+    nodes: &mut [RenderNode],
+    resolved: &[andamento_shared::EffectiveNodeVariables],
+) {
+    let by_node = resolved
+        .iter()
+        .map(|variables| (&variables.node, &variables.values))
+        .collect::<HashMap<_, _>>();
+    merge_effective_variables_into_nodes(nodes, &by_node);
+}
+
+fn merge_effective_variables_into_nodes(
+    nodes: &mut [RenderNode],
+    by_node: &HashMap<&NodeKey, &BTreeMap<String, andamento_shared::EffectiveVariableValue>>,
+) {
+    for node in nodes {
+        let (key, metadata, children) = match node {
+            RenderNode::Tab(tab) => (
+                tab.card
+                    .entity
+                    .clone()
+                    .map(NodeKey::Entity)
+                    .unwrap_or(NodeKey::Tab(tab.card.tab_id)),
+                &mut tab.card.metadata,
+                None,
+            ),
+            RenderNode::Group(group) => (
+                NodeKey::Group(group.path.clone()),
+                &mut group.metadata,
+                Some(group.children.as_mut_slice()),
+            ),
+        };
+        if let Some(variables) = by_node.get(&key) {
+            metadata.extend(variables.iter().map(|(name, value)| {
+                (
+                    format!("var.{name}"),
+                    MetadataValue::Text(value.value.clone()),
+                )
+            }));
+        }
+        if let Some(children) = children {
+            merge_effective_variables_into_nodes(children, by_node);
+        }
+    }
 }
 
 fn pending_nodes_to_render_nodes(
@@ -3777,7 +3897,7 @@ fn can_conflate_group_with_only_child(
     group: &RenderGroup,
     effective_settings: InheritedRailSettings,
 ) -> bool {
-    if group.collapsed || effective_settings.child_layout != ChildLayoutSetting::Cards {
+    if group.collapsed || effective_settings.child_layout != ChildLayoutMode::Cards {
         return false;
     }
     let mut child_groups = 0;
@@ -3786,7 +3906,8 @@ fn can_conflate_group_with_only_child(
             RenderNode::Tab(_) => return false,
             RenderNode::Group(child_group) => {
                 if child_group.collapsed
-                    || child_layout_from_metadata(&child_group.metadata).is_some()
+                    || child_layout_from_variables(&child_group.metadata)
+                        .is_some_and(|layout| layout != effective_settings.child_layout)
                 {
                     return false;
                 }
@@ -3975,6 +4096,7 @@ fn render_card_from_model(card: &TabCard, local_by_id: &HashMap<u64, &LocalTab>)
         meta_panel: None,
         entity: None,
         compact_only: false,
+        form: "full".to_owned(),
     }
 }
 
@@ -4083,6 +4205,7 @@ fn render_card_from_latent(latent: &LatentTab) -> RenderCard {
         meta_panel: None,
         entity: Some(latent.entity.clone()),
         compact_only: false,
+        form: "full".to_owned(),
     }
 }
 
@@ -4104,6 +4227,7 @@ fn render_card_from_entity(entity: &andamento_shared::DisplayEntity) -> RenderCa
         meta_panel: None,
         entity: Some(entity.entity.clone()),
         compact_only: entity.form == DISPLAY_FORM_COMPACT,
+        form: entity.form.clone(),
     }
 }
 
@@ -4191,16 +4315,12 @@ fn metadata_for_tab_card(
     metadata
 }
 
-fn visible_cells(
-    cards: &[RenderCard],
-    available_rows: usize,
-    sizing: RailSizingPreset,
-) -> Vec<(usize, usize)> {
+fn visible_cells(cards: &[RenderCard], available_rows: usize) -> Vec<(usize, usize)> {
     if cards.is_empty() || available_rows < COMPACT_CELL_HEIGHT + 1 {
         return vec![];
     }
     let active_index = cards.iter().position(|card| card.active).unwrap_or(0);
-    let cell_height = |card: &RenderCard| cell_height(card, sizing, true);
+    let cell_height = |card: &RenderCard| cell_height(card, true);
     let all_rows = cards.iter().map(cell_height).sum::<usize>() + 1;
     if all_rows <= available_rows {
         return cards
@@ -4236,16 +4356,12 @@ fn visible_cells(
     selected
 }
 
-fn visible_boxes(
-    cards: &[RenderCard],
-    available_rows: usize,
-    sizing: RailSizingPreset,
-) -> Vec<(usize, usize)> {
+fn visible_boxes(cards: &[RenderCard], available_rows: usize) -> Vec<(usize, usize)> {
     if cards.is_empty() || available_rows < COMPACT_CELL_HEIGHT + 1 {
         return vec![];
     }
     let active_index = cards.iter().position(|card| card.active).unwrap_or(0);
-    let box_height = |card: &RenderCard| cell_height(card, sizing, false).max(2);
+    let box_height = |card: &RenderCard| cell_height(card, false).max(2);
     let mut selected = vec![(active_index, box_height(&cards[active_index]))];
     let mut used_rows = selected[0].1;
     let mut before = active_index;
@@ -4272,18 +4388,16 @@ fn visible_boxes(
     selected
 }
 
-fn cell_height(card: &RenderCard, sizing: RailSizingPreset, joined_cell: bool) -> usize {
+fn cell_height(card: &RenderCard, joined_cell: bool) -> usize {
     let compact = if joined_cell {
         COMPACT_CELL_HEIGHT
     } else {
         COMPACT_CELL_HEIGHT + 1
     };
-    let base = match sizing {
-        RailSizingPreset::Compact => compact,
-        RailSizingPreset::Large => ACTIVE_CELL_HEIGHT,
-        RailSizingPreset::ActiveLarge if card.active => ACTIVE_CELL_HEIGHT,
-        RailSizingPreset::PinnedLarge if card.active || card.pinned => ACTIVE_CELL_HEIGHT,
-        RailSizingPreset::ActiveLarge | RailSizingPreset::PinnedLarge => compact,
+    let base = if card.form == DISPLAY_FORM_COMPACT {
+        compact
+    } else {
+        ACTIVE_CELL_HEIGHT
     };
     // Meta panel sits inside the card body; grow the card by the number of
     // panel rows so the existing border + body layout absorbs them without
@@ -5355,12 +5469,12 @@ fn project_direct_tab_header_niche(
             label,
             active: tab.card.active,
         };
-        let segment_width = compact_segment_width(&segment_item.label);
+        let segment_width = strip_segment_width(&segment_item.label);
         if segment_width > width.saturating_sub(visible_width) {
             break;
         }
         let start = visible_width;
-        let (segment, rendered_width) = render_compact_segment(&segment_item, segment_width, theme);
+        let (segment, rendered_width) = render_strip_segment(&segment_item, segment_width, theme);
         if rendered_width == 0 || rendered_width > width.saturating_sub(visible_width) {
             break;
         }
@@ -6089,9 +6203,34 @@ mod tests {
     use super::*;
     use andamento_shared::{
         DisplayEntity, EntityRef, GroupPath, GroupSegment, LatentTab, MetadataEntry,
-        MetadataTriState, MetadataValue, PaneTarget, RailConfig, RailRow, RailSizingPreset,
-        RailStructure, ResolvedMetadata, ResolvedMetadataTarget, SortMode, StatusIcon,
+        MetadataTriState, MetadataValue, PaneTarget, RailConfig, RailRow, RailStructure,
+        ResolvedMetadata, ResolvedMetadataTarget, SortMode, StatusIcon,
     };
+
+    fn set_child_layout_variable(model: &mut ControllerViewModel, node: NodeKey, value: &str) {
+        model
+            .template_config
+            .effective_variables
+            .push(andamento_shared::EffectiveNodeVariables {
+                node: node.clone(),
+                values: BTreeMap::from([(
+                    "child-layout".to_owned(),
+                    andamento_shared::EffectiveVariableValue {
+                        value: value.to_owned(),
+                        provenance: andamento_shared::VariableSetterProvenance {
+                            setter: "test template".to_owned(),
+                            ancestor: node,
+                            origin: andamento_shared::template_config::TemplateConfigOrigin {
+                                layer: andamento_shared::template_config::TemplateConfigLayerKind::User,
+                                membership: None,
+                                source: "test.kdl".to_owned(),
+                            },
+                        },
+                        overridden: vec![],
+                    },
+                )]),
+            });
+    }
 
     fn local_tab(tab_id: u64, position: usize, active: bool) -> LocalTab {
         LocalTab {
@@ -6205,7 +6344,7 @@ mod tests {
             RailRow::GroupHeader { path, .. } => path.clone(),
             _ => panic!("expected group header"),
         };
-        let nodes = nodes_to_render(Some(&model), &[], std::slice::from_ref(&group_path));
+        let nodes = nodes_to_render(Some(&model), &[], std::slice::from_ref(&group_path), None);
         let ensure_target = active_ensure_target(&nodes);
         assert_eq!(ensure_target, Some(NodeKey::Group(group_path.clone())));
 
@@ -6485,7 +6624,6 @@ mod tests {
         ControllerViewModel {
             sort_mode: SortMode::Position,
             config: RailConfig {
-                sizing: RailSizingPreset::Compact,
                 ..RailConfig::default()
             },
             template_config: andamento_shared::TemplateConfigDiagnostics::default(),
@@ -6527,7 +6665,6 @@ mod tests {
             sort_mode: SortMode::PinnedFirst,
             config: RailConfig {
                 structure: RailStructure::JoinedCells,
-                sizing: RailSizingPreset::Compact,
                 segment_between_color: None,
             },
             template_config: andamento_shared::TemplateConfigDiagnostics::default(),
@@ -6604,7 +6741,6 @@ mod tests {
             sort_mode: SortMode::Position,
             config: RailConfig {
                 structure: RailStructure::JoinedCells,
-                sizing: RailSizingPreset::Compact,
                 segment_between_color: None,
             },
             template_config: andamento_shared::TemplateConfigDiagnostics::default(),
@@ -6675,7 +6811,6 @@ mod tests {
     fn flat_rows_model() -> ControllerViewModel {
         let mut model = model();
         model.config.structure = RailStructure::JoinedCells;
-        model.config.sizing = RailSizingPreset::Compact;
         model.rows = model
             .tabs
             .iter()
@@ -6690,7 +6825,7 @@ mod tests {
 
     #[test]
     fn flat_controller_rows_still_honor_joined_cells_structure() {
-        let rendered = render_lines(Some(&flat_rows_model()), &[], 7, 24, true);
+        let rendered = render_lines(Some(&flat_rows_model()), &[], 9, 24, true);
 
         assert!(rendered.lines[0].starts_with("┌ tab-2"));
         assert!(
@@ -6794,6 +6929,33 @@ mod tests {
                         id: "1060".to_owned(),
                     }))
         }));
+    }
+
+    #[test]
+    fn bundled_tree_form_promotes_active_and_pinned_tabs_to_full() {
+        let catalog = TemplateConfigCatalog::default();
+        let tree = catalog
+            .regions()
+            .iter()
+            .find(|region| region.source == SurfaceRegionSource::Tree)
+            .expect("bundled tree region");
+
+        let inactive = RenderMetadata::from([
+            ("zellij.tab.active".to_owned(), MetadataValue::Bool(false)),
+            ("rail.tab.pinned".to_owned(), MetadataValue::Bool(false)),
+        ]);
+        let active = RenderMetadata::from([
+            ("zellij.tab.active".to_owned(), MetadataValue::Bool(true)),
+            ("rail.tab.pinned".to_owned(), MetadataValue::Bool(false)),
+        ]);
+        let pinned = RenderMetadata::from([
+            ("zellij.tab.active".to_owned(), MetadataValue::Bool(false)),
+            ("rail.tab.pinned".to_owned(), MetadataValue::Bool(true)),
+        ]);
+
+        assert_eq!(form_for_region(tree, &inactive), DISPLAY_FORM_COMPACT);
+        assert_eq!(form_for_region(tree, &active), "full");
+        assert_eq!(form_for_region(tree, &pinned), "full");
     }
 
     #[test]
@@ -6977,7 +7139,6 @@ mod tests {
     fn render_nodes_walk_nested_groups_recursively() {
         let mut config = RailConfig::default();
         config.structure = RailStructure::JoinedCells;
-        config.sizing = RailSizingPreset::Compact;
         let nodes = vec![RenderNode::Group(RenderGroup {
             path: GroupPath::default(),
             conflated_paths: vec![GroupPath::default()],
@@ -7025,6 +7186,7 @@ mod tests {
                         meta_panel: None,
                         entity: None,
                         compact_only: false,
+                        form: "full".to_owned(),
                     },
                     indent: 4,
                     grouping: None,
@@ -7136,7 +7298,7 @@ mod tests {
             },
         ];
 
-        let nodes = nodes_to_render(Some(&model), &[], &[]);
+        let nodes = nodes_to_render(Some(&model), &[], &[], None);
         let [RenderNode::Group(group)] = nodes.as_slice() else {
             panic!("expected one conflated group, got {nodes:?}");
         };
@@ -7163,7 +7325,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_child_layout_setting_blocks_group_conflation_boundary() {
+    fn child_layout_variable_blocks_group_conflation_boundary() {
         let mut model = nested_group_model();
         let path = GroupPath(vec![
             GroupSegment {
@@ -7203,25 +7365,32 @@ mod tests {
                 parent_path: Some(path),
             },
         ];
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Group(GroupPath(vec![GroupSegment {
-                key: "project".to_owned(),
-                value: MetadataValue::Text("project-a".to_owned()),
-                label: None,
-            }])),
-            values: BTreeMap::from([(
-                RAIL_CHILD_LAYOUT_METADATA_KEY.to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        model.template_config.effective_variables = vec![
+            andamento_shared::EffectiveNodeVariables {
+                node: NodeKey::Group(GroupPath(vec![GroupSegment {
+                    key: "project".to_owned(),
+                    value: MetadataValue::Text("project-a".to_owned()),
+                    label: None,
+                }])),
+                values: BTreeMap::from([(
+                    "child-layout".to_owned(),
+                    andamento_shared::EffectiveVariableValue {
+                        value: "strip".to_owned(),
+                        provenance: andamento_shared::VariableSetterProvenance {
+                            setter: "test".to_owned(),
+                            ancestor: NodeKey::Root,
+                            origin: andamento_shared::template_config::TemplateConfigOrigin {
+                                layer:
+                                    andamento_shared::template_config::TemplateConfigLayerKind::User,
+                                membership: None,
+                                source: "test".to_owned(),
+                            },
+                        },
+                        overridden: vec![],
+                    },
+                )]),
+            },
+        ];
 
         let rendered = render_lines(Some(&model), &[], 6, 48, true);
 
@@ -7232,7 +7401,7 @@ mod tests {
         );
         assert!(
             rendered.lines[0].contains("─ repo-a"),
-            "explicit parent layout should keep the child group boundary visible without structural conflation: {:?}",
+            "parent layout should keep the child group boundary visible without structural conflation: {:?}",
             rendered.lines
         );
     }
@@ -7241,7 +7410,7 @@ mod tests {
     fn group_can_contain_tabs_and_child_groups() {
         let model = mixed_child_group_model();
 
-        let nodes = nodes_to_render(Some(&model), &[], &[]);
+        let nodes = nodes_to_render(Some(&model), &[], &[], None);
 
         let [RenderNode::Group(parent)] = nodes.as_slice() else {
             panic!("expected one parent group, got {nodes:?}");
@@ -7273,27 +7442,13 @@ mod tests {
     }
 
     #[test]
-    fn group_child_layout_metadata_can_render_direct_tabs_as_compact_strip() {
+    fn group_child_layout_variable_can_render_direct_tabs_as_strip() {
         let mut model = mixed_child_group_model();
         let parent_path = match &model.rows[0] {
             RailRow::GroupHeader { path, .. } => path.clone(),
             _ => panic!("first row should be parent group"),
         };
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Group(parent_path),
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Group(parent_path), "strip");
 
         let rendered = render_lines(Some(&model), &[], 8, 48, true);
 
@@ -7327,7 +7482,7 @@ mod tests {
                 .lines
                 .iter()
                 .any(|line| line.contains(" branch-agent ")),
-            "child groups should inherit compact-strip for their direct tabs: {:?}",
+            "child groups should inherit strip layout for their direct tabs: {:?}",
             rendered.lines
         );
         assert!(
@@ -7335,7 +7490,7 @@ mod tests {
                 .lines
                 .iter()
                 .any(|line| line.contains("┌ branch-agent")),
-            "inherited compact-strip should avoid full child tab cards: {:?}",
+            "inherited strip layout should avoid full child tab cards: {:?}",
             rendered.lines
         );
     }
@@ -7385,6 +7540,7 @@ mod tests {
                 template_name: resolved.name.clone(),
                 fields: vec![],
                 render_ready: Some(resolved.render_ready()),
+                setters: resolved.setters.clone(),
                 effective_kdl: resolved.dump_kdl(),
                 resolve_error: None,
             }
@@ -7535,21 +7691,7 @@ mod tests {
             RailRow::GroupHeader { path, .. } => path.clone(),
             _ => panic!("first row should be parent group"),
         };
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Group(parent_path),
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Group(parent_path), "strip");
 
         let rendered = render_lines_with_theme(Some(&model), &[], 8, 72, true, Some(test_theme()));
 
@@ -7568,21 +7710,7 @@ mod tests {
     #[test]
     fn group_header_absorbs_one_child_group_path_into_niche() {
         let mut model = nested_group_model();
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Root,
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Root, "strip");
 
         let rendered = render_lines(Some(&model), &[], 10, 72, true);
 
@@ -7619,21 +7747,7 @@ mod tests {
     #[test]
     fn absorbed_child_group_label_is_not_a_toggle_hit() {
         let mut model = nested_group_model();
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Root,
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Root, "strip");
 
         let rendered = render_lines(Some(&model), &[], 10, 72, true);
         let group_label_col = rendered.lines[0]
@@ -7673,21 +7787,7 @@ mod tests {
             RailRow::GroupHeader { path, .. } => path.clone(),
             _ => panic!("first row should be parent group"),
         };
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Group(parent_path),
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Group(parent_path), "strip");
 
         let rendered = render_lines(Some(&model), &[], 8, 48, true);
         let tab_col = rendered.lines[0]
@@ -7706,21 +7806,7 @@ mod tests {
     #[test]
     fn right_aligned_absorbed_tabs_do_not_leave_separator_artifact_after_group_label() {
         let mut model = nested_group_model();
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Root,
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Root, "strip");
 
         let rendered = render_lines(Some(&model), &[], 10, 72, true);
 
@@ -7759,21 +7845,7 @@ mod tests {
                 },
             );
         }
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Root,
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Root, "strip");
 
         let rendered = render_lines(Some(&model), &[], 10, 44, true);
 
@@ -7810,21 +7882,7 @@ mod tests {
     #[test]
     fn fully_absorbed_group_body_does_not_show_a_collapse_toggle() {
         let mut model = grouped_model();
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Root,
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Root, "strip");
 
         let rendered = render_lines(Some(&model), &[], 8, 72, true);
 
@@ -7882,21 +7940,7 @@ mod tests {
                 parent_path: Some(child_path.clone()),
             });
         }
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Root,
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Root, "strip");
 
         let rendered = render_lines(Some(&model), &[], 10, 44, true);
 
@@ -7928,21 +7972,7 @@ mod tests {
             RailRow::GroupHeader { path, .. } => path.clone(),
             _ => panic!("first row should be child group"),
         };
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Root,
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Root, "strip");
 
         let rendered =
             render_lines_with_collapsed_groups(Some(&model), &[], 10, 72, true, &[collapsed_path]);
@@ -7969,23 +7999,9 @@ mod tests {
     }
 
     #[test]
-    fn root_child_layout_metadata_is_inherited_by_groups() {
+    fn root_child_layout_variable_is_inherited_by_groups() {
         let mut model = mixed_child_group_model();
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Root,
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Root, "strip");
 
         let rendered = render_lines(Some(&model), &[], 8, 48, true);
 
@@ -8005,27 +8021,13 @@ mod tests {
     }
 
     #[test]
-    fn themed_compact_strip_uses_exact_separator_with_active_inactive_and_between_colors() {
+    fn themed_strip_uses_exact_separator_with_active_inactive_and_between_colors() {
         let mut model = mixed_child_group_model();
         let parent_path = match &model.rows[0] {
             RailRow::GroupHeader { path, .. } => path.clone(),
             _ => panic!("first row should be parent group"),
         };
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Group(parent_path),
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Group(parent_path), "strip");
 
         let rendered = render_lines_with_theme(Some(&model), &[], 8, 48, true, Some(test_theme()));
 
@@ -8051,7 +8053,7 @@ mod tests {
     }
 
     #[test]
-    fn themed_compact_strip_uses_template_catalog_tab_titles() {
+    fn themed_strip_uses_template_catalog_tab_titles() {
         let config = andamento_shared::template_config::parse_template_config_kdl(
             r#"
             template "tab/title" slot="tab-title" node-kind="tab" {
@@ -8066,21 +8068,7 @@ mod tests {
             RailRow::GroupHeader { path, .. } => path.clone(),
             _ => panic!("first row should be parent group"),
         };
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Group(parent_path),
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Group(parent_path), "strip");
 
         let rendered = render_lines_with_options(
             Some(&model),
@@ -8096,31 +8084,31 @@ mod tests {
 
         assert!(
             rendered.lines[0].contains(" External "),
-            "themed compact strip should keep template-resolved tab title labels: {:?}",
+            "themed strip should keep template-resolved tab title labels: {:?}",
             rendered.lines
         );
         assert!(
             !rendered.lines[0].contains(" repo-overview "),
-            "themed compact strip should not fall back to built-in tab title labels: {:?}",
+            "themed strip should not fall back to built-in tab title labels: {:?}",
             rendered.lines
         );
     }
 
     #[test]
-    fn themed_compact_segment_truncates_before_styling_when_narrow() {
+    fn themed_strip_segment_truncates_before_styling_when_narrow() {
         let item = SegmentItem {
             label: "repo-overview".to_owned(),
             active: true,
         };
 
-        let (segment, visible_width) = render_compact_segment(&item, 3, Some(test_theme()));
+        let (segment, visible_width) = render_strip_segment(&item, 3, Some(test_theme()));
 
         assert_eq!(visible_width, 3);
         assert_eq!(visible_width_without_ansi(&segment), 3);
     }
 
     #[test]
-    fn rail_config_overrides_compact_segment_between_color() {
+    fn rail_config_overrides_strip_segment_between_color() {
         let mut model = mixed_child_group_model();
         model.config.segment_between_color = Some(andamento_shared::RailRgbColor {
             red: 1,
@@ -8131,21 +8119,7 @@ mod tests {
             RailRow::GroupHeader { path, .. } => path.clone(),
             _ => panic!("first row should be parent group"),
         };
-        model.resolved_metadata = vec![ResolvedMetadata {
-            target: ResolvedMetadataTarget::Group(parent_path),
-            values: BTreeMap::from([(
-                "rail.child_layout".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("compact-strip".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
+        set_child_layout_variable(&mut model, NodeKey::Group(parent_path), "strip");
 
         let rendered = render_lines_with_theme(Some(&model), &[], 8, 48, true, Some(test_theme()));
 
@@ -8176,6 +8150,7 @@ mod tests {
                     source: Some(repo_source.clone()),
                 }],
                 render_ready: None,
+                setters: vec![],
                 effective_kdl: String::new(),
                 resolve_error: None,
             });
@@ -8196,6 +8171,7 @@ mod tests {
                     },
                 ],
                 render_ready: None,
+                setters: vec![],
                 effective_kdl: String::new(),
                 resolve_error: None,
             });
@@ -8575,7 +8551,7 @@ mod tests {
             None,
             &[],
             &[],
-            ChildLayoutSetting::Cards,
+            ChildLayoutMode::Cards,
         );
 
         assert!(
@@ -8651,6 +8627,7 @@ mod tests {
             meta_panel: None,
             entity: None,
             compact_only: false,
+            form: "full".to_owned(),
         };
 
         assert_eq!(
@@ -8678,12 +8655,41 @@ mod tests {
     }
 
     #[test]
+    fn external_template_fields_read_effective_node_variables() {
+        let config = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            template "group/full" slot="group-header" node-kind="group" {
+              field "layout" class="required" key="var.child-layout"
+            }
+            "#,
+        )
+        .expect("valid template config");
+        let catalog = andamento_shared::template_config::TemplateConfigCatalog::from_config(config);
+        let mut model = grouped_model();
+        let group_path = match &model.rows[0] {
+            RailRow::GroupHeader { path, .. } => path.clone(),
+            _ => panic!("expected group header"),
+        };
+        set_child_layout_variable(&mut model, NodeKey::Group(group_path), "strip");
+
+        let rendered =
+            render_lines_with_template_catalog(Some(&model), &[], 7, 24, true, Some(&catalog));
+
+        assert!(
+            rendered.lines[0].starts_with("strip"),
+            "{:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
     fn entry_with_no_recognized_fields_renders_label_and_kind() {
         let mut model = model();
         model.tabs[0].templates.tab_title = Some(ResolvedTemplateSlot {
             template_name: "future.entry".to_owned(),
             fields: vec![],
             render_ready: None,
+            setters: vec![],
             effective_kdl: String::new(),
             resolve_error: None,
         });
@@ -8705,6 +8711,7 @@ mod tests {
                 template_name: "future.group".to_owned(),
                 fields: vec![],
                 render_ready: None,
+                setters: vec![],
                 effective_kdl: String::new(),
                 resolve_error: None,
             }),
@@ -9051,6 +9058,7 @@ mod tests {
             template_name: "future.group".to_owned(),
             fields: vec![],
             render_ready: None,
+            setters: vec![],
             effective_kdl: String::new(),
             resolve_error: None,
         });
@@ -9115,6 +9123,7 @@ mod tests {
                 },
             ],
             render_ready: Some(resolved.render_ready()),
+            setters: resolved.setters.clone(),
             effective_kdl: "// deliberately not parseable; inspect evidence only".to_owned(),
             resolve_error: None,
         });
@@ -9563,14 +9572,13 @@ mod tests {
     fn box_per_tab_draws_a_complete_box_for_each_visible_tab() {
         let mut model = model();
         model.config.structure = RailStructure::BoxPerTab;
-        model.config.sizing = RailSizingPreset::Compact;
 
-        let rendered = render_lines(Some(&model), &[], 7, 24, true);
+        let rendered = render_lines(Some(&model), &[], 10, 24, true);
 
         assert!(rendered.lines[0].starts_with("┌ tab-2"));
-        assert!(rendered.lines[2].starts_with("└"));
-        assert!(rendered.lines[3].starts_with("┌ tab-1"));
-        assert!(rendered.lines[5].starts_with("└"));
+        assert!(rendered.lines[4].starts_with("└"));
+        assert!(rendered.lines[5].starts_with("┌ tab-1"));
+        assert!(rendered.lines[7].starts_with("└"));
     }
 
     #[test]
@@ -9637,7 +9645,7 @@ mod tests {
         let rendered = render_lines(
             Some(&model),
             &[local_tab(1, 0, true), local_tab(2, 1, false)],
-            9,
+            12,
             24,
             true,
         );
@@ -9958,7 +9966,7 @@ mod tests {
             None,
             &[],
             &[],
-            ChildLayoutSetting::Cards,
+            ChildLayoutMode::Cards,
         );
         assert_eq!(allocation.rows, 2..3);
         assert!(matches!(allocation.key, NodeKey::Group(ref p) if p == &group.path));
@@ -10012,7 +10020,7 @@ mod tests {
     #[test]
     fn footer_projects_declared_variable_control_and_false_state() {
         let config = andamento_shared::template_config::parse_template_config_kdl(
-            r#"variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
+            r#"display-variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
         )
         .unwrap();
         let mut lines = vec![blank(20)];
@@ -10031,7 +10039,7 @@ mod tests {
             &MetadataControls::default(),
             None,
             false,
-            &config.variables,
+            &config.display_variables,
             Some(&values),
         );
 
@@ -10143,6 +10151,7 @@ mod tests {
             meta_panel: None,
             entity: None,
             compact_only: false,
+            form: "full".to_owned(),
         };
         let chrome = card_chrome(&card, None);
         write_tab_top_border(
@@ -10189,6 +10198,7 @@ mod tests {
             meta_panel: None,
             entity: None,
             compact_only: false,
+            form: "full".to_owned(),
         };
         let chrome = card_chrome(&card, None);
         write_tab_top_border(
@@ -10219,6 +10229,7 @@ mod tests {
             meta_panel: None,
             entity: None,
             compact_only: false,
+            form: "full".to_owned(),
         };
 
         write_tab_top_border(
@@ -10354,10 +10365,11 @@ mod tests {
             meta_panel: None,
             entity: None,
             compact_only: false,
+            form: "full".to_owned(),
         };
-        let base = cell_height(&card, RailSizingPreset::Compact, false);
+        let base = cell_height(&card, false);
         card.meta_panel = Some(vec!["a".into(), "b".into(), "c".into()]);
-        let grown = cell_height(&card, RailSizingPreset::Compact, false);
+        let grown = cell_height(&card, false);
         assert_eq!(grown, base + 3);
     }
 
@@ -10446,6 +10458,7 @@ mod tests {
                     template_name: resolved.name.clone(),
                     fields: vec![],
                     render_ready: Some(resolved.render_ready()),
+                    setters: resolved.setters.clone(),
                     effective_kdl: resolved.dump_kdl(),
                     resolve_error: None,
                 }),
@@ -10508,7 +10521,7 @@ mod tests {
             Some(&NodeKey::Group(path.clone())),
             &[],
             &[],
-            ChildLayoutSetting::Cards,
+            ChildLayoutMode::Cards,
         );
         assert!(lines[0].ends_with("●─"), "got {:?}", lines[0]);
         let cycle_hit = hits
@@ -10542,6 +10555,7 @@ mod tests {
                 meta_panel: None,
                 entity: None,
                 compact_only: false,
+                form: "full".to_owned(),
             },
             indent: 0,
             grouping: None,

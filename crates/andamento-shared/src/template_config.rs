@@ -44,7 +44,19 @@ pub fn parse_template_config_kdl(
         .nodes()
         .iter()
         .filter(|node| node.name().value() == "variable")
-        .map(parse_kdl_variable)
+        .map(parse_kdl_node_variable)
+        .collect::<Result<Vec<_>, _>>()?;
+    let display_variables = document
+        .nodes()
+        .iter()
+        .filter(|node| node.name().value() == "display-variable")
+        .map(parse_kdl_display_variable)
+        .collect::<Result<Vec<_>, _>>()?;
+    let sets = document
+        .nodes()
+        .iter()
+        .filter(|node| node.name().value() == "set")
+        .map(parse_kdl_variable_setter)
         .collect::<Result<Vec<_>, _>>()?;
     let regions = document
         .nodes()
@@ -57,6 +69,8 @@ pub fn parse_template_config_kdl(
         templates,
         fragments,
         variables,
+        display_variables,
+        sets,
         regions,
     };
     config.validate()?;
@@ -102,7 +116,11 @@ pub struct ExternalTemplateConfig {
     #[serde(default)]
     pub fragments: Vec<TemplateConfigFragmentDefinition>,
     #[serde(default)]
-    pub variables: Vec<TemplateVariableDefinition>,
+    pub variables: Vec<NodeVariableDefinition>,
+    #[serde(default)]
+    pub display_variables: Vec<TemplateVariableDefinition>,
+    #[serde(default)]
+    pub sets: Vec<TemplateVariableSetter>,
     #[serde(default)]
     pub regions: Vec<SurfaceRegionDefinition>,
 }
@@ -128,9 +146,12 @@ impl ExternalTemplateConfig {
                     template.name
                 )));
             }
-            if template.operations.is_empty() && template.extends.is_none() {
+            if template.operations.is_empty()
+                && template.sets.is_empty()
+                && template.extends.is_none()
+            {
                 return Err(TemplateConfigError::Validation(format!(
-                    "template {} must define at least one field or extends",
+                    "template {} must define at least one field, set, or extends",
                     template.name
                 )));
             }
@@ -149,6 +170,16 @@ impl ExternalTemplateConfig {
                             template.name
                         )));
                     }
+                }
+            }
+            let mut setter_names = BTreeSet::new();
+            for setter in &template.sets {
+                setter.validate()?;
+                if !setter_names.insert(setter.name.clone()) {
+                    return Err(TemplateConfigError::Validation(format!(
+                        "template {} has duplicate variable setter: {}",
+                        template.name, setter.name
+                    )));
                 }
             }
         }
@@ -198,6 +229,57 @@ impl ExternalTemplateConfig {
             }
             variable.validate()?;
         }
+        let local_variables = self
+            .variables
+            .iter()
+            .map(|variable| (variable.name.as_str(), variable))
+            .collect::<BTreeMap<_, _>>();
+        for (scope, setter) in
+            self.sets
+                .iter()
+                .map(|setter| ("config", setter))
+                .chain(self.templates.iter().flat_map(|template| {
+                    template
+                        .sets
+                        .iter()
+                        .map(move |setter| (template.name.as_str(), setter))
+                }))
+        {
+            if local_variables
+                .get(setter.name.as_str())
+                .is_some_and(|variable| !variable.accepts(&setter.value))
+            {
+                return Err(TemplateConfigError::Validation(format!(
+                    "{scope} sets variable {} to disallowed value {}",
+                    setter.name, setter.value
+                )));
+            }
+        }
+        let mut display_variable_names = BTreeSet::new();
+        for variable in &self.display_variables {
+            if variable.name.trim().is_empty() {
+                return Err(TemplateConfigError::Validation(
+                    "display variable name cannot be empty".to_owned(),
+                ));
+            }
+            if !display_variable_names.insert(variable.name.clone()) {
+                return Err(TemplateConfigError::Validation(format!(
+                    "duplicate display variable name: {}",
+                    variable.name
+                )));
+            }
+            variable.validate()?;
+        }
+        let mut setter_names = BTreeSet::new();
+        for setter in &self.sets {
+            setter.validate()?;
+            if !setter_names.insert(setter.name.clone()) {
+                return Err(TemplateConfigError::Validation(format!(
+                    "duplicate config variable setter: {}",
+                    setter.name
+                )));
+            }
+        }
         let mut region_names = BTreeSet::new();
         for region in &self.regions {
             if region.name.trim().is_empty() {
@@ -225,6 +307,14 @@ impl ExternalTemplateConfig {
                     region.name
                 )));
             }
+            for promotion in &region.promotions {
+                if promotion.when.trim().is_empty() || promotion.form.trim().is_empty() {
+                    return Err(TemplateConfigError::Validation(format!(
+                        "region {} promotion must declare non-empty when and form",
+                        region.name
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -251,7 +341,7 @@ impl TemplateConfigLayerKind {
         }
     }
 
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::User => "user",
             Self::Repo => "repo",
@@ -271,7 +361,7 @@ pub struct TemplateConfigOrigin {
 }
 
 impl TemplateConfigOrigin {
-    fn label(&self) -> String {
+    pub fn label(&self) -> String {
         match self.membership.as_deref() {
             Some(membership) => format!("{}:{} ({})", self.layer.as_str(), membership, self.source),
             None => format!("{} ({})", self.layer.as_str(), self.source),
@@ -356,7 +446,7 @@ impl TemplateConfigLayer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateConfigCatalog {
     layers: Vec<TemplateConfigLayer>,
-    variables: Vec<TemplateVariableDefinition>,
+    display_variables: Vec<TemplateVariableDefinition>,
     regions: Vec<SurfaceRegionDefinition>,
 }
 
@@ -386,11 +476,11 @@ impl TemplateConfigCatalog {
 
     pub fn from_layers(mut layers: Vec<TemplateConfigLayer>) -> Self {
         layers.sort_by_key(|layer| layer.origin.layer.rank());
-        let mut seen_variables = BTreeSet::new();
-        let variables = layers
+        let mut seen_display_variables = BTreeSet::new();
+        let display_variables = layers
             .iter()
-            .flat_map(|layer| layer.config.variables.iter())
-            .filter(|variable| seen_variables.insert(variable.name.clone()))
+            .flat_map(|layer| layer.config.display_variables.iter())
+            .filter(|variable| seen_display_variables.insert(variable.name.clone()))
             .cloned()
             .collect();
         let regions = layers
@@ -401,7 +491,7 @@ impl TemplateConfigCatalog {
             .unwrap_or_default();
         Self {
             layers,
-            variables,
+            display_variables,
             regions,
         }
     }
@@ -477,8 +567,87 @@ impl TemplateConfigCatalog {
             .collect()
     }
 
-    pub fn variables(&self) -> &[TemplateVariableDefinition] {
-        &self.variables
+    pub fn display_variables(&self) -> &[TemplateVariableDefinition] {
+        &self.display_variables
+    }
+
+    pub fn variables(
+        &self,
+        metadata: &BTreeMap<String, MetadataValue>,
+    ) -> Vec<ResolvedNodeVariableDefinition> {
+        self.variable_scope(metadata).declarations
+    }
+
+    pub fn variable_scope(
+        &self,
+        metadata: &BTreeMap<String, MetadataValue>,
+    ) -> ResolvedVariableScope {
+        let stack = self.layer_stack(metadata);
+        let mut seen = BTreeSet::new();
+        let declarations = stack
+            .iter()
+            .copied()
+            .flat_map(|layer| {
+                layer.config.variables.iter().map(move |definition| {
+                    ResolvedNodeVariableDefinition {
+                        definition: definition.clone(),
+                        origin: layer.origin.clone(),
+                    }
+                })
+            })
+            .filter(|variable| seen.insert(variable.definition.name.clone()))
+            .collect::<Vec<_>>();
+        let declaration_by_name = declarations
+            .iter()
+            .map(|resolved| (resolved.definition.name.as_str(), &resolved.definition))
+            .collect::<BTreeMap<_, _>>();
+        let mut setters = vec![];
+        let mut warnings = vec![];
+        let mut seen = BTreeSet::new();
+        for resolved in stack.iter().copied().flat_map(|layer| {
+            layer
+                .config
+                .sets
+                .iter()
+                .map(move |setter| ResolvedVariableSetter {
+                    setter: setter.clone(),
+                    origin: layer.origin.clone(),
+                })
+        }) {
+            if !seen.insert(resolved.setter.name.clone()) {
+                continue;
+            }
+            let Some(declaration) = declaration_by_name.get(resolved.setter.name.as_str()) else {
+                warnings.push(format!(
+                    "{} sets undeclared node variable {}",
+                    resolved.origin.label(),
+                    resolved.setter.name,
+                ));
+                continue;
+            };
+            if !declaration.accepts(&resolved.setter.value) {
+                warnings.push(format!(
+                    "{} sets node variable {} to disallowed value {}",
+                    resolved.origin.label(),
+                    resolved.setter.name,
+                    resolved.setter.value,
+                ));
+                continue;
+            }
+            setters.push(resolved);
+        }
+        ResolvedVariableScope {
+            declarations,
+            setters,
+            warnings,
+        }
+    }
+
+    pub fn config_variable_setters(
+        &self,
+        metadata: &BTreeMap<String, MetadataValue>,
+    ) -> Vec<ResolvedVariableSetter> {
+        self.variable_scope(metadata).setters
     }
 
     pub fn regions(&self) -> &[SurfaceRegionDefinition] {
@@ -513,6 +682,15 @@ pub struct SurfaceRegionDefinition {
     pub attention_key: Option<String>,
     #[serde(default)]
     pub pinned: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub promotions: Vec<SurfaceFormPromotion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct SurfaceFormPromotion {
+    pub when: String,
+    pub form: String,
 }
 
 fn bundled_default_config() -> ExternalTemplateConfig {
@@ -537,6 +715,7 @@ pub struct TemplateConfigResolved {
     pub node_kind: TemplateConfigNodeKind,
     pub fields: Vec<TemplateConfigResolvedField>,
     pub chrome: ChromeSpec,
+    pub setters: Vec<ResolvedVariableSetter>,
     pub chain: Vec<TemplateConfigChainEntry>,
     pub is_bundled: bool,
 }
@@ -573,6 +752,14 @@ impl TemplateConfigResolved {
             quote_kdl(self.slot.as_str()),
             quote_kdl(self.node_kind.as_str()),
         ));
+        for setter in &self.setters {
+            output.push_str(&format!(
+                "  // origin: {}\n  set {} {}\n",
+                setter.origin.label(),
+                quote_kdl(&setter.setter.name),
+                quote_kdl(&setter.setter.value),
+            ));
+        }
         for primitive in &self.chrome.primitives {
             output.push_str(&primitive.to_kdl(2));
         }
@@ -812,6 +999,24 @@ fn flatten_template(
         .as_ref()
         .map(|parent| parent.chrome.clone())
         .unwrap_or_default();
+    let mut setters = parent
+        .as_ref()
+        .map(|parent| parent.setters.clone())
+        .unwrap_or_default();
+    for setter in &template.sets {
+        let resolved = ResolvedVariableSetter {
+            setter: setter.clone(),
+            origin: layer.origin.clone(),
+        };
+        if let Some(index) = setters
+            .iter()
+            .position(|existing| existing.setter.name == setter.name)
+        {
+            setters[index] = resolved;
+        } else {
+            setters.push(resolved);
+        }
+    }
     apply_operations(
         stack,
         &template.name,
@@ -836,6 +1041,7 @@ fn flatten_template(
         node_kind,
         fields,
         chrome,
+        setters,
         chain,
         is_bundled: layer.origin.layer == TemplateConfigLayerKind::Bundled,
     })
@@ -1111,6 +1317,8 @@ pub struct TemplateConfigDefinition {
     pub node_kind: Option<TemplateConfigNodeKind>,
     #[serde(default)]
     pub operations: Vec<TemplateConfigFieldOperation>,
+    #[serde(default)]
+    pub sets: Vec<TemplateVariableSetter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1186,6 +1394,88 @@ impl TemplateConfigNodeKind {
             Self::Entity => "entity",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct NodeVariableDefinition {
+    pub name: String,
+    pub default: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+}
+
+impl NodeVariableDefinition {
+    fn validate(&self) -> Result<(), TemplateConfigError> {
+        if self.name.trim().is_empty() {
+            return Err(TemplateConfigError::Validation(
+                "variable name cannot be empty".to_owned(),
+            ));
+        }
+        if self.default.is_empty() {
+            return Err(TemplateConfigError::Validation(format!(
+                "variable {} default cannot be empty",
+                self.name
+            )));
+        }
+        if !self.values.is_empty() {
+            let unique = self.values.iter().collect::<BTreeSet<_>>();
+            if unique.len() != self.values.len() {
+                return Err(TemplateConfigError::Validation(format!(
+                    "variable {} has duplicate allowed values",
+                    self.name
+                )));
+            }
+            if !self.values.contains(&self.default) {
+                return Err(TemplateConfigError::Validation(format!(
+                    "variable {} default is not in its allowed values",
+                    self.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn accepts(&self, value: &str) -> bool {
+        self.values.is_empty() || self.values.iter().any(|allowed| allowed == value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct TemplateVariableSetter {
+    pub name: String,
+    pub value: String,
+}
+
+impl TemplateVariableSetter {
+    fn validate(&self) -> Result<(), TemplateConfigError> {
+        if self.name.trim().is_empty() || self.value.is_empty() {
+            return Err(TemplateConfigError::Validation(
+                "set must declare a non-empty variable name and value".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedNodeVariableDefinition {
+    pub definition: NodeVariableDefinition,
+    pub origin: TemplateConfigOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedVariableSetter {
+    pub setter: TemplateVariableSetter,
+    pub origin: TemplateConfigOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedVariableScope {
+    pub declarations: Vec<ResolvedNodeVariableDefinition>,
+    pub setters: Vec<ResolvedVariableSetter>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1517,6 +1807,7 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
         ))
     })?;
     let mut operations = vec![];
+    let mut sets = vec![];
     for child in children.nodes() {
         match child.name().value() {
             "when" | "predicate" => {
@@ -1528,6 +1819,7 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
             "field" | "remove" | "use" | "box" | "toggle" | "fill" | "dim" | "indent" => {
                 operations.push(parse_kdl_field_operation(child)?)
             }
+            "set" => sets.push(parse_kdl_variable_setter(child)?),
             other => {
                 return Err(TemplateConfigError::Validation(format!(
                     "template {} has unsupported child node: {other}",
@@ -1546,6 +1838,7 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
             .map(|value| parse_kdl_node_kind(&value))
             .transpose()?,
         operations,
+        sets,
     })
 }
 
@@ -1571,6 +1864,23 @@ fn parse_kdl_region(node: &KdlNode) -> Result<SurfaceRegionDefinition, TemplateC
             .get("pinned")
             .and_then(|entry| entry.value().as_bool())
             .unwrap_or(false),
+        promotions: node
+            .children()
+            .map(|children| {
+                children
+                    .nodes()
+                    .iter()
+                    .filter(|child| child.name().value() == "promote")
+                    .map(|child| {
+                        Ok(SurfaceFormPromotion {
+                            when: kdl_required_prop_string(child, "when")?,
+                            form: kdl_required_prop_string(child, "form")?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, TemplateConfigError>>()
+            })
+            .transpose()?
+            .unwrap_or_default(),
     })
 }
 
@@ -1668,7 +1978,41 @@ fn parse_kdl_chrome(node: &KdlNode) -> Result<ChromePrimitive, TemplateConfigErr
     }
 }
 
-fn parse_kdl_variable(node: &KdlNode) -> Result<TemplateVariableDefinition, TemplateConfigError> {
+fn parse_kdl_node_variable(node: &KdlNode) -> Result<NodeVariableDefinition, TemplateConfigError> {
+    let variable = NodeVariableDefinition {
+        name: kdl_required_arg_string(node, 0, "variable name")?,
+        default: kdl_required_prop_string(node, "default")?,
+        values: node
+            .children()
+            .map(|children| {
+                children
+                    .nodes()
+                    .iter()
+                    .filter(|child| child.name().value() == "value")
+                    .map(|child| kdl_required_arg_string(child, 0, "allowed value"))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default(),
+    };
+    variable.validate()?;
+    Ok(variable)
+}
+
+fn parse_kdl_variable_setter(
+    node: &KdlNode,
+) -> Result<TemplateVariableSetter, TemplateConfigError> {
+    let setter = TemplateVariableSetter {
+        name: kdl_required_arg_string(node, 0, "variable name")?,
+        value: kdl_required_arg_string(node, 1, "variable value")?,
+    };
+    setter.validate()?;
+    Ok(setter)
+}
+
+fn parse_kdl_display_variable(
+    node: &KdlNode,
+) -> Result<TemplateVariableDefinition, TemplateConfigError> {
     let name = kdl_required_arg_string(node, 0, "variable name")?;
     let variable_type_name = kdl_required_prop_string(node, "type")?;
     let (variable_type, default) = match variable_type_name.as_str() {
@@ -2230,6 +2574,8 @@ mod tests {
             templates: vec![],
             fragments: vec![],
             variables: vec![],
+            display_variables: vec![],
+            sets: vec![],
             regions: vec![],
         };
         let catalog = TemplateConfigCatalog::from_layers(vec![
@@ -2428,6 +2774,127 @@ mod tests {
             Some("status.attention")
         );
         assert!(config.regions[1].pinned);
+    }
+
+    #[test]
+    fn node_variables_parse_with_template_and_config_setters_and_namespaced_reads() {
+        let config = parse_template_config_kdl(
+            r#"
+            variable "child-layout" default="cards" {
+              value "cards"
+              value "strip"
+            }
+            set "child-layout" "strip"
+            template "issue/compact" slot="compact" node-kind="entity" {
+              set "child-layout" "cards"
+              field "layout" key="var.child-layout"
+            }
+            "#,
+        )
+        .expect("node variables parse");
+        let catalog = TemplateConfigCatalog::from_config(config);
+        let metadata = BTreeMap::from([
+            (
+                "entity.kind".to_owned(),
+                MetadataValue::Text("issue".to_owned()),
+            ),
+            (
+                "var.child-layout".to_owned(),
+                MetadataValue::Text("strip".to_owned()),
+            ),
+        ]);
+
+        assert_eq!(catalog.variables(&metadata)[0].definition.default, "cards");
+        assert_eq!(
+            catalog.config_variable_setters(&metadata)[0].setter.value,
+            "strip"
+        );
+        let resolved = catalog
+            .resolve(entity_context(&metadata))
+            .expect("template resolves")
+            .expect("template is present");
+        assert_eq!(resolved.setters[0].setter.value, "cards");
+        assert_eq!(
+            resolved.render_fields(entity_context(&metadata))[0].value,
+            "strip"
+        );
+        assert!(resolved
+            .dump_kdl()
+            .contains("set \"child-layout\" \"cards\""));
+    }
+
+    #[test]
+    fn node_variable_setters_reject_locally_disallowed_values() {
+        let error = parse_template_config_kdl(
+            r#"
+            variable "child-layout" default="cards" {
+              value "cards"
+              value "strip"
+            }
+            set "child-layout" "grid"
+            "#,
+        )
+        .expect_err("disallowed setter must fail validation");
+
+        assert!(error
+            .to_string()
+            .contains("config sets variable child-layout to disallowed value grid"));
+    }
+
+    #[test]
+    fn layered_node_variable_scope_warns_about_invalid_cross_layer_setters() {
+        let bundled = parse_template_config_kdl(
+            r#"
+            variable "child-layout" default="cards" {
+              value "cards"
+              value "strip"
+            }
+            "#,
+        )
+        .expect("bundled declaration");
+        let project = parse_template_config_kdl(
+            r#"
+            set "child-layout" "compact-strip"
+            set "typo-variable" "anything"
+            "#,
+        )
+        .expect("cross-layer setters parse before catalog resolution");
+        let catalog = TemplateConfigCatalog::from_layers(vec![
+            TemplateConfigLayer::project("flotilla-org/andamento", "project.kdl", project),
+            TemplateConfigLayer::bundled("bundled.kdl", bundled),
+        ]);
+        let metadata = BTreeMap::from([(
+            "flotilla.project".to_owned(),
+            MetadataValue::Text("flotilla-org/andamento".to_owned()),
+        )]);
+
+        let scope = catalog.variable_scope(&metadata);
+
+        assert!(scope.setters.is_empty());
+        assert!(scope.warnings.iter().any(|warning| {
+            warning.contains("child-layout") && warning.contains("disallowed value compact-strip")
+        }));
+        assert!(scope
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("undeclared node variable typo-variable")));
+    }
+
+    #[test]
+    fn region_form_promotions_are_declared_in_order() {
+        let config = parse_template_config_kdl(
+            r#"
+            region "tree" source="tree" root-template="tree" form="compact" {
+              promote when="zellij.tab.active" form="full"
+              promote when="rail.tab.pinned" form="full"
+            }
+            "#,
+        )
+        .expect("promotions parse");
+
+        assert_eq!(config.regions[0].promotions.len(), 2);
+        assert_eq!(config.regions[0].promotions[0].when, "zellij.tab.active");
+        assert_eq!(config.regions[0].promotions[1].when, "rail.tab.pinned");
     }
 
     #[test]

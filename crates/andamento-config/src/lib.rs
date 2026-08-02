@@ -4,20 +4,19 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use andamento_shared::segment_bar;
-use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
-    ChildLayoutSetRequest, ChildLayoutSetting, ConfigInspectRequest, ControllerViewModel,
-    GroupPath, MetadataEntry, MetadataSourceEntry, MetadataTriState, MetadataValue,
-    MetadataVisibilitySetRequest, NodeKey, PluginPaneKind, PluginPlacement,
-    PluginRegistrationHello, PluginStatsSnapshot, RailConfig, RailRow, RailSizingPreset,
-    RailStructure, ResolvedMetadataTarget, ResolvedTemplateSlots, TabCard,
+    ConfigInspectRequest, ControllerViewModel, GroupPath, MetadataEntry, MetadataSourceEntry,
+    MetadataTriState, MetadataValue, MetadataVisibilitySetRequest, NodeKey, NodeVariableSetRequest,
+    PluginPaneKind, PluginPlacement, PluginRegistrationHello, PluginStatsSnapshot, RailConfig,
+    RailRow, RailStructure, ResolvedMetadataTarget, ResolvedTemplateSlots, TabCard,
+    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 use unicode_width::UnicodeWidthStr;
 
 use andamento_shared::StatsCollectRequest;
 use andamento_shared::{
     PluginStatsRecorder, RendererHello, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT,
-    MSG_REQUEST_STATE, MSG_SET_CHILD_LAYOUT, MSG_SET_METADATA_VISIBILITY, MSG_SET_RAIL_CONFIG,
+    MSG_REQUEST_STATE, MSG_SET_METADATA_VISIBILITY, MSG_SET_NODE_VARIABLE, MSG_SET_RAIL_CONFIG,
     MSG_STATS_COLLECT, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_VIEW_MODEL,
 };
 use ratatui::buffer::Buffer;
@@ -96,10 +95,16 @@ fn config_editor_hello_payload(
 enum ConfigAction {
     SetPage(ConfigPage),
     SetStructure(RailStructure),
-    SetSizing(RailSizingPreset),
     CollectStats,
     SetInspectedMetadata(Option<MetadataTriState>),
-    SetChildLayout(Option<ChildLayoutSetting>),
+    SetChildLayout(NodeVariableChoice),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodeVariableChoice {
+    Inherit,
+    Cards,
+    Strip,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -510,8 +515,8 @@ impl PluginState {
             self.set_inspected_metadata(state);
             return true;
         }
-        if let ConfigAction::SetChildLayout(layout) = hit.action {
-            self.set_child_layout(layout);
+        if let ConfigAction::SetChildLayout(choice) = hit.action {
+            self.set_child_layout(choice);
             return true;
         }
         let mut config = self
@@ -601,7 +606,7 @@ impl PluginState {
         );
     }
 
-    fn set_child_layout(&self, layout: Option<ChildLayoutSetting>) {
+    fn set_child_layout(&self, choice: NodeVariableChoice) {
         let Some(client_id) = self.own_client_id else {
             return;
         };
@@ -611,15 +616,21 @@ impl PluginState {
             NodeKey::Tab(_) => return,
             NodeKey::Entity(_) => return,
         };
-        let Ok(payload) = serde_json::to_string(&ChildLayoutSetRequest {
+        let value = match choice {
+            NodeVariableChoice::Inherit => None,
+            NodeVariableChoice::Cards => Some("cards".to_owned()),
+            NodeVariableChoice::Strip => Some("strip".to_owned()),
+        };
+        let Ok(payload) = serde_json::to_string(&NodeVariableSetRequest {
             client_id,
             node_key,
-            layout,
+            name: "child-layout".to_owned(),
+            value,
         }) else {
             return;
         };
         pipe_message_to_plugin(
-            self.controller_message(MSG_SET_CHILD_LAYOUT)
+            self.controller_message(MSG_SET_NODE_VARIABLE)
                 .with_destination_client_id(client_id)
                 .with_payload(payload),
         );
@@ -638,7 +649,6 @@ fn apply_config_action(mut config: RailConfig, action: ConfigAction) -> RailConf
     match action {
         ConfigAction::SetPage(_) => {}
         ConfigAction::SetStructure(structure) => config.structure = structure,
-        ConfigAction::SetSizing(sizing) => config.sizing = sizing,
         ConfigAction::CollectStats
         | ConfigAction::SetInspectedMetadata(_)
         | ConfigAction::SetChildLayout(_) => {}
@@ -993,11 +1003,47 @@ fn push_inspect_page(
     frame.push_blank();
     push_inspect_options_section(frame, model, &target);
     frame.push_blank();
+    push_inspect_variables_section(frame, model, &target);
+    frame.push_blank();
     push_inspect_metadata_section(frame, &target);
     frame.push_blank();
     push_inspect_sources_section(frame, &target);
     frame.push_blank();
     push_inspect_templates_section(frame, &target);
+}
+
+fn push_inspect_variables_section(
+    frame: &mut ConfigUiFrame,
+    model: &ControllerViewModel,
+    target: &InspectTargetView<'_>,
+) {
+    push_section_header(frame, "Variables");
+    let Some(variables) = model
+        .template_config
+        .effective_variables
+        .iter()
+        .find(|variables| variables.node == target.node_key)
+    else {
+        frame.push_plain("  <none>");
+        return;
+    };
+    for (name, effective) in &variables.values {
+        frame.push_plain(&format!("  {name} = {}", effective.value));
+        frame.push_plain(&format!(
+            "    {} at {:?} [{}]",
+            effective.provenance.setter,
+            effective.provenance.ancestor,
+            effective.provenance.origin.label(),
+        ));
+        for overridden in &effective.overridden {
+            frame.push_plain(&format!(
+                "    overrides {} at {:?} [{}]",
+                overridden.setter,
+                overridden.ancestor,
+                overridden.origin.label(),
+            ));
+        }
+    }
 }
 
 fn parse_tab_scope(scope: &str) -> Option<u64> {
@@ -1117,7 +1163,16 @@ fn push_inspect_options_section(
         ],
     );
     if target.kind == InspectTargetKind::Root || target.kind == InspectTargetKind::Group {
-        let child_layout = child_layout_setting_from_metadata(&target.metadata);
+        let child_layout = model
+            .template_config
+            .effective_variables
+            .iter()
+            .find(|variables| variables.node == target.node_key)
+            .and_then(|variables| variables.values.get("child-layout"));
+        let explicit = child_layout.is_some_and(|value| {
+            value.provenance.ancestor == target.node_key
+                && value.provenance.setter == NODE_VARIABLE_CONFIG_OVERRIDE_SETTER
+        });
         push_segmented_form_choice(
             frame,
             "Child layout",
@@ -1125,28 +1180,22 @@ fn push_inspect_options_section(
             &[
                 (
                     "inherit",
-                    child_layout.is_none(),
-                    ConfigAction::SetChildLayout(None),
+                    !explicit,
+                    ConfigAction::SetChildLayout(NodeVariableChoice::Inherit),
                 ),
                 (
                     "cards",
-                    child_layout == Some(ChildLayoutSetting::Cards),
-                    ConfigAction::SetChildLayout(Some(ChildLayoutSetting::Cards)),
+                    explicit && child_layout.is_some_and(|value| value.value == "cards"),
+                    ConfigAction::SetChildLayout(NodeVariableChoice::Cards),
                 ),
                 (
-                    "compact",
-                    child_layout == Some(ChildLayoutSetting::CompactStrip),
-                    ConfigAction::SetChildLayout(Some(ChildLayoutSetting::CompactStrip)),
+                    "strip",
+                    explicit && child_layout.is_some_and(|value| value.value == "strip"),
+                    ConfigAction::SetChildLayout(NodeVariableChoice::Strip),
                 ),
             ],
         );
     }
-}
-
-fn child_layout_setting_from_metadata(
-    metadata: &BTreeMap<String, MetadataEntry>,
-) -> Option<ChildLayoutSetting> {
-    ChildLayoutSetting::from_metadata_value(&metadata.get(RAIL_CHILD_LAYOUT_METADATA_KEY)?.value)
 }
 
 fn push_inspect_metadata_section(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {
@@ -1394,32 +1443,6 @@ fn push_settings_page(
                 "box per tab",
                 config.structure == RailStructure::BoxPerTab,
                 ConfigAction::SetStructure(RailStructure::BoxPerTab),
-            ),
-        ],
-    );
-    push_segmented_choice(
-        frame,
-        "sizing",
-        &[
-            (
-                "compact",
-                config.sizing == RailSizingPreset::Compact,
-                ConfigAction::SetSizing(RailSizingPreset::Compact),
-            ),
-            (
-                "large",
-                config.sizing == RailSizingPreset::Large,
-                ConfigAction::SetSizing(RailSizingPreset::Large),
-            ),
-            (
-                "active large",
-                config.sizing == RailSizingPreset::ActiveLarge,
-                ConfigAction::SetSizing(RailSizingPreset::ActiveLarge),
-            ),
-            (
-                "pinned large",
-                config.sizing == RailSizingPreset::PinnedLarge,
-                ConfigAction::SetSizing(RailSizingPreset::PinnedLarge),
             ),
         ],
     );
@@ -1753,7 +1776,6 @@ mod tests {
         let rendered = render_config(
             RailConfig {
                 structure: RailStructure::BoxPerTab,
-                sizing: RailSizingPreset::Compact,
                 segment_between_color: None,
             },
             None,
@@ -1769,10 +1791,6 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.trim().ends_with("● box per tab")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim().contains("● compact")));
     }
 
     #[test]
@@ -1792,10 +1810,6 @@ mod tests {
             .hit_regions
             .iter()
             .any(|hit| hit.action == ConfigAction::SetStructure(RailStructure::BoxPerTab)));
-        assert!(rendered
-            .hit_regions
-            .iter()
-            .any(|hit| hit.action == ConfigAction::SetSizing(RailSizingPreset::PinnedLarge)));
     }
 
     #[test]
@@ -1803,7 +1817,6 @@ mod tests {
         let rendered = render_config(
             RailConfig {
                 structure: RailStructure::BoxPerTab,
-                sizing: RailSizingPreset::Compact,
                 segment_between_color: None,
             },
             None,
@@ -1820,11 +1833,6 @@ mod tests {
             .iter()
             .any(|line| line.trim()
                 == "structure  ○ joined cells  ○ split around active  ● box per tab"));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim()
-                == "sizing     ● compact  ○ large  ○ active large  ○ pinned large"));
     }
 
     #[test]
@@ -1856,11 +1864,6 @@ mod tests {
         assert!(structure_hits
             .windows(2)
             .all(|pair| pair[0].row == pair[1].row && pair[0].col_end < pair[1].col_start));
-
-        assert!(rendered
-            .hit_regions
-            .iter()
-            .any(|hit| hit.action == ConfigAction::SetSizing(RailSizingPreset::PinnedLarge)));
     }
 
     #[test]
@@ -2155,6 +2158,7 @@ mod tests {
                         template_name: "repo-header".to_owned(),
                         fields: vec![],
                         render_ready: None,
+                        setters: vec![],
                         effective_kdl: String::new(),
                         resolve_error: None,
                     }),
@@ -2479,22 +2483,50 @@ mod tests {
         assert!(rendered.hit_regions.iter().any(|hit| {
             hit.action == ConfigAction::SetInspectedMetadata(Some(MetadataTriState::MetaChildren))
         }));
-        assert!(rendered.hit_regions.iter().any(|hit| {
-            hit.action
-                == ConfigAction::SetChildLayout(Some(
-                    andamento_shared::ChildLayoutSetting::CompactStrip,
-                ))
-        }));
         assert!(rendered
             .hit_regions
             .iter()
-            .any(|hit| hit.action == ConfigAction::SetChildLayout(None)));
+            .any(|hit| { hit.action == ConfigAction::SetChildLayout(NodeVariableChoice::Strip) }));
+        assert!(rendered
+            .hit_regions
+            .iter()
+            .any(|hit| hit.action == ConfigAction::SetChildLayout(NodeVariableChoice::Inherit)));
     }
 
     #[test]
     fn inspect_root_options_expose_inheritable_child_layout_actions() {
         let mut model = model_with_tab(7, "repo");
         model.inspected_node = Some(NodeKey::Root);
+        model.template_config.effective_variables = vec![
+            andamento_shared::EffectiveNodeVariables {
+                node: NodeKey::Root,
+                values: BTreeMap::from([(
+                    "child-layout".to_owned(),
+                    andamento_shared::EffectiveVariableValue {
+                        value: "strip".to_owned(),
+                        provenance: andamento_shared::VariableSetterProvenance {
+                            setter: "config".to_owned(),
+                            ancestor: NodeKey::Root,
+                            origin: andamento_shared::template_config::TemplateConfigOrigin {
+                                layer:
+                                    andamento_shared::template_config::TemplateConfigLayerKind::User,
+                                membership: None,
+                                source: "user.kdl".to_owned(),
+                            },
+                        },
+                        overridden: vec![andamento_shared::VariableSetterProvenance {
+                            setter: "default".to_owned(),
+                            ancestor: NodeKey::Root,
+                            origin: andamento_shared::template_config::TemplateConfigOrigin {
+                                layer: andamento_shared::template_config::TemplateConfigLayerKind::Bundled,
+                                membership: None,
+                                source: "templates/flotilla-default.kdl".to_owned(),
+                            },
+                        }],
+                    },
+                )]),
+            },
+        ];
 
         let rendered = render_config_with_scope(
             RailConfig::default(),
@@ -2511,12 +2543,14 @@ mod tests {
 
         assert!(rendered_text.contains("Options"));
         assert!(rendered_text.contains("Child layout"));
-        assert!(rendered.hit_regions.iter().any(|hit| {
-            hit.action
-                == ConfigAction::SetChildLayout(Some(
-                    andamento_shared::ChildLayoutSetting::CompactStrip,
-                ))
-        }));
+        assert!(rendered_text.contains("Variables"));
+        assert!(rendered_text.contains("child-layout = strip"));
+        assert!(rendered_text.contains("config at Root [user (user.kdl)]"));
+        assert!(rendered_text.contains("overrides default at Root"));
+        assert!(rendered
+            .hit_regions
+            .iter()
+            .any(|hit| { hit.action == ConfigAction::SetChildLayout(NodeVariableChoice::Strip) }));
     }
 
     #[test]
@@ -2628,7 +2662,6 @@ mod tests {
         );
 
         assert_eq!(updated.structure, RailStructure::BoxPerTab);
-        assert_eq!(updated.sizing, RailSizingPreset::ActiveLarge);
     }
 
     #[test]
@@ -2643,6 +2676,7 @@ mod tests {
                 template_names: vec!["andamento.git.group-header".to_owned()],
                 last_error: None,
                 warnings: vec![],
+                effective_variables: vec![],
             },
             tabs: vec![],
             rows: vec![],

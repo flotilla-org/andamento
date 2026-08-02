@@ -1,10 +1,18 @@
 version 1
 
-variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
+variable "child-layout" default="cards" {
+  value "cards"
+  value "strip"
+}
+
+display-variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
 
 region "header" source="header" root-template="flotilla/region/header" form="compact" pinned=true
 region "attention" source="attention" root-template="flotilla/region/attention" form="full" attention-key="status.attention"
-region "tree" source="tree" root-template="flotilla/region/tree" form="compact"
+region "tree" source="tree" root-template="flotilla/region/tree" form="compact" {
+  promote when="zellij.tab.active" form="full"
+  promote when="rail.tab.pinned" form="full"
+}
 region "controls" source="controls" root-template="flotilla/region/controls" form="compact" pinned=true
 
 grouping "flotilla.default" priority=-1000 {

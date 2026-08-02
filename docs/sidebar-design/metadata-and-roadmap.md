@@ -288,7 +288,7 @@ Deep grouping rules can produce noisy trees when each parent has exactly one chi
 
 The renderer should be able to conflate compatible single-child group chains without losing the underlying identities. Each original group prefix remains addressable for metadata, templates, ordering, toggles, and external facts; the visible node is only a combined presentation of the chain.
 
-This is related to the "header niche" idea for compact child content. Both features are about using the visible header row as a denser projection of the underlying tree without changing the tree itself. A conflated group header may have more semantic context available, and a group header may also have spare horizontal space where a prefix of direct child tabs can be rendered as compact segments. These should be implemented as layout projections over the same recursive node tree, not as special grouping modes.
+This is related to the "header niche" idea for dense child content. Both features are about using the visible header row as a denser projection of the underlying tree without changing the tree itself. A conflated group header may have more semantic context available, and a group header may also have spare horizontal space where a prefix of direct child tabs can be rendered as strip segments. These should be implemented as layout projections over the same recursive node tree, not as special grouping modes.
 
 Compatibility should start conservative:
 
@@ -297,11 +297,11 @@ Compatibility should start conservative:
 - preserve all original path prefixes internally.
 - let templates decide how to render the combined label from ancestor metadata.
 - avoid conflating across a group boundary that has an explicit local setting, pin, manual order, attention marker, or body content.
-- keep compact child absorption separate from conflation: a header can absorb some direct tabs into a niche without pretending those tabs are part of the group label.
+- keep child absorption separate from conflation: a header can absorb some direct tabs into a niche without pretending those tabs are part of the group label.
 
 This is likely to become load-bearing as grouping gets richer, because one flexible grouping rule needs to look reasonable across very different workspace shapes.
 
-Status: started in the rail renderer. A single-child group chain can now be visibly conflated into one header after resolved metadata has been merged into the render tree. The visible node keeps the deepest group path for normal group actions and stores the conflated prefixes for inspection. The visible title joins conflated labels with the rail border character so it reads as one combined header. The current conservative blockers are direct tabs, collapsed groups, and explicit `rail.child_layout` settings on either side of a boundary. These blockers are intentionally provisional; as inherited settings, body/content slots, priority areas, and header-niche absorption take shape, the compatibility rule should be revisited rather than treated as final.
+Status: started in the rail renderer. A single-child group chain can now be visibly conflated into one header after resolved metadata has been merged into the render tree. The visible node keeps the deepest group path for normal group actions and stores the conflated prefixes for inspection. The visible title joins conflated labels with the rail border character so it reads as one combined header. The current conservative blockers are direct tabs, collapsed groups, and explicit `var.child-layout` values that change across a boundary. These blockers are intentionally provisional; as inherited variables, body/content slots, priority areas, and header-niche absorption take shape, the compatibility rule should be revisited rather than treated as final.
 
 ### Group Prefixes Are First-Class Controller Targets
 
@@ -339,7 +339,7 @@ Status: partially implemented. The metadata rail view now consumes the same loca
 
 Early behavior:
 
-- every node expands to the biggest size it needs, ignoring compact card sizing.
+- every node expands to the biggest size it needs, regardless of its selected region form.
 - every present resolved metadata key renders as a generic `key: value` line.
 - groups, tabs, and later panes/latent nodes all use the same generic metadata display.
 - clicking a value can reveal raw resolution detail for that key: source entries, ttl, updated time, precedence, ordinal, and later the reason a value won.
@@ -362,9 +362,9 @@ The config plugin is the right place for a richer settings and inspection surfac
 - add an `Inspect` page only after the rendering approach is chosen, so the first inspector implementation can use the same widget/layout path that later metadata controls will use.
 - keep the rail's existing metadata view as the source of truth for in-context hierarchy inspection until that config inspector exists.
 
-Status: started. `andamento-config` now has the same lib/bin shape as the rail, so native unit tests run against the plugin implementation without the `register_plugin!` entrypoint collision. The config renderer now uses a ratatui-backed frame: pages render into a `Buffer`, the frame converts that buffer back to Zellij text, and Andamento still records its own `ConfigAction` hit regions for mouse interaction. This builds for `wasm32-wasip1` with `ratatui` default features disabled and only `std` enabled. The evidence so far supports using ratatui in the config plugin, but not moving the rail to ratatui yet: the rail remains custom enough that its layout, image placement, hover behavior, and recursive compact projections need tighter control.
+Status: started. `andamento-config` now has the same lib/bin shape as the rail, so native unit tests run against the plugin implementation without the `register_plugin!` entrypoint collision. The config renderer now uses a ratatui-backed frame: pages render into a `Buffer`, the frame converts that buffer back to Zellij text, and Andamento still records its own `ConfigAction` hit regions for mouse interaction. This builds for `wasm32-wasip1` with `ratatui` default features disabled and only `std` enabled. The evidence so far supports using ratatui in the config plugin, but not moving the rail to ratatui yet: the rail remains custom enough that its layout, image placement, hover behavior, and recursive dense projections need tighter control.
 
-Small fixed enum settings should render as inline segmented radio rows rather than one option per row. For example, `structure`, `grouping`, and `sizing` fit better as one labeled row each, with every segment directly clickable. Drop-downs should be reserved for large or dynamic option sets because they hide the available choices and require extra open/close state.
+Small fixed enum controls should render as inline segmented radio rows rather than one option per row. For example, `structure`, `child-layout`, and metadata visibility fit better as one labeled row each, with every segment directly clickable. Drop-downs should be reserved for large or dynamic option sets because they hide the available choices and require extra open/close state.
 
 The config plugin also has a first `Inspect` page. When opened from the rail with a scope such as `tab:<id>`, the rail now sends a `ConfigInspectRequest` to the controller instead of directly launching a config plugin by URL. The controller prefers an already-registered config editor on the same client and sends it `andamento-config-inspect`; if none exists, it launches a focused floating config editor with the same scope. The config editor updates its scope on that message, switches to Inspect, and resolves the selected tab from the controller view model. The current page shows selected scope, model counts, metadata-control state, tab state, grouping, and active pane. This is intentionally the beginning of the richer item-focus surface rather than a separate metadata renderer.
 
@@ -380,7 +380,7 @@ General shape:
 4. later allow interactive cycling among multiple matching templates for a tile.
 5. render a priority list of fields, each with its own coalescing, compaction, and truncation behavior.
 
-Tile size should start as automatic squash-down based on available space. Templates can later add sizing hints such as minimum useful size, preferred size, compact variant, and expanded variant.
+Tile density is a region-form policy. The selected form establishes the default shape, ordered `promote` rules move qualifying nodes to another form, and the renderer performs automatic squash-down within that form based on available space. Templates do not carry a separate sizing hint.
 
 Field compaction should eventually happen before priority dropping. A string field can expose progressively shorter representations, such as full repo slug, basename, user-configured alias, and finally ellipsis truncation. Some compact labels can come from transforms, such as `rjwittams/katzensteg` -> `katzensteg`; others should be supplied by watchers or config when a user-specific abbreviation such as `ks` is meaningful enough to distinguish the node.
 
@@ -388,7 +388,7 @@ Status: started internally. The renderer now has generic ordered template fields
 
 ### Header Rows Need An Inline Layout Model
 
-Header rows and compact tab strips need a smaller layout primitive than the future recursive body/content tree. These rows are not rectangular pages like the config plugin, and they are not just strings: they contain symbols, labels, counters, template fields, separators, focus/inspect controls, future image-backed buttons, and exact mouse hit regions.
+Header rows and tab strips need a smaller layout primitive than the future recursive body/content tree. These rows are not rectangular pages like the config plugin, and they are not just strings: they contain symbols, labels, counters, template fields, separators, focus/inspect controls, future image-backed buttons, and exact mouse hit regions.
 
 The rail should therefore keep a custom inline layout model rather than move this part to ratatui. Ratatui is useful for config pages and inspector forms, but the rail needs tighter control over:
 
@@ -396,19 +396,19 @@ The rail should therefore keep a custom inline layout model rather than move thi
 - priority fitting and truncation before full field elision.
 - exact Zellij tabbar segment glyphs and colours.
 - hit payloads tied to the placed item, not the original string.
-- compact child runs that can later fit into a group header niche.
+- child strip runs that can later fit into a group header niche.
 - optional future item kinds such as image placeholders, action buttons, focus toggles, and priority/pinned chips.
 
-Status: started in `andamento-rail`. `InlineRun` and `InlineItem` now model the row as placed items with required/optional/priority classes, min widths, truncation, wrapping, styled text measurement, and local hit payloads. Group header template fields are packed through this inline model, so low-priority fields truncate with `...` before disappearing entirely. Compact child tab strips also use inline placement before rendering their Zellij-tabbar-like segments, preserving template-resolved tab labels and click regions.
+Status: started in `andamento-rail`. `InlineRun` and `InlineItem` now model the row as placed items with required/optional/priority classes, min widths, truncation, wrapping, styled text measurement, and local hit payloads. Group header template fields are packed through this inline model, so low-priority fields truncate with `...` before disappearing entirely. Child tab strips also use inline placement before rendering their Zellij-tabbar-like segments, preserving template-resolved tab labels and click regions.
 
 This model is intentionally a row-level projection. It does not replace `body`, `content`, or `children`, and it should not become a second tree model. A recursive node can later project part of itself into an inline run, for example:
 
 - collapse toggle + group title + count.
 - group title plus absorbed child content in a spare header niche.
-- compact focus/action controls when an inherited "show controls" setting is active.
+- dense focus/action controls when an inherited "show controls" variable is active.
 - priority/pinned tab chips duplicated into a top-level attention area.
 
-Header niche absorption has a first conservative implementation. A group with effective `rail.child_layout=compact-strip` computes spare header width after its own title/template fields. If direct tabs at that group level fit, the renderer absorbs a prefix of those tabs as one adjacent Zellij-tabbar-like segment run and leaves overflow below. Once any same-level tab has been absorbed, sibling child groups are not absorbed into that same header.
+Header niche absorption has a first conservative implementation. A group with effective `var.child-layout=strip` computes spare header width after its own title/template fields. If direct tabs at that group level fit, the renderer absorbs a prefix of those tabs as one adjacent Zellij-tabbar-like segment run and leaves overflow below. Once any same-level tab has been absorbed, sibling child groups are not absorbed into that same header.
 
 If no direct tabs are absorbed at that level, the renderer may absorb one child-group path instead: the first child group label is rendered as a header fragment, separated with the rail border character, and the child group can recursively donate its own first direct tab run into the remaining niche. Collapse state only controls the remaining body rows below the header; it does not hide content that has already been projected into an ancestor header niche. Absorbed tab runs are right-aligned within the available niche and keep switch-tab mouse hits. Absorbed group fragments are display-only for now, because toggling a projected group label while its overflow remains below is confusing. If there is only one child group and the rail is too narrow to absorb that group completely, the renderer falls back to normal grouped rendering for that child group instead of producing a partial header/continuation split.
 
@@ -429,7 +429,7 @@ Body layout and content slots should be able to render richer material when spac
 - one or more metadata text lines.
 - status/progress rows.
 - image previews or icons.
-- compact pane/tab summaries.
+- dense pane/tab summaries.
 - action affordances.
 - expanded debugging/details in metadata view.
 
@@ -447,10 +447,10 @@ Layout policy should stay separate from matching. A template can produce content
 Open layout policies:
 
 - vertical body under a header, usually content followed by children.
-- compact one-line body folded into the header.
+- one-line body folded into the header.
 - horizontal tab strip for child tabs.
 - responsive wrap/masonry for child nodes in expanded or wider modes.
-- hidden body with only header affordances in compact navigation mode.
+- hidden body with only header affordances in navigation mode.
 
 Template fragments should be able to test both node metadata and inherited UI properties. For example, a group body can appear only when `git.repo` exists and `show-repo-actions` is enabled. This lets bottom-bar toggles, global header/footer controls, and per-node settings drive local template output without hard-coding global modes into every render path.
 
@@ -458,30 +458,30 @@ This slot model should also handle image asset chrome/buttons. The bottom contro
 
 Image chrome should be optional and controlled by a visible rail toggle plus config. It depends on the same Zellij image placement machinery as pane images, and assets need to be designed with transparency and terminal cell scaling in mind.
 
-### Node Settings Should Inherit Down The Tree
+### Node Variables Inherit Down The Tree
 
 Many future controls are naturally scoped to a subtree:
 
 - tab/card style.
 - show/hide images.
-- compact versus detailed body.
-- child layout mode: vertical, horizontal strip, masonry, zellij-tabbar-like compact.
+- body form: `compact` or `detail`.
+- child layout mode: cards, horizontal strip, or masonry.
 - metadata/debug visibility.
 - focus/action button visibility.
 - priority/pinned duplication policy.
 - factory/latent-node display policy.
 
-The model should support per-node settings/toggles that inherit from the nearest explicitly-set ancestor. A group header can expose small right-aligned toggles for local overrides, while default settings flow from the root or profile.
+The model supports declared per-node variables that inherit from the nearest explicitly-set ancestor. A group header can expose small right-aligned controls for local overrides, while defaults flow from the root or profile. Template `set` operations establish node-local values; applicable configuration-layer `set` operations win at the same node. Template fields read effective values from the `var.*` namespace.
 
 This keeps configuration ergonomic: a user can say "this repo group shows images" or "this project uses horizontal child tabs" without setting the same value on every child. It also gives templates a stable way to ask for local display policy without hard-coding global modes.
 
-Status: started. The rail recognizes root/group metadata `rail.child_layout=compact-strip` as an inherited child-layout setting. Root metadata provides the default for the tree; each group can override it for its own children and descendants. A group with the effective compact setting first offers spare header width to the header-niche projection, then renders any remaining direct tab children as a compact Zellij-tabbar-like segment run before rendering child groups normally. Compact segments use the exact Zellij powerline separator glyph with active/inactive tab foreground/background colours, and `rail_segment_between_color "#RRGGBB"` can override the in-between separator colour to match the terminal background. The default remains vertical card rendering, and the Inspect page can set or clear the child-layout override for root or an inspected group.
+Status: enacted. The bundled document declares `child-layout` with allowed values `cards` and `strip`, defaulting to `cards`. Effective variables and provenance travel in the controller view model and are exposed to rendering metadata as `var.child-layout`. A group using `strip` first offers spare header width to the header-niche projection, then renders remaining direct tab children as a Zellij-tabbar-like segment run before rendering child groups normally. Strip segments use the exact Zellij powerline separator glyph with active/inactive tab foreground/background colours, and `rail_segment_between_color "#RRGGBB"` can override the in-between separator colour to match the terminal background. The Inspect page shows the winning setter, ancestor, layer/file, and overridden history, and can set or clear a root/group override.
 
 The segment renderer is deliberately pure and bounded: callers provide the available width and get rendered text plus hit geometry back. A group header can now pass a smaller "niche" width and absorb a prefix of direct child tabs into an available gap without the segment code assuming it owns the whole row. Segment style is also separate from segment data so future runs can be selected from metadata, choose explicit adjacency/gap rules, or be replaced by image-backed segment assets without changing the child-node projection model.
 
-Compact child layouts should not assume that every affordance is always visible. For example, focus/config/action buttons may be hidden by default when tabs are rendered as compact header segments, because there may not be enough space to show them without destroying the density benefit. A separate inherited toggle should put a subtree into an action/focus mode where those controls are visible or given priority. This avoids overloading compact layout itself with "show buttons" semantics.
+Strip child layouts should not assume that every affordance is always visible. For example, focus/config/action buttons may be hidden by default when tabs are rendered as header segments, because there may not be enough space to show them without destroying the density benefit. A separate inherited variable should put a subtree into an action/focus mode where those controls are visible or given priority. This avoids overloading child layout itself with "show buttons" semantics.
 
-The layout should eventually be adaptive within a single group. Some direct tabs can be absorbed into a header niche, overflow into a compact child strip, or expand as cards when they have important status, icons, body content, or actions to show. This means `rail.child_layout` should be treated as a policy preference and starting point, not as a rigid one-renderer-per-subtree command.
+The layout should eventually be adaptive within a single group. Some direct tabs can be absorbed into a header niche, overflow into a child strip, or expand as cards when they have important status, icons, body content, or actions to show. This means `child-layout` should be treated as a policy preference and starting point, not as a rigid one-renderer-per-subtree command.
 
 ### Sensible Order For Templates And Deep Hierarchy
 
@@ -507,12 +507,12 @@ The order should be:
    Joined cells, boxes, collapsed groups, horizontal sub-tab bars, and expanded overview modes should be projections over the recursive tree. Do not encode "children of groups are tab rows" into the data model.
 
 6. **Add template matching only after metadata and recursion are stable.**
-   Start with hard-coded template definitions over node type plus metadata predicates. A template should produce ordered fields and sizing hints. Only after this is proven should the config file expose user-authored templates and reload diagnostics.
-   Status: started. The renderer now has an internal template resolver keyed by node kind, template slot, and metadata predicates. Built-in group header, tab title, and tab status templates route through it, with the highest-specificity metadata match winning while preserving the current visible output. Predicate support currently covers existence, exact text, and text-prefix matches. Built-ins now describe fields with hard-coded field specs: field class, coalescing value sources, optional prefix/suffix wrappers, and simple conditions. Templates also carry a sizing hint; all current built-ins use `Auto`, leaving existing layout policy unchanged. Metadata view shows the matched built-in template name, sizing hint, specificity score, predicate explanation, and all matching candidates per rendered group/tab/status slot, giving the authoring loop initial diagnostics. This is still not external config, but the runtime path is no longer arbitrary Rust builder functions.
+   Start with hard-coded template definitions over node type plus metadata predicates. A template should produce ordered fields; region forms own density. Only after this is proven should the config file expose user-authored templates and reload diagnostics.
+   Status: started. The renderer has a template resolver keyed by node kind, template slot, and metadata. Built-in group header, tab title, and tab status templates route through it while preserving the current visible output. Built-ins describe fields with field class, coalescing value sources, optional prefix/suffix wrappers, and simple conditions. The metadata view shows the matched template, source chain, and effective fields. The former template sizing hint has been removed; region form and promotion declarations now own density.
 
 7. **Add external templates last.**
-   External config should target stable concepts: node type, metadata predicates, field lists, truncation/coalescing rules, and sizing hints. It should not expose temporary compatibility structs or assumptions about exactly two hierarchy levels.
-   Status: started. The shared crate now owns the JSON/KDL template config schema and validator covering template names, node kind, slot, predicates, field specs, value sources, conditions, and sizing hints. Parsed config can be normalized into a catalog that resolves the highest-specificity template and renders field specs into ordered text fields. A KDL authoring format lowers into the same catalog for hand-written templates: `template` nodes select `slot` and `node-kind`, `when` nodes express template predicates, `field` order is render order, and numeric `priority` controls which fields drop first under width pressure. A `key=` field reads a metadata value and renders it by type, with explicit `value` child nodes only needed for coalescing or non-metadata sources. The controller loads the template config from `template_config_path`, sets `/host` to the real filesystem root when using host paths, resolves templates against the resolved metadata for each group/tab, and sends `ResolvedTemplateSlots` plus template-load diagnostics in the view model. Rails stay dumb: they consume resolved fields, apply local layout/truncation, and keep client-local affordances such as collapse toggles outside the external template. The config plugin has a `templates` page for load status and resolved-slot inspection; reload-on-change is still future work.
+   External config should target stable concepts: node type, metadata predicates, field lists, and truncation/coalescing rules. It should not expose temporary compatibility structs or assumptions about exactly two hierarchy levels.
+   Status: started. The shared crate owns the KDL template config schema and validator covering template names, node kind, slot, field specs, value sources, conditions, node variables, and region policies. Parsed config becomes a layered catalog that resolves templates and renders field specs into ordered text fields. A KDL authoring format uses `template` nodes for `slot` and `node-kind`, `field` order for render order, numeric `priority` for width pressure, `variable`/`set` for inherited policy, and `region`/`promote` for density. The controller loads the config from `template_config_path`, resolves it against node metadata, and sends `ResolvedTemplateSlots` plus diagnostics in the view model. Rails consume resolved fields and variables, apply local layout/truncation, and keep client-local affordances such as collapse toggles outside templates. The config plugin has templates and Inspect pages for resolution evidence; reload-on-change is still future work.
 
 The key dependency is: metadata-backed fields first, recursive nodes second, configurable templates last. That avoids the pointless loop of generic metadata being projected into `TabStatusSummary` and then mapped back into generic template fields.
 
@@ -845,7 +845,7 @@ Scope:
 - progress pair aggregation.
 - list union/dedupe.
 - severity/status rollups.
-- profiles for compact navigation, workflow/status-heavy, and overview-heavy usage.
+- profiles for dense navigation, workflow/status-heavy, and overview-heavy usage.
 
 ### 12. Ordering, Pinning, And Manual Arrangement
 
@@ -873,7 +873,7 @@ ProjectionItem =
   Tab(tab_id)
 ```
 
-The same underlying tab may appear in more than one projection area. For example, a tab can be shown in a priority or pinned area while also remaining in its normal group, or it can be suppressed from lower-priority areas to avoid duplication. This should be configurable as an inherited display policy, because compact navigation, status-heavy, and overview-heavy profiles will want different answers.
+The same underlying tab may appear in more than one projection area. For example, a tab can be shown in a priority or pinned area while also remaining in its normal group, or it can be suppressed from lower-priority areas to avoid duplication. This should be configurable as an inherited display policy, because dense navigation, status-heavy, and overview-heavy profiles will want different answers.
 
 A future layered ordering policy can be:
 
