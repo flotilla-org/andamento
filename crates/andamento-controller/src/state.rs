@@ -5,13 +5,14 @@ use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataSt
 use andamento_shared::grouping_config::{GroupingConfigCatalog, GroupingRule, PresenceClass};
 use andamento_shared::{
     ControllerBootstrapSnapshot, ControllerViewModel, DisplayEntity, DisplayVariableValue,
-    EntityRef, GroupPath, GroupSegment, GroupingRuleDiagnostic, LatentMaterializationState,
-    LatentTab, MetadataControls, MetadataEntry, MetadataIdentity, MetadataSourceEntry,
-    MetadataTriState, MetadataValue, NodeKey, ObservedMetadataIdentity, PaneTarget,
-    PluginPlacement, PluginRegistrationHello, Priority, RailConfig, RailRow, RailUiAction,
-    RailUiRevision, RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata,
-    ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabGroupingInfo,
-    TabStatusSummary, TemplateConfigDiagnostics, DISPLAY_FORM_COMPACT, DISPLAY_FORM_FULL,
+    EffectiveNodeVariables, EffectiveVariableValue, EntityRef, GroupPath, GroupSegment,
+    GroupingRuleDiagnostic, LatentMaterializationState, LatentTab, MetadataControls, MetadataEntry,
+    MetadataIdentity, MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey,
+    ObservedMetadataIdentity, PaneTarget, PluginPlacement, PluginRegistrationHello, Priority,
+    RailConfig, RailRow, RailUiAction, RailUiRevision, RailUiState, ReachableMetadataIdentity,
+    RendererHello, ResolvedMetadata, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus,
+    SortMode, TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics,
+    VariableSetterProvenance, DISPLAY_FORM_COMPACT, DISPLAY_FORM_FULL,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
@@ -136,6 +137,7 @@ pub struct ControllerState {
     pending_latent_materializations: BTreeMap<String, PendingLatentMaterialization>,
     rail_ui: ControllerRailUiState,
     rail_ui_writer_client_id: u16,
+    node_variable_overrides: BTreeMap<NodeKey, BTreeMap<String, String>>,
 }
 
 impl ControllerState {
@@ -388,6 +390,34 @@ impl ControllerState {
         }
     }
 
+    pub fn set_node_variable(
+        &mut self,
+        node: NodeKey,
+        name: String,
+        value: Option<String>,
+    ) -> bool {
+        let previous = self
+            .node_variable_overrides
+            .get(&node)
+            .and_then(|values| values.get(&name))
+            .cloned();
+        if previous == value {
+            return false;
+        }
+        if let Some(value) = value {
+            self.node_variable_overrides
+                .entry(node)
+                .or_default()
+                .insert(name, value);
+        } else if let Some(values) = self.node_variable_overrides.get_mut(&node) {
+            values.remove(&name);
+            if values.is_empty() {
+                self.node_variable_overrides.remove(&node);
+            }
+        }
+        true
+    }
+
     pub fn set_rail_ui_writer_client_id(&mut self, client_id: u16) {
         self.rail_ui_writer_client_id = client_id;
     }
@@ -397,7 +427,12 @@ impl ControllerState {
             let Some(definition) = self
                 .template_catalog
                 .as_ref()
-                .and_then(|catalog| catalog.variables().iter().find(|item| &item.name == name))
+                .and_then(|catalog| {
+                    catalog
+                        .display_variables()
+                        .iter()
+                        .find(|item| &item.name == name)
+                })
                 .cloned()
             else {
                 return false;
@@ -486,7 +521,7 @@ impl ControllerState {
     ) {
         self.template_catalog = Some(catalog.unwrap_or_default());
         if let Some(catalog) = self.template_catalog.as_ref() {
-            for variable in catalog.variables() {
+            for variable in catalog.display_variables() {
                 self.rail_ui
                     .variables
                     .entry(variable.name.clone())
@@ -540,7 +575,7 @@ impl ControllerState {
             .as_ref()
             .map(|catalog| {
                 catalog
-                    .variables()
+                    .display_variables()
                     .iter()
                     .map(|variable| (variable.name.as_str(), &variable.variable_type))
                     .collect::<BTreeMap<_, _>>()
@@ -589,6 +624,14 @@ impl ControllerState {
             config: self.rail_config,
             pinned_tabs,
             pane_statuses,
+            node_variable_overrides: self
+                .node_variable_overrides
+                .iter()
+                .map(|(node, values)| andamento_shared::NodeVariableOverrides {
+                    node: node.clone(),
+                    values: values.clone(),
+                })
+                .collect(),
             metadata_patches: self.metadata.snapshot_patches(self.receive_counter),
             rail_ui_state: RailUiState {
                 variables: self
@@ -596,7 +639,7 @@ impl ControllerState {
                     .as_ref()
                     .map(|catalog| {
                         catalog
-                            .variables()
+                            .display_variables()
                             .iter()
                             .filter(|variable| variable.persist)
                             .filter_map(|variable| {
@@ -618,6 +661,12 @@ impl ControllerState {
         self.sort_mode = snapshot.sort_mode;
         self.rail_config = snapshot.config;
         self.pinned_tabs.extend(snapshot.pinned_tabs);
+        for overrides in snapshot.node_variable_overrides {
+            self.node_variable_overrides
+                .entry(overrides.node)
+                .or_default()
+                .extend(overrides.values);
+        }
         for status in snapshot.pane_statuses {
             self.set_status(status);
         }
@@ -900,6 +949,14 @@ impl ControllerState {
         let rows = self
             .rows_with_group_templates(self.rows_for_tabs(&tabs, &latent_tabs), &resolved_metadata);
         let region_catalog_entities = self.catalog_entities();
+        let effective_variables = self.resolve_effective_variables(
+            &rows,
+            &tabs,
+            &resolved_metadata,
+            &region_catalog_entities,
+        );
+        let mut template_config = self.template_config.clone();
+        template_config.effective_variables = effective_variables;
         let surface_regions = self
             .template_catalog
             .as_ref()
@@ -954,7 +1011,7 @@ impl ControllerState {
         ControllerViewModel {
             sort_mode: self.sort_mode,
             config: self.rail_config,
-            template_config: self.template_config.clone(),
+            template_config,
             resolved_metadata,
             observed_identities,
             grouping_diagnostics: self.grouping_diagnostics(),
@@ -970,7 +1027,7 @@ impl ControllerState {
             display_variables: self
                 .template_catalog
                 .as_ref()
-                .map(|catalog| catalog.variables().to_vec())
+                .map(|catalog| catalog.display_variables().to_vec())
                 .unwrap_or_default(),
             display_variable_values: self.rail_ui.variables.clone(),
             surface_regions,
@@ -1285,6 +1342,248 @@ impl ControllerState {
                 },
             })
             .collect()
+    }
+
+    fn resolve_effective_variables(
+        &self,
+        rows: &[RailRow],
+        tabs: &[TabCard],
+        resolved_metadata: &[ResolvedMetadata],
+        catalog_entities: &[CatalogEntity],
+    ) -> Vec<EffectiveNodeVariables> {
+        let Some(catalog) = self.template_catalog.as_ref() else {
+            return vec![];
+        };
+        let mut resolved_by_node =
+            BTreeMap::<NodeKey, BTreeMap<String, EffectiveVariableValue>>::new();
+        let root = NodeKey::Root;
+        let root_metadata = node_metadata(&root, resolved_metadata);
+        let root_values =
+            self.resolve_variables_at_node(catalog, &root, None, &root_metadata, None);
+        resolved_by_node.insert(root.clone(), root_values);
+
+        let mut groups = rows
+            .iter()
+            .filter_map(|row| match row {
+                RailRow::GroupHeader {
+                    path, templates, ..
+                } => Some((path.clone(), templates.group_header.as_ref())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        groups.sort_by_key(|(path, _)| path.0.len());
+        for (path, template) in groups {
+            let node = NodeKey::Group(path.clone());
+            let parent = if path.0.len() <= 1 {
+                NodeKey::Root
+            } else {
+                NodeKey::Group(GroupPath(path.0[..path.0.len() - 1].to_vec()))
+            };
+            let metadata = node_metadata(&node, resolved_metadata);
+            let values = self.resolve_variables_at_node(
+                catalog,
+                &node,
+                resolved_by_node.get(&parent),
+                &metadata,
+                template,
+            );
+            resolved_by_node.insert(node, values);
+        }
+
+        let tab_by_id = tabs
+            .iter()
+            .map(|tab| (tab.tab_id, tab))
+            .collect::<HashMap<_, _>>();
+        for row in rows {
+            let (node, parent, metadata, template) = match row {
+                RailRow::Tab {
+                    tab_id,
+                    parent_path,
+                    ..
+                } => {
+                    let Some(tab) = tab_by_id.get(tab_id) else {
+                        continue;
+                    };
+                    let node = NodeKey::Tab(*tab_id);
+                    let parent = parent_path
+                        .clone()
+                        .map(NodeKey::Group)
+                        .unwrap_or(NodeKey::Root);
+                    (
+                        node.clone(),
+                        parent,
+                        node_metadata(&node, resolved_metadata),
+                        tab.templates.tab_title.as_ref(),
+                    )
+                }
+                RailRow::Latent {
+                    latent,
+                    parent_path,
+                    ..
+                } => {
+                    let node = NodeKey::Entity(latent.entity.clone());
+                    let parent = parent_path
+                        .clone()
+                        .map(NodeKey::Group)
+                        .unwrap_or(NodeKey::Root);
+                    (
+                        node.clone(),
+                        parent,
+                        node_metadata(&node, resolved_metadata),
+                        latent
+                            .templates
+                            .detail
+                            .as_ref()
+                            .or(latent.templates.compact.as_ref()),
+                    )
+                }
+                RailRow::Entity {
+                    entity,
+                    parent_path,
+                    ..
+                } => {
+                    let node = NodeKey::Entity(entity.entity.clone());
+                    let parent = parent_path
+                        .clone()
+                        .map(NodeKey::Group)
+                        .unwrap_or(NodeKey::Root);
+                    let template = if entity.form == DISPLAY_FORM_COMPACT {
+                        entity.templates.compact.as_ref()
+                    } else {
+                        entity.templates.detail.as_ref()
+                    };
+                    (node, parent, entity.metadata.clone(), template)
+                }
+                RailRow::GroupHeader { .. } => continue,
+            };
+            if resolved_by_node.contains_key(&node) {
+                continue;
+            }
+            let values = self.resolve_variables_at_node(
+                catalog,
+                &node,
+                resolved_by_node.get(&parent),
+                &metadata,
+                template,
+            );
+            resolved_by_node.insert(node, values);
+        }
+
+        for entity in catalog_entities {
+            let node = NodeKey::Entity(entity.entity.clone());
+            if resolved_by_node.contains_key(&node) {
+                continue;
+            }
+            let display = self.display_entity(entity);
+            let parent = if entity.path.0.is_empty() {
+                NodeKey::Root
+            } else {
+                NodeKey::Group(entity.path.clone())
+            };
+            let template = if display.form == DISPLAY_FORM_COMPACT {
+                display.templates.compact.as_ref()
+            } else {
+                display.templates.detail.as_ref()
+            };
+            let values = self.resolve_variables_at_node(
+                catalog,
+                &node,
+                resolved_by_node.get(&parent),
+                &display.metadata,
+                template,
+            );
+            resolved_by_node.insert(node, values);
+        }
+
+        resolved_by_node
+            .into_iter()
+            .map(|(node, values)| EffectiveNodeVariables { node, values })
+            .collect()
+    }
+
+    fn resolve_variables_at_node(
+        &self,
+        catalog: &andamento_shared::template_config::TemplateConfigCatalog,
+        node: &NodeKey,
+        inherited: Option<&BTreeMap<String, EffectiveVariableValue>>,
+        metadata: &BTreeMap<String, MetadataValue>,
+        template: Option<&ResolvedTemplateSlot>,
+    ) -> BTreeMap<String, EffectiveVariableValue> {
+        let declarations = catalog.variables(metadata);
+        let declaration_by_name = declarations
+            .iter()
+            .map(|resolved| (resolved.definition.name.as_str(), resolved))
+            .collect::<BTreeMap<_, _>>();
+        let mut values = inherited.cloned().unwrap_or_default();
+        for declaration in &declarations {
+            values
+                .entry(declaration.definition.name.clone())
+                .or_insert_with(|| EffectiveVariableValue {
+                    value: declaration.definition.default.clone(),
+                    provenance: VariableSetterProvenance {
+                        setter: "default".to_owned(),
+                        ancestor: node.clone(),
+                        origin: declaration.origin.clone(),
+                    },
+                    overridden: vec![],
+                });
+        }
+        if let Some(template) = template {
+            for setter in &template.setters {
+                if declaration_by_name
+                    .get(setter.setter.name.as_str())
+                    .is_some_and(|declaration| declaration.definition.accepts(&setter.setter.value))
+                {
+                    apply_variable_setter(
+                        &mut values,
+                        &setter.setter.name,
+                        &setter.setter.value,
+                        VariableSetterProvenance {
+                            setter: format!("template {}", template.template_name),
+                            ancestor: node.clone(),
+                            origin: setter.origin.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        for setter in catalog.config_variable_setters(metadata) {
+            apply_variable_setter(
+                &mut values,
+                &setter.setter.name,
+                &setter.setter.value,
+                VariableSetterProvenance {
+                    setter: "config".to_owned(),
+                    ancestor: node.clone(),
+                    origin: setter.origin,
+                },
+            );
+        }
+        if let Some(overrides) = self.node_variable_overrides.get(node) {
+            for (name, value) in overrides {
+                if declaration_by_name
+                    .get(name.as_str())
+                    .is_some_and(|declaration| declaration.definition.accepts(value))
+                {
+                    apply_variable_setter(
+                        &mut values,
+                        name,
+                        value,
+                        VariableSetterProvenance {
+                            setter: "config override".to_owned(),
+                            ancestor: node.clone(),
+                            origin: andamento_shared::template_config::TemplateConfigOrigin {
+                                layer:
+                                    andamento_shared::template_config::TemplateConfigLayerKind::User,
+                                membership: None,
+                                source: "andamento-inspector".to_owned(),
+                            },
+                        },
+                    );
+                }
+            }
+        }
+        values
     }
 
     fn latent_tabs(&self) -> Vec<LatentTab> {
@@ -1633,13 +1932,6 @@ impl ControllerState {
             .next()
     }
 
-    pub fn entity_for_presentation_path(&self, path: &GroupPath) -> Option<EntityRef> {
-        self.catalog_entities()
-            .into_iter()
-            .find(|entity| entity.path == *path)
-            .map(|entity| entity.entity)
-    }
-
     pub fn can_materialize_latent(
         &self,
         request: &andamento_shared::MaterializeLatentRequest,
@@ -1851,6 +2143,7 @@ impl ControllerState {
                     template_name: "<resolve-error>".to_owned(),
                     fields: vec![],
                     render_ready: None,
+                    setters: vec![],
                     effective_kdl: format!("// error: {error}\n"),
                     resolve_error: Some(error.to_string()),
                 });
@@ -1865,6 +2158,7 @@ impl ControllerState {
             template_name: resolved.name.clone(),
             fields: vec![],
             render_ready: Some(resolved.render_ready()),
+            setters: resolved.setters.clone(),
             effective_kdl: resolved.dump_kdl(),
             resolve_error: None,
         })
@@ -2350,6 +2644,53 @@ fn grouping_path_for_facts(
     derive_grouping_path(rule, facts).ok()
 }
 
+fn node_metadata(
+    node: &NodeKey,
+    resolved_metadata: &[ResolvedMetadata],
+) -> BTreeMap<String, MetadataValue> {
+    let target = match node {
+        NodeKey::Root => andamento_shared::ResolvedMetadataTarget::Root,
+        NodeKey::Group(path) => andamento_shared::ResolvedMetadataTarget::Group(path.clone()),
+        NodeKey::Tab(tab_id) => andamento_shared::ResolvedMetadataTarget::Tab(*tab_id),
+        NodeKey::Entity(entity) => andamento_shared::ResolvedMetadataTarget::Entity(entity.clone()),
+    };
+    resolved_metadata
+        .iter()
+        .find(|metadata| metadata.target == target)
+        .map(|metadata| {
+            metadata
+                .values
+                .iter()
+                .map(|(key, entry)| (key.clone(), entry.value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn apply_variable_setter(
+    values: &mut BTreeMap<String, EffectiveVariableValue>,
+    name: &str,
+    value: &str,
+    provenance: VariableSetterProvenance,
+) {
+    let overridden = values
+        .remove(name)
+        .map(|previous| {
+            let mut history = vec![previous.provenance];
+            history.extend(previous.overridden);
+            history
+        })
+        .unwrap_or_default();
+    values.insert(
+        name.to_owned(),
+        EffectiveVariableValue {
+            value: value.to_owned(),
+            provenance,
+            overridden,
+        },
+    );
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GroupingPathError {
     MissingNonOptionalLevel(String),
@@ -2718,7 +3059,7 @@ mod tests {
     use super::*;
     use andamento_shared::{
         GroupPath, GroupSegment, PluginPaneKind, PluginPlacement, PluginRegistrationHello, RailRow,
-        RailSizingPreset, RailStructure, StatusIcon,
+        RailStructure, StatusIcon,
     };
 
     type EntityId = andamento_shared::MetadataTarget;
@@ -2767,6 +3108,99 @@ mod tests {
             kind: kind.to_owned(),
             id: id.to_owned(),
         }
+    }
+
+    #[test]
+    fn node_variables_inherit_and_config_layers_override_template_setters() {
+        let declaration = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            variable "child-layout" default="cards" {
+              value "cards"
+              value "strip"
+            }
+            "#,
+        )
+        .expect("variable declaration");
+        let template = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+            template "tab/title" slot="tab-title" node-kind="tab" {
+              set "child-layout" "strip"
+            }
+            "#,
+        )
+        .expect("template setter");
+        let project = andamento_shared::template_config::parse_template_config_kdl(
+            r#"set "child-layout" "cards""#,
+        )
+        .expect("project setter");
+        let catalog = andamento_shared::template_config::TemplateConfigCatalog::from_layers(vec![
+            andamento_shared::template_config::TemplateConfigLayer::user("user.kdl", template),
+            andamento_shared::template_config::TemplateConfigLayer::project(
+                "flotilla-org/andamento",
+                "project.kdl",
+                project,
+            ),
+            andamento_shared::template_config::TemplateConfigLayer::bundled(
+                "bundled.kdl",
+                declaration,
+            ),
+        ]);
+        let mut state = ControllerState::default();
+        state.set_template_catalog(Some(catalog.clone()));
+
+        let plain_metadata = BTreeMap::new();
+        let resolved_template = state
+            .resolve_template_slot(
+                andamento_shared::template_config::TemplateConfigSlot::TabTitle,
+                andamento_shared::template_config::TemplateConfigNodeKind::Tab,
+                &plain_metadata,
+            )
+            .expect("user template resolves");
+        let parent = NodeKey::Tab(1);
+        let parent_values = state.resolve_variables_at_node(
+            &catalog,
+            &parent,
+            None,
+            &plain_metadata,
+            Some(&resolved_template),
+        );
+        let child = NodeKey::Tab(2);
+        let child_values = state.resolve_variables_at_node(
+            &catalog,
+            &child,
+            Some(&parent_values),
+            &plain_metadata,
+            None,
+        );
+        let inherited = child_values
+            .get("child-layout")
+            .expect("inherited child-layout");
+        assert_eq!(inherited.value, "strip");
+        assert_eq!(inherited.provenance.ancestor, parent);
+        assert_eq!(inherited.provenance.setter, "template tab/title");
+
+        let project_metadata = BTreeMap::from([(
+            "flotilla.project".to_owned(),
+            MetadataValue::Text("flotilla-org/andamento".to_owned()),
+        )]);
+        let project_node = NodeKey::Tab(3);
+        let project_values = state.resolve_variables_at_node(
+            &catalog,
+            &project_node,
+            None,
+            &project_metadata,
+            Some(&resolved_template),
+        );
+        let configured = project_values
+            .get("child-layout")
+            .expect("configured child-layout");
+        assert_eq!(configured.value, "cards");
+        assert_eq!(configured.provenance.setter, "config");
+        assert_eq!(
+            configured.provenance.origin.membership.as_deref(),
+            Some("flotilla-org/andamento")
+        );
+        assert_eq!(configured.overridden[0].setter, "template tab/title");
     }
 
     fn apply_entity(
@@ -3603,6 +4037,8 @@ mod tests {
                     templates: vec![],
                     fragments: vec![],
                     variables: vec![],
+                    display_variables: vec![],
+                    sets: vec![],
                     regions: vec![],
                 },
             ),
@@ -3616,7 +4052,7 @@ mod tests {
             andamento_shared::template_config::TemplateConfigCatalog::from_config(
                 andamento_shared::template_config::parse_template_config_kdl(
                     r#"
-                    variable "show-issues" type="enum" default="all" label="Issues" icon="I" {
+                    display-variable "show-issues" type="enum" default="all" label="Issues" icon="I" {
                       value "all"
                       value "none"
                     }
@@ -3633,7 +4069,7 @@ mod tests {
         state.set_template_catalog(Some(
             andamento_shared::template_config::TemplateConfigCatalog::from_config(
                 andamento_shared::template_config::parse_template_config_kdl(
-                    r#"variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
+                    r#"display-variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
                 )
                 .unwrap(),
             ),
@@ -5181,7 +5617,6 @@ mod tests {
         source.set_sort_mode(SortMode::PinnedFirst);
         source.set_rail_config(RailConfig {
             structure: RailStructure::BoxPerTab,
-            sizing: RailSizingPreset::Compact,
             segment_between_color: None,
         });
         source.toggle_pin(7);
@@ -5191,6 +5626,11 @@ mod tests {
             "waiting",
             10,
         ));
+        source.set_node_variable(
+            NodeKey::Root,
+            "child-layout".to_owned(),
+            Some("strip".to_owned()),
+        );
         source.apply_rail_ui_action(RailUiAction::ScrollBy { delta: 8 });
 
         let snapshot = source.bootstrap_snapshot();
@@ -5203,6 +5643,15 @@ mod tests {
         assert_eq!(target_snapshot.pinned_tabs, vec![7]);
         assert_eq!(target_snapshot.pane_statuses.len(), 1);
         assert_eq!(target_snapshot.pane_statuses[0].title, "waiting");
+        assert_eq!(
+            target_snapshot
+                .node_variable_overrides
+                .iter()
+                .find(|overrides| overrides.node == NodeKey::Root)
+                .and_then(|overrides| overrides.values.get("child-layout"))
+                .map(String::as_str),
+            Some("strip")
+        );
         assert_eq!(
             target_snapshot.rail_ui_state,
             RailUiState {
@@ -5225,8 +5674,8 @@ mod tests {
                 andamento_shared::template_config::parse_template_config_kdl(
                     r#"
                     version 1
-                    variable "persistent" type="bool" default=true label="Persistent" icon="P"
-                    variable "ephemeral" type="bool" default=true label="Ephemeral" icon="E" persist=false
+                    display-variable "persistent" type="bool" default=true label="Persistent" icon="P"
+                    display-variable "ephemeral" type="bool" default=true label="Ephemeral" icon="E" persist=false
                     "#,
                 )
                 .unwrap(),

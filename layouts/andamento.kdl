@@ -1,7 +1,6 @@
 plugins {
     andamento-controller location="file:$ANDAMENTO_ROOT/target/wasm32-wasip1/release/andamento-controller.wasm" {
         rail_structure "joined-cells"
-        rail_sizing "active-large"
         rail_segment_between_color "#282c34"
         template_config_path "file:$ANDAMENTO_ROOT/templates/flotilla-default.kdl"
         grouping_config_path "file:$ANDAMENTO_ROOT/templates/flotilla-default.kdl"

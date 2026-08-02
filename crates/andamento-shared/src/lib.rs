@@ -31,7 +31,7 @@ pub const MSG_RAIL_UI_ACTION: &str = "andamento-rail-ui-action";
 pub const MSG_RAIL_UI_STATE: &str = "andamento-rail-ui-state";
 pub const MSG_REQUEST_RAIL_UI_STATE: &str = "andamento-request-rail-ui-state";
 pub const MSG_SET_METADATA_VISIBILITY: &str = "andamento-set-metadata-visibility";
-pub const MSG_SET_CHILD_LAYOUT: &str = "andamento-set-child-layout";
+pub const MSG_SET_NODE_VARIABLE: &str = "andamento-set-node-variable";
 pub const MSG_CONFIG_INSPECT: &str = "andamento-config-inspect";
 pub const MSG_MATERIALIZE_LATENT: &str = "andamento-materialize-latent";
 
@@ -117,42 +117,12 @@ pub struct MetadataVisibilitySetRequest {
     pub state: Option<MetadataTriState>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ChildLayoutSetting {
-    Cards,
-    CompactStrip,
-}
-
-pub const RAIL_CHILD_LAYOUT_METADATA_KEY: &str = "rail.child_layout";
-
-impl ChildLayoutSetting {
-    pub fn to_metadata_value(self) -> MetadataValue {
-        let text = match self {
-            ChildLayoutSetting::Cards => "vertical",
-            ChildLayoutSetting::CompactStrip => "compact-strip",
-        };
-        MetadataValue::Text(text.to_owned())
-    }
-
-    pub fn from_metadata_value(value: &MetadataValue) -> Option<Self> {
-        match value {
-            MetadataValue::Text(text) if text == "compact-strip" || text == "compact_strip" => {
-                Some(ChildLayoutSetting::CompactStrip)
-            }
-            MetadataValue::Text(text) if text == "vertical" || text == "cards" => {
-                Some(ChildLayoutSetting::Cards)
-            }
-            _ => None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChildLayoutSetRequest {
+pub struct NodeVariableSetRequest {
     pub client_id: u16,
     pub node_key: NodeKey,
-    pub layout: Option<ChildLayoutSetting>,
+    pub name: String,
+    pub value: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,6 +214,8 @@ pub struct ControllerBootstrapSnapshot {
     pub config: RailConfig,
     pub pinned_tabs: Vec<u64>,
     pub pane_statuses: Vec<SetPaneStatus>,
+    #[serde(default)]
+    pub node_variable_overrides: Vec<NodeVariableOverrides>,
     #[serde(default)]
     pub metadata_patches: Vec<MetadataPatch>,
     #[serde(default)]
@@ -384,21 +356,6 @@ pub enum RailStructure {
 impl Default for RailStructure {
     fn default() -> Self {
         Self::JoinedCells
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RailSizingPreset {
-    Compact,
-    Large,
-    ActiveLarge,
-    PinnedLarge,
-}
-
-impl Default for RailSizingPreset {
-    fn default() -> Self {
-        Self::ActiveLarge
     }
 }
 
@@ -697,6 +654,8 @@ pub struct ResolvedTemplateSlot {
     /// state without reparsing the inspectable KDL on every redraw.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_ready: Option<template_config::TemplateConfigRenderReady>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setters: Vec<template_config::ResolvedVariableSetter>,
     /// Flattened template evidence shown by inspect.
     #[serde(default)]
     pub effective_kdl: String,
@@ -732,6 +691,8 @@ pub struct TemplateConfigDiagnostics {
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub effective_variables: Vec<EffectiveNodeVariables>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -756,8 +717,6 @@ pub struct RailConfig {
     #[serde(default)]
     pub structure: RailStructure,
     #[serde(default)]
-    pub sizing: RailSizingPreset,
-    #[serde(default)]
     pub segment_between_color: Option<RailRgbColor>,
 }
 
@@ -765,7 +724,6 @@ impl Default for RailConfig {
     fn default() -> Self {
         Self {
             structure: RailStructure::default(),
-            sizing: RailSizingPreset::default(),
             segment_between_color: None,
         }
     }
@@ -817,13 +775,42 @@ pub enum MetadataTriState {
     MetaChildren,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "kind", content = "value")]
 pub enum NodeKey {
     Root,
     Group(GroupPath),
     Tab(u64),
     Entity(EntityRef),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeVariableOverrides {
+    pub node: NodeKey,
+    #[serde(default)]
+    pub values: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveNodeVariables {
+    pub node: NodeKey,
+    #[serde(default)]
+    pub values: BTreeMap<String, EffectiveVariableValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveVariableValue {
+    pub value: String,
+    pub provenance: VariableSetterProvenance,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overridden: Vec<VariableSetterProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VariableSetterProvenance {
+    pub setter: String,
+    pub ancestor: NodeKey,
+    pub origin: template_config::TemplateConfigOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1031,7 +1018,7 @@ mod tests {
             MSG_RAIL_SIZE_OBSERVED,
             MSG_RAIL_SIZE_TARGET,
             MSG_SET_METADATA_VISIBILITY,
-            MSG_SET_CHILD_LAYOUT,
+            MSG_SET_NODE_VARIABLE,
             MSG_CONFIG_INSPECT,
             MSG_MATERIALIZE_LATENT,
         ];
@@ -1173,52 +1160,26 @@ mod tests {
         let decoded: MetadataVisibilitySetRequest = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, visibility);
 
-        let child_layout = ChildLayoutSetRequest {
+        let child_layout = NodeVariableSetRequest {
             client_id: 4,
             node_key: NodeKey::Group(GroupPath(vec![GroupSegment {
                 key: "git.repo".to_owned(),
                 value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
                 label: Some("flotilla".to_owned()),
             }])),
-            layout: Some(ChildLayoutSetting::CompactStrip),
+            name: "child-layout".to_owned(),
+            value: Some("strip".to_owned()),
         };
         let encoded = serde_json::to_string(&child_layout).unwrap();
-        let decoded: ChildLayoutSetRequest = serde_json::from_str(&encoded).unwrap();
+        let decoded: NodeVariableSetRequest = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, child_layout);
     }
 
     #[test]
-    fn child_layout_setting_owns_metadata_encoding() {
-        assert_eq!(
-            ChildLayoutSetting::Cards.to_metadata_value(),
-            MetadataValue::Text("vertical".to_owned())
-        );
-        assert_eq!(
-            ChildLayoutSetting::CompactStrip.to_metadata_value(),
-            MetadataValue::Text("compact-strip".to_owned())
-        );
-        assert_eq!(
-            ChildLayoutSetting::from_metadata_value(&MetadataValue::Text("cards".to_owned())),
-            Some(ChildLayoutSetting::Cards)
-        );
-        assert_eq!(
-            ChildLayoutSetting::from_metadata_value(&MetadataValue::Text(
-                "compact_strip".to_owned()
-            )),
-            Some(ChildLayoutSetting::CompactStrip)
-        );
-        assert_eq!(
-            ChildLayoutSetting::from_metadata_value(&MetadataValue::Bool(true)),
-            None
-        );
-    }
-
-    #[test]
-    fn rail_config_defaults_to_joined_active_large() {
+    fn rail_config_defaults_to_joined_cells() {
         let config = RailConfig::default();
 
         assert_eq!(config.structure, RailStructure::JoinedCells);
-        assert_eq!(config.sizing, RailSizingPreset::ActiveLarge);
     }
 
     #[test]
@@ -1300,7 +1261,6 @@ mod tests {
             sort_mode: SortMode::Position,
             config: RailConfig {
                 structure: RailStructure::JoinedCells,
-                sizing: RailSizingPreset::Compact,
                 segment_between_color: None,
             },
             template_config: TemplateConfigDiagnostics::default(),
@@ -1550,7 +1510,6 @@ mod tests {
     fn rail_config_round_trips_json() {
         let config = RailConfig {
             structure: RailStructure::BoxPerTab,
-            sizing: RailSizingPreset::Compact,
             segment_between_color: Some(RailRgbColor {
                 red: 1,
                 green: 2,

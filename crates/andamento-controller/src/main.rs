@@ -14,19 +14,17 @@ use andamento_shared::PaneTarget;
 use andamento_shared::PluginStatsRecorder;
 use andamento_shared::MSG_RAIL_SIZE_TARGET;
 use andamento_shared::MSG_VIEW_MODEL;
-use andamento_shared::RAIL_CHILD_LAYOUT_METADATA_KEY;
 use andamento_shared::{
-    ChildLayoutSetRequest, ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage,
-    GroupingTemplateSetRequest, MetadataPatch, MetadataTarget, MetadataValueUpdate,
-    MetadataVisibilitySetRequest, PluginRegistrationHello, RailConfig, RailRgbColor, RailSize,
-    RailSizeObserved, RailSizeTarget, RailSizingPreset, RailStructure, RailUiAction, RailUiState,
-    RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS,
-    MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST,
-    MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED,
-    MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO, MSG_REQUEST_RAIL_UI_STATE,
-    MSG_REQUEST_STATE, MSG_SET_CHILD_LAYOUT, MSG_SET_GROUPING_TEMPLATE,
-    MSG_SET_METADATA_VISIBILITY, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE,
-    MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
+    ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage, GroupingTemplateSetRequest,
+    MetadataVisibilitySetRequest, NodeVariableSetRequest, PluginRegistrationHello, RailConfig,
+    RailRgbColor, RailSize, RailSizeObserved, RailSizeTarget, RailStructure, RailUiAction,
+    RailUiState, RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH,
+    MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT,
+    MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES,
+    MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO,
+    MSG_REQUEST_RAIL_UI_STATE, MSG_REQUEST_STATE, MSG_SET_GROUPING_TEMPLATE,
+    MSG_SET_METADATA_VISIBILITY, MSG_SET_NODE_VARIABLE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG,
+    MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
@@ -614,6 +612,7 @@ impl PluginState {
                     template_names: catalog.template_names(),
                     last_error: None,
                     warnings: vec![],
+                    effective_variables: vec![],
                 };
                 self.state.set_template_config_diagnostics(diagnostics);
                 self.state.set_template_catalog(Some(catalog));
@@ -1246,13 +1245,13 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             broadcast_rail_ui_state: true,
             ..HandlePipeResult::default()
         },
-        Ok(Some(ControllerMessage::SetChildLayout(request))) => {
-            let state_changed = child_layout_patch(state, request)
-                .map(|patch| state.apply_metadata_patch(patch))
-                .unwrap_or(false);
+        Ok(Some(ControllerMessage::SetNodeVariable(request))) => {
+            let state_changed =
+                state.set_node_variable(request.node_key, request.name, request.value);
             HandlePipeResult {
                 state_changed,
-                view_model_push_reason: state_changed.then_some(ViewModelPushReason::PipeMetadata),
+                view_model_push_reason: state_changed
+                    .then_some(ViewModelPushReason::PipeMetadataControls),
                 ..HandlePipeResult::default()
             }
         }
@@ -1286,53 +1285,11 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
     result
 }
 
-fn child_layout_patch(
-    state: &ControllerState,
-    request: ChildLayoutSetRequest,
-) -> Option<MetadataPatch> {
-    let target = match request.node_key {
-        andamento_shared::NodeKey::Root => MetadataTarget::Root,
-        andamento_shared::NodeKey::Tab(tab_id) => MetadataTarget::Tab(tab_id),
-        andamento_shared::NodeKey::Group(path) => {
-            MetadataTarget::Entity(state.entity_for_presentation_path(&path)?)
-        }
-        andamento_shared::NodeKey::Entity(entity) => MetadataTarget::Entity(entity),
-    };
-    let (set, unset) = match request.layout {
-        Some(layout) => (
-            BTreeMap::from([(
-                RAIL_CHILD_LAYOUT_METADATA_KEY.to_owned(),
-                MetadataValueUpdate {
-                    value: layout.to_metadata_value(),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: None,
-                },
-            )]),
-            Vec::new(),
-        ),
-        None => (
-            BTreeMap::new(),
-            vec![RAIL_CHILD_LAYOUT_METADATA_KEY.to_owned()],
-        ),
-    };
-    Some(MetadataPatch {
-        target,
-        source_id: "andamento-inspector".to_owned(),
-        set,
-        unset,
-    })
-}
-
 fn parse_rail_config(configuration: &BTreeMap<String, String>) -> RailConfig {
     RailConfig {
         structure: configuration
             .get("rail_structure")
             .and_then(|value| parse_rail_structure(value))
-            .unwrap_or_default(),
-        sizing: configuration
-            .get("rail_sizing")
-            .and_then(|value| parse_rail_sizing(value))
             .unwrap_or_default(),
         segment_between_color: configuration
             .get("rail_segment_between_color")
@@ -1373,6 +1330,7 @@ fn initial_template_config_diagnostics(path: Option<String>) -> TemplateConfigDi
         template_names: vec![],
         last_error: None,
         warnings: vec![],
+        effective_variables: vec![],
     }
 }
 
@@ -1387,6 +1345,7 @@ fn template_config_error_diagnostics(
         template_names: vec![],
         last_error: Some(error),
         warnings: vec![],
+        effective_variables: vec![],
     }
 }
 
@@ -1482,16 +1441,6 @@ fn parse_rail_structure(value: &str) -> Option<RailStructure> {
     }
 }
 
-fn parse_rail_sizing(value: &str) -> Option<RailSizingPreset> {
-    match value {
-        "compact" => Some(RailSizingPreset::Compact),
-        "large" => Some(RailSizingPreset::Large),
-        "active-large" | "active_large" => Some(RailSizingPreset::ActiveLarge),
-        "pinned-large" | "pinned_large" => Some(RailSizingPreset::PinnedLarge),
-        _ => None,
-    }
-}
-
 fn parse_rail_rgb_color(value: &str) -> Option<RailRgbColor> {
     let hex = value.trim().strip_prefix('#')?;
     if hex.len() != 6 {
@@ -1523,7 +1472,7 @@ enum ControllerMessage {
     RailUiAction(RailUiAction),
     RailUiState(RailUiState),
     RequestRailUiState,
-    SetChildLayout(ChildLayoutSetRequest),
+    SetNodeVariable(NodeVariableSetRequest),
     ConfigInspect(ConfigInspectRequest),
     MaterializeLatent(andamento_shared::MaterializeLatentRequest),
 }
@@ -1634,15 +1583,15 @@ fn parse_controller_message(
             .map(ControllerMessage::RailUiState)
             .map(Some),
         MSG_REQUEST_RAIL_UI_STATE => Ok(Some(ControllerMessage::RequestRailUiState)),
-        MSG_SET_CHILD_LAYOUT => pipe_message
+        MSG_SET_NODE_VARIABLE => pipe_message
             .payload
             .as_deref()
-            .ok_or_else(|| "set child layout requires payload".to_owned())
+            .ok_or_else(|| "set node variable requires payload".to_owned())
             .and_then(|payload| {
-                serde_json::from_str::<ChildLayoutSetRequest>(payload)
-                    .map_err(|e| format!("invalid child layout request: {e}"))
+                serde_json::from_str::<NodeVariableSetRequest>(payload)
+                    .map_err(|e| format!("invalid node variable request: {e}"))
             })
-            .map(ControllerMessage::SetChildLayout)
+            .map(ControllerMessage::SetNodeVariable)
             .map(Some),
         MSG_CONFIG_INSPECT => pipe_message
             .payload
@@ -2019,12 +1968,10 @@ mod tests {
     fn parses_rail_config_from_plugin_configuration() {
         let mut configuration = BTreeMap::new();
         configuration.insert("rail_structure".to_owned(), "box-per-tab".to_owned());
-        configuration.insert("rail_sizing".to_owned(), "compact".to_owned());
 
         let config = parse_rail_config(&configuration);
 
         assert_eq!(config.structure, RailStructure::BoxPerTab);
-        assert_eq!(config.sizing, RailSizingPreset::Compact);
     }
 
     #[test]
@@ -2077,7 +2024,6 @@ mod tests {
     fn parses_set_rail_config_payload() {
         let config = RailConfig {
             structure: RailStructure::SplitAroundActive,
-            sizing: RailSizingPreset::PinnedLarge,
             segment_between_color: None,
         };
         let payload = serde_json::to_string(&config).unwrap();
@@ -2113,7 +2059,6 @@ mod tests {
             sort_mode: SortMode::PinnedFirst,
             config: RailConfig {
                 structure: RailStructure::BoxPerTab,
-                sizing: RailSizingPreset::Compact,
                 segment_between_color: None,
             },
             pinned_tabs: vec![7],
@@ -2125,6 +2070,7 @@ mod tests {
                 icon: None,
                 timestamp_ms: Some(10),
             }],
+            node_variable_overrides: vec![],
             metadata_patches: vec![],
             rail_ui_state: RailUiState::default(),
         };
@@ -2411,7 +2357,7 @@ mod tests {
         state.set_template_catalog(Some(
             andamento_shared::template_config::TemplateConfigCatalog::from_config(
                 andamento_shared::template_config::parse_template_config_kdl(
-                    r#"variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
+                    r#"display-variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
                 )
                 .unwrap(),
             ),
@@ -2439,19 +2385,21 @@ mod tests {
     }
 
     #[test]
-    fn child_layout_request_patches_group_metadata() {
+    fn node_variable_request_sets_group_config_override() {
         let group_path = andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
             key: "vcs.repo".to_owned(),
             value: andamento_shared::MetadataValue::Text("example/repo".to_owned()),
             label: Some("repo".to_owned()),
         }]);
-        let request = andamento_shared::ChildLayoutSetRequest {
+        let request = andamento_shared::NodeVariableSetRequest {
             client_id: 4,
             node_key: NodeKey::Group(group_path.clone()),
-            layout: Some(andamento_shared::ChildLayoutSetting::CompactStrip),
+            name: "child-layout".to_owned(),
+            value: Some("strip".to_owned()),
         };
         let payload = serde_json::to_string(&request).unwrap();
         let mut state = ControllerState::default();
+        state.set_template_catalog(None);
         state.set_rail_config(RailConfig::default());
         state.apply_metadata_patch(andamento_shared::MetadataPatch {
             target: andamento_shared::MetadataTarget::Entity(andamento_shared::EntityRef {
@@ -2502,75 +2450,63 @@ mod tests {
         let changed = handle_pipe_message(
             &mut state,
             pipe(
-                andamento_shared::MSG_SET_CHILD_LAYOUT,
+                andamento_shared::MSG_SET_NODE_VARIABLE,
                 Some(payload),
                 BTreeMap::new(),
             ),
         );
 
-        let model = state.view_model();
-        let group_metadata = model
-            .resolved_metadata
-            .iter()
-            .find(|metadata| {
-                metadata.target
-                    == andamento_shared::ResolvedMetadataTarget::Group(group_path.clone())
-            })
-            .expect("group metadata");
         assert!(changed.state_changed);
         assert_eq!(
             changed.view_model_push_reason,
-            Some(ViewModelPushReason::PipeMetadata)
+            Some(ViewModelPushReason::PipeMetadataControls)
         );
-        assert_eq!(
-            group_metadata
-                .values
-                .get("rail.child_layout")
-                .map(|entry| &entry.value),
-            Some(&andamento_shared::MetadataValue::Text(
-                "compact-strip".to_owned()
-            ))
-        );
+        assert!(!state.set_node_variable(
+            NodeKey::Group(group_path),
+            "child-layout".to_owned(),
+            Some("strip".to_owned()),
+        ));
     }
 
     #[test]
-    fn child_layout_request_patches_root_metadata() {
-        let request = andamento_shared::ChildLayoutSetRequest {
+    fn node_variable_request_sets_root_config_override() {
+        let request = andamento_shared::NodeVariableSetRequest {
             client_id: 4,
             node_key: NodeKey::Root,
-            layout: Some(andamento_shared::ChildLayoutSetting::CompactStrip),
+            name: "child-layout".to_owned(),
+            value: Some("strip".to_owned()),
         };
         let payload = serde_json::to_string(&request).unwrap();
         let mut state = ControllerState::default();
+        state.set_template_catalog(None);
 
         let changed = handle_pipe_message(
             &mut state,
             pipe(
-                andamento_shared::MSG_SET_CHILD_LAYOUT,
+                andamento_shared::MSG_SET_NODE_VARIABLE,
                 Some(payload),
                 BTreeMap::new(),
             ),
         );
 
         let model = state.view_model();
-        let root_metadata = model
-            .resolved_metadata
+        let root_variables = model
+            .template_config
+            .effective_variables
             .iter()
-            .find(|metadata| metadata.target == andamento_shared::ResolvedMetadataTarget::Root)
-            .expect("root metadata");
+            .find(|variables| variables.node == NodeKey::Root)
+            .expect("root variables");
         assert!(changed.state_changed);
         assert_eq!(
             changed.view_model_push_reason,
-            Some(ViewModelPushReason::PipeMetadata)
+            Some(ViewModelPushReason::PipeMetadataControls)
         );
         assert_eq!(
-            root_metadata
+            root_variables
                 .values
-                .get("rail.child_layout")
-                .map(|entry| &entry.value),
-            Some(&andamento_shared::MetadataValue::Text(
-                "compact-strip".to_owned()
-            ))
+                .get("child-layout")
+                .map(|entry| entry.value.as_str()),
+            Some("strip")
         );
     }
 
@@ -2578,7 +2514,6 @@ mod tests {
     fn set_rail_config_message_updates_controller_state() {
         let config = RailConfig {
             structure: RailStructure::BoxPerTab,
-            sizing: RailSizingPreset::Compact,
             segment_between_color: None,
         };
         let payload = serde_json::to_string(&config).unwrap();

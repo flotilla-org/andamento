@@ -83,7 +83,7 @@ plugin location="andamento-controller" {
 }
 ```
 
-`rail_segment_between_color` is optional. It controls the in-between colour used by compact tab-strip separators; set it to your terminal background colour when you want those segments to blend into the rail instead of using Zellij's ribbon background.
+`rail_segment_between_color` is optional. It controls the in-between colour used by tab-strip separators; set it to your terminal background colour when you want those segments to blend into the rail instead of using Zellij's ribbon background.
 
 ## External Grouping Rules
 
@@ -164,7 +164,7 @@ controls are projected into the fixed footer, and values are shared by all
 rails through the session rail-state broadcast:
 
 ```kdl
-variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
+display-variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
 
 template "issue/compact" slot="compact" node-kind="entity" {
     field "label" source="metadata-first-token" key="display.label"
@@ -243,12 +243,40 @@ each node. Repository and project layers participate only when that node's
 from leaking across nodes. The complete namespaced fallback pack is published
 in `templates/flotilla-default.kdl`.
 
+The same document can declare node-scoped variables. A variable has a default
+and an allowed value set; templates and applicable configuration layers can set
+it, and template fields can read its effective value through the `var.*`
+namespace:
+
+```kdl
+variable "child-layout" default="cards" {
+    value "cards"
+    value "strip"
+}
+
+set "child-layout" "cards"
+
+template "repo/full" slot="group-header" node-kind="group" {
+    set "child-layout" "strip"
+    field "layout" key="var.child-layout"
+}
+```
+
+Values inherit from the nearest ancestor. At a node, an applicable
+configuration-layer `set` wins over a template `set`; the Inspect view shows
+the effective value, winning setter, ancestor, source layer/file, and overridden
+history. The bundled `child-layout` variable replaces the former rail-specific
+child-layout metadata control and accepts only `cards` or `strip`.
+
 The sidebar itself is an ordered stack declared in that same surface config:
 
 ```kdl
 region "header" source="header" root-template="flotilla/region/header" form="compact" pinned=true
 region "attention" source="attention" root-template="flotilla/region/attention" form="full" attention-key="status.attention"
-region "tree" source="tree" root-template="flotilla/region/tree" form="compact"
+region "tree" source="tree" root-template="flotilla/region/tree" form="compact" {
+    promote when="zellij.tab.active" form="full"
+    promote when="rail.tab.pinned" form="full"
+}
 region "controls" source="controls" root-template="flotilla/region/controls" form="compact" pinned=true
 ```
 
@@ -257,8 +285,9 @@ stack as one unit, so regions can be reordered without renderer changes. Each
 region selects its root template and entity form independently. Attention
 regions promote entities whose configured boolean fact is true; the bundled
 surface consumes Flotilla's normalized `status.attention` fact and uses the
-full/detail form while the tree defaults to compact. Promotion is a highlight
-projection: the entity keeps its stable navigation position in the tree. A
+full form. The tree defaults to the `compact` form, promoting active or pinned
+tabs to `full` in declaration order. Promotion is a highlight projection: the
+entity keeps its stable navigation position in the tree. A
 pinned border-adjacent region reserves its rows while the intervening region
 viewport is clipped.
 
@@ -285,7 +314,7 @@ plugin location="andamento-controller" {
 }
 ```
 
-Use `rail_view "normal"` or omit the setting for the compact navigation rail.
+Use `rail_view "normal"` or omit the setting for the normal navigation rail.
 
 ## Rail Placement
 
