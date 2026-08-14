@@ -1,0 +1,5 @@
+name: andamento
+members:
+  - alias: andamento
+    url: https://github.com/flotilla-org/andamento
+    roles: [code, ops, knowledge]
