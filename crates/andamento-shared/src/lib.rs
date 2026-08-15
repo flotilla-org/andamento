@@ -34,6 +34,7 @@ pub const MSG_SET_METADATA_VISIBILITY: &str = "andamento-set-metadata-visibility
 pub const MSG_SET_NODE_VARIABLE: &str = "andamento-set-node-variable";
 pub const MSG_CONFIG_INSPECT: &str = "andamento-config-inspect";
 pub const MSG_MATERIALIZE_LATENT: &str = "andamento-materialize-latent";
+pub const MSG_ACTIVATE_ENTITY: &str = "andamento-activate-entity";
 pub const NODE_VARIABLE_CONFIG_OVERRIDE_SETTER: &str = "config override";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -109,6 +110,19 @@ pub struct ConfigInspectRequest {
     pub node_key: NodeKey,
     pub config_plugin_url: String,
     pub controller_plugin_url: String,
+}
+
+/// Activate the entity behind a row.
+///
+/// Not every entity in a region can be focused or materialized — the attention
+/// region admits every non-hidden presence class, and only `Tab`-presence
+/// entities become tabs. Those rows carry the inspector request they used to
+/// send, so a row that cannot be activated still does something rather than
+/// becoming a dead click.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntityActivationRequest {
+    pub entity: EntityRef,
+    pub inspect_fallback: ConfigInspectRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

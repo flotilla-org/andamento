@@ -47,6 +47,12 @@ pub struct ControllerTab {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntityActivation {
+    FocusTab { position: usize },
+    Materialize(andamento_shared::MaterializeLatentRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct StoredPaneStatus {
     status: SetPaneStatus,
     received_at: u64,
@@ -2053,6 +2059,10 @@ impl ControllerState {
         &self,
         request: &andamento_shared::MaterializeLatentRequest,
     ) -> Option<usize> {
+        self.materialized_tab_position_for_action_target(&request.action_target)
+    }
+
+    fn materialized_tab_position_for_action_target(&self, action_target: &str) -> Option<usize> {
         let tab_seed_metadata = self.tab_seed_metadata_entries();
         self.tabs.iter().find_map(|tab| {
             let target = EntityId::Tab(tab.tab_id);
@@ -2063,12 +2073,27 @@ impl ControllerState {
             let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
             let entity_target =
                 entity_ref_from_entries(&values).map(|entity| entity.action_target());
-            let action_target = metadata_entry_text(&values, KEY_ACTION_TARGET)
+            let resolved_action_target = metadata_entry_text(&values, KEY_ACTION_TARGET)
                 .map(str::to_owned)
                 .or(entity_target);
-            (action_target.as_deref() == Some(request.action_target.as_str()))
-                .then_some(tab.position)
+            (resolved_action_target.as_deref() == Some(action_target)).then_some(tab.position)
         })
+    }
+
+    pub fn activation_for_entity(&self, subject: &EntityRef) -> Option<EntityActivation> {
+        let entities = self.catalog_entities();
+        let entity = entities.iter().find(|entity| &entity.entity == subject)?;
+        let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
+            .map(str::to_owned)
+            .unwrap_or_else(|| entity.entity.action_target());
+        if let Some(position) = self.materialized_tab_position_for_action_target(&action_target) {
+            return Some(EntityActivation::FocusTab { position });
+        }
+        self.latent_tabs()
+            .into_iter()
+            .find(|latent| latent.entity == *subject)
+            .and_then(|latent| latent.materialize_request())
+            .map(EntityActivation::Materialize)
     }
 
     fn claim_materializing_tabs(&mut self) -> bool {
@@ -3629,6 +3654,12 @@ mod tests {
         assert_eq!(latents[0].name, "only");
         assert_eq!(latents[0].path.0.len(), 2);
         assert_eq!(latents[0].path.0.last().unwrap().key, "flotilla.convoy");
+        assert_eq!(
+            state.activation_for_entity(&entity_ref("convoy", "dev/only@lab")),
+            latents[0]
+                .materialize_request()
+                .map(EntityActivation::Materialize)
+        );
     }
 
     #[test]
@@ -4304,14 +4335,61 @@ mod tests {
     }
 
     #[test]
+    fn an_inline_presence_entity_has_no_activation_and_falls_back_to_inspect() {
+        // The attention region admits every non-hidden presence class, but only
+        // Tab-presence entities become tabs. An issue is Inline, so it has no
+        // activation at all — the caller opens the inspector instead, which is
+        // what the row did before activation existed.
+        let mut state = directory_entity_state();
+        apply_entity(
+            &mut state,
+            "issue",
+            "github/flotilla-org/andamento#61",
+            1,
+            &[
+                ("flotilla.project", "dev"),
+                ("flotilla.issue", "github/flotilla-org/andamento#61"),
+                ("display.label", "Hover does nothing on UI elements"),
+                ("status.attention", "true"),
+            ],
+        );
+
+        let issue = entity_ref("issue", "github/flotilla-org/andamento#61");
+        assert!(
+            state
+                .catalog_entities()
+                .iter()
+                .any(|entity| entity.entity == issue),
+            "the issue must be in the catalog for this test to mean anything"
+        );
+        assert_eq!(
+            state.activation_for_entity(&issue),
+            None,
+            "an inline-presence entity is neither focusable nor materializable"
+        );
+    }
+
+    #[test]
     fn materialization_focuses_an_existing_tab_with_the_same_action_target() {
         let mut state = directory_entity_state();
         let shared_target = "flotilla:attach:dev/focus@lab";
         apply_entity(
             &mut state,
+            "convoy",
+            "dev/focus@lab",
+            1,
+            &[
+                ("flotilla.project", "dev"),
+                ("flotilla.convoy", "dev/focus@lab"),
+                (KEY_ACTION_TARGET, shared_target),
+                (KEY_MATERIALIZE_RECIPE, "flotilla attach dev/focus"),
+            ],
+        );
+        apply_entity(
+            &mut state,
             "vessel",
             "dev/focus/worker@lab",
-            1,
+            2,
             &[
                 ("flotilla.project", "dev"),
                 ("flotilla.vessel", "dev/focus/worker@lab"),
@@ -4358,6 +4436,10 @@ mod tests {
         };
 
         assert_eq!(state.materialized_tab_position(&request), Some(3));
+        assert_eq!(
+            state.activation_for_entity(&entity_ref("convoy", "dev/focus@lab")),
+            Some(EntityActivation::FocusTab { position: 3 })
+        );
         assert!(!state.begin_latent_materialization(&request));
     }
 
