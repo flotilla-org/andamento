@@ -1057,7 +1057,19 @@ impl ControllerState {
                 template_config.warnings.push(warning);
             }
         }
-        let placement_index = PlacementIndex::build(&region_catalog_entities);
+        // Only built when something asks for it. Indexing every fact of every
+        // entity is pure cost on the legacy path, which is still the default.
+        let placement_index = self
+            .template_catalog
+            .as_ref()
+            .is_some_and(|catalog| {
+                catalog
+                    .regions()
+                    .iter()
+                    .any(|region| region.placement.is_some())
+            })
+            .then(|| PlacementIndex::build(&region_catalog_entities))
+            .unwrap_or_default();
         let surface_regions = self
             .template_catalog
             .as_ref()
@@ -4488,6 +4500,100 @@ mod tests {
         assert_eq!(default_path.0.len(), 2);
         assert_eq!(switched_path.0.len(), 1);
         assert_eq!(switched_path.0[0].key, "flotilla.convoy");
+    }
+
+    fn placement_loop(
+        predicates: &[(&str, &str)],
+    ) -> andamento_shared::template_config::PlacementDefinition {
+        andamento_shared::template_config::PlacementDefinition {
+            name: "section".to_owned(),
+            loops: vec![andamento_shared::template_config::PlacementLoop {
+                binding: "item".to_owned(),
+                predicates: predicates
+                    .iter()
+                    .map(
+                        |(key, value)| andamento_shared::template_config::PlacementPredicate {
+                            key: (*key).to_owned(),
+                            value: (*value).to_owned(),
+                        },
+                    )
+                    .collect(),
+                fields: vec![],
+                layout: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn an_entity_whose_facts_restate_its_kind_is_placed_once() {
+        // Producers do restate identity in their patches — flotilla's connector
+        // sets entity.kind and entity.id as facts — so the index sees the same
+        // (key, value) twice for one entity: once from the EntityRef, once from
+        // its facts. Without the dedup guard it gets two postings and renders
+        // twice.
+        let mut state = directory_entity_state();
+        apply_entity(
+            &mut state,
+            "vessel",
+            "dev/focus/worker@lab",
+            1,
+            &[
+                ("entity.kind", "vessel"),
+                ("entity.id", "dev/focus/worker@lab"),
+                ("flotilla.vessel", "dev/focus/worker@lab"),
+                ("display.label", "worker"),
+            ],
+        );
+
+        let entities = state.catalog_entities();
+        let index = PlacementIndex::build(&entities);
+        let placed = state.evaluate_placement(
+            &placement_loop(&[("entity.kind", "vessel")]),
+            &entities,
+            &index,
+            "full",
+        );
+
+        assert_eq!(
+            placed.len(),
+            1,
+            "restating identity in facts must not duplicate the placement: {:?}",
+            placed.iter().map(|e| &e.entity).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_loop_matching_nothing_places_nothing() {
+        let mut state = directory_entity_state();
+        apply_entity(
+            &mut state,
+            "vessel",
+            "dev/focus/worker@lab",
+            1,
+            &[("flotilla.vessel", "dev/focus/worker@lab")],
+        );
+        let entities = state.catalog_entities();
+        let index = PlacementIndex::build(&entities);
+
+        assert!(state
+            .evaluate_placement(
+                &placement_loop(&[("entity.kind", "convoy")]),
+                &entities,
+                &index,
+                "full",
+            )
+            .is_empty());
+        assert!(
+            state
+                .evaluate_placement(
+                    &placement_loop(&[("entity.kind", "vessel"), ("status.attention", "true")]),
+                    &entities,
+                    &index,
+                    "full",
+                )
+                .is_empty(),
+            "predicates intersect: an unmatched one empties the result"
+        );
     }
 
     #[test]

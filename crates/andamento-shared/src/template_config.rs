@@ -308,6 +308,26 @@ impl ExternalTemplateConfig {
                     region.name
                 )));
             }
+            // A named placement must resolve. Falling through silently to the
+            // legacy path (or to nothing) on a typo is exactly the failure mode
+            // this slice refuses everywhere else.
+            //
+            // Checked within the document: regions all come from one layer, and
+            // a config that declares a region names its placements beside it. A
+            // region referencing a placement from another layer would need this
+            // moved to catalog construction, where the whole stack is visible.
+            if let Some(placement) = region.placement.as_deref() {
+                if !self
+                    .placements
+                    .iter()
+                    .any(|declared| declared.name == placement)
+                {
+                    return Err(TemplateConfigError::Validation(format!(
+                        "region {} names placement {placement}, which is not declared",
+                        region.name
+                    )));
+                }
+            }
             // A placement selects the region's entities itself, so the legacy
             // single-key attention filter is not needed alongside it.
             if region.source == SurfaceRegionSource::Attention
@@ -2798,6 +2818,27 @@ placement "attention" {
                 "diagnostic for {predicate} should explain {expected}: {message}"
             );
         }
+    }
+
+    #[test]
+    fn a_region_naming_an_undeclared_placement_is_refused() {
+        let error = parse_template_config_kdl(
+            r#"
+version 1
+region "attention" source="attention" root-template="r" form="full" placement="attetnion"
+placement "attention" {
+  for "item" kind="vessel" {
+    match "status.attention" value="true"
+  }
+}
+"#,
+        )
+        .expect_err("a typo must not fall through to the legacy path");
+        let message = format!("{error:?}");
+        assert!(
+            message.contains("attetnion") && message.contains("not declared"),
+            "the diagnostic should name the unresolved placement: {message}"
+        );
     }
 
     #[test]
