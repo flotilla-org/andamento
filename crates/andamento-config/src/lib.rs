@@ -605,18 +605,37 @@ impl PluginState {
     }
 
     fn set_node_variable(&self, variable: usize, value: Option<usize>) {
-        let Some(client_id) = self.own_client_id else {
+        let Some(request) = self.node_variable_request(variable, value) else {
             return;
         };
+        let client_id = request.client_id;
+        let Ok(payload) = serde_json::to_string(&request) else {
+            return;
+        };
+        pipe_message_to_plugin(
+            self.controller_message(MSG_SET_NODE_VARIABLE)
+                .with_destination_client_id(client_id)
+                .with_payload(payload),
+        );
+    }
+
+    /// Resolve a clicked control back into a set request.
+    ///
+    /// Split from the send so the resolution is testable: the indices come from
+    /// a rendered frame and the model may have moved on since, so a stale index
+    /// must resolve to nothing rather than to a different variable or value.
+    fn node_variable_request(
+        &self,
+        variable: usize,
+        value: Option<usize>,
+    ) -> Option<NodeVariableSetRequest> {
+        let client_id = self.own_client_id?;
         let node_key = match self.current_inspected_node() {
             NodeKey::Root => NodeKey::Root,
             NodeKey::Group(path) => NodeKey::Group(path),
-            NodeKey::Tab(_) => return,
-            NodeKey::Entity(_) => return,
+            NodeKey::Tab(_) | NodeKey::Entity(_) => return None,
         };
-        // Resolve the click back through the declarations rendered for this
-        // node, so a stale index cannot set a variable to a foreign value.
-        let Some(declaration) = self
+        let declaration = self
             .model
             .as_ref()
             .and_then(|model| {
@@ -626,30 +645,17 @@ impl PluginState {
                     .iter()
                     .find(|variables| variables.node == node_key)
             })
-            .and_then(|variables| variables.declarations.get(variable))
-        else {
-            return;
-        };
+            .and_then(|variables| variables.declarations.get(variable))?;
         let value = match value {
             None => None,
-            Some(index) => match declaration.values.get(index) {
-                Some(allowed) => Some(allowed.clone()),
-                None => return,
-            },
+            Some(index) => Some(declaration.values.get(index)?.clone()),
         };
-        let Ok(payload) = serde_json::to_string(&NodeVariableSetRequest {
+        Some(NodeVariableSetRequest {
             client_id,
             node_key,
             name: declaration.name.clone(),
             value,
-        }) else {
-            return;
-        };
-        pipe_message_to_plugin(
-            self.controller_message(MSG_SET_NODE_VARIABLE)
-                .with_destination_client_id(client_id)
-                .with_payload(payload),
-        );
+        })
     }
 
     fn current_inspected_node(&self) -> NodeKey {
@@ -1137,12 +1143,29 @@ fn push_inspect_options_section(
     target: &InspectTargetView<'_>,
 ) {
     push_section_header(frame, "Options");
-    let mut option_labels = vec!["Metadata"];
-    if target.kind == InspectTargetKind::Root || target.kind == InspectTargetKind::Group {
-        option_labels.push("Child layout");
-    }
-    let label_width = option_labels
+    // One row per node variable declared in scope here, so the shared column
+    // width has to come from the names actually rendered. A hardcoded
+    // placeholder would misalign every declaration that is not its length, and
+    // silently — the control still works, it just stops lining up.
+    let node_variables = model
+        .template_config
+        .effective_variables
         .iter()
+        .find(|variables| variables.node == target.node_key);
+    let declarations =
+        if target.kind == InspectTargetKind::Root || target.kind == InspectTargetKind::Group {
+            node_variables
+                .map(|variables| variables.declarations.as_slice())
+                .unwrap_or_default()
+        } else {
+            &[][..]
+        };
+    let label_width = std::iter::once("Metadata")
+        .chain(
+            declarations
+                .iter()
+                .map(|declaration| declaration.name.as_str()),
+        )
         .map(|label| label.width())
         .max()
         .unwrap_or(0);
@@ -1182,41 +1205,32 @@ fn push_inspect_options_section(
     // variable in scope at this node, offering inherit plus its allowed values.
     // The Root/Group gate is the one piece still hardcoded — a declaration says
     // nothing yet about where it is legal to set.
-    if target.kind == InspectTargetKind::Root || target.kind == InspectTargetKind::Group {
-        let Some(node_variables) = model
-            .template_config
-            .effective_variables
-            .iter()
-            .find(|variables| variables.node == target.node_key)
-        else {
-            return;
-        };
-        for (variable, declaration) in node_variables.declarations.iter().enumerate() {
-            let effective = node_variables.values.get(&declaration.name);
-            let explicit = effective.is_some_and(|value| {
-                value.provenance.ancestor == target.node_key
-                    && value.provenance.setter == NODE_VARIABLE_CONFIG_OVERRIDE_SETTER
-            });
-            let mut options: Vec<(&str, bool, ConfigAction)> = vec![(
-                "inherit",
-                !explicit,
+    for (variable, declaration) in declarations.iter().enumerate() {
+        let effective =
+            node_variables.and_then(|variables| variables.values.get(&declaration.name));
+        let explicit = effective.is_some_and(|value| {
+            value.provenance.ancestor == target.node_key
+                && value.provenance.setter == NODE_VARIABLE_CONFIG_OVERRIDE_SETTER
+        });
+        let mut options: Vec<(&str, bool, ConfigAction)> = vec![(
+            "inherit",
+            !explicit,
+            ConfigAction::SetNodeVariable {
+                variable,
+                value: None,
+            },
+        )];
+        for (value, allowed) in declaration.values.iter().enumerate() {
+            options.push((
+                allowed.as_str(),
+                explicit && effective.is_some_and(|current| &current.value == allowed),
                 ConfigAction::SetNodeVariable {
                     variable,
-                    value: None,
+                    value: Some(value),
                 },
-            )];
-            for (value, allowed) in declaration.values.iter().enumerate() {
-                options.push((
-                    allowed.as_str(),
-                    explicit && effective.is_some_and(|current| &current.value == allowed),
-                    ConfigAction::SetNodeVariable {
-                        variable,
-                        value: Some(value),
-                    },
-                ));
-            }
-            push_segmented_form_choice(frame, &declaration.name, label_width, &options);
+            ));
         }
+        push_segmented_form_choice(frame, &declaration.name, label_width, &options);
     }
 }
 
@@ -2446,6 +2460,176 @@ mod tests {
             default: "cards".to_owned(),
             values: vec!["cards".to_owned(), "strip".to_owned()],
         }
+    }
+
+    fn group_model_with_declarations(
+        declarations: Vec<andamento_shared::template_config::NodeVariableDefinition>,
+    ) -> ControllerViewModel {
+        let path = GroupPath(vec![GroupSegment {
+            key: "git.repo".to_owned(),
+            value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
+            label: Some("flotilla".to_owned()),
+        }]);
+        let mut model = ControllerViewModel {
+            sort_mode: SortMode::Position,
+            config: RailConfig::default(),
+            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
+            tabs: vec![],
+            rows: vec![RailRow::GroupHeader {
+                group_id: "git.repo=flotilla-org/flotilla".to_owned(),
+                path: path.clone(),
+                label: "flotilla".to_owned(),
+                full_label: "flotilla-org/flotilla".to_owned(),
+                tab_count: 2,
+                templates: ResolvedTemplateSlots::default(),
+            }],
+            resolved_metadata: vec![],
+            observed_identities: vec![],
+            grouping_diagnostics: vec![],
+            metadata_controls: andamento_shared::MetadataControls::default(),
+            inspected_node: Some(NodeKey::Group(path.clone())),
+            collapsed_groups: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
+            surface_regions: vec![],
+        };
+        model.template_config.effective_variables =
+            vec![andamento_shared::EffectiveNodeVariables {
+                node: NodeKey::Group(path),
+                values: BTreeMap::new(),
+                declarations,
+            }];
+        model
+    }
+
+    fn option_column(lines: &[String], label: &str) -> Option<usize> {
+        lines
+            .iter()
+            .find(|line| line.trim_start().starts_with(label))
+            .and_then(|line| line.find("● inherit").or_else(|| line.find("○ inherit")))
+    }
+
+    #[test]
+    fn a_stale_control_index_resolves_to_nothing_rather_than_a_foreign_variable() {
+        // The indices in a hit region come from a rendered frame. The model can
+        // move on before the click lands, so resolution must fail closed.
+        let mut plugin = PluginState::default();
+        plugin.own_client_id = Some(3);
+        plugin.model = Some(group_model_with_declarations(vec![
+            child_layout_declaration(),
+        ]));
+
+        let request = plugin
+            .node_variable_request(0, Some(1))
+            .expect("a live index resolves");
+        assert_eq!(request.name, "child-layout");
+        assert_eq!(request.value.as_deref(), Some("strip"));
+
+        assert_eq!(
+            plugin.node_variable_request(1, None),
+            None,
+            "a variable index past the declarations must not fall through to another variable"
+        );
+        assert_eq!(
+            plugin.node_variable_request(0, Some(9)),
+            None,
+            "a value index past the allowed values must not set a foreign value"
+        );
+
+        // The same click against a model whose declarations have changed under
+        // it resolves to the new declaration or to nothing, never to the old one.
+        plugin.model = Some(group_model_with_declarations(vec![
+            andamento_shared::template_config::NodeVariableDefinition {
+                name: "caption".to_owned(),
+                default: "none".to_owned(),
+                values: vec![],
+            },
+        ]));
+        assert_eq!(
+            plugin.node_variable_request(0, Some(1)),
+            None,
+            "a value index that was valid for the previous declaration must not carry over"
+        );
+    }
+
+    #[test]
+    fn declared_variable_rows_share_one_option_column_whatever_they_are_named() {
+        // The column width used to come from a hardcoded "Child layout"
+        // placeholder, so any declaration named something longer rendered its
+        // control further right than the Metadata row and its siblings.
+        let model = group_model_with_declarations(vec![
+            child_layout_declaration(),
+            andamento_shared::template_config::NodeVariableDefinition {
+                name: "attention.density.preference".to_owned(),
+                default: "roomy".to_owned(),
+                values: vec!["roomy".to_owned(), "tight".to_owned()],
+            },
+        ]);
+
+        let rendered = render_config_with_scope(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Inspect,
+            None,
+            60,
+            100,
+            &[],
+            false,
+            0,
+        );
+
+        let metadata = option_column(&rendered.lines, "Metadata").expect("metadata row");
+        let short = option_column(&rendered.lines, "child-layout").expect("child-layout row");
+        let long =
+            option_column(&rendered.lines, "attention.density.preference").expect("long-name row");
+        assert_eq!(
+            (metadata, short),
+            (long, long),
+            "every option row shares one column: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
+    fn an_unbounded_variable_offers_only_inherit() {
+        // A declaration with no allowed values accepts anything, so there is no
+        // finite set of segments to offer. It renders inherit alone rather than
+        // an empty row. Setting a free-form value from the inspector needs a
+        // different control — see the follow-up issue.
+        let model = group_model_with_declarations(vec![
+            andamento_shared::template_config::NodeVariableDefinition {
+                name: "caption".to_owned(),
+                default: "none".to_owned(),
+                values: vec![],
+            },
+        ]);
+
+        let rendered = render_config_with_scope(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Inspect,
+            None,
+            60,
+            100,
+            &[],
+            false,
+            0,
+        );
+
+        assert!(option_column(&rendered.lines, "caption").is_some());
+        assert_eq!(
+            rendered
+                .hit_regions
+                .iter()
+                .filter(|hit| matches!(
+                    hit.action,
+                    ConfigAction::SetNodeVariable { variable: 0, .. }
+                ))
+                .count(),
+            1,
+            "only the inherit segment is offered: {:?}",
+            rendered.lines
+        );
     }
 
     #[test]
