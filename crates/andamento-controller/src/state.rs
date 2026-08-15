@@ -46,6 +46,86 @@ pub struct ControllerTab {
     pub active: bool,
 }
 
+/// THROWAWAY ADAPTER. Bends a placed entity into the `DisplayEntity` the
+/// current renderer expects, so the placement pipeline can render before the
+/// renderer learns about placements.
+///
+/// Do not build on this and do not widen it. It exists only until the renderer
+/// takes placements directly; treating it as the interface is how the old
+/// grouping shapes would survive the cutover.
+fn placed_display_entity(
+    mut display: andamento_shared::DisplayEntity,
+    loop_definition: &andamento_shared::template_config::PlacementLoop,
+    form: &str,
+) -> andamento_shared::DisplayEntity {
+    display.form = form.to_owned();
+    if !loop_definition.fields.is_empty() {
+        display.templates.compact = Some(andamento_shared::ResolvedTemplateSlot {
+            template_name: format!("placement:{}", loop_definition.binding),
+            fields: vec![],
+            render_ready: Some(
+                andamento_shared::template_config::TemplateConfigRenderReady {
+                    fields: loop_definition.fields.clone(),
+                    chrome: Default::default(),
+                },
+            ),
+            setters: vec![],
+            effective_kdl: String::new(),
+            resolve_error: None,
+        });
+        display.templates.detail = display.templates.compact.clone();
+    }
+    display
+}
+
+/// Catalog entities indexed by `(fact key, indexable text)`.
+///
+/// Built once per model. Every placement predicate is answered by a lookup
+/// here; nothing scans the catalog.
+#[derive(Debug, Default)]
+struct PlacementIndex {
+    by_fact: BTreeMap<(String, String), Vec<usize>>,
+}
+
+impl PlacementIndex {
+    fn build(entities: &[CatalogEntity]) -> Self {
+        let mut by_fact = BTreeMap::<(String, String), Vec<usize>>::new();
+        for (position, entity) in entities.iter().enumerate() {
+            let mut insert = |key: String, text: String| {
+                let postings = by_fact.entry((key, text)).or_default();
+                // Positions arrive ascending, so binary_search stays valid; the
+                // guard only stops an entity appearing twice under one fact.
+                if postings.last() != Some(&position) {
+                    postings.push(position);
+                }
+            };
+            // An entity's kind and id come from its ref, not from whatever the
+            // producer happened to echo into its facts, so `kind=` always works.
+            insert("entity.kind".to_owned(), entity.entity.kind.clone());
+            insert("entity.id".to_owned(), entity.entity.id.clone());
+            for (key, entry) in &entity.values {
+                let Some(text) =
+                    andamento_shared::template_config::placement_index_text(&entry.value)
+                else {
+                    continue;
+                };
+                insert(key.clone(), text);
+            }
+        }
+        Self { by_fact }
+    }
+
+    fn lookup(
+        &self,
+        predicate: &andamento_shared::template_config::PlacementPredicate,
+    ) -> &[usize] {
+        self.by_fact
+            .get(&(predicate.key.clone(), predicate.value.clone()))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+}
+
 /// What a node resolved to: the variable values in effect, and the declarations
 /// that are in scope there.
 #[derive(Debug, Clone, Default)]
@@ -977,6 +1057,19 @@ impl ControllerState {
                 template_config.warnings.push(warning);
             }
         }
+        // Only built when something asks for it. Indexing every fact of every
+        // entity is pure cost on the legacy path, which is still the default.
+        let placement_index = self
+            .template_catalog
+            .as_ref()
+            .is_some_and(|catalog| {
+                catalog
+                    .regions()
+                    .iter()
+                    .any(|region| region.placement.is_some())
+            })
+            .then(|| PlacementIndex::build(&region_catalog_entities))
+            .unwrap_or_default();
         let surface_regions = self
             .template_catalog
             .as_ref()
@@ -990,7 +1083,20 @@ impl ControllerState {
                             "presentation.template".to_owned(),
                             MetadataValue::Text(definition.root_template.clone()),
                         )]);
-                        let entities = if definition.source
+                        let entities = if let Some(placement) = definition
+                            .placement
+                            .as_deref()
+                            .and_then(|name| catalog.placement(name))
+                        {
+                            // Placement pipeline. Only this region uses it; the
+                            // rest of the render stays on legacy grouping.
+                            self.evaluate_placement(
+                                placement,
+                                &region_catalog_entities,
+                                &placement_index,
+                                &definition.form,
+                            )
+                        } else if definition.source
                             == andamento_shared::template_config::SurfaceRegionSource::Attention
                         {
                             let attention_key = definition
@@ -1361,6 +1467,46 @@ impl ControllerState {
                     parent_path,
                 },
             })
+            .collect()
+    }
+
+    /// Evaluate a placement's single loop into the entities it places.
+    ///
+    /// Predicates intersect: the smallest posting list is taken first and the
+    /// rest filter it, so cost tracks the most selective fact rather than the
+    /// catalog size.
+    fn evaluate_placement(
+        &self,
+        placement: &andamento_shared::template_config::PlacementDefinition,
+        entities: &[CatalogEntity],
+        index: &PlacementIndex,
+        form: &str,
+    ) -> Vec<andamento_shared::DisplayEntity> {
+        let Some(loop_definition) = placement.loops.first() else {
+            return vec![];
+        };
+        // Resolve every predicate's postings once, shortest first: the smallest
+        // list seeds the walk and the rest filter it. Looking them up per
+        // candidate would put the catalog-sized map back in the inner loop this
+        // index exists to keep it out of. The seed's own predicate is dropped
+        // from the filter — membership in it is true by construction.
+        let mut postings = loop_definition
+            .predicates
+            .iter()
+            .map(|predicate| index.lookup(predicate))
+            .collect::<Vec<_>>();
+        postings.sort_by_key(|matches| matches.len());
+        let Some((seed, rest)) = postings.split_first() else {
+            return vec![];
+        };
+        seed.iter()
+            .filter(|position| {
+                rest.iter()
+                    .all(|matches| matches.binary_search(position).is_ok())
+            })
+            .filter_map(|position| entities.get(*position))
+            .filter(|entity| self.entity_is_visible(entity))
+            .map(|entity| placed_display_entity(self.display_entity(entity), loop_definition, form))
             .collect()
     }
 
@@ -4169,6 +4315,7 @@ mod tests {
         state.set_template_catalog(Some(
             andamento_shared::template_config::TemplateConfigCatalog::from_config(
                 andamento_shared::template_config::ExternalTemplateConfig {
+                    placements: vec![],
                     version: 1,
                     templates: vec![],
                     fragments: vec![],
@@ -4357,6 +4504,100 @@ mod tests {
         assert_eq!(default_path.0.len(), 2);
         assert_eq!(switched_path.0.len(), 1);
         assert_eq!(switched_path.0[0].key, "flotilla.convoy");
+    }
+
+    fn placement_loop(
+        predicates: &[(&str, &str)],
+    ) -> andamento_shared::template_config::PlacementDefinition {
+        andamento_shared::template_config::PlacementDefinition {
+            name: "section".to_owned(),
+            loops: vec![andamento_shared::template_config::PlacementLoop {
+                binding: "item".to_owned(),
+                predicates: predicates
+                    .iter()
+                    .map(
+                        |(key, value)| andamento_shared::template_config::PlacementPredicate {
+                            key: (*key).to_owned(),
+                            value: (*value).to_owned(),
+                        },
+                    )
+                    .collect(),
+                fields: vec![],
+                layout: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn an_entity_whose_facts_restate_its_kind_is_placed_once() {
+        // Producers do restate identity in their patches — flotilla's connector
+        // sets entity.kind and entity.id as facts — so the index sees the same
+        // (key, value) twice for one entity: once from the EntityRef, once from
+        // its facts. Without the dedup guard it gets two postings and renders
+        // twice.
+        let mut state = directory_entity_state();
+        apply_entity(
+            &mut state,
+            "vessel",
+            "dev/focus/worker@lab",
+            1,
+            &[
+                ("entity.kind", "vessel"),
+                ("entity.id", "dev/focus/worker@lab"),
+                ("flotilla.vessel", "dev/focus/worker@lab"),
+                ("display.label", "worker"),
+            ],
+        );
+
+        let entities = state.catalog_entities();
+        let index = PlacementIndex::build(&entities);
+        let placed = state.evaluate_placement(
+            &placement_loop(&[("entity.kind", "vessel")]),
+            &entities,
+            &index,
+            "full",
+        );
+
+        assert_eq!(
+            placed.len(),
+            1,
+            "restating identity in facts must not duplicate the placement: {:?}",
+            placed.iter().map(|e| &e.entity).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_loop_matching_nothing_places_nothing() {
+        let mut state = directory_entity_state();
+        apply_entity(
+            &mut state,
+            "vessel",
+            "dev/focus/worker@lab",
+            1,
+            &[("flotilla.vessel", "dev/focus/worker@lab")],
+        );
+        let entities = state.catalog_entities();
+        let index = PlacementIndex::build(&entities);
+
+        assert!(state
+            .evaluate_placement(
+                &placement_loop(&[("entity.kind", "convoy")]),
+                &entities,
+                &index,
+                "full",
+            )
+            .is_empty());
+        assert!(
+            state
+                .evaluate_placement(
+                    &placement_loop(&[("entity.kind", "vessel"), ("status.attention", "true")]),
+                    &entities,
+                    &index,
+                    "full",
+                )
+                .is_empty(),
+            "predicates intersect: an unmatched one empties the result"
+        );
     }
 
     #[test]
