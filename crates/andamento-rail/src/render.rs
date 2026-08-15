@@ -5298,20 +5298,22 @@ fn group_header_line(
         resolved_slot,
         template_catalog,
     );
-    if collapsible {
-        if let Some((collapsed_glyph, expanded_glyph)) = chrome.toggle() {
-            fields.insert(
-                0,
-                TemplateField::Required(
+    if let Some((collapsed_glyph, expanded_glyph)) = chrome.toggle() {
+        fields.insert(
+            0,
+            TemplateField::Required(
+                if collapsible {
                     if collapsed {
                         collapsed_glyph
                     } else {
                         expanded_glyph
                     }
-                    .to_owned(),
-                ),
-            );
-        }
+                } else {
+                    " "
+                }
+                .to_owned(),
+            ),
+        );
     }
     let rendered_fields =
         render_template_fields_inline_with_suppression(&fields, width, ancestor_template_fields);
@@ -7397,7 +7399,7 @@ mod tests {
         let rendered = render_lines(Some(&model), &[], 6, 48, true);
 
         assert!(
-            rendered.lines[0].starts_with("project-a"),
+            rendered.lines[0].trim_start().starts_with("project-a"),
             "{:?}",
             rendered.lines
         );
@@ -7912,6 +7914,40 @@ mod tests {
                 .any(|line| line.contains("server") || line.contains("tests")),
             "fully absorbed tabs should not repeat below the header: {:?}",
             rendered.lines
+        );
+    }
+
+    #[test]
+    fn empty_group_reserves_the_toggle_column_without_becoming_collapsible() {
+        let mut model = grouped_model();
+        let empty_path = GroupPath(vec![GroupSegment {
+            key: "project".to_owned(),
+            value: MetadataValue::Text("empty".to_owned()),
+            label: None,
+        }]);
+        model.rows.push(RailRow::GroupHeader {
+            group_id: "project:empty".to_owned(),
+            path: empty_path,
+            label: "empty".to_owned(),
+            full_label: "empty".to_owned(),
+            tab_count: 0,
+            templates: ResolvedTemplateSlots::default(),
+        });
+
+        let rendered = render_lines(Some(&model), &[], 12, 24, true);
+        let (row, line) = rendered
+            .lines
+            .iter()
+            .enumerate()
+            .find(|(_, line)| line.contains("empty"))
+            .expect("empty group should render");
+
+        assert_eq!(line.find("empty"), Some(2), "got {line:?}");
+        assert!(!line.contains('▼') && !line.contains('▶'), "got {line:?}");
+        assert_eq!(
+            hit_at(&rendered.hit_regions, row, 0).map(|hit| hit.action),
+            None,
+            "an empty group must not expose a collapse action"
         );
     }
 
@@ -8557,7 +8593,7 @@ mod tests {
         );
 
         assert!(
-            lines[0].starts_with("metadata-label (3)"),
+            lines[0].trim_start().starts_with("metadata-label (3)"),
             "group header template should render from metadata: {:?}",
             lines[0]
         );
@@ -8928,7 +8964,9 @@ mod tests {
         let rendered = render_lines(Some(&model), &[], 8, 80, true);
 
         assert!(
-            rendered.lines[0].starts_with(&format!("{expected} ─")),
+            rendered.lines[0]
+                .trim_start()
+                .starts_with(&format!("{expected} ─")),
             "{key} should render its designed label without conformance fallback: {:?}",
             rendered.lines[0]
         );
@@ -8979,7 +9017,8 @@ mod tests {
         let rendered = render_lines(Some(&model), &[], 8, 80, true);
 
         assert!(
-            rendered.lines[0].starts_with("cutover") && !rendered.lines[0].contains("[flotilla]"),
+            rendered.lines[0].trim_start().starts_with("cutover")
+                && !rendered.lines[0].contains("[flotilla]"),
             "{:?}",
             rendered.lines
         );
