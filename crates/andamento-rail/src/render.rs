@@ -6215,6 +6215,7 @@ mod tests {
             .template_config
             .effective_variables
             .push(andamento_shared::EffectiveNodeVariables {
+                declarations: vec![],
                 node: node.clone(),
                 values: BTreeMap::from([(
                     "child-layout".to_owned(),
@@ -7371,6 +7372,7 @@ mod tests {
         ];
         model.template_config.effective_variables = vec![
             andamento_shared::EffectiveNodeVariables {
+                declarations: vec![],
                 node: NodeKey::Group(GroupPath(vec![GroupSegment {
                     key: "project".to_owned(),
                     value: MetadataValue::Text("project-a".to_owned()),
