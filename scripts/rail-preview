@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#
+# Render the rail through the real controller and the real renderer, at one or
+# more widths, as plain text.
+#
+# This is the loop for looking at the rail. Snapshots tell you a frame changed;
+# they do not tell you whether the result is legible, and most of the rail's
+# open problems are legibility ones. Width matters especially — the strip
+# layout degrades as it narrows, and several defects only appear at one size.
+#
+#   scripts/rail-preview                                  default template, 46 cols
+#   scripts/rail-preview templates/flotilla-default.kdl 30 46 80
+#   scripts/rail-preview my-experiment.kdl 46
+#
+# The scene comes from scripts/rail-scene.py unless RAIL_PREVIEW_SCENE names a
+# connector-format JSONL file. Set RAIL_PREVIEW_RAW=1 to keep the controller's
+# model dump, which is where grouping paths and resolved templates are visible.
+set -euo pipefail
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+host_target="$(rustc -vV | sed -n 's/^host: //p')"
+
+template="${1:-$repo_root/templates/flotilla-default.kdl}"
+[ $# -gt 0 ] && shift
+widths=("$@")
+[ ${#widths[@]} -eq 0 ] && widths=(46)
+
+# One trap: a second would silently replace the first and leak the other file.
+scratch=()
+cleanup() { [ ${#scratch[@]} -gt 0 ] && rm -f "${scratch[@]}"; }
+trap cleanup EXIT
+
+scene="${RAIL_PREVIEW_SCENE:-}"
+if [ -z "$scene" ]; then
+    scene="$(mktemp -t rail-preview-scene)"
+    scratch+=("$scene")
+    python3 "$repo_root/scripts/rail-scene.py" > "$scene"
+fi
+
+cd "$repo_root"
+# Keep build chatter out of the frames; surface it only if the build fails.
+build_log="$(mktemp -t rail-preview-build)"
+scratch+=("$build_log")
+if ! cargo build -q -p andamento-controller --target "$host_target" >"$build_log" 2>&1; then
+    cat "$build_log" >&2
+    exit 1
+fi
+controller="$repo_root/target/$host_target/debug/andamento-controller"
+
+for cols in "${widths[@]}"; do
+    printf '──────── %s cols ─ %s\n' "$cols" "$(basename "$template")"
+    if [ -n "${RAIL_PREVIEW_RAW:-}" ]; then
+        HARNESS_COLS="$cols" "$controller" "$scene" "$template"
+    else
+        HARNESS_COLS="$cols" "$controller" "$scene" "$template" 2>/dev/null \
+            | sed -n '/=== rendered/,$p' \
+            | perl -pe 's/\e\[[0-9;]*m//g; s/[ \t]+$//' \
+            | sed '1d'
+    fi
+    echo
+done
