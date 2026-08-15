@@ -306,6 +306,28 @@ cargo run -p andamento-controller --target "$(rustc -vV | sed -n 's/^host: //p')
   --dump-template group-header
 ```
 
+To look at the rail rather than inspect one model, `scripts/rail-preview`
+wraps that harness: it renders through the real controller and renderer at
+whatever widths you ask for, and strips the model dump and colour so the
+frames are readable side by side.
+
+```sh
+scripts/rail-preview                 # default template, 46 cols
+scripts/rail-preview 30 46 80        # default template, three widths
+scripts/rail-preview my-experiment.kdl 46
+```
+
+Width is worth varying deliberately: the strip layout degrades as it narrows,
+and several rail defects only show up at one size. Its scene comes from
+`scripts/rail-scene.py`, which mirrors what the Flotilla connector actually
+emits — same keys, same entity-id shapes — over projects and repos taken from
+real manifests, so the awkward cases are the ones that really occur. Point it
+at your own capture with `RAIL_PREVIEW_SCENE=path.jsonl`, or keep the model
+dump with `RAIL_PREVIEW_RAW=1`.
+
+Snapshots tell you a frame changed. They do not tell you whether the result
+reads well, which is what most of the rail's open questions are about.
+
 Switch the rail into the generic metadata inspection projection:
 
 ```kdl
