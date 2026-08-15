@@ -4335,6 +4335,41 @@ mod tests {
     }
 
     #[test]
+    fn an_inline_presence_entity_has_no_activation_and_falls_back_to_inspect() {
+        // The attention region admits every non-hidden presence class, but only
+        // Tab-presence entities become tabs. An issue is Inline, so it has no
+        // activation at all — the caller opens the inspector instead, which is
+        // what the row did before activation existed.
+        let mut state = directory_entity_state();
+        apply_entity(
+            &mut state,
+            "issue",
+            "github/flotilla-org/andamento#61",
+            1,
+            &[
+                ("flotilla.project", "dev"),
+                ("flotilla.issue", "github/flotilla-org/andamento#61"),
+                ("display.label", "Hover does nothing on UI elements"),
+                ("status.attention", "true"),
+            ],
+        );
+
+        let issue = entity_ref("issue", "github/flotilla-org/andamento#61");
+        assert!(
+            state
+                .catalog_entities()
+                .iter()
+                .any(|entity| entity.entity == issue),
+            "the issue must be in the catalog for this test to mean anything"
+        );
+        assert_eq!(
+            state.activation_for_entity(&issue),
+            None,
+            "an inline-presence entity is neither focusable nor materializable"
+        );
+    }
+
+    #[test]
     fn materialization_focuses_an_existing_tab_with_the_same_action_target() {
         let mut state = directory_entity_state();
         let shared_target = "flotilla:attach:dev/focus@lab";

@@ -303,10 +303,24 @@ fn build_materialize_latent_message(
 
 fn build_activate_entity_message(
     controller_plugin_url: &str,
+    config_plugin_url: &str,
     client_id: u16,
+    origin_tab_id: u64,
     entity: &andamento_shared::EntityRef,
 ) -> Option<MessageToPlugin> {
-    let payload = serde_json::to_string(entity).ok()?;
+    let request = andamento_shared::EntityActivationRequest {
+        entity: entity.clone(),
+        // The controller cannot build this itself — it only ever learns the
+        // plugin urls from a request.
+        inspect_fallback: ConfigInspectRequest {
+            client_id,
+            origin_tab_id,
+            node_key: NodeKey::Entity(entity.clone()),
+            config_plugin_url: config_plugin_url.to_owned(),
+            controller_plugin_url: controller_plugin_url.to_owned(),
+        },
+    };
+    let payload = serde_json::to_string(&request).ok()?;
     let message = MessageToPlugin::new(andamento_shared::MSG_ACTIVATE_ENTITY)
         .with_destination_client_id(client_id)
         .with_payload(payload);
@@ -1119,14 +1133,27 @@ mod tests {
             id: "dev/focus/worker@lab".to_owned(),
         };
 
-        let message = build_activate_entity_message("andamento-controller", 4, &entity).unwrap();
+        let message = build_activate_entity_message(
+            "andamento-controller",
+            "andamento-config",
+            4,
+            7,
+            &entity,
+        )
+        .unwrap();
 
         assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
         assert_eq!(message.destination_client_id, Some(4));
         assert_eq!(message.message_name, andamento_shared::MSG_ACTIVATE_ENTITY);
-        let payload: andamento_shared::EntityRef =
+        let payload: andamento_shared::EntityActivationRequest =
             serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
-        assert_eq!(payload, entity);
+        assert_eq!(payload.entity, entity);
+        assert_eq!(
+            payload.inspect_fallback.node_key,
+            NodeKey::Entity(entity.clone()),
+            "a row that cannot be activated must still reach its inspector"
+        );
+        assert_eq!(payload.inspect_fallback.origin_tab_id, 7);
     }
 
     #[test]
@@ -1583,7 +1610,11 @@ impl PluginState {
                         {
                             if let Some(message) = build_activate_entity_message(
                                 &self.controller_plugin_url,
+                                &self.config_plugin_url,
                                 client_id,
+                                self.own_tab_id()
+                                    .or_else(|| self.active_tab_id())
+                                    .unwrap_or(0),
                                 entity,
                             ) {
                                 pipe_message_to_plugin(message);

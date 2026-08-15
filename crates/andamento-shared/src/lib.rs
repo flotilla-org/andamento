@@ -112,6 +112,19 @@ pub struct ConfigInspectRequest {
     pub controller_plugin_url: String,
 }
 
+/// Activate the entity behind a row.
+///
+/// Not every entity in a region can be focused or materialized — the attention
+/// region admits every non-hidden presence class, and only `Tab`-presence
+/// entities become tabs. Those rows carry the inspector request they used to
+/// send, so a row that cannot be activated still does something rather than
+/// becoming a dead click.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntityActivationRequest {
+    pub entity: EntityRef,
+    pub inspect_fallback: ConfigInspectRequest,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetadataVisibilitySetRequest {
     pub client_id: u16,

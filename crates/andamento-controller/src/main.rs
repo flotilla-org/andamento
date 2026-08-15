@@ -906,9 +906,9 @@ impl PluginState {
         false
     }
 
-    fn activate_entity(&mut self, entity: andamento_shared::EntityRef) -> bool {
+    fn activate_entity(&mut self, request: andamento_shared::EntityActivationRequest) -> bool {
         self.stats.increment("entity.activate.request");
-        match self.state.activation_for_entity(&entity) {
+        match self.state.activation_for_entity(&request.entity) {
             Some(EntityActivation::FocusTab { position }) => {
                 self.stats.increment("entity.activate.focus-existing");
                 switch_tab_to((position + 1) as u32);
@@ -919,7 +919,11 @@ impl PluginState {
                 self.materialize_latent(request)
             }
             None => {
-                self.stats.increment("entity.activate.unavailable");
+                // Nothing to focus and nothing to materialize — an inline
+                // presence class, say. Fall back to the inspector rather than
+                // swallowing the click.
+                self.stats.increment("entity.activate.inspect-fallback");
+                self.open_or_focus_config_editor(&request.inspect_fallback);
                 false
             }
         }
@@ -937,7 +941,7 @@ struct HandlePipeResult {
     rail_size_observed: Option<RailSizeObserved>,
     config_inspect_request: Option<ConfigInspectRequest>,
     materialize_latent_request: Option<andamento_shared::MaterializeLatentRequest>,
-    activate_entity_request: Option<andamento_shared::EntityRef>,
+    activate_entity_request: Option<andamento_shared::EntityActivationRequest>,
     broadcast_rail_ui_state: bool,
 }
 
@@ -1506,7 +1510,7 @@ enum ControllerMessage {
     SetNodeVariable(NodeVariableSetRequest),
     ConfigInspect(ConfigInspectRequest),
     MaterializeLatent(andamento_shared::MaterializeLatentRequest),
-    ActivateEntity(andamento_shared::EntityRef),
+    ActivateEntity(andamento_shared::EntityActivationRequest),
 }
 
 fn parse_controller_message(
@@ -1650,7 +1654,7 @@ fn parse_controller_message(
             .as_deref()
             .ok_or_else(|| "activate entity requires payload".to_owned())
             .and_then(|payload| {
-                serde_json::from_str::<andamento_shared::EntityRef>(payload)
+                serde_json::from_str::<andamento_shared::EntityActivationRequest>(payload)
                     .map_err(|e| format!("invalid activate entity request: {e}"))
             })
             .map(ControllerMessage::ActivateEntity)
@@ -1891,6 +1895,16 @@ mod tests {
         let entity = andamento_shared::EntityRef {
             kind: "vessel".to_owned(),
             id: "dev/focus/worker@lab".to_owned(),
+        };
+        let entity = andamento_shared::EntityActivationRequest {
+            entity: entity.clone(),
+            inspect_fallback: ConfigInspectRequest {
+                client_id: 1,
+                origin_tab_id: 2,
+                node_key: NodeKey::Entity(entity),
+                config_plugin_url: "andamento-config".to_owned(),
+                controller_plugin_url: "andamento-controller".to_owned(),
+            },
         };
         let payload = serde_json::to_string(&entity).unwrap();
 
