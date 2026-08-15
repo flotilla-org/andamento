@@ -20,6 +20,10 @@ import sys
 TTL = 30_000
 CONNECTOR = "flotilla-connector"
 FLOTILLA = "flotilla"
+# projection.rs gives entities with no project and no repo this ordinal, which
+# is what floats unattached work to the top rather than leaving it wherever
+# insertion order put it.
+ARCHIPELAGO_ORDINAL = -100
 
 out = []
 
@@ -147,6 +151,13 @@ CONVOYS = [
     ),
 ]
 
+# Work belonging to no project and no repo. The connector stamps these with
+# ARCHIPELAGO_ORDINAL, so the scene exercises ordinal-driven ordering rather
+# than only the every-entity-has-a-parent case.
+ARCHIPELAGO = [
+    ("adhoc-triage", "worker", "lab", "working", False, "chasing a flaky test"),
+]
+
 ISSUES = [
     ("https://github.com/flotilla-org/andamento#61", "Hover does nothing on UI elements", "andamento"),
     ("https://github.com/flotilla-org/andamento#62", "Clicking an attention item opens the config panel", "andamento"),
@@ -235,6 +246,42 @@ for project, cname, phase, workflow, change_request, message, vessels in CONVOYS
             vfacts.append(("summary.text", text(vmessage)))
         vfacts += action("vessel", vid, f"flotilla attach {cname}/{vname}")
         entity("vessel", vid, vfacts)
+
+for cname, vname, host, work_phase, wants_attention, vmessage in ARCHIPELAGO:
+    cid = f"flotilla/{cname}@fleet"
+    vid = f"flotilla/{cname}/{vname}@{host}"
+    entity(
+        "convoy",
+        cid,
+        [
+            ("flotilla.convoy", text(cid)),
+            ("flotilla.convoy.name", text(cname)),
+            ("display.label", text(cname)),
+            ("flotilla.convoy.phase", text("implementing")),
+            ("flotilla.convoy.workflow", text("single-agent-trusted")),
+            ("status.state", text("implementing")),
+            ("summary.text", text("0/1 vessels done")),
+        ]
+        + action("vessel", vid, f"flotilla attach {cname}"),
+        ordinal=ARCHIPELAGO_ORDINAL,
+    )
+    entity(
+        "vessel",
+        vid,
+        [
+            ("flotilla.convoy", text(cid)),
+            ("flotilla.convoy.name", text(cname)),
+            ("flotilla.vessel", text(vid)),
+            ("flotilla.vessel.name", text(vname)),
+            ("display.label", text(vname)),
+            ("flotilla.work.phase", text(work_phase)),
+            ("flotilla.vessel.host", text(host)),
+            ("status.state", text(work_phase)),
+            ("summary.text", text(vmessage)),
+        ]
+        + action("vessel", vid, f"flotilla attach {cname}/{vname}"),
+        ordinal=ARCHIPELAGO_ORDINAL,
+    )
 
 for iid, title, project in ISSUES:
     slug = repo_of[project]

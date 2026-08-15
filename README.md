@@ -312,8 +312,8 @@ whatever widths you ask for, and strips the model dump and colour so the
 frames are readable side by side.
 
 ```sh
-scripts/rail-preview                                     # default template, 46 cols
-scripts/rail-preview templates/flotilla-default.kdl 30 46 80
+scripts/rail-preview                 # default template, 46 cols
+scripts/rail-preview 30 46 80        # default template, three widths
 scripts/rail-preview my-experiment.kdl 46
 ```
 
