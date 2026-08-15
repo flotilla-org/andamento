@@ -37,15 +37,15 @@ trap cleanup EXIT
 
 scene="${RAIL_PREVIEW_SCENE:-}"
 if [ -z "$scene" ]; then
-    scene="$(mktemp -t rail-preview-scene)"
+    scene="$(mktemp "${TMPDIR:-/tmp}/rail-preview-scene.XXXXXX")"
     scratch+=("$scene")
     python3 "$repo_root/scripts/rail-scene.py" > "$scene"
 fi
 
 cd "$repo_root"
 # Keep build chatter out of the frames; surface it only if the build fails.
-build_log="$(mktemp -t rail-preview-build)"
-run_log="$(mktemp -t rail-preview-run)"
+build_log="$(mktemp "${TMPDIR:-/tmp}/rail-preview-build.XXXXXX")"
+run_log="$(mktemp "${TMPDIR:-/tmp}/rail-preview-run.XXXXXX")"
 scratch+=("$build_log" "$run_log")
 if ! cargo build -q -p andamento-controller --target "$host_target" >"$build_log" 2>&1; then
     cat "$build_log" >&2

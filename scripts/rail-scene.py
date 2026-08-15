@@ -70,11 +70,13 @@ def repo_label(slug):
     return slug.rsplit("/", 1)[-1]
 
 
-def action(target_kind, target_id, recipe, vehicle="workspace"):
+def action(target_kind, target_id, recipe):
+    # projection.rs also emits vehicle="pane" for independent sessions; this
+    # scene has none, so the parameter would only ever take one value.
     return [
         ("action.primary.key", text("materialize")),
         ("action.primary.label", text("Open")),
-        ("action.primary.vehicle", text(vehicle)),
+        ("action.primary.vehicle", text("workspace")),
         ("action.primary.target", text(f"{target_kind}:{target_id}")),
         ("action.primary.recipe", text(recipe)),
     ]
