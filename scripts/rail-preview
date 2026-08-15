@@ -20,6 +20,17 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 host_target="$(rustc -vV | sed -n 's/^host: //p')"
 
+# Everything the caller names is resolved against their cwd, not the repo root
+# this cds into later. A capture pointed at with RAIL_PREVIEW_SCENE is quite
+# likely to live somewhere else entirely.
+resolve() {
+    if [ ! -f "$1" ]; then
+        echo "rail-preview: no such file: $1" >&2
+        exit 1
+    fi
+    printf '%s/%s\n' "$(cd -- "$(dirname -- "$1")" && pwd -P)" "$(basename -- "$1")"
+}
+
 # A bare number is a width, not a template — `rail-preview 80` is the obvious
 # way to ask for one, and reading it as a template gives a baffling error.
 template="$repo_root/templates/flotilla-default.kdl"
@@ -29,6 +40,7 @@ if [ $# -gt 0 ] && ! [[ $1 =~ ^[0-9]+$ ]]; then
 fi
 widths=("$@")
 [ ${#widths[@]} -eq 0 ] && widths=(46)
+template="$(resolve "$template")"
 
 # One trap: a second would silently replace the first and leak the other file.
 scratch=()
@@ -36,7 +48,9 @@ cleanup() { [ ${#scratch[@]} -gt 0 ] && rm -f "${scratch[@]}"; }
 trap cleanup EXIT
 
 scene="${RAIL_PREVIEW_SCENE:-}"
-if [ -z "$scene" ]; then
+if [ -n "$scene" ]; then
+    scene="$(resolve "$scene")"
+else
     scene="$(mktemp "${TMPDIR:-/tmp}/rail-preview-scene.XXXXXX")"
     scratch+=("$scene")
     python3 "$repo_root/scripts/rail-scene.py" > "$scene"
