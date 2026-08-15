@@ -591,17 +591,11 @@ impl PluginState {
     }
 
     fn set_inspected_metadata(&self, state: Option<MetadataTriState>) {
-        let Some(client_id) = self.own_client_id else {
+        let Some(request) = self.metadata_visibility_request(state) else {
             return;
         };
-        let Some(node_key) = self.clicked_node() else {
-            return;
-        };
-        let Ok(payload) = serde_json::to_string(&MetadataVisibilitySetRequest {
-            client_id,
-            node_key,
-            state,
-        }) else {
+        let client_id = request.client_id;
+        let Ok(payload) = serde_json::to_string(&request) else {
             return;
         };
         pipe_message_to_plugin(
@@ -609,6 +603,23 @@ impl PluginState {
                 .with_destination_client_id(client_id)
                 .with_payload(payload),
         );
+    }
+
+    /// Resolve a metadata tri-state click into a set request.
+    ///
+    /// Split from the send for the same reason as `node_variable_request`: the
+    /// click is only valid while the frame it was aimed at is still on screen,
+    /// and that is worth a test at this call site rather than only where the
+    /// shared guard is defined.
+    fn metadata_visibility_request(
+        &self,
+        state: Option<MetadataTriState>,
+    ) -> Option<MetadataVisibilitySetRequest> {
+        Some(MetadataVisibilitySetRequest {
+            client_id: self.own_client_id?,
+            node_key: self.clicked_node()?,
+            state,
+        })
     }
 
     fn set_node_variable(&self, variable: usize, value: Option<usize>) {
@@ -2569,6 +2580,33 @@ mod tests {
             plugin.node_variable_request(0, Some(1)),
             None,
             "a value index that was valid for the previous declaration must not carry over"
+        );
+    }
+
+    #[test]
+    fn a_stale_frame_click_is_dropped_on_the_metadata_control_too() {
+        // Same guard as the variable path. Tested at this call site rather than
+        // only where clicked_node is defined, so dropping the guard here would
+        // fail a test rather than pass silently.
+        let mut plugin = PluginState::default();
+        plugin.own_client_id = Some(3);
+        plugin.model = Some(group_model_with_declarations(vec![
+            child_layout_declaration(),
+        ]));
+        plugin.rendered_for_node = Some(plugin.current_inspected_node());
+
+        assert!(
+            plugin
+                .metadata_visibility_request(Some(MetadataTriState::Meta))
+                .is_some(),
+            "a click against the frame on screen resolves"
+        );
+
+        plugin.rendered_for_node = Some(NodeKey::Root);
+        assert_eq!(
+            plugin.metadata_visibility_request(Some(MetadataTriState::Meta)),
+            None,
+            "the click was aimed at a frame that is no longer on screen"
         );
     }
 
