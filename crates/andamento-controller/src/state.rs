@@ -1485,20 +1485,24 @@ impl ControllerState {
         let Some(loop_definition) = placement.loops.first() else {
             return vec![];
         };
-        let Some(seed) = loop_definition
+        // Resolve every predicate's postings once, shortest first: the smallest
+        // list seeds the walk and the rest filter it. Looking them up per
+        // candidate would put the catalog-sized map back in the inner loop this
+        // index exists to keep it out of. The seed's own predicate is dropped
+        // from the filter — membership in it is true by construction.
+        let mut postings = loop_definition
             .predicates
             .iter()
             .map(|predicate| index.lookup(predicate))
-            .min_by_key(|matches| matches.len())
-        else {
+            .collect::<Vec<_>>();
+        postings.sort_by_key(|matches| matches.len());
+        let Some((seed, rest)) = postings.split_first() else {
             return vec![];
         };
         seed.iter()
             .filter(|position| {
-                loop_definition
-                    .predicates
-                    .iter()
-                    .all(|predicate| index.lookup(predicate).binary_search(*position).is_ok())
+                rest.iter()
+                    .all(|matches| matches.binary_search(position).is_ok())
             })
             .filter_map(|position| entities.get(*position))
             .filter(|entity| self.entity_is_visible(entity))
