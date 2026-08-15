@@ -3209,6 +3209,157 @@ mod tests {
         );
     }
 
+    /// Config for the placement pipeline: the attention region pulls its own
+    /// contents instead of being handed everything carrying an attention fact.
+    #[cfg(not(target_family = "wasm"))]
+    const PLACEMENT_KDL: &str = r#"
+version 1
+
+region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="attention"
+
+placement "attention" {
+  for "item" kind="vessel" {
+    match "status.attention" value="true"
+    field "label" {
+      value source="metadata-text" key="display.label"
+    }
+  }
+}
+"#;
+
+    #[cfg(not(target_family = "wasm"))]
+    fn attention_vessel_patch(id: &str, label: &str, attention: bool) -> String {
+        serde_json::json!({
+            "type": "metadata-patch",
+            "target": { "kind": "entity", "value": { "kind": "vessel", "id": id } },
+            "source_id": "flotilla-connector",
+            "set": {
+                "flotilla.vessel": {
+                    "value": { "type": "text", "value": id },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "display.label": {
+                    "value": { "type": "text", "value": label },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "status.attention": {
+                    "value": { "type": "bool", "value": attention },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                }
+            }
+        })
+        .to_string()
+    }
+
+    // Native-only for the same reason as the grouping frame snapshot above:
+    // this drives the real controller and the real rail renderer.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn placement_pipeline_renders_a_region_from_a_loop() {
+        let mut state = ControllerState::default();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
+                andamento_shared::template_config::parse_template_config_kdl(PLACEMENT_KDL)
+                    .unwrap(),
+            ),
+        ));
+        // The placement selects from the entity catalog, which the grouping
+        // catalog still populates in this slice.
+        state.set_grouping_catalog(Some(
+            andamento_shared::grouping_config::GroupingConfigCatalog::with_bundled_defaults(
+                andamento_shared::grouping_config::parse_grouping_config_kdl(PLACEMENT_KDL)
+                    .unwrap(),
+            ),
+        ));
+        state.set_rail_config(RailConfig::default());
+
+        for (id, label, attention) in [
+            ("flotilla/alpha/worker@lab", "alpha-worker", true),
+            ("flotilla/beta/worker@lab", "beta-worker", false),
+            ("flotilla/gamma/worker@lab", "gamma-worker", true),
+        ] {
+            assert!(
+                handle_pipe_message(
+                    &mut state,
+                    pipe(
+                        MSG_APPLY_METADATA_PATCH,
+                        Some(attention_vessel_patch(id, label, attention)),
+                        BTreeMap::new(),
+                    ),
+                )
+                .state_changed
+            );
+        }
+        // A convoy also carrying the attention fact. The legacy region would
+        // place it; the loop asks for vessels, so it must not appear.
+        let convoy_patch = serde_json::json!({
+            "type": "metadata-patch",
+            "target": { "kind": "entity", "value": { "kind": "convoy", "id": "flotilla/alpha@lab" } },
+            "source_id": "flotilla-connector",
+            "set": {
+                "flotilla.convoy": {
+                    "value": { "type": "text", "value": "flotilla/alpha@lab" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "display.label": {
+                    "value": { "type": "text", "value": "alpha-convoy" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "status.attention": {
+                    "value": { "type": "bool", "value": true },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                }
+            }
+        })
+        .to_string();
+        assert!(
+            handle_pipe_message(
+                &mut state,
+                pipe(
+                    MSG_APPLY_METADATA_PATCH,
+                    Some(convoy_patch),
+                    BTreeMap::new()
+                ),
+            )
+            .state_changed
+        );
+
+        let model = state.view_model();
+        let attention = model
+            .surface_regions
+            .iter()
+            .find(|region| region.definition.name == "attention")
+            .expect("attention region");
+        let placed = attention
+            .entities
+            .iter()
+            .map(|entity| entity.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            placed,
+            vec!["alpha-worker", "gamma-worker"],
+            "the loop selects vessels wanting attention and nothing else"
+        );
+
+        let templates =
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
+                andamento_shared::template_config::parse_template_config_kdl(PLACEMENT_KDL)
+                    .unwrap(),
+            );
+        let rendered = andamento_rail::render::render_lines_with_template_catalog(
+            Some(&model),
+            &[],
+            10,
+            40,
+            true,
+            Some(&templates),
+        );
+        insta::assert_snapshot!(
+            "placement_pipeline_renders_a_region_from_a_loop",
+            rail_frame_snapshot(&rendered.lines, 40)
+        );
+    }
+
     #[test]
     fn metadata_patch_cli_pipe_is_unblocked_without_output() {
         let mut state = ControllerState::default();

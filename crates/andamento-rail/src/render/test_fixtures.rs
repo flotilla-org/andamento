@@ -100,6 +100,7 @@ impl ControllerModelFixture {
     pub(super) fn with_header_region(mut self) -> Self {
         self.model.surface_regions.push(DisplayRegion {
             definition: andamento_shared::template_config::SurfaceRegionDefinition {
+                placement: None,
                 name: "header".to_owned(),
                 source: andamento_shared::template_config::SurfaceRegionSource::Header,
                 root_template: "region/header".to_owned(),

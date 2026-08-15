@@ -64,6 +64,12 @@ pub fn parse_template_config_kdl(
         .filter(|node| node.name().value() == "region")
         .map(parse_kdl_region)
         .collect::<Result<Vec<_>, _>>()?;
+    let placements = document
+        .nodes()
+        .iter()
+        .filter(|node| node.name().value() == "placement")
+        .map(parse_kdl_placement)
+        .collect::<Result<Vec<_>, _>>()?;
     let config = ExternalTemplateConfig {
         version,
         templates,
@@ -72,6 +78,7 @@ pub fn parse_template_config_kdl(
         display_variables,
         sets,
         regions,
+        placements,
     };
     config.validate()?;
     Ok(config)
@@ -123,6 +130,8 @@ pub struct ExternalTemplateConfig {
     pub sets: Vec<TemplateVariableSetter>,
     #[serde(default)]
     pub regions: Vec<SurfaceRegionDefinition>,
+    #[serde(default)]
+    pub placements: Vec<PlacementDefinition>,
 }
 
 impl ExternalTemplateConfig {
@@ -299,7 +308,10 @@ impl ExternalTemplateConfig {
                     region.name
                 )));
             }
+            // A placement selects the region's entities itself, so the legacy
+            // single-key attention filter is not needed alongside it.
             if region.source == SurfaceRegionSource::Attention
+                && region.placement.is_none()
                 && region.attention_key.as_deref().is_none_or(str::is_empty)
             {
                 return Err(TemplateConfigError::Validation(format!(
@@ -448,6 +460,7 @@ pub struct TemplateConfigCatalog {
     layers: Vec<TemplateConfigLayer>,
     display_variables: Vec<TemplateVariableDefinition>,
     regions: Vec<SurfaceRegionDefinition>,
+    placements: Vec<PlacementDefinition>,
 }
 
 impl Default for TemplateConfigCatalog {
@@ -489,10 +502,18 @@ impl TemplateConfigCatalog {
                 (!layer.config.regions.is_empty()).then(|| layer.config.regions.clone())
             })
             .unwrap_or_default();
+        let mut seen_placements = BTreeSet::new();
+        let placements = layers
+            .iter()
+            .flat_map(|layer| layer.config.placements.iter())
+            .filter(|placement| seen_placements.insert(placement.name.clone()))
+            .cloned()
+            .collect();
         Self {
             layers,
             display_variables,
             regions,
+            placements,
         }
     }
 
@@ -654,6 +675,12 @@ impl TemplateConfigCatalog {
         &self.regions
     }
 
+    pub fn placement(&self, name: &str) -> Option<&PlacementDefinition> {
+        self.placements
+            .iter()
+            .find(|placement| placement.name == name)
+    }
+
     fn layer_stack(&self, metadata: &BTreeMap<String, MetadataValue>) -> Vec<&TemplateConfigLayer> {
         self.layers
             .iter()
@@ -680,6 +707,10 @@ pub struct SurfaceRegionDefinition {
     pub form: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_key: Option<String>,
+    /// Names a `placement` that supplies this region's contents. When absent
+    /// the region keeps the legacy pipeline, which stays the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<String>,
     #[serde(default)]
     pub pinned: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -691,6 +722,58 @@ pub struct SurfaceRegionDefinition {
 pub struct SurfaceFormPromotion {
     pub when: String,
     pub form: String,
+}
+
+/// A named placement: a section built by pulling entities in, rather than by
+/// entities pushing themselves into a grouping path.
+///
+/// This slice carries exactly one flat loop. Nesting, bindings and
+/// `apply-template` are deliberately absent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct PlacementDefinition {
+    pub name: String,
+    pub loops: Vec<PlacementLoop>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct PlacementLoop {
+    /// The name this loop binds its current entity to. Unused until nesting
+    /// arrives, but part of the syntax from the start so configs do not churn.
+    pub binding: String,
+    pub predicates: Vec<PlacementPredicate>,
+    #[serde(default)]
+    pub fields: Vec<TemplateConfigFieldSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+}
+
+/// Fact equality against a constant.
+///
+/// Every predicate must be answerable by the `(key, value)` index the
+/// controller builds once per model. That is a hard constraint, not a
+/// stylistic one: an unindexable predicate turns a nested loop into a scan,
+/// and nested scans are quadratic in the catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct PlacementPredicate {
+    pub key: String,
+    pub value: String,
+}
+
+/// The text a value is indexed under. Predicates compare against this, so a
+/// config writes `value="true"` for a bool and `value="3"` for an integer.
+///
+/// Values with no single indexable text — lists, group paths — return `None`
+/// and simply never match, rather than matching something surprising.
+pub fn placement_index_text(value: &MetadataValue) -> Option<String> {
+    match value {
+        MetadataValue::Text(text) => Some(text.clone()),
+        MetadataValue::Bool(flag) => Some(flag.to_string()),
+        MetadataValue::Integer(number) => Some(number.to_string()),
+        MetadataValue::StringList(_) | MetadataValue::GroupPath(_) => None,
+    }
 }
 
 fn bundled_default_config() -> ExternalTemplateConfig {
@@ -1842,6 +1925,97 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
     })
 }
 
+fn parse_kdl_placement(node: &KdlNode) -> Result<PlacementDefinition, TemplateConfigError> {
+    let name = kdl_required_arg_string(node, 0, "placement name")?;
+    let loops = node
+        .children()
+        .map(|children| {
+            children
+                .nodes()
+                .iter()
+                .filter(|child| child.name().value() == "for")
+                .map(parse_kdl_placement_loop)
+                .collect::<Result<Vec<_>, TemplateConfigError>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    if loops.is_empty() {
+        return Err(TemplateConfigError::Validation(format!(
+            "placement {name} declares no loops"
+        )));
+    }
+    if loops.len() > 1 {
+        return Err(TemplateConfigError::Validation(format!(
+            "placement {name} declares {} loops; this build renders one",
+            loops.len()
+        )));
+    }
+    Ok(PlacementDefinition { name, loops })
+}
+
+fn parse_kdl_placement_loop(node: &KdlNode) -> Result<PlacementLoop, TemplateConfigError> {
+    let binding = kdl_required_arg_string(node, 0, "loop binding")?;
+    let mut predicates = vec![];
+    // `kind=` is sugar for the overwhelmingly common entity.kind equality.
+    if let Some(kind) = kdl_prop_string(node, "kind") {
+        predicates.push(PlacementPredicate {
+            key: "entity.kind".to_owned(),
+            value: kind,
+        });
+    }
+    let mut fields = vec![];
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            match child.name().value() {
+                "match" => predicates.push(parse_kdl_placement_predicate(child, &binding)?),
+                "field" => fields.push(parse_kdl_field(child)?),
+                other => {
+                    return Err(TemplateConfigError::Validation(format!(
+                        "loop {binding} has unsupported child {other}"
+                    )))
+                }
+            }
+        }
+    }
+    if predicates.is_empty() {
+        return Err(TemplateConfigError::Validation(format!(
+            "loop {binding} selects every entity; declare kind= or a match"
+        )));
+    }
+    Ok(PlacementLoop {
+        binding,
+        predicates,
+        fields,
+        layout: kdl_prop_string(node, "layout"),
+    })
+}
+
+fn parse_kdl_placement_predicate(
+    node: &KdlNode,
+    binding: &str,
+) -> Result<PlacementPredicate, TemplateConfigError> {
+    let key = kdl_required_arg_string(node, 0, "match key")?;
+    // The index is keyed by (key, value). Anything else — existence tests,
+    // comparisons, matches against another loop's binding — cannot be served
+    // by a lookup, so it is refused here rather than silently scanned.
+    if node.get("exists").is_some() {
+        return Err(TemplateConfigError::Validation(format!(
+            "loop {binding} matches {key} with exists=; the placement index is keyed by (key, value) and cannot serve an existence test"
+        )));
+    }
+    if let Some(of) = kdl_prop_string(node, "of") {
+        return Err(TemplateConfigError::Validation(format!(
+            "loop {binding} matches {key} against binding {of}; this build has no nested loops to bind against"
+        )));
+    }
+    let Some(value) = kdl_prop_string(node, "value") else {
+        return Err(TemplateConfigError::Validation(format!(
+            "loop {binding} matches {key} without value=; the placement index can only answer equality against a constant"
+        )));
+    };
+    Ok(PlacementPredicate { key, value })
+}
+
 fn parse_kdl_region(node: &KdlNode) -> Result<SurfaceRegionDefinition, TemplateConfigError> {
     let source = match kdl_required_prop_string(node, "source")?.as_str() {
         "header" => SurfaceRegionSource::Header,
@@ -1860,6 +2034,7 @@ fn parse_kdl_region(node: &KdlNode) -> Result<SurfaceRegionDefinition, TemplateC
         root_template: kdl_required_prop_string(node, "root-template")?,
         form: kdl_prop_string(node, "form").unwrap_or_else(|| "full".to_owned()),
         attention_key: kdl_prop_string(node, "attention-key"),
+        placement: kdl_prop_string(node, "placement"),
         pinned: node
             .get("pinned")
             .and_then(|entry| entry.value().as_bool())
@@ -2568,6 +2743,88 @@ mod tests {
     }
 
     #[test]
+    fn placement_loop_parses_kind_sugar_and_constant_matches() {
+        let config = parse_template_config_kdl(
+            r#"
+version 1
+placement "attention" {
+  for "item" kind="vessel" {
+    match "status.attention" value="true"
+    field "label" {
+      value source="metadata-text" key="display.label"
+    }
+  }
+}
+"#,
+        )
+        .expect("placement parses");
+
+        let placement = &config.placements[0];
+        let loop_definition = &placement.loops[0];
+        assert_eq!(loop_definition.binding, "item");
+        assert_eq!(
+            loop_definition.predicates,
+            vec![
+                PlacementPredicate {
+                    key: "entity.kind".to_owned(),
+                    value: "vessel".to_owned(),
+                },
+                PlacementPredicate {
+                    key: "status.attention".to_owned(),
+                    value: "true".to_owned(),
+                },
+            ],
+            "kind= is sugar for an entity.kind equality"
+        );
+        assert_eq!(loop_definition.fields.len(), 1);
+    }
+
+    #[test]
+    fn placement_refuses_predicates_the_index_cannot_serve() {
+        // The index is keyed by (key, value). Each of these would force a scan,
+        // which is what makes nested loops quadratic, so each is a config error.
+        for (predicate, expected) in [
+            (r#"match "status.attention" exists=true"#, "existence test"),
+            (r#"match "flotilla.project" of="project""#, "nested loops"),
+            (r#"match "status.attention""#, "equality against a constant"),
+        ] {
+            let error = parse_template_config_kdl(&format!(
+                "version 1\nplacement \"p\" {{\n  for \"item\" kind=\"vessel\" {{\n    {predicate}\n  }}\n}}\n"
+            ))
+            .expect_err("unindexable predicate must be refused");
+            let message = format!("{error:?}");
+            assert!(
+                message.contains(expected),
+                "diagnostic for {predicate} should explain {expected}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn attention_region_may_omit_attention_key_when_a_placement_supplies_it() {
+        parse_template_config_kdl(
+            r#"
+version 1
+region "attention" source="attention" root-template="r" form="full" placement="attention"
+placement "attention" {
+  for "item" kind="vessel" {
+    match "status.attention" value="true"
+  }
+}
+"#,
+        )
+        .expect("placement replaces the legacy attention filter");
+
+        parse_template_config_kdl(
+            r#"
+version 1
+region "attention" source="attention" root-template="r" form="full"
+"#,
+        )
+        .expect_err("without a placement the legacy attention-key is still required");
+    }
+
+    #[test]
     fn node_layer_stack_has_documented_precedence_and_membership_scope() {
         let empty = || ExternalTemplateConfig {
             version: 1,
@@ -2577,6 +2834,7 @@ mod tests {
             display_variables: vec![],
             sets: vec![],
             regions: vec![],
+            placements: vec![],
         };
         let catalog = TemplateConfigCatalog::from_layers(vec![
             TemplateConfigLayer::bundled("bundled.kdl", empty()),
