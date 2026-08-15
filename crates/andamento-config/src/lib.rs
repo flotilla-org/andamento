@@ -230,6 +230,7 @@ pub struct PluginState {
     last_pane_manifest: Option<PaneManifest>,
     own_plugin_id: Option<u32>,
     own_client_id: Option<u16>,
+    rendered_for_node: Option<NodeKey>,
     own_plugin_placement: Option<PluginPlacement>,
     model: Option<ControllerViewModel>,
     pending_config: Option<RailConfig>,
@@ -429,6 +430,10 @@ impl ZellijPlugin for PluginState {
             self.body_scroll_offset,
         );
         self.hit_regions = rendered.hit_regions;
+        // Hit regions describe the node this frame was drawn for. A controller
+        // push can replace the model — and with it the inspected node — before
+        // the click arrives, so record what they refer to.
+        self.rendered_for_node = Some(self.current_inspected_node());
         self.body_scroll_offset = rendered.body_scroll_offset;
         print!("{}", rendered.lines.join("\n"));
         for ribbon in rendered.ribbons {
@@ -589,7 +594,9 @@ impl PluginState {
         let Some(client_id) = self.own_client_id else {
             return;
         };
-        let node_key = self.current_inspected_node();
+        let Some(node_key) = self.clicked_node() else {
+            return;
+        };
         let Ok(payload) = serde_json::to_string(&MetadataVisibilitySetRequest {
             client_id,
             node_key,
@@ -630,7 +637,7 @@ impl PluginState {
         value: Option<usize>,
     ) -> Option<NodeVariableSetRequest> {
         let client_id = self.own_client_id?;
-        let node_key = match self.current_inspected_node() {
+        let node_key = match self.clicked_node()? {
             NodeKey::Root => NodeKey::Root,
             NodeKey::Group(path) => NodeKey::Group(path),
             NodeKey::Tab(_) | NodeKey::Entity(_) => return None,
@@ -656,6 +663,18 @@ impl PluginState {
             name: declaration.name.clone(),
             value,
         })
+    }
+
+    /// The node a click applies to, or `None` if the frame it was aimed at is
+    /// no longer the one on screen.
+    ///
+    /// Hit regions are captured at render and consumed on a later event. A
+    /// controller push in between swaps the model, so resolving a click against
+    /// whatever is inspected *now* can silently apply it to a different node
+    /// that happens to be the same shape.
+    fn clicked_node(&self) -> Option<NodeKey> {
+        let current = self.current_inspected_node();
+        (self.rendered_for_node.as_ref() == Some(&current)).then_some(current)
     }
 
     fn current_inspected_node(&self) -> NodeKey {
@@ -2518,6 +2537,7 @@ mod tests {
         plugin.model = Some(group_model_with_declarations(vec![
             child_layout_declaration(),
         ]));
+        plugin.rendered_for_node = Some(plugin.current_inspected_node());
 
         let request = plugin
             .node_variable_request(0, Some(1))
@@ -2549,6 +2569,48 @@ mod tests {
             plugin.node_variable_request(0, Some(1)),
             None,
             "a value index that was valid for the previous declaration must not carry over"
+        );
+    }
+
+    #[test]
+    fn a_click_aimed_at_a_replaced_frame_does_not_apply_to_the_new_node() {
+        // hit regions are captured at render and consumed on a later event. A
+        // controller push in between swaps the model and the inspected node, so
+        // a click carrying indices from the old frame must be dropped, not
+        // re-resolved against a different node of the same shape.
+        let mut plugin = PluginState::default();
+        plugin.own_client_id = Some(3);
+        plugin.model = Some(group_model_with_declarations(vec![
+            child_layout_declaration(),
+        ]));
+        plugin.rendered_for_node = Some(plugin.current_inspected_node());
+
+        assert!(
+            plugin.node_variable_request(0, Some(1)).is_some(),
+            "a click against the frame on screen resolves"
+        );
+
+        // Same shape, different node — one declaration at index 0, so the index
+        // is in range and only the node identity distinguishes them.
+        let mut moved = group_model_with_declarations(vec![child_layout_declaration()]);
+        let elsewhere = GroupPath(vec![GroupSegment {
+            key: "git.repo".to_owned(),
+            value: MetadataValue::Text("flotilla-org/andamento".to_owned()),
+            label: Some("andamento".to_owned()),
+        }]);
+        moved.inspected_node = Some(NodeKey::Group(elsewhere.clone()));
+        moved.template_config.effective_variables =
+            vec![andamento_shared::EffectiveNodeVariables {
+                node: NodeKey::Group(elsewhere),
+                values: BTreeMap::new(),
+                declarations: vec![child_layout_declaration()],
+            }];
+        plugin.model = Some(moved);
+
+        assert_eq!(
+            plugin.node_variable_request(0, Some(1)),
+            None,
+            "the click was aimed at a frame that is no longer on screen"
         );
     }
 
