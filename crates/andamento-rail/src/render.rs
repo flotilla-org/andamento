@@ -39,6 +39,7 @@ pub struct LocalTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HitAction {
     SwitchTab,
+    ActivateEntity,
     Materialize,
     TogglePin,
     ToggleGroup,
@@ -682,7 +683,7 @@ fn render_region_stack(
                             group_path: None,
                             inspect_target: Some(NodeKey::Entity(entity.entity.clone())),
                             materialize_request: None,
-                            action: HitAction::InspectNode,
+                            action: HitAction::ActivateEntity,
                         });
                     }
                 }
@@ -6923,6 +6924,7 @@ mod tests {
         );
         assert!(rendered.hit_regions.iter().any(|hit| {
             hit.row_start == 1
+                && hit.action == HitAction::ActivateEntity
                 && hit.inspect_target
                     == Some(NodeKey::Entity(EntityRef {
                         kind: "issue".to_owned(),

@@ -301,6 +301,22 @@ fn build_materialize_latent_message(
     })
 }
 
+fn build_activate_entity_message(
+    controller_plugin_url: &str,
+    client_id: u16,
+    entity: &andamento_shared::EntityRef,
+) -> Option<MessageToPlugin> {
+    let payload = serde_json::to_string(entity).ok()?;
+    let message = MessageToPlugin::new(andamento_shared::MSG_ACTIVATE_ENTITY)
+        .with_destination_client_id(client_id)
+        .with_payload(payload);
+    Some(if controller_plugin_url.trim().is_empty() {
+        message
+    } else {
+        message.with_plugin_url(controller_plugin_url.to_owned())
+    })
+}
+
 fn build_rail_ui_action_message(
     controller_plugin_url: &str,
     action: RailUiAction,
@@ -1097,6 +1113,23 @@ mod tests {
     }
 
     #[test]
+    fn attention_activation_builds_an_entity_only_controller_request() {
+        let entity = andamento_shared::EntityRef {
+            kind: "vessel".to_owned(),
+            id: "dev/focus/worker@lab".to_owned(),
+        };
+
+        let message = build_activate_entity_message("andamento-controller", 4, &entity).unwrap();
+
+        assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
+        assert_eq!(message.destination_client_id, Some(4));
+        assert_eq!(message.message_name, andamento_shared::MSG_ACTIVATE_ENTITY);
+        let payload: andamento_shared::EntityRef =
+            serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
+        assert_eq!(payload, entity);
+    }
+
+    #[test]
     fn group_toggle_builds_controller_request() {
         let path = GroupPath(vec![andamento_shared::GroupSegment {
             key: "zellij.pane.cwd".to_owned(),
@@ -1542,6 +1575,20 @@ impl PluginState {
                 match hit.action {
                     HitAction::SwitchTab => {
                         switch_tab_to((hit.tab_position + 1) as u32);
+                        false
+                    }
+                    HitAction::ActivateEntity => {
+                        if let (Some(NodeKey::Entity(entity)), Some(client_id)) =
+                            (hit.inspect_target.as_ref(), self.own_client_id)
+                        {
+                            if let Some(message) = build_activate_entity_message(
+                                &self.controller_plugin_url,
+                                client_id,
+                                entity,
+                            ) {
+                                pipe_message_to_plugin(message);
+                            }
+                        }
                         false
                     }
                     HitAction::Materialize => {

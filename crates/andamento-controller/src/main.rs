@@ -28,7 +28,7 @@ use andamento_shared::{
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
-use state::ControllerState;
+use state::{ControllerState, EntityActivation};
 use zellij_tile::output::print;
 use zellij_tile::prelude::*;
 
@@ -457,6 +457,13 @@ impl ZellijPlugin for PluginState {
         let mut result = handle_pipe_message(&mut self.state, pipe_message);
         self.stats
             .record_span_elapsed("pipe.handle-message", started_at);
+        if let Some(entity) = result.activate_entity_request.take() {
+            let state_changed = self.activate_entity(entity);
+            result.state_changed |= state_changed;
+            if state_changed {
+                result.view_model_push_reason = Some(ViewModelPushReason::PipeMaterializeLatent);
+            }
+        }
         if let Some(request) = result.materialize_latent_request.take() {
             let state_changed = self.materialize_latent(request);
             result.state_changed |= state_changed;
@@ -898,6 +905,25 @@ impl PluginState {
         // opening-to-live transition; there is no intermediate orphan model.
         false
     }
+
+    fn activate_entity(&mut self, entity: andamento_shared::EntityRef) -> bool {
+        self.stats.increment("entity.activate.request");
+        match self.state.activation_for_entity(&entity) {
+            Some(EntityActivation::FocusTab { position }) => {
+                self.stats.increment("entity.activate.focus-existing");
+                switch_tab_to((position + 1) as u32);
+                false
+            }
+            Some(EntityActivation::Materialize(request)) => {
+                self.stats.increment("entity.activate.materialize");
+                self.materialize_latent(request)
+            }
+            None => {
+                self.stats.increment("entity.activate.unavailable");
+                false
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -911,6 +937,7 @@ struct HandlePipeResult {
     rail_size_observed: Option<RailSizeObserved>,
     config_inspect_request: Option<ConfigInspectRequest>,
     materialize_latent_request: Option<andamento_shared::MaterializeLatentRequest>,
+    activate_entity_request: Option<andamento_shared::EntityRef>,
     broadcast_rail_ui_state: bool,
 }
 
@@ -1270,6 +1297,10 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             materialize_latent_request: Some(request),
             ..HandlePipeResult::default()
         },
+        Ok(Some(ControllerMessage::ActivateEntity(entity))) => HandlePipeResult {
+            activate_entity_request: Some(entity),
+            ..HandlePipeResult::default()
+        },
         Ok(None) => HandlePipeResult::default(),
         Err(error) => {
             let message = format!(
@@ -1475,6 +1506,7 @@ enum ControllerMessage {
     SetNodeVariable(NodeVariableSetRequest),
     ConfigInspect(ConfigInspectRequest),
     MaterializeLatent(andamento_shared::MaterializeLatentRequest),
+    ActivateEntity(andamento_shared::EntityRef),
 }
 
 fn parse_controller_message(
@@ -1612,6 +1644,16 @@ fn parse_controller_message(
                     .map_err(|e| format!("invalid materialize latent request: {e}"))
             })
             .map(ControllerMessage::MaterializeLatent)
+            .map(Some),
+        andamento_shared::MSG_ACTIVATE_ENTITY => pipe_message
+            .payload
+            .as_deref()
+            .ok_or_else(|| "activate entity requires payload".to_owned())
+            .and_then(|payload| {
+                serde_json::from_str::<andamento_shared::EntityRef>(payload)
+                    .map_err(|e| format!("invalid activate entity request: {e}"))
+            })
+            .map(ControllerMessage::ActivateEntity)
             .map(Some),
         MSG_REQUEST_STATE => Ok(Some(ControllerMessage::RequestState)),
         MSG_OBSERVED_IDENTITIES => match &pipe_message.source {
@@ -1842,6 +1884,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::MaterializeLatent(request)));
+    }
+
+    #[test]
+    fn parses_activate_entity_request() {
+        let entity = andamento_shared::EntityRef {
+            kind: "vessel".to_owned(),
+            id: "dev/focus/worker@lab".to_owned(),
+        };
+        let payload = serde_json::to_string(&entity).unwrap();
+
+        let parsed = parse_controller_message(&pipe(
+            andamento_shared::MSG_ACTIVATE_ENTITY,
+            Some(payload),
+            BTreeMap::new(),
+        ))
+        .unwrap();
+
+        assert_eq!(parsed, Some(ControllerMessage::ActivateEntity(entity)));
     }
 
     #[test]

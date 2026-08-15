@@ -34,6 +34,7 @@ pub const MSG_SET_METADATA_VISIBILITY: &str = "andamento-set-metadata-visibility
 pub const MSG_SET_NODE_VARIABLE: &str = "andamento-set-node-variable";
 pub const MSG_CONFIG_INSPECT: &str = "andamento-config-inspect";
 pub const MSG_MATERIALIZE_LATENT: &str = "andamento-materialize-latent";
+pub const MSG_ACTIVATE_ENTITY: &str = "andamento-activate-entity";
 pub const NODE_VARIABLE_CONFIG_OVERRIDE_SETTER: &str = "config override";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
