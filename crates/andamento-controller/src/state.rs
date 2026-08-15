@@ -46,6 +46,14 @@ pub struct ControllerTab {
     pub active: bool,
 }
 
+/// What a node resolved to: the variable values in effect, and the declarations
+/// that are in scope there.
+#[derive(Debug, Clone, Default)]
+struct ResolvedNodeVariables {
+    values: BTreeMap<String, EffectiveVariableValue>,
+    declarations: Vec<andamento_shared::template_config::NodeVariableDefinition>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntityActivation {
     FocusTab { position: usize },
@@ -1367,8 +1375,7 @@ impl ControllerState {
             return (vec![], vec![]);
         };
         let mut variable_warnings = BTreeSet::new();
-        let mut resolved_by_node =
-            BTreeMap::<NodeKey, BTreeMap<String, EffectiveVariableValue>>::new();
+        let mut resolved_by_node = BTreeMap::<NodeKey, ResolvedNodeVariables>::new();
         let root = NodeKey::Root;
         let root_metadata = node_metadata(&root, resolved_metadata);
         let root_values = self.resolve_variables_at_node(
@@ -1402,7 +1409,9 @@ impl ControllerState {
             let values = self.resolve_variables_at_node(
                 catalog,
                 &node,
-                resolved_by_node.get(&parent),
+                resolved_by_node
+                    .get(&parent)
+                    .map(|resolved| &resolved.values),
                 &metadata,
                 template,
                 &mut variable_warnings,
@@ -1482,7 +1491,9 @@ impl ControllerState {
             let values = self.resolve_variables_at_node(
                 catalog,
                 &node,
-                resolved_by_node.get(&parent),
+                resolved_by_node
+                    .get(&parent)
+                    .map(|resolved| &resolved.values),
                 &metadata,
                 template,
                 &mut variable_warnings,
@@ -1509,7 +1520,9 @@ impl ControllerState {
             let values = self.resolve_variables_at_node(
                 catalog,
                 &node,
-                resolved_by_node.get(&parent),
+                resolved_by_node
+                    .get(&parent)
+                    .map(|resolved| &resolved.values),
                 &display.metadata,
                 template,
                 &mut variable_warnings,
@@ -1520,7 +1533,11 @@ impl ControllerState {
         (
             resolved_by_node
                 .into_iter()
-                .map(|(node, values)| EffectiveNodeVariables { node, values })
+                .map(|(node, resolved)| EffectiveNodeVariables {
+                    node,
+                    values: resolved.values,
+                    declarations: resolved.declarations,
+                })
                 .collect(),
             variable_warnings.into_iter().collect(),
         )
@@ -1534,7 +1551,7 @@ impl ControllerState {
         metadata: &BTreeMap<String, MetadataValue>,
         template: Option<&ResolvedTemplateSlot>,
         warnings: &mut BTreeSet<String>,
-    ) -> BTreeMap<String, EffectiveVariableValue> {
+    ) -> ResolvedNodeVariables {
         let scope = catalog.variable_scope(metadata);
         warnings.extend(scope.warnings);
         let declarations = scope.declarations;
@@ -1631,7 +1648,13 @@ impl ControllerState {
                 );
             }
         }
-        values
+        ResolvedNodeVariables {
+            values,
+            declarations: declarations
+                .into_iter()
+                .map(|resolved| resolved.definition)
+                .collect(),
+        }
     }
 
     fn latent_tabs(&self) -> Vec<LatentTab> {
@@ -3237,12 +3260,13 @@ mod tests {
         let child_values = state.resolve_variables_at_node(
             &catalog,
             &child,
-            Some(&parent_values),
+            Some(&parent_values.values),
             &plain_metadata,
             None,
             &mut warnings,
         );
         let inherited = child_values
+            .values
             .get("child-layout")
             .expect("inherited child-layout");
         assert_eq!(inherited.value, "strip");
@@ -3263,6 +3287,7 @@ mod tests {
             &mut warnings,
         );
         let configured = project_values
+            .values
             .get("child-layout")
             .expect("configured child-layout");
         assert_eq!(configured.value, "cards");

@@ -97,14 +97,12 @@ enum ConfigAction {
     SetStructure(RailStructure),
     CollectStats,
     SetInspectedMetadata(Option<MetadataTriState>),
-    SetChildLayout(NodeVariableChoice),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NodeVariableChoice {
-    Inherit,
-    Cards,
-    Strip,
+    /// Indices into the inspected node's declarations, and into that
+    /// declaration's allowed values. `None` clears the override (inherit).
+    SetNodeVariable {
+        variable: usize,
+        value: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -515,8 +513,8 @@ impl PluginState {
             self.set_inspected_metadata(state);
             return true;
         }
-        if let ConfigAction::SetChildLayout(choice) = hit.action {
-            self.set_child_layout(choice);
+        if let ConfigAction::SetNodeVariable { variable, value } = hit.action {
+            self.set_node_variable(variable, value);
             return true;
         }
         let mut config = self
@@ -606,7 +604,7 @@ impl PluginState {
         );
     }
 
-    fn set_child_layout(&self, choice: NodeVariableChoice) {
+    fn set_node_variable(&self, variable: usize, value: Option<usize>) {
         let Some(client_id) = self.own_client_id else {
             return;
         };
@@ -616,15 +614,33 @@ impl PluginState {
             NodeKey::Tab(_) => return,
             NodeKey::Entity(_) => return,
         };
-        let value = match choice {
-            NodeVariableChoice::Inherit => None,
-            NodeVariableChoice::Cards => Some("cards".to_owned()),
-            NodeVariableChoice::Strip => Some("strip".to_owned()),
+        // Resolve the click back through the declarations rendered for this
+        // node, so a stale index cannot set a variable to a foreign value.
+        let Some(declaration) = self
+            .model
+            .as_ref()
+            .and_then(|model| {
+                model
+                    .template_config
+                    .effective_variables
+                    .iter()
+                    .find(|variables| variables.node == node_key)
+            })
+            .and_then(|variables| variables.declarations.get(variable))
+        else {
+            return;
+        };
+        let value = match value {
+            None => None,
+            Some(index) => match declaration.values.get(index) {
+                Some(allowed) => Some(allowed.clone()),
+                None => return,
+            },
         };
         let Ok(payload) = serde_json::to_string(&NodeVariableSetRequest {
             client_id,
             node_key,
-            name: "child-layout".to_owned(),
+            name: declaration.name.clone(),
             value,
         }) else {
             return;
@@ -651,7 +667,7 @@ fn apply_config_action(mut config: RailConfig, action: ConfigAction) -> RailConf
         ConfigAction::SetStructure(structure) => config.structure = structure,
         ConfigAction::CollectStats
         | ConfigAction::SetInspectedMetadata(_)
-        | ConfigAction::SetChildLayout(_) => {}
+        | ConfigAction::SetNodeVariable { .. } => {}
     }
     config
 }
@@ -1162,39 +1178,45 @@ fn push_inspect_options_section(
             ),
         ],
     );
+    // Node variables render from their declarations: one segmented control per
+    // variable in scope at this node, offering inherit plus its allowed values.
+    // The Root/Group gate is the one piece still hardcoded — a declaration says
+    // nothing yet about where it is legal to set.
     if target.kind == InspectTargetKind::Root || target.kind == InspectTargetKind::Group {
-        let child_layout = model
+        let Some(node_variables) = model
             .template_config
             .effective_variables
             .iter()
             .find(|variables| variables.node == target.node_key)
-            .and_then(|variables| variables.values.get("child-layout"));
-        let explicit = child_layout.is_some_and(|value| {
-            value.provenance.ancestor == target.node_key
-                && value.provenance.setter == NODE_VARIABLE_CONFIG_OVERRIDE_SETTER
-        });
-        push_segmented_form_choice(
-            frame,
-            "Child layout",
-            label_width,
-            &[
-                (
-                    "inherit",
-                    !explicit,
-                    ConfigAction::SetChildLayout(NodeVariableChoice::Inherit),
-                ),
-                (
-                    "cards",
-                    explicit && child_layout.is_some_and(|value| value.value == "cards"),
-                    ConfigAction::SetChildLayout(NodeVariableChoice::Cards),
-                ),
-                (
-                    "strip",
-                    explicit && child_layout.is_some_and(|value| value.value == "strip"),
-                    ConfigAction::SetChildLayout(NodeVariableChoice::Strip),
-                ),
-            ],
-        );
+        else {
+            return;
+        };
+        for (variable, declaration) in node_variables.declarations.iter().enumerate() {
+            let effective = node_variables.values.get(&declaration.name);
+            let explicit = effective.is_some_and(|value| {
+                value.provenance.ancestor == target.node_key
+                    && value.provenance.setter == NODE_VARIABLE_CONFIG_OVERRIDE_SETTER
+            });
+            let mut options: Vec<(&str, bool, ConfigAction)> = vec![(
+                "inherit",
+                !explicit,
+                ConfigAction::SetNodeVariable {
+                    variable,
+                    value: None,
+                },
+            )];
+            for (value, allowed) in declaration.values.iter().enumerate() {
+                options.push((
+                    allowed.as_str(),
+                    explicit && effective.is_some_and(|current| &current.value == allowed),
+                    ConfigAction::SetNodeVariable {
+                        variable,
+                        value: Some(value),
+                    },
+                ));
+            }
+            push_segmented_form_choice(frame, &declaration.name, label_width, &options);
+        }
     }
 }
 
@@ -2418,6 +2440,14 @@ mod tests {
         assert!(!rendered_text.contains("model: tabs="));
     }
 
+    fn child_layout_declaration() -> andamento_shared::template_config::NodeVariableDefinition {
+        andamento_shared::template_config::NodeVariableDefinition {
+            name: "child-layout".to_owned(),
+            default: "cards".to_owned(),
+            values: vec!["cards".to_owned(), "strip".to_owned()],
+        }
+    }
+
     #[test]
     fn inspect_group_options_expose_direct_child_layout_actions() {
         let path = GroupPath(vec![GroupSegment {
@@ -2425,7 +2455,7 @@ mod tests {
             value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
             label: Some("flotilla".to_owned()),
         }]);
-        let model = ControllerViewModel {
+        let mut model = ControllerViewModel {
             sort_mode: SortMode::Position,
             config: RailConfig::default(),
             template_config: andamento_shared::TemplateConfigDiagnostics::default(),
@@ -2448,6 +2478,12 @@ mod tests {
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
         };
+        model.template_config.effective_variables =
+            vec![andamento_shared::EffectiveNodeVariables {
+                node: model.inspected_node.clone().expect("inspected group"),
+                values: BTreeMap::new(),
+                declarations: vec![child_layout_declaration()],
+            }];
 
         let rendered = render_config_with_scope(
             RailConfig::default(),
@@ -2464,7 +2500,7 @@ mod tests {
 
         assert!(rendered_text.contains("Options"));
         assert!(rendered_text.contains("Metadata"));
-        assert!(rendered_text.contains("Child layout"));
+        assert!(rendered_text.contains("child-layout"));
         let metadata_options_line = rendered
             .lines
             .iter()
@@ -2473,7 +2509,7 @@ mod tests {
         let child_layout_options_line = rendered
             .lines
             .iter()
-            .find(|line| line.trim_start().starts_with("Child layout"))
+            .find(|line| line.trim_start().starts_with("child-layout"))
             .expect("child layout options row");
         assert_eq!(
             metadata_options_line.find("● inherit"),
@@ -2483,14 +2519,20 @@ mod tests {
         assert!(rendered.hit_regions.iter().any(|hit| {
             hit.action == ConfigAction::SetInspectedMetadata(Some(MetadataTriState::MetaChildren))
         }));
-        assert!(rendered
-            .hit_regions
-            .iter()
-            .any(|hit| { hit.action == ConfigAction::SetChildLayout(NodeVariableChoice::Strip) }));
-        assert!(rendered
-            .hit_regions
-            .iter()
-            .any(|hit| hit.action == ConfigAction::SetChildLayout(NodeVariableChoice::Inherit)));
+        assert!(rendered.hit_regions.iter().any(|hit| {
+            hit.action
+                == ConfigAction::SetNodeVariable {
+                    variable: 0,
+                    value: Some(1),
+                }
+        }));
+        assert!(rendered.hit_regions.iter().any(|hit| {
+            hit.action
+                == ConfigAction::SetNodeVariable {
+                    variable: 0,
+                    value: None,
+                }
+        }));
     }
 
     #[test]
@@ -2525,6 +2567,7 @@ mod tests {
                         }],
                     },
                 )]),
+                declarations: vec![child_layout_declaration()],
             },
         ];
 
@@ -2542,15 +2585,18 @@ mod tests {
         let rendered_text = rendered.lines.join("\n");
 
         assert!(rendered_text.contains("Options"));
-        assert!(rendered_text.contains("Child layout"));
+        assert!(rendered_text.contains("child-layout"));
         assert!(rendered_text.contains("Variables"));
         assert!(rendered_text.contains("child-layout = strip"));
         assert!(rendered_text.contains("config at Root [user (user.kdl)]"));
         assert!(rendered_text.contains("overrides default at Root"));
-        assert!(rendered
-            .hit_regions
-            .iter()
-            .any(|hit| { hit.action == ConfigAction::SetChildLayout(NodeVariableChoice::Strip) }));
+        assert!(rendered.hit_regions.iter().any(|hit| {
+            hit.action
+                == ConfigAction::SetNodeVariable {
+                    variable: 0,
+                    value: Some(1),
+                }
+        }));
     }
 
     #[test]

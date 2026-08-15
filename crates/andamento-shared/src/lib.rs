@@ -811,6 +811,10 @@ pub struct EffectiveNodeVariables {
     pub node: NodeKey,
     #[serde(default)]
     pub values: BTreeMap<String, EffectiveVariableValue>,
+    /// Declarations in scope at this node. The inspector renders a control per
+    /// declaration, so what is settable here is carried with what is set.
+    #[serde(default)]
+    pub declarations: Vec<template_config::NodeVariableDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
