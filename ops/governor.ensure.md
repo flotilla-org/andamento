@@ -1,6 +1,6 @@
 ---
 kind: ensure
-name: andamento-governor
+role: governor
 repos: [andamento]
 ---
 workflow: governor
