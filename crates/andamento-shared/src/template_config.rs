@@ -382,6 +382,12 @@ fn validate_placement_loops(
             )));
         }
         for predicate in &loop_definition.predicates {
+            if predicate.value.is_some() == predicate.of.is_some() {
+                return Err(TemplateConfigError::Validation(format!(
+                    "loop {} predicate {} must declare exactly one of value or of",
+                    loop_definition.binding, predicate.key
+                )));
+            }
             if let Some(of) = predicate.of.as_ref() {
                 if !enclosing.contains(of) {
                     return Err(TemplateConfigError::Validation(format!(
@@ -775,11 +781,27 @@ impl TemplateConfigCatalog {
         let Some((layer, template)) = find_template(&stack, name) else {
             return Ok(None);
         };
+        let mut inherited_slot = None;
+        let mut inherited_node_kind = None;
+        let mut cursor = Some(template);
+        let mut seen = BTreeSet::new();
+        while let Some(candidate) = cursor {
+            if !seen.insert(candidate.name.as_str()) {
+                break;
+            }
+            inherited_slot = inherited_slot.or(candidate.slot);
+            inherited_node_kind = inherited_node_kind.or(candidate.node_kind);
+            if inherited_slot.is_some() && inherited_node_kind.is_some() {
+                break;
+            }
+            cursor = candidate
+                .extends
+                .as_deref()
+                .and_then(|parent| find_template(&stack, parent).map(|(_, template)| template));
+        }
         let mut template = template.clone();
-        template.slot.get_or_insert(TemplateConfigSlot::Compact);
-        template
-            .node_kind
-            .get_or_insert(TemplateConfigNodeKind::Entity);
+        template.slot = inherited_slot.or(Some(TemplateConfigSlot::Compact));
+        template.node_kind = inherited_node_kind.or(Some(TemplateConfigNodeKind::Entity));
         let mut resolved = flatten_template(&stack, layer, &template, &mut vec![], &mut vec![])?;
         resolved.name = name.to_owned();
         Ok(Some(resolved))
@@ -2966,7 +2988,7 @@ mod tests {
               value "cards"
               value "strip"
             }
-            template "base/line" slot="compact" node-kind="entity" {
+            template "base/line" slot="detail" node-kind="entity" {
               field "inherited" source="literal" value="base"
               field "removed" source="literal" value="gone"
               control "open-config" glyph="gear"
@@ -2996,6 +3018,26 @@ mod tests {
         assert_eq!(resolved.controls.len(), 1);
         assert_eq!(resolved.setters[0].setter.name, "child-layout");
         assert_eq!(resolved.setters[0].setter.value, "strip");
+        assert_eq!(resolved.slot, TemplateConfigSlot::Detail);
+    }
+
+    #[test]
+    fn json_placement_predicate_requires_a_value_or_enclosing_binding() {
+        let error = parse_template_config_json(
+            r#"{
+              "version": 1,
+              "placements": [{
+                "name": "tree",
+                "loops": [{
+                  "binding": "project",
+                  "predicates": [{"key": "entity.kind"}]
+                }]
+              }]
+            }"#,
+        )
+            .expect_err("a JSON predicate without value or of must fail validation");
+
+        assert!(format!("{error:?}").contains("exactly one of value or of"));
     }
 
     #[test]

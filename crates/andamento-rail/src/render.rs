@@ -863,16 +863,21 @@ fn placement_entity_tree(
 }
 
 fn pinned_region_rows(region: &DisplayRegion, model: Option<&ControllerViewModel>) -> usize {
+    if matches!(
+        region.definition.source,
+        SurfaceRegionSource::Attention | SurfaceRegionSource::Tree
+    ) && region.definition.placement.is_some()
+        && !region.entities.is_empty()
+    {
+        return 1 + region
+            .entities
+            .iter()
+            .map(|entity| placement_entity_tree(entity, 0).len())
+            .sum::<usize>();
+    }
     match region.definition.source {
         SurfaceRegionSource::Controls => 1,
         SurfaceRegionSource::Attention => {
-            if region.definition.placement.is_some() && !region.entities.is_empty() {
-                return 1 + region
-                    .entities
-                    .iter()
-                    .map(|entity| placement_entity_tree(entity, 0).len())
-                    .sum::<usize>();
-            }
             let key = region
                 .definition
                 .attention_key
@@ -7177,7 +7182,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_placement_attention_region_reserves_every_nested_entity_row() {
+    fn pinned_placement_regions_reserve_every_nested_entity_row() {
         let child = DisplayEntity {
             entity: EntityRef {
                 kind: "convoy".to_owned(),
@@ -7225,6 +7230,9 @@ mod tests {
         };
 
         assert_eq!(pinned_region_rows(&region, None), 4);
+        let mut tree_region = region;
+        tree_region.definition.source = SurfaceRegionSource::Tree;
+        assert_eq!(pinned_region_rows(&tree_region, None), 4);
     }
 
     #[test]

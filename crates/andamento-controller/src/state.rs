@@ -1565,17 +1565,28 @@ impl ControllerState {
                         if let Some(template) =
                             catalog.placement_template(&template_name, &display.metadata)
                         {
-                            if let Ok(Some(resolved)) = catalog
+                            let resolved_slot = match catalog
                                 .resolve_placement_template(&template_name, &display.metadata)
                             {
-                                let slot = ResolvedTemplateSlot {
+                                Ok(Some(resolved)) => Some(ResolvedTemplateSlot {
                                     template_name: resolved.name.clone(),
                                     fields: vec![],
                                     render_ready: Some(resolved.render_ready()),
                                     setters: resolved.setters.clone(),
                                     effective_kdl: resolved.dump_kdl(),
                                     resolve_error: None,
-                                };
+                                }),
+                                Ok(None) => None,
+                                Err(error) => Some(ResolvedTemplateSlot {
+                                    template_name: "<resolve-error>".to_owned(),
+                                    fields: vec![],
+                                    render_ready: None,
+                                    setters: vec![],
+                                    effective_kdl: String::new(),
+                                    resolve_error: Some(error.to_string()),
+                                }),
+                            };
+                            if let Some(slot) = resolved_slot {
                                 display.templates.compact = Some(slot.clone());
                                 display.templates.detail = Some(slot);
                             }
@@ -4791,6 +4802,47 @@ template "vessel/line" {
           Convoy C
             Vessel V
         "###);
+    }
+
+    #[test]
+    fn applied_template_resolution_failure_is_visible_on_the_placed_entity() {
+        let config = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+version 1
+region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="tree"
+placement "tree" {
+  for "project" kind="project" {
+    apply-template
+  }
+}
+template "project/line" extends="missing/line" {
+  field "label" source="metadata-text" key="display.label"
+}
+"#,
+        )
+        .expect("placement config parses before template resolution");
+        let mut state = directory_entity_state();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(config),
+        ));
+        apply_entity(
+            &mut state,
+            "project",
+            "p",
+            1,
+            &[("flotilla.project", "p"), ("display.label", "Project P")],
+        );
+
+        let slot = state.view_model().surface_regions[0].entities[0]
+            .templates
+            .compact
+            .clone()
+            .expect("applied template leaves visible resolution evidence");
+        assert_eq!(slot.template_name, "<resolve-error>");
+        assert!(slot
+            .resolve_error
+            .as_deref()
+            .is_some_and(|error| error.contains("missing/line")));
     }
 
     #[test]
