@@ -761,6 +761,36 @@ impl TemplateConfigCatalog {
         })
     }
 
+    /// Resolve the render surface of a template reached through
+    /// `apply-template`. Placement-only templates may omit the normal slot and
+    /// node-kind declarations, for which compact/entity is the rendering
+    /// convention, but otherwise use the same inheritance and operation
+    /// pipeline as every other template consumer.
+    pub fn resolve_placement_template(
+        &self,
+        name: &str,
+        metadata: &BTreeMap<String, MetadataValue>,
+    ) -> Result<Option<TemplateConfigResolved>, TemplateConfigResolveError> {
+        let stack = self.layer_stack(metadata);
+        let Some((layer, template)) = find_template(&stack, name) else {
+            return Ok(None);
+        };
+        let mut template = template.clone();
+        template.slot.get_or_insert(TemplateConfigSlot::Compact);
+        template
+            .node_kind
+            .get_or_insert(TemplateConfigNodeKind::Entity);
+        let mut resolved = flatten_template(
+            &stack,
+            layer,
+            &template,
+            &mut vec![],
+            &mut vec![],
+        )?;
+        resolved.name = name.to_owned();
+        Ok(Some(resolved))
+    }
+
     fn layer_stack(&self, metadata: &BTreeMap<String, MetadataValue>) -> Vec<&TemplateConfigLayer> {
         self.layers
             .iter()
@@ -2932,6 +2962,46 @@ mod tests {
         assert!(dump.contains("// origin: user (user.kdl)"));
         assert!(dump.contains("// origin: bundled (templates/flotilla-default.kdl)"));
         assert!(dump.parse::<KdlDocument>().is_ok(), "{dump}");
+    }
+
+    #[test]
+    fn applied_template_resolution_flattens_inheritance_operations_and_setters() {
+        let config = parse_template_config_kdl(
+            r#"
+            variable "child-layout" default="cards" {
+              value "cards"
+              value "strip"
+            }
+            template "base/line" slot="compact" node-kind="entity" {
+              field "inherited" source="literal" value="base"
+              field "removed" source="literal" value="gone"
+              control "open-config" glyph="gear"
+              set "child-layout" "strip"
+            }
+            template "project/line" extends="base/line" {
+              remove "removed"
+              field "own" source="literal" value="project"
+            }
+            "#,
+        )
+        .expect("placement templates parse");
+        let catalog = TemplateConfigCatalog::from_config(config);
+        let resolved = catalog
+            .resolve_placement_template("project/line", &BTreeMap::new())
+            .expect("placement template resolves")
+            .expect("placement template exists");
+
+        assert_eq!(
+            resolved
+                .fields
+                .iter()
+                .map(|field| field.spec.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["inherited", "own"]
+        );
+        assert_eq!(resolved.controls.len(), 1);
+        assert_eq!(resolved.setters[0].setter.name, "child-layout");
+        assert_eq!(resolved.setters[0].setter.value, "strip");
     }
 
     #[test]

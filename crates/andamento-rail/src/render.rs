@@ -866,6 +866,13 @@ fn pinned_region_rows(region: &DisplayRegion, model: Option<&ControllerViewModel
     match region.definition.source {
         SurfaceRegionSource::Controls => 1,
         SurfaceRegionSource::Attention => {
+            if region.definition.placement.is_some() && !region.entities.is_empty() {
+                return 1 + region
+                    .entities
+                    .iter()
+                    .map(|entity| placement_entity_tree(entity, 0).len())
+                    .sum::<usize>();
+            }
             let key = region
                 .definition
                 .attention_key
@@ -7167,6 +7174,57 @@ mod tests {
         );
 
         assert!(rendered.lines[3].contains("[issue] Issue 1095 hover detail"));
+    }
+
+    #[test]
+    fn pinned_placement_attention_region_reserves_every_nested_entity_row() {
+        let child = DisplayEntity {
+            entity: EntityRef {
+                kind: "convoy".to_owned(),
+                id: "c".to_owned(),
+            },
+            label: "Convoy".to_owned(),
+            form: "full".to_owned(),
+            metadata: BTreeMap::new(),
+            templates: ResolvedTemplateSlots::default(),
+            children: vec![DisplayEntity {
+                entity: EntityRef {
+                    kind: "vessel".to_owned(),
+                    id: "v".to_owned(),
+                },
+                label: "Vessel".to_owned(),
+                form: "full".to_owned(),
+                metadata: BTreeMap::new(),
+                templates: ResolvedTemplateSlots::default(),
+                children: vec![],
+            }],
+        };
+        let region = andamento_shared::DisplayRegion {
+            definition: SurfaceRegionDefinition {
+                name: "attention".to_owned(),
+                source: SurfaceRegionSource::Attention,
+                root_template: "flotilla/region/attention".to_owned(),
+                form: "full".to_owned(),
+                attention_key: None,
+                placement: Some("tree".to_owned()),
+                pinned: true,
+                promotions: vec![],
+            },
+            root: None,
+            entities: vec![DisplayEntity {
+                entity: EntityRef {
+                    kind: "project".to_owned(),
+                    id: "p".to_owned(),
+                },
+                label: "Project".to_owned(),
+                form: "full".to_owned(),
+                metadata: BTreeMap::new(),
+                templates: ResolvedTemplateSlots::default(),
+                children: vec![child],
+            }],
+        };
+
+        assert_eq!(pinned_region_rows(&region, None), 4);
     }
 
     #[test]

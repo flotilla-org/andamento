@@ -1562,19 +1562,19 @@ impl ControllerState {
                     };
                     if let Some(catalog) = self.template_catalog.as_ref() {
                         if let Some(template) = catalog.placement_template(&template_name, &display.metadata) {
-                            if !template.operations.is_empty() {
-                                let applied = andamento_shared::template_config::PlacementLoop {
-                                    binding: loop_definition.binding.clone(),
-                                    predicates: loop_definition.predicates.clone(),
-                                    fields: template.operations.iter().filter_map(|operation| match operation {
-                                        andamento_shared::template_config::TemplateConfigFieldOperation::Set { field } => Some(field.clone()),
-                                        _ => None,
-                                    }).collect(),
-                                    layout: loop_definition.layout.clone(),
-                                    loops: vec![],
-                                    apply_template: None,
+                            if let Ok(Some(resolved)) = catalog
+                                .resolve_placement_template(&template_name, &display.metadata)
+                            {
+                                let slot = ResolvedTemplateSlot {
+                                    template_name: resolved.name.clone(),
+                                    fields: vec![],
+                                    render_ready: Some(resolved.render_ready()),
+                                    setters: resolved.setters.clone(),
+                                    effective_kdl: resolved.dump_kdl(),
+                                    resolve_error: None,
                                 };
-                                display = placed_display_entity(display, &applied, form);
+                                display.templates.compact = Some(slot.clone());
+                                display.templates.detail = Some(slot);
                             }
                             child_loops = template.loops.as_slice();
                             // Applied templates intentionally start a new lexical environment.
