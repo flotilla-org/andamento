@@ -157,6 +157,7 @@ pub(super) fn entity(kind: &str, id: &str, label: &str) -> DisplayEntity {
         form: "full".to_owned(),
         metadata: BTreeMap::new(),
         templates: ResolvedTemplateSlots::default(),
+        children: vec![],
     }
 }
 

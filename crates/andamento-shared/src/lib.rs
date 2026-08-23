@@ -633,6 +633,8 @@ pub struct DisplayEntity {
     pub metadata: BTreeMap<String, MetadataValue>,
     #[serde(default)]
     pub templates: ResolvedTemplateSlots,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<DisplayEntity>,
 }
 
 /// Conventional form that uses the rail's wrapped ribbon layout.

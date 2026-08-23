@@ -116,12 +116,9 @@ impl PlacementIndex {
         Self { by_fact }
     }
 
-    fn lookup(
-        &self,
-        predicate: &andamento_shared::template_config::PlacementPredicate,
-    ) -> &[usize] {
+    fn lookup_value(&self, key: &str, value: &str) -> &[usize] {
         self.by_fact
-            .get(&(predicate.key.clone(), predicate.value.clone()))
+            .get(&(key.to_owned(), value.to_owned()))
             .map(Vec::as_slice)
             .unwrap_or_default()
     }
@@ -1387,6 +1384,7 @@ impl ControllerState {
             form: entity.form.clone(),
             metadata,
             templates,
+            children: vec![],
         }
     }
 
@@ -1483,18 +1481,58 @@ impl ControllerState {
         index: &PlacementIndex,
         form: &str,
     ) -> Vec<andamento_shared::DisplayEntity> {
-        let Some(loop_definition) = placement.loops.first() else {
+        placement
+            .loops
+            .iter()
+            .flat_map(|loop_definition| {
+                self.evaluate_placement_loop(
+                    loop_definition,
+                    entities,
+                    index,
+                    form,
+                    &BTreeMap::new(),
+                    &[],
+                    0,
+                )
+            })
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_placement_loop<'a>(
+        &self,
+        loop_definition: &andamento_shared::template_config::PlacementLoop,
+        entities: &'a [CatalogEntity],
+        index: &PlacementIndex,
+        form: &str,
+        bindings: &BTreeMap<String, &'a CatalogEntity>,
+        ancestors: &[andamento_shared::EntityRef],
+        depth: usize,
+    ) -> Vec<andamento_shared::DisplayEntity> {
+        const MAX_PLACEMENT_DEPTH: usize = 64;
+        if depth >= MAX_PLACEMENT_DEPTH {
             return vec![];
-        };
-        // Resolve every predicate's postings once, shortest first: the smallest
-        // list seeds the walk and the rest filter it. Looking them up per
-        // candidate would put the catalog-sized map back in the inner loop this
-        // index exists to keep it out of. The seed's own predicate is dropped
-        // from the filter — membership in it is true by construction.
+        }
         let mut postings = loop_definition
             .predicates
             .iter()
-            .map(|predicate| index.lookup(predicate))
+            .map(|predicate| {
+                let value = predicate.value.clone().or_else(|| {
+                    let bound = bindings.get(predicate.of.as_deref()?)?;
+                    if predicate.key == "entity.kind" {
+                        Some(bound.entity.kind.clone())
+                    } else if predicate.key == "entity.id" {
+                        Some(bound.entity.id.clone())
+                    } else {
+                        bound.values.get(&predicate.key).and_then(|entry| {
+                            andamento_shared::template_config::placement_index_text(&entry.value)
+                        })
+                    }
+                });
+                value
+                    .map(|value| index.lookup_value(&predicate.key, &value))
+                    .unwrap_or_default()
+            })
             .collect::<Vec<_>>();
         postings.sort_by_key(|matches| matches.len());
         let Some((seed, rest)) = postings.split_first() else {
@@ -1507,7 +1545,58 @@ impl ControllerState {
             })
             .filter_map(|position| entities.get(*position))
             .filter(|entity| self.entity_is_visible(entity))
-            .map(|entity| placed_display_entity(self.display_entity(entity), loop_definition, form))
+            .filter(|entity| !ancestors.contains(&entity.entity))
+            .map(|entity| {
+                let mut display = placed_display_entity(self.display_entity(entity), loop_definition, form);
+                let mut nested_bindings = bindings.clone();
+                nested_bindings.insert(loop_definition.binding.clone(), entity);
+                let mut nested_ancestors = ancestors.to_vec();
+                nested_ancestors.push(entity.entity.clone());
+
+                let mut child_loops = loop_definition.loops.as_slice();
+                if let Some(requested) = loop_definition.apply_template.as_deref() {
+                    let template_name = if requested.is_empty() {
+                        format!("{}/line", entity.entity.kind)
+                    } else {
+                        requested.to_owned()
+                    };
+                    if let Some(catalog) = self.template_catalog.as_ref() {
+                        if let Some(template) = catalog.placement_template(&template_name, &display.metadata) {
+                            if !template.operations.is_empty() {
+                                let applied = andamento_shared::template_config::PlacementLoop {
+                                    binding: loop_definition.binding.clone(),
+                                    predicates: loop_definition.predicates.clone(),
+                                    fields: template.operations.iter().filter_map(|operation| match operation {
+                                        andamento_shared::template_config::TemplateConfigFieldOperation::Set { field } => Some(field.clone()),
+                                        _ => None,
+                                    }).collect(),
+                                    layout: loop_definition.layout.clone(),
+                                    loops: vec![],
+                                    apply_template: None,
+                                };
+                                display = placed_display_entity(display, &applied, form);
+                            }
+                            child_loops = template.loops.as_slice();
+                            // Applied templates intentionally start a new lexical environment.
+                            nested_bindings.clear();
+                            let own_binding = template_name
+                                .split('/')
+                                .next()
+                                .unwrap_or(&template_name)
+                                .to_owned();
+                            nested_bindings.insert(own_binding, entity);
+                        }
+                    }
+                }
+                display.children = child_loops
+                    .iter()
+                    .flat_map(|nested| self.evaluate_placement_loop(
+                        nested, entities, index, form, &nested_bindings,
+                        &nested_ancestors, depth + 1,
+                    ))
+                    .collect();
+                display
+            })
             .collect()
     }
 
@@ -4519,12 +4608,15 @@ mod tests {
                     .map(
                         |(key, value)| andamento_shared::template_config::PlacementPredicate {
                             key: (*key).to_owned(),
-                            value: (*value).to_owned(),
+                            value: Some((*value).to_owned()),
+                            of: None,
                         },
                     )
                     .collect(),
                 fields: vec![],
                 layout: None,
+                loops: vec![],
+                apply_template: None,
             }],
         }
     }
@@ -4599,6 +4691,88 @@ mod tests {
                 .is_empty(),
             "predicates intersect: an unmatched one empties the result"
         );
+    }
+
+    #[test]
+    fn nested_placement_builds_one_tree_and_stops_an_ancestor_cycle() {
+        let config = andamento_shared::template_config::parse_template_config_kdl(r#"
+version 1
+region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="tree"
+placement "tree" {
+  for "project" kind="project" { apply-template }
+}
+template "project/line" {
+  field "label" { value source="metadata-text" key="display.label" }
+  for "convoy" kind="convoy" {
+    match "flotilla.project" of="project"
+    apply-template
+  }
+}
+template "convoy/line" {
+  field "label" { value source="metadata-text" key="display.label" }
+  for "vessel" kind="vessel" {
+    match "flotilla.convoy" of="convoy"
+    apply-template
+  }
+  for "project" kind="project" {
+    match "flotilla.project" of="convoy"
+  }
+}
+template "vessel/line" {
+  field "label" { value source="metadata-text" key="display.label" }
+}
+"#).expect("nested placement config");
+        let mut state = directory_entity_state();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(config),
+        ));
+        apply_entity(
+            &mut state,
+            "project",
+            "p",
+            1,
+            &[("flotilla.project", "p"), ("display.label", "Project P")],
+        );
+        apply_entity(
+            &mut state,
+            "convoy",
+            "c",
+            1,
+            &[
+                ("flotilla.project", "p"),
+                ("flotilla.convoy", "c"),
+                ("display.label", "Convoy C"),
+            ],
+        );
+        apply_entity(
+            &mut state,
+            "vessel",
+            "v",
+            1,
+            &[("flotilla.convoy", "c"), ("display.label", "Vessel V")],
+        );
+
+        let model = state.view_model();
+        let roots = &model.surface_regions[0].entities;
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].label, "Project P");
+        assert_eq!(roots[0].children.len(), 1);
+        assert_eq!(roots[0].children[0].label, "Convoy C");
+        assert_eq!(
+            roots[0].children[0].children.len(),
+            1,
+            "the project back-edge is cut while the vessel remains"
+        );
+        assert_eq!(roots[0].children[0].children[0].label, "Vessel V");
+        let rendered = format!(
+            "{}\n  {}\n    {}",
+            roots[0].label, roots[0].children[0].label, roots[0].children[0].children[0].label
+        );
+        insta::assert_snapshot!(rendered, @r###"
+        Project P
+          Convoy C
+            Vessel V
+        "###);
     }
 
     #[test]
