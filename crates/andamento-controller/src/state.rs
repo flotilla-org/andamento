@@ -1547,7 +1547,8 @@ impl ControllerState {
             .filter(|entity| self.entity_is_visible(entity))
             .filter(|entity| !ancestors.contains(&entity.entity))
             .map(|entity| {
-                let mut display = placed_display_entity(self.display_entity(entity), loop_definition, form);
+                let mut display =
+                    placed_display_entity(self.display_entity(entity), loop_definition, form);
                 let mut nested_bindings = bindings.clone();
                 nested_bindings.insert(loop_definition.binding.clone(), entity);
                 let mut nested_ancestors = ancestors.to_vec();
@@ -1561,7 +1562,9 @@ impl ControllerState {
                         requested.to_owned()
                     };
                     if let Some(catalog) = self.template_catalog.as_ref() {
-                        if let Some(template) = catalog.placement_template(&template_name, &display.metadata) {
+                        if let Some(template) =
+                            catalog.placement_template(&template_name, &display.metadata)
+                        {
                             if let Ok(Some(resolved)) = catalog
                                 .resolve_placement_template(&template_name, &display.metadata)
                             {
@@ -1590,10 +1593,17 @@ impl ControllerState {
                 }
                 display.children = child_loops
                     .iter()
-                    .flat_map(|nested| self.evaluate_placement_loop(
-                        nested, entities, index, form, &nested_bindings,
-                        &nested_ancestors, depth + 1,
-                    ))
+                    .flat_map(|nested| {
+                        self.evaluate_placement_loop(
+                            nested,
+                            entities,
+                            index,
+                            form,
+                            &nested_bindings,
+                            &nested_ancestors,
+                            depth + 1,
+                        )
+                    })
                     .collect();
                 display
             })

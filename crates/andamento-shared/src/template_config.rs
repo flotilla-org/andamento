@@ -780,13 +780,7 @@ impl TemplateConfigCatalog {
         template
             .node_kind
             .get_or_insert(TemplateConfigNodeKind::Entity);
-        let mut resolved = flatten_template(
-            &stack,
-            layer,
-            &template,
-            &mut vec![],
-            &mut vec![],
-        )?;
+        let mut resolved = flatten_template(&stack, layer, &template, &mut vec![], &mut vec![])?;
         resolved.name = name.to_owned();
         Ok(Some(resolved))
     }
