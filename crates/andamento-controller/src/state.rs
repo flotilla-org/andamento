@@ -66,6 +66,7 @@ fn placed_display_entity(
             render_ready: Some(
                 andamento_shared::template_config::TemplateConfigRenderReady {
                     fields: loop_definition.fields.clone(),
+                    controls: vec![],
                     chrome: Default::default(),
                 },
             ),

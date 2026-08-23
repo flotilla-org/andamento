@@ -817,6 +817,7 @@ pub struct TemplateConfigResolved {
     pub slot: TemplateConfigSlot,
     pub node_kind: TemplateConfigNodeKind,
     pub fields: Vec<TemplateConfigResolvedField>,
+    pub controls: Vec<TemplateControlSpec>,
     pub chrome: ChromeSpec,
     pub setters: Vec<ResolvedVariableSetter>,
     pub chain: Vec<TemplateConfigChainEntry>,
@@ -837,6 +838,7 @@ impl TemplateConfigResolved {
     pub fn render_ready(&self) -> TemplateConfigRenderReady {
         TemplateConfigRenderReady {
             fields: self.fields.iter().map(|field| field.spec.clone()).collect(),
+            controls: self.controls.clone(),
             chrome: self.chrome.clone(),
         }
     }
@@ -869,6 +871,9 @@ impl TemplateConfigResolved {
         for field in &self.fields {
             output.push_str(&format!("  // origin: {}\n", field.origin.label()));
             output.push_str(&field.spec.to_kdl(2));
+        }
+        for control in &self.controls {
+            output.push_str(&control.to_kdl(2));
         }
         output.push_str("}\n");
         output
@@ -1098,6 +1103,10 @@ fn flatten_template(
         .as_ref()
         .map(|parent| parent.fields.clone())
         .unwrap_or_default();
+    let mut controls = parent
+        .as_ref()
+        .map(|parent| parent.controls.clone())
+        .unwrap_or_default();
     let mut chrome = parent
         .as_ref()
         .map(|parent| parent.chrome.clone())
@@ -1126,6 +1135,7 @@ fn flatten_template(
         &template.operations,
         &layer.origin,
         &mut fields,
+        &mut controls,
         &mut chrome,
         fragment_stack,
         interleave_new_fields,
@@ -1143,6 +1153,7 @@ fn flatten_template(
         slot,
         node_kind,
         fields,
+        controls,
         chrome,
         setters,
         chain,
@@ -1150,12 +1161,14 @@ fn flatten_template(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_operations(
     stack: &[&TemplateConfigLayer],
     template_name: &str,
     operations: &[TemplateConfigFieldOperation],
     origin: &TemplateConfigOrigin,
     fields: &mut Vec<TemplateConfigResolvedField>,
+    controls: &mut Vec<TemplateControlSpec>,
     chrome: &mut ChromeSpec,
     fragment_stack: &mut Vec<String>,
     interleave_new_fields: bool,
@@ -1217,6 +1230,7 @@ fn apply_operations(
                     &fragment.operations,
                     &fragment_layer.origin,
                     fields,
+                    controls,
                     chrome,
                     fragment_stack,
                     interleave_new_fields,
@@ -1225,6 +1239,9 @@ fn apply_operations(
             }
             TemplateConfigFieldOperation::Chrome { primitive } => {
                 chrome.set(primitive.clone());
+            }
+            TemplateConfigFieldOperation::Control { control } => {
+                controls.push(control.clone());
             }
         }
     }
@@ -1389,6 +1406,8 @@ pub struct TemplateConfigRenderReady {
     #[serde(default)]
     pub fields: Vec<TemplateConfigFieldSpec>,
     #[serde(default)]
+    pub controls: Vec<TemplateControlSpec>,
+    #[serde(default)]
     pub chrome: ChromeSpec,
 }
 
@@ -1439,6 +1458,48 @@ pub enum TemplateConfigFieldOperation {
     Remove { name: String },
     Use { name: String },
     Chrome { primitive: ChromePrimitive },
+    Control { control: TemplateControlSpec },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct TemplateControlSpec {
+    pub kind: TemplateControlKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variable: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TemplateControlKind {
+    OpenConfig,
+    DisplayVariable,
+    ScrollDown,
+    ScrollUp,
+    InspectRoot,
+}
+
+impl TemplateControlSpec {
+    fn to_kdl(&self, indent: usize) -> String {
+        let kind = match self.kind {
+            TemplateControlKind::OpenConfig => "open-config",
+            TemplateControlKind::DisplayVariable => "display-variable",
+            TemplateControlKind::ScrollDown => "scroll-down",
+            TemplateControlKind::ScrollUp => "scroll-up",
+            TemplateControlKind::InspectRoot => "inspect-root",
+        };
+        let mut output = format!("{}control {}", " ".repeat(indent), quote_kdl(kind));
+        if let Some(variable) = &self.variable {
+            output.push_str(&format!(" variable={}", quote_kdl(variable)));
+        }
+        if let Some(glyph) = &self.glyph {
+            output.push_str(&format!(" glyph={}", quote_kdl(glyph)));
+        }
+        output.push('\n');
+        output
+    }
 }
 
 impl TemplateConfigFieldOperation {
@@ -1919,9 +1980,8 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
                         .to_owned(),
                 ));
             }
-            "field" | "remove" | "use" | "box" | "toggle" | "fill" | "dim" | "indent" => {
-                operations.push(parse_kdl_field_operation(child)?)
-            }
+            "field" | "remove" | "use" | "box" | "toggle" | "fill" | "dim" | "indent"
+            | "control" => operations.push(parse_kdl_field_operation(child)?),
             "set" => sets.push(parse_kdl_variable_setter(child)?),
             other => {
                 return Err(TemplateConfigError::Validation(format!(
@@ -2105,6 +2165,9 @@ fn parse_kdl_field_operation(
         "use" => Ok(TemplateConfigFieldOperation::Use {
             name: kdl_required_arg_string(node, 0, "fragment name")?,
         }),
+        "control" => Ok(TemplateConfigFieldOperation::Control {
+            control: parse_kdl_control(node)?,
+        }),
         "box" | "toggle" | "fill" | "dim" | "indent" => Ok(TemplateConfigFieldOperation::Chrome {
             primitive: parse_kdl_chrome(node)?,
         }),
@@ -2112,6 +2175,38 @@ fn parse_kdl_field_operation(
             "unsupported fragment/template operation: {other}"
         ))),
     }
+}
+
+fn parse_kdl_control(node: &KdlNode) -> Result<TemplateControlSpec, TemplateConfigError> {
+    let kind = match kdl_required_arg_string(node, 0, "control kind")?.as_str() {
+        "open-config" => TemplateControlKind::OpenConfig,
+        "display-variable" => TemplateControlKind::DisplayVariable,
+        "scroll-down" => TemplateControlKind::ScrollDown,
+        "scroll-up" => TemplateControlKind::ScrollUp,
+        "inspect-root" => TemplateControlKind::InspectRoot,
+        other => {
+            return Err(TemplateConfigError::Validation(format!(
+                "unsupported control kind: {other}"
+            )))
+        }
+    };
+    let variable = kdl_prop_string(node, "variable");
+    if kind == TemplateControlKind::DisplayVariable && variable.is_none() {
+        return Err(TemplateConfigError::Validation(
+            "display-variable control requires variable=\"...\"".to_owned(),
+        ));
+    }
+    if kind != TemplateControlKind::DisplayVariable && variable.is_some() {
+        return Err(TemplateConfigError::Validation(format!(
+            "{} control does not accept variable",
+            kdl_required_arg_string(node, 0, "control kind")?
+        )));
+    }
+    Ok(TemplateControlSpec {
+        kind,
+        variable,
+        glyph: kdl_prop_string(node, "glyph"),
+    })
 }
 
 fn parse_kdl_chrome(node: &KdlNode) -> Result<ChromePrimitive, TemplateConfigError> {
@@ -3215,5 +3310,45 @@ region "attention" source="attention" root-template="r" form="full"
                 .collect::<Vec<_>>(),
             vec!["tree-first", "attention-second"]
         );
+    }
+
+    #[test]
+    fn control_only_template_is_legal_and_controls_survive_resolution() {
+        let config = parse_template_config_kdl(
+            r#"
+            display-variable "show-issues" type="bool" default=true label="Issues" icon="I"
+            template "region/controls" slot="compact" node-kind="entity" {
+              control "open-config" glyph="⚙"
+              control "display-variable" variable="show-issues"
+              control "scroll-down"
+              control "scroll-up"
+              control "inspect-root"
+            }
+            "#,
+        )
+        .expect("a section template does not require a loop or field");
+        let catalog = TemplateConfigCatalog::from_config(config);
+        let metadata = BTreeMap::from([(
+            "presentation.template".to_owned(),
+            MetadataValue::Text("region/controls".to_owned()),
+        )]);
+        let resolved = catalog
+            .resolve(TemplateConfigMatchContext {
+                slot: TemplateConfigSlot::Compact,
+                node_kind: TemplateConfigNodeKind::Entity,
+                metadata: &metadata,
+                collapsed: false,
+                collapsible: false,
+                active_tab_name: None,
+            })
+            .expect("control template resolves")
+            .expect("declared template exists");
+
+        assert!(resolved.fields.is_empty());
+        assert_eq!(resolved.controls.len(), 5);
+        assert_eq!(resolved.render_ready().controls, resolved.controls);
+        assert!(resolved
+            .dump_kdl()
+            .contains("control \"display-variable\" variable=\"show-issues\""));
     }
 }

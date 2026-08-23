@@ -159,12 +159,21 @@ Template load status, errors, and resolved slots are visible in the config
 plugin's `templates` tab.
 
 Display variables and entity forms live in the same template model. Boolean
-and enum variables have a default, label, icon, and persistence policy. Their
-controls are projected into the fixed footer, and values are shared by all
-rails through the session rail-state broadcast:
+and enum variables have a default, label, icon, and persistence policy. A
+display-variable control refers to its declaration by name, and values are
+shared by all rails through the session rail-state broadcast. Controls are a
+template content type alongside fields (and loops):
 
 ```kdl
 display-variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
+
+template "region/controls" slot="compact" node-kind="entity" {
+    control "open-config" glyph="⚙"
+    control "display-variable" variable="show-issues"
+    control "scroll-down" glyph="▼"
+    control "scroll-up" glyph="▲"
+    control "inspect-root"
+}
 
 template "issue/compact" slot="compact" node-kind="entity" {
     field "label" source="metadata-first-token" key="display.label"
@@ -175,6 +184,10 @@ template "issue/detail" slot="detail" node-kind="entity" {
     field "summary" class="priority" key="summary.text" priority=50
 }
 ```
+
+The bundled `controls` region is pinned and its root template contains only
+control widgets. Templates do not require a loop, so the section occupies one
+fixed row and does not scroll away with tree content.
 
 Compact entities expose their `detail` form in the rail's fixed detail row.
 Pointer hover updates it immediately; clicking an entity keeps it as the
