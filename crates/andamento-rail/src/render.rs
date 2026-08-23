@@ -424,7 +424,7 @@ pub fn render_lines_with_rail_viewport(
     rail_scroll_offset: isize,
     ensure_active_visible: bool,
 ) -> RenderedRail {
-    let configured_regions = model
+    let mut configured_regions = model
         .map(|model| model.surface_regions.clone())
         .filter(|regions| !regions.is_empty())
         .or_else(|| {
@@ -442,6 +442,13 @@ pub fn render_lines_with_rail_viewport(
             })
         })
         .unwrap_or_default();
+    if let Some(catalog) = template_catalog {
+        for region in &mut configured_regions {
+            if region.root.is_none() {
+                region.root = resolve_region_root(&region.definition, catalog);
+            }
+        }
+    }
     if !configured_regions.is_empty() {
         return render_region_stack(
             model,
@@ -543,15 +550,31 @@ fn render_legacy_rail_viewport(
 
     let rail_can_scroll = content_height > card_rows_available;
     if controller_available {
-        render_footer_with_variables(
+        let fallback_catalog;
+        let catalog = match template_catalog {
+            Some(catalog) => catalog,
+            None => {
+                fallback_catalog = TemplateConfigCatalog::default();
+                &fallback_catalog
+            }
+        };
+        let controls = catalog
+            .regions()
+            .iter()
+            .find(|region| region.source == SurfaceRegionSource::Controls)
+            .and_then(|region| resolve_region_root(region, catalog))
+            .and_then(|root| root.render_ready)
+            .map(|ready| ready.controls)
+            .unwrap_or_default();
+        render_control_template(
             &mut lines,
             &mut hit_regions,
             rows - 1,
             cols,
             theme,
-            metadata_controls,
             inspected_node,
             rail_can_scroll,
+            &controls,
             model
                 .map(|model| model.display_variables.as_slice())
                 .unwrap_or_default(),
@@ -740,29 +763,29 @@ fn render_region_stack(
                 ensure_active_resolved = rendered.ensure_active_resolved;
             }
             SurfaceRegionSource::Controls => {
-                lines.push(region_root_line(display_region, None, cols, theme, model));
-                content_height += 1;
-                if lines.len() >= rows {
-                    continue;
-                }
-                controls_footer_rows.push(lines.len());
+                controls_footer_rows.push((lines.len(), display_region));
                 lines.push(blank(cols));
                 content_height += 1;
             }
         }
     }
-    for footer_row in controls_footer_rows {
+    for (footer_row, controls_region) in controls_footer_rows {
         let mut footer = vec![blank(cols)];
         let mut footer_hits = vec![];
-        render_footer_with_variables(
+        render_control_template(
             &mut footer,
             &mut footer_hits,
             0,
             cols,
             theme,
-            metadata_controls,
             model.and_then(|model| model.inspected_node.as_ref()),
             region_can_scroll,
+            controls_region
+                .root
+                .as_ref()
+                .and_then(|root| root.render_ready.as_ref())
+                .map(|ready| ready.controls.as_slice())
+                .unwrap_or_default(),
             model
                 .map(|model| model.display_variables.as_slice())
                 .unwrap_or_default(),
@@ -789,7 +812,7 @@ fn render_region_stack(
 
 fn pinned_region_rows(region: &DisplayRegion, model: Option<&ControllerViewModel>) -> usize {
     match region.definition.source {
-        SurfaceRegionSource::Controls => 2,
+        SurfaceRegionSource::Controls => 1,
         SurfaceRegionSource::Attention => {
             let key = region
                 .definition
@@ -5154,30 +5177,52 @@ fn render_footer(
     inspected_node: Option<&NodeKey>,
     rail_can_scroll: bool,
 ) {
-    render_footer_with_variables(
+    let controls = vec![
+        andamento_shared::template_config::TemplateControlSpec {
+            kind: andamento_shared::template_config::TemplateControlKind::OpenConfig,
+            variable: None,
+            glyph: None,
+        },
+        andamento_shared::template_config::TemplateControlSpec {
+            kind: andamento_shared::template_config::TemplateControlKind::ScrollDown,
+            variable: None,
+            glyph: None,
+        },
+        andamento_shared::template_config::TemplateControlSpec {
+            kind: andamento_shared::template_config::TemplateControlKind::ScrollUp,
+            variable: None,
+            glyph: None,
+        },
+        andamento_shared::template_config::TemplateControlSpec {
+            kind: andamento_shared::template_config::TemplateControlKind::InspectRoot,
+            variable: None,
+            glyph: None,
+        },
+    ];
+    render_control_template(
         lines,
         hit_regions,
         row,
         width,
         theme,
-        _metadata_controls,
         inspected_node,
         rail_can_scroll,
+        &controls,
         &[],
         None,
     );
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_footer_with_variables(
+fn render_control_template(
     lines: &mut [String],
     hit_regions: &mut Vec<HitRegion>,
     row: usize,
     width: usize,
     theme: Option<RenderTheme>,
-    _metadata_controls: &MetadataControls,
     inspected_node: Option<&NodeKey>,
     rail_can_scroll: bool,
+    controls: &[andamento_shared::template_config::TemplateControlSpec],
     variables: &[andamento_shared::template_config::TemplateVariableDefinition],
     values: Option<&BTreeMap<String, andamento_shared::DisplayVariableValue>>,
 ) {
@@ -5185,57 +5230,90 @@ fn render_footer_with_variables(
         return;
     }
     let mut footer = BorderRow::new(width, BorderKind::Footer);
-    footer.place_left(
-        0,
-        '⚙',
-        Some((HitAction::OpenConfig, BorderHitPayload::none())),
-        "footer_gear",
-    );
-    for (index, variable) in variables.iter().enumerate() {
-        let Some(mut icon) = variable.icon.chars().next() else {
-            continue;
-        };
-        if matches!(
-            values.and_then(|values| values.get(&variable.name)),
-            Some(andamento_shared::DisplayVariableValue::Bool(false))
-        ) {
-            icon = '·';
+    let mut left_offset = 0;
+    let mut right_offset = 0;
+    for control in controls {
+        use andamento_shared::template_config::TemplateControlKind;
+        let declared_glyph = control
+            .glyph
+            .as_deref()
+            .and_then(|glyph| glyph.chars().next());
+        match control.kind {
+            TemplateControlKind::OpenConfig => {
+                footer.place_left(
+                    left_offset,
+                    declared_glyph.unwrap_or('⚙'),
+                    Some((HitAction::OpenConfig, BorderHitPayload::none())),
+                    "control_open_config",
+                );
+                left_offset += 1;
+            }
+            TemplateControlKind::DisplayVariable => {
+                let Some(index) = control
+                    .variable
+                    .as_deref()
+                    .and_then(|name| variables.iter().position(|variable| variable.name == name))
+                else {
+                    continue;
+                };
+                let variable = &variables[index];
+                let Some(mut icon) = declared_glyph.or_else(|| variable.icon.chars().next()) else {
+                    continue;
+                };
+                if matches!(
+                    values.and_then(|values| values.get(&variable.name)),
+                    Some(andamento_shared::DisplayVariableValue::Bool(false))
+                ) {
+                    icon = '·';
+                }
+                footer.place_left(
+                    left_offset,
+                    icon,
+                    Some((HitAction::ToggleVariable(index), BorderHitPayload::none())),
+                    "control_display_variable",
+                );
+                left_offset += 1;
+            }
+            TemplateControlKind::ScrollDown | TemplateControlKind::ScrollUp if rail_can_scroll => {
+                let (glyph, action, label) = if control.kind == TemplateControlKind::ScrollDown {
+                    (
+                        declared_glyph.unwrap_or('▼'),
+                        HitAction::ScrollRailDown,
+                        "control_scroll_down",
+                    )
+                } else {
+                    (
+                        declared_glyph.unwrap_or('▲'),
+                        HitAction::ScrollRailUp,
+                        "control_scroll_up",
+                    )
+                };
+                footer.place_right(
+                    right_offset,
+                    glyph,
+                    Some((action, BorderHitPayload::none())),
+                    label,
+                );
+                right_offset += 1;
+            }
+            TemplateControlKind::InspectRoot => {
+                footer.place_right(
+                    right_offset,
+                    declared_glyph
+                        .unwrap_or_else(|| inspect_node_glyph(inspected_node, &NodeKey::Root)),
+                    Some((
+                        HitAction::InspectNode,
+                        BorderHitPayload {
+                            inspect_target: Some(NodeKey::Root),
+                            ..BorderHitPayload::none()
+                        },
+                    )),
+                    "control_inspect_root",
+                );
+                right_offset += 1;
+            }
+            TemplateControlKind::ScrollDown | TemplateControlKind::ScrollUp => {}
         }
-        footer.place_left(
-            index + 1,
-            icon,
-            Some((HitAction::ToggleVariable(index), BorderHitPayload::none())),
-            "footer_variable",
-        );
-    }
-    if width >= 2 && rail_can_scroll {
-        footer.place_right(
-            1,
-            '▲',
-            Some((HitAction::ScrollRailUp, BorderHitPayload::none())),
-            "footer_scroll_up",
-        );
-        footer.place_right(
-            0,
-            '▼',
-            Some((HitAction::ScrollRailDown, BorderHitPayload::none())),
-            "footer_scroll_down",
-        );
-    }
-    if width >= 5 {
-        let offset = if rail_can_scroll { 2 } else { 0 };
-        footer.place_right(
-            offset,
-            inspect_node_glyph(inspected_node, &NodeKey::Root),
-            Some((
-                HitAction::InspectNode,
-                BorderHitPayload {
-                    inspect_target: Some(NodeKey::Root),
-                    ..BorderHitPayload::none()
-                },
-            )),
-            "footer_root_inspect",
-        );
     }
     let (line, hits) = footer.finish(row, theme);
     lines[row] = line;
@@ -7022,7 +7100,9 @@ mod tests {
               field "label" source="literal" value="TREE"
             }
             template "region/controls" slot="compact" node-kind="entity" {
-              field "label" source="literal" value="CONTROLS"
+              control "open-config"
+              control "scroll-down"
+              control "scroll-up"
             }
             "#,
         )
@@ -7038,22 +7118,15 @@ mod tests {
             Some(&catalog),
         );
         let controls_rows = rendered
-            .lines
+            .hit_regions
             .iter()
-            .enumerate()
-            .filter_map(|(row, line)| line.contains("CONTROLS").then_some(row))
+            .filter_map(|hit| (hit.action == HitAction::OpenConfig).then_some(hit.row_start))
             .collect::<Vec<_>>();
         assert_eq!(controls_rows.len(), 2, "{:?}", rendered.lines);
 
-        assert!(
-            !rendered.hit_regions.iter().any(|hit| {
-                hit.row_start == controls_rows[1] && hit.action == HitAction::OpenConfig
-            }),
-            "the truncated tree footer must not leak its gear hit onto the controls root"
-        );
         for controls_row in controls_rows {
             assert!(rendered.hit_regions.iter().any(|hit| {
-                hit.row_start == controls_row + 1
+                hit.row_start == controls_row
                     && matches!(
                         hit.action,
                         HitAction::ScrollRailUp | HitAction::ScrollRailDown
@@ -7114,7 +7187,7 @@ mod tests {
             render_lines_with_template_catalog(Some(&model), &[], 4, 30, true, Some(&catalog));
 
         assert!(
-            rendered.lines[0].contains("ATTENTION (+2 more)"),
+            rendered.lines[0].contains("ATTENTION (+1 more)"),
             "{:?}",
             rendered.lines
         );
@@ -10073,20 +10146,25 @@ mod tests {
             andamento_shared::DisplayVariableValue::Bool(false),
         )]);
 
-        render_footer_with_variables(
+        let controls = [andamento_shared::template_config::TemplateControlSpec {
+            kind: andamento_shared::template_config::TemplateControlKind::DisplayVariable,
+            variable: Some("show-issues".to_owned()),
+            glyph: None,
+        }];
+        render_control_template(
             &mut lines,
             &mut hits,
             0,
             20,
             None,
-            &MetadataControls::default(),
             None,
             false,
+            &controls,
             &config.display_variables,
             Some(&values),
         );
 
-        assert_eq!(lines[0].chars().nth(1), Some('·'));
+        assert_eq!(lines[0].chars().next(), Some('·'));
         assert!(hits
             .iter()
             .any(|hit| hit.action == HitAction::ToggleVariable(0)));

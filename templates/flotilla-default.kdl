@@ -64,7 +64,11 @@ template "flotilla/region/tree" slot="compact" node-kind="entity" {
 }
 
 template "flotilla/region/controls" slot="compact" node-kind="entity" {
-  field "label" class="required" source="literal" value="Controls"
+  control "open-config" glyph="⚙"
+  control "display-variable" variable="show-issues"
+  control "scroll-down" glyph="▼"
+  control "scroll-up" glyph="▲"
+  control "inspect-root"
 }
 
 fragment "flotilla/group-label" {
