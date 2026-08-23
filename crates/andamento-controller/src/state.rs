@@ -4699,17 +4699,23 @@ mod tests {
 version 1
 region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="tree"
 placement "tree" {
-  for "project" kind="project" { apply-template }
+  for "project" kind="project" {
+    apply-template
+  }
 }
 template "project/line" {
-  field "label" { value source="metadata-text" key="display.label" }
+  field "label" {
+    value source="metadata-text" key="display.label"
+  }
   for "convoy" kind="convoy" {
     match "flotilla.project" of="project"
     apply-template
   }
 }
 template "convoy/line" {
-  field "label" { value source="metadata-text" key="display.label" }
+  field "label" {
+    value source="metadata-text" key="display.label"
+  }
   for "vessel" kind="vessel" {
     match "flotilla.convoy" of="convoy"
     apply-template
@@ -4719,7 +4725,9 @@ template "convoy/line" {
   }
 }
 template "vessel/line" {
-  field "label" { value source="metadata-text" key="display.label" }
+  field "label" {
+    value source="metadata-text" key="display.label"
+  }
 }
 "#).expect("nested placement config");
         let mut state = directory_entity_state();
