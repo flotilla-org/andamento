@@ -3035,7 +3035,7 @@ mod tests {
               }]
             }"#,
         )
-            .expect_err("a JSON predicate without value or of must fail validation");
+        .expect_err("a JSON predicate without value or of must fail validation");
 
         assert!(format!("{error:?}").contains("exactly one of value or of"));
     }
