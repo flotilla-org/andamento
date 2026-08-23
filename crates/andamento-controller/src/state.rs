@@ -1599,6 +1599,21 @@ impl ControllerState {
                                 .unwrap_or(&template_name)
                                 .to_owned();
                             nested_bindings.insert(own_binding, entity);
+                        } else if !requested.is_empty() {
+                            let slot = ResolvedTemplateSlot {
+                                template_name: "<resolve-error>".to_owned(),
+                                fields: vec![],
+                                render_ready: None,
+                                setters: vec![],
+                                effective_kdl: String::new(),
+                                resolve_error: Some(format!(
+                                    "unknown applied template {template_name}"
+                                )),
+                            };
+                            display.templates.compact = Some(slot.clone());
+                            display.templates.detail = Some(slot);
+                            child_loops = &[];
+                            nested_bindings.clear();
                         }
                     }
                 }
@@ -4843,6 +4858,44 @@ template "project/line" extends="missing/line" {
             .resolve_error
             .as_deref()
             .is_some_and(|error| error.contains("missing/line")));
+    }
+
+    #[test]
+    fn explicitly_named_missing_applied_template_is_a_visible_error() {
+        let config = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+version 1
+region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="tree"
+placement "tree" {
+  for "project" kind="project" {
+    apply-template "missing/line"
+  }
+}
+"#,
+        )
+        .expect("placement config parses before template resolution");
+        let mut state = directory_entity_state();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(config),
+        ));
+        apply_entity(
+            &mut state,
+            "project",
+            "p",
+            1,
+            &[("flotilla.project", "p"), ("display.label", "Project P")],
+        );
+
+        let slot = state.view_model().surface_regions[0].entities[0]
+            .templates
+            .compact
+            .clone()
+            .expect("an explicit missing template leaves visible error evidence");
+        assert_eq!(slot.template_name, "<resolve-error>");
+        assert_eq!(
+            slot.resolve_error.as_deref(),
+            Some("unknown applied template missing/line")
+        );
     }
 
     #[test]
