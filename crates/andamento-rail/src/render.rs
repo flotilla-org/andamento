@@ -550,13 +550,9 @@ fn render_legacy_rail_viewport(
 
     let rail_can_scroll = content_height > card_rows_available;
     if controller_available {
-        let fallback_catalog;
         let catalog = match template_catalog {
             Some(catalog) => catalog,
-            None => {
-                fallback_catalog = TemplateConfigCatalog::default();
-                &fallback_catalog
-            }
+            None => bundled_template_catalog(),
         };
         let controls = catalog
             .regions()
@@ -4839,6 +4835,19 @@ impl BorderRow {
         self.place_at(col, glyph, hit, owner);
     }
 
+    fn left_cell_is_available(&self, offset: usize) -> bool {
+        let inner = self.inner_range();
+        offset < inner.len() && self.cells[inner.start + offset].owner.is_none()
+    }
+
+    fn right_cell_is_available(&self, offset: usize) -> bool {
+        let inner = self.inner_range();
+        if offset >= inner.len() {
+            return false;
+        }
+        self.cells[inner.end - 1 - offset].owner.is_none()
+    }
+
     fn place_right(
         &mut self,
         offset: usize,
@@ -4847,7 +4856,7 @@ impl BorderRow {
         owner: &'static str,
     ) {
         let inner = self.inner_range();
-        if inner.end == 0 {
+        if offset >= inner.len() {
             return;
         }
         let col = inner.end - 1 - offset;
@@ -5240,6 +5249,9 @@ fn render_control_template(
             .and_then(|glyph| glyph.chars().next());
         match control.kind {
             TemplateControlKind::OpenConfig => {
+                if !footer.left_cell_is_available(left_offset) {
+                    continue;
+                }
                 footer.place_left(
                     left_offset,
                     declared_glyph.unwrap_or('⚙'),
@@ -5266,6 +5278,9 @@ fn render_control_template(
                 ) {
                     icon = '·';
                 }
+                if !footer.left_cell_is_available(left_offset) {
+                    continue;
+                }
                 footer.place_left(
                     left_offset,
                     icon,
@@ -5275,6 +5290,9 @@ fn render_control_template(
                 left_offset += 1;
             }
             TemplateControlKind::ScrollDown | TemplateControlKind::ScrollUp if rail_can_scroll => {
+                if !footer.right_cell_is_available(right_offset) {
+                    continue;
+                }
                 let (glyph, action, label) = if control.kind == TemplateControlKind::ScrollDown {
                     (
                         declared_glyph.unwrap_or('▼'),
@@ -5297,6 +5315,9 @@ fn render_control_template(
                 right_offset += 1;
             }
             TemplateControlKind::InspectRoot => {
+                if !footer.right_cell_is_available(right_offset) {
+                    continue;
+                }
                 footer.place_right(
                     right_offset,
                     declared_glyph
@@ -5312,6 +5333,7 @@ fn render_control_template(
                 );
                 right_offset += 1;
             }
+            // Scroll controls are intentionally absent when the viewport already fits.
             TemplateControlKind::ScrollDown | TemplateControlKind::ScrollUp => {}
         }
     }
@@ -10168,6 +10190,61 @@ mod tests {
         assert!(hits
             .iter()
             .any(|hit| hit.action == HitAction::ToggleVariable(0)));
+    }
+
+    #[test]
+    fn control_footer_drops_controls_that_do_not_fit_narrow_widths() {
+        use andamento_shared::template_config::{TemplateControlKind, TemplateControlSpec};
+
+        let controls = [
+            TemplateControlSpec {
+                kind: TemplateControlKind::OpenConfig,
+                variable: None,
+                glyph: None,
+            },
+            TemplateControlSpec {
+                kind: TemplateControlKind::ScrollDown,
+                variable: None,
+                glyph: None,
+            },
+            TemplateControlSpec {
+                kind: TemplateControlKind::ScrollUp,
+                variable: None,
+                glyph: None,
+            },
+            TemplateControlSpec {
+                kind: TemplateControlKind::InspectRoot,
+                variable: None,
+                glyph: None,
+            },
+        ];
+
+        for width in 1..=3 {
+            let mut lines = vec![blank(width)];
+            let mut hits = vec![];
+            render_control_template(
+                &mut lines,
+                &mut hits,
+                0,
+                width,
+                None,
+                None,
+                true,
+                &controls,
+                &[],
+                None,
+            );
+
+            assert_eq!(lines[0].chars().count(), width);
+            assert!(hits.iter().all(|hit| hit.col_start < width));
+            assert_eq!(
+                hits.iter()
+                    .map(|hit| hit.col_start)
+                    .collect::<BTreeSet<_>>()
+                    .len(),
+                hits.len()
+            );
+        }
     }
 
     #[test]
