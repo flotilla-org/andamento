@@ -669,7 +669,14 @@ fn render_region_stack(
                 };
                 let attention_entities = attention_entities
                     .into_iter()
-                    .filter(|entity| entity.metadata.get(key) == Some(&MetadataValue::Bool(true)))
+                    .filter(|entity| {
+                        region.placement.is_some()
+                            || entity.metadata.get(key) == Some(&MetadataValue::Bool(true))
+                    })
+                    .collect::<Vec<_>>();
+                let attention_entities = attention_entities
+                    .into_iter()
+                    .flat_map(|entity| placement_entity_tree(entity, 0))
                     .collect::<Vec<_>>();
                 let available_entity_rows =
                     rows.saturating_sub(lines.len() + 1 + later_pinned_rows);
@@ -685,13 +692,19 @@ fn render_region_stack(
                     model,
                 ));
                 content_height += 1;
-                for entity in attention_entities {
+                for (entity, depth) in attention_entities {
                     if lines.len() + later_pinned_rows < rows {
                         content_height += 1;
                         let row = lines.len();
-                        lines.push(region_entity_line(
-                            entity, region, catalog, cols, theme, model,
-                        ));
+                        let mut line =
+                            region_entity_line(entity, region, catalog, cols, theme, model);
+                        if depth > 0 {
+                            let prefix = "  ".repeat(depth);
+                            line = format!("{prefix}{line}");
+                            line = truncate_to_width(&line, cols);
+                            line = pad_to_width(&line, cols);
+                        }
+                        lines.push(line);
                         hit_regions.push(HitRegion {
                             row_start: row,
                             row_end: row,
@@ -711,6 +724,38 @@ fn render_region_stack(
                 lines.push(region_root_line(display_region, None, cols, theme, model));
                 content_height += 1;
                 if remaining <= 1 {
+                    continue;
+                }
+                if region.placement.is_some() {
+                    let placed = display_region
+                        .entities
+                        .iter()
+                        .flat_map(|entity| placement_entity_tree(entity, 0))
+                        .collect::<Vec<_>>();
+                    let available = remaining.saturating_sub(1 + later_pinned_rows);
+                    content_height += placed.len();
+                    for (entity, depth) in placed.into_iter().take(available) {
+                        let row = lines.len();
+                        let prefix = "  ".repeat(depth);
+                        let rendered =
+                            region_entity_line(entity, region, catalog, cols, theme, model);
+                        lines.push(pad_to_width(
+                            &truncate_to_width(&format!("{prefix}{rendered}"), cols),
+                            cols,
+                        ));
+                        hit_regions.push(HitRegion {
+                            row_start: row,
+                            row_end: row,
+                            col_start: 0,
+                            col_end: cols.saturating_sub(1),
+                            tab_id: 0,
+                            tab_position: 0,
+                            group_path: None,
+                            inspect_target: Some(NodeKey::Entity(entity.entity.clone())),
+                            materialize_request: None,
+                            action: HitAction::ActivateEntity,
+                        });
+                    }
                     continue;
                 }
                 let mut region_model = model.cloned();
@@ -806,7 +851,30 @@ fn render_region_stack(
     }
 }
 
+fn placement_entity_tree(
+    entity: &andamento_shared::DisplayEntity,
+    depth: usize,
+) -> Vec<(&andamento_shared::DisplayEntity, usize)> {
+    let mut result = vec![(entity, depth)];
+    for child in &entity.children {
+        result.extend(placement_entity_tree(child, depth + 1));
+    }
+    result
+}
+
 fn pinned_region_rows(region: &DisplayRegion, model: Option<&ControllerViewModel>) -> usize {
+    if matches!(
+        region.definition.source,
+        SurfaceRegionSource::Attention | SurfaceRegionSource::Tree
+    ) && region.definition.placement.is_some()
+        && !region.entities.is_empty()
+    {
+        return 1 + region
+            .entities
+            .iter()
+            .map(|entity| placement_entity_tree(entity, 0).len())
+            .sum::<usize>();
+    }
     match region.definition.source {
         SurfaceRegionSource::Controls => 1,
         SurfaceRegionSource::Attention => {
@@ -6999,6 +7067,7 @@ mod tests {
                     ("status.attention".to_owned(), MetadataValue::Bool(true)),
                 ]),
                 templates: ResolvedTemplateSlots::default(),
+                children: vec![],
             },
             indent: 0,
             parent_path: None,
@@ -7082,6 +7151,7 @@ mod tests {
             form: "detail".to_owned(),
             metadata: BTreeMap::from([("status.attention".to_owned(), MetadataValue::Bool(true))]),
             templates: ResolvedTemplateSlots::default(),
+            children: vec![],
         };
         let mut model = model();
         model.tabs.clear();
@@ -7109,6 +7179,60 @@ mod tests {
         );
 
         assert!(rendered.lines[3].contains("[issue] Issue 1095 hover detail"));
+    }
+
+    #[test]
+    fn pinned_placement_regions_reserve_every_nested_entity_row() {
+        let child = DisplayEntity {
+            entity: EntityRef {
+                kind: "convoy".to_owned(),
+                id: "c".to_owned(),
+            },
+            label: "Convoy".to_owned(),
+            form: "full".to_owned(),
+            metadata: BTreeMap::new(),
+            templates: ResolvedTemplateSlots::default(),
+            children: vec![DisplayEntity {
+                entity: EntityRef {
+                    kind: "vessel".to_owned(),
+                    id: "v".to_owned(),
+                },
+                label: "Vessel".to_owned(),
+                form: "full".to_owned(),
+                metadata: BTreeMap::new(),
+                templates: ResolvedTemplateSlots::default(),
+                children: vec![],
+            }],
+        };
+        let region = andamento_shared::DisplayRegion {
+            definition: SurfaceRegionDefinition {
+                name: "attention".to_owned(),
+                source: SurfaceRegionSource::Attention,
+                root_template: "flotilla/region/attention".to_owned(),
+                form: "full".to_owned(),
+                attention_key: None,
+                placement: Some("tree".to_owned()),
+                pinned: true,
+                promotions: vec![],
+            },
+            root: None,
+            entities: vec![DisplayEntity {
+                entity: EntityRef {
+                    kind: "project".to_owned(),
+                    id: "p".to_owned(),
+                },
+                label: "Project".to_owned(),
+                form: "full".to_owned(),
+                metadata: BTreeMap::new(),
+                templates: ResolvedTemplateSlots::default(),
+                children: vec![child],
+            }],
+        };
+
+        assert_eq!(pinned_region_rows(&region, None), 4);
+        let mut tree_region = region;
+        tree_region.definition.source = SurfaceRegionSource::Tree;
+        assert_eq!(pinned_region_rows(&tree_region, None), 4);
     }
 
     #[test]
@@ -7199,6 +7323,7 @@ mod tests {
                         ("status.attention".to_owned(), MetadataValue::Bool(true)),
                     ]),
                     templates: ResolvedTemplateSlots::default(),
+                    children: vec![],
                 },
                 indent: 0,
                 parent_path: None,
@@ -7659,6 +7784,7 @@ mod tests {
                     detail: Some(resolve_slot(TemplateConfigSlot::Detail)),
                     ..Default::default()
                 },
+                children: vec![],
             },
             indent: 2,
             parent_path: Some(path),
@@ -7713,6 +7839,7 @@ mod tests {
                 form: "full".to_owned(),
                 metadata: RenderMetadata::new(),
                 templates: ResolvedTemplateSlots::default(),
+                children: vec![],
             },
             indent: 0,
             parent_path: None,
@@ -7757,6 +7884,7 @@ mod tests {
                 form: "compact".to_owned(),
                 metadata: RenderMetadata::new(),
                 templates: ResolvedTemplateSlots::default(),
+                children: vec![],
             },
             indent: 0,
             parent_path: None,
@@ -10662,6 +10790,7 @@ mod tests {
                 }),
                 ..ResolvedTemplateSlots::default()
             },
+            children: vec![],
         };
         let entity_lines = tab_metadata_block(&RenderTab {
             card: render_card_from_entity(&entity),

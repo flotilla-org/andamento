@@ -157,6 +157,8 @@ impl ExternalTemplateConfig {
             }
             if template.operations.is_empty()
                 && template.sets.is_empty()
+                && template.loops.is_empty()
+                && template.apply_template.is_none()
                 && template.extends.is_none()
             {
                 return Err(TemplateConfigError::Validation(format!(
@@ -191,6 +193,13 @@ impl ExternalTemplateConfig {
                     )));
                 }
             }
+            let template_binding = template
+                .name
+                .split('/')
+                .next()
+                .unwrap_or(&template.name)
+                .to_owned();
+            validate_placement_loops(&template.loops, &BTreeSet::from([template_binding]))?;
         }
         let mut fragment_names = BTreeSet::new();
         for fragment in &self.fragments {
@@ -222,6 +231,9 @@ impl ExternalTemplateConfig {
                     }
                 }
             }
+        }
+        for placement in &self.placements {
+            validate_placement_loops(&placement.loops, &BTreeSet::new())?;
         }
         let mut variable_names = BTreeSet::new();
         for variable in &self.variables {
@@ -350,6 +362,46 @@ impl ExternalTemplateConfig {
         }
         Ok(())
     }
+}
+
+fn validate_placement_loops(
+    loops: &[PlacementLoop],
+    enclosing: &BTreeSet<String>,
+) -> Result<(), TemplateConfigError> {
+    for loop_definition in loops {
+        if loop_definition.binding.ends_with('s') {
+            return Err(TemplateConfigError::Validation(format!(
+                "loop binding {} must be singular",
+                loop_definition.binding
+            )));
+        }
+        if enclosing.contains(&loop_definition.binding) {
+            return Err(TemplateConfigError::Validation(format!(
+                "loop binding {} shadows an enclosing binding",
+                loop_definition.binding
+            )));
+        }
+        for predicate in &loop_definition.predicates {
+            if predicate.value.is_some() == predicate.of.is_some() {
+                return Err(TemplateConfigError::Validation(format!(
+                    "loop {} predicate {} must declare exactly one of value or of",
+                    loop_definition.binding, predicate.key
+                )));
+            }
+            if let Some(of) = predicate.of.as_ref() {
+                if !enclosing.contains(of) {
+                    return Err(TemplateConfigError::Validation(format!(
+                        "loop {} refers to unbound enclosing loop {of}",
+                        loop_definition.binding
+                    )));
+                }
+            }
+        }
+        let mut scope = enclosing.clone();
+        scope.insert(loop_definition.binding.clone());
+        validate_placement_loops(&loop_definition.loops, &scope)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -701,6 +753,60 @@ impl TemplateConfigCatalog {
             .find(|placement| placement.name == name)
     }
 
+    pub fn placement_template<'a>(
+        &'a self,
+        name: &str,
+        metadata: &BTreeMap<String, MetadataValue>,
+    ) -> Option<&'a TemplateConfigDefinition> {
+        self.layer_stack(metadata).into_iter().find_map(|layer| {
+            layer
+                .config
+                .templates
+                .iter()
+                .find(|template| template.name == name)
+        })
+    }
+
+    /// Resolve the render surface of a template reached through
+    /// `apply-template`. Placement-only templates may omit the normal slot and
+    /// node-kind declarations, for which compact/entity is the rendering
+    /// convention, but otherwise use the same inheritance and operation
+    /// pipeline as every other template consumer.
+    pub fn resolve_placement_template(
+        &self,
+        name: &str,
+        metadata: &BTreeMap<String, MetadataValue>,
+    ) -> Result<Option<TemplateConfigResolved>, TemplateConfigResolveError> {
+        let stack = self.layer_stack(metadata);
+        let Some((layer, template)) = find_template(&stack, name) else {
+            return Ok(None);
+        };
+        let mut inherited_slot = None;
+        let mut inherited_node_kind = None;
+        let mut cursor = Some(template);
+        let mut seen = BTreeSet::new();
+        while let Some(candidate) = cursor {
+            if !seen.insert(candidate.name.as_str()) {
+                break;
+            }
+            inherited_slot = inherited_slot.or(candidate.slot);
+            inherited_node_kind = inherited_node_kind.or(candidate.node_kind);
+            if inherited_slot.is_some() && inherited_node_kind.is_some() {
+                break;
+            }
+            cursor = candidate
+                .extends
+                .as_deref()
+                .and_then(|parent| find_template(&stack, parent).map(|(_, template)| template));
+        }
+        let mut template = template.clone();
+        template.slot = inherited_slot.or(Some(TemplateConfigSlot::Compact));
+        template.node_kind = inherited_node_kind.or(Some(TemplateConfigNodeKind::Entity));
+        let mut resolved = flatten_template(&stack, layer, &template, &mut vec![], &mut vec![])?;
+        resolved.name = name.to_owned();
+        Ok(Some(resolved))
+    }
+
     fn layer_stack(&self, metadata: &BTreeMap<String, MetadataValue>) -> Vec<&TemplateConfigLayer> {
         self.layers
             .iter()
@@ -767,6 +873,10 @@ pub struct PlacementLoop {
     pub fields: Vec<TemplateConfigFieldSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loops: Vec<PlacementLoop>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apply_template: Option<String>,
 }
 
 /// Fact equality against a constant.
@@ -779,7 +889,10 @@ pub struct PlacementLoop {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct PlacementPredicate {
     pub key: String,
-    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub of: Option<String>,
 }
 
 /// The text a value is indexed under. Predicates compare against this, so a
@@ -1441,6 +1554,10 @@ pub struct TemplateConfigDefinition {
     pub operations: Vec<TemplateConfigFieldOperation>,
     #[serde(default)]
     pub sets: Vec<TemplateVariableSetter>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loops: Vec<PlacementLoop>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apply_template: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1972,6 +2089,15 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
     })?;
     let mut operations = vec![];
     let mut sets = vec![];
+    let mut loops = vec![];
+    let mut apply_template = None;
+    let template_name = kdl_required_arg_string(node, 0, "template name")?;
+    let template_binding = template_name
+        .split('/')
+        .next()
+        .unwrap_or(&template_name)
+        .to_owned();
+    let template_scope = BTreeSet::from([template_binding]);
     for child in children.nodes() {
         match child.name().value() {
             "when" | "predicate" => {
@@ -1983,6 +2109,15 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
             "field" | "remove" | "use" | "box" | "toggle" | "fill" | "dim" | "indent"
             | "control" => operations.push(parse_kdl_field_operation(child)?),
             "set" => sets.push(parse_kdl_variable_setter(child)?),
+            "for" => loops.push(parse_kdl_placement_loop(child, &template_scope)?),
+            "apply-template" => {
+                if apply_template.is_some() {
+                    return Err(TemplateConfigError::Validation(
+                        "template applies more than one template".to_owned(),
+                    ));
+                }
+                apply_template = Some(kdl_node_arg_string(child, 0).unwrap_or("").to_owned());
+            }
             other => {
                 return Err(TemplateConfigError::Validation(format!(
                     "template {} has unsupported child node: {other}",
@@ -1992,7 +2127,7 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
         }
     }
     Ok(TemplateConfigDefinition {
-        name: kdl_required_arg_string(node, 0, "template name")?,
+        name: template_name,
         extends: kdl_prop_string(node, "extends"),
         slot: kdl_prop_string(node, "slot")
             .map(|value| parse_kdl_slot(&value))
@@ -2002,6 +2137,8 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
             .transpose()?,
         operations,
         sets,
+        loops,
+        apply_template,
     })
 }
 
@@ -2014,7 +2151,7 @@ fn parse_kdl_placement(node: &KdlNode) -> Result<PlacementDefinition, TemplateCo
                 .nodes()
                 .iter()
                 .filter(|child| child.name().value() == "for")
-                .map(parse_kdl_placement_loop)
+                .map(|node| parse_kdl_placement_loop(node, &BTreeSet::new()))
                 .collect::<Result<Vec<_>, TemplateConfigError>>()
         })
         .transpose()?
@@ -2033,22 +2170,51 @@ fn parse_kdl_placement(node: &KdlNode) -> Result<PlacementDefinition, TemplateCo
     Ok(PlacementDefinition { name, loops })
 }
 
-fn parse_kdl_placement_loop(node: &KdlNode) -> Result<PlacementLoop, TemplateConfigError> {
+fn parse_kdl_placement_loop(
+    node: &KdlNode,
+    enclosing: &BTreeSet<String>,
+) -> Result<PlacementLoop, TemplateConfigError> {
     let binding = kdl_required_arg_string(node, 0, "loop binding")?;
+    if binding.ends_with('s') {
+        return Err(TemplateConfigError::Validation(format!(
+            "loop binding {binding} must be singular"
+        )));
+    }
+    if enclosing.contains(&binding) {
+        return Err(TemplateConfigError::Validation(format!(
+            "loop binding {binding} shadows an enclosing binding"
+        )));
+    }
+    let mut scope = enclosing.clone();
+    scope.insert(binding.clone());
     let mut predicates = vec![];
     // `kind=` is sugar for the overwhelmingly common entity.kind equality.
     if let Some(kind) = kdl_prop_string(node, "kind") {
         predicates.push(PlacementPredicate {
             key: "entity.kind".to_owned(),
-            value: kind,
+            value: Some(kind),
+            of: None,
         });
     }
     let mut fields = vec![];
+    let mut loops = vec![];
+    let mut apply_template = kdl_prop_string(node, "apply-template");
     if let Some(children) = node.children() {
         for child in children.nodes() {
             match child.name().value() {
-                "match" => predicates.push(parse_kdl_placement_predicate(child, &binding)?),
+                "match" => {
+                    predicates.push(parse_kdl_placement_predicate(child, &binding, enclosing)?)
+                }
                 "field" => fields.push(parse_kdl_field(child)?),
+                "for" => loops.push(parse_kdl_placement_loop(child, &scope)?),
+                "apply-template" => {
+                    if apply_template.is_some() {
+                        return Err(TemplateConfigError::Validation(format!(
+                            "loop {binding} applies more than one template"
+                        )));
+                    }
+                    apply_template = Some(kdl_node_arg_string(child, 0).unwrap_or("").to_owned());
+                }
                 other => {
                     return Err(TemplateConfigError::Validation(format!(
                         "loop {binding} has unsupported child {other}"
@@ -2067,12 +2233,15 @@ fn parse_kdl_placement_loop(node: &KdlNode) -> Result<PlacementLoop, TemplateCon
         predicates,
         fields,
         layout: kdl_prop_string(node, "layout"),
+        loops,
+        apply_template,
     })
 }
 
 fn parse_kdl_placement_predicate(
     node: &KdlNode,
     binding: &str,
+    enclosing: &BTreeSet<String>,
 ) -> Result<PlacementPredicate, TemplateConfigError> {
     let key = kdl_required_arg_string(node, 0, "match key")?;
     // The index is keyed by (key, value). Anything else — existence tests,
@@ -2084,16 +2253,27 @@ fn parse_kdl_placement_predicate(
         )));
     }
     if let Some(of) = kdl_prop_string(node, "of") {
-        return Err(TemplateConfigError::Validation(format!(
-            "loop {binding} matches {key} against binding {of}; this build has no nested loops to bind against"
-        )));
+        if !enclosing.contains(&of) {
+            return Err(TemplateConfigError::Validation(format!(
+                "loop {binding} refers to unbound enclosing loop {of}"
+            )));
+        }
+        return Ok(PlacementPredicate {
+            key,
+            value: None,
+            of: Some(of),
+        });
     }
     let Some(value) = kdl_prop_string(node, "value") else {
         return Err(TemplateConfigError::Validation(format!(
             "loop {binding} matches {key} without value=; the placement index can only answer equality against a constant"
         )));
     };
-    Ok(PlacementPredicate { key, value })
+    Ok(PlacementPredicate {
+        key,
+        value: Some(value),
+        of: None,
+    })
 }
 
 fn parse_kdl_region(node: &KdlNode) -> Result<SurfaceRegionDefinition, TemplateConfigError> {
@@ -2801,6 +2981,66 @@ mod tests {
     }
 
     #[test]
+    fn applied_template_resolution_flattens_inheritance_operations_and_setters() {
+        let config = parse_template_config_kdl(
+            r#"
+            variable "child-layout" default="cards" {
+              value "cards"
+              value "strip"
+            }
+            template "base/line" slot="detail" node-kind="entity" {
+              field "inherited" source="literal" value="base"
+              field "removed" source="literal" value="gone"
+              control "open-config" glyph="gear"
+              set "child-layout" "strip"
+            }
+            template "project/line" extends="base/line" {
+              remove "removed"
+              field "own" source="literal" value="project"
+            }
+            "#,
+        )
+        .expect("placement templates parse");
+        let catalog = TemplateConfigCatalog::from_config(config);
+        let resolved = catalog
+            .resolve_placement_template("project/line", &BTreeMap::new())
+            .expect("placement template resolves")
+            .expect("placement template exists");
+
+        assert_eq!(
+            resolved
+                .fields
+                .iter()
+                .map(|field| field.spec.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["inherited", "own"]
+        );
+        assert_eq!(resolved.controls.len(), 1);
+        assert_eq!(resolved.setters[0].setter.name, "child-layout");
+        assert_eq!(resolved.setters[0].setter.value, "strip");
+        assert_eq!(resolved.slot, TemplateConfigSlot::Detail);
+    }
+
+    #[test]
+    fn json_placement_predicate_requires_a_value_or_enclosing_binding() {
+        let error = parse_template_config_json(
+            r#"{
+              "version": 1,
+              "placements": [{
+                "name": "tree",
+                "loops": [{
+                  "binding": "project",
+                  "predicates": [{"key": "entity.kind"}]
+                }]
+              }]
+            }"#,
+        )
+        .expect_err("a JSON predicate without value or of must fail validation");
+
+        assert!(format!("{error:?}").contains("exactly one of value or of"));
+    }
+
+    #[test]
     fn project_layer_is_selected_per_node_and_does_not_leak() {
         let project = parse_template_config_kdl(
             r#"
@@ -2882,11 +3122,13 @@ placement "attention" {
             vec![
                 PlacementPredicate {
                     key: "entity.kind".to_owned(),
-                    value: "vessel".to_owned(),
+                    value: Some("vessel".to_owned()),
+                    of: None,
                 },
                 PlacementPredicate {
                     key: "status.attention".to_owned(),
-                    value: "true".to_owned(),
+                    value: Some("true".to_owned()),
+                    of: None,
                 },
             ],
             "kind= is sugar for an entity.kind equality"
@@ -2900,7 +3142,10 @@ placement "attention" {
         // which is what makes nested loops quadratic, so each is a config error.
         for (predicate, expected) in [
             (r#"match "status.attention" exists=true"#, "existence test"),
-            (r#"match "flotilla.project" of="project""#, "nested loops"),
+            (
+                r#"match "flotilla.project" of="project""#,
+                "unbound enclosing loop",
+            ),
             (r#"match "status.attention""#, "equality against a constant"),
         ] {
             let error = parse_template_config_kdl(&format!(
@@ -2913,6 +3158,55 @@ placement "attention" {
                 "diagnostic for {predicate} should explain {expected}: {message}"
             );
         }
+    }
+
+    #[test]
+    fn nested_loops_bind_lexically_and_reject_shadowing() {
+        let config = parse_template_config_kdl(
+            r#"
+version 1
+placement "tree" {
+  for "project" kind="project" {
+    for "convoy" kind="convoy" apply-template="convoy/line" {
+      match "flotilla.project" of="project"
+    }
+  }
+}
+"#,
+        )
+        .expect("nested bindings parse");
+        let nested = &config.placements[0].loops[0].loops[0];
+        assert_eq!(nested.predicates[1].of.as_deref(), Some("project"));
+        assert_eq!(nested.apply_template.as_deref(), Some("convoy/line"));
+
+        let error = parse_template_config_kdl(
+            r#"
+version 1
+placement "tree" {
+  for "project" kind="project" {
+    for "project" kind="convoy" {}
+  }
+}
+"#,
+        )
+        .expect_err("shadowing is a config error");
+        assert!(format!("{error:?}").contains("shadows an enclosing binding"));
+    }
+
+    #[test]
+    fn applied_template_cannot_reference_the_callers_bindings() {
+        let error = parse_template_config_kdl(
+            r#"
+version 1
+template "convoy/line" {
+  for "vessel" kind="vessel" {
+    match "flotilla.project" of="project"
+  }
+}
+"#,
+        )
+        .expect_err("the caller environment is not in template scope");
+        assert!(format!("{error:?}").contains("unbound enclosing loop project"));
     }
 
     #[test]
