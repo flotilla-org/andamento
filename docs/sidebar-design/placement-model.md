@@ -292,6 +292,8 @@ template "project/line" {
 
   for "convoy" kind="convoy" layout="lines" {
     match "flotilla.project" of="project"
+    order "status.rank" direction="descending" absent="last"
+    order "display.label" direction="ascending" absent="last"
     apply-template
   }
 
@@ -332,6 +334,13 @@ This is deliberate. A string grammar grows — someone adds `!=`, then `or`, the
 a function, and it becomes a dynamic language nobody designed. Node-shaped
 predicates can only grow by inventing a node type, which is a visible act
 somebody has to argue for.
+
+**Order keys are fact nodes on each loop.** `order "key"` compares typed fact
+values in declaration order. `direction` is `ascending` (the default) or
+`descending`; `absent` is `last` (the default) or `first`, and is independent
+of direction. Several `order` nodes form the declared tie-break chain. Entity
+kind and id are always the final tie-break, so equal keys cannot reshuffle.
+With no `order` nodes, that stable entity identity is the documented order.
 
 **Every predicate must be servable by an index.** Equality only; left side a
 fact on the thing being matched, right side a constant or a fact of an

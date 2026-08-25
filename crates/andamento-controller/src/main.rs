@@ -3220,6 +3220,7 @@ region "attention" source="attention" root-template="flotilla/region/attention" 
 placement "attention" {
   for "item" kind="vessel" {
     match "status.attention" value="true"
+    order "display.label" direction="descending" absent="last"
     field "label" {
       value source="metadata-text" key="display.label"
     }
@@ -3337,8 +3338,8 @@ placement "attention" {
             .collect::<Vec<_>>();
         assert_eq!(
             placed,
-            vec!["alpha-worker", "gamma-worker"],
-            "the loop selects vessels wanting attention and nothing else"
+            vec!["gamma-worker", "alpha-worker"],
+            "the loop's declared order overrides the catalog's alphabetical order"
         );
 
         let templates =

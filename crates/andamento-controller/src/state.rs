@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
@@ -177,6 +178,44 @@ struct CatalogEntity {
     grouping_priority: i64,
     collapse_single_member: bool,
     show_empty: bool,
+}
+
+fn placement_entity_order(
+    left: &CatalogEntity,
+    right: &CatalogEntity,
+    order: &[andamento_shared::template_config::PlacementOrder],
+) -> Ordering {
+    for key in order {
+        let left_value = placement_sort_fact(left, &key.key);
+        let right_value = placement_sort_fact(right, &key.key);
+        let compared = match (left_value, right_value) {
+            (Some(left), Some(right)) => match key.direction {
+                andamento_shared::template_config::PlacementOrderDirection::Ascending => {
+                    left.cmp(right)
+                }
+                andamento_shared::template_config::PlacementOrderDirection::Descending => {
+                    right.cmp(left)
+                }
+            },
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => match key.absent {
+                andamento_shared::template_config::PlacementOrderAbsent::First => Ordering::Less,
+                andamento_shared::template_config::PlacementOrderAbsent::Last => Ordering::Greater,
+            },
+            (Some(_), None) => match key.absent {
+                andamento_shared::template_config::PlacementOrderAbsent::First => Ordering::Greater,
+                andamento_shared::template_config::PlacementOrderAbsent::Last => Ordering::Less,
+            },
+        };
+        if compared != Ordering::Equal {
+            return compared;
+        }
+    }
+    left.entity.cmp(&right.entity)
+}
+
+fn placement_sort_fact<'a>(entity: &'a CatalogEntity, key: &str) -> Option<&'a MetadataValue> {
+    entity.values.get(key).map(|entry| &entry.value)
 }
 
 #[derive(Debug, Default)]
@@ -1538,7 +1577,8 @@ impl ControllerState {
         let Some((seed, rest)) = postings.split_first() else {
             return vec![];
         };
-        seed.iter()
+        let mut matches = seed
+            .iter()
             .filter(|position| {
                 rest.iter()
                     .all(|matches| matches.binary_search(position).is_ok())
@@ -1546,6 +1586,10 @@ impl ControllerState {
             .filter_map(|position| entities.get(*position))
             .filter(|entity| self.entity_is_visible(entity))
             .filter(|entity| !ancestors.contains(&entity.entity))
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| placement_entity_order(left, right, &loop_definition.order));
+        matches
+            .into_iter()
             .map(|entity| {
                 let mut display =
                     placed_display_entity(self.display_entity(entity), loop_definition, form);
@@ -4649,6 +4693,7 @@ mod tests {
                         },
                     )
                     .collect(),
+                order: vec![],
                 fields: vec![],
                 layout: None,
                 loops: vec![],
@@ -4726,6 +4771,107 @@ mod tests {
                 )
                 .is_empty(),
             "predicates intersect: an unmatched one empties the result"
+        );
+    }
+
+    #[test]
+    fn loops_over_the_same_kind_choose_independent_total_orders() {
+        let config = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+version 1
+placement "urgent" {
+  for "item" kind="vessel" {
+    order "status.rank" direction="descending" absent="last"
+  }
+}
+placement "stable" {
+  for "item" kind="vessel" {
+    order "display.label" direction="ascending" absent="first"
+  }
+}
+"#,
+        )
+        .expect("two independently ordered loops");
+        let mut state = directory_entity_state();
+        apply_entity(
+            &mut state,
+            "vessel",
+            "zeta-id",
+            1,
+            &[
+                ("flotilla.vessel", "zeta-id"),
+                ("display.label", "alpha"),
+                ("status.rank", "1"),
+            ],
+        );
+        apply_entity(
+            &mut state,
+            "vessel",
+            "alpha-id",
+            1,
+            &[
+                ("flotilla.vessel", "alpha-id"),
+                ("display.label", "zeta"),
+                ("status.rank", "9"),
+            ],
+        );
+        apply_entity(
+            &mut state,
+            "vessel",
+            "missing-id",
+            1,
+            &[
+                ("flotilla.vessel", "missing-id"),
+                ("display.label", "middle"),
+            ],
+        );
+        let entities = state.catalog_entities();
+        let index = PlacementIndex::build(&entities);
+        let labels = |placement: &andamento_shared::template_config::PlacementDefinition| {
+            state
+                .evaluate_placement(placement, &entities, &index, "full")
+                .into_iter()
+                .map(|entity| entity.label)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            labels(&config.placements[0]),
+            vec!["zeta", "alpha", "middle"]
+        );
+        assert_eq!(
+            labels(&config.placements[1]),
+            vec!["alpha", "middle", "zeta"]
+        );
+    }
+
+    #[test]
+    fn undeclared_and_equal_order_falls_back_to_stable_entity_identity() {
+        let mut state = directory_entity_state();
+        for id in ["zeta-id", "alpha-id"] {
+            apply_entity(
+                &mut state,
+                "vessel",
+                id,
+                1,
+                &[("flotilla.vessel", id), ("display.label", "same")],
+            );
+        }
+        let entities = state.catalog_entities();
+        let index = PlacementIndex::build(&entities);
+        let placed = state.evaluate_placement(
+            &placement_loop(&[("entity.kind", "vessel")]),
+            &entities,
+            &index,
+            "full",
+        );
+
+        assert_eq!(
+            placed
+                .into_iter()
+                .map(|item| item.entity.id)
+                .collect::<Vec<_>>(),
+            vec!["alpha-id", "zeta-id"]
         );
     }
 
