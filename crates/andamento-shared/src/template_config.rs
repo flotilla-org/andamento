@@ -869,6 +869,11 @@ pub struct PlacementLoop {
     /// arrives, but part of the syntax from the start so configs do not churn.
     pub binding: String,
     pub predicates: Vec<PlacementPredicate>,
+    /// Fact keys are compared in declaration order. Entity identity is always
+    /// appended as the final tie-break, so both declared and undeclared order
+    /// are total and stable across model rebuilds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<PlacementOrder>,
     #[serde(default)]
     pub fields: Vec<TemplateConfigFieldSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -877,6 +882,32 @@ pub struct PlacementLoop {
     pub loops: Vec<PlacementLoop>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apply_template: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct PlacementOrder {
+    pub key: String,
+    #[serde(default)]
+    pub direction: PlacementOrderDirection,
+    #[serde(default)]
+    pub absent: PlacementOrderAbsent,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlacementOrderDirection {
+    #[default]
+    Ascending,
+    Descending,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlacementOrderAbsent {
+    First,
+    #[default]
+    Last,
 }
 
 /// Fact equality against a constant.
@@ -2197,6 +2228,7 @@ fn parse_kdl_placement_loop(
         });
     }
     let mut fields = vec![];
+    let mut order = vec![];
     let mut loops = vec![];
     let mut apply_template = kdl_prop_string(node, "apply-template");
     if let Some(children) = node.children() {
@@ -2206,6 +2238,7 @@ fn parse_kdl_placement_loop(
                     predicates.push(parse_kdl_placement_predicate(child, &binding, enclosing)?)
                 }
                 "field" => fields.push(parse_kdl_field(child)?),
+                "order" => order.push(parse_kdl_placement_order(child)?),
                 "for" => loops.push(parse_kdl_placement_loop(child, &scope)?),
                 "apply-template" => {
                     if apply_template.is_some() {
@@ -2231,10 +2264,38 @@ fn parse_kdl_placement_loop(
     Ok(PlacementLoop {
         binding,
         predicates,
+        order,
         fields,
         layout: kdl_prop_string(node, "layout"),
         loops,
         apply_template,
+    })
+}
+
+fn parse_kdl_placement_order(node: &KdlNode) -> Result<PlacementOrder, TemplateConfigError> {
+    let key = kdl_required_arg_string(node, 0, "order fact key")?;
+    let direction = match kdl_prop_string(node, "direction").as_deref() {
+        None | Some("ascending") => PlacementOrderDirection::Ascending,
+        Some("descending") => PlacementOrderDirection::Descending,
+        Some(other) => {
+            return Err(TemplateConfigError::Validation(format!(
+                "unsupported order direction: {other}"
+            )))
+        }
+    };
+    let absent = match kdl_prop_string(node, "absent").as_deref() {
+        None | Some("last") => PlacementOrderAbsent::Last,
+        Some("first") => PlacementOrderAbsent::First,
+        Some(other) => {
+            return Err(TemplateConfigError::Validation(format!(
+                "unsupported absent placement: {other}"
+            )))
+        }
+    };
+    Ok(PlacementOrder {
+        key,
+        direction,
+        absent,
     })
 }
 
@@ -3134,6 +3195,52 @@ placement "attention" {
             "kind= is sugar for an entity.kind equality"
         );
         assert_eq!(loop_definition.fields.len(), 1);
+    }
+
+    #[test]
+    fn placement_loop_parses_ordered_fact_keys_and_missing_policy() {
+        let config = parse_template_config_kdl(
+            r#"
+version 1
+placement "attention" {
+  for "item" kind="vessel" {
+    order "status.rank" direction="descending" absent="first"
+    order "display.label"
+  }
+}
+"#,
+        )
+        .expect("placement order parses");
+
+        assert_eq!(
+            config.placements[0].loops[0].order,
+            vec![
+                PlacementOrder {
+                    key: "status.rank".to_owned(),
+                    direction: PlacementOrderDirection::Descending,
+                    absent: PlacementOrderAbsent::First,
+                },
+                PlacementOrder {
+                    key: "display.label".to_owned(),
+                    direction: PlacementOrderDirection::Ascending,
+                    absent: PlacementOrderAbsent::Last,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn placement_loop_refuses_unknown_order_options() {
+        for (property, expected) in [
+            (r#"direction="sideways""#, "order direction"),
+            (r#"absent="somewhere""#, "absent placement"),
+        ] {
+            let error = parse_template_config_kdl(&format!(
+                "version 1\nplacement \"p\" {{\n  for \"item\" kind=\"vessel\" {{\n    order \"display.label\" {property}\n  }}\n}}\n"
+            ))
+            .expect_err("unknown order option must be refused");
+            assert!(format!("{error:?}").contains(expected));
+        }
     }
 
     #[test]
