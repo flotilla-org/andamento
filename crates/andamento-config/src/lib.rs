@@ -772,7 +772,17 @@ fn inspect_scope_label(key: &NodeKey) -> String {
         NodeKey::Tab(tab_id) => format!("tab:{tab_id}"),
         NodeKey::Group(_) => "group".to_owned(),
         NodeKey::Entity(entity) => format!("entity:{}:{}", entity.kind, entity.id),
-        NodeKey::Placement(key) => format!("placement:{}", key.0.len()),
+        NodeKey::Placement(key) => format!(
+            "placement:{}",
+            key.0
+                .iter()
+                .map(|segment| format!(
+                    "{}={}:{}",
+                    segment.loop_name, segment.entity.kind, segment.entity.id
+                ))
+                .collect::<Vec<_>>()
+                .join("/")
+        ),
     }
 }
 

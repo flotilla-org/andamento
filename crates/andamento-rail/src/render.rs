@@ -1225,6 +1225,11 @@ fn render_detail_surface(
         (Some(model), Some(NodeKey::Entity(target))) => display_entity_for_target(model, target)
             .map(display_entity_detail)
             .or_else(|| latent_entity_for_target(model, target).map(latent_entity_detail)),
+        (Some(model), Some(NodeKey::Placement(key))) => key
+            .0
+            .last()
+            .and_then(|segment| display_entity_for_target(model, &segment.entity))
+            .map(display_entity_detail),
         _ => None,
     }
     .unwrap_or_default();

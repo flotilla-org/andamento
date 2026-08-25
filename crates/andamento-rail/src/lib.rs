@@ -783,6 +783,37 @@ mod tests {
     }
 
     #[test]
+    fn placement_hit_targets_drive_hover_detail_state() {
+        let target = NodeKey::Placement(andamento_shared::PlacementKey(vec![
+            andamento_shared::PlacementSegment {
+                loop_name: "attention".to_owned(),
+                entity: andamento_shared::EntityRef {
+                    kind: "vessel".to_owned(),
+                    id: "worker".to_owned(),
+                },
+            },
+        ]));
+        let mut state = PluginState {
+            hit_regions: vec![HitRegion {
+                row_start: 1,
+                row_end: 1,
+                col_start: 2,
+                col_end: 8,
+                tab_id: 0,
+                tab_position: 0,
+                group_path: None,
+                inspect_target: Some(target.clone()),
+                materialize_request: None,
+                action: HitAction::ActivateEntity,
+            }],
+            ..Default::default()
+        };
+
+        assert!(state.handle_mouse(Mouse::Hover(1, 4)));
+        assert_eq!(state.hovered_detail_target, Some(target));
+    }
+
+    #[test]
     fn detail_hover_does_not_clear_between_compact_chips() {
         let first = NodeKey::Entity(andamento_shared::EntityRef {
             kind: "action".to_owned(),
@@ -1700,7 +1731,9 @@ impl PluginState {
                 let row = row as usize;
                 let target = hit_at(&self.hit_regions, row, col).and_then(|hit| {
                     match hit.inspect_target.as_ref() {
-                        Some(target @ NodeKey::Entity(_)) => Some(target.clone()),
+                        Some(target @ (NodeKey::Entity(_) | NodeKey::Placement(_))) => {
+                            Some(target.clone())
+                        }
                         _ => None,
                     }
                 });

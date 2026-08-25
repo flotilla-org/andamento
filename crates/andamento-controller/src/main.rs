@@ -1435,7 +1435,17 @@ fn inspect_scope_label(key: &andamento_shared::NodeKey) -> String {
         andamento_shared::NodeKey::Entity(entity) => {
             format!("entity:{}:{}", entity.kind, entity.id)
         }
-        andamento_shared::NodeKey::Placement(key) => format!("placement:{}", key.0.len()),
+        andamento_shared::NodeKey::Placement(key) => format!(
+            "placement:{}",
+            key.0
+                .iter()
+                .map(|segment| format!(
+                    "{}={}:{}",
+                    segment.loop_name, segment.entity.kind, segment.entity.id
+                ))
+                .collect::<Vec<_>>()
+                .join("/")
+        ),
     }
 }
 
