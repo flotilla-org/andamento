@@ -7277,12 +7277,10 @@ mod tests {
             kind: "issue".to_owned(),
             id: "89".to_owned(),
         };
-        let parent_key = andamento_shared::PlacementKey(vec![
-            andamento_shared::PlacementSegment {
-                loop_name: "projects".to_owned(),
-                entity: parent_ref.clone(),
-            },
-        ]);
+        let parent_key = andamento_shared::PlacementKey(vec![andamento_shared::PlacementSegment {
+            loop_name: "projects".to_owned(),
+            entity: parent_ref.clone(),
+        }]);
         let child_key = andamento_shared::PlacementKey(vec![
             parent_key.0[0].clone(),
             andamento_shared::PlacementSegment {
@@ -7319,12 +7317,8 @@ mod tests {
             }],
         }];
 
-        let rendered = render_detail_surface(
-            Some(&model),
-            Some(&NodeKey::Placement(child_key)),
-            40,
-            None,
-        );
+        let rendered =
+            render_detail_surface(Some(&model), Some(&NodeKey::Placement(child_key)), 40, None);
 
         assert!(rendered.contains("[issue] Nested issue 89"));
     }

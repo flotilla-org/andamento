@@ -2321,12 +2321,10 @@ mod tests {
             kind: "issue".to_owned(),
             id: "89".to_owned(),
         };
-        let parent_key = andamento_shared::PlacementKey(vec![
-            andamento_shared::PlacementSegment {
-                loop_name: "projects".to_owned(),
-                entity: parent_ref.clone(),
-            },
-        ]);
+        let parent_key = andamento_shared::PlacementKey(vec![andamento_shared::PlacementSegment {
+            loop_name: "projects".to_owned(),
+            entity: parent_ref.clone(),
+        }]);
         let child_key = andamento_shared::PlacementKey(vec![
             parent_key.0[0].clone(),
             andamento_shared::PlacementSegment {
@@ -2434,9 +2432,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            plugin
-                .node_variable_request(0, Some(1))
-                .map(|request| (request.node_key, request.name, request.value)),
+            plugin.node_variable_request(0, Some(1)).map(|request| (
+                request.node_key,
+                request.name,
+                request.value
+            )),
             Some((
                 plugin.current_inspected_node(),
                 "child-layout".to_owned(),
