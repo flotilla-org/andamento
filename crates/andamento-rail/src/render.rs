@@ -43,6 +43,7 @@ pub enum HitAction {
     Materialize,
     TogglePin,
     ToggleGroup,
+    TogglePlacement,
     OpenConfig,
     ScrollRailUp,
     ScrollRailDown,
@@ -676,7 +677,15 @@ fn render_region_stack(
                     .collect::<Vec<_>>();
                 let attention_entities = attention_entities
                     .into_iter()
-                    .flat_map(|entity| placement_entity_tree(entity, 0))
+                    .flat_map(|entity| {
+                        placement_entity_tree(
+                            entity,
+                            0,
+                            model
+                                .map(|model| model.collapsed_placements.as_slice())
+                                .unwrap_or_default(),
+                        )
+                    })
                     .collect::<Vec<_>>();
                 let available_entity_rows =
                     rows.saturating_sub(lines.len() + 1 + later_pinned_rows);
@@ -713,9 +722,17 @@ fn render_region_stack(
                             tab_id: 0,
                             tab_position: 0,
                             group_path: None,
-                            inspect_target: Some(NodeKey::Entity(entity.entity.clone())),
+                            inspect_target: entity
+                                .placement
+                                .clone()
+                                .map(NodeKey::Placement)
+                                .or_else(|| Some(NodeKey::Entity(entity.entity.clone()))),
                             materialize_request: None,
-                            action: HitAction::ActivateEntity,
+                            action: if entity.children.is_empty() {
+                                HitAction::ActivateEntity
+                            } else {
+                                HitAction::TogglePlacement
+                            },
                         });
                     }
                 }
@@ -730,7 +747,15 @@ fn render_region_stack(
                     let placed = display_region
                         .entities
                         .iter()
-                        .flat_map(|entity| placement_entity_tree(entity, 0))
+                        .flat_map(|entity| {
+                            placement_entity_tree(
+                                entity,
+                                0,
+                                model
+                                    .map(|model| model.collapsed_placements.as_slice())
+                                    .unwrap_or_default(),
+                            )
+                        })
                         .collect::<Vec<_>>();
                     let available = remaining.saturating_sub(1 + later_pinned_rows);
                     content_height += placed.len();
@@ -751,9 +776,17 @@ fn render_region_stack(
                             tab_id: 0,
                             tab_position: 0,
                             group_path: None,
-                            inspect_target: Some(NodeKey::Entity(entity.entity.clone())),
+                            inspect_target: entity
+                                .placement
+                                .clone()
+                                .map(NodeKey::Placement)
+                                .or_else(|| Some(NodeKey::Entity(entity.entity.clone()))),
                             materialize_request: None,
-                            action: HitAction::ActivateEntity,
+                            action: if entity.children.is_empty() {
+                                HitAction::ActivateEntity
+                            } else {
+                                HitAction::TogglePlacement
+                            },
                         });
                     }
                     continue;
@@ -851,13 +884,21 @@ fn render_region_stack(
     }
 }
 
-fn placement_entity_tree(
-    entity: &andamento_shared::DisplayEntity,
+fn placement_entity_tree<'a>(
+    entity: &'a andamento_shared::DisplayEntity,
     depth: usize,
-) -> Vec<(&andamento_shared::DisplayEntity, usize)> {
+    collapsed: &[andamento_shared::PlacementKey],
+) -> Vec<(&'a andamento_shared::DisplayEntity, usize)> {
     let mut result = vec![(entity, depth)];
+    if entity
+        .placement
+        .as_ref()
+        .is_some_and(|key| collapsed.contains(key))
+    {
+        return result;
+    }
     for child in &entity.children {
-        result.extend(placement_entity_tree(child, depth + 1));
+        result.extend(placement_entity_tree(child, depth + 1, collapsed));
     }
     result
 }
@@ -872,7 +913,16 @@ fn pinned_region_rows(region: &DisplayRegion, model: Option<&ControllerViewModel
         return 1 + region
             .entities
             .iter()
-            .map(|entity| placement_entity_tree(entity, 0).len())
+            .map(|entity| {
+                placement_entity_tree(
+                    entity,
+                    0,
+                    model
+                        .map(|model| model.collapsed_placements.as_slice())
+                        .unwrap_or_default(),
+                )
+                .len()
+            })
             .sum::<usize>();
     }
     match region.definition.source {
@@ -3022,6 +3072,9 @@ fn hit_matches_node(hit: &HitRegion, node: &NodeKey) -> bool {
         NodeKey::Entity(entity) => {
             hit.action == HitAction::ShowDetail
                 && hit.inspect_target.as_ref() == Some(&NodeKey::Entity(entity.clone()))
+        }
+        NodeKey::Placement(key) => {
+            hit.inspect_target.as_ref() == Some(&NodeKey::Placement(key.clone()))
         }
     }
 }
@@ -6614,6 +6667,7 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -6759,6 +6813,7 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -6826,6 +6881,7 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -6848,6 +6904,7 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -6974,6 +7031,7 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -7045,6 +7103,7 @@ mod tests {
         model.tabs.clear();
         model.rows = vec![RailRow::Entity {
             entity: DisplayEntity {
+                placement: None,
                 entity: EntityRef {
                     kind: "issue".to_owned(),
                     id: "1060".to_owned(),
@@ -7146,6 +7205,7 @@ mod tests {
             id: "1095".to_owned(),
         };
         let entity = DisplayEntity {
+            placement: None,
             entity: entity_ref.clone(),
             label: "Issue 1095 hover detail".to_owned(),
             form: "detail".to_owned(),
@@ -7184,6 +7244,7 @@ mod tests {
     #[test]
     fn pinned_placement_regions_reserve_every_nested_entity_row() {
         let child = DisplayEntity {
+            placement: None,
             entity: EntityRef {
                 kind: "convoy".to_owned(),
                 id: "c".to_owned(),
@@ -7193,6 +7254,7 @@ mod tests {
             metadata: BTreeMap::new(),
             templates: ResolvedTemplateSlots::default(),
             children: vec![DisplayEntity {
+                placement: None,
                 entity: EntityRef {
                     kind: "vessel".to_owned(),
                     id: "v".to_owned(),
@@ -7217,6 +7279,7 @@ mod tests {
             },
             root: None,
             entities: vec![DisplayEntity {
+                placement: None,
                 entity: EntityRef {
                     kind: "project".to_owned(),
                     id: "p".to_owned(),
@@ -7305,6 +7368,7 @@ mod tests {
         model.rows = (1..=3)
             .map(|id| RailRow::Entity {
                 entity: DisplayEntity {
+                    placement: None,
                     entity: EntityRef {
                         kind: "issue".to_owned(),
                         id: id.to_string(),
@@ -7775,6 +7839,7 @@ mod tests {
         model.rows.truncate(1);
         model.rows.push(RailRow::Entity {
             entity: andamento_shared::DisplayEntity {
+                placement: None,
                 entity: entity_ref.clone(),
                 label: "#982 entities-only cutover".to_owned(),
                 form: "compact".to_owned(),
@@ -7834,6 +7899,7 @@ mod tests {
         model.tabs.clear();
         model.rows = vec![RailRow::Entity {
             entity: andamento_shared::DisplayEntity {
+                placement: None,
                 entity: entity_ref.clone(),
                 label: "#1095 hover detail".to_owned(),
                 form: "full".to_owned(),
@@ -7879,6 +7945,7 @@ mod tests {
         };
         let compact_row = |entity: EntityRef, label: &str| RailRow::Entity {
             entity: DisplayEntity {
+                placement: None,
                 entity,
                 label: label.to_owned(),
                 form: "compact".to_owned(),
@@ -10772,6 +10839,7 @@ mod tests {
             .expect("resolution succeeds")
             .expect("issue compact template");
         let entity = andamento_shared::DisplayEntity {
+            placement: None,
             entity: andamento_shared::EntityRef {
                 kind: "issue".to_owned(),
                 id: "flotilla#1058".into(),

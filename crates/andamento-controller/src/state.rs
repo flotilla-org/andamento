@@ -10,11 +10,11 @@ use andamento_shared::{
     EffectiveNodeVariables, EffectiveVariableValue, EntityRef, GroupPath, GroupSegment,
     GroupingRuleDiagnostic, LatentMaterializationState, LatentTab, MetadataControls, MetadataEntry,
     MetadataIdentity, MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey,
-    ObservedMetadataIdentity, PaneTarget, PluginPlacement, PluginRegistrationHello, Priority,
-    RailConfig, RailRow, RailUiAction, RailUiRevision, RailUiState, ReachableMetadataIdentity,
-    RendererHello, ResolvedMetadata, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus,
-    SortMode, TabCard, TabGroupingInfo, TabStatusSummary, TemplateConfigDiagnostics,
-    VariableSetterProvenance, DISPLAY_FORM_COMPACT, DISPLAY_FORM_FULL,
+    ObservedMetadataIdentity, PaneTarget, PlacementKey, PlacementSegment, PluginPlacement,
+    PluginRegistrationHello, Priority, RailConfig, RailRow, RailUiAction, RailUiRevision,
+    RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateSlot,
+    ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
+    TemplateConfigDiagnostics, VariableSetterProvenance, DISPLAY_FORM_COMPACT, DISPLAY_FORM_FULL,
     NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 use zellij_tile::prelude::{PaneManifest, TabInfo};
@@ -230,6 +230,7 @@ fn placement_sort_fact<'a>(entity: &'a CatalogEntity, key: &str) -> Option<Cow<'
 struct ControllerRailUiState {
     revision: RailUiRevision,
     collapsed_groups: BTreeSet<GroupPath>,
+    collapsed_placements: BTreeSet<PlacementKey>,
     scroll_offset: isize,
     variables: BTreeMap<String, DisplayVariableValue>,
 }
@@ -591,6 +592,11 @@ impl ControllerState {
                     self.rail_ui.collapsed_groups.remove(&path);
                 }
             }
+            RailUiAction::TogglePlacement { key } => {
+                if !self.rail_ui.collapsed_placements.insert(key.clone()) {
+                    self.rail_ui.collapsed_placements.remove(&key);
+                }
+            }
             RailUiAction::ToggleVariable { name } => {
                 let definition = toggle_definition.expect("toggle definition resolved above");
                 let current = self
@@ -637,6 +643,7 @@ impl ControllerState {
         RailUiState {
             revision: self.rail_ui.revision,
             collapsed_groups: self.rail_ui.collapsed_groups.iter().cloned().collect(),
+            collapsed_placements: self.rail_ui.collapsed_placements.iter().cloned().collect(),
             scroll_offset: self.rail_ui.scroll_offset,
             variables: self.rail_ui.variables.clone(),
         }
@@ -649,6 +656,7 @@ impl ControllerState {
         self.rail_ui = ControllerRailUiState {
             revision: state.revision,
             collapsed_groups: state.collapsed_groups.into_iter().collect(),
+            collapsed_placements: state.collapsed_placements.into_iter().collect(),
             scroll_offset: state.scroll_offset,
             variables: state.variables,
         };
@@ -1115,7 +1123,7 @@ impl ControllerState {
             })
             .then(|| PlacementIndex::build(&region_catalog_entities))
             .unwrap_or_default();
-        let surface_regions = self
+        let surface_regions: Vec<andamento_shared::DisplayRegion> = self
             .template_catalog
             .as_ref()
             .map(|catalog| {
@@ -1178,6 +1186,33 @@ impl ControllerState {
                     .collect()
             })
             .unwrap_or_default();
+        if let Some(catalog) = self.template_catalog.as_ref() {
+            let mut inherited = template_config
+                .effective_variables
+                .iter()
+                .map(|entry| (entry.node.clone(), entry.values.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let mut placement_variables = vec![];
+            let mut warnings = BTreeSet::new();
+            for entity in surface_regions.iter().flat_map(|region| &region.entities) {
+                self.resolve_placement_variables(
+                    catalog,
+                    entity,
+                    &NodeKey::Root,
+                    &mut inherited,
+                    &mut placement_variables,
+                    &mut warnings,
+                );
+            }
+            template_config
+                .effective_variables
+                .extend(placement_variables);
+            for warning in warnings {
+                if !template_config.warnings.contains(&warning) {
+                    template_config.warnings.push(warning);
+                }
+            }
+        }
 
         ControllerViewModel {
             sort_mode: self.sort_mode,
@@ -1195,6 +1230,7 @@ impl ControllerState {
                 .unwrap_or_default(),
             inspected_node: None,
             collapsed_groups: self.rail_ui.collapsed_groups.iter().cloned().collect(),
+            collapsed_placements: self.rail_ui.collapsed_placements.iter().cloned().collect(),
             display_variables: self
                 .template_catalog
                 .as_ref()
@@ -1425,6 +1461,7 @@ impl ControllerState {
         };
         DisplayEntity {
             entity: entity.entity.clone(),
+            placement: None,
             label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL)
                 .map(str::to_owned)
                 .unwrap_or_else(|| entity.entity.id.clone()),
@@ -1539,6 +1576,7 @@ impl ControllerState {
                     form,
                     &BTreeMap::new(),
                     &[],
+                    &PlacementKey::default(),
                     0,
                 )
             })
@@ -1554,6 +1592,7 @@ impl ControllerState {
         form: &str,
         bindings: &BTreeMap<String, &'a CatalogEntity>,
         ancestors: &[andamento_shared::EntityRef],
+        parent_placement: &PlacementKey,
         depth: usize,
     ) -> Vec<andamento_shared::DisplayEntity> {
         const MAX_PLACEMENT_DEPTH: usize = 64;
@@ -1601,6 +1640,12 @@ impl ControllerState {
             .map(|entity| {
                 let mut display =
                     placed_display_entity(self.display_entity(entity), loop_definition, form);
+                let mut placement = parent_placement.clone();
+                placement.0.push(PlacementSegment {
+                    loop_name: loop_definition.binding.clone(),
+                    entity: entity.entity.clone(),
+                });
+                display.placement = Some(placement.clone());
                 let mut nested_bindings = bindings.clone();
                 nested_bindings.insert(loop_definition.binding.clone(), entity);
                 let mut nested_ancestors = ancestors.to_vec();
@@ -1679,6 +1724,7 @@ impl ControllerState {
                             form,
                             &nested_bindings,
                             &nested_ancestors,
+                            &placement,
                             depth + 1,
                         )
                     })
@@ -1865,6 +1911,50 @@ impl ControllerState {
                 .collect(),
             variable_warnings.into_iter().collect(),
         )
+    }
+
+    fn resolve_placement_variables(
+        &self,
+        catalog: &andamento_shared::template_config::TemplateConfigCatalog,
+        entity: &DisplayEntity,
+        parent: &NodeKey,
+        inherited_by_node: &mut BTreeMap<NodeKey, BTreeMap<String, EffectiveVariableValue>>,
+        output: &mut Vec<EffectiveNodeVariables>,
+        warnings: &mut BTreeSet<String>,
+    ) {
+        let Some(key) = entity.placement.clone() else {
+            return;
+        };
+        let node = NodeKey::Placement(key);
+        let template = if entity.form == DISPLAY_FORM_COMPACT {
+            entity.templates.compact.as_ref()
+        } else {
+            entity.templates.detail.as_ref()
+        };
+        let resolved = self.resolve_variables_at_node(
+            catalog,
+            &node,
+            inherited_by_node.get(parent),
+            &entity.metadata,
+            template,
+            warnings,
+        );
+        inherited_by_node.insert(node.clone(), resolved.values.clone());
+        output.push(EffectiveNodeVariables {
+            node: node.clone(),
+            values: resolved.values,
+            declarations: resolved.declarations,
+        });
+        for child in &entity.children {
+            self.resolve_placement_variables(
+                catalog,
+                child,
+                &node,
+                inherited_by_node,
+                output,
+                warnings,
+            );
+        }
     }
 
     fn resolve_variables_at_node(
@@ -3067,6 +3157,11 @@ fn node_metadata(
         NodeKey::Group(path) => andamento_shared::ResolvedMetadataTarget::Group(path.clone()),
         NodeKey::Tab(tab_id) => andamento_shared::ResolvedMetadataTarget::Tab(*tab_id),
         NodeKey::Entity(entity) => andamento_shared::ResolvedMetadataTarget::Entity(entity.clone()),
+        NodeKey::Placement(key) => key
+            .0
+            .last()
+            .map(|segment| andamento_shared::ResolvedMetadataTarget::Entity(segment.entity.clone()))
+            .unwrap_or(andamento_shared::ResolvedMetadataTarget::Root),
     };
     resolved_metadata
         .iter()
@@ -4904,6 +4999,131 @@ placement "identity-descending" {
     }
 
     #[test]
+    fn placement_state_is_independent_per_appearance_and_survives_model_pushes() {
+        let entity = EntityRef {
+            kind: "vessel".to_owned(),
+            id: "dev/focus/worker@lab".to_owned(),
+        };
+        let key = |loop_name: &str| {
+            PlacementKey(vec![PlacementSegment {
+                loop_name: loop_name.to_owned(),
+                entity: entity.clone(),
+            }])
+        };
+        let tree = key("tree-item");
+        let attention = key("attention-item");
+        let mut state = directory_entity_state();
+
+        assert!(state.apply_rail_ui_action(RailUiAction::TogglePlacement { key: tree.clone() }));
+        assert_eq!(state.view_model().collapsed_placements, vec![tree.clone()]);
+        assert!(!state.view_model().collapsed_placements.contains(&attention));
+
+        state.set_sort_mode(SortMode::Controller);
+        assert_eq!(state.view_model().collapsed_placements, vec![tree]);
+    }
+
+    #[test]
+    fn one_entity_is_rendered_in_tree_and_match_driven_attention_placements() {
+        let config = andamento_shared::template_config::parse_template_config_kdl(
+            r#"
+version 1
+region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="attention"
+region "tree" source="tree" root-template="flotilla/region/tree" form="full" placement="tree"
+placement "attention" {
+  for "attention-item" kind="vessel" {
+    match "status.attention" value="true"
+  }
+}
+placement "tree" {
+  for "tree-item" kind="vessel"
+}
+"#,
+        )
+        .expect("placement config");
+        let mut state = directory_entity_state();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(config),
+        ));
+        apply_entity(
+            &mut state,
+            "vessel",
+            "dev/focus/worker@lab",
+            1,
+            &[
+                ("flotilla.vessel", "dev/focus/worker@lab"),
+                ("status.attention", "true"),
+            ],
+        );
+
+        let model = state.view_model();
+        let appearances = model
+            .surface_regions
+            .iter()
+            .flat_map(|region| &region.entities)
+            .filter(|display| display.entity.id == "dev/focus/worker@lab")
+            .collect::<Vec<_>>();
+        assert_eq!(appearances.len(), 2);
+        assert_ne!(appearances[0].placement, appearances[1].placement);
+    }
+
+    #[test]
+    fn placement_layout_variables_are_scoped_by_the_full_key() {
+        let entity = EntityRef {
+            kind: "vessel".to_owned(),
+            id: "dev/focus/worker@lab".to_owned(),
+        };
+        let placement = |loop_name: &str| {
+            NodeKey::Placement(PlacementKey(vec![PlacementSegment {
+                loop_name: loop_name.to_owned(),
+                entity: entity.clone(),
+            }]))
+        };
+        let tree = placement("tree-item");
+        let attention = placement("attention-item");
+        let mut state = ControllerState::default();
+        assert!(state.set_node_variable(
+            tree.clone(),
+            "child-layout".to_owned(),
+            Some("cards".to_owned()),
+        ));
+        assert!(state.set_node_variable(
+            attention.clone(),
+            "child-layout".to_owned(),
+            Some("strip".to_owned()),
+        ));
+
+        let overrides = state.bootstrap_snapshot().node_variable_overrides;
+        assert!(overrides.iter().any(|item| item.node == tree
+            && item.values.get("child-layout").map(String::as_str) == Some("cards")));
+        assert!(overrides.iter().any(|item| item.node == attention
+            && item.values.get("child-layout").map(String::as_str) == Some("strip")));
+    }
+
+    #[test]
+    fn renaming_a_loop_deliberately_resets_its_placement_subtree_state() {
+        let entity = EntityRef {
+            kind: "vessel".to_owned(),
+            id: "dev/focus/worker@lab".to_owned(),
+        };
+        let key = |loop_name: &str| {
+            PlacementKey(vec![PlacementSegment {
+                loop_name: loop_name.to_owned(),
+                entity: entity.clone(),
+            }])
+        };
+        let old = key("vessel");
+        let renamed = key("worker");
+        let mut state = ControllerState::default();
+        state.apply_rail_ui_action(RailUiAction::TogglePlacement { key: old.clone() });
+
+        assert!(state.rail_ui_state().collapsed_placements.contains(&old));
+        assert!(!state
+            .rail_ui_state()
+            .collapsed_placements
+            .contains(&renamed));
+    }
+
+    #[test]
     fn nested_placement_builds_one_tree_and_stops_an_ancestor_cycle() {
         let config = andamento_shared::template_config::parse_template_config_kdl(r#"
 version 1
@@ -6560,6 +6780,7 @@ placement "tree" {
                     writer_client_id: 0,
                 },
                 collapsed_groups: vec![],
+                collapsed_placements: vec![],
                 scroll_offset: 8,
                 variables: BTreeMap::new(),
             }
@@ -6606,6 +6827,7 @@ placement "tree" {
                 writer_client_id: 9,
             },
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             scroll_offset: 99,
             variables: BTreeMap::new(),
         }));
@@ -6617,6 +6839,7 @@ placement "tree" {
                     writer_client_id: 0,
                 },
                 collapsed_groups: vec![],
+                collapsed_placements: vec![],
                 scroll_offset: 10,
                 variables: BTreeMap::new(),
             }
@@ -6783,6 +7006,7 @@ placement "tree" {
                     writer_client_id: 0,
                 },
                 collapsed_groups: vec![path],
+                collapsed_placements: vec![],
                 scroll_offset: 7,
                 variables: BTreeMap::new(),
             }

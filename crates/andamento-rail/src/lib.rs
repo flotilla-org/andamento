@@ -968,6 +968,7 @@ mod tests {
     fn explicit_navigation_clears_scroll_queued_before_it() {
         let mut state = PluginState {
             rail_ui_state: RailUiState {
+                collapsed_placements: vec![],
                 scroll_offset: 4,
                 variables: BTreeMap::new(),
                 ..Default::default()
@@ -1201,6 +1202,7 @@ mod tests {
                 writer_client_id: 1,
             },
             collapsed_groups: vec![path],
+            collapsed_placements: vec![],
             scroll_offset: 9,
             variables: BTreeMap::new(),
         };
@@ -1224,6 +1226,7 @@ mod tests {
                 writer_client_id: 1,
             },
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             scroll_offset: 12,
             variables: BTreeMap::new(),
         };
@@ -1233,6 +1236,7 @@ mod tests {
                 writer_client_id: 2,
             },
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             scroll_offset: 14,
             variables: BTreeMap::new(),
         };
@@ -1242,6 +1246,7 @@ mod tests {
                 writer_client_id: 0,
             },
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             scroll_offset: 1,
             variables: BTreeMap::new(),
         };
@@ -1605,9 +1610,12 @@ impl PluginState {
                         false
                     }
                     HitAction::ActivateEntity => {
-                        if let (Some(NodeKey::Entity(entity)), Some(client_id)) =
-                            (hit.inspect_target.as_ref(), self.own_client_id)
-                        {
+                        let entity = hit.inspect_target.as_ref().and_then(|target| match target {
+                            NodeKey::Entity(entity) => Some(entity),
+                            NodeKey::Placement(key) => key.0.last().map(|segment| &segment.entity),
+                            _ => None,
+                        });
+                        if let (Some(entity), Some(client_id)) = (entity, self.own_client_id) {
                             if let Some(message) = build_activate_entity_message(
                                 &self.controller_plugin_url,
                                 &self.config_plugin_url,
@@ -1644,6 +1652,12 @@ impl PluginState {
                     HitAction::ToggleGroup => {
                         if let Some(group_path) = hit.group_path {
                             self.toggle_group(group_path);
+                        }
+                        false
+                    }
+                    HitAction::TogglePlacement => {
+                        if let Some(NodeKey::Placement(key)) = hit.inspect_target {
+                            self.send_rail_ui_action(RailUiAction::TogglePlacement { key });
                         }
                         false
                     }

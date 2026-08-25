@@ -651,6 +651,7 @@ impl PluginState {
         let node_key = match self.clicked_node()? {
             NodeKey::Root => NodeKey::Root,
             NodeKey::Group(path) => NodeKey::Group(path),
+            NodeKey::Placement(key) => NodeKey::Placement(key),
             NodeKey::Tab(_) | NodeKey::Entity(_) => return None,
         };
         let declaration = self
@@ -771,6 +772,7 @@ fn inspect_scope_label(key: &NodeKey) -> String {
         NodeKey::Tab(tab_id) => format!("tab:{tab_id}"),
         NodeKey::Group(_) => "group".to_owned(),
         NodeKey::Entity(entity) => format!("entity:{}:{}", entity.kind, entity.id),
+        NodeKey::Placement(key) => format!("placement:{}", key.0.len()),
     }
 }
 
@@ -858,6 +860,20 @@ fn inspect_target_for<'a>(
             metadata,
             sources,
         },
+        NodeKey::Placement(key) => {
+            let entity = key.0.last().map(|segment| &segment.entity);
+            InspectTargetView {
+                label: entity
+                    .map(|entity| format!("Placement of {} {}", entity.kind, entity.id))
+                    .unwrap_or_else(|| "Placement".to_owned()),
+                kind: InspectTargetKind::Entity,
+                node_key,
+                tab: None,
+                group_templates: None,
+                metadata,
+                sources,
+            }
+        }
     }
 }
 
@@ -895,6 +911,7 @@ fn resolved_metadata_for_node<'a>(
         NodeKey::Tab(tab_id) => ResolvedMetadataTarget::Tab(*tab_id),
         NodeKey::Group(path) => ResolvedMetadataTarget::Group(path.clone()),
         NodeKey::Entity(entity) => ResolvedMetadataTarget::Entity(entity.clone()),
+        NodeKey::Placement(key) => ResolvedMetadataTarget::Entity(key.0.last()?.entity.clone()),
     };
     model
         .resolved_metadata
@@ -2237,6 +2254,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path.clone())),
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -2294,6 +2312,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path)),
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -2424,6 +2443,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -2519,6 +2539,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path.clone())),
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -2758,6 +2779,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path)),
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -3016,6 +3038,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -3176,6 +3199,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -3229,6 +3253,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],

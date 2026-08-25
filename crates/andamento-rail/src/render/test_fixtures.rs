@@ -29,6 +29,7 @@ impl ControllerModelFixture {
                 metadata_controls: MetadataControls::default(),
                 inspected_node: None,
                 collapsed_groups: vec![],
+                collapsed_placements: vec![],
                 display_variables: vec![],
                 display_variable_values: BTreeMap::new(),
                 surface_regions: vec![],
@@ -149,6 +150,7 @@ impl DetailSurfaceFixture {
 
 pub(super) fn entity(kind: &str, id: &str, label: &str) -> DisplayEntity {
     DisplayEntity {
+        placement: None,
         entity: EntityRef {
             kind: kind.to_owned(),
             id: id.to_owned(),
