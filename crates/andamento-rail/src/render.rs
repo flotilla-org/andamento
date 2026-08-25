@@ -1228,7 +1228,7 @@ fn render_detail_surface(
         (Some(model), Some(NodeKey::Placement(key))) => key
             .0
             .last()
-            .and_then(|segment| display_entity_for_target(model, &segment.entity))
+            .and_then(|_| display_entity_for_placement(model, key))
             .map(display_entity_detail),
         _ => None,
     }
@@ -1299,6 +1299,27 @@ fn display_entity_for_target<'a>(
                 .flat_map(|region| region.entities.iter()),
         )
         .find(|entity| &entity.entity == target)
+}
+
+fn display_entity_for_placement<'a>(
+    model: &'a ControllerViewModel,
+    target: &andamento_shared::PlacementKey,
+) -> Option<&'a andamento_shared::DisplayEntity> {
+    fn find<'a>(
+        entities: &'a [andamento_shared::DisplayEntity],
+        target: &andamento_shared::PlacementKey,
+    ) -> Option<&'a andamento_shared::DisplayEntity> {
+        entities.iter().find_map(|entity| {
+            (entity.placement.as_ref() == Some(target))
+                .then_some(entity)
+                .or_else(|| find(&entity.children, target))
+        })
+    }
+
+    model
+        .surface_regions
+        .iter()
+        .find_map(|region| find(&region.entities, target))
 }
 
 fn latent_entity_for_target<'a>(
@@ -7244,6 +7265,68 @@ mod tests {
         );
 
         assert!(rendered.lines[3].contains("[issue] Issue 1095 hover detail"));
+    }
+
+    #[test]
+    fn detail_surface_resolves_nested_entity_by_full_placement_key() {
+        let parent_ref = EntityRef {
+            kind: "project".to_owned(),
+            id: "andamento".to_owned(),
+        };
+        let child_ref = EntityRef {
+            kind: "issue".to_owned(),
+            id: "89".to_owned(),
+        };
+        let parent_key = andamento_shared::PlacementKey(vec![
+            andamento_shared::PlacementSegment {
+                loop_name: "projects".to_owned(),
+                entity: parent_ref.clone(),
+            },
+        ]);
+        let child_key = andamento_shared::PlacementKey(vec![
+            parent_key.0[0].clone(),
+            andamento_shared::PlacementSegment {
+                loop_name: "issues".to_owned(),
+                entity: child_ref.clone(),
+            },
+        ]);
+        let config = andamento_shared::template_config::parse_template_config_kdl(
+            r#"region "attention" source="attention" root-template="region/attention" form="detail" attention-key="status.attention""#,
+        )
+        .expect("region config");
+        let catalog = TemplateConfigCatalog::from_config(config);
+        let mut model = model();
+        model.rows.clear();
+        model.surface_regions = vec![andamento_shared::DisplayRegion {
+            definition: catalog.regions()[0].clone(),
+            root: None,
+            entities: vec![DisplayEntity {
+                entity: parent_ref,
+                placement: Some(parent_key),
+                label: "Andamento".to_owned(),
+                form: "detail".to_owned(),
+                metadata: BTreeMap::new(),
+                templates: ResolvedTemplateSlots::default(),
+                children: vec![DisplayEntity {
+                    entity: child_ref,
+                    placement: Some(child_key.clone()),
+                    label: "Nested issue 89".to_owned(),
+                    form: "detail".to_owned(),
+                    metadata: BTreeMap::new(),
+                    templates: ResolvedTemplateSlots::default(),
+                    children: vec![],
+                }],
+            }],
+        }];
+
+        let rendered = render_detail_surface(
+            Some(&model),
+            Some(&NodeKey::Placement(child_key)),
+            40,
+            None,
+        );
+
+        assert!(rendered.contains("[issue] Nested issue 89"));
     }
 
     #[test]

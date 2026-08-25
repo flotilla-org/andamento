@@ -879,12 +879,34 @@ fn inspect_target_for<'a>(
                 kind: InspectTargetKind::Entity,
                 node_key,
                 tab: None,
-                group_templates: None,
+                group_templates: display_entity_for_placement(model, &key)
+                    .map(|entity| &entity.templates),
                 metadata,
                 sources,
             }
         }
     }
+}
+
+fn display_entity_for_placement<'a>(
+    model: &'a ControllerViewModel,
+    target: &andamento_shared::PlacementKey,
+) -> Option<&'a andamento_shared::DisplayEntity> {
+    fn find<'a>(
+        entities: &'a [andamento_shared::DisplayEntity],
+        target: &andamento_shared::PlacementKey,
+    ) -> Option<&'a andamento_shared::DisplayEntity> {
+        entities.iter().find_map(|entity| {
+            (entity.placement.as_ref() == Some(target))
+                .then_some(entity)
+                .or_else(|| find(&entity.children, target))
+        })
+    }
+
+    model
+        .surface_regions
+        .iter()
+        .find_map(|region| find(&region.entities, target))
 }
 
 fn parse_scope_node_key(scope: &str) -> Option<NodeKey> {
@@ -1166,7 +1188,12 @@ fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTarg
             push_key_value(frame, "state", "missing");
         }
         InspectTargetKind::Entity => {
-            if let NodeKey::Entity(entity) = &target.node_key {
+            let entity = match &target.node_key {
+                NodeKey::Entity(entity) => Some(entity),
+                NodeKey::Placement(key) => key.0.last().map(|segment| &segment.entity),
+                _ => None,
+            };
+            if let Some(entity) = entity {
                 push_key_value(frame, "kind", &entity.kind);
                 push_key_value(frame, "id", &entity.id);
             }
@@ -2281,6 +2308,140 @@ mod tests {
                 .and_then(|templates| templates.group_header.as_ref())
                 .map(|slot| slot.template_name.as_str()),
             Some("repo-header")
+        );
+    }
+
+    #[test]
+    fn inspect_target_resolves_nested_placement_identity_templates_and_controls() {
+        let parent_ref = andamento_shared::EntityRef {
+            kind: "project".to_owned(),
+            id: "andamento".to_owned(),
+        };
+        let child_ref = andamento_shared::EntityRef {
+            kind: "issue".to_owned(),
+            id: "89".to_owned(),
+        };
+        let parent_key = andamento_shared::PlacementKey(vec![
+            andamento_shared::PlacementSegment {
+                loop_name: "projects".to_owned(),
+                entity: parent_ref.clone(),
+            },
+        ]);
+        let child_key = andamento_shared::PlacementKey(vec![
+            parent_key.0[0].clone(),
+            andamento_shared::PlacementSegment {
+                loop_name: "issues".to_owned(),
+                entity: child_ref.clone(),
+            },
+        ]);
+        let detail = andamento_shared::ResolvedTemplateSlot {
+            template_name: "issue-detail".to_owned(),
+            fields: vec![],
+            render_ready: None,
+            setters: vec![],
+            effective_kdl: String::new(),
+            resolve_error: None,
+        };
+        let mut model = model_with_tab(7, "repo");
+        model.inspected_node = Some(NodeKey::Placement(child_key.clone()));
+        model.surface_regions = vec![andamento_shared::DisplayRegion {
+            definition: andamento_shared::template_config::SurfaceRegionDefinition {
+                name: "attention".to_owned(),
+                source: andamento_shared::template_config::SurfaceRegionSource::Attention,
+                root_template: "region/attention".to_owned(),
+                form: "detail".to_owned(),
+                attention_key: None,
+                placement: Some("tree".to_owned()),
+                pinned: false,
+                promotions: vec![],
+            },
+            root: None,
+            entities: vec![andamento_shared::DisplayEntity {
+                entity: parent_ref,
+                placement: Some(parent_key),
+                label: "Andamento".to_owned(),
+                form: "detail".to_owned(),
+                metadata: BTreeMap::new(),
+                templates: ResolvedTemplateSlots::default(),
+                children: vec![andamento_shared::DisplayEntity {
+                    entity: child_ref.clone(),
+                    placement: Some(child_key.clone()),
+                    label: "Issue 89".to_owned(),
+                    form: "detail".to_owned(),
+                    metadata: BTreeMap::new(),
+                    templates: ResolvedTemplateSlots {
+                        detail: Some(detail),
+                        ..Default::default()
+                    },
+                    children: vec![],
+                }],
+            }],
+        }];
+        model.resolved_metadata = vec![andamento_shared::ResolvedMetadata {
+            target: ResolvedMetadataTarget::Entity(child_ref),
+            values: BTreeMap::from([(
+                "status".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("open".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+        model.template_config.effective_variables =
+            vec![andamento_shared::EffectiveNodeVariables {
+                node: NodeKey::Placement(child_key.clone()),
+                values: BTreeMap::new(),
+                declarations: vec![child_layout_declaration()],
+            }];
+
+        let target = inspect_target_for(model.inspected_node.as_ref(), None, &model);
+        assert_eq!(
+            target
+                .group_templates
+                .and_then(|templates| templates.detail.as_ref())
+                .map(|slot| slot.template_name.as_str()),
+            Some("issue-detail")
+        );
+        assert_eq!(
+            target.metadata.get("status").map(|entry| &entry.value),
+            Some(&MetadataValue::Text("open".to_owned()))
+        );
+
+        let rendered = render_config(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Inspect,
+            40,
+            100,
+            &[],
+            false,
+            0,
+        );
+        let text = rendered.lines.join("\n");
+        assert!(text.contains("kind      issue"));
+        assert!(text.contains("id        89"));
+        assert!(text.contains("issue-detail"));
+
+        let plugin = PluginState {
+            own_client_id: Some(3),
+            rendered_for_node: Some(NodeKey::Placement(child_key)),
+            model: Some(model),
+            ..Default::default()
+        };
+        assert_eq!(
+            plugin
+                .node_variable_request(0, Some(1))
+                .map(|request| (request.node_key, request.name, request.value)),
+            Some((
+                plugin.current_inspected_node(),
+                "child-layout".to_owned(),
+                Some("strip".to_owned()),
+            ))
         );
     }
 
