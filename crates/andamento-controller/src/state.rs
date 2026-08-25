@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -191,10 +192,10 @@ fn placement_entity_order(
         let compared = match (left_value, right_value) {
             (Some(left), Some(right)) => match key.direction {
                 andamento_shared::template_config::PlacementOrderDirection::Ascending => {
-                    left.cmp(right)
+                    left.as_ref().cmp(right.as_ref())
                 }
                 andamento_shared::template_config::PlacementOrderDirection::Descending => {
-                    right.cmp(left)
+                    right.as_ref().cmp(left.as_ref())
                 }
             },
             (None, None) => Ordering::Equal,
@@ -214,8 +215,15 @@ fn placement_entity_order(
     left.entity.cmp(&right.entity)
 }
 
-fn placement_sort_fact<'a>(entity: &'a CatalogEntity, key: &str) -> Option<&'a MetadataValue> {
-    entity.values.get(key).map(|entry| &entry.value)
+fn placement_sort_fact<'a>(entity: &'a CatalogEntity, key: &str) -> Option<Cow<'a, MetadataValue>> {
+    match key {
+        KEY_ENTITY_KIND => Some(Cow::Owned(MetadataValue::Text(entity.entity.kind.clone()))),
+        KEY_ENTITY_ID => Some(Cow::Owned(MetadataValue::Text(entity.entity.id.clone()))),
+        _ => entity
+            .values
+            .get(key)
+            .map(|entry| Cow::Borrowed(&entry.value)),
+    }
 }
 
 #[derive(Debug, Default)]
@@ -4789,6 +4797,16 @@ placement "stable" {
     order "display.label" direction="ascending" absent="first"
   }
 }
+placement "missing-first" {
+  for "item" kind="vessel" {
+    order "status.rank" direction="ascending" absent="first"
+  }
+}
+placement "identity-descending" {
+  for "item" kind="vessel" {
+    order "entity.id" direction="descending"
+  }
+}
 "#,
         )
         .expect("two independently ordered loops");
@@ -4842,6 +4860,16 @@ placement "stable" {
         assert_eq!(
             labels(&config.placements[1]),
             vec!["alpha", "middle", "zeta"]
+        );
+        assert_eq!(
+            labels(&config.placements[2]),
+            vec!["middle", "alpha", "zeta"],
+            "absent-first is independent of ascending direction"
+        );
+        assert_eq!(
+            labels(&config.placements[3]),
+            vec!["alpha", "middle", "zeta"],
+            "canonical entity identity facts can be ordered explicitly"
         );
     }
 
