@@ -14,7 +14,8 @@ use andamento_shared::{
     MetadataValue, NodeKey, PaneTarget, Priority, RailConfig, RailRgbColor, RailRow, RailStructure,
     ReachableMetadataIdentity, ResolvedMetadata, ResolvedMetadataTarget,
     ResolvedTemplateFieldSource, ResolvedTemplateSlot, ResolvedTemplateSlots, StatusIcon, TabCard,
-    TabGroupingInfo, TabStatusSummary, DISPLAY_FORM_COMPACT,
+    TabGroupingInfo, TabStatusSummary, DISPLAY_FORM_COMPACT, PLACEMENT_LOOP_BINDING_KEY,
+    PLACEMENT_LOOP_TIER_KEY,
 };
 use ansi_term::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -23,8 +24,6 @@ use zellij_tile::prelude::{PaletteColor, SizeInPixels, Styling};
 const ACTIVE_CELL_HEIGHT: usize = 5;
 const COMPACT_CELL_HEIGHT: usize = 2;
 const CHILD_LAYOUT_VARIABLE_KEY: &str = "var.child-layout";
-const PLACEMENT_LOOP_BINDING_KEY: &str = "andamento.placement.loop-binding";
-const PLACEMENT_LOOP_TIER_KEY: &str = "andamento.placement.loop-tier";
 
 type RenderMetadata = BTreeMap<String, MetadataValue>;
 type RenderMetadataSources = BTreeMap<String, Vec<MetadataSourceEntry>>;
@@ -1001,11 +1000,12 @@ fn region_entity_line(
     theme: Option<RenderTheme>,
     model: Option<&ControllerViewModel>,
 ) -> String {
-    let mut metadata = metadata_with_effective_variables(
-        entity.metadata.clone(),
-        &NodeKey::Entity(entity.entity.clone()),
-        model,
-    );
+    let node = entity
+        .placement
+        .clone()
+        .map(NodeKey::Placement)
+        .unwrap_or_else(|| NodeKey::Entity(entity.entity.clone()));
+    let mut metadata = metadata_with_effective_variables(entity.metadata.clone(), &node, model);
     apply_declared_abbreviation(&mut metadata, cols.saturating_sub(2));
     let form = form_for_region(region, &metadata);
     let slot = if form == DISPLAY_FORM_COMPACT {
@@ -1061,7 +1061,7 @@ fn apply_declared_abbreviation(metadata: &mut RenderMetadata, available_width: u
     let full = metadata_text(metadata, "display.label").map(str::to_owned);
     let medium = metadata_text(metadata, "display.label.medium").map(str::to_owned);
     let short = metadata_text(metadata, "display.label.short").map(str::to_owned);
-    let (selected, producer_supplied) = match tier {
+    let Some((selected, producer_supplied)) = (match tier {
         "short" => short
             .map(|label| (label, true))
             .or_else(|| medium.map(|label| (label, true)))
@@ -1070,12 +1070,10 @@ fn apply_declared_abbreviation(metadata: &mut RenderMetadata, available_width: u
             .map(|label| (label, true))
             .or_else(|| full.map(|label| (label, false))),
         _ => full.map(|label| (label, true)),
-    }
-    .unzip();
-    let Some(selected) = selected else {
+    }) else {
         return;
     };
-    let label = if producer_supplied == Some(false) {
+    let label = if !producer_supplied {
         middle_elide_to_width(&selected, available_width)
     } else {
         selected
