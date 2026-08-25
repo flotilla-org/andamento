@@ -33,6 +33,8 @@ const KEY_STATUS_STATE: &str = "status.state";
 const KEY_SUMMARY_TEXT: &str = "summary.text";
 const KEY_SOURCE: &str = "source";
 const KEY_DISPLAY_LABEL: &str = "display.label";
+const KEY_PLACEMENT_LOOP_BINDING: &str = "andamento.placement.loop-binding";
+const KEY_PLACEMENT_LOOP_TIER: &str = "andamento.placement.loop-tier";
 const FOCUSED_CWD_PRECEDENCE: i64 = 100;
 const NORMAL_CWD_PRECEDENCE: i64 = 0;
 // Opener-owned identity must outrank observational discovery such as cwd grouping.
@@ -61,6 +63,16 @@ fn placed_display_entity(
     form: &str,
 ) -> andamento_shared::DisplayEntity {
     display.form = form.to_owned();
+    display.metadata.insert(
+        KEY_PLACEMENT_LOOP_BINDING.to_owned(),
+        MetadataValue::Text(loop_definition.binding.clone()),
+    );
+    if let Some(tier) = loop_definition.tier {
+        display.metadata.insert(
+            KEY_PLACEMENT_LOOP_TIER.to_owned(),
+            MetadataValue::Text(tier.as_str().to_owned()),
+        );
+    }
     if !loop_definition.fields.is_empty() {
         display.templates.compact = Some(andamento_shared::ResolvedTemplateSlot {
             template_name: format!("placement:{}", loop_definition.binding),
@@ -4799,6 +4811,7 @@ mod tests {
                 order: vec![],
                 fields: vec![],
                 layout: None,
+                tier: None,
                 loops: vec![],
                 apply_template: None,
             }],

@@ -116,6 +116,52 @@ impl ControllerModelFixture {
         self
     }
 
+    pub(super) fn abbreviation_ladder(tier: &str) -> Self {
+        let mut fixture = Self::empty();
+        let mut placed = entity(
+            "issue",
+            "github/flotilla-org/andamento#68",
+            "abbreviation-ladder-declared-tiers",
+        );
+        placed.metadata.extend([
+            (
+                "display.label".to_owned(),
+                MetadataValue::Text("abbreviation-ladder-declared-tiers".to_owned()),
+            ),
+            (
+                "display.label.medium".to_owned(),
+                MetadataValue::Text("abbreviation-ladder".to_owned()),
+            ),
+            (
+                "display.label.short".to_owned(),
+                MetadataValue::Text("aldt".to_owned()),
+            ),
+            (
+                "andamento.placement.loop-binding".to_owned(),
+                MetadataValue::Text("issue".to_owned()),
+            ),
+            (
+                "andamento.placement.loop-tier".to_owned(),
+                MetadataValue::Text(tier.to_owned()),
+            ),
+        ]);
+        fixture.model.surface_regions.push(DisplayRegion {
+            definition: andamento_shared::template_config::SurfaceRegionDefinition {
+                placement: Some("issues".to_owned()),
+                name: "issues".to_owned(),
+                source: andamento_shared::template_config::SurfaceRegionSource::Tree,
+                root_template: "region/issues".to_owned(),
+                form: "full".to_owned(),
+                attention_key: None,
+                pinned: false,
+                promotions: vec![],
+            },
+            root: None,
+            entities: vec![placed],
+        });
+        fixture
+    }
+
     pub(super) fn build(self) -> ControllerViewModel {
         self.model
     }

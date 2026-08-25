@@ -80,3 +80,18 @@ fn size_edge_cases() {
         )
     );
 }
+
+#[test]
+fn abbreviation_ladder_declared_tiers() {
+    let medium = RailFrameFixture::new(4, 40)
+        .with_model(ControllerModelFixture::abbreviation_ladder("medium"))
+        .snapshot();
+    let short = RailFrameFixture::new(4, 40)
+        .with_model(ControllerModelFixture::abbreviation_ladder("short"))
+        .snapshot();
+
+    insta::assert_snapshot!(
+        "abbreviation_ladder_declared_tiers",
+        format!("medium\n{medium}\n\nshort\n{short}")
+    );
+}

@@ -297,12 +297,19 @@ template "project/line" {
     apply-template
   }
 
-  for "issue" kind="issue" layout="inline" {
+  for "issue" kind="issue" layout="inline" tier="short" {
     match "flotilla.project" of="project"
-    field "label" { value source="metadata-text" key="display.label.short" }
+    field "label" { value source="metadata-text" key="display.label" }
   }
 }
 ```
+
+**Abbreviation is declared, never negotiated.** `tier=` accepts `full`,
+`medium`, or `short`. When it is omitted, a loop named `issue` reads the
+node-scoped `issue.tier` variable (likewise `convoy.tier`). Short falls back to
+medium and then full; medium falls back to full. If no producer abbreviation is
+available, the full label is middle-elided as the degraded path. The renderer
+does not change tiers when siblings appear or disappear.
 
 **Loop names are singular and are the binding.** `for "convoy"` binds `convoy`
 to each item for the duration of its block; an enclosing `for "project"` is what

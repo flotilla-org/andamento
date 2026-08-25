@@ -1,0 +1,17 @@
+---
+source: crates/andamento-rail/src/render/frame_snapshots.rs
+expression: "format!(\"medium\\n{medium}\\n\\nshort\\n{short}\")"
+---
+medium
+frame 40x4
+00 |issues| + 34 spaces
+01 |  abbreviation-ladder| + 19 spaces
+02 || + 40 spaces
+03 || + 40 spaces
+
+short
+frame 40x4
+00 |issues| + 34 spaces
+01 |  aldt| + 34 spaces
+02 || + 40 spaces
+03 || + 40 spaces

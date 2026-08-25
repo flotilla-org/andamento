@@ -878,10 +878,32 @@ pub struct PlacementLoop {
     pub fields: Vec<TemplateConfigFieldSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<String>,
+    /// A loop-local abbreviation tier. When omitted, rendering reads the
+    /// node-scoped `<binding>.tier` variable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<AbbreviationTier>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loops: Vec<PlacementLoop>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apply_template: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AbbreviationTier {
+    Full,
+    Medium,
+    Short,
+}
+
+impl AbbreviationTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Medium => "medium",
+            Self::Short => "short",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2261,12 +2283,23 @@ fn parse_kdl_placement_loop(
             "loop {binding} selects every entity; declare kind= or a match"
         )));
     }
+    let tier = kdl_prop_string(node, "tier")
+        .map(|tier| match tier.as_str() {
+            "full" => Ok(AbbreviationTier::Full),
+            "medium" => Ok(AbbreviationTier::Medium),
+            "short" => Ok(AbbreviationTier::Short),
+            other => Err(TemplateConfigError::Validation(format!(
+                "loop {binding} has unsupported abbreviation tier {other}"
+            ))),
+        })
+        .transpose()?;
     Ok(PlacementLoop {
         binding,
         predicates,
         order,
         fields,
         layout: kdl_prop_string(node, "layout"),
+        tier,
         loops,
         apply_template,
     })
@@ -3164,7 +3197,7 @@ mod tests {
             r#"
 version 1
 placement "attention" {
-  for "item" kind="vessel" {
+  for "item" kind="vessel" tier="short" {
     match "status.attention" value="true"
     field "label" {
       value source="metadata-text" key="display.label"
@@ -3195,6 +3228,22 @@ placement "attention" {
             "kind= is sugar for an entity.kind equality"
         );
         assert_eq!(loop_definition.fields.len(), 1);
+        assert_eq!(loop_definition.tier, Some(AbbreviationTier::Short));
+    }
+
+    #[test]
+    fn placement_loop_refuses_unknown_abbreviation_tier() {
+        let error = parse_template_config_kdl(
+            r#"
+version 1
+placement "p" {
+  for "item" kind="vessel" tier="tiny"
+}
+"#,
+        )
+        .expect_err("unknown tier must fail");
+
+        assert!(format!("{error:?}").contains("unsupported abbreviation tier tiny"));
     }
 
     #[test]
