@@ -2357,6 +2357,7 @@ mod tests {
             entities: vec![andamento_shared::DisplayEntity {
                 entity: parent_ref,
                 placement: Some(parent_key),
+                placement_layout: None,
                 label: "Andamento".to_owned(),
                 form: "detail".to_owned(),
                 metadata: BTreeMap::new(),
@@ -2364,6 +2365,7 @@ mod tests {
                 children: vec![andamento_shared::DisplayEntity {
                     entity: child_ref.clone(),
                     placement: Some(child_key.clone()),
+                    placement_layout: None,
                     label: "Issue 89".to_owned(),
                     form: "detail".to_owned(),
                     metadata: BTreeMap::new(),
