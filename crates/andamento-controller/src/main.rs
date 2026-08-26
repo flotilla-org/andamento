@@ -1435,6 +1435,17 @@ fn inspect_scope_label(key: &andamento_shared::NodeKey) -> String {
         andamento_shared::NodeKey::Entity(entity) => {
             format!("entity:{}:{}", entity.kind, entity.id)
         }
+        andamento_shared::NodeKey::Placement(key) => format!(
+            "placement:{}",
+            key.0
+                .iter()
+                .map(|segment| format!(
+                    "{}={}:{}",
+                    segment.loop_name, segment.entity.kind, segment.entity.id
+                ))
+                .collect::<Vec<_>>()
+                .join("/")
+        ),
     }
 }
 
@@ -2338,6 +2349,7 @@ mod tests {
                 writer_client_id: 2,
             },
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             scroll_offset: 11,
             variables: BTreeMap::new(),
         };
@@ -2347,6 +2359,7 @@ mod tests {
                 writer_client_id: 3,
             },
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             scroll_offset: 13,
             variables: BTreeMap::new(),
         };
@@ -2356,6 +2369,7 @@ mod tests {
                 writer_client_id: 1,
             },
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             scroll_offset: 1,
             variables: BTreeMap::new(),
         };
@@ -2419,6 +2433,7 @@ mod tests {
                     writer_client_id: 6,
                 },
                 collapsed_groups: vec![],
+                collapsed_placements: vec![],
                 scroll_offset: 4,
                 variables: BTreeMap::new(),
             }

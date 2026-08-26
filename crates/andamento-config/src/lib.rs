@@ -651,6 +651,7 @@ impl PluginState {
         let node_key = match self.clicked_node()? {
             NodeKey::Root => NodeKey::Root,
             NodeKey::Group(path) => NodeKey::Group(path),
+            NodeKey::Placement(key) => NodeKey::Placement(key),
             NodeKey::Tab(_) | NodeKey::Entity(_) => return None,
         };
         let declaration = self
@@ -771,6 +772,17 @@ fn inspect_scope_label(key: &NodeKey) -> String {
         NodeKey::Tab(tab_id) => format!("tab:{tab_id}"),
         NodeKey::Group(_) => "group".to_owned(),
         NodeKey::Entity(entity) => format!("entity:{}:{}", entity.kind, entity.id),
+        NodeKey::Placement(key) => format!(
+            "placement:{}",
+            key.0
+                .iter()
+                .map(|segment| format!(
+                    "{}={}:{}",
+                    segment.loop_name, segment.entity.kind, segment.entity.id
+                ))
+                .collect::<Vec<_>>()
+                .join("/")
+        ),
     }
 }
 
@@ -858,7 +870,43 @@ fn inspect_target_for<'a>(
             metadata,
             sources,
         },
+        NodeKey::Placement(key) => {
+            let entity = key.0.last().map(|segment| &segment.entity);
+            InspectTargetView {
+                label: entity
+                    .map(|entity| format!("Placement of {} {}", entity.kind, entity.id))
+                    .unwrap_or_else(|| "Placement".to_owned()),
+                kind: InspectTargetKind::Entity,
+                node_key,
+                tab: None,
+                group_templates: display_entity_for_placement(model, &key)
+                    .map(|entity| &entity.templates),
+                metadata,
+                sources,
+            }
+        }
     }
+}
+
+fn display_entity_for_placement<'a>(
+    model: &'a ControllerViewModel,
+    target: &andamento_shared::PlacementKey,
+) -> Option<&'a andamento_shared::DisplayEntity> {
+    fn find<'a>(
+        entities: &'a [andamento_shared::DisplayEntity],
+        target: &andamento_shared::PlacementKey,
+    ) -> Option<&'a andamento_shared::DisplayEntity> {
+        entities.iter().find_map(|entity| {
+            (entity.placement.as_ref() == Some(target))
+                .then_some(entity)
+                .or_else(|| find(&entity.children, target))
+        })
+    }
+
+    model
+        .surface_regions
+        .iter()
+        .find_map(|region| find(&region.entities, target))
 }
 
 fn parse_scope_node_key(scope: &str) -> Option<NodeKey> {
@@ -895,6 +943,7 @@ fn resolved_metadata_for_node<'a>(
         NodeKey::Tab(tab_id) => ResolvedMetadataTarget::Tab(*tab_id),
         NodeKey::Group(path) => ResolvedMetadataTarget::Group(path.clone()),
         NodeKey::Entity(entity) => ResolvedMetadataTarget::Entity(entity.clone()),
+        NodeKey::Placement(key) => ResolvedMetadataTarget::Entity(key.0.last()?.entity.clone()),
     };
     model
         .resolved_metadata
@@ -1139,7 +1188,12 @@ fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTarg
             push_key_value(frame, "state", "missing");
         }
         InspectTargetKind::Entity => {
-            if let NodeKey::Entity(entity) = &target.node_key {
+            let entity = match &target.node_key {
+                NodeKey::Entity(entity) => Some(entity),
+                NodeKey::Placement(key) => key.0.last().map(|segment| &segment.entity),
+                _ => None,
+            };
+            if let Some(entity) = entity {
                 push_key_value(frame, "kind", &entity.kind);
                 push_key_value(frame, "id", &entity.id);
             }
@@ -2237,6 +2291,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path.clone())),
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -2253,6 +2308,140 @@ mod tests {
                 .and_then(|templates| templates.group_header.as_ref())
                 .map(|slot| slot.template_name.as_str()),
             Some("repo-header")
+        );
+    }
+
+    #[test]
+    fn inspect_target_resolves_nested_placement_identity_templates_and_controls() {
+        let parent_ref = andamento_shared::EntityRef {
+            kind: "project".to_owned(),
+            id: "andamento".to_owned(),
+        };
+        let child_ref = andamento_shared::EntityRef {
+            kind: "issue".to_owned(),
+            id: "89".to_owned(),
+        };
+        let parent_key = andamento_shared::PlacementKey(vec![andamento_shared::PlacementSegment {
+            loop_name: "projects".to_owned(),
+            entity: parent_ref.clone(),
+        }]);
+        let child_key = andamento_shared::PlacementKey(vec![
+            parent_key.0[0].clone(),
+            andamento_shared::PlacementSegment {
+                loop_name: "issues".to_owned(),
+                entity: child_ref.clone(),
+            },
+        ]);
+        let detail = andamento_shared::ResolvedTemplateSlot {
+            template_name: "issue-detail".to_owned(),
+            fields: vec![],
+            render_ready: None,
+            setters: vec![],
+            effective_kdl: String::new(),
+            resolve_error: None,
+        };
+        let mut model = model_with_tab(7, "repo");
+        model.inspected_node = Some(NodeKey::Placement(child_key.clone()));
+        model.surface_regions = vec![andamento_shared::DisplayRegion {
+            definition: andamento_shared::template_config::SurfaceRegionDefinition {
+                name: "attention".to_owned(),
+                source: andamento_shared::template_config::SurfaceRegionSource::Attention,
+                root_template: "region/attention".to_owned(),
+                form: "detail".to_owned(),
+                attention_key: None,
+                placement: Some("tree".to_owned()),
+                pinned: false,
+                promotions: vec![],
+            },
+            root: None,
+            entities: vec![andamento_shared::DisplayEntity {
+                entity: parent_ref,
+                placement: Some(parent_key),
+                label: "Andamento".to_owned(),
+                form: "detail".to_owned(),
+                metadata: BTreeMap::new(),
+                templates: ResolvedTemplateSlots::default(),
+                children: vec![andamento_shared::DisplayEntity {
+                    entity: child_ref.clone(),
+                    placement: Some(child_key.clone()),
+                    label: "Issue 89".to_owned(),
+                    form: "detail".to_owned(),
+                    metadata: BTreeMap::new(),
+                    templates: ResolvedTemplateSlots {
+                        detail: Some(detail),
+                        ..Default::default()
+                    },
+                    children: vec![],
+                }],
+            }],
+        }];
+        model.resolved_metadata = vec![andamento_shared::ResolvedMetadata {
+            target: ResolvedMetadataTarget::Entity(child_ref),
+            values: BTreeMap::from([(
+                "status".to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text("open".to_owned()),
+                    updated_at: 1,
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            )]),
+            source_entries: BTreeMap::new(),
+            reachable_identities: vec![],
+        }];
+        model.template_config.effective_variables =
+            vec![andamento_shared::EffectiveNodeVariables {
+                node: NodeKey::Placement(child_key.clone()),
+                values: BTreeMap::new(),
+                declarations: vec![child_layout_declaration()],
+            }];
+
+        let target = inspect_target_for(model.inspected_node.as_ref(), None, &model);
+        assert_eq!(
+            target
+                .group_templates
+                .and_then(|templates| templates.detail.as_ref())
+                .map(|slot| slot.template_name.as_str()),
+            Some("issue-detail")
+        );
+        assert_eq!(
+            target.metadata.get("status").map(|entry| &entry.value),
+            Some(&MetadataValue::Text("open".to_owned()))
+        );
+
+        let rendered = render_config(
+            RailConfig::default(),
+            Some(&model),
+            ConfigPage::Inspect,
+            40,
+            100,
+            &[],
+            false,
+            0,
+        );
+        let text = rendered.lines.join("\n");
+        assert!(text.contains("kind      issue"));
+        assert!(text.contains("id        89"));
+        assert!(text.contains("issue-detail"));
+
+        let plugin = PluginState {
+            own_client_id: Some(3),
+            rendered_for_node: Some(NodeKey::Placement(child_key)),
+            model: Some(model),
+            ..Default::default()
+        };
+        assert_eq!(
+            plugin.node_variable_request(0, Some(1)).map(|request| (
+                request.node_key,
+                request.name,
+                request.value
+            )),
+            Some((
+                plugin.current_inspected_node(),
+                "child-layout".to_owned(),
+                Some("strip".to_owned()),
+            ))
         );
     }
 
@@ -2294,6 +2483,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path)),
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -2424,6 +2614,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -2519,6 +2710,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path.clone())),
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -2758,6 +2950,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: Some(NodeKey::Group(path)),
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -3016,6 +3209,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -3176,6 +3370,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -3229,6 +3424,7 @@ mod tests {
             metadata_controls: andamento_shared::MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],

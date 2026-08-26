@@ -144,6 +144,7 @@ pub struct NodeVariableSetRequest {
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum RailUiAction {
     ToggleGroup { path: GroupPath },
+    TogglePlacement { key: PlacementKey },
     ToggleVariable { name: String },
     ScrollBy { delta: isize },
     SetScrollOffset { offset: isize },
@@ -162,6 +163,8 @@ pub struct RailUiState {
     pub revision: RailUiRevision,
     #[serde(default)]
     pub collapsed_groups: Vec<GroupPath>,
+    #[serde(default)]
+    pub collapsed_placements: Vec<PlacementKey>,
     #[serde(default)]
     pub scroll_offset: isize,
     #[serde(default)]
@@ -490,6 +493,20 @@ pub struct EntityRef {
     pub id: String,
 }
 
+/// The identity of one rendered appearance of an entity.
+///
+/// Each segment records the loop that selected the entity at that depth. This
+/// deliberately parallels `GroupPath`, while remaining outside metadata's
+/// target space.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct PlacementKey(pub Vec<PlacementSegment>);
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct PlacementSegment {
+    pub loop_name: String,
+    pub entity: EntityRef,
+}
+
 impl EntityRef {
     pub fn action_target(&self) -> String {
         format!("{}:{}", self.kind, self.id)
@@ -627,6 +644,8 @@ pub enum RailRow {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisplayEntity {
     pub entity: EntityRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementKey>,
     pub label: String,
     pub form: String,
     #[serde(default)]
@@ -768,6 +787,8 @@ pub struct ControllerViewModel {
     #[serde(default)]
     pub collapsed_groups: Vec<GroupPath>,
     #[serde(default)]
+    pub collapsed_placements: Vec<PlacementKey>,
+    #[serde(default)]
     pub display_variables: Vec<template_config::TemplateVariableDefinition>,
     #[serde(default)]
     pub display_variable_values: BTreeMap<String, DisplayVariableValue>,
@@ -799,6 +820,7 @@ pub enum NodeKey {
     Group(GroupPath),
     Tab(u64),
     Entity(EntityRef),
+    Placement(PlacementKey),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1126,6 +1148,7 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -1342,6 +1365,7 @@ mod tests {
             metadata_controls: MetadataControls::default(),
             inspected_node: None,
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
@@ -1378,6 +1402,29 @@ mod tests {
         let decoded: GroupPath = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, path);
+    }
+
+    #[test]
+    fn placement_key_round_trips_as_an_ordered_loop_entity_path() {
+        let key = PlacementKey(vec![
+            PlacementSegment {
+                loop_name: "project".to_owned(),
+                entity: EntityRef {
+                    kind: "project".to_owned(),
+                    id: "andamento".to_owned(),
+                },
+            },
+            PlacementSegment {
+                loop_name: "vessel".to_owned(),
+                entity: EntityRef {
+                    kind: "vessel".to_owned(),
+                    id: "andamento/work".to_owned(),
+                },
+            },
+        ]);
+        let encoded = serde_json::to_string(&key).unwrap();
+        let decoded: PlacementKey = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, key);
     }
 
     #[test]
