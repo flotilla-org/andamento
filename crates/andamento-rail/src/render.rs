@@ -774,10 +774,12 @@ fn render_region_stack(
                 }
                 if region.placement.is_some() {
                     let available = remaining.saturating_sub(1 + later_pinned_rows);
-                    let root = lines.pop().unwrap_or_default();
+                    lines.pop();
                     content_height = content_height.saturating_sub(1);
                     let rendered = render_placement_lines(
-                        root.trim_end().to_owned(),
+                        region_root_line(display_region, None, cols, None, model)
+                            .trim_end()
+                            .to_owned(),
                         &display_region.entities,
                         region,
                         catalog,
@@ -974,7 +976,7 @@ fn append_placement_loop_instance<'a>(
             let parent_width = lines[parent_row].text.width();
             let separator_width = usize::from(!run.is_empty() && parent_width > 0);
             if parent_width + separator_width + run.width() <= cols {
-                let filler = cols.saturating_sub(parent_width + run.width() + 1);
+                let filler = cols.saturating_sub(parent_width + run.width() + 2);
                 if filler > 0 {
                     lines[parent_row].text.push(' ');
                     lines[parent_row].text.push_str(&"─".repeat(filler));
@@ -1035,7 +1037,11 @@ fn append_placement_loop_instance<'a>(
                 if !current.is_empty() {
                     rows.push((current, current_hits));
                 }
+                let mut item_parent_rows = Vec::new();
                 for (row, inline_hits) in rows {
+                    let row_index = lines.len();
+                    item_parent_rows
+                        .extend(inline_hits.iter().map(|(entity, _)| (*entity, row_index)));
                     lines.push(PlacementRenderLine {
                         text: format!("{indent}{row}"),
                         entity: None,
@@ -1046,7 +1052,12 @@ fn append_placement_loop_instance<'a>(
                     if placement_is_collapsed(entity, model) {
                         continue;
                     }
-                    let item_parent = lines.len().saturating_sub(1);
+                    let item_parent = item_parent_rows
+                        .iter()
+                        .find_map(|(candidate, row)| {
+                            std::ptr::eq(*candidate, entity).then_some(*row)
+                        })
+                        .unwrap_or(parent_row);
                     append_placement_loop_instance(
                         lines,
                         item_parent,
@@ -7884,7 +7895,7 @@ mod tests {
             entity("governor", None, "bob"),
         ];
         let snapshot = |width| {
-            render_placement_lines(
+            let lines = render_placement_lines(
                 "▾ flotilla".to_owned(),
                 &entities,
                 &region,
@@ -7894,21 +7905,47 @@ mod tests {
             )
             .into_iter()
             .map(|line| line.text)
-            .collect::<Vec<_>>()
-            .join("\n")
+            .collect::<Vec<_>>();
+            assert!(lines.iter().all(|line| line.width() <= width));
+            lines.join("\n")
         };
 
         insta::assert_snapshot!(
             format!("FIT\n{}\n\nOVERFLOW\n{}", snapshot(50), snapshot(30)),
             @r###"
         FIT
-        ▾ flotilla ─── tui      #62 alice  governor     bob
+        ▾ flotilla ── tui      #62 alice  governor     bob
 
         OVERFLOW
         ▾ flotilla
           tui      #62 alice
           governor     bob
         "###
+        );
+
+        let mut themed_model = model();
+        themed_model.rows.clear();
+        themed_model.surface_regions = vec![DisplayRegion {
+            definition: region,
+            root: None,
+            entities,
+        }];
+        let themed = render_lines_with_options(
+            Some(&themed_model),
+            &[],
+            3,
+            50,
+            true,
+            Some(test_theme()),
+            None,
+            &[],
+            Some(&catalog),
+        );
+        assert!(
+            themed.lines[0].contains("governor")
+                && visible_width_without_ansi(&themed.lines[0]) == 50,
+            "themed root layout must measure plain text before styling: {:?}",
+            themed.lines[0]
         );
     }
 
