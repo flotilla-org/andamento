@@ -675,6 +675,35 @@ fn render_region_stack(
                             || entity.metadata.get(key) == Some(&MetadataValue::Bool(true))
                     })
                     .collect::<Vec<_>>();
+                if region.placement.is_some() && !display_region.entities.is_empty() {
+                    let available = remaining.saturating_sub(later_pinned_rows);
+                    let rendered = render_placement_lines(
+                        region_root_line(display_region, None, cols, None, model)
+                            .trim_end()
+                            .to_owned(),
+                        &display_region.entities,
+                        region,
+                        catalog,
+                        cols,
+                        model,
+                    );
+                    content_height += rendered.len();
+                    for rendered_line in rendered.into_iter().take(available) {
+                        let row = lines.len();
+                        lines.push(style_body_text(
+                            pad_to_width(&truncate_to_width(&rendered_line.text, cols), cols),
+                            theme,
+                        ));
+                        if let Some(entity) = rendered_line.entity {
+                            hit_regions.push(placement_hit_region(entity, row, cols));
+                        }
+                        for (entity, hit_cols) in rendered_line.inline_hits {
+                            hit_regions
+                                .push(placement_inline_hit_region(entity, row, hit_cols, cols));
+                        }
+                    }
+                    continue;
+                }
                 let attention_entities = attention_entities
                     .into_iter()
                     .flat_map(|entity| {
@@ -744,50 +773,31 @@ fn render_region_stack(
                     continue;
                 }
                 if region.placement.is_some() {
-                    let placed = display_region
-                        .entities
-                        .iter()
-                        .flat_map(|entity| {
-                            placement_entity_tree(
-                                entity,
-                                0,
-                                model
-                                    .map(|model| model.collapsed_placements.as_slice())
-                                    .unwrap_or_default(),
-                            )
-                        })
-                        .collect::<Vec<_>>();
                     let available = remaining.saturating_sub(1 + later_pinned_rows);
-                    content_height += placed.len();
-                    for (entity, depth) in placed.into_iter().take(available) {
+                    let root = lines.pop().unwrap_or_default();
+                    content_height = content_height.saturating_sub(1);
+                    let rendered = render_placement_lines(
+                        root.trim_end().to_owned(),
+                        &display_region.entities,
+                        region,
+                        catalog,
+                        cols,
+                        model,
+                    );
+                    content_height += rendered.len();
+                    for rendered_line in rendered.into_iter().take(available + 1) {
                         let row = lines.len();
-                        let prefix = "  ".repeat(depth);
-                        let rendered =
-                            region_entity_line(entity, region, catalog, cols, theme, model);
-                        lines.push(pad_to_width(
-                            &truncate_to_width(&format!("{prefix}{rendered}"), cols),
-                            cols,
+                        lines.push(style_body_text(
+                            pad_to_width(&truncate_to_width(&rendered_line.text, cols), cols),
+                            theme,
                         ));
-                        hit_regions.push(HitRegion {
-                            row_start: row,
-                            row_end: row,
-                            col_start: 0,
-                            col_end: cols.saturating_sub(1),
-                            tab_id: 0,
-                            tab_position: 0,
-                            group_path: None,
-                            inspect_target: entity
-                                .placement
-                                .clone()
-                                .map(NodeKey::Placement)
-                                .or_else(|| Some(NodeKey::Entity(entity.entity.clone()))),
-                            materialize_request: None,
-                            action: if entity.children.is_empty() {
-                                HitAction::ActivateEntity
-                            } else {
-                                HitAction::TogglePlacement
-                            },
-                        });
+                        if let Some(entity) = rendered_line.entity {
+                            hit_regions.push(placement_hit_region(entity, row, cols));
+                        }
+                        for (entity, hit_cols) in rendered_line.inline_hits {
+                            hit_regions
+                                .push(placement_inline_hit_region(entity, row, hit_cols, cols));
+                        }
                     }
                     continue;
                 }
@@ -901,6 +911,410 @@ fn placement_entity_tree<'a>(
         result.extend(placement_entity_tree(child, depth + 1, collapsed));
     }
     result
+}
+
+#[derive(Debug)]
+struct PlacementRenderLine<'a> {
+    text: String,
+    entity: Option<&'a andamento_shared::DisplayEntity>,
+    inline_hits: Vec<(&'a andamento_shared::DisplayEntity, std::ops::Range<usize>)>,
+}
+
+/// Render a placement tree while keeping each loop invocation as one layout
+/// scope. The controller has already materialized the loop tree; the final
+/// placement segment identifies sibling loop instances, and `placement_layout`
+/// carries the declaration that selected their geometry.
+fn render_placement_lines<'a>(
+    root: String,
+    entities: &'a [andamento_shared::DisplayEntity],
+    region: &SurfaceRegionDefinition,
+    catalog: Option<&TemplateConfigCatalog>,
+    cols: usize,
+    model: Option<&ControllerViewModel>,
+) -> Vec<PlacementRenderLine<'a>> {
+    let mut lines = vec![PlacementRenderLine {
+        text: root,
+        entity: None,
+        inline_hits: vec![],
+    }];
+    append_placement_loop_instance(&mut lines, 0, entities, 0, region, catalog, cols, model);
+    lines
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_placement_loop_instance<'a>(
+    lines: &mut Vec<PlacementRenderLine<'a>>,
+    parent_row: usize,
+    entities: &'a [andamento_shared::DisplayEntity],
+    depth: usize,
+    region: &SurfaceRegionDefinition,
+    catalog: Option<&TemplateConfigCatalog>,
+    cols: usize,
+    model: Option<&ControllerViewModel>,
+) {
+    if entities.is_empty() {
+        return;
+    }
+    // A template may declare several child loops. Their results are appended
+    // in declaration order, so equal loop names form one contiguous instance.
+    let mut start = 0;
+    while start < entities.len() {
+        let loop_name = placement_loop_name(&entities[start]);
+        let mut end = start + 1;
+        while end < entities.len() && placement_loop_name(&entities[end]) == loop_name {
+            end += 1;
+        }
+        let siblings = &entities[start..end];
+        let item_texts = resolve_placement_loop_fields(siblings, region, catalog, cols, model);
+        let inline = siblings[0].placement_layout.as_deref() == Some("inline");
+        let indent = "  ".repeat(depth + 1);
+
+        if inline {
+            let run = item_texts.join("  ");
+            let parent_width = lines[parent_row].text.width();
+            let separator_width = usize::from(!run.is_empty() && parent_width > 0);
+            if parent_width + separator_width + run.width() <= cols {
+                let filler = cols.saturating_sub(parent_width + run.width() + 1);
+                if filler > 0 {
+                    lines[parent_row].text.push(' ');
+                    lines[parent_row].text.push_str(&"─".repeat(filler));
+                }
+                if !run.is_empty() {
+                    lines[parent_row].text.push(' ');
+                    let mut start = lines[parent_row].text.width();
+                    lines[parent_row].text.push_str(&run);
+                    for (entity, text) in siblings.iter().zip(&item_texts) {
+                        let end = start + text.width();
+                        lines[parent_row].inline_hits.push((entity, start..end));
+                        start = end + 2;
+                    }
+                }
+                // Inline items share the parent's row. Nested loops are still
+                // rendered, but each child instance makes its own fit decision.
+                for entity in siblings {
+                    if placement_is_collapsed(entity, model) {
+                        continue;
+                    }
+                    append_placement_loop_instance(
+                        lines,
+                        parent_row,
+                        &entity.children,
+                        depth + 1,
+                        region,
+                        catalog,
+                        cols,
+                        model,
+                    );
+                }
+            } else {
+                // Once the niche rejects the instance, every item moves. Wrap
+                // complete items across dedicated rows; never use layout(),
+                // whose width selection is intentionally allowed to suppress.
+                let available = cols.saturating_sub(indent.width());
+                let mut rows = Vec::new();
+                let mut current = String::new();
+                let mut current_hits = vec![];
+                for (entity, item) in siblings.iter().zip(&item_texts) {
+                    let item = truncate_to_width(item, available);
+                    let separator = if current.is_empty() { "" } else { "  " };
+                    if !current.is_empty()
+                        && current.width() + separator.width() + item.width() > available
+                    {
+                        rows.push((
+                            std::mem::take(&mut current),
+                            std::mem::take(&mut current_hits),
+                        ));
+                    }
+                    if !current.is_empty() {
+                        current.push_str("  ");
+                    }
+                    let start = indent.width() + current.width();
+                    current.push_str(&item);
+                    current_hits.push((entity, start..start + item.width()));
+                }
+                if !current.is_empty() {
+                    rows.push((current, current_hits));
+                }
+                for (row, inline_hits) in rows {
+                    lines.push(PlacementRenderLine {
+                        text: format!("{indent}{row}"),
+                        entity: None,
+                        inline_hits,
+                    });
+                }
+                for entity in siblings {
+                    if placement_is_collapsed(entity, model) {
+                        continue;
+                    }
+                    let item_parent = lines.len().saturating_sub(1);
+                    append_placement_loop_instance(
+                        lines,
+                        item_parent,
+                        &entity.children,
+                        depth + 1,
+                        region,
+                        catalog,
+                        cols,
+                        model,
+                    );
+                }
+            }
+        } else {
+            for (entity, text) in siblings.iter().zip(item_texts) {
+                let row = lines.len();
+                lines.push(PlacementRenderLine {
+                    text: format!("{indent}{text}"),
+                    entity: Some(entity),
+                    inline_hits: vec![],
+                });
+                if placement_is_collapsed(entity, model) {
+                    continue;
+                }
+                append_placement_loop_instance(
+                    lines,
+                    row,
+                    &entity.children,
+                    depth + 1,
+                    region,
+                    catalog,
+                    cols,
+                    model,
+                );
+            }
+        }
+        start = end;
+    }
+}
+
+fn placement_loop_name(entity: &andamento_shared::DisplayEntity) -> Option<&str> {
+    entity
+        .placement
+        .as_ref()
+        .and_then(|key| key.0.last())
+        .map(|segment| segment.loop_name.as_str())
+}
+
+fn placement_is_collapsed(
+    entity: &andamento_shared::DisplayEntity,
+    model: Option<&ControllerViewModel>,
+) -> bool {
+    entity.placement.as_ref().is_some_and(|placement| {
+        model.is_some_and(|model| model.collapsed_placements.contains(placement))
+    })
+}
+
+fn placement_hit_region(
+    entity: &andamento_shared::DisplayEntity,
+    row: usize,
+    cols: usize,
+) -> HitRegion {
+    HitRegion {
+        row_start: row,
+        row_end: row,
+        col_start: 0,
+        col_end: cols.saturating_sub(1),
+        tab_id: 0,
+        tab_position: 0,
+        group_path: None,
+        inspect_target: entity
+            .placement
+            .clone()
+            .map(NodeKey::Placement)
+            .or_else(|| Some(NodeKey::Entity(entity.entity.clone()))),
+        materialize_request: None,
+        action: if entity.children.is_empty() {
+            HitAction::ActivateEntity
+        } else {
+            HitAction::TogglePlacement
+        },
+    }
+}
+
+fn placement_inline_hit_region(
+    entity: &andamento_shared::DisplayEntity,
+    row: usize,
+    cols: std::ops::Range<usize>,
+    width: usize,
+) -> HitRegion {
+    let mut hit = placement_hit_region(entity, row, width);
+    hit.col_start = cols.start.min(width.saturating_sub(1));
+    hit.col_end = cols.end.saturating_sub(1).min(width.saturating_sub(1));
+    hit
+}
+
+fn resolve_placement_loop_fields(
+    entities: &[andamento_shared::DisplayEntity],
+    region: &SurfaceRegionDefinition,
+    catalog: Option<&TemplateConfigCatalog>,
+    cols: usize,
+    model: Option<&ControllerViewModel>,
+) -> Vec<String> {
+    let rows = entities
+        .iter()
+        .map(|entity| placement_entity_fields(entity, region, catalog, model))
+        .collect::<Vec<_>>();
+    let column_count = rows.iter().map(Vec::len).max().unwrap_or_default();
+    let mut widths = (0..column_count)
+        .map(|column| {
+            rows.iter()
+                .filter_map(|row| row.get(column))
+                .map(|field| template_field_value(field).width())
+                .max()
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    let mut visible = vec![true; column_count];
+    let total_width = |visible: &[bool], widths: &[usize]| {
+        let columns = visible.iter().filter(|visible| **visible).count();
+        widths
+            .iter()
+            .zip(visible)
+            .filter(|(_, visible)| **visible)
+            .map(|(width, _)| *width)
+            .sum::<usize>()
+            .saturating_add(columns.saturating_sub(1))
+    };
+
+    if total_width(&visible, &widths) > cols {
+        for column in 0..column_count {
+            if rows
+                .iter()
+                .filter_map(|row| row.get(column))
+                .all(|field| matches!(field, TemplateField::Optional(_)))
+            {
+                visible[column] = false;
+            }
+        }
+    }
+    let mut priorities = (0..column_count)
+        .filter_map(|column| {
+            let priority = rows
+                .iter()
+                .filter_map(|row| row.get(column))
+                .filter_map(|field| match field {
+                    TemplateField::Priority(_) => Some(100),
+                    TemplateField::Prioritized { priority, .. } => Some(*priority),
+                    _ => None,
+                })
+                .min()?;
+            Some((priority, column))
+        })
+        .collect::<Vec<_>>();
+    priorities.sort_unstable();
+    for (_, column) in priorities {
+        if total_width(&visible, &widths) <= cols {
+            break;
+        }
+        visible[column] = false;
+    }
+    if total_width(&visible, &widths) > cols {
+        if let Some(column) = (0..column_count).rev().find(|column| visible[*column]) {
+            let overflow = total_width(&visible, &widths).saturating_sub(cols);
+            widths[column] = widths[column].saturating_sub(overflow);
+        }
+    }
+
+    rows.into_iter()
+        .zip(entities)
+        .map(|(row, entity)| {
+            let selected = visible
+                .iter()
+                .enumerate()
+                .filter(|(_, visible)| **visible)
+                .map(|(column, _)| {
+                    let value = row
+                        .get(column)
+                        .map(template_field_value)
+                        .unwrap_or_default();
+                    pad_to_width(&truncate_to_width(value, widths[column]), widths[column])
+                })
+                .collect::<Vec<_>>();
+            let text = selected.join(" ").trim_end().to_owned();
+            if text.is_empty() {
+                entity.label.clone()
+            } else {
+                text
+            }
+        })
+        .collect()
+}
+
+fn placement_entity_fields(
+    entity: &andamento_shared::DisplayEntity,
+    region: &SurfaceRegionDefinition,
+    catalog: Option<&TemplateConfigCatalog>,
+    model: Option<&ControllerViewModel>,
+) -> Vec<TemplateField> {
+    let metadata = metadata_with_effective_variables(
+        entity.metadata.clone(),
+        &NodeKey::Entity(entity.entity.clone()),
+        model,
+    );
+    let form = form_for_region(region, &metadata);
+    let slot = if form == DISPLAY_FORM_COMPACT {
+        TemplateConfigSlot::Compact
+    } else {
+        TemplateConfigSlot::Detail
+    };
+    let context = TemplateConfigMatchContext {
+        slot,
+        node_kind: TemplateConfigNodeKind::Entity,
+        metadata: &metadata,
+        collapsed: false,
+        collapsible: false,
+        active_tab_name: None,
+    };
+    let resolved = if slot == TemplateConfigSlot::Compact {
+        entity.templates.compact.as_ref()
+    } else {
+        entity.templates.detail.as_ref()
+    };
+    let fallback;
+    let resolved = match resolved {
+        Some(resolved) => Some(resolved),
+        None => {
+            fallback = catalog.and_then(|catalog| resolve_entity_slot(&metadata, slot, catalog));
+            fallback.as_ref()
+        }
+    };
+    resolved
+        .map(|resolved| {
+            resolved
+                .render_ready
+                .as_ref()
+                .map(|ready| {
+                    ready
+                        .fields
+                        .iter()
+                        .map(|spec| {
+                            let rendered = spec.render(context);
+                            let value = rendered
+                                .as_ref()
+                                .map(|field| field.value.clone())
+                                .unwrap_or_default();
+                            let source = rendered.and_then(|field| field.source);
+                            match spec.class {
+                                _ if spec.priority.is_some() => TemplateField::Prioritized {
+                                    value,
+                                    priority: spec.priority.unwrap_or(100),
+                                    source,
+                                },
+                                TemplateConfigFieldClass::Required => {
+                                    TemplateField::Required(value)
+                                }
+                                TemplateConfigFieldClass::Optional => {
+                                    TemplateField::Optional(value)
+                                }
+                                TemplateConfigFieldClass::Priority => {
+                                    TemplateField::Priority(value)
+                                }
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_else(|| template_fields_from_resolved_slot(resolved, context))
+        })
+        .unwrap_or_default()
 }
 
 fn pinned_region_rows(region: &DisplayRegion, model: Option<&ControllerViewModel>) -> usize {
@@ -7130,6 +7544,7 @@ mod tests {
         model.rows = vec![RailRow::Entity {
             entity: DisplayEntity {
                 placement: None,
+                placement_layout: None,
                 entity: EntityRef {
                     kind: "issue".to_owned(),
                     id: "1060".to_owned(),
@@ -7232,6 +7647,7 @@ mod tests {
         };
         let entity = DisplayEntity {
             placement: None,
+            placement_layout: None,
             entity: entity_ref.clone(),
             label: "Issue 1095 hover detail".to_owned(),
             form: "detail".to_owned(),
@@ -7301,6 +7717,7 @@ mod tests {
             entities: vec![DisplayEntity {
                 entity: parent_ref,
                 placement: Some(parent_key),
+                placement_layout: None,
                 label: "Andamento".to_owned(),
                 form: "detail".to_owned(),
                 metadata: BTreeMap::new(),
@@ -7308,6 +7725,7 @@ mod tests {
                 children: vec![DisplayEntity {
                     entity: child_ref,
                     placement: Some(child_key.clone()),
+                    placement_layout: None,
                     label: "Nested issue 89".to_owned(),
                     form: "detail".to_owned(),
                     metadata: BTreeMap::new(),
@@ -7327,6 +7745,7 @@ mod tests {
     fn pinned_placement_regions_reserve_every_nested_entity_row() {
         let child = DisplayEntity {
             placement: None,
+            placement_layout: None,
             entity: EntityRef {
                 kind: "convoy".to_owned(),
                 id: "c".to_owned(),
@@ -7337,6 +7756,7 @@ mod tests {
             templates: ResolvedTemplateSlots::default(),
             children: vec![DisplayEntity {
                 placement: None,
+                placement_layout: None,
                 entity: EntityRef {
                     kind: "vessel".to_owned(),
                     id: "v".to_owned(),
@@ -7362,6 +7782,7 @@ mod tests {
             root: None,
             entities: vec![DisplayEntity {
                 placement: None,
+                placement_layout: None,
                 entity: EntityRef {
                     kind: "project".to_owned(),
                     id: "p".to_owned(),
@@ -7378,6 +7799,117 @@ mod tests {
         let mut tree_region = region;
         tree_region.definition.source = SurfaceRegionSource::Tree;
         assert_eq!(pinned_region_rows(&tree_region, None), 4);
+    }
+
+    #[test]
+    fn placement_inline_loop_snapshots_fit_and_all_item_overflow() {
+        let config = andamento_shared::template_config::parse_template_config_kdl(
+            r##"
+            template "item/line" slot="compact" node-kind="entity" {
+              field "label" class="required" source="metadata-text" key="display.label"
+              field "change" class="required" source="metadata-text" key="change.number" prefix="#"
+              field "owner" class="required" source="metadata-text" key="owner"
+            }
+            "##,
+        )
+        .expect("placement item template");
+        let catalog = TemplateConfigCatalog::from_config(config);
+        let region = SurfaceRegionDefinition {
+            name: "tree".to_owned(),
+            source: SurfaceRegionSource::Tree,
+            root_template: "root".to_owned(),
+            form: DISPLAY_FORM_COMPACT.to_owned(),
+            attention_key: None,
+            placement: Some("tree".to_owned()),
+            pinned: false,
+            promotions: vec![],
+        };
+        let entity = |id: &str, change: Option<&str>, owner: &str| {
+            let metadata = BTreeMap::from_iter(
+                [
+                    Some((
+                        "display.label".to_owned(),
+                        MetadataValue::Text(id.to_owned()),
+                    )),
+                    change.map(|change| {
+                        (
+                            "change.number".to_owned(),
+                            MetadataValue::Text(change.to_owned()),
+                        )
+                    }),
+                    Some(("owner".to_owned(), MetadataValue::Text(owner.to_owned()))),
+                ]
+                .into_iter()
+                .flatten(),
+            );
+            let resolved = catalog
+                .resolve_placement_template("item/line", &metadata)
+                .expect("resolve placement template")
+                .expect("item line template");
+            let slot = ResolvedTemplateSlot {
+                template_name: resolved.name.clone(),
+                fields: vec![],
+                render_ready: Some(resolved.render_ready()),
+                setters: vec![],
+                effective_kdl: String::new(),
+                resolve_error: None,
+            };
+            DisplayEntity {
+                entity: EntityRef {
+                    kind: "convoy".to_owned(),
+                    id: id.to_owned(),
+                },
+                placement: Some(andamento_shared::PlacementKey(vec![
+                    andamento_shared::PlacementSegment {
+                        loop_name: "convoy".to_owned(),
+                        entity: EntityRef {
+                            kind: "convoy".to_owned(),
+                            id: id.to_owned(),
+                        },
+                    },
+                ])),
+                placement_layout: Some("inline".to_owned()),
+                label: id.to_owned(),
+                form: DISPLAY_FORM_COMPACT.to_owned(),
+                metadata,
+                templates: ResolvedTemplateSlots {
+                    compact: Some(slot),
+                    ..ResolvedTemplateSlots::default()
+                },
+                children: vec![],
+            }
+        };
+        let entities = vec![
+            entity("tui", Some("62"), "alice"),
+            entity("governor", None, "bob"),
+        ];
+        let snapshot = |width| {
+            render_placement_lines(
+                "▾ flotilla".to_owned(),
+                &entities,
+                &region,
+                Some(&catalog),
+                width,
+                None,
+            )
+            .into_iter()
+            .map(|line| line.text)
+            .collect::<Vec<_>>()
+            .join("\n")
+        };
+
+        insta::assert_snapshot!(
+            format!("FIT\n{}\n\nOVERFLOW\n{}", snapshot(50), snapshot(30)),
+            @r###"
+        FIT
+        ▾ flotilla ─── tui      #62 alice  governor     bob
+
+        OVERFLOW
+        ▾ flotilla
+          tui      #62 alice
+          governor     bob
+        "###
+        );
     }
 
     #[test]
@@ -7451,6 +7983,7 @@ mod tests {
             .map(|id| RailRow::Entity {
                 entity: DisplayEntity {
                     placement: None,
+                    placement_layout: None,
                     entity: EntityRef {
                         kind: "issue".to_owned(),
                         id: id.to_string(),
@@ -7922,6 +8455,7 @@ mod tests {
         model.rows.push(RailRow::Entity {
             entity: andamento_shared::DisplayEntity {
                 placement: None,
+                placement_layout: None,
                 entity: entity_ref.clone(),
                 label: "#982 entities-only cutover".to_owned(),
                 form: "compact".to_owned(),
@@ -7982,6 +8516,7 @@ mod tests {
         model.rows = vec![RailRow::Entity {
             entity: andamento_shared::DisplayEntity {
                 placement: None,
+                placement_layout: None,
                 entity: entity_ref.clone(),
                 label: "#1095 hover detail".to_owned(),
                 form: "full".to_owned(),
@@ -8028,6 +8563,7 @@ mod tests {
         let compact_row = |entity: EntityRef, label: &str| RailRow::Entity {
             entity: DisplayEntity {
                 placement: None,
+                placement_layout: None,
                 entity,
                 label: label.to_owned(),
                 form: "compact".to_owned(),
@@ -10922,6 +11458,7 @@ mod tests {
             .expect("issue compact template");
         let entity = andamento_shared::DisplayEntity {
             placement: None,
+            placement_layout: None,
             entity: andamento_shared::EntityRef {
                 kind: "issue".to_owned(),
                 id: "flotilla#1058".into(),

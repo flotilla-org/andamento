@@ -151,6 +151,7 @@ impl DetailSurfaceFixture {
 pub(super) fn entity(kind: &str, id: &str, label: &str) -> DisplayEntity {
     DisplayEntity {
         placement: None,
+        placement_layout: None,
         entity: EntityRef {
             kind: kind.to_owned(),
             id: id.to_owned(),

@@ -76,18 +76,33 @@ impl InlineRun {
         let mut current = Vec::new();
         let mut current_width = 0usize;
         for item in &self.items {
+            let current_text = current
+                .iter()
+                .map(|item: &InlineItem| item.measure_text.as_str())
+                .collect::<String>();
+            let separator_width = inline_separator(&current_text, item).width();
             let item_width = item.measure_text.width().min(width);
-            if !current.is_empty() && item_width > width.saturating_sub(current_width) {
+            if !current.is_empty()
+                && separator_width + item_width > width.saturating_sub(current_width)
+            {
                 rows.push(place_items(&current, width));
                 current.clear();
                 current_width = 0;
             }
             let mut item = item.clone();
-            if item.measure_text.width() > width.saturating_sub(current_width) {
-                let visible_width = width.saturating_sub(current_width);
-                item.measure_text = " ".repeat(visible_width);
+            let current_text = current
+                .iter()
+                .map(|item: &InlineItem| item.measure_text.as_str())
+                .collect::<String>();
+            let separator_width = inline_separator(&current_text, &item).width();
+            if item.measure_text.width() > width.saturating_sub(current_width + separator_width) {
+                let visible_width = width.saturating_sub(current_width + separator_width);
+                item.measure_text = truncate_to_width(&item.measure_text, visible_width);
+                item.text = truncate_to_width(&item.text, visible_width);
             }
-            current_width = current_width.saturating_add(item.measure_text.width());
+            current_width = current_width
+                .saturating_add(separator_width)
+                .saturating_add(item.measure_text.width());
             current.push(item);
         }
 

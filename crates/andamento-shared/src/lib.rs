@@ -646,6 +646,13 @@ pub struct DisplayEntity {
     pub entity: EntityRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<PlacementKey>,
+    /// Layout declared by the loop that produced this placement.
+    ///
+    /// Siblings from the same loop are resolved together by the renderer; this
+    /// value is repeated on each item so the wire model remains a tree rather
+    /// than exposing controller-internal loop definitions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement_layout: Option<String>,
     pub label: String,
     pub form: String,
     #[serde(default)]
