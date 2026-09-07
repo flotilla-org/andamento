@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use andamento_shared::{
+use crate::{
     MetadataEntry, MetadataPatch, MetadataSourceEntry, MetadataTarget, MetadataValue,
     MetadataValueUpdate, ResolvedMetadataTarget,
 };
@@ -326,7 +326,7 @@ mod tests {
     fn select_primary_value(entries: &[CandidateEntry]) -> Option<MetadataValue> {
         select_primary_entry(entries).map(|candidate| candidate.entry.value)
     }
-    use andamento_shared::{
+    use crate::{
         GroupPath, GroupSegment, MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate,
         PaneTarget,
     };
@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn metadata_patch_sets_values_with_controller_timestamp() {
         let mut store = MetadataStore::default();
-        let entity = andamento_shared::EntityRef {
+        let entity = crate::EntityRef {
             kind: "project".to_owned(),
             id: "zellij".to_owned(),
         };
@@ -497,7 +497,7 @@ mod tests {
     #[test]
     fn target_ordinal_comes_from_the_patch_without_an_identity_value() {
         let mut store = MetadataStore::default();
-        let entity = andamento_shared::EntityRef {
+        let entity = crate::EntityRef {
             kind: "issue".to_owned(),
             id: "github/flotilla-org/andamento#37".to_owned(),
         };

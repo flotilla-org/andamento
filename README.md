@@ -10,6 +10,15 @@ namespace throughout. The intended published home is `flotilla-org/andamento`;
 this prototype does not maintain compatibility aliases for earlier scratch
 names.
 
+## Shared core and native embedding
+
+The reusable implementation now lives in `andamento-core`, with terminal
+rendering in `andamento-terminal`. Neither depends on Zellij. The plugins
+retain their host adapters; `andamento-ffi` exposes a C-callable JSON interface
+for Wheelhouse, and `andamento-html` proves native geometry over the shared
+placement snapshot. See [the embedding interface](docs/sidebar-design/core-interface.md)
+for build commands, ownership rules, fixtures and the no-Zellij validation.
+
 ## Build
 
 ```sh

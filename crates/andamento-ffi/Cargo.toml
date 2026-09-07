@@ -1,0 +1,12 @@
+[package]
+name = "andamento-ffi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+andamento-core = { path = "../andamento-core" }
+serde_json = "1"

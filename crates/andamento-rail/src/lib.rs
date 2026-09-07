@@ -1,4 +1,3 @@
-mod inline_layout;
 pub mod render;
 
 fn should_sync_graphics(controller_available: bool) -> bool {
@@ -575,8 +574,11 @@ impl ZellijPlugin for PluginState {
             controller_available,
             self.mode_info
                 .as_ref()
-                .map(|mode_info| mode_info.style.colors.into()),
-            terminal_pixel_cell_size(),
+                .map(|mode_info| render::theme_from_zellij(mode_info.style.colors)),
+            terminal_pixel_cell_size().map(|s| render::SizeInPixels {
+                height: s.height,
+                width: s.width,
+            }),
             &self.rail_ui_state.collapsed_groups,
             None,
             &metadata_controls,
