@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+andamento-terminal.workspace = true
+andamento-core.workspace = true
 kdl.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -2295,6 +2295,7 @@ mod tests {
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
+            presentation: None,
         };
 
         let target = inspect_target_for(model.inspected_node.as_ref(), None, &model);
@@ -2487,6 +2488,7 @@ mod tests {
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
+            presentation: None,
         };
 
         let rendered = render_config_with_scope(
@@ -2618,6 +2620,7 @@ mod tests {
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
+            presentation: None,
         };
         model.inspected_node = Some(NodeKey::Tab(7));
 
@@ -2714,6 +2717,7 @@ mod tests {
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
+            presentation: None,
         };
         model.template_config.effective_variables =
             vec![andamento_shared::EffectiveNodeVariables {
@@ -2954,6 +2958,7 @@ mod tests {
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
+            presentation: None,
         };
         model.template_config.effective_variables =
             vec![andamento_shared::EffectiveNodeVariables {
@@ -3213,6 +3218,7 @@ mod tests {
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
+            presentation: None,
         };
 
         let rendered = render_config(
@@ -3374,6 +3380,7 @@ mod tests {
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
+            presentation: None,
         };
 
         let rendered = render_config(
@@ -3428,6 +3435,7 @@ mod tests {
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
             surface_regions: vec![],
+            presentation: None,
         }
     }
 

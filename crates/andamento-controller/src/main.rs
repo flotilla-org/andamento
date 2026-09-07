@@ -1,4 +1,3 @@
-mod metadata;
 mod state;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -28,7 +27,7 @@ use andamento_shared::{
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
-use state::{ControllerState, EntityActivation};
+use state::{ControllerState, EntityActivation, ZellijObservations};
 use zellij_tile::output::print;
 use zellij_tile::prelude::*;
 
@@ -110,15 +109,9 @@ fn main() {
     let raw = std::fs::read_to_string(&patches_path).expect("read patches file");
     let (mut applied, mut failed) = (0usize, 0usize);
     for line in raw.lines().filter(|l| !l.trim().is_empty()) {
-        let message = PipeMessage {
-            source: PipeSource::Cli("render-harness".to_owned()),
-            name: MSG_APPLY_METADATA_PATCH.to_owned(),
-            payload: Some(line.to_owned()),
-            args: BTreeMap::new(),
-            is_private: false,
-        };
-        let result = handle_pipe_message(&mut state, message);
-        if result.state_changed {
+        let patch = serde_json::from_str::<andamento_shared::MetadataPatch>(line)
+            .expect("parse metadata patch");
+        if state.apply_metadata_patch(patch) {
             applied += 1;
         } else {
             failed += 1;
