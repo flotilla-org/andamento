@@ -132,6 +132,7 @@ body{font:16px system-ui;margin:2rem;max-width:72rem;color:#20242b;background:#f
 function emit(action){document.getElementById('action').textContent=JSON.stringify(action,null,2);window.dispatchEvent(new CustomEvent('andamento-action',{detail:action}));}
 document.querySelectorAll('[data-action]').forEach(el=>el.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();emit(JSON.parse(el.dataset.action));}));
 document.querySelectorAll('[data-toggle]').forEach(el=>el.querySelector('summary').addEventListener('click',event=>{if(event.target.closest('button'))return;emit(JSON.parse(el.dataset.toggle));}));
+// Keep this payload in sync with Rust sidebar::Action::SetVariable's serde shape.
 document.querySelectorAll('[data-variable]').forEach(el=>el.addEventListener('change',()=>emit({action:'set-variable',key:JSON.parse(el.dataset.key),name:el.dataset.variable,value:el.value||null})));
 </script></html>"#);
     html

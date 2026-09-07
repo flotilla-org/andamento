@@ -27,7 +27,12 @@ this extraction; adopting a wall-clock expiry scheduler there is separate work.
 `observe(workspaces, panes)` supplies a full local topology snapshot, including
 the selected workspace. Workspace IDs are stable for their host lifetime,
 scoped to this client; positions retain the existing navigation order. A host
-without pane observations can start with an empty pane list.
+without pane observations can start with an empty pane list. Pane observations
+currently retain Zellij's terminal/plugin `u32` identity through the core's
+`PaneTarget`, not just the C header. Wheelhouse's 64-bit `CFG_ID`s and general
+views must not be truncated or relabelled as plugins. Use workspace observations
+with an empty pane list for the fixture slice; generalise identity through the
+core and adapters before integrating native panes ([#95](https://github.com/flotilla-org/andamento/issues/95)).
 
 `dispatch(Action)` returns host effects. Focus carries a workspace ID;
 materialize carries an entity, name, recipe and optional working directory.
@@ -101,7 +106,8 @@ Use typed `andamento_observe` for full workspace/pane topology and
 `andamento_complete` for host outcomes. Apply incoming facts and completions,
 then explicitly call `andamento_snapshot_acquire` once for rendering. Mutations
 do not produce output snapshots. Action validation can still resolve state
-internally; this interface does not promise incremental evaluation.
+internally; this interface does not promise incremental evaluation. Caching and
+conditional resolution are tracked in [#96](https://github.com/flotilla-org/andamento/issues/96).
 
 The snapshot owns its nodes, fields, controls and borrowed text until
 `andamento_snapshot_release`. It survives updates to or destruction of the
@@ -121,8 +127,15 @@ sites; do not reconstruct the template resolver in Wheelhouse.
 Nodes expose activation/collapse action references; display controls expose
 their own action references. Pass the snapshot and reference to
 `andamento_dispatch`. References are snapshot-local, and dispatch rejects a
-snapshot from another client or from before a successful mutation. Reacquire
-and re-hit-test after updates; never reuse an index against a different
+snapshot from another client or from before a successful mutation.
+
+Capture the action reference together with the displayed snapshot. Process
+captured clicks against that snapshot before draining queued facts, ticks,
+topology and completion updates, then render the next frame. If a mutation
+already intervened, dispatch rejects the click: discard it and redraw. Do not
+re-hit-test the old click's coordinates against the new arrangement, since
+that could activate a different entity. Only a fresh user interaction is
+hit-tested against a new frame. Never reuse an action index against a different
 snapshot. The conservative rule also invalidates actions after a tick or a
 successful dispatch that produces no effects. Unknown/duplicate completions
 and failed input validation leave actions valid. Retaining an older snapshot

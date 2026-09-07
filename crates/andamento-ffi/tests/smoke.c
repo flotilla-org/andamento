@@ -141,6 +141,34 @@ int main(int argc, char **argv) {
     const uint8_t bad_utf8[] = {255};
     expected_error(andamento_configure(h, (AndamentoText){bad_utf8, 1}, &error));
     expected_error(andamento_tick(NULL, 0, &error));
+    /* A click belongs to the displayed geometry. A tick or metadata update
+     * arriving before dispatch rejects it; never retarget old coordinates. */
+    for (int metadata_update = 0; metadata_update < 2; ++metadata_update) {
+        AndamentoSnapshot *displayed = snapshot(h);
+        AndamentoNode intended = find_node(displayed, "vessel");
+        if (metadata_update) {
+            AndamentoFact rename = {.key=T("display.label"), .kind=ANDAMENTO_FACT_TEXT,
+                                     .text=T("a different arrangement")};
+            ok(andamento_apply_entity(h, 112, T("vessel"), T("v"), T("fixture"), &rename, 1, &error));
+        } else {
+            ok(andamento_tick(h, 112, &error));
+        }
+        expected_error(andamento_dispatch(h, displayed, intended.activate, &error));
+        AndamentoEffects *rejected = take(h);
+        assert(andamento_effects_count(rejected) == 0);
+        andamento_effects_release(rejected);
+        andamento_snapshot_release(displayed);
+        /* Discard the captured click. A fresh interaction uses a fresh frame. */
+        AndamentoSnapshot *fresh = snapshot(h);
+        ok(andamento_dispatch(h, fresh, find_node(fresh, "vessel").activate, &error));
+        AndamentoEffects *accepted = take(h);
+        assert(andamento_effects_count(accepted) == 1);
+        AndamentoEffect target; assert(andamento_effects_get(accepted, 0, &target));
+        assert(target.kind == ANDAMENTO_EFFECT_FOCUS && target.workspace_id == 42);
+        ok(andamento_complete(h, target.request_id, ANDAMENTO_COMPLETE_FOCUS, 0, T(""), &error));
+        andamento_effects_release(accepted);
+        andamento_snapshot_release(fresh);
+    }
     andamento_destroy(h); andamento_destroy(other);
     /* Snapshot and effect allocations outlive the sidebar. */
     assert(eq(project.label, "Project P") && eq(e.recipe, "printf hello"));

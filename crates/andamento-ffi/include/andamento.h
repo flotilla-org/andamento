@@ -65,7 +65,10 @@ uint32_t andamento_tick(Andamento *, uint64_t now_ms, char **error_out);
 typedef struct { uint64_t id; size_t position; AndamentoText name; uint32_t selected; } AndamentoWorkspace;
 enum { ANDAMENTO_PANE_TERMINAL, ANDAMENTO_PANE_PLUGIN };
 typedef struct { uint64_t workspace_id; uint32_t pane_id, kind, selectable, focused; int64_t ordinal; } AndamentoPane;
-/* Full replacement of topology; workspace IDs are scoped to this client. */
+/* Full replacement of topology; workspace IDs are scoped to this client.
+ * Pane observations currently retain Zellij's terminal/plugin u32 identity.
+ * Native hosts with wider IDs or other view kinds must pass an empty pane list;
+ * do not truncate IDs or classify arbitrary native views as plugins. */
 uint32_t andamento_observe(Andamento *, const AndamentoWorkspace *, size_t count,
     const AndamentoPane *, size_t pane_count, char **error_out);
 enum { ANDAMENTO_COMPLETE_FOCUS, ANDAMENTO_COMPLETE_MATERIALIZE, ANDAMENTO_COMPLETE_ERROR };
@@ -113,8 +116,11 @@ uint32_t andamento_snapshot_control(const AndamentoSnapshot *, size_t index, And
 size_t andamento_snapshot_diagnostic_count(const AndamentoSnapshot *);
 uint32_t andamento_snapshot_diagnostic(const AndamentoSnapshot *, size_t index, AndamentoText *out);
 /* Action references belong to one snapshot. Another client or a snapshot from
- * before any successful mutation is rejected. Reacquire and re-hit-test after
- * updates; never reinterpret an old action index against a new snapshot.
+ * before any successful mutation is rejected. Dispatch captured clicks against
+ * their displayed snapshot BEFORE draining queued facts/ticks/topology. If an
+ * update already intervened, discard the stale click and redraw. Only a NEW
+ * interaction may be hit-tested against the new frame: never replay old
+ * coordinates or reinterpret an old action index against a new snapshot.
  * Dispatch queues effects; it does not execute host operations. */
 uint32_t andamento_dispatch(Andamento *, const AndamentoSnapshot *, size_t action, char **error_out);
 void andamento_snapshot_release(AndamentoSnapshot *);
