@@ -222,3 +222,21 @@ linked live tickets carry the updated execution scope. The core extraction and r
 See [the embedding interface](core-interface.md) for the implemented surface
 and its remaining placement-cutover constraint. Wheelhouse integration is
 still the next consumer task.
+
+
+## Embedding interface refinement
+
+Before the first Wheelhouse integration, replace the bootstrap JSON request
+ABI with typed C operations, explicitly acquired immutable snapshots, and
+separately drained tagged host effects. Input is borrowed for a call; snapshot
+and effect text belongs to the respective retained allocation. Native clicks
+use snapshot-owned action references rather than reconstructed payloads.
+The initial stale-action rule rejects dispatch after an intervening mutation.
+
+Producer semantics, encoding and transport are independent. JSON remains an
+optional ingress decoder and replay format; CBOR or another encoding can feed
+the same typed core later. Typed scalar entity ingestion already permits
+native facts without encoding. Implementing another wire encoding, snapshot
+diffs, and a complete C mirror of the Rust model are deferred. The compiled C
+fixture consumer verifies the first native slice; Wheelhouse call sites will
+guide further projection fields. See the embedding guide for ABI 2 details.

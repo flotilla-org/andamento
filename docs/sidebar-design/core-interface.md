@@ -85,40 +85,95 @@ cargo build -p andamento-ffi --target aarch64-apple-darwin
 ```
 
 It produces `libandamento_ffi.a` and a dynamic library in the native target's
-debug directory. ABI version 1 is an initial embedding interface. Its owned
-JSON messages keep Rust layouts and allocation internals out of the C contract.
-Do not treat this as a frozen producer transport protocol.
+debug directory. ABI version **2** replaces the experimental JSON request
+interface from version 1. It is not yet a frozen embedding contract.
 
-1. Call `andamento_create` with UTF-8 KDL and its byte length. On failure it
-   returns null and, when requested, an owned error string.
-2. Serialize calls to `andamento_request` for each handle, preferably on the
-   UI thread. Queue transport events onto that thread. Input buffers are
-   borrowed only during each call and need not be NUL-terminated.
-3. Parse the owned, NUL-terminated JSON response, then release it through
-   `andamento_string_free`. Every request gets an independent response buffer.
-4. Destroy the handle after all calls complete. A panic returns an error and
-   poisons the handle; recreate it before further work.
+### Update and ownership rules
 
-Requests use the `sidebar::Request` schema. Examples:
+Create one opaque `Andamento` handle per presentation client. Serialize calls
+on that handle, usually by queueing transport events onto the UI thread.
+Input arrays and UTF-8 byte strings are borrowed only during each call; they
+need not be NUL-terminated. Every mutation returns success/failure and an
+optional owned error string, freed with `andamento_string_free`. Invalid input
+is rejected before mutation. A caught panic poisons the sidebar; recreate it.
 
-```json
-{"request":"apply","now_ms":1000,"patches":[]}
-{"request":"observe","workspaces":[{"id":42,"position":0,"name":"Worker","selected":true}],"panes":[]}
-{"request":"dispatch","action":{"action":"activate","entity":{"kind":"vessel","id":"v"}}}
-{"request":"complete","request_id":1,"workspace_id":42,"error":null}
-{"request":"snapshot"}
+Use typed `andamento_observe` for full workspace/pane topology and
+`andamento_complete` for host outcomes. Apply incoming facts and completions,
+then explicitly call `andamento_snapshot_acquire` once for rendering. Mutations
+do not produce output snapshots. Action validation can still resolve state
+internally; this interface does not promise incremental evaluation.
+
+The snapshot owns its nodes, fields, controls and borrowed text until
+`andamento_snapshot_release`. It survives updates to or destruction of the
+sidebar. Nodes are in preorder with parent indices; section nodes have no
+parent. Collapsed children remain present. Placement keys are opaque stable
+widget identities, not strings for the host to parse. The host owns geometry,
+measurement, hit testing, scrolling and drawing.
+
+The initial native projection exposes resolved field text/class/priority,
+main and detail fields, main controls, layout/form intent, collapse state,
+and catalog/latent/opening/live state. Display controls include their resolved
+label, icon and typed current value. Template provenance, raw facts, placement
+variable editors, detail controls and chrome primitives remain available in
+Rust but are not yet projected into C. Add them against actual native call
+sites; do not reconstruct the template resolver in Wheelhouse.
+
+Nodes expose activation/collapse action references; display controls expose
+their own action references. Pass the snapshot and reference to
+`andamento_dispatch`. References are snapshot-local, and dispatch rejects a
+snapshot from another client or from before a successful mutation. Reacquire
+and re-hit-test after updates; never reuse an index against a different
+snapshot. The conservative rule also invalidates actions after a tick or a
+successful dispatch that produces no effects. Unknown/duplicate completions
+and failed input validation leave actions valid. Retaining an older snapshot
+for drawing is always allowed. Controls with no core action expose their
+host-owned intent, such as scrolling, with `ANDAMENTO_NONE` as the action.
+
+Dispatch queues tagged host effects. `andamento_effects_take` drains them into
+an independently owned batch; a second take returns an empty batch. Execute
+focus/materialize locally and complete every request, including failure,
+cancellation and timeout. An inspect effect needs no completion. Copy strings
+needed asynchronously or retain the batch until finished. Releasing a batch
+does not complete its requests, and acquiring snapshots does not drain effects.
+
+A typical update is:
+
+```c
+/* Apply queued facts, topology and effect completions first. */
+AndamentoSnapshot *frame = andamento_snapshot_acquire(sidebar, &error);
+/* Read typed nodes/fields/controls and build native widgets. */
+/* On a hit, dispatch the action reference from this exact frame. */
+andamento_dispatch(sidebar, frame, hit_action, &error);
+AndamentoEffects *effects = andamento_effects_take(sidebar, &error);
+/* Execute effects, retaining/copying any data needed asynchronously. */
+andamento_effects_release(effects);
+andamento_snapshot_release(frame);
 ```
 
-Success returns `{"ok":true,"snapshot":...,"effects":[...]}`. Errors return
-`{"ok":false,"error":"..."}`. Snapshot errors are an array of entity/message
-pairs, so arbitrary entity references remain valid JSON. The `revision` is
-local to the instance; it is not a distributed synchronization clock.
+Check each result before continuing. The complete, compiled consumer is
+`crates/andamento-ffi/tests/smoke.c`; the header specifies tags, pointer validity,
+nullable arguments and ownership for every operation.
 
-`Configure` accepts a `kdl` string. `TogglePlacement` takes a `PlacementKey`
-copied from the snapshot. `SetVariable` takes that key, a name and a string
-value, or null to inherit. `ToggleDisplayVariable` takes a declared name.
-Use the Rust serde definitions as the exact evolving JSON schema; do not infer
-producer HTTP paths or request framing from these in-process messages.
+### Facts, encoding and transport
+
+The semantic producer model, its encoding and its transport are separate
+choices. Rust accepts typed `MetadataPatch` values. The native scalar
+`andamento_apply_entity` convenience interface supports text, boolean and
+integer entity facts, unsets, TTL, precedence and ordinal without encoding
+those values. It intentionally does not duplicate every producer target and
+value type in the C header.
+
+`andamento_apply_patch_json` is an optional decoder for one existing producer
+patch, parsed inside Rust. It accepts no local request envelope and produces
+no JSON response. It is enabled by the default Cargo feature `json`; build
+with `--no-default-features` to omit the entry point. Other producer targets,
+lists and path values currently use that decoder or Rust's typed interface.
+A future CBOR decoder can feed the same model without changing the renderer
+or host-effect interface. Neither JSON nor HTTP/UDS is a core requirement.
+
+`andamento_tick` advances expiry when no facts arrive. Supply monotonic
+milliseconds scoped to this client. JSON `Request`/`Response` replay tooling
+remains available in Rust/HTML, but does not define the embedding interface.
 
 ## Proof and validation
 
@@ -139,7 +194,10 @@ frontends reflect the resulting placement state.
 
 The isolation script copies only the reusable crates and bundled templates
 into a temporary workspace, verifies the dependency graph contains no Zellij
-or Flotilla packages, runs its tests, then compiles and executes a C caller.
+or Flotilla packages, runs its tests, checks the FFI without its JSON feature, then compiles and executes a C fixture
+consumer. That consumer covers hierarchy, labels/status, controls, collapse,
+materialize/focus, failure/retry, typed facts, expiry, stale/cross-client actions
+and snapshot/effect lifetimes.
 The plugin workspace itself still needs the sibling Zellij checkout for Cargo
 workspace resolution. CI runs both the full plugin suite and the isolated check.
 

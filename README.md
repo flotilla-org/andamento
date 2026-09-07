@@ -14,7 +14,7 @@ names.
 
 The reusable implementation now lives in `andamento-core`, with terminal
 rendering in `andamento-terminal`. Neither depends on Zellij. The plugins
-retain their host adapters; `andamento-ffi` exposes a C-callable JSON interface
+retain their host adapters; `andamento-ffi` exposes a typed C embedding interface
 for Wheelhouse, and `andamento-html` proves native geometry over the shared
 placement snapshot. See [the embedding interface](docs/sidebar-design/core-interface.md)
 for build commands, ownership rules, fixtures and the no-Zellij validation.

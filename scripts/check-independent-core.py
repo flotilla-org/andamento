@@ -35,13 +35,17 @@ with tempfile.TemporaryDirectory(prefix="andamento-independent-") as directory:
     assert not forbidden, forbidden
     subprocess.run(["cargo", "test", "--workspace", "--locked", "--target", host],
                    cwd=isolated, env=env, check=True)
+    subprocess.run(["cargo", "check", "-p", "andamento-ffi", "--no-default-features",
+                    "--locked", "--target", host], cwd=isolated, env=env, check=True)
     subprocess.run(["cargo", "build", "-p", "andamento-ffi", "--locked", "--target", host],
                    cwd=isolated, env=env, check=True)
     library = target / host / "debug"
     smoke = isolated / "ffi-smoke"
-    subprocess.run(["cc", str(isolated / "crates/andamento-ffi/tests/smoke.c"),
+    subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", str(isolated / "crates/andamento-ffi/tests/smoke.c"),
                     "-I", str(isolated / "crates/andamento-ffi/include"),
                     "-L", str(library), "-landamento_ffi", "-o", str(smoke)], check=True)
-    subprocess.run([str(smoke)], env=dict(env, LD_LIBRARY_PATH=str(library),
+    subprocess.run([str(smoke),
+                    str(isolated / "crates/andamento-core/tests/fixtures/sidebar.kdl"),
+                    str(isolated / "crates/andamento-core/tests/fixtures/sidebar.jsonl")], env=dict(env, LD_LIBRARY_PATH=str(library),
                                         DYLD_LIBRARY_PATH=str(library)), check=True)
     print("Independent core/frontends and C ABI verified without a Zellij or Flotilla dependency.")
