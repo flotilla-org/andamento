@@ -313,3 +313,52 @@ fn host_time_expires_overrides_without_further_facts_and_retries_refresh_ttl() {
         "Worker <one>"
     );
 }
+
+#[test]
+fn abbreviation_uses_placement_variable_and_preserves_full_fallback() {
+    let mut sidebar = Sidebar::new(include_str!("fixtures/abbreviation.kdl")).unwrap();
+    sidebar.apply(
+        0,
+        [patch(
+            entity("vessel", "v"),
+            &[
+                ("display.label", text("Full worker label")),
+                ("flotilla.vessel", text("v")),
+                ("display.label.medium", text("Worker")),
+            ],
+        )],
+    );
+    let before = sidebar.snapshot();
+    let node = &before.surface.sections[0].nodes[0];
+    assert_eq!(node.content.text(), "Worker", "{node:#?}");
+    assert_eq!(node.label, "Full worker label");
+    assert_eq!(node.detail.text(), "Full worker label");
+    sidebar
+        .dispatch(Action::SetVariable {
+            key: node.key.clone(),
+            name: "item.tier".into(),
+            value: Some("short".into()),
+        })
+        .unwrap();
+    assert_eq!(
+        sidebar.snapshot().surface.sections[0].nodes[0]
+            .content
+            .text(),
+        "Worker"
+    );
+    sidebar.apply(
+        1,
+        [MetadataPatch {
+            target: MetadataTarget::Entity(entity("vessel", "v")),
+            source_id: "fixture".into(),
+            set: BTreeMap::new(),
+            unset: vec!["display.label.medium".into()],
+        }],
+    );
+    let after = sidebar.snapshot();
+    assert_eq!(
+        after.surface.sections[0].nodes[0].content.text(),
+        "Full worker label"
+    );
+    assert_eq!(after.surface.sections[0].nodes[0].key, node.key);
+}

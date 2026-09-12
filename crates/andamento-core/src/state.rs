@@ -16,7 +16,7 @@ use crate::{
     RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateSlot,
     ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
     TemplateConfigDiagnostics, VariableSetterProvenance, DISPLAY_FORM_COMPACT, DISPLAY_FORM_FULL,
-    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
+    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER, PLACEMENT_LOOP_BINDING_KEY, PLACEMENT_LOOP_TIER_KEY,
 };
 
 const SOURCE_ZELLIJ: &str = "zellij";
@@ -61,6 +61,18 @@ fn placed_display_entity(
     form: &str,
 ) -> crate::DisplayEntity {
     display.form = form.to_owned();
+    display.metadata.insert(
+        PLACEMENT_LOOP_BINDING_KEY.to_owned(),
+        MetadataValue::Text(loop_definition.binding.clone()),
+    );
+    if let Some(tier) = loop_definition.tier {
+        display.metadata.insert(
+            PLACEMENT_LOOP_TIER_KEY.to_owned(),
+            MetadataValue::Text(tier.as_str().to_owned()),
+        );
+    } else {
+        display.metadata.remove(PLACEMENT_LOOP_TIER_KEY);
+    }
     if !loop_definition.fields.is_empty() {
         display.templates.compact = Some(crate::ResolvedTemplateSlot {
             template_name: format!("placement:{}", loop_definition.binding),
@@ -4811,6 +4823,7 @@ mod tests {
                 order: vec![],
                 fields: vec![],
                 layout: None,
+                tier: None,
                 loops: vec![],
                 apply_template: None,
             }],
@@ -4853,6 +4866,38 @@ mod tests {
             1,
             "restating identity in facts must not duplicate the placement: {:?}",
             placed.iter().map(|e| &e.entity).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn placed_entity_carries_its_loop_binding_and_explicit_tier() {
+        let mut state = directory_entity_state();
+        apply_entity(
+            &mut state,
+            "vessel",
+            "dev/focus/worker@lab",
+            1,
+            &[
+                ("flotilla.vessel", "dev/focus/worker@lab"),
+                ("display.label", "worker"),
+            ],
+        );
+        let entities = state.catalog_entities();
+        let index = PlacementIndex::build(&entities);
+        let mut placement = placement_loop(&[("entity.kind", "vessel")]);
+        placement.loops[0].binding = "convoy".to_owned();
+        placement.loops[0].tier = Some(crate::template_config::AbbreviationTier::Short);
+
+        let placed =
+            state.evaluate_placement(&placement, &entities, &index, "full", &mut BTreeMap::new());
+
+        assert_eq!(
+            placed[0].metadata.get(PLACEMENT_LOOP_BINDING_KEY),
+            Some(&MetadataValue::Text("convoy".to_owned()))
+        );
+        assert_eq!(
+            placed[0].metadata.get(PLACEMENT_LOOP_TIER_KEY),
+            Some(&MetadataValue::Text("short".to_owned()))
         );
     }
 

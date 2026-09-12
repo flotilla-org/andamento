@@ -1,8 +1,10 @@
 use super::{render_lines_with_detail_surface, LocalTab, RenderedRail};
 use andamento_shared::{
-    ControllerViewModel, DisplayEntity, DisplayRegion, EntityRef, GroupPath, GroupSegment,
-    LatentMaterializationState, LatentTab, MetadataControls, MetadataValue, NodeKey, RailConfig,
-    RailRow, ResolvedTemplateSlots, SortMode, TabCard, TemplateConfigDiagnostics,
+    ControllerViewModel, DisplayEntity, DisplayRegion, EffectiveNodeVariables,
+    EffectiveVariableValue, EntityRef, GroupPath, GroupSegment, LatentMaterializationState,
+    LatentTab, MetadataControls, MetadataValue, NodeKey, PlacementKey, PlacementSegment,
+    RailConfig, RailRow, ResolvedTemplateSlots, SortMode, TabCard, TemplateConfigDiagnostics,
+    VariableSetterProvenance, PLACEMENT_LOOP_BINDING_KEY,
 };
 use std::collections::BTreeMap;
 use unicode_width::UnicodeWidthStr;
@@ -115,6 +117,77 @@ impl ControllerModelFixture {
             entities: vec![],
         });
         self
+    }
+
+    pub(super) fn abbreviation_ladder(tier: &str) -> Self {
+        let mut fixture = Self::empty();
+        let mut placed = entity(
+            "issue",
+            "github/flotilla-org/andamento#68",
+            "abbreviation-ladder-declared-tiers",
+        );
+        let placement = PlacementKey(vec![PlacementSegment {
+            loop_name: "issue".to_owned(),
+            entity: placed.entity.clone(),
+        }]);
+        placed.placement = Some(placement.clone());
+        placed.metadata.extend([
+            (
+                "display.label".to_owned(),
+                MetadataValue::Text("abbreviation-ladder-declared-tiers".to_owned()),
+            ),
+            (
+                "display.label.medium".to_owned(),
+                MetadataValue::Text("abbreviation-ladder".to_owned()),
+            ),
+            (
+                "display.label.short".to_owned(),
+                MetadataValue::Text("aldt".to_owned()),
+            ),
+            (
+                PLACEMENT_LOOP_BINDING_KEY.to_owned(),
+                MetadataValue::Text("issue".to_owned()),
+            ),
+        ]);
+        fixture
+            .model
+            .template_config
+            .effective_variables
+            .push(EffectiveNodeVariables {
+                node: NodeKey::Placement(placement.clone()),
+                values: BTreeMap::from([(
+                    "issue.tier".to_owned(),
+                    EffectiveVariableValue {
+                        value: tier.to_owned(),
+                        provenance: VariableSetterProvenance {
+                            setter: "fixture".to_owned(),
+                            ancestor: NodeKey::Placement(placement),
+                            origin: andamento_shared::template_config::TemplateConfigOrigin {
+                                layer: andamento_shared::template_config::TemplateConfigLayerKind::User,
+                                membership: None,
+                                source: "fixture.kdl".to_owned(),
+                            },
+                        },
+                        overridden: vec![],
+                    },
+                )]),
+                declarations: vec![],
+            });
+        fixture.model.surface_regions.push(DisplayRegion {
+            definition: andamento_shared::template_config::SurfaceRegionDefinition {
+                placement: Some("issues".to_owned()),
+                name: "issues".to_owned(),
+                source: andamento_shared::template_config::SurfaceRegionSource::Tree,
+                root_template: "region/issues".to_owned(),
+                form: "full".to_owned(),
+                attention_key: None,
+                pinned: false,
+                promotions: vec![],
+            },
+            root: None,
+            entities: vec![placed],
+        });
+        fixture
     }
 
     pub(super) fn build(self) -> ControllerViewModel {

@@ -1,0 +1,15 @@
+variable "item.tier" default="medium" {
+  value "full"
+  value "medium"
+  value "short"
+}
+region "tree" source="tree" root-template="title" form="compact" placement="tree"
+template "title" { field "label" source="literal" value="Vessels"; }
+placement "tree" {
+  for "item" kind="vessel" {
+    apply-template "entry"
+  }
+}
+template "entry" {
+  field "label" key="display.label"
+}
