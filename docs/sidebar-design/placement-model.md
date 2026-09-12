@@ -308,7 +308,10 @@ template "project/line" {
 `medium`, or `short`. When it is omitted, a loop named `issue` reads the
 node-scoped `issue.tier` variable (likewise `convoy.tier`). Short falls back to
 medium and then full; medium falls back to full. If no producer abbreviation is
-available, the full label is middle-elided as the degraded path. The renderer
+available, the selected text remains the full label. The snapshot-based terminal
+renderer applies its normal end-clipping; the compatibility renderer retains
+its older middle-elision fallback. Native renderers measure and clip in pixels.
+The renderer
 does not change tiers when siblings appear or disappear.
 
 **Loop names are singular and are the binding.** `for "convoy"` binds `convoy`

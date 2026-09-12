@@ -6520,6 +6520,49 @@ mod tests {
     use andamento_core::{PLACEMENT_LOOP_BINDING_KEY, PLACEMENT_LOOP_TIER_KEY};
 
     #[test]
+    fn real_presentation_uses_shared_tiers_and_normal_terminal_clipping() {
+        use andamento_core::state::ControllerState;
+        let config = include_str!("../../andamento-core/tests/fixtures/abbreviation.kdl")
+            .replace("kind=\"vessel\"", "kind=\"vessel\" tier=\"short\"");
+        for (medium, expected) in [(Some("worker"), "  worker"), (None, "  grouping-...")] {
+            let mut state = ControllerState::default();
+            state.set_grouping_catalog(None);
+            state.set_template_catalog(Some(TemplateConfigCatalog::with_bundled_defaults(
+                andamento_core::template_config::parse_template_config_kdl(&config).unwrap(),
+            )));
+            let mut patch: andamento_core::MetadataPatch = serde_json::from_str(r#"{"target":{"kind":"entity","value":{"kind":"vessel","id":"worker"}},"source_id":"test","set":{"flotilla.vessel":{"value":{"type":"text","value":"worker"}},"display.label":{"value":{"type":"text","value":"grouping-live-session"}}},"unset":[]}"#).unwrap();
+            if let Some(medium) = medium {
+                patch.set.insert(
+                    "display.label.medium".into(),
+                    andamento_core::MetadataValueUpdate {
+                        value: MetadataValue::Text(medium.into()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                );
+            }
+            state.apply_metadata_patch(patch);
+            let model = state.view_model();
+            let region = &model.surface_regions[0];
+            let entity = &region.entities[0];
+            let node = model
+                .presentation
+                .as_ref()
+                .unwrap()
+                .node(entity.placement.as_ref().unwrap())
+                .unwrap();
+            assert_eq!(node.label, "grouping-live-session");
+            assert_eq!(node.detail.text(), "grouping-live-session");
+            assert_eq!(
+                region_entity_line(entity, &region.definition, None, 14, None, Some(&model))
+                    .trim_end(),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn abbreviation_tier_uses_loop_variable_and_falls_back_longer() {
         let mut metadata = BTreeMap::from([
             (
