@@ -1,7 +1,8 @@
 ---
 kind: ensure
-name: governor
+role: governor
 repos: [andamento]
+driver: udder
 ---
 workflow: governor
 placement: docker-crew-image-udder

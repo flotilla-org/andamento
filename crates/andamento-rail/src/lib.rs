@@ -1,4 +1,4 @@
-pub use andamento_core::render;
+pub mod render;
 
 fn should_sync_graphics(controller_available: bool) -> bool {
     controller_available
@@ -240,7 +240,6 @@ fn renderer_hello_payload(
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
-use andamento_core::{HostControl, SidebarCore, Tab as CoreTab};
 use andamento_shared::StatusIcon;
 use andamento_shared::{
     ConfigInspectRequest, ControllerViewModel, GroupPath, NodeKey, PluginPaneKind, PluginPlacement,
@@ -301,6 +300,36 @@ fn build_materialize_latent_message(
     })
 }
 
+fn build_activate_entity_message(
+    controller_plugin_url: &str,
+    config_plugin_url: &str,
+    client_id: u16,
+    origin_tab_id: u64,
+    entity: &andamento_shared::EntityRef,
+) -> Option<MessageToPlugin> {
+    let request = andamento_shared::EntityActivationRequest {
+        entity: entity.clone(),
+        // The controller cannot build this itself — it only ever learns the
+        // plugin urls from a request.
+        inspect_fallback: ConfigInspectRequest {
+            client_id,
+            origin_tab_id,
+            node_key: NodeKey::Entity(entity.clone()),
+            config_plugin_url: config_plugin_url.to_owned(),
+            controller_plugin_url: controller_plugin_url.to_owned(),
+        },
+    };
+    let payload = serde_json::to_string(&request).ok()?;
+    let message = MessageToPlugin::new(andamento_shared::MSG_ACTIVATE_ENTITY)
+        .with_destination_client_id(client_id)
+        .with_payload(payload);
+    Some(if controller_plugin_url.trim().is_empty() {
+        message
+    } else {
+        message.with_plugin_url(controller_plugin_url.to_owned())
+    })
+}
+
 fn build_rail_ui_action_message(
     controller_plugin_url: &str,
     action: RailUiAction,
@@ -323,36 +352,8 @@ fn build_rail_ui_state_request_message(controller_plugin_url: &str) -> MessageTo
     }
 }
 
-fn render_theme(colors: Styling) -> render::RenderTheme {
-    render::RenderTheme {
-        active_border: render_color(colors.ribbon_selected.background),
-        inactive_border: render_color(colors.ribbon_unselected.background),
-        body_foreground: render_color(colors.text_unselected.base),
-        segment_active_background: render_color(colors.ribbon_selected.background),
-        segment_active_foreground: render_color(colors.ribbon_selected.base),
-        segment_inactive_background: render_color(colors.ribbon_unselected.background),
-        segment_inactive_foreground: render_color(colors.ribbon_unselected.base),
-        segment_between_background: render_color(colors.text_unselected.background),
-    }
-}
-
-fn render_color(color: PaletteColor) -> render::PaletteColor {
-    match color {
-        PaletteColor::Rgb(rgb) => render::PaletteColor::Rgb(rgb),
-        PaletteColor::EightBit(color) => render::PaletteColor::EightBit(color),
-    }
-}
-
-fn render_cell_size(size: SizeInPixels) -> render::SizeInPixels {
-    render::SizeInPixels {
-        width: size.width,
-        height: size.height,
-    }
-}
-
 #[derive(Default)]
 pub struct PluginState {
-    core: SidebarCore,
     tabs: Vec<TabInfo>,
     local_tabs: Vec<LocalTab>,
     hit_regions: Vec<HitRegion>,
@@ -457,18 +458,6 @@ impl ZellijPlugin for PluginState {
                 let previous_active_tab_id = self.active_tab_id();
                 self.tabs = tabs;
                 self.local_tabs = local_tabs;
-                self.core.apply(andamento_core::Facts::Tabs {
-                    tabs: self
-                        .local_tabs
-                        .iter()
-                        .map(|tab| CoreTab {
-                            id: tab.tab_id,
-                            position: tab.position,
-                            name: tab.name.clone(),
-                            active: tab.active,
-                        })
-                        .collect(),
-                });
                 self.ensure_active_visible |= previous_active_tab_id != self.active_tab_id()
                     && self.active_tab_id().is_some();
                 if let Some(pane_manifest) = self.last_pane_manifest.clone() {
@@ -506,11 +495,11 @@ impl ZellijPlugin for PluginState {
         if message.name == MSG_VIEW_MODEL {
             if let Some(payload) = message.payload.as_deref() {
                 let started_at = Instant::now();
-                match self.core.apply_view_model_json(payload) {
-                    Ok(()) => {
+                match serde_json::from_str::<ControllerViewModel>(payload) {
+                    Ok(model) => {
                         self.stats
                             .record_span_elapsed("json.decode-view-model", started_at);
-                        self.controller_model = self.core.model().cloned();
+                        self.controller_model = Some(model);
                         // Defensive: zellij may grant cached permissions
                         // without firing PermissionRequestResult. Receiving a
                         // view model proves the controller is talking to us
@@ -585,8 +574,11 @@ impl ZellijPlugin for PluginState {
             controller_available,
             self.mode_info
                 .as_ref()
-                .map(|mode_info| render_theme(mode_info.style.colors)),
-            terminal_pixel_cell_size().map(render_cell_size),
+                .map(|mode_info| render::theme_from_zellij(mode_info.style.colors)),
+            terminal_pixel_cell_size().map(|s| render::SizeInPixels {
+                height: s.height,
+                width: s.width,
+            }),
             &self.rail_ui_state.collapsed_groups,
             None,
             &metadata_controls,
@@ -793,6 +785,37 @@ mod tests {
     }
 
     #[test]
+    fn placement_hit_targets_drive_hover_detail_state() {
+        let target = NodeKey::Placement(andamento_shared::PlacementKey(vec![
+            andamento_shared::PlacementSegment {
+                loop_name: "attention".to_owned(),
+                entity: andamento_shared::EntityRef {
+                    kind: "vessel".to_owned(),
+                    id: "worker".to_owned(),
+                },
+            },
+        ]));
+        let mut state = PluginState {
+            hit_regions: vec![HitRegion {
+                row_start: 1,
+                row_end: 1,
+                col_start: 2,
+                col_end: 8,
+                tab_id: 0,
+                tab_position: 0,
+                group_path: None,
+                inspect_target: Some(target.clone()),
+                materialize_request: None,
+                action: HitAction::ActivateEntity,
+            }],
+            ..Default::default()
+        };
+
+        assert!(state.handle_mouse(Mouse::Hover(1, 4)));
+        assert_eq!(state.hovered_detail_target, Some(target));
+    }
+
+    #[test]
     fn detail_hover_does_not_clear_between_compact_chips() {
         let first = NodeKey::Entity(andamento_shared::EntityRef {
             kind: "action".to_owned(),
@@ -978,6 +1001,7 @@ mod tests {
     fn explicit_navigation_clears_scroll_queued_before_it() {
         let mut state = PluginState {
             rail_ui_state: RailUiState {
+                collapsed_placements: vec![],
                 scroll_offset: 4,
                 variables: BTreeMap::new(),
                 ..Default::default()
@@ -1137,6 +1161,36 @@ mod tests {
     }
 
     #[test]
+    fn attention_activation_builds_an_entity_only_controller_request() {
+        let entity = andamento_shared::EntityRef {
+            kind: "vessel".to_owned(),
+            id: "dev/focus/worker@lab".to_owned(),
+        };
+
+        let message = build_activate_entity_message(
+            "andamento-controller",
+            "andamento-config",
+            4,
+            7,
+            &entity,
+        )
+        .unwrap();
+
+        assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
+        assert_eq!(message.destination_client_id, Some(4));
+        assert_eq!(message.message_name, andamento_shared::MSG_ACTIVATE_ENTITY);
+        let payload: andamento_shared::EntityActivationRequest =
+            serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
+        assert_eq!(payload.entity, entity);
+        assert_eq!(
+            payload.inspect_fallback.node_key,
+            NodeKey::Entity(entity.clone()),
+            "a row that cannot be activated must still reach its inspector"
+        );
+        assert_eq!(payload.inspect_fallback.origin_tab_id, 7);
+    }
+
+    #[test]
     fn group_toggle_builds_controller_request() {
         let path = GroupPath(vec![andamento_shared::GroupSegment {
             key: "zellij.pane.cwd".to_owned(),
@@ -1181,6 +1235,7 @@ mod tests {
                 writer_client_id: 1,
             },
             collapsed_groups: vec![path],
+            collapsed_placements: vec![],
             scroll_offset: 9,
             variables: BTreeMap::new(),
         };
@@ -1204,6 +1259,7 @@ mod tests {
                 writer_client_id: 1,
             },
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             scroll_offset: 12,
             variables: BTreeMap::new(),
         };
@@ -1213,6 +1269,7 @@ mod tests {
                 writer_client_id: 2,
             },
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             scroll_offset: 14,
             variables: BTreeMap::new(),
         };
@@ -1222,6 +1279,7 @@ mod tests {
                 writer_client_id: 0,
             },
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             scroll_offset: 1,
             variables: BTreeMap::new(),
         };
@@ -1581,8 +1639,28 @@ impl PluginState {
                 };
                 match hit.action {
                     HitAction::SwitchTab => {
-                        let mut host = ZellijHost;
-                        let _ = self.core.activate_position(hit.tab_position, &mut host);
+                        switch_tab_to((hit.tab_position + 1) as u32);
+                        false
+                    }
+                    HitAction::ActivateEntity => {
+                        let entity = hit.inspect_target.as_ref().and_then(|target| match target {
+                            NodeKey::Entity(entity) => Some(entity),
+                            NodeKey::Placement(key) => key.0.last().map(|segment| &segment.entity),
+                            _ => None,
+                        });
+                        if let (Some(entity), Some(client_id)) = (entity, self.own_client_id) {
+                            if let Some(message) = build_activate_entity_message(
+                                &self.controller_plugin_url,
+                                &self.config_plugin_url,
+                                client_id,
+                                self.own_tab_id()
+                                    .or_else(|| self.active_tab_id())
+                                    .unwrap_or(0),
+                                entity,
+                            ) {
+                                pipe_message_to_plugin(message);
+                            }
+                        }
                         false
                     }
                     HitAction::Materialize => {
@@ -1607,6 +1685,12 @@ impl PluginState {
                     HitAction::ToggleGroup => {
                         if let Some(group_path) = hit.group_path {
                             self.toggle_group(group_path);
+                        }
+                        false
+                    }
+                    HitAction::TogglePlacement => {
+                        if let Some(NodeKey::Placement(key)) = hit.inspect_target {
+                            self.send_rail_ui_action(RailUiAction::TogglePlacement { key });
                         }
                         false
                     }
@@ -1649,7 +1733,9 @@ impl PluginState {
                 let row = row as usize;
                 let target = hit_at(&self.hit_regions, row, col).and_then(|hit| {
                     match hit.inspect_target.as_ref() {
-                        Some(target @ NodeKey::Entity(_)) => Some(target.clone()),
+                        Some(target @ (NodeKey::Entity(_) | NodeKey::Placement(_))) => {
+                            Some(target.clone())
+                        }
                         _ => None,
                     }
                 });
@@ -1846,21 +1932,5 @@ impl PluginState {
             });
         }
         asset_id
-    }
-}
-
-struct ZellijHost;
-
-impl HostControl for ZellijHost {
-    type Error = std::convert::Infallible;
-
-    fn switch_tab(&mut self, position: usize) -> Result<(), Self::Error> {
-        switch_tab_to(position as u32);
-        Ok(())
-    }
-
-    fn open_tab(&mut self, name: &str) -> Result<(), Self::Error> {
-        new_tab(Some(name), None);
-        Ok(())
     }
 }

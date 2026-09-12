@@ -10,6 +10,15 @@ namespace throughout. The intended published home is `flotilla-org/andamento`;
 this prototype does not maintain compatibility aliases for earlier scratch
 names.
 
+## Shared core and native embedding
+
+The reusable implementation now lives in `andamento-core`, with terminal
+rendering in `andamento-terminal`. Neither depends on Zellij. The plugins
+retain their host adapters; `andamento-ffi` exposes a typed C embedding interface
+for Wheelhouse, and `andamento-html` proves native geometry over the shared
+placement snapshot. See [the embedding interface](docs/sidebar-design/core-interface.md)
+for build commands, ownership rules, fixtures and the no-Zellij validation.
+
 ## Build
 
 ```sh
@@ -159,12 +168,21 @@ Template load status, errors, and resolved slots are visible in the config
 plugin's `templates` tab.
 
 Display variables and entity forms live in the same template model. Boolean
-and enum variables have a default, label, icon, and persistence policy. Their
-controls are projected into the fixed footer, and values are shared by all
-rails through the session rail-state broadcast:
+and enum variables have a default, label, icon, and persistence policy. A
+display-variable control refers to its declaration by name, and values are
+shared by all rails through the session rail-state broadcast. Controls are a
+template content type alongside fields (and loops):
 
 ```kdl
 display-variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
+
+template "region/controls" slot="compact" node-kind="entity" {
+    control "open-config" glyph="⚙"
+    control "display-variable" variable="show-issues"
+    control "scroll-down" glyph="▼"
+    control "scroll-up" glyph="▲"
+    control "inspect-root"
+}
 
 template "issue/compact" slot="compact" node-kind="entity" {
     field "label" source="metadata-first-token" key="display.label"
@@ -175,6 +193,10 @@ template "issue/detail" slot="detail" node-kind="entity" {
     field "summary" class="priority" key="summary.text" priority=50
 }
 ```
+
+The bundled `controls` region is pinned and its root template contains only
+control widgets. Templates do not require a loop, so the section occupies one
+fixed row and does not scroll away with tree content.
 
 Compact entities expose their `detail` form in the rail's fixed detail row.
 Pointer hover updates it immediately; clicking an entity keeps it as the
@@ -306,6 +328,28 @@ cargo run -p andamento-controller --target "$(rustc -vV | sed -n 's/^host: //p')
   --dump-template group-header
 ```
 
+To look at the rail rather than inspect one model, `scripts/rail-preview`
+wraps that harness: it renders through the real controller and renderer at
+whatever widths you ask for, and strips the model dump and colour so the
+frames are readable side by side.
+
+```sh
+scripts/rail-preview                 # default template, 46 cols
+scripts/rail-preview 30 46 80        # default template, three widths
+scripts/rail-preview my-experiment.kdl 46
+```
+
+Width is worth varying deliberately: the strip layout degrades as it narrows,
+and several rail defects only show up at one size. Its scene comes from
+`scripts/rail-scene.py`, which mirrors what the Flotilla connector actually
+emits — same keys, same entity-id shapes — over projects and repos taken from
+real manifests, so the awkward cases are the ones that really occur. Point it
+at your own capture with `RAIL_PREVIEW_SCENE=path.jsonl`, or keep the model
+dump with `RAIL_PREVIEW_RAW=1`.
+
+Snapshots tell you a frame changed. They do not tell you whether the result
+reads well, which is what most of the rail's open questions are about.
+
 Switch the rail into the generic metadata inspection projection:
 
 ```kdl
@@ -389,19 +433,16 @@ repositories can materialize their repo-manager tabs automatically.
 
 ## Standalone TUI
 
-`andamento-core` contains the sidebar's transport-neutral fact state and its
-two-operation host-control seam. It has no Zellij or Flotilla dependency.
-`andamento-rail` adapts Zellij events and commands to that core. As a second
-adapter, `andamento-tui` reads the same controller view-model JSON payloads (or
-tagged `Facts` JSON) one per line from stdin and controls tmux windows:
+`andamento-core` contains the sidebar's transport-neutral fact state and host
+effects. It has no Zellij or Flotilla dependency. `andamento-rail` adapts
+Zellij events and commands to that core. As a second adapter, `andamento-tui`
+reads the same metadata-patch JSONL stream and controls tmux windows:
 
 ```sh
-cargo run -p andamento-tui -- my-tmux-session flotilla pm-connect ...
+cargo run -p andamento-tui -- my-tmux-session templates/flotilla-default.kdl flotilla pm-connect ...
 ```
 
-Press `1` through `9` to select a tmux window, `n` to open one, and `q` to
-quit. A tabs fact has the following transport-independent form:
-
-```json
-{"type":"tabs","tabs":[{"id":1,"position":0,"name":"work","active":true}]}
-```
+Use the arrow keys and Enter to activate a row; press `q` to quit. The TUI
+observes live tmux windows, passes facts into `Sidebar`, renders the portable
+surface through `andamento-terminal`, and executes the returned focus or
+materialize effects through the tmux CLI.

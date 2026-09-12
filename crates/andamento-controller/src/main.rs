@@ -1,4 +1,3 @@
-mod metadata;
 mod state;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -28,7 +27,7 @@ use andamento_shared::{
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
-use state::ControllerState;
+use state::{ControllerState, EntityActivation, ZellijObservations};
 use zellij_tile::output::print;
 use zellij_tile::prelude::*;
 
@@ -110,15 +109,9 @@ fn main() {
     let raw = std::fs::read_to_string(&patches_path).expect("read patches file");
     let (mut applied, mut failed) = (0usize, 0usize);
     for line in raw.lines().filter(|l| !l.trim().is_empty()) {
-        let message = PipeMessage {
-            source: PipeSource::Cli("render-harness".to_owned()),
-            name: MSG_APPLY_METADATA_PATCH.to_owned(),
-            payload: Some(line.to_owned()),
-            args: BTreeMap::new(),
-            is_private: false,
-        };
-        let result = handle_pipe_message(&mut state, message);
-        if result.state_changed {
+        let patch = serde_json::from_str::<andamento_shared::MetadataPatch>(line)
+            .expect("parse metadata patch");
+        if state.apply_metadata_patch(patch) {
             applied += 1;
         } else {
             failed += 1;
@@ -457,6 +450,13 @@ impl ZellijPlugin for PluginState {
         let mut result = handle_pipe_message(&mut self.state, pipe_message);
         self.stats
             .record_span_elapsed("pipe.handle-message", started_at);
+        if let Some(entity) = result.activate_entity_request.take() {
+            let state_changed = self.activate_entity(entity);
+            result.state_changed |= state_changed;
+            if state_changed {
+                result.view_model_push_reason = Some(ViewModelPushReason::PipeMaterializeLatent);
+            }
+        }
         if let Some(request) = result.materialize_latent_request.take() {
             let state_changed = self.materialize_latent(request);
             result.state_changed |= state_changed;
@@ -898,6 +898,29 @@ impl PluginState {
         // opening-to-live transition; there is no intermediate orphan model.
         false
     }
+
+    fn activate_entity(&mut self, request: andamento_shared::EntityActivationRequest) -> bool {
+        self.stats.increment("entity.activate.request");
+        match self.state.activation_for_entity(&request.entity) {
+            Some(EntityActivation::FocusTab { position }) => {
+                self.stats.increment("entity.activate.focus-existing");
+                switch_tab_to((position + 1) as u32);
+                false
+            }
+            Some(EntityActivation::Materialize(request)) => {
+                self.stats.increment("entity.activate.materialize");
+                self.materialize_latent(request)
+            }
+            None => {
+                // Nothing to focus and nothing to materialize — an inline
+                // presence class, say. Fall back to the inspector rather than
+                // swallowing the click.
+                self.stats.increment("entity.activate.inspect-fallback");
+                self.open_or_focus_config_editor(&request.inspect_fallback);
+                false
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -911,6 +934,7 @@ struct HandlePipeResult {
     rail_size_observed: Option<RailSizeObserved>,
     config_inspect_request: Option<ConfigInspectRequest>,
     materialize_latent_request: Option<andamento_shared::MaterializeLatentRequest>,
+    activate_entity_request: Option<andamento_shared::EntityActivationRequest>,
     broadcast_rail_ui_state: bool,
 }
 
@@ -1270,6 +1294,10 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             materialize_latent_request: Some(request),
             ..HandlePipeResult::default()
         },
+        Ok(Some(ControllerMessage::ActivateEntity(entity))) => HandlePipeResult {
+            activate_entity_request: Some(entity),
+            ..HandlePipeResult::default()
+        },
         Ok(None) => HandlePipeResult::default(),
         Err(error) => {
             let message = format!(
@@ -1400,6 +1428,17 @@ fn inspect_scope_label(key: &andamento_shared::NodeKey) -> String {
         andamento_shared::NodeKey::Entity(entity) => {
             format!("entity:{}:{}", entity.kind, entity.id)
         }
+        andamento_shared::NodeKey::Placement(key) => format!(
+            "placement:{}",
+            key.0
+                .iter()
+                .map(|segment| format!(
+                    "{}={}:{}",
+                    segment.loop_name, segment.entity.kind, segment.entity.id
+                ))
+                .collect::<Vec<_>>()
+                .join("/")
+        ),
     }
 }
 
@@ -1475,6 +1514,7 @@ enum ControllerMessage {
     SetNodeVariable(NodeVariableSetRequest),
     ConfigInspect(ConfigInspectRequest),
     MaterializeLatent(andamento_shared::MaterializeLatentRequest),
+    ActivateEntity(andamento_shared::EntityActivationRequest),
 }
 
 fn parse_controller_message(
@@ -1612,6 +1652,16 @@ fn parse_controller_message(
                     .map_err(|e| format!("invalid materialize latent request: {e}"))
             })
             .map(ControllerMessage::MaterializeLatent)
+            .map(Some),
+        andamento_shared::MSG_ACTIVATE_ENTITY => pipe_message
+            .payload
+            .as_deref()
+            .ok_or_else(|| "activate entity requires payload".to_owned())
+            .and_then(|payload| {
+                serde_json::from_str::<andamento_shared::EntityActivationRequest>(payload)
+                    .map_err(|e| format!("invalid activate entity request: {e}"))
+            })
+            .map(ControllerMessage::ActivateEntity)
             .map(Some),
         MSG_REQUEST_STATE => Ok(Some(ControllerMessage::RequestState)),
         MSG_OBSERVED_IDENTITIES => match &pipe_message.source {
@@ -1842,6 +1892,34 @@ mod tests {
         .unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::MaterializeLatent(request)));
+    }
+
+    #[test]
+    fn parses_activate_entity_request() {
+        let entity = andamento_shared::EntityRef {
+            kind: "vessel".to_owned(),
+            id: "dev/focus/worker@lab".to_owned(),
+        };
+        let entity = andamento_shared::EntityActivationRequest {
+            entity: entity.clone(),
+            inspect_fallback: ConfigInspectRequest {
+                client_id: 1,
+                origin_tab_id: 2,
+                node_key: NodeKey::Entity(entity),
+                config_plugin_url: "andamento-config".to_owned(),
+                controller_plugin_url: "andamento-controller".to_owned(),
+            },
+        };
+        let payload = serde_json::to_string(&entity).unwrap();
+
+        let parsed = parse_controller_message(&pipe(
+            andamento_shared::MSG_ACTIVATE_ENTITY,
+            Some(payload),
+            BTreeMap::new(),
+        ))
+        .unwrap();
+
+        assert_eq!(parsed, Some(ControllerMessage::ActivateEntity(entity)));
     }
 
     #[test]
@@ -2264,6 +2342,7 @@ mod tests {
                 writer_client_id: 2,
             },
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             scroll_offset: 11,
             variables: BTreeMap::new(),
         };
@@ -2273,6 +2352,7 @@ mod tests {
                 writer_client_id: 3,
             },
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             scroll_offset: 13,
             variables: BTreeMap::new(),
         };
@@ -2282,6 +2362,7 @@ mod tests {
                 writer_client_id: 1,
             },
             collapsed_groups: vec![],
+            collapsed_placements: vec![],
             scroll_offset: 1,
             variables: BTreeMap::new(),
         };
@@ -2345,6 +2426,7 @@ mod tests {
                     writer_client_id: 6,
                 },
                 collapsed_groups: vec![],
+                collapsed_placements: vec![],
                 scroll_offset: 4,
                 variables: BTreeMap::new(),
             }
@@ -3132,6 +3214,158 @@ mod tests {
         insta::assert_snapshot!(
             "vessel_with_project_facts_renders_under_its_project_before_its_repo",
             rail_frame_snapshot(&rendered.lines, 48)
+        );
+    }
+
+    /// Config for the placement pipeline: the attention region pulls its own
+    /// contents instead of being handed everything carrying an attention fact.
+    #[cfg(not(target_family = "wasm"))]
+    const PLACEMENT_KDL: &str = r#"
+version 1
+
+region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="attention"
+
+placement "attention" {
+  for "item" kind="vessel" {
+    match "status.attention" value="true"
+    order "display.label" direction="descending" absent="last"
+    field "label" {
+      value source="metadata-text" key="display.label"
+    }
+  }
+}
+"#;
+
+    #[cfg(not(target_family = "wasm"))]
+    fn attention_vessel_patch(id: &str, label: &str, attention: bool) -> String {
+        serde_json::json!({
+            "type": "metadata-patch",
+            "target": { "kind": "entity", "value": { "kind": "vessel", "id": id } },
+            "source_id": "flotilla-connector",
+            "set": {
+                "flotilla.vessel": {
+                    "value": { "type": "text", "value": id },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "display.label": {
+                    "value": { "type": "text", "value": label },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "status.attention": {
+                    "value": { "type": "bool", "value": attention },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                }
+            }
+        })
+        .to_string()
+    }
+
+    // Native-only for the same reason as the grouping frame snapshot above:
+    // this drives the real controller and the real rail renderer.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn placement_pipeline_renders_a_region_from_a_loop() {
+        let mut state = ControllerState::default();
+        state.set_template_catalog(Some(
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
+                andamento_shared::template_config::parse_template_config_kdl(PLACEMENT_KDL)
+                    .unwrap(),
+            ),
+        ));
+        // The placement selects from the entity catalog, which the grouping
+        // catalog still populates in this slice.
+        state.set_grouping_catalog(Some(
+            andamento_shared::grouping_config::GroupingConfigCatalog::with_bundled_defaults(
+                andamento_shared::grouping_config::parse_grouping_config_kdl(PLACEMENT_KDL)
+                    .unwrap(),
+            ),
+        ));
+        state.set_rail_config(RailConfig::default());
+
+        for (id, label, attention) in [
+            ("flotilla/alpha/worker@lab", "alpha-worker", true),
+            ("flotilla/beta/worker@lab", "beta-worker", false),
+            ("flotilla/gamma/worker@lab", "gamma-worker", true),
+        ] {
+            assert!(
+                handle_pipe_message(
+                    &mut state,
+                    pipe(
+                        MSG_APPLY_METADATA_PATCH,
+                        Some(attention_vessel_patch(id, label, attention)),
+                        BTreeMap::new(),
+                    ),
+                )
+                .state_changed
+            );
+        }
+        // A convoy also carrying the attention fact. The legacy region would
+        // place it; the loop asks for vessels, so it must not appear.
+        let convoy_patch = serde_json::json!({
+            "type": "metadata-patch",
+            "target": { "kind": "entity", "value": { "kind": "convoy", "id": "flotilla/alpha@lab" } },
+            "source_id": "flotilla-connector",
+            "set": {
+                "flotilla.convoy": {
+                    "value": { "type": "text", "value": "flotilla/alpha@lab" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "display.label": {
+                    "value": { "type": "text", "value": "alpha-convoy" },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                },
+                "status.attention": {
+                    "value": { "type": "bool", "value": true },
+                    "ttl_ms": null, "precedence": null, "ordinal": 1
+                }
+            }
+        })
+        .to_string();
+        assert!(
+            handle_pipe_message(
+                &mut state,
+                pipe(
+                    MSG_APPLY_METADATA_PATCH,
+                    Some(convoy_patch),
+                    BTreeMap::new()
+                ),
+            )
+            .state_changed
+        );
+
+        let model = state.view_model();
+        let attention = model
+            .surface_regions
+            .iter()
+            .find(|region| region.definition.name == "attention")
+            .expect("attention region");
+        let placed = attention
+            .entities
+            .iter()
+            .map(|entity| entity.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            placed,
+            vec!["gamma-worker", "alpha-worker"],
+            "the loop's declared order overrides the catalog's alphabetical order"
+        );
+
+        let templates =
+            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
+                andamento_shared::template_config::parse_template_config_kdl(PLACEMENT_KDL)
+                    .unwrap(),
+            );
+        let rendered = andamento_rail::render::render_lines_with_template_catalog(
+            Some(&model),
+            &[],
+            10,
+            40,
+            true,
+            Some(&templates),
+        );
+        insta::assert_snapshot!(
+            "placement_pipeline_renders_a_region_from_a_loop",
+            rail_frame_snapshot(&rendered.lines, 40)
         );
     }
 

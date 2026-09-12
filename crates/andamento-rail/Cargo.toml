@@ -16,6 +16,7 @@ path = "src/main.rs"
 native-plugin-factory = []
 
 [dependencies]
+andamento-terminal.workspace = true
 ansi_term.workspace = true
 log = "0.4"
 serde_json.workspace = true

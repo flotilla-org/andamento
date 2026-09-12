@@ -48,6 +48,7 @@ dependencies = [
 name = "andamento-controller"
 version = "0.1.0"
 dependencies = [
+ "andamento-core",
  "andamento-rail",
  "andamento-shared",
  "insta",
@@ -61,13 +62,28 @@ dependencies = [
 name = "andamento-core"
 version = "0.1.0"
 dependencies = [
- "andamento-shared",
- "ansi_term",
  "insta",
- "ratatui",
+ "kdl",
  "serde",
  "serde_json",
  "unicode-width 0.1.14",
+]
+
+[[package]]
+name = "andamento-ffi"
+version = "0.1.0"
+dependencies = [
+ "andamento-core",
+ "serde_json",
+]
+
+[[package]]
+name = "andamento-html"
+version = "0.1.0"
+dependencies = [
+ "andamento-core",
+ "andamento-terminal",
+ "serde_json",
 ]
 
 [[package]]
@@ -76,6 +92,7 @@ version = "0.1.0"
 dependencies = [
  "andamento-core",
  "andamento-shared",
+ "andamento-terminal",
  "ansi_term",
  "insta",
  "log",
@@ -89,8 +106,21 @@ dependencies = [
 name = "andamento-shared"
 version = "0.1.0"
 dependencies = [
+ "andamento-core",
+ "andamento-terminal",
  "kdl",
  "serde",
+ "serde_json",
+ "unicode-width 0.1.14",
+]
+
+[[package]]
+name = "andamento-terminal"
+version = "0.1.0"
+dependencies = [
+ "andamento-core",
+ "ansi_term",
+ "insta",
  "serde_json",
  "unicode-width 0.1.14",
 ]
@@ -100,6 +130,7 @@ name = "andamento-tui"
 version = "0.1.0"
 dependencies = [
  "andamento-core",
+ "andamento-terminal",
  "crossterm 0.29.0",
  "serde_json",
 ]

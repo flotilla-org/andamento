@@ -5,15 +5,33 @@ variable "child-layout" default="cards" {
   value "strip"
 }
 
+variable "convoy.tier" default="full" {
+  value "full"
+  value "medium"
+  value "short"
+}
+
+variable "issue.tier" default="full" {
+  value "full"
+  value "medium"
+  value "short"
+}
+
 display-variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
 
 region "header" source="header" root-template="flotilla/region/header" form="compact" pinned=true
-region "attention" source="attention" root-template="flotilla/region/attention" form="full" attention-key="status.attention"
+region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="attention"
 region "tree" source="tree" root-template="flotilla/region/tree" form="compact" {
   promote when="zellij.tab.active" form="full"
   promote when="rail.tab.pinned" form="full"
 }
 region "controls" source="controls" root-template="flotilla/region/controls" form="compact" pinned=true
+
+placement "attention" {
+  for "attention" {
+    match "status.attention" value="true"
+  }
+}
 
 grouping "flotilla.default" priority=-1000 {
   filter key="entity.kind"
@@ -64,7 +82,11 @@ template "flotilla/region/tree" slot="compact" node-kind="entity" {
 }
 
 template "flotilla/region/controls" slot="compact" node-kind="entity" {
-  field "label" class="required" source="literal" value="Controls"
+  control "open-config" glyph="⚙"
+  control "display-variable" variable="show-issues"
+  control "scroll-down" glyph="▼"
+  control "scroll-up" glyph="▲"
+  control "inspect-root"
 }
 
 fragment "flotilla/group-label" {

@@ -12,6 +12,9 @@ zellij-tile-utils = { path = "../zellij/zellij-tile-utils" }
 
 [workspace]
 members = [
+    "crates/andamento-ffi",
+    "crates/andamento-html",
+    "crates/andamento-terminal",
     "crates/andamento-core",
     "crates/andamento-shared",
     "crates/andamento-controller",
@@ -37,4 +40,7 @@ zellij-tile = { path = "../zellij/zellij-tile" }
 zellij-tile-utils = { path = "../zellij/zellij-tile-utils" }
 andamento-shared = { path = "crates/andamento-shared" }
 andamento-rail = { path = "crates/andamento-rail" }
+
 andamento-core = { path = "crates/andamento-core" }
+andamento-terminal = { path = "crates/andamento-terminal" }
+andamento-tui = { path = "crates/andamento-tui" }

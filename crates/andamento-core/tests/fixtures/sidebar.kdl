@@ -1,0 +1,43 @@
+variable "density" default="roomy" {
+  value "roomy"
+  value "compact"
+}
+display-variable "show-issues" type="bool" default=true label="Issues" icon="I"
+
+region "tree" source="tree" root-template="tree/title" form="compact" placement="tree"
+region "attention" source="attention" root-template="attention/title" form="compact" placement="attention"
+region "controls" source="controls" root-template="controls/title" form="compact" pinned=true
+
+template "tree/title" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Projects"
+}
+template "attention/title" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Attention"
+}
+template "controls/title" slot="compact" node-kind="entity" {
+  control "display-variable" variable="show-issues"
+}
+placement "tree" {
+  for "project" kind="project" {
+    apply-template
+  }
+}
+template "project/line" {
+  field "label" key="display.label"
+  field "density" key="var.density"
+  for "vessel" kind="vessel" layout="inline" {
+    match "flotilla.project" of="project"
+    apply-template
+  }
+}
+template "vessel/line" {
+  field "label" key="display.label"
+  field "status" key="status.state"
+  field "density" key="var.density"
+}
+placement "attention" {
+  for "attention" kind="vessel" {
+    match "status.attention" value="true"
+    apply-template "vessel/line"
+  }
+}
