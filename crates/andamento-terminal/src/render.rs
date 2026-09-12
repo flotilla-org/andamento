@@ -1255,11 +1255,13 @@ fn placement_entity_fields(
     }) {
         return semantic_fields(&node.content);
     }
-    let metadata = metadata_with_effective_variables(
-        entity.metadata.clone(),
-        &NodeKey::Entity(entity.entity.clone()),
-        model,
-    );
+    let node = entity
+        .placement
+        .clone()
+        .map(NodeKey::Placement)
+        .unwrap_or_else(|| NodeKey::Entity(entity.entity.clone()));
+    let mut metadata = metadata_with_effective_variables(entity.metadata.clone(), &node, model);
+    andamento_core::presentation::apply_declared_abbreviation(&mut metadata);
     let form = form_for_region(region, &metadata);
     let slot = if form == DISPLAY_FORM_COMPACT {
         TemplateConfigSlot::Compact
@@ -1324,7 +1326,13 @@ fn placement_entity_fields(
                 })
                 .unwrap_or_else(|| template_fields_from_resolved_slot(resolved, context))
         })
-        .unwrap_or_default()
+        .unwrap_or_else(|| {
+            vec![TemplateField::Required(
+                metadata_text(&metadata, "display.label")
+                    .unwrap_or(&entity.label)
+                    .to_owned(),
+            )]
+        })
 }
 
 fn pinned_region_rows(region: &DisplayRegion, model: Option<&ControllerViewModel>) -> usize {
@@ -1439,11 +1447,13 @@ fn region_entity_line(
             theme,
         );
     }
-    let metadata = metadata_with_effective_variables(
-        entity.metadata.clone(),
-        &NodeKey::Entity(entity.entity.clone()),
-        model,
-    );
+    let node = entity
+        .placement
+        .clone()
+        .map(NodeKey::Placement)
+        .unwrap_or_else(|| NodeKey::Entity(entity.entity.clone()));
+    let mut metadata = metadata_with_effective_variables(entity.metadata.clone(), &node, model);
+    apply_declared_abbreviation(&mut metadata, cols.saturating_sub(2));
     let form = form_for_region(region, &metadata);
     let slot = if form == DISPLAY_FORM_COMPACT {
         TemplateConfigSlot::Compact
@@ -1476,11 +1486,64 @@ fn region_entity_line(
             join_template_fields(&template_fields_from_resolved_slot(resolved, context), true)
         })
         .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| entity.label.clone());
+        .unwrap_or_else(|| {
+            metadata_text(&metadata, "display.label")
+                .unwrap_or(&entity.label)
+                .to_owned()
+        });
     style_body_text(
         pad_to_width(&truncate_to_width(&format!("  {text}"), cols), cols),
         theme,
     )
+}
+
+fn apply_declared_abbreviation(metadata: &mut RenderMetadata, available_width: usize) {
+    if andamento_core::presentation::apply_declared_abbreviation(metadata) {
+        if let Some(label) = metadata_text(metadata, "display.label") {
+            let label = middle_elide_to_width(label, available_width);
+            metadata.insert("display.label".to_owned(), MetadataValue::Text(label));
+        }
+    }
+}
+
+fn middle_elide_to_width(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    if width == 1 {
+        return "…".to_owned();
+    }
+    let characters = text.chars().collect::<Vec<_>>();
+    let content_width = width - 1;
+    let left_budget = content_width.div_ceil(2);
+    let right_budget = content_width / 2;
+    let mut left = String::new();
+    let mut used = 0;
+    let mut left_count = 0;
+    for character in &characters {
+        let character_width = character.width().unwrap_or(0);
+        if used + character_width > left_budget {
+            break;
+        }
+        left.push(*character);
+        used += character_width;
+        left_count += 1;
+    }
+    let mut right = Vec::new();
+    used = 0;
+    for character in characters[left_count..].iter().rev() {
+        let character_width = character.width().unwrap_or(0);
+        if used + character_width > right_budget {
+            break;
+        }
+        right.push(*character);
+        used += character_width;
+    }
+    right.reverse();
+    format!("{left}…{}", right.into_iter().collect::<String>())
 }
 
 fn apply_region_form(
@@ -6896,6 +6959,62 @@ mod tests {
         MetadataTriState, MetadataValue, PaneTarget, RailConfig, RailRow, RailStructure,
         ResolvedMetadata, ResolvedMetadataTarget, SortMode, StatusIcon,
     };
+    use andamento_core::{PLACEMENT_LOOP_BINDING_KEY, PLACEMENT_LOOP_TIER_KEY};
+
+    #[test]
+    fn abbreviation_tier_uses_loop_variable_and_falls_back_longer() {
+        let mut metadata = BTreeMap::from([
+            (
+                PLACEMENT_LOOP_BINDING_KEY.to_owned(),
+                MetadataValue::Text("issue".to_owned()),
+            ),
+            (
+                "var.issue.tier".to_owned(),
+                MetadataValue::Text("short".to_owned()),
+            ),
+            (
+                "display.label".to_owned(),
+                MetadataValue::Text("grouping-live-session".to_owned()),
+            ),
+            (
+                "display.label.medium".to_owned(),
+                MetadataValue::Text("grouping-session".to_owned()),
+            ),
+        ]);
+
+        apply_declared_abbreviation(&mut metadata, 40);
+
+        assert_eq!(
+            metadata.get("display.label"),
+            Some(&MetadataValue::Text("grouping-session".to_owned())),
+            "a missing short form falls back to the next longer producer form"
+        );
+    }
+
+    #[test]
+    fn abbreviation_tier_middle_elides_only_the_degraded_full_fallback() {
+        let mut metadata = BTreeMap::from([
+            (
+                PLACEMENT_LOOP_BINDING_KEY.to_owned(),
+                MetadataValue::Text("issue".to_owned()),
+            ),
+            (
+                PLACEMENT_LOOP_TIER_KEY.to_owned(),
+                MetadataValue::Text("short".to_owned()),
+            ),
+            (
+                "display.label".to_owned(),
+                MetadataValue::Text("grouping-live-session".to_owned()),
+            ),
+        ]);
+
+        apply_declared_abbreviation(&mut metadata, 12);
+
+        assert_eq!(
+            metadata.get("display.label"),
+            Some(&MetadataValue::Text("groupi…ssion".to_owned()))
+        );
+    }
 
     fn set_child_layout_variable(model: &mut ControllerViewModel, node: NodeKey, value: &str) {
         model

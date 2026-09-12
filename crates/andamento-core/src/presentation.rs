@@ -12,7 +12,8 @@ use crate::template_config::{
 };
 use crate::{
     ControllerViewModel, DisplayEntity, DisplayVariableValue, EffectiveNodeVariables, EntityRef,
-    MetadataValue, NodeKey, PlacementKey, ResolvedTemplateSlot,
+    MetadataValue, NodeKey, PlacementKey, ResolvedTemplateSlot, PLACEMENT_LOOP_BINDING_KEY,
+    PLACEMENT_LOOP_TIER_KEY,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +148,43 @@ impl SurfaceSnapshot {
     }
 }
 
+/// Resolve the declared tier without measuring or shortening producer text.
+/// Returns true when a shorter tier had to fall back to the full label; a
+/// frontend may apply its own measured elision to that fallback.
+pub fn apply_declared_abbreviation(metadata: &mut BTreeMap<String, MetadataValue>) -> bool {
+    let Some(binding) = metadata_text(metadata, PLACEMENT_LOOP_BINDING_KEY).map(str::to_owned)
+    else {
+        return false;
+    };
+    let tier = metadata_text(metadata, PLACEMENT_LOOP_TIER_KEY)
+        .or_else(|| metadata_text(metadata, &format!("var.{binding}.tier")))
+        .unwrap_or("full");
+    let full = metadata_text(metadata, "display.label").map(str::to_owned);
+    let medium = metadata_text(metadata, "display.label.medium").map(str::to_owned);
+    let short = metadata_text(metadata, "display.label.short").map(str::to_owned);
+    let Some((selected, producer_supplied)) = (match tier {
+        "short" => short
+            .map(|label| (label, true))
+            .or_else(|| medium.map(|label| (label, true)))
+            .or_else(|| full.map(|label| (label, false))),
+        "medium" => medium
+            .map(|label| (label, true))
+            .or_else(|| full.map(|label| (label, false))),
+        _ => full.map(|label| (label, true)),
+    }) else {
+        return false;
+    };
+    metadata.insert("display.label".to_owned(), MetadataValue::Text(selected));
+    !producer_supplied
+}
+
+fn metadata_text<'a>(metadata: &'a BTreeMap<String, MetadataValue>, key: &str) -> Option<&'a str> {
+    match metadata.get(key) {
+        Some(MetadataValue::Text(value)) => Some(value),
+        _ => None,
+    }
+}
+
 fn effective_metadata(
     model: &ControllerViewModel,
     target: &NodeKey,
@@ -189,8 +227,16 @@ fn resolve_node(
     } else {
         entity.templates.detail.as_ref()
     };
+    let mut display_facts = facts.clone();
+    apply_declared_abbreviation(&mut display_facts);
     Some(PlacementNode {
-        content: resolve_content(slot, &facts, collapsed, !entity.children.is_empty(), true),
+        content: resolve_content(
+            slot,
+            &display_facts,
+            collapsed,
+            !entity.children.is_empty(),
+            true,
+        ),
         detail: resolve_content(
             entity.templates.detail.as_ref(),
             &facts,

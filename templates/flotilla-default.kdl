@@ -5,6 +5,18 @@ variable "child-layout" default="cards" {
   value "strip"
 }
 
+variable "convoy.tier" default="full" {
+  value "full"
+  value "medium"
+  value "short"
+}
+
+variable "issue.tier" default="full" {
+  value "full"
+  value "medium"
+  value "short"
+}
+
 display-variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
 
 region "header" source="header" root-template="flotilla/region/header" form="compact" pinned=true

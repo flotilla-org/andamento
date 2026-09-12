@@ -697,6 +697,13 @@ pub const DISPLAY_FORM_COMPACT: &str = "compact";
 /// Conventional name for the default full surface.
 pub const DISPLAY_FORM_FULL: &str = "full";
 
+/// Internal metadata carried by the temporary placement adapter so renderers
+/// can resolve the loop-scoped abbreviation variable.
+pub const PLACEMENT_LOOP_BINDING_KEY: &str = "andamento.placement.loop-binding";
+
+/// Internal metadata carrying an explicit loop-local abbreviation tier.
+pub const PLACEMENT_LOOP_TIER_KEY: &str = "andamento.placement.loop-tier";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedTemplateSlots {
     #[serde(default, skip_serializing_if = "Option::is_none")]

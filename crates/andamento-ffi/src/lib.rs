@@ -459,7 +459,17 @@ impl AndamentoSnapshot {
             entity: n.entity.clone(),
             label: n.label.clone(),
             layout: n.layout.clone().unwrap_or_default(),
-            loop_key: serde_json::to_string(&n.loop_key).expect("loop key serialization"),
+            loop_key: std::iter::once(&n.loop_key.region)
+                .chain(
+                    n.loop_key
+                        .parent
+                        .0
+                        .iter()
+                        .flat_map(|s| [&s.loop_name, &s.entity.kind, &s.entity.id]),
+                )
+                .chain(std::iter::once(&n.loop_key.binding))
+                .map(|s| format!("{}:{}", s.len(), s))
+                .collect(),
             form: n.form.clone(),
             state,
             workspace,
@@ -877,6 +887,56 @@ pub unsafe extern "C" fn andamento_string_free(s: *mut c_char) {
 mod tests {
     use super::*;
     use std::ffi::CStr;
+
+    #[test]
+    fn declared_abbreviation_reaches_c_fields_but_keeps_full_details() {
+        unsafe {
+            let config = include_str!("../../andamento-core/tests/fixtures/abbreviation.kdl");
+            let mut error = ptr::null_mut();
+            let h = andamento_create(config.as_ptr(), config.len(), &mut error);
+            assert!(!h.is_null());
+            let patch = r#"{"type":"metadata-patch","target":{"kind":"entity","value":{"kind":"vessel","id":"worker"}},"source_id":"test","set":{"flotilla.vessel":{"value":{"type":"text","value":"worker"}},"display.label":{"value":{"type":"text","value":"a very long worker name"}},"display.label.medium":{"value":{"type":"text","value":"worker medium"}},"display.label.short":{"value":{"type":"text","value":"w"}}},"unset":[]}"#;
+            assert_eq!(
+                andamento_apply_patch_json(h, 0, Text::borrowed(patch), &mut error),
+                1
+            );
+            for (declaration, expected) in [
+                ("", "worker medium"),
+                ("tier=\"short\"", "w"),
+                ("tier=\"full\"", "a very long worker name"),
+            ] {
+                let config =
+                    config.replace("kind=\"vessel\"", &format!("kind=\"vessel\" {declaration}"));
+                assert_eq!(
+                    andamento_configure(h, Text::borrowed(&config), &mut error),
+                    1
+                );
+                let snapshot = andamento_snapshot_acquire(h, &mut error);
+                assert!(!snapshot.is_null());
+                let mut node = std::mem::MaybeUninit::<NodeView>::uninit();
+                assert_eq!(andamento_snapshot_node(snapshot, 1, node.as_mut_ptr()), 1);
+                let node = node.assume_init();
+                assert_eq!(node.label.read().unwrap(), "a very long worker name");
+                let mut field = std::mem::MaybeUninit::<FieldView>::uninit();
+                assert_eq!(
+                    andamento_snapshot_field(snapshot, node.first_field, field.as_mut_ptr()),
+                    1
+                );
+                assert_eq!(field.assume_init_ref().text.read().unwrap(), expected);
+                assert_eq!(
+                    andamento_snapshot_field(snapshot, node.first_detail, field.as_mut_ptr()),
+                    1
+                );
+                assert_eq!(
+                    field.assume_init_ref().text.read().unwrap(),
+                    "a very long worker name"
+                );
+                andamento_snapshot_release(snapshot);
+            }
+            andamento_destroy(h);
+            assert!(error.is_null());
+        }
+    }
 
     #[test]
     fn panic_is_contained_and_poisoned_client_keeps_existing_snapshots_alive() {
