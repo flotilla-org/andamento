@@ -1798,18 +1798,31 @@ fn render_detail_card(
     theme: Option<RenderTheme>,
 ) -> Vec<String> {
     if height < 2 || width < 2 {
-        return (0..height).map(|_| blank(width)).collect();
+        let summary = content.first().map(String::as_str).unwrap_or_default();
+        let line = pad_to_width(&truncate_to_width(summary, width), width);
+        return (0..height)
+            .map(|_| style_body_text(line.clone(), theme))
+            .collect();
     }
     let inner_width = width - 2;
     let horizontal = "─".repeat(inner_width);
     let mut lines = Vec::with_capacity(height);
-    lines.push(style_body_text(format!("┌{horizontal}┐"), theme));
-    for row in 0..height.saturating_sub(2) {
-        let text = content.get(row).map(String::as_str).unwrap_or_default();
-        let text = pad_to_width(&truncate_to_width(text, inner_width), inner_width);
-        lines.push(style_body_text(format!("│{text}│"), theme));
+    lines.push(style_border_text(format!("┌{horizontal}┐"), false, theme));
+    let content_rows = height.saturating_sub(2);
+    for row in 0..content_rows {
+        let mut text = content.get(row).cloned().unwrap_or_default();
+        if row + 1 == content_rows && content.len() > content_rows && inner_width > 0 {
+            text = format!("{}…", truncate_to_width(&text, inner_width - 1));
+        }
+        let text = pad_to_width(&truncate_to_width(&text, inner_width), inner_width);
+        lines.push(format!(
+            "{}{}{}",
+            style_border_text("│".to_owned(), false, theme),
+            style_body_text(text, theme),
+            style_border_text("│".to_owned(), false, theme),
+        ));
     }
-    lines.push(style_body_text(format!("└{horizontal}┘"), theme));
+    lines.push(style_border_text(format!("└{horizontal}┘"), false, theme));
     lines
 }
 
@@ -7972,6 +7985,28 @@ mod tests {
         assert!(rendered
             .iter()
             .any(|line| line.contains("│Nested issue 89")));
+    }
+
+    #[test]
+    fn detail_card_styles_its_frame_and_marks_field_overflow() {
+        let rendered = render_detail_card(
+            &["first".to_owned(), "second".to_owned(), "third".to_owned()],
+            DETAIL_PANEL_HEIGHT,
+            16,
+            Some(test_theme()),
+        );
+
+        assert!(rendered[0].starts_with("\u{1b}[1;38;5;8m┌"));
+        assert!(rendered[1].starts_with("\u{1b}[1;38;5;8m│"));
+        assert!(rendered[1].contains("\u{1b}[38;5;7mfirst"));
+        assert!(rendered[2].contains("second…"));
+    }
+
+    #[test]
+    fn one_row_detail_surface_keeps_a_summary() {
+        let rendered = render_detail_card(&["summary".to_owned()], 1, 5, None);
+
+        assert_eq!(rendered, vec!["su..."]);
     }
 
     #[test]
