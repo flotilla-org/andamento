@@ -12,10 +12,12 @@ zellij-tile-utils = { path = "../zellij/zellij-tile-utils" }
 
 [workspace]
 members = [
+    "crates/andamento-core",
     "crates/andamento-shared",
     "crates/andamento-controller",
     "crates/andamento-rail",
     "crates/andamento-config",
+    "crates/andamento-tui",
 ]
 resolver = "2"
 
@@ -35,3 +37,4 @@ zellij-tile = { path = "../zellij/zellij-tile" }
 zellij-tile-utils = { path = "../zellij/zellij-tile-utils" }
 andamento-shared = { path = "crates/andamento-shared" }
 andamento-rail = { path = "crates/andamento-rail" }
+andamento-core = { path = "crates/andamento-core" }

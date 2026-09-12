@@ -1,6 +1,6 @@
 ---
-source: crates/andamento-rail/src/render/frame_snapshots.rs
-assertion_line: 50
+source: crates/andamento-core/src/render/frame_snapshots.rs
+assertion_line: 48
 expression: "format!(\"connected\\n{connected}\\n\\nunavailable\\n{unavailable}\")"
 ---
 connected

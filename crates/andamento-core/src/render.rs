@@ -18,7 +18,18 @@ use andamento_shared::{
 };
 use ansi_term::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-use zellij_tile::prelude::{PaletteColor, SizeInPixels, Styling};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteColor {
+    Rgb((u8, u8, u8)),
+    EightBit(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SizeInPixels {
+    pub width: usize,
+    pub height: usize,
+}
 
 const ACTIVE_CELL_HEIGHT: usize = 5;
 const COMPACT_CELL_HEIGHT: usize = 2;
@@ -115,27 +126,6 @@ pub struct RenderTheme {
     pub segment_inactive_background: PaletteColor,
     pub segment_inactive_foreground: PaletteColor,
     pub segment_between_background: PaletteColor,
-}
-
-impl From<Styling> for RenderTheme {
-    fn from(colors: Styling) -> Self {
-        Self {
-            // Match the normal tab bar's selected/unselected foreground choices,
-            // but do not paint a background over the terminal default.
-            active_border: colors.ribbon_selected.background,
-            inactive_border: colors.ribbon_unselected.background,
-            body_foreground: colors.text_unselected.base,
-            segment_active_background: colors.ribbon_selected.background,
-            segment_active_foreground: colors.ribbon_selected.base,
-            segment_inactive_background: colors.ribbon_unselected.background,
-            segment_inactive_foreground: colors.ribbon_unselected.base,
-            // The plugin API Styling currently does not expose Zellij's top-level
-            // theme background. Keep this explicit in RenderTheme so config/API
-            // work can supply the real terminal-like background without changing
-            // strip rendering.
-            segment_between_background: colors.text_unselected.background,
-        }
-    }
 }
 
 impl RenderTheme {

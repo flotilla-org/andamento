@@ -20,6 +20,7 @@ ansi_term.workspace = true
 log = "0.4"
 serde_json.workspace = true
 andamento-shared.workspace = true
+andamento-core.workspace = true
 unicode-width.workspace = true
 zellij-tile.workspace = true
 zellij-tile-utils.workspace = true

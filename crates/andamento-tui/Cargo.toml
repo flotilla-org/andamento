@@ -1,13 +1,10 @@
 [package]
-name = "andamento-shared"
+name = "andamento-tui"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-kdl.workspace = true
-serde.workspace = true
+andamento-core.workspace = true
 serde_json.workspace = true
-unicode-width.workspace = true
-
-[dev-dependencies]
+crossterm = "0.29"

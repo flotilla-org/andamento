@@ -1,5 +1,6 @@
 ---
-source: crates/andamento-rail/src/render/frame_snapshots.rs
+source: crates/andamento-core/src/render/frame_snapshots.rs
+assertion_line: 35
 expression: frame
 ---
 frame 48x12

@@ -1,5 +1,4 @@
-mod inline_layout;
-pub mod render;
+pub use andamento_core::render;
 
 fn should_sync_graphics(controller_available: bool) -> bool {
     controller_available
@@ -241,6 +240,7 @@ fn renderer_hello_payload(
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
+use andamento_core::{HostControl, SidebarCore, Tab as CoreTab};
 use andamento_shared::StatusIcon;
 use andamento_shared::{
     ConfigInspectRequest, ControllerViewModel, GroupPath, NodeKey, PluginPaneKind, PluginPlacement,
@@ -323,8 +323,36 @@ fn build_rail_ui_state_request_message(controller_plugin_url: &str) -> MessageTo
     }
 }
 
+fn render_theme(colors: Styling) -> render::RenderTheme {
+    render::RenderTheme {
+        active_border: render_color(colors.ribbon_selected.background),
+        inactive_border: render_color(colors.ribbon_unselected.background),
+        body_foreground: render_color(colors.text_unselected.base),
+        segment_active_background: render_color(colors.ribbon_selected.background),
+        segment_active_foreground: render_color(colors.ribbon_selected.base),
+        segment_inactive_background: render_color(colors.ribbon_unselected.background),
+        segment_inactive_foreground: render_color(colors.ribbon_unselected.base),
+        segment_between_background: render_color(colors.text_unselected.background),
+    }
+}
+
+fn render_color(color: PaletteColor) -> render::PaletteColor {
+    match color {
+        PaletteColor::Rgb(rgb) => render::PaletteColor::Rgb(rgb),
+        PaletteColor::EightBit(color) => render::PaletteColor::EightBit(color),
+    }
+}
+
+fn render_cell_size(size: SizeInPixels) -> render::SizeInPixels {
+    render::SizeInPixels {
+        width: size.width,
+        height: size.height,
+    }
+}
+
 #[derive(Default)]
 pub struct PluginState {
+    core: SidebarCore,
     tabs: Vec<TabInfo>,
     local_tabs: Vec<LocalTab>,
     hit_regions: Vec<HitRegion>,
@@ -429,6 +457,18 @@ impl ZellijPlugin for PluginState {
                 let previous_active_tab_id = self.active_tab_id();
                 self.tabs = tabs;
                 self.local_tabs = local_tabs;
+                self.core.apply(andamento_core::Facts::Tabs {
+                    tabs: self
+                        .local_tabs
+                        .iter()
+                        .map(|tab| CoreTab {
+                            id: tab.tab_id,
+                            position: tab.position,
+                            name: tab.name.clone(),
+                            active: tab.active,
+                        })
+                        .collect(),
+                });
                 self.ensure_active_visible |= previous_active_tab_id != self.active_tab_id()
                     && self.active_tab_id().is_some();
                 if let Some(pane_manifest) = self.last_pane_manifest.clone() {
@@ -466,11 +506,11 @@ impl ZellijPlugin for PluginState {
         if message.name == MSG_VIEW_MODEL {
             if let Some(payload) = message.payload.as_deref() {
                 let started_at = Instant::now();
-                match serde_json::from_str::<ControllerViewModel>(payload) {
-                    Ok(model) => {
+                match self.core.apply_view_model_json(payload) {
+                    Ok(()) => {
                         self.stats
                             .record_span_elapsed("json.decode-view-model", started_at);
-                        self.controller_model = Some(model);
+                        self.controller_model = self.core.model().cloned();
                         // Defensive: zellij may grant cached permissions
                         // without firing PermissionRequestResult. Receiving a
                         // view model proves the controller is talking to us
@@ -545,8 +585,8 @@ impl ZellijPlugin for PluginState {
             controller_available,
             self.mode_info
                 .as_ref()
-                .map(|mode_info| mode_info.style.colors.into()),
-            terminal_pixel_cell_size(),
+                .map(|mode_info| render_theme(mode_info.style.colors)),
+            terminal_pixel_cell_size().map(render_cell_size),
             &self.rail_ui_state.collapsed_groups,
             None,
             &metadata_controls,
@@ -1541,7 +1581,8 @@ impl PluginState {
                 };
                 match hit.action {
                     HitAction::SwitchTab => {
-                        switch_tab_to((hit.tab_position + 1) as u32);
+                        let mut host = ZellijHost;
+                        let _ = self.core.activate_position(hit.tab_position, &mut host);
                         false
                     }
                     HitAction::Materialize => {
@@ -1805,5 +1846,21 @@ impl PluginState {
             });
         }
         asset_id
+    }
+}
+
+struct ZellijHost;
+
+impl HostControl for ZellijHost {
+    type Error = std::convert::Infallible;
+
+    fn switch_tab(&mut self, position: usize) -> Result<(), Self::Error> {
+        switch_tab_to(position as u32);
+        Ok(())
+    }
+
+    fn open_tab(&mut self, name: &str) -> Result<(), Self::Error> {
+        new_tab(Some(name), None);
+        Ok(())
     }
 }

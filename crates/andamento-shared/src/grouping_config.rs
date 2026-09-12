@@ -301,8 +301,7 @@ pub fn parse_grouping_config_json(
 pub fn load_grouping_catalog_from_file(
     path: &str,
 ) -> Result<GroupingConfigCatalog, GroupingConfigError> {
-    let resolved = zellij_tile::vfs::resolve_host_path(path)
-        .map_err(|err| GroupingConfigError::Io(err.to_string()))?;
+    let resolved = resolve_host_path(path);
     let content = std::fs::read_to_string(&resolved).map_err(|source| {
         GroupingConfigError::Io(format!("failed to read {}: {source}", resolved.display()))
     })?;
@@ -315,6 +314,18 @@ pub fn load_grouping_catalog_from_file(
         parse_grouping_config_json(&content)?
     };
     Ok(GroupingConfigCatalog::with_bundled_defaults(config))
+}
+
+fn resolve_host_path(path: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(path.strip_prefix("file:").unwrap_or(path));
+    #[cfg(target_family = "wasm")]
+    {
+        std::path::Path::new("/host").join(path.strip_prefix("/").unwrap_or(path))
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        path.into()
+    }
 }
 
 fn parse_kdl_grouping_rule(node: &KdlNode) -> Result<GroupingRule, GroupingConfigError> {

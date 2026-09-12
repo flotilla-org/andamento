@@ -80,8 +80,7 @@ pub fn parse_template_config_kdl(
 pub fn load_template_catalog_from_json_file(
     path: &str,
 ) -> Result<TemplateConfigCatalog, TemplateConfigError> {
-    let resolved = zellij_tile::vfs::resolve_host_path(path)
-        .map_err(|err| TemplateConfigError::Io(err.to_string()))?;
+    let resolved = resolve_host_path(path);
     let content = std::fs::read_to_string(&resolved).map_err(|source| {
         TemplateConfigError::Io(format!("failed to read {}: {source}", resolved.display()))
     })?;
@@ -91,8 +90,7 @@ pub fn load_template_catalog_from_json_file(
 pub fn load_template_catalog_from_file(
     path: &str,
 ) -> Result<TemplateConfigCatalog, TemplateConfigError> {
-    let resolved = zellij_tile::vfs::resolve_host_path(path)
-        .map_err(|err| TemplateConfigError::Io(err.to_string()))?;
+    let resolved = resolve_host_path(path);
     let content = std::fs::read_to_string(&resolved).map_err(|source| {
         TemplateConfigError::Io(format!("failed to read {}: {source}", resolved.display()))
     })?;
@@ -103,6 +101,18 @@ pub fn load_template_catalog_from_file(
         parse_template_config_kdl(&content).map(TemplateConfigCatalog::with_bundled_defaults)
     } else {
         parse_template_config_json(&content).map(TemplateConfigCatalog::with_bundled_defaults)
+    }
+}
+
+fn resolve_host_path(path: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(path.strip_prefix("file:").unwrap_or(path));
+    #[cfg(target_family = "wasm")]
+    {
+        std::path::Path::new("/host").join(path.strip_prefix("/").unwrap_or(path))
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        path.into()
     }
 }
 

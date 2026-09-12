@@ -1,13 +1,16 @@
 [package]
-name = "andamento-shared"
+name = "andamento-core"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-kdl.workspace = true
+ansi_term.workspace = true
+andamento-shared.workspace = true
+ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
+insta.workspace = true
