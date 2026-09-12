@@ -68,6 +68,24 @@ int main(int argc, char **argv) {
     assert(eq(vessel.layout, "inline") && vessel.state == ANDAMENTO_LATENT && vessel.openable);
     AndamentoNode parent; assert(andamento_snapshot_node(s, vessel.parent, &parent));
     assert(eq(parent.key, "") == 0 && eq(parent.entity_kind, "project"));
+    /* Loop keys are opaque and snapshot-owned, with an empty key for sections.
+     * Aliases in separate regions must not share a loop invocation. */
+    AndamentoText tree_loop = {0}, attention_loop = {0};
+    for (size_t i = 0; i < andamento_snapshot_node_count(s); ++i) {
+        AndamentoNode node; AndamentoText loop;
+        assert(andamento_snapshot_node(s, i, &node));
+        assert(andamento_snapshot_node_loop_key(s, i, &loop));
+        if (node.is_section) assert(loop.len == 0);
+        else assert(loop.len > 0);
+        if (eq(node.entity_kind, "vessel")) {
+            if (!tree_loop.len) tree_loop = loop;
+            else attention_loop = loop;
+        }
+    }
+    assert(tree_loop.len && attention_loop.len);
+    assert(tree_loop.len != attention_loop.len || memcmp(tree_loop.data, attention_loop.data, tree_loop.len));
+    assert(!andamento_snapshot_node_loop_key(s, andamento_snapshot_node_count(s), &tree_loop));
+    assert(!andamento_snapshot_node_loop_key(s, 0, NULL));
     int status = 0;
     for (size_t i = 0; i < vessel.field_count; ++i) {
         AndamentoField field; assert(andamento_snapshot_field(s, vessel.first_field+i, &field));

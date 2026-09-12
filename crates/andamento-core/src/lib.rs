@@ -512,6 +512,26 @@ pub struct PlacementSegment {
     pub entity: EntityRef,
 }
 
+/// One invocation of a declared loop beneath a particular parent appearance.
+/// Siblings share this identity; a different parent or binding creates another.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct PlacementLoopKey {
+    pub region: String,
+    pub parent: PlacementKey,
+    pub binding: String,
+}
+
+impl PlacementKey {
+    pub fn loop_key(&self, region: &str) -> Option<PlacementLoopKey> {
+        let (last, parent) = self.0.split_last()?;
+        Some(PlacementLoopKey {
+            region: region.to_owned(),
+            parent: PlacementKey(parent.to_vec()),
+            binding: last.loop_name.clone(),
+        })
+    }
+}
+
 impl EntityRef {
     pub fn action_target(&self) -> String {
         format!("{}:{}", self.kind, self.id)
@@ -651,6 +671,13 @@ pub struct DisplayEntity {
     pub entity: EntityRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<PlacementKey>,
+    /// Layout declared by the loop that produced this placement.
+    ///
+    /// Siblings from the same loop are resolved together by the renderer; this
+    /// value is repeated on each item so the wire model remains a tree rather
+    /// than exposing controller-internal loop definitions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement_layout: Option<String>,
     pub label: String,
     pub form: String,
     #[serde(default)]

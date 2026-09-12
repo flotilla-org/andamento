@@ -344,6 +344,7 @@ struct Node {
     entity: EntityRef,
     label: String,
     layout: String,
+    loop_key: String,
     form: String,
     state: u32,
     workspace: u64,
@@ -458,6 +459,17 @@ impl AndamentoSnapshot {
             entity: n.entity.clone(),
             label: n.label.clone(),
             layout: n.layout.clone().unwrap_or_default(),
+            loop_key: std::iter::once(&n.loop_key.region)
+                .chain(
+                    n.loop_key
+                        .parent
+                        .0
+                        .iter()
+                        .flat_map(|s| [&s.loop_name, &s.entity.kind, &s.entity.id]),
+                )
+                .chain(std::iter::once(&n.loop_key.binding))
+                .map(|s| format!("{}:{}", s.len(), s))
+                .collect(),
             form: n.form.clone(),
             state,
             workspace,
@@ -512,6 +524,7 @@ pub unsafe extern "C" fn andamento_snapshot_acquire(
                 },
                 label: section.name,
                 layout: String::new(),
+                loop_key: String::new(),
                 form: String::new(),
                 state: 0,
                 workspace: 0,
@@ -652,6 +665,23 @@ pub unsafe extern "C" fn andamento_snapshot_node(
     };
     1
 }
+/// Additive ABI 2 accessor: no change to the layout of AndamentoNode.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_node_loop_key(
+    s: *const AndamentoSnapshot,
+    index: usize,
+    out: *mut Text,
+) -> u32 {
+    let Some(node) = s.as_ref().and_then(|s| s.nodes.get(index)) else {
+        return 0;
+    };
+    if out.is_null() {
+        return 0;
+    }
+    *out = Text::borrowed(&node.loop_key);
+    1
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn andamento_snapshot_field(
     s: *const AndamentoSnapshot,

@@ -218,3 +218,17 @@ Wheelhouse's next slice is labels, status, collapse and local activation over
 fixtures, then HTTP/UDS facts under wheelhouse#22. Use its existing layout and
 workspace machinery. Preview implementation already exists in Wheelhouse;
 declarative placement of previews remains follow-up work.
+
+### Loop layout groups
+
+Each Rust placement node exposes `loop_key`: the region, parent appearance and
+binding of the loop invocation that produced it. Sibling items share this key;
+repeated invocations under different parents do not. Sibling loop bindings must
+be distinct and duplicate declarations are rejected during configuration.
+
+C consumers can call `andamento_snapshot_node_loop_key(snapshot, index, &text)`.
+This additive ABI 2 function leaves `AndamentoNode` unchanged. The returned text
+is opaque, snapshot-owned and empty for a section; compare it for equality only.
+Group adjacent nodes by loop key and use the existing layout intent to choose
+native geometry. Keep each node's activation/collapse reference and state when
+presenting several items on one line. Width measurement stays in the frontend.

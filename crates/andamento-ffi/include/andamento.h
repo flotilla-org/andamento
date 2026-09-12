@@ -111,6 +111,9 @@ typedef struct {
 } AndamentoControl;
 size_t andamento_snapshot_node_count(const AndamentoSnapshot *);
 uint32_t andamento_snapshot_node(const AndamentoSnapshot *, size_t index, AndamentoNode *out);
+/* Snapshot-owned opaque loop invocation key. Compare for equality; do not parse.
+ * Empty for section nodes. Additive ABI 2 API; AndamentoNode is unchanged. */
+uint32_t andamento_snapshot_node_loop_key(const AndamentoSnapshot *, size_t index, AndamentoText *out);
 uint32_t andamento_snapshot_field(const AndamentoSnapshot *, size_t index, AndamentoField *out);
 uint32_t andamento_snapshot_control(const AndamentoSnapshot *, size_t index, AndamentoControl *out);
 size_t andamento_snapshot_diagnostic_count(const AndamentoSnapshot *);

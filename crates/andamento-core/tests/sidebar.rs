@@ -315,6 +315,73 @@ fn host_time_expires_overrides_without_further_facts_and_retries_refresh_ttl() {
 }
 
 #[test]
+fn loop_keys_distinguish_invocations_and_survive_collapse() {
+    let mut sidebar = sidebar();
+    sidebar.apply(
+        101,
+        [patch(
+            entity("vessel", "v2"),
+            &[
+                ("flotilla.project", text("p")),
+                ("flotilla.vessel", text("v2")),
+                ("display.label", text("Second worker")),
+            ],
+        )],
+    );
+    let before = sidebar.snapshot();
+    let project = &before.surface.sections[0].nodes[0];
+    assert_eq!(project.children.len(), 2);
+    assert_eq!(project.children[0].loop_key, project.children[1].loop_key);
+    assert_ne!(project.loop_key, project.children[0].loop_key);
+    assert_ne!(
+        before.surface.sections[1].nodes[0].loop_key,
+        project.children[0].loop_key
+    );
+    sidebar
+        .dispatch(Action::TogglePlacement {
+            key: project.key.clone(),
+        })
+        .unwrap();
+    let after = sidebar.snapshot();
+    assert_eq!(
+        after.surface.sections[0].nodes[0].children[0].loop_key,
+        project.children[0].loop_key
+    );
+}
+
+#[test]
+fn sibling_loop_bindings_must_be_distinct() {
+    let config = CONFIG.replace(
+        "template \"project/line\" {",
+        "template \"project/line\" {\n  for \"vessel\" kind=\"issue\" {}\n",
+    );
+    let error = Sidebar::new(&config)
+        .err()
+        .expect("duplicate sibling binding must fail");
+    assert!(
+        error.contains("duplicate sibling loop binding vessel"),
+        "{error}"
+    );
+}
+
+#[test]
+fn native_content_retains_declared_empty_columns() {
+    let config = CONFIG.replace(
+        "field \"status\" key=\"status.state\"",
+        "field \"missing\" key=\"missing.fact\"\n  field \"status\" key=\"status.state\"",
+    );
+    let mut sidebar = sidebar();
+    sidebar.configure(&config).unwrap();
+    let snapshot = sidebar.snapshot();
+    let fields = &snapshot.surface.sections[0].nodes[0].children[0]
+        .content
+        .fields;
+    assert_eq!(fields[0].value, "Worker <one>");
+    assert_eq!(fields[1].value, "");
+    assert_eq!(fields[2].value, "waiting");
+}
+
+#[test]
 fn abbreviation_uses_placement_variable_and_preserves_full_fallback() {
     let mut sidebar = Sidebar::new(include_str!("fixtures/abbreviation.kdl")).unwrap();
     sidebar.apply(

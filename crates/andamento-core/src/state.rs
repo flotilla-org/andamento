@@ -61,6 +61,7 @@ fn placed_display_entity(
     form: &str,
 ) -> crate::DisplayEntity {
     display.form = form.to_owned();
+    display.placement_layout = loop_definition.layout.clone();
     display.metadata.insert(
         PLACEMENT_LOOP_BINDING_KEY.to_owned(),
         MetadataValue::Text(loop_definition.binding.clone()),
@@ -1541,6 +1542,7 @@ impl ControllerState {
         DisplayEntity {
             entity: entity.entity.clone(),
             placement: None,
+            placement_layout: None,
             label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL)
                 .map(str::to_owned)
                 .unwrap_or_else(|| entity.entity.id.clone()),
@@ -5198,7 +5200,7 @@ template "project/line" {
   field "label" {
     value source="metadata-text" key="display.label"
   }
-  for "convoy" kind="convoy" {
+  for "convoy" kind="convoy" layout="inline" {
     match "flotilla.project" of="project"
     apply-template
   }
@@ -5257,6 +5259,11 @@ template "vessel/line" {
         assert_eq!(roots[0].label, "Project P");
         assert_eq!(roots[0].children.len(), 1);
         assert_eq!(roots[0].children[0].label, "Convoy C");
+        assert_eq!(
+            roots[0].children[0].placement_layout.as_deref(),
+            Some("inline"),
+            "the renderer needs the producing loop's declaration"
+        );
         assert_eq!(
             roots[0].children[0].children.len(),
             1,

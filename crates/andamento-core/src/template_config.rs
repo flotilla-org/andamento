@@ -338,7 +338,14 @@ fn validate_placement_loops(
     loops: &[PlacementLoop],
     enclosing: &BTreeSet<String>,
 ) -> Result<(), TemplateConfigError> {
+    let mut bindings = BTreeSet::new();
     for loop_definition in loops {
+        if !bindings.insert(loop_definition.binding.clone()) {
+            return Err(TemplateConfigError::Validation(format!(
+                "duplicate sibling loop binding {}",
+                loop_definition.binding
+            )));
+        }
         if loop_definition.binding.ends_with('s') {
             return Err(TemplateConfigError::Validation(format!(
                 "loop binding {} must be singular",

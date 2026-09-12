@@ -37,6 +37,8 @@ pub struct Section {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlacementNode {
     pub key: PlacementKey,
+    /// Loop invocation shared by sibling items, independent of their entity IDs.
+    pub loop_key: crate::PlacementLoopKey,
     pub entity: EntityRef,
     pub label: String,
     /// Logical intent declared on the loop, interpreted by each frontend.
@@ -130,7 +132,7 @@ impl SurfaceSnapshot {
             }
             let mut metadata = BTreeMap::new();
             effective_metadata(model, &NodeKey::Root, &mut metadata);
-            let content = resolve_content(region.root.as_ref(), &metadata, false, false);
+            let content = resolve_content(region.root.as_ref(), &metadata, false, false, false);
             snapshot.sections.push(Section {
                 name: definition.name.clone(),
                 pinned: definition.pinned,
@@ -228,15 +230,23 @@ fn resolve_node(
     let mut display_facts = facts.clone();
     apply_declared_abbreviation(&mut display_facts);
     Some(PlacementNode {
-        content: resolve_content(slot, &display_facts, collapsed, !entity.children.is_empty()),
+        content: resolve_content(
+            slot,
+            &display_facts,
+            collapsed,
+            !entity.children.is_empty(),
+            true,
+        ),
         detail: resolve_content(
             entity.templates.detail.as_ref(),
             &facts,
             collapsed,
             !entity.children.is_empty(),
+            false,
         ),
         layout: layouts.get(&key).cloned().flatten(),
         state: states.get(&entity.entity).cloned().unwrap_or_default(),
+        loop_key: key.loop_key(&region.name)?,
         key,
         entity: entity.entity.clone(),
         label: entity.label.clone(),
@@ -257,19 +267,34 @@ fn resolve_content(
     metadata: &BTreeMap<String, MetadataValue>,
     collapsed: bool,
     collapsible: bool,
+    reserve_columns: bool,
 ) -> Content {
     let Some(slot) = slot else {
         return Content::default();
     };
     let fields = if let Some(ready) = &slot.render_ready {
-        ready.render_fields(TemplateConfigMatchContext {
+        let context = TemplateConfigMatchContext {
             slot: TemplateConfigSlot::Compact,
             node_kind: TemplateConfigNodeKind::Entity,
             metadata,
             collapsed,
             collapsible,
             active_tab_name: None,
-        })
+        };
+        ready
+            .fields
+            .iter()
+            .filter_map(|spec| {
+                spec.render(context).or_else(|| {
+                    reserve_columns.then(|| TemplateConfigRenderedField {
+                        class: spec.class,
+                        priority: spec.priority,
+                        value: String::new(),
+                        source: None,
+                    })
+                })
+            })
+            .collect()
     } else {
         slot.fields
             .iter()
