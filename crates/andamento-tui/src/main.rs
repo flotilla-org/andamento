@@ -40,10 +40,7 @@ mod native {
 
         fn execute(&mut self, effect: HostEffect) -> io::Result<Option<u64>> {
             match effect {
-                HostEffect::Focus {
-                    request_id,
-                    workspace_id,
-                } => {
+                HostEffect::Focus { workspace_id, .. } => {
                     let position = self
                         .workspaces
                         .iter()
@@ -55,15 +52,10 @@ mod native {
                         "-t",
                         &format!("{}:{position}", self.target),
                     ])?;
-                    let _ = request_id;
                     Ok(None)
                 }
                 HostEffect::Materialize {
-                    request_id,
-                    name,
-                    recipe,
-                    cwd,
-                    ..
+                    name, recipe, cwd, ..
                 } => {
                     let mut command = Command::new("tmux");
                     command.args([
@@ -89,7 +81,6 @@ mod native {
                         .trim_start_matches('@')
                         .parse()
                         .map_err(|_| io::Error::other("tmux returned an invalid window id"))?;
-                    let _ = request_id;
                     Ok(Some(id))
                 }
                 HostEffect::Inspect { .. } => Err(io::Error::other("inspect is not implemented")),
@@ -184,6 +175,7 @@ mod native {
                     Err(error) => eprintln!("andamento-tui: ignoring malformed fact: {error}"),
                 }
             }
+            eprintln!("andamento-tui: facts stream ended");
         });
         Ok(child)
     }
@@ -198,7 +190,14 @@ mod native {
         loop {
             let patches = facts.try_iter().collect::<Vec<_>>();
             sidebar.apply(now_ms(), patches);
-            sidebar.observe(host.observe()?, vec![]);
+            let workspaces = match host.observe() {
+                Ok(workspaces) => workspaces,
+                Err(error) => {
+                    eprintln!("andamento-tui: retaining last tmux observation: {error}");
+                    host.workspaces.clone()
+                }
+            };
+            sidebar.observe(workspaces, vec![]);
             let frame = surface::render(&sidebar.snapshot().surface, terminal::size()?.0 as usize);
             selected = selected.min(frame.hits.len().saturating_sub(1));
             draw(
