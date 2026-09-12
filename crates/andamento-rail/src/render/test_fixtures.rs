@@ -8,6 +8,9 @@ use andamento_shared::{
 };
 use std::collections::BTreeMap;
 use unicode_width::UnicodeWidthStr;
+use zellij_tile::prelude::{Event, Mouse, ZellijPlugin};
+
+use crate::PluginState;
 
 pub(super) struct ControllerModelFixture {
     model: ControllerViewModel,
@@ -269,12 +272,24 @@ impl RailFrameFixture {
     pub(super) fn hover_entity(mut self, entity: &DisplayEntity) -> Self {
         let initial = self.render();
         let target = NodeKey::Entity(entity.entity.clone());
-        initial
+        let hit = initial
             .hit_regions
             .iter()
             .find(|hit| hit.inspect_target.as_ref() == Some(&target))
             .unwrap_or_else(|| panic!("rendered frame has no hit region for {target:?}"));
-        self.detail_surface.target = Some(target);
+        let mut state = PluginState {
+            hit_regions: initial.hit_regions.clone(),
+            ..Default::default()
+        };
+
+        assert!(
+            state.update(Event::Mouse(Mouse::Hover(
+                hit.row_start as isize,
+                hit.col_start
+            ))),
+            "hover event should request a new rendered frame"
+        );
+        self.detail_surface.target = state.hovered_detail_target;
         self
     }
 

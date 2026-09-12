@@ -11,5 +11,6 @@ kdl.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 unicode-width.workspace = true
+zellij-tile.workspace = true
 
 [dev-dependencies]
