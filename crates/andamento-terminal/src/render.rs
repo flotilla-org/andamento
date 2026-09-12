@@ -983,12 +983,12 @@ fn append_placement_loop_instance<'a>(
                 }
                 if !run.is_empty() {
                     lines[parent_row].text.push(' ');
-                    let mut start = lines[parent_row].text.width();
+                    let mut column = lines[parent_row].text.width();
                     lines[parent_row].text.push_str(&run);
                     for (entity, text) in siblings.iter().zip(&item_texts) {
-                        let end = start + text.width();
-                        lines[parent_row].inline_hits.push((entity, start..end));
-                        start = end + 2;
+                        let end = column + text.width();
+                        lines[parent_row].inline_hits.push((entity, column..end));
+                        column = end + 2;
                     }
                 }
                 // Inline items share the parent's row. Nested loops are still
@@ -7950,6 +7950,74 @@ mod tests {
         let mut tree_region = region;
         tree_region.definition.source = SurfaceRegionSource::Tree;
         assert_eq!(pinned_region_rows(&tree_region, None), 4);
+    }
+
+    #[test]
+    fn wrapped_inline_siblings_keep_their_children_and_hits_on_their_own_rows() {
+        fn item(
+            id: &str,
+            binding: &str,
+            parent: &[andamento_core::PlacementSegment],
+        ) -> DisplayEntity {
+            let entity = EntityRef {
+                kind: "vessel".into(),
+                id: id.into(),
+            };
+            let mut key = parent.to_vec();
+            key.push(andamento_core::PlacementSegment {
+                loop_name: binding.into(),
+                entity: entity.clone(),
+            });
+            DisplayEntity {
+                entity,
+                placement: Some(andamento_core::PlacementKey(key)),
+                placement_layout: Some("inline".into()),
+                label: id.into(),
+                form: "compact".into(),
+                metadata: BTreeMap::from([(
+                    "display.label".into(),
+                    MetadataValue::Text(id.into()),
+                )]),
+                templates: ResolvedTemplateSlots::default(),
+                children: vec![],
+            }
+        }
+        let mut first = item("firstxxxx", "item", &[]);
+        let mut second = item("secondxxx", "item", &[]);
+        first
+            .children
+            .push(item("one", "child", &first.placement.as_ref().unwrap().0));
+        second
+            .children
+            .push(item("two", "child", &second.placement.as_ref().unwrap().0));
+        let entities = vec![first, second];
+        let region = SurfaceRegionDefinition {
+            name: "tree".into(),
+            source: SurfaceRegionSource::Tree,
+            root_template: "root".into(),
+            form: "compact".into(),
+            attention_key: None,
+            placement: Some("tree".into()),
+            pinned: false,
+            promotions: vec![],
+        };
+        let lines = render_placement_lines("root".into(), &entities, &region, None, 20, None);
+        assert_eq!(lines.len(), 3);
+        for (row, parent, child) in [(1, "firstxxxx", "one"), (2, "secondxxx", "two")] {
+            assert!(
+                lines[row].text.contains(parent) && lines[row].text.contains(child),
+                "{:?}",
+                lines[row]
+            );
+            assert!(lines[row].text.width() <= 20);
+            assert_eq!(lines[row].inline_hits.len(), 2);
+            assert_eq!(lines[row].inline_hits[0].0.entity.id, parent);
+            assert_eq!(lines[row].inline_hits[1].0.entity.id, child);
+            assert!(lines[row]
+                .inline_hits
+                .iter()
+                .all(|(_, columns)| columns.start < columns.end && columns.end <= 20));
+        }
     }
 
     #[test]
