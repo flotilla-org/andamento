@@ -90,7 +90,6 @@ dependencies = [
 name = "andamento-rail"
 version = "0.1.0"
 dependencies = [
- "andamento-core",
  "andamento-shared",
  "andamento-terminal",
  "ansi_term",
@@ -112,6 +111,7 @@ dependencies = [
  "serde",
  "serde_json",
  "unicode-width 0.1.14",
+ "zellij-tile",
 ]
 
 [[package]]
