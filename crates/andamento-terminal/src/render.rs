@@ -33,6 +33,7 @@ pub struct SizeInPixels {
 
 const ACTIVE_CELL_HEIGHT: usize = 5;
 const COMPACT_CELL_HEIGHT: usize = 2;
+const DETAIL_PANEL_HEIGHT: usize = 4;
 const CHILD_LAYOUT_VARIABLE_KEY: &str = "var.child-layout";
 
 type RenderMetadata = BTreeMap<String, MetadataValue>;
@@ -1689,10 +1690,11 @@ pub fn render_lines_with_detail_surface(
             ensure_active_visible,
         );
     }
+    let detail_rows = DETAIL_PANEL_HEIGHT.min(rows.saturating_sub(1));
     let mut rendered = render_lines_with_rail_viewport(
         model,
         tabs,
-        rows - 1,
+        rows - detail_rows,
         cols,
         controller_available,
         theme,
@@ -1703,17 +1705,21 @@ pub fn render_lines_with_detail_surface(
         rail_scroll_offset,
         ensure_active_visible,
     );
-    let footer_row = rows - 2;
+    let footer_row = rows - detail_rows - 1;
     let footer = rendered.lines.pop().unwrap_or_else(|| blank(cols));
     for hit in &mut rendered.hit_regions {
         if hit.row_start == footer_row {
-            hit.row_start += 1;
-            hit.row_end += 1;
+            hit.row_start += detail_rows;
+            hit.row_end += detail_rows;
         }
     }
-    rendered
-        .lines
-        .push(render_detail_surface(model, detail_target, cols, theme));
+    rendered.lines.extend(render_detail_surface(
+        model,
+        detail_target,
+        detail_rows,
+        cols,
+        theme,
+    ));
     rendered.lines.push(footer);
     rendered
 }
@@ -1721,48 +1727,47 @@ pub fn render_lines_with_detail_surface(
 fn render_detail_surface(
     model: Option<&ControllerViewModel>,
     target: Option<&NodeKey>,
+    height: usize,
     width: usize,
     theme: Option<RenderTheme>,
-) -> String {
+) -> Vec<String> {
+    if height == 0 {
+        return vec![];
+    }
     let detail = match (model, target) {
         (Some(model), Some(NodeKey::Entity(target))) => display_entity_for_target(model, target)
-            .map(display_entity_detail)
-            .or_else(|| latent_entity_for_target(model, target).map(latent_entity_detail)),
+            .map(display_entity_detail_lines)
+            .or_else(|| latent_entity_for_target(model, target).map(latent_entity_detail_lines)),
         (Some(model), Some(NodeKey::Placement(key))) => key
             .0
             .last()
             .and_then(|_| display_entity_for_placement(model, key))
-            .map(display_entity_detail),
+            .map(display_entity_detail_lines),
         _ => None,
     }
     .unwrap_or_default();
-    style_body_text(
-        pad_to_width(&truncate_to_width(&detail, width), width),
-        theme,
-    )
+    render_detail_card(&detail, height, width, theme)
 }
 
-fn display_entity_detail(entity: &andamento_core::DisplayEntity) -> String {
-    entity_detail(
-        &entity.entity,
+fn display_entity_detail_lines(entity: &andamento_core::DisplayEntity) -> Vec<String> {
+    entity_detail_lines(
         &entity.label,
         &entity.templates,
         &display_entity_metadata(entity),
     )
 }
 
-fn latent_entity_detail(latent: &andamento_core::LatentTab) -> String {
+fn latent_entity_detail_lines(latent: &andamento_core::LatentTab) -> Vec<String> {
     let card = render_card_from_latent(latent);
-    entity_detail(&latent.entity, &card.name, &card.templates, &card.metadata)
+    entity_detail_lines(&card.name, &card.templates, &card.metadata)
 }
 
-fn entity_detail(
-    entity: &andamento_core::EntityRef,
+fn entity_detail_lines(
     label: &str,
     templates: &ResolvedTemplateSlots,
     metadata: &RenderMetadata,
-) -> String {
-    let text = templates
+) -> Vec<String> {
+    templates
         .detail
         .as_ref()
         .map(|slot| {
@@ -1777,11 +1782,35 @@ fn entity_detail(
                     active_tab_name: None,
                 },
             );
-            join_template_fields(&fields, true)
+            fields
+                .iter()
+                .map(|field| template_field_value(field).to_owned())
+                .collect()
         })
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| label.to_owned());
-    format!("[{}] {text}", entity.kind)
+        .filter(|lines: &Vec<String>| lines.iter().any(|line| !line.is_empty()))
+        .unwrap_or_else(|| vec![label.to_owned()])
+}
+
+fn render_detail_card(
+    content: &[String],
+    height: usize,
+    width: usize,
+    theme: Option<RenderTheme>,
+) -> Vec<String> {
+    if height < 2 || width < 2 {
+        return (0..height).map(|_| blank(width)).collect();
+    }
+    let inner_width = width - 2;
+    let horizontal = "─".repeat(inner_width);
+    let mut lines = Vec::with_capacity(height);
+    lines.push(style_body_text(format!("┌{horizontal}┐"), theme));
+    for row in 0..height.saturating_sub(2) {
+        let text = content.get(row).map(String::as_str).unwrap_or_default();
+        let text = pad_to_width(&truncate_to_width(text, inner_width), inner_width);
+        lines.push(style_body_text(format!("│{text}│"), theme));
+    }
+    lines.push(style_body_text(format!("└{horizontal}┘"), theme));
+    lines
 }
 
 fn display_entity_for_target<'a>(
@@ -7874,7 +7903,10 @@ mod tests {
             Some(&NodeKey::Entity(entity_ref)),
         );
 
-        assert!(rendered.lines[3].contains("[issue] Issue 1095 hover detail"));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("│Issue 1095 hover detail")));
     }
 
     #[test]
@@ -7929,10 +7961,17 @@ mod tests {
             }],
         }];
 
-        let rendered =
-            render_detail_surface(Some(&model), Some(&NodeKey::Placement(child_key)), 40, None);
+        let rendered = render_detail_surface(
+            Some(&model),
+            Some(&NodeKey::Placement(child_key)),
+            DETAIL_PANEL_HEIGHT,
+            40,
+            None,
+        );
 
-        assert!(rendered.contains("[issue] Nested issue 89"));
+        assert!(rendered
+            .iter()
+            .any(|line| line.contains("│Nested issue 89")));
     }
 
     #[test]
@@ -8782,8 +8821,14 @@ mod tests {
             "compact template should resolve display.label from carried metadata: {:?}",
             rendered.lines
         );
-        assert!(rendered.lines[5]
-            .contains("[issue] #982 entities-only cutover Cached entity metadata survives"));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("│#982 entities-only cutover")));
+        assert!(rendered
+            .lines
+            .iter()
+            .any(|line| line.contains("│Cached entity metadata survives")));
         assert!(rendered.hit_regions.iter().any(|hit| {
             hit.action == HitAction::ShowDetail
                 && hit.inspect_target == Some(NodeKey::Entity(entity_ref.clone()))
