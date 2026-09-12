@@ -8,4 +8,6 @@ license.workspace = true
 andamento-core.workspace = true
 andamento-terminal.workspace = true
 serde_json.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 crossterm = "0.29"
