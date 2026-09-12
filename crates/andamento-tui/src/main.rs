@@ -6,7 +6,7 @@ mod native {
     use std::env;
     use std::fs;
     use std::io::{self, BufRead, Write};
-    use std::process::{Command, ExitCode, Stdio};
+    use std::process::{Child, Command, ExitCode, Stdio};
     use std::sync::mpsc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -34,22 +34,11 @@ mod native {
             if !output.status.success() {
                 return Err(io::Error::other("tmux list-windows failed"));
             }
-            self.workspaces = String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(|line| {
-                    let mut fields = line.split('\t');
-                    Some(Workspace {
-                        id: fields.next()?.trim_start_matches('@').parse().ok()?,
-                        position: fields.next()?.parse().ok()?,
-                        name: fields.next()?.to_owned(),
-                        selected: fields.next()? == "1",
-                    })
-                })
-                .collect();
+            self.workspaces = parse_workspaces(&String::from_utf8_lossy(&output.stdout));
             Ok(self.workspaces.clone())
         }
 
-        fn execute(&mut self, effect: HostEffect) -> io::Result<(u64, Option<u64>)> {
+        fn execute(&mut self, effect: HostEffect) -> io::Result<Option<u64>> {
             match effect {
                 HostEffect::Focus {
                     request_id,
@@ -66,7 +55,8 @@ mod native {
                         "-t",
                         &format!("{}:{position}", self.target),
                     ])?;
-                    Ok((request_id, None))
+                    let _ = request_id;
+                    Ok(None)
                 }
                 HostEffect::Materialize {
                     request_id,
@@ -99,10 +89,35 @@ mod native {
                         .trim_start_matches('@')
                         .parse()
                         .map_err(|_| io::Error::other("tmux returned an invalid window id"))?;
-                    Ok((request_id, Some(id)))
+                    let _ = request_id;
+                    Ok(Some(id))
                 }
                 HostEffect::Inspect { .. } => Err(io::Error::other("inspect is not implemented")),
             }
+        }
+    }
+
+    fn parse_workspaces(output: &str) -> Vec<Workspace> {
+        output
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\t');
+                Some(Workspace {
+                    id: fields.next()?.trim_start_matches('@').parse().ok()?,
+                    position: fields.next()?.parse().ok()?,
+                    name: fields.next()?.to_owned(),
+                    selected: fields.next()? == "1",
+                })
+            })
+            .collect()
+    }
+
+    fn effect_request_id(effect: &HostEffect) -> Option<u64> {
+        match effect {
+            HostEffect::Focus { request_id, .. } | HostEffect::Materialize { request_id, .. } => {
+                Some(*request_id)
+            }
+            HostEffect::Inspect { .. } => None,
         }
     }
 
@@ -132,7 +147,7 @@ mod native {
         let facts_command = args.collect::<Vec<_>>();
         let mut sidebar = Sidebar::new(&fs::read_to_string(config)?).map_err(io::Error::other)?;
         let (sender, receiver) = mpsc::channel();
-        spawn_facts_reader(facts_command, sender)?;
+        let mut facts_child = spawn_facts_reader(facts_command, sender)?;
         let mut host = TmuxHost {
             target,
             workspaces: vec![],
@@ -141,6 +156,8 @@ mod native {
         let mut output = io::stdout();
         execute!(output, terminal::EnterAlternateScreen, cursor::Hide)?;
         let result = event_loop(&mut sidebar, &mut host, &receiver, &mut output);
+        let _ = facts_child.kill();
+        let _ = facts_child.wait();
         execute!(output, cursor::Show, terminal::LeaveAlternateScreen)?;
         terminal::disable_raw_mode()?;
         result
@@ -149,7 +166,7 @@ mod native {
     fn spawn_facts_reader(
         command: Vec<String>,
         sender: mpsc::Sender<MetadataPatch>,
-    ) -> io::Result<()> {
+    ) -> io::Result<Child> {
         let program = command
             .first()
             .ok_or_else(|| io::Error::other("missing FACTS_COMMAND"))?;
@@ -157,18 +174,18 @@ mod native {
             .args(&command[1..])
             .stdout(Stdio::piped())
             .spawn()?;
+        let stdout = child.stdout.take().unwrap();
         std::thread::spawn(move || {
-            for line in io::BufReader::new(child.stdout.take().unwrap())
-                .lines()
-                .map_while(Result::ok)
-            {
-                if let Ok(patch) = serde_json::from_str(&line) {
-                    let _ = sender.send(patch);
+            for line in io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                match serde_json::from_str(&line) {
+                    Ok(patch) => {
+                        let _ = sender.send(patch);
+                    }
+                    Err(error) => eprintln!("andamento-tui: ignoring malformed fact: {error}"),
                 }
             }
-            let _ = child.wait();
         });
-        Ok(())
+        Ok(child)
     }
 
     fn event_loop(
@@ -184,8 +201,12 @@ mod native {
             sidebar.observe(host.observe()?, vec![]);
             let frame = surface::render(&sidebar.snapshot().surface, terminal::size()?.0 as usize);
             selected = selected.min(frame.hits.len().saturating_sub(1));
-            draw(&frame.lines, selected, output)?;
-            if event::poll(Duration::from_millis(200))? {
+            draw(
+                &frame.lines,
+                frame.hits.get(selected).map(|hit| hit.row),
+                output,
+            )?;
+            if event::poll(Duration::from_secs(1))? {
                 if let event::Event::Key(key) = event::read()? {
                     match key.code {
                         event::KeyCode::Char('q') => return Ok(()),
@@ -201,14 +222,28 @@ mod native {
                                     })
                                     .map_err(io::Error::other)?;
                                 for effect in response.effects {
-                                    if let Ok((request_id, workspace_id)) = host.execute(effect) {
-                                        sidebar
-                                            .handle(Request::Complete {
-                                                request_id,
-                                                workspace_id,
-                                                error: None,
-                                            })
-                                            .map_err(io::Error::other)?;
+                                    let request_id = effect_request_id(&effect);
+                                    match host.execute(effect) {
+                                        Ok(workspace_id) if request_id.is_some() => {
+                                            sidebar
+                                                .handle(Request::Complete {
+                                                    request_id: request_id.unwrap(),
+                                                    workspace_id,
+                                                    error: None,
+                                                })
+                                                .map_err(io::Error::other)?;
+                                        }
+                                        Err(error) if request_id.is_some() => {
+                                            sidebar
+                                                .handle(Request::Complete {
+                                                    request_id: request_id.unwrap(),
+                                                    workspace_id: None,
+                                                    error: Some(error.to_string()),
+                                                })
+                                                .map_err(io::Error::other)?;
+                                        }
+                                        Err(error) => eprintln!("andamento-tui: {error}"),
+                                        Ok(_) => {}
                                     }
                                 }
                             }
@@ -220,7 +255,11 @@ mod native {
         }
     }
 
-    fn draw(lines: &[String], selected: usize, output: &mut impl Write) -> io::Result<()> {
+    fn draw(
+        lines: &[String],
+        selected_row: Option<usize>,
+        output: &mut impl Write,
+    ) -> io::Result<()> {
         execute!(
             output,
             cursor::MoveTo(0, 0),
@@ -230,7 +269,7 @@ mod native {
             writeln!(
                 output,
                 "{} {line}\r",
-                if row == selected { '>' } else { ' ' }
+                if Some(row) == selected_row { '>' } else { ' ' }
             )?;
         }
         write!(output, "\r\n[↑/↓] select  [enter] activate  [q] quit")?;
@@ -242,6 +281,34 @@ mod native {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn parses_tmux_workspace_rows_and_skips_malformed_rows() {
+            let workspaces = parse_workspaces("@7\t2\twork\t1\ninvalid\n@8\t3\tdocs\t0\n");
+            assert_eq!(workspaces.len(), 2);
+            assert_eq!(
+                (
+                    workspaces[0].id,
+                    workspaces[0].position,
+                    workspaces[0].selected
+                ),
+                (7, 2, true)
+            );
+            assert_eq!(workspaces[1].name, "docs");
+        }
+
+        #[test]
+        fn draw_highlights_the_rendered_hit_row() {
+            let mut output = Vec::new();
+            draw(&["header".into(), "item".into()], Some(1), &mut output).unwrap();
+            let output = String::from_utf8(output).unwrap();
+            assert!(output.contains("  header\r\n> item"));
+        }
     }
 }
 
