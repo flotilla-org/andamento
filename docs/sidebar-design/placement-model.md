@@ -497,3 +497,14 @@ presentation guess, not a specification of what those facts are for.
 Do not treat the current state as evidence that it was wanted. Equally, do not
 rewrite as if nothing is known: the list above of what survives is most of the
 system.
+
+
+### Native abbreviation resolution
+
+The extracted core resolves the declared tier before rendering main template
+fields. Native C fields and terminal presentation therefore receive the same
+producer label. The node label, facts and detail fields retain the full text.
+Tier selection does not depend on viewport width. Short falls back to medium,
+then full; native frontends measure and clip the selected text themselves. The
+legacy terminal path retains its measured middle elision for a full-label
+fallback. Shared presentation does not introduce terminal column budgets.

@@ -36,6 +36,10 @@ jobs:
           --package andamento-controller
           --package andamento-rail
           --package andamento-config
+          --package andamento-core
+          --package andamento-terminal
+          --package andamento-html
+          --package andamento-ffi
 
   clippy:
     name: Clippy
@@ -91,11 +95,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-test-
       - run: >-
-          cargo test --target x86_64-unknown-linux-gnu --lib --locked
-          -p andamento-shared
-          -p andamento-controller
-          -p andamento-config
-          -p andamento-rail
+          cargo test --workspace --lib --target x86_64-unknown-linux-gnu --locked
 
   wasm:
     name: WASM build
@@ -124,3 +124,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-wasm-
       - run: cargo build --workspace --target wasm32-wasip1 --release --locked -j1
+
+  independent:
+    name: Core and frontends without Zellij
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: python3 scripts/check-independent-core.py

@@ -35,6 +35,7 @@ impl ControllerModelFixture {
                 display_variables: vec![],
                 display_variable_values: BTreeMap::new(),
                 surface_regions: vec![],
+                presentation: None,
             },
         }
     }

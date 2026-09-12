@@ -48,6 +48,7 @@ dependencies = [
 name = "andamento-controller"
 version = "0.1.0"
 dependencies = [
+ "andamento-core",
  "andamento-rail",
  "andamento-shared",
  "insta",
@@ -58,10 +59,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "andamento-core"
+version = "0.1.0"
+dependencies = [
+ "insta",
+ "kdl",
+ "serde",
+ "serde_json",
+ "unicode-width 0.1.14",
+]
+
+[[package]]
+name = "andamento-ffi"
+version = "0.1.0"
+dependencies = [
+ "andamento-core",
+ "serde_json",
+]
+
+[[package]]
+name = "andamento-html"
+version = "0.1.0"
+dependencies = [
+ "andamento-core",
+ "andamento-terminal",
+ "serde_json",
+]
+
+[[package]]
 name = "andamento-rail"
 version = "0.1.0"
 dependencies = [
  "andamento-shared",
+ "andamento-terminal",
  "ansi_term",
  "insta",
  "log",
@@ -75,11 +105,24 @@ dependencies = [
 name = "andamento-shared"
 version = "0.1.0"
 dependencies = [
+ "andamento-core",
+ "andamento-terminal",
  "kdl",
  "serde",
  "serde_json",
  "unicode-width 0.1.14",
  "zellij-tile",
+]
+
+[[package]]
+name = "andamento-terminal"
+version = "0.1.0"
+dependencies = [
+ "andamento-core",
+ "ansi_term",
+ "insta",
+ "serde_json",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
