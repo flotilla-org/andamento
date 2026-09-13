@@ -20,6 +20,7 @@ members = [
     "crates/andamento-controller",
     "crates/andamento-rail",
     "crates/andamento-config",
+    "crates/andamento-tui",
 ]
 resolver = "2"
 
@@ -29,6 +30,7 @@ license = "MIT"
 
 [workspace.dependencies]
 ansi_term = "0.12"
+crossterm = "0.28.1"
 insta = "1"
 kdl = { version = "4.7.1", default-features = false }
 ratatui = { version = "0.30.0", default-features = false, features = ["std"] }
@@ -42,3 +44,4 @@ andamento-rail = { path = "crates/andamento-rail" }
 
 andamento-core = { path = "crates/andamento-core" }
 andamento-terminal = { path = "crates/andamento-terminal" }
+andamento-tui = { path = "crates/andamento-tui" }

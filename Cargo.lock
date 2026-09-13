@@ -126,6 +126,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "andamento-tui"
+version = "0.1.0"
+dependencies = [
+ "andamento-core",
+ "andamento-terminal",
+ "crossterm",
+ "serde_json",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

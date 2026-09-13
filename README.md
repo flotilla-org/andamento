@@ -430,3 +430,19 @@ an external `new-tab --layout` call. The standard `layouts/andamento.kdl` and
 plugin, then embed a normal shell, the config plugin, and the watcher in the
 first tab. The watcher is started with `--factory-repo-manager`, so observed git
 repositories can materialize their repo-manager tabs automatically.
+
+## Standalone TUI
+
+`andamento-core` contains the sidebar's transport-neutral fact state and host
+effects. It has no Zellij or Flotilla dependency. `andamento-rail` adapts
+Zellij events and commands to that core. As a second adapter, `andamento-tui`
+reads the same metadata-patch JSONL stream and controls tmux windows:
+
+```sh
+cargo run -p andamento-tui -- my-tmux-session templates/flotilla-default.kdl flotilla pm-connect ...
+```
+
+Use the arrow keys and Enter to activate a row; press `q` to quit. The TUI
+observes live tmux windows, passes facts into `Sidebar`, renders the portable
+surface through `andamento-terminal`, and executes the returned focus or
+materialize effects through the tmux CLI.

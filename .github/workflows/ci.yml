@@ -40,6 +40,7 @@ jobs:
           --package andamento-terminal
           --package andamento-html
           --package andamento-ffi
+          --package andamento-tui
 
   clippy:
     name: Clippy
