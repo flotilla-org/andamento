@@ -20,7 +20,7 @@ fn hover_state_renders_visible_detail_panel() {
         "github/flotilla-org/andamento#49",
         "#49 Keep hover detail visible",
     );
-    let frame = RailFrameFixture::new(12, 48)
+    let frame = RailFrameFixture::new(15, 48)
         .with_model(
             ControllerModelFixture::project_sidebar(&["andamento"])
                 .with_latent_entity(hovered_issue.clone()),
@@ -29,7 +29,7 @@ fn hover_state_renders_visible_detail_panel() {
         .snapshot();
 
     assert!(
-        frame.contains("[issue] #49 Keep hover detail visible"),
+        frame.contains("│#49 Keep hover detail visible"),
         "hovered entity detail must be present in the rendered frame"
     );
     insta::assert_snapshot!("hover_state_renders_visible_detail_panel", frame);

@@ -198,7 +198,7 @@ The bundled `controls` region is pinned and its root template contains only
 control widgets. Templates do not require a loop, so the section occupies one
 fixed row and does not scroll away with tree content.
 
-Compact entities expose their `detail` form in the rail's fixed detail row.
+Compact entities expose their `detail` form in the rail's fixed multi-row card.
 Pointer hover updates it immediately; clicking an entity keeps it as the
 selection fallback when the pointer leaves.
 
