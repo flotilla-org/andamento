@@ -174,6 +174,9 @@ struct PendingLatentMaterialization {
     tab_id: Option<u64>,
 }
 
+#[cfg(test)]
+thread_local! { static CATALOG_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 #[derive(Debug, Clone)]
 struct CatalogEntity {
     entity: EntityRef,
@@ -188,6 +191,44 @@ struct CatalogEntity {
     grouping_priority: i64,
     collapse_single_member: bool,
     show_empty: bool,
+}
+
+/// Resolved catalog and lookup tables shared by every pass of one model build.
+/// Its lifetime is the evaluation, so metadata/configuration/time changes cannot
+/// leave stale derived state behind between snapshots.
+struct CatalogEvaluation {
+    entities: Vec<CatalogEntity>,
+    by_entity: BTreeMap<EntityRef, usize>,
+    ordinal_by_path: BTreeMap<GroupPath, i64>,
+    collapsed: BTreeSet<EntityRef>,
+}
+
+impl CatalogEvaluation {
+    fn new(entities: Vec<CatalogEntity>) -> Self {
+        let mut by_entity = BTreeMap::new();
+        let mut ordinal_by_path = BTreeMap::new();
+        for (index, entity) in entities.iter().enumerate() {
+            by_entity.insert(entity.entity.clone(), index);
+            // Catalog order is ordinal then path. Preserve the first match,
+            // including when several entities occupy the same group path.
+            ordinal_by_path
+                .entry(entity.path.clone())
+                .or_insert(entity.ordinal);
+        }
+        let collapsed = collapsed_child_entities(&entities);
+        Self {
+            entities,
+            by_entity,
+            ordinal_by_path,
+            collapsed,
+        }
+    }
+
+    fn entity(&self, target: &EntityRef) -> Option<&CatalogEntity> {
+        self.by_entity
+            .get(target)
+            .map(|index| &self.entities[*index])
+    }
 }
 
 fn placement_entity_order(
@@ -1069,7 +1110,8 @@ impl ControllerState {
     }
 
     pub fn view_model(&self) -> ControllerViewModel {
-        let grouping_by_tab = self.tab_grouping_infos();
+        let catalog = CatalogEvaluation::new(self.catalog_entities());
+        let grouping_by_tab = self.tab_grouping_infos(&catalog);
         let mut tabs: Vec<TabCard> = self
             .tabs
             .iter()
@@ -1106,18 +1148,21 @@ impl ControllerState {
             }
         }
 
-        let latent_tabs = self.latent_tabs();
-        let resolved_metadata = self.resolved_metadata_for_tabs(&tabs);
+        let latent_tabs = self.latent_tabs_in(&catalog);
+        let resolved_metadata = self.resolved_metadata_for_tabs(&tabs, &catalog);
         let observed_identities = observed_metadata_identities(&resolved_metadata);
         self.resolve_tab_templates(&mut tabs, &resolved_metadata);
-        let rows = self
-            .rows_with_group_templates(self.rows_for_tabs(&tabs, &latent_tabs), &resolved_metadata);
-        let region_catalog_entities = self.catalog_entities();
+        let rows = self.rows_with_group_templates(
+            self.catalog_group_rows(&tabs, &latent_tabs, &catalog),
+            &resolved_metadata,
+            &catalog,
+        );
+        let region_catalog_entities = &catalog.entities;
         let (effective_variables, variable_warnings) = self.resolve_effective_variables(
             &rows,
             &tabs,
             &resolved_metadata,
-            &region_catalog_entities,
+            region_catalog_entities,
         );
         let mut template_config = self.template_config.clone();
         template_config.effective_variables = effective_variables;
@@ -1137,7 +1182,7 @@ impl ControllerState {
                     .iter()
                     .any(|region| region.placement.is_some())
             })
-            .then(|| PlacementIndex::build(&region_catalog_entities))
+            .then(|| PlacementIndex::build(region_catalog_entities))
             .unwrap_or_default();
         let mut placement_layouts = BTreeMap::new();
         let surface_regions: Vec<crate::DisplayRegion> = self
@@ -1162,7 +1207,7 @@ impl ControllerState {
                             // rest of the render stays on legacy grouping.
                             self.evaluate_placement(
                                 placement,
-                                &region_catalog_entities,
+                                region_catalog_entities,
                                 &placement_index,
                                 &definition.form,
                                 &mut placement_layouts,
@@ -1330,13 +1375,14 @@ impl ControllerState {
         model
     }
 
-    fn rows_for_tabs(&self, tabs: &[TabCard], latent_tabs: &[LatentTab]) -> Vec<RailRow> {
-        self.catalog_group_rows(tabs, latent_tabs)
-    }
-
-    fn catalog_group_rows(&self, tabs: &[TabCard], latent_tabs: &[LatentTab]) -> Vec<RailRow> {
-        let inline_entities = self.visible_inline_entities();
-        let compact_entities = self.compact_entities();
+    fn catalog_group_rows(
+        &self,
+        tabs: &[TabCard],
+        latent_tabs: &[LatentTab],
+        catalog: &CatalogEvaluation,
+    ) -> Vec<RailRow> {
+        let inline_entities = self.visible_inline_entities(&catalog.entities);
+        let compact_entities = self.compact_entities(&catalog.entities);
         let mut path_to_tabs: BTreeMap<GroupPath, Vec<TabCard>> = BTreeMap::new();
         let mut grouping_by_path: BTreeMap<GroupPath, TabGroupingInfo> = BTreeMap::new();
         for tab in tabs {
@@ -1397,18 +1443,10 @@ impl ControllerState {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let catalog_ordinal_by_path = ordered_paths
-            .iter()
-            .cloned()
-            .map(|path| {
-                let ordinal = self.catalog_group_ordinal(&path);
-                (path, ordinal)
-            })
-            .collect::<BTreeMap<_, _>>();
         ordered_paths.sort_by(|left, right| {
             match (
-                catalog_ordinal_by_path.get(left).copied().flatten(),
-                catalog_ordinal_by_path.get(right).copied().flatten(),
+                catalog.ordinal_by_path.get(left).copied(),
+                catalog.ordinal_by_path.get(right).copied(),
             ) {
                 (Some(left_ordinal), Some(right_ordinal)) => left_ordinal
                     .cmp(&right_ordinal)
@@ -1553,19 +1591,13 @@ impl ControllerState {
         }
     }
 
-    fn catalog_group_ordinal(&self, path: &GroupPath) -> Option<i64> {
-        self.catalog_entities()
-            .into_iter()
-            .find(|entity| &entity.path == path)
-            .map(|entity| entity.ordinal)
-    }
-
     fn rows_with_group_templates(
         &self,
         rows: Vec<RailRow>,
         resolved_metadata: &[ResolvedMetadata],
+        catalog: &CatalogEvaluation,
     ) -> Vec<RailRow> {
-        let declared_templates = self.declared_group_templates();
+        let declared_templates = self.declared_group_templates(&catalog.entities);
         rows.into_iter()
             .map(|row| match row {
                 RailRow::GroupHeader {
@@ -2158,9 +2190,13 @@ impl ControllerState {
     }
 
     fn latent_tabs(&self) -> Vec<LatentTab> {
-        let entities = self.catalog_entities();
-        let collapsed = collapsed_child_entities(&entities);
-        let live_targets = self.materialized_action_targets(&entities);
+        self.latent_tabs_in(&CatalogEvaluation::new(self.catalog_entities()))
+    }
+
+    fn latent_tabs_in(&self, catalog: &CatalogEvaluation) -> Vec<LatentTab> {
+        let entities = &catalog.entities;
+        let collapsed = &catalog.collapsed;
+        let live_targets = self.materialized_action_targets(catalog);
         entities
             .iter()
             .filter(|entity| entity.presence == PresenceClass::Tab)
@@ -2206,6 +2242,8 @@ impl ControllerState {
     }
 
     fn catalog_entities(&self) -> Vec<CatalogEntity> {
+        #[cfg(test)]
+        CATALOG_BUILDS.with(|count| count.set(count.get() + 1));
         let default_catalog = GroupingConfigCatalog::default();
         let catalog = self.grouping_catalog.as_ref().unwrap_or(&default_catalog);
         let mut entities = self
@@ -2342,10 +2380,9 @@ impl ControllerState {
             .collect()
     }
 
-    fn declared_group_templates(&self) -> BTreeMap<GroupPath, String> {
-        let entities = self.catalog_entities();
+    fn declared_group_templates(&self, entities: &[CatalogEntity]) -> BTreeMap<GroupPath, String> {
         let mut declarations: BTreeMap<GroupPath, (i64, String)> = BTreeMap::new();
-        for entity in &entities {
+        for entity in entities {
             for depth in 1..=entity.path.0.len() {
                 let prefix = GroupPath(entity.path.0[..depth].to_vec());
                 let key = &entity.path.0[depth - 1].key;
@@ -2408,8 +2445,8 @@ impl ControllerState {
         // takes precedence over the grouping level's default for that path.
         for entity in entities {
             if entity.form != DISPLAY_FORM_COMPACT {
-                if let Some(template) = entity.template {
-                    declarations.insert(entity.path, (i64::MAX, template));
+                if let Some(template) = &entity.template {
+                    declarations.insert(entity.path.clone(), (i64::MAX, template.clone()));
                 }
             }
         }
@@ -2419,15 +2456,14 @@ impl ControllerState {
             .collect()
     }
 
-    fn materialized_action_targets(&self, entities: &[CatalogEntity]) -> BTreeSet<String> {
+    fn materialized_action_targets(&self, catalog: &CatalogEvaluation) -> BTreeSet<String> {
         let tab_seed_metadata = self.tab_seed_metadata_entries();
         self.tabs
             .iter()
             .filter_map(|tab| self.tab_entity_ref(tab.tab_id, &tab_seed_metadata))
             .map(|entity| {
-                entities
-                    .iter()
-                    .find(|candidate| candidate.entity == entity)
+                catalog
+                    .entity(&entity)
                     .and_then(|candidate| metadata_entry_text(&candidate.values, KEY_ACTION_TARGET))
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity.action_target())
@@ -2435,8 +2471,7 @@ impl ControllerState {
             .collect()
     }
 
-    fn visible_inline_entities(&self) -> Vec<CatalogEntity> {
-        let entities = self.catalog_entities();
+    fn visible_inline_entities<'a>(&self, entities: &'a [CatalogEntity]) -> Vec<&'a CatalogEntity> {
         entities
             .iter()
             .filter(|entity| entity.presence == PresenceClass::Inline)
@@ -2450,13 +2485,12 @@ impl ControllerState {
                             && candidate.path.0.starts_with(&entity.path.0)
                     })
             })
-            .cloned()
             .collect()
     }
 
-    fn compact_entities(&self) -> Vec<CatalogEntity> {
-        self.catalog_entities()
-            .into_iter()
+    fn compact_entities<'a>(&self, entities: &'a [CatalogEntity]) -> Vec<&'a CatalogEntity> {
+        entities
+            .iter()
             .filter(|entity| entity.presence == PresenceClass::Inline)
             .filter(|entity| entity.form == DISPLAY_FORM_COMPACT)
             .filter(|entity| self.entity_is_visible(entity))
@@ -2484,11 +2518,14 @@ impl ControllerState {
         entity_ref_from_entries(&values)
     }
 
-    fn presentation_path_for_entity(&self, target: &EntityRef) -> Option<GroupPath> {
-        let entities = self.catalog_entities();
-        let collapsed = collapsed_child_entities(&entities);
-        let entity = entities.iter().find(|entity| &entity.entity == target)?;
-        if !collapsed.contains(target) {
+    fn presentation_path_for_entity(
+        &self,
+        target: &EntityRef,
+        catalog: &CatalogEvaluation,
+    ) -> Option<GroupPath> {
+        let entities = &catalog.entities;
+        let entity = catalog.entity(target)?;
+        if !catalog.collapsed.contains(target) {
             return Some(entity.path.clone());
         }
         entities
@@ -2747,13 +2784,13 @@ impl ControllerState {
         })
     }
 
-    fn tab_grouping_infos(&self) -> HashMap<u64, TabGroupingInfo> {
+    fn tab_grouping_infos(&self, catalog: &CatalogEvaluation) -> HashMap<u64, TabGroupingInfo> {
         let tab_seed_metadata = self.tab_seed_metadata_entries();
         let tab_entities: HashMap<u64, TabGroupingInfo> = self
             .tabs
             .iter()
             .filter_map(|tab| {
-                self.tab_entity_grouping(tab.tab_id, &tab_seed_metadata)
+                self.tab_entity_grouping(tab.tab_id, &tab_seed_metadata, catalog)
                     .map(|grouping| (tab.tab_id, grouping))
             })
             .collect();
@@ -2860,9 +2897,10 @@ impl ControllerState {
         &self,
         tab_id: u64,
         tab_seed_metadata: &TabSeedMetadata,
+        catalog: &CatalogEvaluation,
     ) -> Option<TabGroupingInfo> {
         let entity = self.tab_entity_ref(tab_id, tab_seed_metadata)?;
-        let path = self.presentation_path_for_entity(&entity)?;
+        let path = self.presentation_path_for_entity(&entity, catalog)?;
         tab_grouping_info_for_entity_path(path)
     }
 
@@ -2879,7 +2917,11 @@ impl ControllerState {
         select_primary_entry(&entries).map(|candidate| candidate.entry)
     }
 
-    fn resolved_metadata_for_tabs(&self, tabs: &[TabCard]) -> Vec<ResolvedMetadata> {
+    fn resolved_metadata_for_tabs(
+        &self,
+        tabs: &[TabCard],
+        catalog: &CatalogEvaluation,
+    ) -> Vec<ResolvedMetadata> {
         let directory_tab_ids = tabs
             .iter()
             .filter_map(|tab| {
@@ -2895,7 +2937,7 @@ impl ControllerState {
             BTreeMap::new();
         let mut identities_by_target: BTreeMap<EntityId, Vec<ReachableMetadataIdentity>> =
             BTreeMap::new();
-        let catalog_entities = self.catalog_entities();
+        let catalog_entities = &catalog.entities;
         let mut group_paths = catalog_entities
             .iter()
             .flat_map(|entity| group_path_prefixes(&entity.path))
@@ -3862,6 +3904,91 @@ mod tests {
                 .collect(),
             unset: vec![],
         });
+    }
+
+    #[test]
+    fn snapshot_resolves_catalog_once_regardless_of_group_count() {
+        for count in [8, 32] {
+            let mut state = ControllerState::default();
+            let config = crate::grouping_config::parse_grouping_config_kdl(
+                r#"
+                grouping "entities" priority=1000 {
+                    presence kind="vessel" class="tab"
+                    level key="entity.id"
+                }
+            "#,
+            )
+            .unwrap();
+            state.set_grouping_catalog(Some(GroupingConfigCatalog::with_bundled_defaults(config)));
+            for i in 0..count {
+                apply_target_only_entity(
+                    &mut state,
+                    "vessel",
+                    &format!("v{i}"),
+                    i,
+                    &[
+                        (KEY_DISPLAY_LABEL, "Worker"),
+                        (KEY_MATERIALIZE_RECIPE, "true"),
+                    ],
+                );
+            }
+            CATALOG_BUILDS.with(|n| n.set(0));
+            let model = state.view_model();
+            assert_eq!(
+                model
+                    .rows
+                    .iter()
+                    .filter(|r| matches!(r, RailRow::Latent { .. }))
+                    .count(),
+                count as usize
+            );
+            assert_eq!(
+                CATALOG_BUILDS.with(|n| n.get()),
+                1,
+                "one catalog evaluation per snapshot, independent of group count"
+            );
+
+            // Observed workspaces previously rebuilt the catalog once per tab
+            // as well. Metadata changes between snapshots must remain visible.
+            state.observe_workspaces(
+                (0..count)
+                    .map(|i| tab_info(i as usize, i as usize, "Worker", i == 0))
+                    .collect(),
+            );
+            for i in 0..count {
+                state.apply_metadata_patch(crate::MetadataPatch {
+                    target: crate::MetadataTarget::Tab(i as u64),
+                    source_id: "host".into(),
+                    set: [
+                        (KEY_ENTITY_KIND, "vessel".to_string()),
+                        (KEY_ENTITY_ID, format!("v{i}")),
+                    ]
+                    .into_iter()
+                    .map(|(key, value)| {
+                        (
+                            key.to_owned(),
+                            crate::MetadataValueUpdate {
+                                value: MetadataValue::Text(value),
+                                ttl_ms: None,
+                                precedence: None,
+                                ordinal: None,
+                            },
+                        )
+                    })
+                    .collect(),
+                    unset: vec![],
+                });
+            }
+            CATALOG_BUILDS.with(|n| n.set(0));
+            let live = state.view_model();
+            assert_eq!(live.tabs.len(), count as usize);
+            assert!(live.tabs.iter().all(|tab| tab.grouping.is_some()));
+            assert!(!live
+                .rows
+                .iter()
+                .any(|row| matches!(row, RailRow::Latent { .. })));
+            assert_eq!(CATALOG_BUILDS.with(|n| n.get()), 1);
+        }
     }
 
     fn directory_entity_state() -> ControllerState {
