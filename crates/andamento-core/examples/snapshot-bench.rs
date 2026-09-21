@@ -43,12 +43,41 @@ fn main() {
         sidebar.apply(100, patches);
         black_box(sidebar.snapshot());
         let t = Instant::now();
-        for _ in 0..3 {
-            black_box(sidebar.snapshot());
+        for update in 0..3 {
+            sidebar.apply(
+                100,
+                [MetadataPatch {
+                    target: MetadataTarget::Entity(EntityRef {
+                        kind: "vessel".into(),
+                        id: "v0".into(),
+                    }),
+                    source_id: "bench".into(),
+                    unset: vec![],
+                    set: BTreeMap::from([(
+                        "status.state".into(),
+                        MetadataValueUpdate {
+                            value: MetadataValue::Text(format!("update-{update}")),
+                            ttl_ms: None,
+                            precedence: None,
+                            ordinal: Some(0),
+                        },
+                    )]),
+                }],
+            );
+            black_box(sidebar.snapshot_shared());
         }
         println!(
-            "entities={n} snapshot_ms={:.3}",
+            "entities={n} changed_snapshot_ms={:.3}",
             t.elapsed().as_secs_f64() * 1000. / 3.
+        );
+        let t = Instant::now();
+        for _ in 0..1000 {
+            sidebar.apply(100, []);
+            black_box(sidebar.snapshot_shared());
+        }
+        println!(
+            "entities={n} unchanged_tick_and_snapshot_us={:.3}",
+            t.elapsed().as_secs_f64() * 1000.
         );
     }
 }

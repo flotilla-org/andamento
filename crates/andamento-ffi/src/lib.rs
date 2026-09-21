@@ -58,7 +58,6 @@ pub struct Andamento {
     sidebar: Sidebar,
     poisoned: bool,
     client: u64,
-    generation: u64,
     effects: Vec<HostEffect>,
 }
 unsafe fn run<T>(
@@ -114,7 +113,6 @@ pub unsafe extern "C" fn andamento_create(
             sidebar,
             poisoned: false,
             client: NEXT_CLIENT.fetch_add(1, Ordering::Relaxed),
-            generation: 0,
             effects: vec![],
         })),
         Err(message) => {
@@ -133,7 +131,6 @@ pub unsafe extern "C" fn andamento_configure(
 ) -> u32 {
     run(h, error, |h| {
         h.sidebar.configure(&config.read()?)?;
-        h.generation += 1;
         Ok(())
     })
     .is_some() as u32
@@ -153,7 +150,6 @@ pub unsafe extern "C" fn andamento_apply_patch_json(
         let patch: MetadataPatch =
             serde_json::from_str(&json.read()?).map_err(|e| e.to_string())?;
         h.sidebar.apply(now_ms, [patch]);
-        h.generation += 1;
         Ok(())
     })
     .is_some() as u32
@@ -222,7 +218,6 @@ pub unsafe extern "C" fn andamento_apply_entity(
             );
         }
         h.sidebar.apply(now_ms, [patch]);
-        h.generation += 1;
         Ok(())
     })
     .is_some() as u32
@@ -235,7 +230,6 @@ pub unsafe extern "C" fn andamento_tick(
 ) -> u32 {
     run(h, error, |h| {
         h.sidebar.apply(now_ms, []);
-        h.generation += 1;
         Ok(())
     })
     .is_some() as u32
@@ -294,7 +288,6 @@ pub unsafe extern "C" fn andamento_observe(
             })
             .collect::<Result<Vec<_>, String>>()?;
         h.sidebar.observe(workspaces, panes);
-        h.generation += 1;
         Ok(())
     })
     .is_some() as u32
@@ -315,9 +308,7 @@ pub unsafe extern "C" fn andamento_complete(
             2 => Err(message.read()?),
             _ => return Err("invalid completion outcome".into()),
         };
-        if h.sidebar.complete(request_id, result) {
-            h.generation += 1;
-        }
+        h.sidebar.complete(request_id, result);
         Ok(())
     })
     .is_some() as u32
@@ -491,6 +482,21 @@ impl AndamentoSnapshot {
         }
     }
 }
+/// Cheap revision check; no snapshot construction or fact resolution.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_is_current(
+    h: *mut Andamento,
+    snapshot: *const AndamentoSnapshot,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        Ok(snapshot
+            .as_ref()
+            .is_some_and(|s| s.client == h.client && s.generation == h.sidebar.revision()))
+    })
+    .unwrap_or(false) as u32
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn andamento_snapshot_acquire(
     h: *mut Andamento,
@@ -500,7 +506,7 @@ pub unsafe extern "C" fn andamento_snapshot_acquire(
         let snapshot = h.sidebar.snapshot();
         let mut out = AndamentoSnapshot {
             client: h.client,
-            generation: h.generation,
+            generation: h.sidebar.revision(),
             nodes: vec![],
             fields: vec![],
             controls: vec![],
@@ -756,7 +762,7 @@ pub unsafe extern "C" fn andamento_dispatch(
         if s.client != h.client {
             return Err("snapshot belongs to another sidebar".into());
         }
-        if s.generation != h.generation {
+        if s.generation != h.sidebar.revision() {
             return Err("stale snapshot action; acquire a new snapshot".into());
         }
         let action = s
@@ -765,7 +771,6 @@ pub unsafe extern "C" fn andamento_dispatch(
             .ok_or("invalid action reference")?
             .clone();
         h.effects.extend(h.sidebar.dispatch(action)?);
-        h.generation += 1;
         Ok(())
     })
     .is_some() as u32

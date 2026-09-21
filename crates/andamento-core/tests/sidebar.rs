@@ -429,3 +429,93 @@ fn abbreviation_uses_placement_variable_and_preserves_full_fallback() {
     );
     assert_eq!(after.surface.sections[0].nodes[0].key, node.key);
 }
+
+#[test]
+fn unchanged_heartbeats_and_ticks_reuse_snapshot_until_expiry() {
+    let mut sidebar = sidebar();
+    let mut heartbeat = patch(entity("vessel", "v"), &[("status.state", text("running"))]);
+    heartbeat.set.get_mut("status.state").unwrap().ttl_ms = Some(100);
+    sidebar.apply(100, [heartbeat.clone()]);
+    let revision = sidebar.revision();
+    let snapshot = sidebar.snapshot_shared() as *const _;
+    sidebar.apply(150, [heartbeat]);
+    sidebar.apply(201, []); // The original deadline has been replaced.
+    assert_eq!(sidebar.revision(), revision);
+    assert_eq!(sidebar.snapshot_shared() as *const _, snapshot);
+    sidebar.apply(250, []); // Entries are live through the deadline, inclusively.
+    assert_eq!(sidebar.revision(), revision);
+    sidebar.apply(251, []);
+    assert_ne!(sidebar.revision(), revision);
+    let expired = sidebar.snapshot();
+    sidebar.apply(300, []);
+    assert_eq!(sidebar.snapshot(), expired);
+}
+
+#[test]
+fn recipe_only_changes_invalidate_snapshot_and_activation() {
+    let mut sidebar = sidebar();
+    let revision = sidebar.revision();
+    let before = sidebar.snapshot();
+    sidebar.apply(
+        100,
+        [patch(
+            entity("vessel", "v"),
+            &[("action.primary.recipe", text("printf changed"))],
+        )],
+    );
+    assert_ne!(sidebar.revision(), revision);
+    assert_eq!(
+        before.surface.sections[0].nodes[0].children[0].content,
+        sidebar.snapshot().surface.sections[0].nodes[0].children[0].content
+    );
+    let effects = sidebar
+        .dispatch(Action::Activate {
+            entity: entity("vessel", "v"),
+        })
+        .unwrap();
+    assert!(
+        matches!(&effects[0], HostEffect::Materialize { recipe, .. } if recipe == "printf changed")
+    );
+}
+
+#[test]
+fn identical_topology_is_unchanged_but_selection_invalidates() {
+    let mut sidebar = sidebar();
+    let mut workspaces = vec![Workspace {
+        id: 7,
+        position: 0,
+        name: "Workspace".into(),
+        selected: true,
+    }];
+    sidebar.observe(workspaces.clone(), vec![]);
+    let before = sidebar.snapshot();
+    sidebar.observe(workspaces.clone(), vec![]);
+    assert_eq!(sidebar.snapshot(), before);
+    workspaces[0].selected = false;
+    sidebar.observe(workspaces, vec![]);
+    assert_ne!(sidebar.revision(), before.revision);
+}
+
+#[test]
+fn removing_last_expired_fact_invalidates_entity_membership() {
+    let mut sidebar = Sidebar::new(CONFIG).unwrap();
+    let mut fact = patch(
+        entity("project", "p"),
+        &[("display.label", text("Project"))],
+    );
+    fact.set.get_mut("display.label").unwrap().ttl_ms = Some(10);
+    sidebar.apply(100, [fact]);
+    sidebar.apply(111, []);
+    let revision = sidebar.revision();
+    sidebar.apply(
+        111,
+        [MetadataPatch {
+            target: MetadataTarget::Entity(entity("project", "p")),
+            source_id: "fixture".into(),
+            set: BTreeMap::new(),
+            unset: vec!["display.label".into()],
+        }],
+    );
+    assert_ne!(sidebar.revision(), revision);
+    assert!(sidebar.snapshot().surface.sections[0].nodes.is_empty());
+}

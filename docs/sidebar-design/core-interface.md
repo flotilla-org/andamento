@@ -127,20 +127,28 @@ sites; do not reconstruct the template resolver in Wheelhouse.
 Nodes expose activation/collapse action references; display controls expose
 their own action references. Pass the snapshot and reference to
 `andamento_dispatch`. References are snapshot-local, and dispatch rejects a
-snapshot from another client or from before a successful mutation.
+snapshot from another client or from before a revision-changing mutation.
 
 Capture the action reference together with the displayed snapshot. Process
 captured clicks against that snapshot before draining queued facts, ticks,
-topology and completion updates, then render the next frame. If a mutation
+topology and completion updates, then render the next frame. If a revision-changing mutation
 already intervened, dispatch rejects the click: discard it and redraw. Do not
 re-hit-test the old click's coordinates against the new arrangement, since
 that could activate a different entity. Only a fresh user interaction is
 hit-tested against a new frame. Never reuse an action index against a different
-snapshot. The conservative rule also invalidates actions after a tick or a
-successful dispatch that produces no effects. Unknown/duplicate completions
-and failed input validation leave actions valid. Retaining an older snapshot
-for drawing is always allowed. Controls with no core action expose their
-host-owned intent, such as scrolling, with `ANDAMENTO_NONE` as the action.
+snapshot. The conservative revision includes recipe and other fact changes even if the
+visible content is unchanged. Unchanged heartbeat renewals, ticks that cross no
+expiry deadline, identical topology observations, unknown completions and failed
+input validation preserve actions. Retaining an older snapshot keeps its text
+alive, but does not make stale actions valid.
+
+After draining an update batch, call `andamento_snapshot_is_current` with the
+currently displayed snapshot. It returns 1 when both client and revision match;
+otherwise acquire a replacement. NULL or other-client snapshots return 0 without
+an error; invalid or poisoned clients return 0 with an error. The query does no
+snapshot construction. The shared Rust `Sidebar` retains one immutable snapshot
+per revision (`snapshot_shared` borrows it; `snapshot` makes an owned clone).
+Expiry lookup uses a deadline index whose entries are replaced on lease renewal.
 
 Dispatch queues tagged host effects. `andamento_effects_take` drains them into
 an independently owned batch; a second take returns an empty batch. Execute

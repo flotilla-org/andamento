@@ -1,6 +1,6 @@
 //! One presentation client's runtime. Hosts supply time and observations and
 //! execute returned effects. Transport and rendering do not run inside it.
-use std::collections::BTreeMap;
+use std::{cell::OnceCell, collections::BTreeMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -113,6 +113,7 @@ enum Pending {
 pub struct Sidebar {
     state: ControllerState,
     revision: u64,
+    snapshot: OnceCell<Snapshot>,
     next_request: u64,
     pending: BTreeMap<u64, Pending>,
     errors: BTreeMap<EntityRef, String>,
@@ -174,24 +175,26 @@ impl Sidebar {
         self.state.set_grouping_catalog(Some(
             crate::grouping_config::GroupingConfigCatalog::with_bundled_defaults(grouping),
         ));
-        self.revision += 1;
+        self.invalidate();
         Ok(())
     }
 
     /// Apply a drained batch before requesting a snapshot. Time is monotonic
     /// milliseconds in this instance, supplied by the host; an empty batch is a tick.
     pub fn apply(&mut self, now_ms: u64, patches: impl IntoIterator<Item = MetadataPatch>) {
-        self.state.advance_time(now_ms);
+        let mut changed = self.state.advance_time(now_ms);
         for patch in patches {
-            self.state.apply_metadata_patch(patch);
+            changed |= self.state.apply_metadata_patch(patch);
         }
-        self.revision += 1;
+        if changed {
+            self.invalidate();
+        }
     }
 
     /// Full host topology, including selected workspace. Closing a workspace
     /// removes its local presentation, not the separately published entity.
     pub fn observe(&mut self, workspaces: Vec<Workspace>, panes: Vec<PaneObservation>) {
-        self.state.observe_workspaces(
+        let mut changed = self.state.observe_workspaces(
             workspaces
                 .into_iter()
                 .map(|w| ControllerTab {
@@ -202,12 +205,31 @@ impl Sidebar {
                 })
                 .collect(),
         );
-        self.state.observe_panes(panes);
+        changed |= self.state.observe_panes(panes);
+        if changed {
+            self.invalidate();
+        }
+    }
+
+    /// Conservative revision of presentation and action dependencies. Unchanged
+    /// heartbeats and ticks preserve it; recipe changes invalidate it even when
+    /// the rendered content is unchanged.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn invalidate(&mut self) {
         self.revision += 1;
+        self.snapshot.take();
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot {
+        self.snapshot_shared().clone()
+    }
+
+    /// Borrow the retained immutable snapshot, rebuilding only after a change.
+    pub fn snapshot_shared(&self) -> &Snapshot {
+        self.snapshot.get_or_init(|| Snapshot {
             revision: self.revision,
             surface: self.state.view_model().presentation.unwrap_or_default(),
             errors: self
@@ -218,7 +240,7 @@ impl Sidebar {
                     message: message.clone(),
                 })
                 .collect(),
-        }
+        })
     }
 
     pub fn dispatch(&mut self, action: Action) -> Result<Vec<HostEffect>, String> {
@@ -229,7 +251,9 @@ impl Sidebar {
                 }) {
                     return Ok(vec![]);
                 }
-                self.errors.remove(&entity);
+                if self.errors.remove(&entity).is_some() {
+                    self.invalidate();
+                }
                 let activation = self.state.activation_for_entity(&entity);
                 let effect = match activation {
                     Some(EntityActivation::FocusTab { position }) => {
@@ -271,7 +295,7 @@ impl Sidebar {
                         HostEffect::Inspect { entity }
                     }
                 };
-                self.revision += 1;
+                self.invalidate();
                 Ok(vec![effect])
             }
             Action::TogglePlacement { key } => {
@@ -280,7 +304,7 @@ impl Sidebar {
                 }
                 self.state
                     .apply_rail_ui_action(RailUiAction::TogglePlacement { key });
-                self.revision += 1;
+                self.invalidate();
                 Ok(vec![])
             }
             Action::SetVariable { key, name, value } => {
@@ -299,7 +323,7 @@ impl Sidebar {
                 }
                 self.state
                     .set_node_variable(NodeKey::Placement(key), name, value);
-                self.revision += 1;
+                self.invalidate();
                 Ok(vec![])
             }
             Action::ToggleDisplayVariable { name } => {
@@ -309,7 +333,7 @@ impl Sidebar {
                 {
                     return Err("unknown display variable".into());
                 }
-                self.revision += 1;
+                self.invalidate();
                 Ok(vec![])
             }
         }
@@ -346,7 +370,7 @@ impl Sidebar {
                 }
             },
         }
-        self.revision += 1;
+        self.invalidate();
         true
     }
 

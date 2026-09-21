@@ -334,8 +334,11 @@ pub struct ControllerState {
 
 impl ControllerState {
     /// Opt into host-supplied monotonic time. Legacy adapters retain receipt-clock behavior.
-    pub fn advance_time(&mut self, now_ms: u64) {
-        self.clock_ms = Some(self.clock_ms.unwrap_or(0).max(now_ms));
+    pub fn advance_time(&mut self, now_ms: u64) -> bool {
+        let before = self.now();
+        let now = self.clock_ms.unwrap_or(0).max(now_ms);
+        self.clock_ms = Some(now);
+        self.metadata.expires_between(before, now)
     }
     fn now(&self) -> u64 {
         self.clock_ms.unwrap_or(self.receive_counter)

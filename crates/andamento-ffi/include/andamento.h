@@ -86,6 +86,12 @@ uint32_t andamento_complete(Andamento *, uint64_t request_id, uint32_t outcome,
  * Keys are opaque, stable within this client for a placement across snapshots;
  * qualify section keys with is_section. Do not parse their representation.
  */
+/* Returns 1 if the snapshot still matches this client, 0 for a stale, NULL,
+ * or other-client snapshot (no error), or an invalid/poisoned client (error).
+ * Unchanged heartbeats/ticks preserve validity. Recipe changes invalidate it
+ * even if visible content is identical. Check after draining a batch; acquire
+ * only when stale. This query does not build a snapshot. */
+uint32_t andamento_snapshot_is_current(Andamento *, const AndamentoSnapshot *, char **error_out);
 AndamentoSnapshot *andamento_snapshot_acquire(Andamento *, char **error_out);
 enum { ANDAMENTO_CATALOG, ANDAMENTO_LATENT, ANDAMENTO_OPENING, ANDAMENTO_LIVE };
 typedef struct {
@@ -119,7 +125,7 @@ uint32_t andamento_snapshot_control(const AndamentoSnapshot *, size_t index, And
 size_t andamento_snapshot_diagnostic_count(const AndamentoSnapshot *);
 uint32_t andamento_snapshot_diagnostic(const AndamentoSnapshot *, size_t index, AndamentoText *out);
 /* Action references belong to one snapshot. Another client or a snapshot from
- * before any successful mutation is rejected. Dispatch captured clicks against
+ * before a revision-changing mutation is rejected. Dispatch captured clicks against
  * their displayed snapshot BEFORE draining queued facts/ticks/topology. If an
  * update already intervened, discard the stale click and redraw. Only a NEW
  * interaction may be hit-tested against the new frame: never replay old

@@ -23,7 +23,8 @@ cargo run -p andamento-core --example snapshot-bench -- /path/to/sidebar.kdl
 ```
 
 The probe applies synthetic vessel facts, warms the snapshot path, then measures
-three snapshots at each catalog size. With Wheelhouse's daily-driver configuration
+three changed snapshots at each catalog size. It also reports 1,000 unchanged
+tick/snapshot queries separately. With Wheelhouse's daily-driver configuration
 and an unoptimised build on macOS:
 
 | Entities | Before (ms) | Shared evaluation (ms) |
@@ -50,18 +51,41 @@ workspace regression also passed. Rustfmt and diff whitespace checks passed.
 Strict Clippy remains blocked by existing warnings in the core (including
 metadata map iteration, boolean assertions and derivable defaults).
 
-## Next steps
+## Revision-based reuse
 
-All derived catalog structures belong to Andamento. Hosts should deliver facts
-and topology and consume immutable snapshots.
+`Sidebar` now retains its immutable snapshot until an input changes its
+presentation or action dependencies. Identical facts, heartbeat renewals and
+unchanged topology preserve the revision. Ticks use a deadline-count index to
+check for expirations without scanning facts. Renewals replace the old deadline;
+removals unregister it. Expiration and removal of an entity's last contribution
+invalidate the snapshot. Recipe-only changes invalidate actions even when the
+visible row content is unchanged.
 
-This change does not retain catalogs between snapshots or change the C ABI.
-Next, distinguish unchanged heartbeat/tick operations from fact, topology and
-presentation changes. Preserve action invalidation when an opening recipe
-changes even if the visible label does not. Shared change reporting should let
-hosts apply a batch and acquire once, without guessing whether facts matter.
+The additive C query `andamento_snapshot_is_current` lets hosts drain updates
+and acquire at most one replacement snapshot. Existing acquisition still returns
+an independently owned snapshot, and old snapshot text remains valid. The Rust
+`snapshot_shared` method borrows the retained snapshot without cloning it.
 
-Measure those changes before implementing per-entity retained caches or a
-fine-grained dependency graph. Full-catalog passes remain in diagnostics, and
-some hierarchy operations still scan entities; this patch does not claim that
-all snapshot work is linear for every hierarchy.
+In the debug scaling probe, unchanged tick plus borrowed snapshot queries took
+0.05 to 0.08 microseconds per iteration at 25 through 200 entities. These are
+in-process measurements, not C snapshot flattening or end-to-end rendering.
+Changed inputs still perform a full evaluation. Repeated timing under concurrent
+build load is variable; use the probe to compare on an otherwise idle machine.
+
+Validation now includes 150 core unit tests, 15 sidebar integration tests,
+terminal/HTML/FFI tests, the no-JSON FFI build and the linked C fixture. Tests cover
+renewed deadlines, bounded deadline storage, expiry, removal of the last expired
+fact, identical topology, selection changes and recipe-only stale actions.
+
+## Remaining work
+
+Derived structures and change tracking stay in Andamento. This implementation
+retains snapshots but does not yet retain and incrementally update individual
+catalog entries. Some hierarchy operations still scan entities, and diagnostics
+resolve metadata separately. It does not claim all snapshot work is linear for
+every hierarchy.
+
+Producer-side batch envelopes and source lease renewal remain possible protocol
+improvements. Wheelhouse can already defer snapshot acquisition until after its
+existing queue drain, using core-owned revision reporting. Measure real traffic
+with these changes before adding per-entity caches or a dependency graph.
