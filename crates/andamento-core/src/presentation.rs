@@ -1,7 +1,7 @@
 //! Semantic placement snapshots. No terminal coordinates, ANSI, host SDK types,
 //! or GroupPath rows cross this interface. The legacy model is an internal input
 //! until the placement cutover removes it; consumers use these types instead.
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::ControlFlow};
 
 use serde::{Deserialize, Serialize};
 
@@ -90,36 +90,44 @@ impl Content {
     }
 }
 
+// Inspection and coverage both traverse collapsed descendants. The callback can
+// stop early for lookup, without allocating an intermediate list of nodes.
+fn visit_nodes<'a, B>(
+    nodes: &'a [PlacementNode],
+    visit: &mut impl FnMut(&'a PlacementNode) -> ControlFlow<B>,
+) -> ControlFlow<B> {
+    for node in nodes {
+        visit(node)?;
+        visit_nodes(&node.children, visit)?;
+    }
+    ControlFlow::Continue(())
+}
+
 impl SurfaceSnapshot {
     pub fn node(&self, key: &PlacementKey) -> Option<&PlacementNode> {
-        fn find<'a>(nodes: &'a [PlacementNode], key: &PlacementKey) -> Option<&'a PlacementNode> {
-            nodes.iter().find_map(|node| {
+        self.sections.iter().find_map(|section| {
+            visit_nodes(&section.nodes, &mut |node| {
                 if &node.key == key {
-                    Some(node)
+                    ControlFlow::Break(node)
                 } else {
-                    find(&node.children, key)
+                    ControlFlow::Continue(())
                 }
             })
-        }
-        self.sections
-            .iter()
-            .find_map(|section| find(&section.nodes, key))
+            .break_value()
+        })
     }
 
     /// Cover host inventory even when catalog filtering or provider loss removes
     /// its normal placement. Collapsed descendants still have a reachable path.
     pub(crate) fn cover_workspaces(&mut self, workspaces: &[crate::state::ControllerTab]) {
-        fn collect(nodes: &[PlacementNode], covered: &mut std::collections::BTreeSet<u64>) {
-            for node in nodes {
+        let mut covered = std::collections::BTreeSet::new();
+        for section in &self.sections {
+            let _: ControlFlow<()> = visit_nodes(&section.nodes, &mut |node| {
                 if let PresentationState::Live { workspace_id, .. } = node.state {
                     covered.insert(workspace_id);
                 }
-                collect(&node.children, covered);
-            }
-        }
-        let mut covered = std::collections::BTreeSet::new();
-        for section in &self.sections {
-            collect(&section.nodes, &mut covered);
+                ControlFlow::Continue(())
+            });
         }
         let mut nodes = Vec::new();
         for workspace in workspaces {

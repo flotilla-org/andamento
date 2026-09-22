@@ -260,6 +260,9 @@ impl Sidebar {
                     .node(&key)
                     .ok_or("unknown placement")?;
                 let entity = node.entity.clone();
+                if self.entity_is_pending(&entity) {
+                    return Ok(vec![]);
+                }
                 if let crate::presentation::PresentationState::Live { workspace_id, .. } =
                     node.state
                 {
@@ -284,9 +287,7 @@ impl Sidebar {
                 }
             }
             Action::Activate { entity } => {
-                if self.pending.values().any(|p| match p {
-                    Pending::Focus(e) | Pending::Materialize(e, _) => e == &entity,
-                }) {
+                if self.entity_is_pending(&entity) {
                     return Ok(vec![]);
                 }
                 if self.errors.remove(&entity).is_some() {
@@ -410,6 +411,12 @@ impl Sidebar {
         }
         self.invalidate();
         true
+    }
+
+    fn entity_is_pending(&self, entity: &EntityRef) -> bool {
+        self.pending.values().any(|pending| match pending {
+            Pending::Focus(e) | Pending::Materialize(e, _) => e == entity,
+        })
     }
 
     fn request_id(&mut self) -> u64 {

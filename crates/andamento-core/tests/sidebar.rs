@@ -685,3 +685,36 @@ fn compact_placement_template_preserves_independent_detail_template() {
         "Host: remote"
     );
 }
+
+#[test]
+fn live_placement_focus_is_deduplicated_until_completion_and_can_retry() {
+    let mut sidebar = sidebar();
+    let request = open(&mut sidebar);
+    sidebar.complete(request, Ok(Some(42)));
+    sidebar.observe(vec![workspace()], vec![]);
+    let key = sidebar.snapshot().surface.sections[0].nodes[0].children[0]
+        .key
+        .clone();
+    let action = Action::ActivatePlacement { key };
+    for outcome in [Err("focus failed".into()), Ok(None)] {
+        let effects = sidebar.dispatch(action.clone()).unwrap();
+        let request_id = match effects.as_slice() {
+            [HostEffect::Focus {
+                request_id,
+                workspace_id: 42,
+            }] => *request_id,
+            other => panic!("expected one focus, got {other:?}"),
+        };
+        let revision = sidebar.snapshot_shared().revision;
+        assert!(sidebar.dispatch(action.clone()).unwrap().is_empty());
+        assert!(sidebar
+            .dispatch(Action::Activate {
+                entity: entity("vessel", "v")
+            })
+            .unwrap()
+            .is_empty());
+        assert_eq!(sidebar.snapshot_shared().revision, revision);
+        assert!(sidebar.complete(request_id, outcome));
+        assert!(!sidebar.complete(request_id, Ok(None)));
+    }
+}
