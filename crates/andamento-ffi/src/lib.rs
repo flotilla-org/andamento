@@ -420,9 +420,7 @@ impl AndamentoSnapshot {
     fn node(&mut self, n: &PlacementNode, parent: usize) {
         let (fields, field_count, controls, control_count) = self.content(&n.content);
         let (details, detail_count, _, _) = self.content(&n.detail);
-        let activate = self.action(Action::Activate {
-            entity: n.entity.clone(),
-        });
+        let activate = self.action(Action::ActivatePlacement { key: n.key.clone() });
         let toggle = self.action(Action::TogglePlacement { key: n.key.clone() });
         // Length framing is collision-free even when IDs contain separators.
         // Hosts compare this opaque value; its encoding is not an interface.

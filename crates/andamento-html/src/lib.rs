@@ -34,8 +34,8 @@ fn node(node: &PlacementNode) -> String {
         "<article data-placement=\"{key}\" data-layout=\"{}\">",
         escape(node.layout.as_deref().unwrap_or("lines"))
     );
-    let activation = action_attribute(&Action::Activate {
-        entity: node.entity.clone(),
+    let activation = action_attribute(&Action::ActivatePlacement {
+        key: node.key.clone(),
     });
     if !node.children.is_empty() {
         result.push_str(&format!(

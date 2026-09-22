@@ -22,6 +22,10 @@ pub struct Workspace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
+    /// Activate this appearance, focusing its exact workspace when already live.
+    ActivatePlacement {
+        key: PlacementKey,
+    },
     Activate {
         entity: EntityRef,
     },
@@ -231,7 +235,11 @@ impl Sidebar {
     pub fn snapshot_shared(&self) -> &Snapshot {
         self.snapshot.get_or_init(|| Snapshot {
             revision: self.revision,
-            surface: self.state.view_model().presentation.unwrap_or_default(),
+            surface: {
+                let mut surface = self.state.view_model().presentation.unwrap_or_default();
+                surface.cover_workspaces(self.state.workspaces());
+                surface
+            },
             errors: self
                 .errors
                 .iter()
@@ -245,6 +253,36 @@ impl Sidebar {
 
     pub fn dispatch(&mut self, action: Action) -> Result<Vec<HostEffect>, String> {
         match action {
+            Action::ActivatePlacement { key } => {
+                let node = self
+                    .snapshot_shared()
+                    .surface
+                    .node(&key)
+                    .ok_or("unknown placement")?;
+                let entity = node.entity.clone();
+                if let crate::presentation::PresentationState::Live { workspace_id, .. } =
+                    node.state
+                {
+                    if !self
+                        .state
+                        .workspaces()
+                        .iter()
+                        .any(|w| w.tab_id == workspace_id)
+                    {
+                        return Err("workspace disappeared".into());
+                    }
+                    self.errors.remove(&entity);
+                    let request_id = self.request_id();
+                    self.pending.insert(request_id, Pending::Focus(entity));
+                    self.invalidate();
+                    Ok(vec![HostEffect::Focus {
+                        request_id,
+                        workspace_id,
+                    }])
+                } else {
+                    self.dispatch(Action::Activate { entity })
+                }
+            }
             Action::Activate { entity } => {
                 if self.pending.values().any(|p| match p {
                     Pending::Focus(e) | Pending::Materialize(e, _) => e == &entity,

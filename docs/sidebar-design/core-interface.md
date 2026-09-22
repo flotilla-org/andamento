@@ -240,3 +240,23 @@ is opaque, snapshot-owned and empty for a section; compare it for equality only.
 Group adjacent nodes by loop key and use the existing layout intent to choose
 native geometry. Keep each node's activation/collapse reference and state when
 presenting several items on one line. Width measurement stays in the frontend.
+
+### Workspace coverage
+
+`Sidebar` snapshots include an `andamento.unplaced-workspaces` section labelled
+“Other workspaces” when observed workspaces have no live placement in the
+resolved catalog presentation. This section is an inventory safety net, independent
+of template visibility filters. It disappears when empty. Collapsed descendants
+still count as placements; frontends must preserve their expansion path.
+
+Fallback keys use workspace IDs, never display names, and use the reserved
+`andamento.unplaced-workspaces` loop and `andamento.workspace` entity kind.
+Renaming or selecting a workspace preserves its key. Provider removal, filtering,
+and multiple workspaces sharing one entity must not hide inventory entries.
+
+Native, HTML and terminal snapshot consumers activate rows with
+`Action::ActivatePlacement`. Live placements focus their exact observed workspace;
+other placements use the normal entity activation path. The C ABI exposes this
+through the existing snapshot-owned activate action, with no ABI layout change.
+Direct `Action::Activate` remains entity-oriented. Hovering or taking a snapshot
+never materializes a workspace.

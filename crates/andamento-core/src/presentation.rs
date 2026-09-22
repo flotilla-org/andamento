@@ -106,6 +106,79 @@ impl SurfaceSnapshot {
             .find_map(|section| find(&section.nodes, key))
     }
 
+    /// Cover host inventory even when catalog filtering or provider loss removes
+    /// its normal placement. Collapsed descendants still have a reachable path.
+    pub(crate) fn cover_workspaces(&mut self, workspaces: &[crate::state::ControllerTab]) {
+        fn collect(nodes: &[PlacementNode], covered: &mut std::collections::BTreeSet<u64>) {
+            for node in nodes {
+                if let PresentationState::Live { workspace_id, .. } = node.state {
+                    covered.insert(workspace_id);
+                }
+                collect(&node.children, covered);
+            }
+        }
+        let mut covered = std::collections::BTreeSet::new();
+        for section in &self.sections {
+            collect(&section.nodes, &mut covered);
+        }
+        let mut nodes = Vec::new();
+        for workspace in workspaces {
+            if !covered.insert(workspace.tab_id) {
+                continue;
+            }
+            let entity = EntityRef {
+                kind: "andamento.workspace".into(),
+                id: workspace.tab_id.to_string(),
+            };
+            let key = PlacementKey(vec![crate::PlacementSegment {
+                loop_name: "andamento.unplaced-workspaces".into(),
+                entity: entity.clone(),
+            }]);
+            nodes.push(PlacementNode {
+                loop_key: key.loop_key("andamento.unplaced-workspaces").unwrap(),
+                key,
+                entity,
+                label: workspace.name.clone(),
+                layout: None,
+                form: "compact".into(),
+                state: PresentationState::Live {
+                    workspace_id: workspace.tab_id,
+                    selected: workspace.active,
+                },
+                content: Content {
+                    fields: vec![TemplateConfigRenderedField {
+                        class: TemplateConfigFieldClass::Required,
+                        priority: None,
+                        value: workspace.name.clone(),
+                        source: None,
+                    }],
+                    ..Content::default()
+                },
+                detail: Content::default(),
+                facts: BTreeMap::new(),
+                variables: None,
+                collapsed: false,
+                children: Vec::new(),
+            });
+        }
+        if !nodes.is_empty() {
+            self.sections.push(Section {
+                name: "andamento.unplaced-workspaces".into(),
+                pinned: false,
+                content: Content {
+                    fields: vec![TemplateConfigRenderedField {
+                        class: TemplateConfigFieldClass::Required,
+                        priority: None,
+                        value: "Other workspaces".into(),
+                        source: None,
+                    }],
+                    ..Content::default()
+                },
+                nodes,
+            });
+        }
+    }
+
     pub(crate) fn resolve(
         model: &ControllerViewModel,
         layouts: &BTreeMap<PlacementKey, Option<String>>,

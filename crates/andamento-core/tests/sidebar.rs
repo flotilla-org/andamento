@@ -519,3 +519,140 @@ fn removing_last_expired_fact_invalidates_entity_membership() {
     assert_ne!(sidebar.revision(), revision);
     assert!(sidebar.snapshot().surface.sections[0].nodes.is_empty());
 }
+
+fn fallback(sidebar: &Sidebar) -> Vec<andamento_core::presentation::PlacementNode> {
+    sidebar
+        .snapshot()
+        .surface
+        .sections
+        .into_iter()
+        .find(|s| s.name == "andamento.unplaced-workspaces")
+        .map(|s| s.nodes)
+        .unwrap_or_default()
+}
+
+#[test]
+fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close() {
+    let mut sidebar = sidebar();
+    let mut first = workspace();
+    let mut second = first.clone();
+    second.id = 43;
+    second.position = 1;
+    second.selected = false;
+    sidebar.observe(vec![first.clone(), second.clone()], vec![]);
+    let nodes = fallback(&sidebar);
+    assert_eq!(nodes.len(), 2);
+    assert_eq!(nodes[0].label, nodes[1].label);
+    assert_ne!(nodes[0].key, nodes[1].key);
+    let key = nodes[1].key.clone();
+    let effects = sidebar
+        .dispatch(Action::ActivatePlacement { key: key.clone() })
+        .unwrap();
+    let request_id = match effects[0] {
+        HostEffect::Focus {
+            workspace_id: 43,
+            request_id,
+        } => request_id,
+        ref effect => panic!("{effect:?}"),
+    };
+    sidebar.complete(request_id, Ok(None));
+    first.selected = false;
+    second.selected = true;
+    second.name = "Renamed".into();
+    sidebar.observe(vec![first.clone(), second], vec![]);
+    let nodes = fallback(&sidebar);
+    assert_eq!(nodes[1].key, key);
+    assert_eq!(nodes[1].label, "Renamed");
+    assert_eq!(
+        nodes[1].state,
+        andamento_core::presentation::PresentationState::Live {
+            workspace_id: 43,
+            selected: true,
+        }
+    );
+    sidebar.observe(vec![first], vec![]);
+    assert_eq!(fallback(&sidebar).len(), 1);
+    assert!(sidebar.dispatch(Action::ActivatePlacement { key }).is_err());
+    sidebar.observe(vec![], vec![]);
+    assert!(fallback(&sidebar).is_empty());
+}
+
+#[test]
+fn placements_cover_aliases_and_collapsed_children_but_filtered_workspaces_fall_back() {
+    let mut sidebar = sidebar();
+    let request = open(&mut sidebar);
+    sidebar.complete(request, Ok(Some(42)));
+    sidebar.observe(vec![workspace()], vec![]);
+    assert!(fallback(&sidebar).is_empty());
+    let parent = sidebar.snapshot().surface.sections[0].nodes[0].key.clone();
+    sidebar
+        .dispatch(Action::TogglePlacement { key: parent })
+        .unwrap();
+    assert!(fallback(&sidebar).is_empty());
+    // Hide every provider placement while retaining the observed workspace and
+    // its binding. Reconfiguring back restores both aliases without a fallback.
+    sidebar
+        .configure(&format!(
+            r#"{CONFIG}
+        display-variable "show-vessels" type="bool" default=false label="Vessels" icon="V"
+        grouping "hidden-vessels" priority=9999 {{
+            filter key="entity.kind" equals="vessel"
+            presence kind="vessel" class="tab" visible-when="show-vessels"
+            level key="entity.id"
+        }}
+    "#
+        ))
+        .unwrap();
+    let nodes = fallback(&sidebar);
+    assert_eq!(nodes.len(), 1);
+    assert!(matches!(
+        sidebar
+            .dispatch(Action::ActivatePlacement {
+                key: nodes[0].key.clone()
+            })
+            .unwrap()
+            .as_slice(),
+        [HostEffect::Focus {
+            workspace_id: 42,
+            ..
+        }]
+    ));
+    sidebar.configure(CONFIG).unwrap();
+    assert!(fallback(&sidebar).is_empty());
+}
+
+#[test]
+fn removed_provider_facts_do_not_remove_open_workspaces() {
+    let mut sidebar = sidebar();
+    let request = open(&mut sidebar);
+    sidebar.complete(request, Ok(Some(42)));
+    sidebar.observe(vec![workspace()], vec![]);
+    let mut remove = patch(entity("vessel", "v"), &[]);
+    remove.unset = vec![
+        "flotilla.project",
+        "flotilla.vessel",
+        "display.label",
+        "status.attention",
+        "status.state",
+        "action.primary.target",
+        "action.primary.recipe",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    sidebar.apply(101, [remove]);
+    let nodes = fallback(&sidebar);
+    assert_eq!(nodes.len(), 1);
+    assert!(matches!(
+        sidebar
+            .dispatch(Action::ActivatePlacement {
+                key: nodes[0].key.clone()
+            })
+            .unwrap()
+            .as_slice(),
+        [HostEffect::Focus {
+            workspace_id: 42,
+            ..
+        }]
+    ));
+}
