@@ -46,8 +46,8 @@ pub fn render(snapshot: &SurfaceSnapshot, columns: usize) -> Frame {
             frame.hits.push(Hit {
                 row: frame.lines.len(),
                 action: if node.children.is_empty() {
-                    Action::Activate {
-                        entity: node.entity.clone(),
+                    Action::ActivatePlacement {
+                        key: node.key.clone(),
                     }
                 } else {
                     Action::TogglePlacement {

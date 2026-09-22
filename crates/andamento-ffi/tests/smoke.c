@@ -159,18 +159,25 @@ int main(int argc, char **argv) {
     const uint8_t bad_utf8[] = {255};
     expected_error(andamento_configure(h, (AndamentoText){bad_utf8, 1}, &error));
     expected_error(andamento_tick(NULL, 0, &error));
-    /* A click belongs to the displayed geometry. A tick or metadata update
-     * arriving before dispatch rejects it; never retarget old coordinates. */
+    assert(!andamento_snapshot_is_current(h, typed, &error) && !error);
+    assert(!andamento_snapshot_is_current(h, NULL, &error) && !error);
+    /* Empty ticks preserve actions, but a recipe-only change must invalidate
+     * them just like a change to displayed geometry. */
     for (int metadata_update = 0; metadata_update < 2; ++metadata_update) {
         AndamentoSnapshot *displayed = snapshot(h);
         AndamentoNode intended = find_node(displayed, "vessel");
+        ok(andamento_tick(h, 112, &error));
+        ok(andamento_snapshot_is_current(h, displayed, &error));
         if (metadata_update) {
             AndamentoFact rename = {.key=T("display.label"), .kind=ANDAMENTO_FACT_TEXT,
                                      .text=T("a different arrangement")};
             ok(andamento_apply_entity(h, 112, T("vessel"), T("v"), T("fixture"), &rename, 1, &error));
         } else {
-            ok(andamento_tick(h, 112, &error));
+            AndamentoFact recipe = {.key=T("action.primary.recipe"), .kind=ANDAMENTO_FACT_TEXT,
+                                     .text=T("printf changed-recipe")};
+            ok(andamento_apply_entity(h, 112, T("vessel"), T("v"), T("fixture"), &recipe, 1, &error));
         }
+        assert(!andamento_snapshot_is_current(h, displayed, &error) && !error);
         expected_error(andamento_dispatch(h, displayed, intended.activate, &error));
         AndamentoEffects *rejected = take(h);
         assert(andamento_effects_count(rejected) == 0);

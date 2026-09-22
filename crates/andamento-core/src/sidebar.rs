@@ -1,6 +1,6 @@
 //! One presentation client's runtime. Hosts supply time and observations and
 //! execute returned effects. Transport and rendering do not run inside it.
-use std::collections::BTreeMap;
+use std::{cell::OnceCell, collections::BTreeMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +22,10 @@ pub struct Workspace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
+    /// Activate this appearance, focusing its exact workspace when already live.
+    ActivatePlacement {
+        key: PlacementKey,
+    },
     Activate {
         entity: EntityRef,
     },
@@ -113,6 +117,7 @@ enum Pending {
 pub struct Sidebar {
     state: ControllerState,
     revision: u64,
+    snapshot: OnceCell<Snapshot>,
     next_request: u64,
     pending: BTreeMap<u64, Pending>,
     errors: BTreeMap<EntityRef, String>,
@@ -174,24 +179,26 @@ impl Sidebar {
         self.state.set_grouping_catalog(Some(
             crate::grouping_config::GroupingConfigCatalog::with_bundled_defaults(grouping),
         ));
-        self.revision += 1;
+        self.invalidate();
         Ok(())
     }
 
     /// Apply a drained batch before requesting a snapshot. Time is monotonic
     /// milliseconds in this instance, supplied by the host; an empty batch is a tick.
     pub fn apply(&mut self, now_ms: u64, patches: impl IntoIterator<Item = MetadataPatch>) {
-        self.state.advance_time(now_ms);
+        let mut changed = self.state.advance_time(now_ms);
         for patch in patches {
-            self.state.apply_metadata_patch(patch);
+            changed |= self.state.apply_metadata_patch(patch);
         }
-        self.revision += 1;
+        if changed {
+            self.invalidate();
+        }
     }
 
     /// Full host topology, including selected workspace. Closing a workspace
     /// removes its local presentation, not the separately published entity.
     pub fn observe(&mut self, workspaces: Vec<Workspace>, panes: Vec<PaneObservation>) {
-        self.state.observe_workspaces(
+        let mut changed = self.state.observe_workspaces(
             workspaces
                 .into_iter()
                 .map(|w| ControllerTab {
@@ -202,14 +209,37 @@ impl Sidebar {
                 })
                 .collect(),
         );
-        self.state.observe_panes(panes);
+        changed |= self.state.observe_panes(panes);
+        if changed {
+            self.invalidate();
+        }
+    }
+
+    /// Conservative revision of presentation and action dependencies. Unchanged
+    /// heartbeats and ticks preserve it; recipe changes invalidate it even when
+    /// the rendered content is unchanged.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn invalidate(&mut self) {
         self.revision += 1;
+        self.snapshot.take();
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot {
+        self.snapshot_shared().clone()
+    }
+
+    /// Borrow the retained immutable snapshot, rebuilding only after a change.
+    pub fn snapshot_shared(&self) -> &Snapshot {
+        self.snapshot.get_or_init(|| Snapshot {
             revision: self.revision,
-            surface: self.state.view_model().presentation.unwrap_or_default(),
+            surface: {
+                let mut surface = self.state.view_model().presentation.unwrap_or_default();
+                surface.cover_workspaces(self.state.workspaces());
+                surface
+            },
             errors: self
                 .errors
                 .iter()
@@ -218,18 +248,51 @@ impl Sidebar {
                     message: message.clone(),
                 })
                 .collect(),
-        }
+        })
     }
 
     pub fn dispatch(&mut self, action: Action) -> Result<Vec<HostEffect>, String> {
         match action {
-            Action::Activate { entity } => {
-                if self.pending.values().any(|p| match p {
-                    Pending::Focus(e) | Pending::Materialize(e, _) => e == &entity,
-                }) {
+            Action::ActivatePlacement { key } => {
+                let node = self
+                    .snapshot_shared()
+                    .surface
+                    .node(&key)
+                    .ok_or("unknown placement")?;
+                let entity = node.entity.clone();
+                if self.entity_is_pending(&entity) {
                     return Ok(vec![]);
                 }
-                self.errors.remove(&entity);
+                if let crate::presentation::PresentationState::Live { workspace_id, .. } =
+                    node.state
+                {
+                    if !self
+                        .state
+                        .workspaces()
+                        .iter()
+                        .any(|w| w.tab_id == workspace_id)
+                    {
+                        return Err("workspace disappeared".into());
+                    }
+                    self.errors.remove(&entity);
+                    let request_id = self.request_id();
+                    self.pending.insert(request_id, Pending::Focus(entity));
+                    self.invalidate();
+                    Ok(vec![HostEffect::Focus {
+                        request_id,
+                        workspace_id,
+                    }])
+                } else {
+                    self.dispatch(Action::Activate { entity })
+                }
+            }
+            Action::Activate { entity } => {
+                if self.entity_is_pending(&entity) {
+                    return Ok(vec![]);
+                }
+                if self.errors.remove(&entity).is_some() {
+                    self.invalidate();
+                }
                 let activation = self.state.activation_for_entity(&entity);
                 let effect = match activation {
                     Some(EntityActivation::FocusTab { position }) => {
@@ -271,7 +334,7 @@ impl Sidebar {
                         HostEffect::Inspect { entity }
                     }
                 };
-                self.revision += 1;
+                self.invalidate();
                 Ok(vec![effect])
             }
             Action::TogglePlacement { key } => {
@@ -280,7 +343,7 @@ impl Sidebar {
                 }
                 self.state
                     .apply_rail_ui_action(RailUiAction::TogglePlacement { key });
-                self.revision += 1;
+                self.invalidate();
                 Ok(vec![])
             }
             Action::SetVariable { key, name, value } => {
@@ -299,7 +362,7 @@ impl Sidebar {
                 }
                 self.state
                     .set_node_variable(NodeKey::Placement(key), name, value);
-                self.revision += 1;
+                self.invalidate();
                 Ok(vec![])
             }
             Action::ToggleDisplayVariable { name } => {
@@ -309,7 +372,7 @@ impl Sidebar {
                 {
                     return Err("unknown display variable".into());
                 }
-                self.revision += 1;
+                self.invalidate();
                 Ok(vec![])
             }
         }
@@ -346,8 +409,14 @@ impl Sidebar {
                 }
             },
         }
-        self.revision += 1;
+        self.invalidate();
         true
+    }
+
+    fn entity_is_pending(&self, entity: &EntityRef) -> bool {
+        self.pending.values().any(|pending| match pending {
+            Pending::Focus(e) | Pending::Materialize(e, _) => e == entity,
+        })
     }
 
     fn request_id(&mut self) -> u64 {

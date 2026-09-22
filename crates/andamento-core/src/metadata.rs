@@ -26,6 +26,7 @@ impl CandidateEntry {
 pub struct MetadataStore {
     entries: HashMap<EntityId, HashMap<String, BTreeMap<String, MetadataEntry>>>,
     target_ordinals: HashMap<EntityId, i64>,
+    expiry_counts: BTreeMap<u64, usize>,
 }
 
 impl MetadataStore {
@@ -43,12 +44,20 @@ impl MetadataStore {
         self.target_ordinals
             .entry(entity_id.clone())
             .or_insert(entry.ordinal);
-        self.entries
+        let deadline = entry.ttl_ms.map(|ttl| entry.updated_at.saturating_add(ttl));
+        let previous = self
+            .entries
             .entry(entity_id)
             .or_default()
             .entry(key.into())
             .or_default()
             .insert(source_id.into(), entry);
+        if let Some(previous) = previous {
+            self.remove_expiry(&previous);
+        }
+        if let Some(deadline) = deadline {
+            *self.expiry_counts.entry(deadline).or_default() += 1;
+        }
     }
 
     pub fn unset(
@@ -71,7 +80,28 @@ impl MetadataStore {
             self.entries.remove(entity_id);
             self.target_ordinals.remove(entity_id);
         }
+        if let Some(entry) = &removed {
+            self.remove_expiry(entry);
+        }
         removed
+    }
+
+    fn remove_expiry(&mut self, entry: &MetadataEntry) {
+        if let Some(ttl) = entry.ttl_ms {
+            let deadline = entry.updated_at.saturating_add(ttl);
+            if let Some(count) = self.expiry_counts.get_mut(&deadline) {
+                *count -= 1;
+                if *count == 0 {
+                    self.expiry_counts.remove(&deadline);
+                }
+            }
+        }
+    }
+
+    /// Entries are live through their deadline. Storage is bounded by the
+    /// number of retained contributions; renewing a lease replaces its deadline.
+    pub fn expires_between(&self, before: u64, now: u64) -> bool {
+        before < now && self.expiry_counts.range(before..now).next().is_some()
     }
 
     pub fn target_ordinal(&self, entity_id: &EntityId) -> Option<i64> {
@@ -93,6 +123,7 @@ impl MetadataStore {
     pub fn apply_patch(&mut self, patch: MetadataPatch, now: u64) -> MetadataPatchOutcome {
         let mut outcome = MetadataPatchOutcome::default();
         let target = EntityId::from(patch.target);
+        let target_existed = self.entries.contains_key(&target);
         for key in patch.unset {
             if let Some(entry) = self.unset(&target, &key, &patch.source_id) {
                 outcome.touched = true;
@@ -146,6 +177,9 @@ impl MetadataStore {
                 }
             }
         }
+        // Entity identity can itself participate in grouping even after all
+        // its facts expire. Removing the last expired contribution removes it.
+        outcome.view_changed |= target_existed != self.entries.contains_key(&target);
         outcome
     }
 
@@ -339,6 +373,32 @@ mod tests {
             precedence,
             ordinal,
         }
+    }
+
+    #[test]
+    fn expiry_index_replaces_renewed_and_removed_deadlines() {
+        let mut store = MetadataStore::default();
+        let target = EntityId::Root;
+        for now in 0..1000 {
+            store.set(
+                target.clone(),
+                "status",
+                "source",
+                MetadataEntry {
+                    value: MetadataValue::Text("running".into()),
+                    updated_at: now,
+                    ttl_ms: Some(10),
+                    precedence: 0,
+                    ordinal: 0,
+                },
+            );
+            assert_eq!(store.expiry_counts.len(), 1);
+        }
+        assert!(!store.expires_between(0, 1009));
+        assert!(store.expires_between(1009, 1010));
+        store.unset(&target, "status", "source");
+        assert!(store.expiry_counts.is_empty());
+        assert!(!store.expires_between(0, u64::MAX));
     }
 
     #[test]
