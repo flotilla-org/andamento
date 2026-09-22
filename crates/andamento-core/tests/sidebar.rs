@@ -656,3 +656,32 @@ fn removed_provider_facts_do_not_remove_open_workspaces() {
         }]
     ));
 }
+
+#[test]
+fn compact_placement_template_preserves_independent_detail_template() {
+    let mut sidebar = sidebar();
+    sidebar
+        .configure(&format!(
+            r#"{CONFIG}
+        template "vessel/detail" slot="detail" node-kind="entity" {{
+            field "host" key="flotilla.vessel.host" prefix="Host: "
+        }}
+    "#
+        ))
+        .unwrap();
+    sidebar.apply(
+        101,
+        [patch(
+            entity("vessel", "v"),
+            &[("flotilla.vessel.host", text("remote"))],
+        )],
+    );
+    let snapshot = sidebar.snapshot();
+    let vessel = &snapshot.surface.sections[0].nodes[0].children[0];
+    assert!(vessel.content.text().contains("Worker <one>"));
+    assert_eq!(vessel.detail.text(), "Host: remote");
+    assert_eq!(
+        snapshot.surface.sections[1].nodes[0].detail.text(),
+        "Host: remote"
+    );
+}

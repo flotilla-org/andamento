@@ -87,7 +87,9 @@ fn placed_display_entity(
             effective_kdl: String::new(),
             resolve_error: None,
         });
-        display.templates.detail = display.templates.compact.clone();
+        if form != DISPLAY_FORM_COMPACT {
+            display.templates.detail = display.templates.compact.clone();
+        }
     }
     display
 }
@@ -1805,7 +1807,9 @@ impl ControllerState {
                             };
                             if let Some(slot) = resolved_slot {
                                 display.templates.compact = Some(slot.clone());
-                                display.templates.detail = Some(slot);
+                                if form != DISPLAY_FORM_COMPACT {
+                                    display.templates.detail = Some(slot);
+                                }
                             }
                             child_loops = template.loops.as_slice();
                             // Applied templates intentionally start a new lexical environment.
