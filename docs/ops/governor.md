@@ -15,35 +15,39 @@ operator turn before making any change.
 
 Andamento's required CI gates are defined in `.github/workflows/ci.yml`:
 
-- stable `cargo fmt --check` for the five workspace packages;
+- stable `cargo fmt --check` across the workspace packages;
 - `cargo clippy --workspace --target wasm32-wasip1 --locked`;
-- library-only tests on `x86_64-unknown-linux-gnu` for
-  `andamento-shared`, `andamento-controller`, `andamento-config`, and
-  `andamento-rail`; and
-- a locked, single-job release build of the workspace for `wasm32-wasip1`.
+- locked, library-only workspace tests on `x86_64-unknown-linux-gnu`;
+- a locked, single-job release build of the workspace for `wasm32-wasip1`; and
+- `scripts/check-independent-core.py`, which builds and tests the reusable
+  core and frontend crates in an isolated workspace with no Zellij checkout
+  and runs a real C client against the exported ABI.
 
-CI uses the pinned `rjwittams/zellij` revision from the workflow and exposes it
-as the sibling `../zellij` path required by the workspace. When reproducing a
-gate locally, use that revision rather than an arbitrary Zellij checkout.
+The Zellij-dependent jobs use the pinned `rjwittams/zellij` revision from the
+workflow and expose it as the sibling `../zellij` path required by the
+workspace. When reproducing one of those gates locally, use that revision
+rather than an arbitrary Zellij checkout. The independence gate deliberately
+runs without one.
 
 ## Current priorities
 
-The tracker is the live source of priority. At the time this guidance was
-written, the active direction is:
+The tracker is the live source of priority and of specific tickets; this
+section records only standing direction. Ready work carries the `ready` label
+and review follow-ups carry `from-review`.
 
-1. Carry the recent template brainstorm through the tracer-bullet placement
-   pipeline: generic node-variable controls, one-section placement rendering,
-   nested loops and bindings, placement-scoped identity, templated controls,
-   declared abbreviation tiers, stable per-loop layout, and the reserved hover
-   card. Cut over and remove the old grouping layer only after those slices
-   land. See issues #63 through #71; #72 holds the unmatched-entity decision.
-2. Keep the rail's core independent of its presentation surface. Zellij remains
-   supported, but the direction in #51 is one surface-agnostic model and
-   renderer with adapters for a Zellij plugin, a plain terminal, wheelhouse,
-   and richer TUI surfaces.
-3. Treat user-visible regressions (#60–#62), latent materialization correctness
-   (#52), and empty-project visibility (#48) as part of daily-driver quality,
-   not as reasons to bypass the declared template direction.
+1. The main development thrust is Wheelhouse's use of Andamento: the shared
+   sidebar core embedded through its C interface, with native geometry owned
+   by the host. Judge slices by whether they move that embedding forward.
+2. Keep the core independent of its presentation surface. Zellij remains a
+   supported host through the plugin adapters, but behaviour belongs in the
+   surface-agnostic model and renderer, with thin adapters per surface.
+3. Finish the placement pipeline and cut over. The legacy grouping layer and
+   its throwaway renderer adapter stay byte-identical until the declared
+   cut-over slice removes them; open template-semantics decisions are settled
+   on their tickets before the slices that depend on them are dispatched.
+4. Daily-driver quality (visible regressions, latent materialization
+   correctness, empty-project visibility) is part of the work, not a reason to
+   bypass the declared template direction.
 
 Do not infer ordering among equally ready tickets from their issue numbers.
 Ask the operator when the durable record does not establish the next slice.
@@ -61,6 +65,10 @@ Ask the operator when the durable record does not establish the next slice.
 - Preserve the controller/rail/config ownership split described in `README.md`.
   The controller owns shared state, the rail renders, and config/inspect
   surfaces explain and edit declarations.
+- Preserve the core/host boundary described in
+  `docs/sidebar-design/core-interface.md`. The reusable crates must not depend
+  on Zellij; host adapters stay in the plugins, and the independence CI gate
+  enforces this.
 - Keep metadata entity-scoped and UI state placement-scoped. Producers publish
   flat facts; they do not publish rendered paths.
 - This experimental repository uses hard cut-overs rather than compatibility
