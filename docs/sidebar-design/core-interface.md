@@ -260,3 +260,9 @@ other placements use the normal entity activation path. The C ABI exposes this
 through the existing snapshot-owned activate action, with no ABI layout change.
 Direct `Action::Activate` remains entity-oriented. Hovering or taking a snapshot
 never materializes a workspace.
+
+## Managed primary content
+
+The optional typed content-plan interface reconciles one command terminal slot
+without recreating its workspace. See [Managed primary content](managed-primary-content.md)
+for producer facts, host commit tokens, expiry and retry semantics.

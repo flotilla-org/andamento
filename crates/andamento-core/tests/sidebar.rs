@@ -718,3 +718,161 @@ fn live_placement_focus_is_deduplicated_until_completion_and_can_retry() {
         assert!(!sidebar.complete(request_id, Ok(None)));
     }
 }
+
+#[test]
+fn managed_primary_reconciles_resolution_not_global_revision() {
+    use andamento_core::managed::{ContentState, TerminalContent};
+    let mut sidebar = sidebar();
+    let subject = entity("vessel", "v");
+    let original = TerminalContent {
+        target: "one".into(),
+        command: "printf hello".into(),
+        cwd: None,
+    };
+    let publish = |sidebar: &mut Sidebar, time, target: &str| {
+        sidebar.apply(
+            time,
+            [patch(
+                subject.clone(),
+                &[
+                    ("workspace.primary.state", text("ready")),
+                    ("workspace.primary.target", text(target)),
+                    ("action.primary.recipe", text(&format!("attach {target}"))),
+                ],
+            )],
+        );
+    };
+    sidebar.observe(vec![workspace()], vec![]);
+    publish(&mut sidebar, 101, "two");
+    let first = sidebar
+        .managed
+        .plan(42, subject.clone(), original.clone())
+        .update
+        .unwrap();
+    sidebar.apply(
+        102,
+        [patch(
+            subject.clone(),
+            &[("display.label", text("Renamed"))],
+        )],
+    );
+    assert_eq!(
+        sidebar
+            .managed
+            .plan(42, subject.clone(), original.clone())
+            .update,
+        Some(first.clone())
+    );
+    publish(&mut sidebar, 103, "three");
+    assert!(!sidebar.managed.valid(42, first.token));
+    assert!(!sidebar.managed.complete(42, first.token, true));
+    let second = sidebar
+        .managed
+        .plan(42, subject.clone(), original.clone())
+        .update
+        .unwrap();
+    assert!(sidebar.managed.complete(42, second.token, false));
+    assert_eq!(
+        sidebar
+            .managed
+            .plan(42, subject.clone(), original.clone())
+            .state,
+        ContentState::Failed
+    );
+    sidebar.managed.retry(42);
+    let third = sidebar
+        .managed
+        .plan(42, subject.clone(), original.clone())
+        .update
+        .unwrap();
+    assert!(sidebar.managed.complete(42, third.token, true));
+    assert_eq!(
+        sidebar
+            .managed
+            .plan(42, subject.clone(), third.content.clone())
+            .state,
+        ContentState::Current
+    );
+    sidebar.apply(
+        104,
+        [patch(
+            subject.clone(),
+            &[("workspace.primary.state", text("held"))],
+        )],
+    );
+    assert_eq!(
+        sidebar
+            .managed
+            .plan(42, subject.clone(), third.content.clone())
+            .state,
+        ContentState::Held
+    );
+    publish(&mut sidebar, 105, "four");
+    let fourth = sidebar
+        .managed
+        .plan(42, subject.clone(), third.content.clone())
+        .update
+        .unwrap();
+    let mut expired = patch(subject.clone(), &[]);
+    expired.unset = vec!["workspace.primary.state".into()];
+    sidebar.apply(106, [expired]);
+    assert!(!sidebar.managed.valid(42, fourth.token));
+    assert_eq!(
+        sidebar
+            .managed
+            .plan(42, subject.clone(), third.content.clone())
+            .state,
+        ContentState::Unavailable
+    );
+    publish(&mut sidebar, 107, "four");
+    let reconnected = sidebar
+        .managed
+        .plan(42, subject.clone(), third.content.clone())
+        .update
+        .unwrap();
+    sidebar.observe(vec![], vec![]);
+    assert!(!sidebar.managed.valid(42, reconnected.token));
+    let reopened = sidebar.managed.plan(42, subject, original).update.unwrap();
+    assert_ne!(reconnected.token, reopened.token);
+}
+
+#[test]
+fn managed_content_is_independent_of_placement_and_expires_without_removal() {
+    use andamento_core::managed::{ContentState, TerminalContent};
+    let mut sidebar = Sidebar::new("").unwrap();
+    let subject = entity("project-role", "p/governor");
+    let applied = TerminalContent {
+        target: "old".into(),
+        command: "old".into(),
+        cwd: None,
+    };
+    let mut desired = patch(
+        subject.clone(),
+        &[
+            ("workspace.primary.state", text("ready")),
+            ("workspace.primary.target", text("new")),
+            ("action.primary.recipe", text("attach new")),
+        ],
+    );
+    for value in desired.set.values_mut() {
+        value.ttl_ms = Some(10);
+    }
+    sidebar.apply(100, [desired.clone()]);
+    let update = sidebar
+        .managed
+        .plan(42, subject.clone(), applied.clone())
+        .update
+        .unwrap();
+    sidebar.apply(111, []);
+    assert!(!sidebar.managed.valid(42, update.token));
+    assert_eq!(
+        sidebar
+            .managed
+            .plan(42, subject.clone(), applied.clone())
+            .state,
+        ContentState::Unavailable
+    );
+    sidebar.apply(112, [desired]);
+    let new = sidebar.managed.plan(42, subject, applied).update.unwrap();
+    assert_ne!(new.token, update.token);
+}

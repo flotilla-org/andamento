@@ -2640,6 +2640,30 @@ impl ControllerState {
         })
     }
 
+    pub(crate) fn managed_content(&self) -> BTreeMap<EntityRef, crate::managed::DesiredContent> {
+        use crate::managed::{DesiredContent, TerminalContent};
+        self.metadata
+            .targets()
+            .filter_map(|target| {
+                let EntityId::Entity(entity) = target else {
+                    return None;
+                };
+                let values = self.metadata.resolved_entries_for(target, self.now());
+                let text = |key| metadata_entry_text(&values, key).map(str::to_owned);
+                let desired = match text("workspace.primary.state").as_deref()? {
+                    "held" => DesiredContent::Held,
+                    "ready" => DesiredContent::Ready(TerminalContent {
+                        target: text("workspace.primary.target").filter(|s| !s.is_empty())?,
+                        command: text(KEY_MATERIALIZE_RECIPE).filter(|s| !s.is_empty())?,
+                        cwd: text("checkout.path"),
+                    }),
+                    _ => return None,
+                };
+                Some((entity.clone(), desired))
+            })
+            .collect()
+    }
+
     pub fn activation_for_entity(&self, subject: &EntityRef) -> Option<EntityActivation> {
         let entities = self.catalog_entities();
         let entity = entities.iter().find(|entity| &entity.entity == subject)?;

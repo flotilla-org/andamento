@@ -121,6 +121,7 @@ pub struct Sidebar {
     next_request: u64,
     pending: BTreeMap<u64, Pending>,
     errors: BTreeMap<EntityRef, String>,
+    pub managed: crate::managed::ManagedContent,
 }
 
 impl Sidebar {
@@ -191,6 +192,7 @@ impl Sidebar {
             changed |= self.state.apply_metadata_patch(patch);
         }
         if changed {
+            self.managed.publish(self.state.managed_content());
             self.invalidate();
         }
     }
@@ -198,6 +200,8 @@ impl Sidebar {
     /// Full host topology, including selected workspace. Closing a workspace
     /// removes its local presentation, not the separately published entity.
     pub fn observe(&mut self, workspaces: Vec<Workspace>, panes: Vec<PaneObservation>) {
+        self.managed
+            .retain_workspaces(&workspaces.iter().map(|w| w.id).collect::<Vec<_>>());
         let mut changed = self.state.observe_workspaces(
             workspaces
                 .into_iter()
@@ -211,6 +215,7 @@ impl Sidebar {
         );
         changed |= self.state.observe_panes(panes);
         if changed {
+            self.managed.publish(self.state.managed_content());
             self.invalidate();
         }
     }

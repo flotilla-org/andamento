@@ -886,6 +886,122 @@ pub unsafe extern "C" fn andamento_string_free(s: *mut c_char) {
     }
 }
 
+/// Owned single-slot reconciliation plan. Text borrows remain valid until release.
+pub struct AndamentoContentPlan(andamento_core::managed::ContentPlan);
+#[repr(C)]
+pub struct ContentView {
+    pub state: u32,
+    pub token: u64,
+    pub target: Text,
+    pub command: Text,
+    pub has_cwd: u32,
+    pub cwd: Text,
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_content_plan(
+    h: *mut Andamento,
+    workspace: u64,
+    kind: Text,
+    id: Text,
+    target: Text,
+    command: Text,
+    has_cwd: u32,
+    cwd: Text,
+    error: *mut *mut c_char,
+) -> *mut AndamentoContentPlan {
+    run(h, error, |h| {
+        let entity = EntityRef {
+            kind: kind.read()?,
+            id: id.read()?,
+        };
+        let applied = andamento_core::managed::TerminalContent {
+            target: target.read()?,
+            command: command.read()?,
+            cwd: if has_cwd != 0 {
+                Some(cwd.read()?)
+            } else {
+                None
+            },
+        };
+        Ok(Box::into_raw(Box::new(AndamentoContentPlan(
+            h.sidebar.managed.plan(workspace, entity, applied),
+        ))))
+    })
+    .unwrap_or(ptr::null_mut())
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_content_get(
+    plan: *const AndamentoContentPlan,
+    out: *mut ContentView,
+) -> u32 {
+    let (Some(plan), Some(out)) = (plan.as_ref(), out.as_mut()) else {
+        return 0;
+    };
+    use andamento_core::managed::ContentState;
+    *out = ContentView {
+        state: match plan.0.state {
+            ContentState::Unavailable => 0,
+            ContentState::Held => 1,
+            ContentState::Current => 2,
+            ContentState::Updating => 3,
+            ContentState::Failed => 4,
+        },
+        token: 0,
+        target: Text::borrowed(""),
+        command: Text::borrowed(""),
+        has_cwd: 0,
+        cwd: Text::borrowed(""),
+    };
+    if let Some(update) = &plan.0.update {
+        out.token = update.token;
+        out.target = Text::borrowed(&update.content.target);
+        out.command = Text::borrowed(&update.content.command);
+        out.has_cwd = update.content.cwd.is_some() as u32;
+        out.cwd = Text::borrowed(update.content.cwd.as_deref().unwrap_or_default());
+    }
+    1
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_content_valid(
+    h: *mut Andamento,
+    workspace: u64,
+    token: u64,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| Ok(h.sidebar.managed.valid(workspace, token))).unwrap_or(false) as u32
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_content_complete(
+    h: *mut Andamento,
+    workspace: u64,
+    token: u64,
+    success: u32,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        Ok(h.sidebar.managed.complete(workspace, token, success != 0))
+    })
+    .unwrap_or(false) as u32
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_content_retry(
+    h: *mut Andamento,
+    workspace: u64,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        h.sidebar.managed.retry(workspace);
+        Ok(())
+    })
+    .is_some() as u32
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_content_release(plan: *mut AndamentoContentPlan) {
+    if !plan.is_null() {
+        drop(Box::from_raw(plan));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

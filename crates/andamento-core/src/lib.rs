@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod grouping_config;
 pub mod host;
+pub mod managed;
 mod metadata;
 pub mod presentation;
 pub mod sidebar;
