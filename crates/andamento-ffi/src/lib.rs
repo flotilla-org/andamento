@@ -842,6 +842,7 @@ pub unsafe extern "C" fn andamento_effects_get(
             name,
             recipe,
             cwd,
+            ..
         } => {
             v.kind = 1;
             v.request_id = *request_id;
@@ -859,6 +860,27 @@ pub unsafe extern "C" fn andamento_effects_get(
         }
     }
     *out = v;
+    1
+}
+/// Managed-content target resolved by a materialize effect. Additive to ABI 2:
+/// returns 0 for other effects and for materializations without managed content.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_effects_primary_target(
+    e: *const AndamentoEffects,
+    index: usize,
+    out: *mut Text,
+) -> u32 {
+    let Some(HostEffect::Materialize {
+        primary_target: Some(target),
+        ..
+    }) = e.as_ref().and_then(|e| e.effects.get(index))
+    else {
+        return 0;
+    };
+    if out.is_null() {
+        return 0;
+    }
+    *out = Text::borrowed(target);
     1
 }
 #[no_mangle]

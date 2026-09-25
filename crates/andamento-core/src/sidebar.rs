@@ -88,6 +88,11 @@ pub enum HostEffect {
         name: String,
         recipe: String,
         cwd: Option<String>,
+        /// Managed-content target this recipe resolves, when the entity opts
+        /// into managed primary content and is ready. Hosts record it as the
+        /// applied target so the first reconciliation sees current content.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primary_target: Option<String>,
     },
     /// No materialization is available; the frontend can show its inspector.
     Inspect {
@@ -320,12 +325,18 @@ impl Sidebar {
                             return Ok(vec![]);
                         }
                         let request_id = self.request_id();
+                        let primary_target = self.state.managed_primary_target(
+                            &entity,
+                            &request.recipe,
+                            request.checkout_path.as_deref(),
+                        );
                         let effect = HostEffect::Materialize {
                             request_id,
                             entity: entity.clone(),
                             name: request.name.clone(),
                             recipe: request.recipe.clone(),
                             cwd: request.checkout_path.clone(),
+                            primary_target,
                         };
                         self.pending
                             .insert(request_id, Pending::Materialize(entity, request));

@@ -149,6 +149,10 @@ typedef struct {
 } AndamentoEffect;
 size_t andamento_effects_count(const AndamentoEffects *);
 uint32_t andamento_effects_get(const AndamentoEffects *, size_t index, AndamentoEffect *out);
+/* Managed-content target a MATERIALIZE effect's recipe resolves; additive to
+ * ABI 2 (AndamentoEffect is unchanged). Returns 0 when there is none. Record it
+ * as the applied target so the first content plan sees the new content as current. */
+uint32_t andamento_effects_primary_target(const AndamentoEffects *, size_t index, AndamentoText *out);
 void andamento_effects_release(AndamentoEffects *);
 void andamento_string_free(char *);
 void andamento_destroy(Andamento *);

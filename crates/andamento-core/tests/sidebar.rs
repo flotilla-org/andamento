@@ -876,3 +876,55 @@ fn managed_content_is_independent_of_placement_and_expires_without_removal() {
     let new = sidebar.managed.plan(42, subject, applied).update.unwrap();
     assert_ne!(new.token, update.token);
 }
+
+#[test]
+fn materializing_the_current_resolution_records_its_managed_target() {
+    use andamento_core::managed::{ContentState, TerminalContent};
+    let mut sidebar = sidebar();
+    let subject = entity("vessel", "v");
+    sidebar.observe(vec![], vec![]);
+    let materialize = |sidebar: &mut Sidebar| {
+        let effects = sidebar
+            .dispatch(Action::Activate {
+                entity: subject.clone(),
+            })
+            .unwrap();
+        match &effects[..] {
+            [HostEffect::Materialize {
+                request_id,
+                primary_target,
+                ..
+            }] => (*request_id, primary_target.clone()),
+            other => panic!("expected materialize, got {other:?}"),
+        }
+    };
+
+    // Without managed facts, a materialization carries no managed target.
+    let (request_id, target) = materialize(&mut sidebar);
+    assert_eq!(target, None);
+    assert!(sidebar.complete(request_id, Err("abandoned".into())));
+
+    sidebar.apply(
+        101,
+        [patch(
+            subject.clone(),
+            &[
+                ("workspace.primary.state", text("ready")),
+                ("workspace.primary.target", text("attempt-2")),
+            ],
+        )],
+    );
+    let (_, target) = materialize(&mut sidebar);
+    assert_eq!(target.as_deref(), Some("attempt-2"));
+
+    // A host that records the target sees its fresh content as current.
+    let applied = TerminalContent {
+        target: "attempt-2".into(),
+        command: "printf hello".into(),
+        cwd: None,
+    };
+    assert_eq!(
+        sidebar.managed.plan(7, subject.clone(), applied).state,
+        ContentState::Current
+    );
+}
