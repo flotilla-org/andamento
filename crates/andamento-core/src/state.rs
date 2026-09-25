@@ -2735,7 +2735,9 @@ impl ControllerState {
             "ready" => Some(DesiredContent::Ready(TerminalContent {
                 target: text("workspace.primary.target").filter(|s| !s.is_empty())?,
                 command: text(KEY_MATERIALIZE_RECIPE).filter(|s| !s.is_empty())?,
-                cwd: text("checkout.path"),
+                // The same fact materialization launches in, so a workspace opened
+                // from this resolution compares equal to it.
+                cwd: text(KEY_CHECKOUT_PATH),
             })),
             _ => None,
         }

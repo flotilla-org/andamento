@@ -1016,3 +1016,46 @@ template "project/detail" slot="detail" node-kind="entity" {
         .iter()
         .all(|node| node.children.is_empty()));
 }
+
+#[test]
+fn materialized_target_is_recorded_when_the_resolution_has_a_working_directory() {
+    use andamento_core::managed::{ContentState, TerminalContent};
+    let mut sidebar = sidebar();
+    let subject = entity("vessel", "v");
+    sidebar.observe(vec![], vec![]);
+    sidebar.apply(
+        101,
+        [patch(
+            subject.clone(),
+            &[
+                ("workspace.primary.state", text("ready")),
+                ("workspace.primary.target", text("attempt-2")),
+                ("git.root", text("/work/repo")),
+            ],
+        )],
+    );
+    let effects = sidebar
+        .dispatch(Action::Activate {
+            entity: subject.clone(),
+        })
+        .unwrap();
+    let [HostEffect::Materialize {
+        cwd,
+        primary_target,
+        ..
+    }] = &effects[..]
+    else {
+        panic!("expected materialize, got {effects:?}");
+    };
+    assert_eq!(cwd.as_deref(), Some("/work/repo"));
+    assert_eq!(primary_target.as_deref(), Some("attempt-2"));
+    let applied = TerminalContent {
+        target: "attempt-2".into(),
+        command: "printf hello".into(),
+        cwd: Some("/work/repo".into()),
+    };
+    assert_eq!(
+        sidebar.managed.plan(7, subject, applied).state,
+        ContentState::Current
+    );
+}
