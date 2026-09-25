@@ -718,3 +718,344 @@ fn live_placement_focus_is_deduplicated_until_completion_and_can_retry() {
         assert!(!sidebar.complete(request_id, Ok(None)));
     }
 }
+
+#[test]
+fn managed_primary_reconciles_resolution_not_global_revision() {
+    use andamento_core::managed::{ContentState, TerminalContent};
+    let mut sidebar = sidebar();
+    let subject = entity("vessel", "v");
+    let original = TerminalContent {
+        target: "one".into(),
+        command: "printf hello".into(),
+        cwd: None,
+    };
+    let publish = |sidebar: &mut Sidebar, time, target: &str| {
+        sidebar.apply(
+            time,
+            [patch(
+                subject.clone(),
+                &[
+                    ("workspace.primary.state", text("ready")),
+                    ("workspace.primary.target", text(target)),
+                    ("action.primary.recipe", text(&format!("attach {target}"))),
+                ],
+            )],
+        );
+    };
+    sidebar.observe(vec![workspace()], vec![]);
+    publish(&mut sidebar, 101, "two");
+    let first = sidebar
+        .managed
+        .plan(42, subject.clone(), original.clone())
+        .update
+        .unwrap();
+    sidebar.apply(
+        102,
+        [patch(
+            subject.clone(),
+            &[("display.label", text("Renamed"))],
+        )],
+    );
+    assert_eq!(
+        sidebar
+            .managed
+            .plan(42, subject.clone(), original.clone())
+            .update,
+        Some(first.clone())
+    );
+    publish(&mut sidebar, 103, "three");
+    assert!(!sidebar.managed.valid(42, first.token));
+    assert!(!sidebar.managed.complete(42, first.token, true));
+    let second = sidebar
+        .managed
+        .plan(42, subject.clone(), original.clone())
+        .update
+        .unwrap();
+    assert!(sidebar.managed.complete(42, second.token, false));
+    assert_eq!(
+        sidebar
+            .managed
+            .plan(42, subject.clone(), original.clone())
+            .state,
+        ContentState::Failed
+    );
+    sidebar.managed.retry(42);
+    let third = sidebar
+        .managed
+        .plan(42, subject.clone(), original.clone())
+        .update
+        .unwrap();
+    assert!(sidebar.managed.complete(42, third.token, true));
+    assert_eq!(
+        sidebar
+            .managed
+            .plan(42, subject.clone(), third.content.clone())
+            .state,
+        ContentState::Current
+    );
+    sidebar.apply(
+        104,
+        [patch(
+            subject.clone(),
+            &[("workspace.primary.state", text("held"))],
+        )],
+    );
+    assert_eq!(
+        sidebar
+            .managed
+            .plan(42, subject.clone(), third.content.clone())
+            .state,
+        ContentState::Held
+    );
+    publish(&mut sidebar, 105, "four");
+    let fourth = sidebar
+        .managed
+        .plan(42, subject.clone(), third.content.clone())
+        .update
+        .unwrap();
+    let mut expired = patch(subject.clone(), &[]);
+    expired.unset = vec!["workspace.primary.state".into()];
+    sidebar.apply(106, [expired]);
+    assert!(!sidebar.managed.valid(42, fourth.token));
+    assert_eq!(
+        sidebar
+            .managed
+            .plan(42, subject.clone(), third.content.clone())
+            .state,
+        ContentState::Unavailable
+    );
+    publish(&mut sidebar, 107, "four");
+    let reconnected = sidebar
+        .managed
+        .plan(42, subject.clone(), third.content.clone())
+        .update
+        .unwrap();
+    sidebar.observe(vec![], vec![]);
+    assert!(!sidebar.managed.valid(42, reconnected.token));
+    let reopened = sidebar.managed.plan(42, subject, original).update.unwrap();
+    assert_ne!(reconnected.token, reopened.token);
+}
+
+#[test]
+fn managed_content_is_independent_of_placement_and_expires_without_removal() {
+    use andamento_core::managed::{ContentState, TerminalContent};
+    let mut sidebar = Sidebar::new("").unwrap();
+    let subject = entity("project-role", "p/governor");
+    let applied = TerminalContent {
+        target: "old".into(),
+        command: "old".into(),
+        cwd: None,
+    };
+    let mut desired = patch(
+        subject.clone(),
+        &[
+            ("workspace.primary.state", text("ready")),
+            ("workspace.primary.target", text("new")),
+            ("action.primary.recipe", text("attach new")),
+        ],
+    );
+    for value in desired.set.values_mut() {
+        value.ttl_ms = Some(10);
+    }
+    sidebar.apply(100, [desired.clone()]);
+    let update = sidebar
+        .managed
+        .plan(42, subject.clone(), applied.clone())
+        .update
+        .unwrap();
+    sidebar.apply(111, []);
+    assert!(!sidebar.managed.valid(42, update.token));
+    assert_eq!(
+        sidebar
+            .managed
+            .plan(42, subject.clone(), applied.clone())
+            .state,
+        ContentState::Unavailable
+    );
+    sidebar.apply(112, [desired]);
+    let new = sidebar.managed.plan(42, subject, applied).update.unwrap();
+    assert_ne!(new.token, update.token);
+}
+
+#[test]
+fn materializing_the_current_resolution_records_its_managed_target() {
+    use andamento_core::managed::{ContentState, TerminalContent};
+    let mut sidebar = sidebar();
+    let subject = entity("vessel", "v");
+    sidebar.observe(vec![], vec![]);
+    let materialize = |sidebar: &mut Sidebar| {
+        let effects = sidebar
+            .dispatch(Action::Activate {
+                entity: subject.clone(),
+            })
+            .unwrap();
+        match &effects[..] {
+            [HostEffect::Materialize {
+                request_id,
+                primary_target,
+                ..
+            }] => (*request_id, primary_target.clone()),
+            other => panic!("expected materialize, got {other:?}"),
+        }
+    };
+
+    // Without managed facts, a materialization carries no managed target.
+    let (request_id, target) = materialize(&mut sidebar);
+    assert_eq!(target, None);
+    assert!(sidebar.complete(request_id, Err("abandoned".into())));
+
+    sidebar.apply(
+        101,
+        [patch(
+            subject.clone(),
+            &[
+                ("workspace.primary.state", text("ready")),
+                ("workspace.primary.target", text("attempt-2")),
+            ],
+        )],
+    );
+    let (_, target) = materialize(&mut sidebar);
+    assert_eq!(target.as_deref(), Some("attempt-2"));
+
+    // A host that records the target sees its fresh content as current.
+    let applied = TerminalContent {
+        target: "attempt-2".into(),
+        command: "printf hello".into(),
+        cwd: None,
+    };
+    assert_eq!(
+        sidebar.managed.plan(7, subject.clone(), applied).state,
+        ContentState::Current
+    );
+}
+
+#[test]
+fn detail_templates_list_related_entities_through_their_own_loops() {
+    const CONFIG: &str = r#"
+grouping "all" {
+  filter key="entity.kind"
+  presence kind="project" class="tab"
+  level key="entity.id"
+}
+region "tree" source="tree" root-template="root" form="compact" placement="tree"
+template "root" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Projects"
+}
+placement "tree" {
+  for "project" kind="project" {
+    order "display.label"
+    apply-template "project/native"
+  }
+}
+template "project/native" {
+  field "label" key="display.label"
+}
+template "project/detail" slot="detail" node-kind="entity" {
+  field "label" key="display.label"
+  for "repository" kind="project_repository" {
+    match "flotilla.project" of="project"
+    order "display.label"
+    field "repo" key="display.label" prefix="Repository: "
+    field "subpath" key="flotilla.membership.subpath" prefix="Path: "
+  }
+}
+"#;
+    let mut sidebar = Sidebar::new(CONFIG).unwrap();
+    let project = |id: &str| {
+        patch(
+            entity("project", id),
+            &[("flotilla.project", text(id)), ("display.label", text(id))],
+        )
+    };
+    let membership = |id: &str, project: &str, label: &str, subpath: Option<&str>| {
+        let mut facts = vec![
+            ("flotilla.project", text(project)),
+            ("display.label", text(label)),
+        ];
+        if let Some(subpath) = subpath {
+            facts.push(("flotilla.membership.subpath", text(subpath)));
+        }
+        patch(entity("project_repository", id), &facts)
+    };
+    sidebar.apply(
+        100,
+        [
+            project("alpha"),
+            project("beta"),
+            membership("m2", "alpha", "zeta", None),
+            membership("m1", "alpha", "shared", Some("docs")),
+            membership("m3", "beta", "shared", None),
+        ],
+    );
+    let snapshot = sidebar.snapshot();
+    let details = |id: &str| {
+        let node = snapshot.surface.sections[0]
+            .nodes
+            .iter()
+            .find(|node| node.entity.id == id)
+            .unwrap();
+        node.detail
+            .fields
+            .iter()
+            .map(|field| field.value.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        details("alpha"),
+        [
+            "alpha",
+            "Repository: shared",
+            "Path: docs",
+            "Repository: zeta"
+        ]
+    );
+    assert_eq!(details("beta"), ["beta", "Repository: shared"]);
+    // Related entities contribute detail only; they are not placed as rows.
+    assert!(snapshot.surface.sections[0]
+        .nodes
+        .iter()
+        .all(|node| node.children.is_empty()));
+}
+
+#[test]
+fn materialized_target_is_recorded_when_the_resolution_has_a_working_directory() {
+    use andamento_core::managed::{ContentState, TerminalContent};
+    let mut sidebar = sidebar();
+    let subject = entity("vessel", "v");
+    sidebar.observe(vec![], vec![]);
+    sidebar.apply(
+        101,
+        [patch(
+            subject.clone(),
+            &[
+                ("workspace.primary.state", text("ready")),
+                ("workspace.primary.target", text("attempt-2")),
+                ("git.root", text("/work/repo")),
+            ],
+        )],
+    );
+    let effects = sidebar
+        .dispatch(Action::Activate {
+            entity: subject.clone(),
+        })
+        .unwrap();
+    let [HostEffect::Materialize {
+        cwd,
+        primary_target,
+        ..
+    }] = &effects[..]
+    else {
+        panic!("expected materialize, got {effects:?}");
+    };
+    assert_eq!(cwd.as_deref(), Some("/work/repo"));
+    assert_eq!(primary_target.as_deref(), Some("attempt-2"));
+    let applied = TerminalContent {
+        target: "attempt-2".into(),
+        command: "printf hello".into(),
+        cwd: Some("/work/repo".into()),
+    };
+    assert_eq!(
+        sidebar.managed.plan(7, subject, applied).state,
+        ContentState::Current
+    );
+}

@@ -149,9 +149,40 @@ typedef struct {
 } AndamentoEffect;
 size_t andamento_effects_count(const AndamentoEffects *);
 uint32_t andamento_effects_get(const AndamentoEffects *, size_t index, AndamentoEffect *out);
+/* Managed-content target a MATERIALIZE effect's recipe resolves; additive to
+ * ABI 2 (AndamentoEffect is unchanged). Returns 0 when there is none. Record it
+ * as the applied target so the first content plan sees the new content as current. */
+uint32_t andamento_effects_primary_target(const AndamentoEffects *, size_t index, AndamentoText *out);
 void andamento_effects_release(AndamentoEffects *);
 void andamento_string_free(char *);
 void andamento_destroy(Andamento *);
+/* Optional managed-primary content reconciliation; additive to ABI 2.
+ * Only entities declaring workspace.primary.state opt in. Missing/expired facts
+ * suspend updates; they never delete content. Plans own borrowed text.
+ * Plan using the host's actual persisted descriptor. Validate immediately before
+ * committing on the single owner thread, then complete. Repeated plans return
+ * the same token until desired/binding state changes. Failures require retry or
+ * a new desired descriptor. Topology observation forgets closed workspaces.
+ */
+typedef struct AndamentoContentPlan AndamentoContentPlan;
+enum { ANDAMENTO_CONTENT_UNAVAILABLE, ANDAMENTO_CONTENT_HELD, ANDAMENTO_CONTENT_CURRENT,
+       ANDAMENTO_CONTENT_UPDATING, ANDAMENTO_CONTENT_FAILED };
+typedef struct {
+  uint32_t state;
+  uint64_t token;
+  AndamentoText target, command;
+  uint32_t has_cwd;
+  AndamentoText cwd;
+} AndamentoContent;
+AndamentoContentPlan *andamento_content_plan(Andamento *, uint64_t workspace_id,
+    AndamentoText entity_kind, AndamentoText entity_id, AndamentoText applied_target,
+    AndamentoText applied_command, uint32_t has_cwd, AndamentoText applied_cwd, char **error_out);
+uint32_t andamento_content_get(const AndamentoContentPlan *, AndamentoContent *out);
+uint32_t andamento_content_valid(Andamento *, uint64_t workspace_id, uint64_t token, char **error_out);
+uint32_t andamento_content_complete(Andamento *, uint64_t workspace_id, uint64_t token, uint32_t success, char **error_out);
+uint32_t andamento_content_retry(Andamento *, uint64_t workspace_id, char **error_out);
+void andamento_content_release(AndamentoContentPlan *);
+
 #ifdef __cplusplus
 }
 #endif

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod grouping_config;
 pub mod host;
+pub mod managed;
 mod metadata;
 pub mod presentation;
 pub mod sidebar;
@@ -686,6 +687,16 @@ pub struct DisplayEntity {
     pub templates: ResolvedTemplateSlots,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<DisplayEntity>,
+}
+
+/// Per-placement presentation resolved during placement evaluation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PlacementAnnotation {
+    /// Layout declared by the loop that produced the placement.
+    pub layout: Option<String>,
+    /// Fields contributed to the detail content by the detail template's own
+    /// loops, one set per related entity, in loop order.
+    pub related_detail: Vec<template_config::TemplateConfigRenderedField>,
 }
 
 /// Conventional form that uses the rail's wrapped ribbon layout.

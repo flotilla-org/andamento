@@ -189,7 +189,7 @@ impl SurfaceSnapshot {
 
     pub(crate) fn resolve(
         model: &ControllerViewModel,
-        layouts: &BTreeMap<PlacementKey, Option<String>>,
+        layouts: &BTreeMap<PlacementKey, crate::PlacementAnnotation>,
         states: &BTreeMap<EntityRef, PresentationState>,
     ) -> Self {
         let mut snapshot = Self {
@@ -289,7 +289,7 @@ fn resolve_node(
     model: &ControllerViewModel,
     entity: &DisplayEntity,
     region: &crate::template_config::SurfaceRegionDefinition,
-    layouts: &BTreeMap<PlacementKey, Option<String>>,
+    layouts: &BTreeMap<PlacementKey, crate::PlacementAnnotation>,
     states: &BTreeMap<EntityRef, PresentationState>,
 ) -> Option<PlacementNode> {
     let key = entity.placement.clone()?;
@@ -318,14 +318,24 @@ fn resolve_node(
             !entity.children.is_empty(),
             true,
         ),
-        detail: resolve_content(
-            entity.templates.detail.as_ref(),
-            &facts,
-            collapsed,
-            !entity.children.is_empty(),
-            false,
-        ),
-        layout: layouts.get(&key).cloned().flatten(),
+        detail: {
+            let mut detail = resolve_content(
+                entity.templates.detail.as_ref(),
+                &facts,
+                collapsed,
+                !entity.children.is_empty(),
+                false,
+            );
+            if let Some(annotation) = layouts.get(&key) {
+                detail
+                    .fields
+                    .extend(annotation.related_detail.iter().cloned());
+            }
+            detail
+        },
+        layout: layouts
+            .get(&key)
+            .and_then(|annotation| annotation.layout.clone()),
         state: states.get(&entity.entity).cloned().unwrap_or_default(),
         loop_key: key.loop_key(&region.name)?,
         key,

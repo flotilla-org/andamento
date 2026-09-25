@@ -88,6 +88,11 @@ pub enum HostEffect {
         name: String,
         recipe: String,
         cwd: Option<String>,
+        /// Managed-content target this recipe resolves, when the entity opts
+        /// into managed primary content and is ready. Hosts record it as the
+        /// applied target so the first reconciliation sees current content.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primary_target: Option<String>,
     },
     /// No materialization is available; the frontend can show its inspector.
     Inspect {
@@ -121,6 +126,7 @@ pub struct Sidebar {
     next_request: u64,
     pending: BTreeMap<u64, Pending>,
     errors: BTreeMap<EntityRef, String>,
+    pub managed: crate::managed::ManagedContent,
 }
 
 impl Sidebar {
@@ -191,6 +197,7 @@ impl Sidebar {
             changed |= self.state.apply_metadata_patch(patch);
         }
         if changed {
+            self.managed.publish(self.state.managed_content());
             self.invalidate();
         }
     }
@@ -198,6 +205,8 @@ impl Sidebar {
     /// Full host topology, including selected workspace. Closing a workspace
     /// removes its local presentation, not the separately published entity.
     pub fn observe(&mut self, workspaces: Vec<Workspace>, panes: Vec<PaneObservation>) {
+        self.managed
+            .retain_workspaces(&workspaces.iter().map(|w| w.id).collect::<Vec<_>>());
         let mut changed = self.state.observe_workspaces(
             workspaces
                 .into_iter()
@@ -211,6 +220,7 @@ impl Sidebar {
         );
         changed |= self.state.observe_panes(panes);
         if changed {
+            self.managed.publish(self.state.managed_content());
             self.invalidate();
         }
     }
@@ -315,12 +325,18 @@ impl Sidebar {
                             return Ok(vec![]);
                         }
                         let request_id = self.request_id();
+                        let primary_target = self.state.managed_primary_target(
+                            &entity,
+                            &request.recipe,
+                            request.checkout_path.as_deref(),
+                        );
                         let effect = HostEffect::Materialize {
                             request_id,
                             entity: entity.clone(),
                             name: request.name.clone(),
                             recipe: request.recipe.clone(),
                             cwd: request.checkout_path.clone(),
+                            primary_target,
                         };
                         self.pending
                             .insert(request_id, Pending::Materialize(entity, request));
