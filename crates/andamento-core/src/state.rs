@@ -1682,7 +1682,7 @@ impl ControllerState {
         entities: &[CatalogEntity],
         index: &PlacementIndex,
         form: &str,
-        layouts: &mut BTreeMap<PlacementKey, Option<String>>,
+        layouts: &mut BTreeMap<PlacementKey, crate::PlacementAnnotation>,
     ) -> Vec<crate::DisplayEntity> {
         placement
             .loops
@@ -1703,23 +1703,15 @@ impl ControllerState {
             .collect()
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn evaluate_placement_loop<'a>(
+    /// Entities a loop selects under the given bindings, in its declared order.
+    fn placement_matches<'a>(
         &self,
         loop_definition: &crate::template_config::PlacementLoop,
         entities: &'a [CatalogEntity],
         index: &PlacementIndex,
-        form: &str,
         bindings: &BTreeMap<String, &'a CatalogEntity>,
         ancestors: &[crate::EntityRef],
-        parent_placement: &PlacementKey,
-        depth: usize,
-        layouts: &mut BTreeMap<PlacementKey, Option<String>>,
-    ) -> Vec<crate::DisplayEntity> {
-        const MAX_PLACEMENT_DEPTH: usize = 64;
-        if depth >= MAX_PLACEMENT_DEPTH {
-            return vec![];
-        }
+    ) -> Vec<&'a CatalogEntity> {
         let mut postings = loop_definition
             .predicates
             .iter()
@@ -1757,6 +1749,81 @@ impl ControllerState {
             .collect::<Vec<_>>();
         matches.sort_by(|left, right| placement_entity_order(left, right, &loop_definition.order));
         matches
+    }
+
+    /// Fields contributed to a placed entity's detail by loops declared in its
+    /// detail template. The template binds the entity under its own name, as an
+    /// applied template does, and each loop renders its fields per match.
+    fn related_detail_fields<'a>(
+        &self,
+        display: &crate::DisplayEntity,
+        entity: &'a CatalogEntity,
+        entities: &'a [CatalogEntity],
+        index: &PlacementIndex,
+    ) -> Vec<crate::template_config::TemplateConfigRenderedField> {
+        let (Some(catalog), Some(detail)) = (
+            self.template_catalog.as_ref(),
+            display.templates.detail.as_ref(),
+        ) else {
+            return vec![];
+        };
+        let Some(template) = catalog.placement_template(&detail.template_name, &display.metadata)
+        else {
+            return vec![];
+        };
+        let binding = detail
+            .template_name
+            .split('/')
+            .next()
+            .unwrap_or(&detail.template_name)
+            .to_owned();
+        let bindings = BTreeMap::from([(binding, entity)]);
+        let ancestors = [entity.entity.clone()];
+        template
+            .loops
+            .iter()
+            .flat_map(|related_loop| {
+                self.placement_matches(related_loop, entities, index, &bindings, &ancestors)
+                    .into_iter()
+                    .flat_map(move |related| {
+                        let metadata = entity_facts(&related.entity, &related.values);
+                        let context = crate::template_config::TemplateConfigMatchContext {
+                            slot: crate::template_config::TemplateConfigSlot::Detail,
+                            node_kind: crate::template_config::TemplateConfigNodeKind::Entity,
+                            metadata: &metadata,
+                            collapsed: false,
+                            collapsible: false,
+                            active_tab_name: None,
+                        };
+                        related_loop
+                            .fields
+                            .iter()
+                            .filter_map(|spec| spec.render(context))
+                            .collect::<Vec<_>>()
+                    })
+            })
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_placement_loop<'a>(
+        &self,
+        loop_definition: &crate::template_config::PlacementLoop,
+        entities: &'a [CatalogEntity],
+        index: &PlacementIndex,
+        form: &str,
+        bindings: &BTreeMap<String, &'a CatalogEntity>,
+        ancestors: &[crate::EntityRef],
+        parent_placement: &PlacementKey,
+        depth: usize,
+        layouts: &mut BTreeMap<PlacementKey, crate::PlacementAnnotation>,
+    ) -> Vec<crate::DisplayEntity> {
+        const MAX_PLACEMENT_DEPTH: usize = 64;
+        if depth >= MAX_PLACEMENT_DEPTH {
+            return vec![];
+        }
+        let matches = self.placement_matches(loop_definition, entities, index, bindings, ancestors);
+        matches
             .into_iter()
             .map(|entity| {
                 let mut display =
@@ -1766,7 +1833,14 @@ impl ControllerState {
                     loop_name: loop_definition.binding.clone(),
                     entity: entity.entity.clone(),
                 });
-                layouts.insert(placement.clone(), loop_definition.layout.clone());
+                let related_detail = self.related_detail_fields(&display, entity, entities, index);
+                layouts.insert(
+                    placement.clone(),
+                    crate::PlacementAnnotation {
+                        layout: loop_definition.layout.clone(),
+                        related_detail,
+                    },
+                );
                 display.placement = Some(placement.clone());
                 let mut nested_bindings = bindings.clone();
                 nested_bindings.insert(loop_definition.binding.clone(), entity);

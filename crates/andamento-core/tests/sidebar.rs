@@ -928,3 +928,91 @@ fn materializing_the_current_resolution_records_its_managed_target() {
         ContentState::Current
     );
 }
+
+#[test]
+fn detail_templates_list_related_entities_through_their_own_loops() {
+    const CONFIG: &str = r#"
+grouping "all" {
+  filter key="entity.kind"
+  presence kind="project" class="tab"
+  level key="entity.id"
+}
+region "tree" source="tree" root-template="root" form="compact" placement="tree"
+template "root" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Projects"
+}
+placement "tree" {
+  for "project" kind="project" {
+    order "display.label"
+    apply-template "project/native"
+  }
+}
+template "project/native" {
+  field "label" key="display.label"
+}
+template "project/detail" slot="detail" node-kind="entity" {
+  field "label" key="display.label"
+  for "repository" kind="project_repository" {
+    match "flotilla.project" of="project"
+    order "display.label"
+    field "repo" key="display.label" prefix="Repository: "
+    field "subpath" key="flotilla.membership.subpath" prefix="Path: "
+  }
+}
+"#;
+    let mut sidebar = Sidebar::new(CONFIG).unwrap();
+    let project = |id: &str| {
+        patch(
+            entity("project", id),
+            &[("flotilla.project", text(id)), ("display.label", text(id))],
+        )
+    };
+    let membership = |id: &str, project: &str, label: &str, subpath: Option<&str>| {
+        let mut facts = vec![
+            ("flotilla.project", text(project)),
+            ("display.label", text(label)),
+        ];
+        if let Some(subpath) = subpath {
+            facts.push(("flotilla.membership.subpath", text(subpath)));
+        }
+        patch(entity("project_repository", id), &facts)
+    };
+    sidebar.apply(
+        100,
+        [
+            project("alpha"),
+            project("beta"),
+            membership("m2", "alpha", "zeta", None),
+            membership("m1", "alpha", "shared", Some("docs")),
+            membership("m3", "beta", "shared", None),
+        ],
+    );
+    let snapshot = sidebar.snapshot();
+    let details = |id: &str| {
+        let node = snapshot.surface.sections[0]
+            .nodes
+            .iter()
+            .find(|node| node.entity.id == id)
+            .unwrap();
+        node.detail
+            .fields
+            .iter()
+            .map(|field| field.value.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        details("alpha"),
+        [
+            "alpha",
+            "Repository: shared",
+            "Path: docs",
+            "Repository: zeta"
+        ]
+    );
+    assert_eq!(details("beta"), ["beta", "Repository: shared"]);
+    // Related entities contribute detail only; they are not placed as rows.
+    assert!(snapshot.surface.sections[0]
+        .nodes
+        .iter()
+        .all(|node| node.children.is_empty()));
+}

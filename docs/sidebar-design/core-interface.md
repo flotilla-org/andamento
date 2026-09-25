@@ -241,6 +241,25 @@ Group adjacent nodes by loop key and use the existing layout intent to choose
 native geometry. Keep each node's activation/collapse reference and state when
 presenting several items on one line. Width measurement stays in the frontend.
 
+### Related entities in details
+
+A detail template may declare `for` loops. They are evaluated for each placed
+node, with the node bound under the template's name (`project` for
+`project/detail`), exactly as an applied template binds its entity. Each match
+renders the loop's own `field`s against its facts, and the fields are appended
+to the node's detail content in loop and match order. They are detail text
+only: they are not placed as rows, have no activation, and add no ABI.
+
+Flotilla's project repository membership (flotilla#1897) uses this. Each
+`project_repository` entity carries its project's `flotilla.project`, so
+`match "flotilla.project" of="project"` lists a project's repositories. Its
+facts are `flotilla.membership.repository_key`, optional
+`flotilla.membership.repository_slug` and `flotilla.membership.subpath`, and a
+`display.label` from the slug or key. Keys and slugs are identity or display
+data, never template join keys. The project entity carries
+`flotilla.project.repository_count`; zero means known-empty, and its absence
+means the definition is unavailable.
+
 ### Workspace coverage
 
 `Sidebar` snapshots include an `andamento.unplaced-workspaces` section labelled

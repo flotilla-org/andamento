@@ -689,6 +689,16 @@ pub struct DisplayEntity {
     pub children: Vec<DisplayEntity>,
 }
 
+/// Per-placement presentation resolved during placement evaluation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PlacementAnnotation {
+    /// Layout declared by the loop that produced the placement.
+    pub layout: Option<String>,
+    /// Fields contributed to the detail content by the detail template's own
+    /// loops, one set per related entity, in loop order.
+    pub related_detail: Vec<template_config::TemplateConfigRenderedField>,
+}
+
 /// Conventional form that uses the rail's wrapped ribbon layout.
 ///
 /// Form names remain an open string vocabulary; only this form has distinct
