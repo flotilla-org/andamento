@@ -2335,6 +2335,12 @@ impl ControllerState {
                     return None;
                 };
                 let values = self.metadata.resolved_entries_for(target, self.now());
+                // An entity exists while some producer asserts it. Once every
+                // fact is unset or expired, its identity alone is not a catalog
+                // entry; open workspaces fall back to Other workspaces.
+                if values.is_empty() {
+                    return None;
+                }
                 let facts = entity_facts(entity, &values);
                 let (rule, path, level_index) =
                     if let Some(name) = self.active_grouping_template.as_deref() {

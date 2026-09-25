@@ -1059,3 +1059,63 @@ fn materialized_target_is_recorded_when_the_resolution_has_a_working_directory()
         ContentState::Current
     );
 }
+
+#[test]
+fn retracted_and_expired_entities_leave_the_catalog() {
+    // Grouping on identity (as the Wheelhouse daily driver does) matches every
+    // entity, so only the absence of facts can keep a retracted one out.
+    let config = format!(
+        "{CONFIG}\ngrouping \"identity\" {{\n  filter key=\"entity.kind\"\n  presence kind=\"project\" class=\"tab\"\n  level key=\"entity.id\"\n}}\n"
+    );
+    let mut sidebar = Sidebar::new(&config).unwrap();
+    let placed = |sidebar: &mut Sidebar, id: &str| {
+        let snapshot = sidebar.snapshot();
+        let mut stack = snapshot
+            .surface
+            .sections
+            .iter()
+            .flat_map(|section| section.nodes.iter())
+            .collect::<Vec<_>>();
+        while let Some(node) = stack.pop() {
+            if node.entity.id == id {
+                return true;
+            }
+            stack.extend(node.children.iter());
+        }
+        false
+    };
+    let mut retracted = patch(
+        entity("project", "gone"),
+        &[
+            ("flotilla.project", text("gone")),
+            ("display.label", text("Gone")),
+        ],
+    );
+    sidebar.apply(101, [retracted.clone()]);
+    assert!(placed(&mut sidebar, "gone"));
+    retracted.set.clear();
+    retracted.unset = vec!["flotilla.project".into(), "display.label".into()];
+    sidebar.apply(102, [retracted]);
+    assert!(
+        !placed(&mut sidebar, "gone"),
+        "an entity with no remaining facts is not a catalog entry"
+    );
+
+    let mut expiring = patch(
+        entity("project", "stale"),
+        &[
+            ("flotilla.project", text("stale")),
+            ("display.label", text("Stale")),
+        ],
+    );
+    for update in expiring.set.values_mut() {
+        update.ttl_ms = Some(1_000);
+    }
+    sidebar.apply(200, [expiring]);
+    assert!(placed(&mut sidebar, "stale"));
+    sidebar.apply(1_300, []);
+    assert!(
+        !placed(&mut sidebar, "stale"),
+        "expired facts retract the entity"
+    );
+}
