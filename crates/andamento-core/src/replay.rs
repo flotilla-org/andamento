@@ -98,8 +98,12 @@ impl Replay {
             ));
         }
         while self.next_offset().is_some_and(|at| at <= offset_ms) {
-            let frame = self.frames.next().unwrap();
-            sidebar.apply(frame.offset_ms, [frame.patch]);
+            let at = self.next_offset().unwrap();
+            let mut patches = Vec::new();
+            while self.next_offset() == Some(at) {
+                patches.push(self.frames.next().unwrap().patch);
+            }
+            sidebar.apply(at, patches);
         }
         sidebar.apply(offset_ms, []);
         self.now_ms = offset_ms;
@@ -122,6 +126,8 @@ pub struct Recorder<W> {
     start: Instant,
 }
 impl<W: Write> Recorder<W> {
+    /// Capture offsets include idle time since construction, including the
+    /// delay before the first patch (matching connector startup timing).
     pub fn new(writer: W) -> Self {
         Self {
             writer,

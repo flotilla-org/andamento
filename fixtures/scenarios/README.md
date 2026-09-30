@@ -21,7 +21,12 @@ cargo run --locked --manifest-path tools/scenario/Cargo.toml --target "$host" --
   fixtures/scenarios/rail-scene.json > fixtures/rail-scene.jsonl
 cargo run --locked --manifest-path tools/scenario/Cargo.toml --target "$host" -- \
   fixtures/scenarios/scripted-roll.json > fixtures/scripted-roll.jsonl
+cargo test --locked --manifest-path tools/scenario/Cargo.toml --target "$host"
 ```
+
+The generator test regenerates both scenes and compares them byte for byte.
+Run it when editing scenarios or updating the pin. It stays separate from
+`check-independent-core.py`, whose dependency graph must exclude Flotilla.
 
 `rail-scene` keeps the original projects, convoy/vessel workloads, unattached
 triage work and issues. It uses today's real awareness projection; labels,

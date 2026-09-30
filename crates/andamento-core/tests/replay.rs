@@ -199,3 +199,71 @@ fn advancing_over_a_gap_does_not_refresh_old_facts() {
         .iter()
         .all(|s| s.nodes.is_empty()));
 }
+
+#[test]
+fn equal_offsets_are_one_ordered_observation() {
+    let mut input = frames("rail-scene-legacy.jsonl");
+    let mut replacement = input[0].clone();
+    replacement
+        .patch
+        .set
+        .get_mut("display.label")
+        .unwrap()
+        .value = MetadataValue::Text("last writer".into());
+    input.push(replacement);
+    let mut direct = Sidebar::new(CONFIG).unwrap();
+    direct.apply(0, input.iter().map(|f| f.patch.clone()));
+    let mut replay = Replay::new(input).unwrap();
+    let mut stepped = Sidebar::new(CONFIG).unwrap();
+    assert_eq!(replay.step(&mut stepped).unwrap(), Some(0));
+    assert_eq!(stepped.snapshot(), direct.snapshot()); // Includes revision, not only surface.
+    assert_eq!(replay.step(&mut stepped).unwrap(), None);
+}
+
+#[test]
+fn incomplete_or_unknown_envelope_fields_are_rejected() {
+    let valid = serde_json::to_value(frames("flotilla-connector-patches.jsonl").remove(0)).unwrap();
+    for field in ["offset_ms", "patch"] {
+        let mut incomplete = valid.clone();
+        incomplete.as_object_mut().unwrap().remove(field);
+        assert!(read(Cursor::new(incomplete.to_string())).is_err());
+    }
+    let mut unknown = valid;
+    unknown["extra"] = serde_json::json!(true);
+    assert!(read(Cursor::new(unknown.to_string())).is_err());
+}
+
+#[test]
+fn cli_emit_snapshot_and_usage() {
+    use std::process::Command;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let binary = env!("CARGO_BIN_EXE_andamento-replay");
+    let capture = root.join("fixtures/scripted-roll.jsonl");
+    let emitted = Command::new(binary)
+        .arg("emit")
+        .arg(&capture)
+        .output()
+        .unwrap();
+    assert!(emitted.status.success());
+    let parsed = read(Cursor::new(emitted.stdout)).unwrap();
+    let expected = frames("scripted-roll.jsonl");
+    assert_eq!(parsed.len(), expected.len());
+    for (actual, expected) in parsed.iter().zip(expected) {
+        assert_eq!(actual.patch, expected.patch);
+        assert_eq!(actual.offset_ms, 0);
+    }
+    let snapshot = Command::new(binary)
+        .arg("snapshot")
+        .arg(&capture)
+        .arg(root.join("crates/andamento-core/tests/fixtures/sidebar.kdl"))
+        .arg("32001")
+        .output()
+        .unwrap();
+    assert!(snapshot.status.success());
+    let snapshot: andamento_core::sidebar::Snapshot =
+        serde_json::from_slice(&snapshot.stdout).unwrap();
+    assert!(snapshot.surface.sections.iter().all(|s| s.nodes.is_empty()));
+    let invalid = Command::new(binary).arg("unknown").output().unwrap();
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("usage:"));
+}

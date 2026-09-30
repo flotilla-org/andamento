@@ -112,10 +112,12 @@ fn main() {
         andamento_shared::replay::read(std::io::Cursor::new(raw)).expect("parse replay stream");
     for frame in frames {
         state.advance_time(frame.offset_ms);
+        let target = frame.patch.target.clone();
         if state.apply_metadata_patch(frame.patch) {
             applied += 1;
         } else {
             failed += 1;
+            std::eprintln!("no-op patch at {} ms: {:?}", frame.offset_ms, target);
         }
     }
 
