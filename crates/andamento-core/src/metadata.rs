@@ -177,7 +177,7 @@ impl MetadataStore {
                 }
             }
         }
-        // Entity identity can itself participate in grouping even after all
+        // Entity identity can itself participate in placement queries even after all
         // its facts expire. Removing the last expired contribution removes it.
         outcome.view_changed |= target_existed != self.entries.contains_key(&target);
         outcome
@@ -275,7 +275,6 @@ impl MetadataStore {
                     EntityId::Tab(tab) => MetadataTarget::Tab(tab),
                     EntityId::Entity(entity) => MetadataTarget::Entity(entity),
                     EntityId::Identity(identity) => MetadataTarget::Identity(identity),
-                    EntityId::Group(_) => return None,
                 };
                 Some(MetadataPatch {
                     target,
@@ -360,10 +359,7 @@ mod tests {
     fn select_primary_value(entries: &[CandidateEntry]) -> Option<MetadataValue> {
         select_primary_entry(entries).map(|candidate| candidate.entry.value)
     }
-    use crate::{
-        GroupPath, GroupSegment, MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate,
-        PaneTarget,
-    };
+    use crate::{MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate, PaneTarget};
 
     fn entry(value: &str, precedence: i64, ordinal: i64, updated_at: u64) -> MetadataEntry {
         MetadataEntry {
@@ -492,30 +488,6 @@ mod tests {
                 16,
             )
             .is_empty());
-    }
-
-    #[test]
-    fn derived_group_targets_are_distinct_internal_metadata_entities() {
-        let mut store = MetadataStore::default();
-        let group = GroupPath(vec![GroupSegment {
-            key: "project.name".to_owned(),
-            value: MetadataValue::Text("zellij".to_owned()),
-            label: None,
-        }]);
-        store.set(
-            EntityId::Group(group.clone()),
-            "summary.local_llm",
-            "flotilla",
-            entry("running tests", 0, 0, 1),
-        );
-
-        let entries = store.entries_for(&EntityId::Group(group), "summary.local_llm", 1);
-
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0].entry.value,
-            MetadataValue::Text("running tests".to_owned())
-        );
     }
 
     #[test]

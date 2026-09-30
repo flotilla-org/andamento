@@ -173,17 +173,12 @@ impl Sidebar {
         Ok(sidebar)
     }
 
-    /// Parse both catalogs before changing either, so a bad reload is atomic.
+    /// Validate the template catalog before replacing the active configuration.
     pub fn configure(&mut self, config_kdl: &str) -> Result<(), String> {
         let templates = crate::template_config::parse_template_config_kdl(config_kdl)
             .map_err(|e| e.to_string())?;
-        let grouping = crate::grouping_config::parse_grouping_config_kdl(config_kdl)
-            .map_err(|e| e.to_string())?;
         self.state.set_template_catalog(Some(
             crate::template_config::TemplateConfigCatalog::with_bundled_defaults(templates),
-        ));
-        self.state.set_grouping_catalog(Some(
-            crate::grouping_config::GroupingConfigCatalog::with_bundled_defaults(grouping),
         ));
         self.invalidate();
         Ok(())

@@ -31,10 +31,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("workspace"),
                 },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("project"),
-                },
                 "count.checkouts": Object {
                     "type": String("integer"),
                     "value": Number(0),
@@ -99,10 +95,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -139,10 +131,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("project"),
                 },
                 "count.checkouts": Object {
                     "type": String("integer"),
@@ -208,10 +196,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -248,10 +232,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("project"),
                 },
                 "count.checkouts": Object {
                     "type": String("integer"),
@@ -317,10 +297,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -340,10 +316,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "kind": String("convoy"),
             },
             "facts": Object {
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("convoy"),
-                },
                 "count.checkouts": Object {
                     "type": String("integer"),
                     "value": Number(0),
@@ -416,10 +388,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -460,10 +428,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("convoy"),
                 },
                 "count.checkouts": Object {
                     "type": String("integer"),
@@ -549,10 +513,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -593,10 +553,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("convoy"),
                 },
                 "count.checkouts": Object {
                     "type": String("integer"),
@@ -682,10 +638,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -726,10 +678,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("convoy"),
                 },
                 "count.checkouts": Object {
                     "type": String("integer"),
@@ -815,10 +763,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -836,10 +780,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "kind": String("convoy"),
             },
             "facts": Object {
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("convoy"),
-                },
                 "count.checkouts": Object {
                     "type": String("integer"),
                     "value": Number(0),
@@ -924,10 +864,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -968,10 +904,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("convoy"),
                 },
                 "count.checkouts": Object {
                     "type": String("integer"),
@@ -1057,10 +989,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -1101,10 +1029,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("convoy"),
                 },
                 "count.checkouts": Object {
                     "type": String("integer"),
@@ -1190,10 +1114,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -1236,10 +1156,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("vessel"),
                 },
                 "display.label": Object {
                     "type": String("text"),
@@ -1301,10 +1217,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("worker"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -1345,10 +1257,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("vessel"),
                 },
                 "display.label": Object {
                     "type": String("text"),
@@ -1410,10 +1318,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("worker"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -1454,10 +1358,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("vessel"),
                 },
                 "display.label": Object {
                     "type": String("text"),
@@ -1519,10 +1419,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("worker"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -1563,10 +1459,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("vessel"),
                 },
                 "display.label": Object {
                     "type": String("text"),
@@ -1632,10 +1524,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("worker"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -1676,10 +1564,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("vessel"),
                 },
                 "display.label": Object {
                     "type": String("text"),
@@ -1741,10 +1625,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("coder"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -1785,10 +1665,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("vessel"),
                 },
                 "display.label": Object {
                     "type": String("text"),
@@ -1854,10 +1730,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("reviewer"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -1898,10 +1770,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("vessel"),
                 },
                 "display.label": Object {
                     "type": String("text"),
@@ -1963,10 +1831,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("worker"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -2007,10 +1871,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "action.primary.vehicle": Object {
                     "type": String("text"),
                     "value": String("workspace"),
-                },
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("vessel"),
                 },
                 "display.label": Object {
                     "type": String("text"),
@@ -2076,10 +1936,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("worker"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -2100,10 +1956,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "kind": String("issue"),
             },
             "facts": Object {
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("issue"),
-                },
                 "display.label": Object {
                     "type": String("text"),
                     "value": String("Hover does nothing on UI elements"),
@@ -2139,10 +1991,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "summary.text": Object {
                     "type": String("text"),
                     "value": String("Hover does nothing on UI elements"),
-                },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
                 },
                 "var.convoy.tier": Object {
                     "type": String("text"),
@@ -2161,10 +2009,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "kind": String("issue"),
             },
             "facts": Object {
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("issue"),
-                },
                 "display.label": Object {
                     "type": String("text"),
                     "value": String("Clicking an attention item opens the config panel"),
@@ -2201,10 +2045,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                     "type": String("text"),
                     "value": String("Clicking an attention item opens the config panel"),
                 },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
-                },
                 "var.convoy.tier": Object {
                     "type": String("text"),
                     "value": String("full"),
@@ -2222,10 +2062,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "kind": String("issue"),
             },
             "facts": Object {
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("issue"),
-                },
                 "display.label": Object {
                     "type": String("text"),
                     "value": String("Publish abbreviated display label tiers"),
@@ -2261,10 +2097,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "summary.text": Object {
                     "type": String("text"),
                     "value": String("Publish abbreviated display label tiers"),
-                },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
                 },
                 "var.convoy.tier": Object {
                     "type": String("text"),

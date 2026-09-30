@@ -22,6 +22,15 @@ pub fn parse_template_config_kdl(
     let document = input
         .parse::<KdlDocument>()
         .map_err(|source| TemplateConfigError::Parse(source.to_string()))?;
+    if document
+        .nodes()
+        .iter()
+        .any(|node| node.name().value() == "grouping")
+    {
+        return Err(TemplateConfigError::Validation(
+            "grouping rules were replaced by placement queries".into(),
+        ));
+    }
     let version = document
         .get_arg("version")
         .map(kdl_u32)
@@ -309,17 +318,6 @@ impl ExternalTemplateConfig {
                         region.name
                     )));
                 }
-            }
-            // A placement selects the region's entities itself, so the legacy
-            // single-key attention filter is not needed alongside it.
-            if region.source == SurfaceRegionSource::Attention
-                && region.placement.is_none()
-                && region.attention_key.as_deref().is_none_or(str::is_empty)
-            {
-                return Err(TemplateConfigError::Validation(format!(
-                    "attention region {} must declare attention-key",
-                    region.name
-                )));
             }
             for promotion in &region.promotions {
                 if promotion.when.trim().is_empty() || promotion.form.trim().is_empty() {
@@ -792,26 +790,13 @@ impl TemplateConfigCatalog {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SurfaceRegionSource {
-    Header,
-    Attention,
-    Tree,
-    Controls,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct SurfaceRegionDefinition {
     pub name: String,
-    pub source: SurfaceRegionSource,
     pub root_template: String,
     pub form: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attention_key: Option<String>,
-    /// Names a `placement` that supplies this region's contents. When absent
-    /// the region keeps the legacy pipeline, which stays the default.
+    /// Optional entity query for this section; sections may contain only fields or controls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<String>,
     #[serde(default)]
@@ -827,11 +812,9 @@ pub struct SurfaceFormPromotion {
     pub form: String,
 }
 
-/// A named placement: a section built by pulling entities in, rather than by
-/// entities pushing themselves into a grouping path.
+/// A named placement selects a section's entities using catalog queries.
 ///
-/// This slice carries exactly one flat loop. Nesting, bindings and
-/// `apply-template` are deliberately absent.
+/// Loops nest lexically or hand off to a named entity template.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct PlacementDefinition {
@@ -842,8 +825,7 @@ pub struct PlacementDefinition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct PlacementLoop {
-    /// The name this loop binds its current entity to. Unused until nesting
-    /// arrives, but part of the syntax from the start so configs do not churn.
+    /// The lexical binding and placement-identity component of this loop.
     pub binding: String,
     pub predicates: Vec<PlacementPredicate>,
     /// Fact keys are compared in declaration order. Entity identity is always
@@ -1114,34 +1096,9 @@ fn template_name_for(context: TemplateConfigMatchContext<'_>) -> Option<(String,
             let kind = metadata_text(context.metadata, "entity.kind")?;
             format!("{kind}/{}", context.slot.convention_form()?)
         }
-        TemplateConfigNodeKind::Tab => match context.slot {
-            TemplateConfigSlot::TabTitle => "tab/title".to_owned(),
-            TemplateConfigSlot::TabStatus => "tab/status".to_owned(),
-            _ => return None,
-        },
-        TemplateConfigNodeKind::Group => {
-            let kind = metadata_text(context.metadata, "presentation.kind")
-                .or_else(|| metadata_text(context.metadata, "group.key").map(group_kind))
-                .unwrap_or("group");
-            format!("{kind}/full")
-        }
+        TemplateConfigNodeKind::Tab => format!("tab/{}", context.slot.convention_form()?),
     };
     Some((name, false))
-}
-
-fn group_kind(key: &str) -> &str {
-    match key {
-        "flotilla.project" | "andamento.project" => "project",
-        "vcs.repo" | "git.repo" => "repo",
-        "flotilla.convoy" => "convoy",
-        "flotilla.vessel" => "vessel",
-        "flotilla.session" | "session" => "session",
-        "flotilla.independent" => "session",
-        "flotilla.issue" | "issue" => "issue",
-        "flotilla.checkout" => "checkout",
-        "project" | "repo" | "worktree" | "git.branch" | "branch" | "zellij.pane.cwd" => "group",
-        _ => key,
-    }
 }
 
 fn find_template<'a>(
@@ -1658,23 +1615,13 @@ impl TemplateConfigFieldOperation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TemplateConfigSlot {
-    GroupHeader,
-    TabTitle,
-    TabStatus,
     Compact,
     Detail,
 }
 
 impl TemplateConfigSlot {
-    pub fn is_rail_local(self) -> bool {
-        matches!(self, Self::GroupHeader | Self::TabTitle | Self::TabStatus)
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::GroupHeader => "group-header",
-            Self::TabTitle => "tab-title",
-            Self::TabStatus => "tab-status",
             Self::Compact => "compact",
             Self::Detail => "detail",
         }
@@ -1684,7 +1631,6 @@ impl TemplateConfigSlot {
         match self {
             Self::Compact => Some("compact"),
             Self::Detail => Some("detail"),
-            Self::GroupHeader | Self::TabTitle | Self::TabStatus => None,
         }
     }
 }
@@ -1692,7 +1638,6 @@ impl TemplateConfigSlot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TemplateConfigNodeKind {
-    Group,
     Tab,
     Entity,
 }
@@ -1700,7 +1645,6 @@ pub enum TemplateConfigNodeKind {
 impl TemplateConfigNodeKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Group => "group",
             Self::Tab => "tab",
             Self::Entity => "entity",
         }
@@ -2348,23 +2292,15 @@ fn parse_kdl_placement_predicate(
 }
 
 fn parse_kdl_region(node: &KdlNode) -> Result<SurfaceRegionDefinition, TemplateConfigError> {
-    let source = match kdl_required_prop_string(node, "source")?.as_str() {
-        "header" => SurfaceRegionSource::Header,
-        "attention" => SurfaceRegionSource::Attention,
-        "tree" => SurfaceRegionSource::Tree,
-        "controls" => SurfaceRegionSource::Controls,
-        other => {
-            return Err(TemplateConfigError::Validation(format!(
-                "unsupported region source: {other}"
-            )))
-        }
-    };
+    if node.get("source").is_some() || node.get("attention-key").is_some() {
+        return Err(TemplateConfigError::Validation(
+            "region source and attention-key were replaced by placement queries".into(),
+        ));
+    }
     Ok(SurfaceRegionDefinition {
         name: kdl_required_arg_string(node, 0, "region name")?,
-        source,
         root_template: kdl_required_prop_string(node, "root-template")?,
         form: kdl_prop_string(node, "form").unwrap_or_else(|| "full".to_owned()),
-        attention_key: kdl_prop_string(node, "attention-key"),
         placement: kdl_prop_string(node, "placement"),
         pinned: node
             .get("pinned")
@@ -2694,9 +2630,6 @@ fn parse_kdl_value_source(
 
 fn parse_kdl_slot(value: &str) -> Result<TemplateConfigSlot, TemplateConfigError> {
     match value {
-        "group-header" => Ok(TemplateConfigSlot::GroupHeader),
-        "tab-title" => Ok(TemplateConfigSlot::TabTitle),
-        "tab-status" => Ok(TemplateConfigSlot::TabStatus),
         "compact" => Ok(TemplateConfigSlot::Compact),
         "detail" => Ok(TemplateConfigSlot::Detail),
         other => Err(TemplateConfigError::Validation(format!(
@@ -2707,7 +2640,6 @@ fn parse_kdl_slot(value: &str) -> Result<TemplateConfigSlot, TemplateConfigError
 
 fn parse_kdl_node_kind(value: &str) -> Result<TemplateConfigNodeKind, TemplateConfigError> {
     match value {
-        "group" => Ok(TemplateConfigNodeKind::Group),
         "tab" => Ok(TemplateConfigNodeKind::Tab),
         "entity" => Ok(TemplateConfigNodeKind::Entity),
         other => Err(TemplateConfigError::Validation(format!(
@@ -2943,45 +2875,6 @@ mod tests {
             "custom deployment"
         );
         assert!(!resolved.is_bundled);
-    }
-
-    #[test]
-    fn chrome_primitives_survive_flattening_and_explain_the_effective_document() {
-        let config = parse_template_config_kdl(
-            r#"
-            template "tab/title" slot="tab-title" node-kind="tab" {
-              box border="single"
-              toggle collapsed=">" expanded="v"
-              fill glyph="-"
-              dim when="rail.tab.latent"
-              indent level=2
-              field "title" source="literal" value="title"
-            }
-            "#,
-        )
-        .expect("template parses");
-        let catalog = TemplateConfigCatalog::from_config(config);
-        let metadata = BTreeMap::new();
-        let context = TemplateConfigMatchContext {
-            slot: TemplateConfigSlot::TabTitle,
-            node_kind: TemplateConfigNodeKind::Tab,
-            metadata: &metadata,
-            collapsed: false,
-            collapsible: false,
-            active_tab_name: None,
-        };
-        let resolved = catalog
-            .resolve(context)
-            .expect("resolution succeeds")
-            .expect("template resolves");
-
-        let dump = resolved.dump_kdl();
-        assert!(dump.contains("box border=\"single\""));
-        assert!(dump.contains("toggle collapsed=\">\" expanded=\"v\""));
-        assert!(dump.contains("fill glyph=\"-\""));
-        assert!(dump.contains("dim when=\"rail.tab.latent\""));
-        assert!(dump.contains("indent level=2"));
-        assert_eq!(resolved.render_ready().chrome, resolved.chrome);
     }
 
     #[test]
@@ -3347,7 +3240,7 @@ template "convoy/line" {
         let error = parse_template_config_kdl(
             r#"
 version 1
-region "attention" source="attention" root-template="r" form="full" placement="attetnion"
+region "attention" root-template="r" form="full" placement="attetnion"
 placement "attention" {
   for "item" kind="vessel" {
     match "status.attention" value="true"
@@ -3364,11 +3257,11 @@ placement "attention" {
     }
 
     #[test]
-    fn attention_region_may_omit_attention_key_when_a_placement_supplies_it() {
+    fn sections_may_contain_fields_or_controls_without_a_query() {
         parse_template_config_kdl(
             r#"
 version 1
-region "attention" source="attention" root-template="r" form="full" placement="attention"
+region "attention" root-template="r" form="full" placement="attention"
 placement "attention" {
   for "item" kind="vessel" {
     match "status.attention" value="true"
@@ -3381,10 +3274,10 @@ placement "attention" {
         parse_template_config_kdl(
             r#"
 version 1
-region "attention" source="attention" root-template="r" form="full"
+region "attention" root-template="r" form="full"
 "#,
         )
-        .expect_err("without a placement the legacy attention-key is still required");
+        .expect("a section without a query is legal");
     }
 
     #[test]
@@ -3575,8 +3468,8 @@ region "attention" source="attention" root-template="r" form="full"
     fn surface_regions_preserve_declaration_order_and_form_targets() {
         let config = parse_template_config_kdl(
             r#"
-            region "attention" source="attention" root-template="my/attention" form="expanded" attention-key="status.attention"
-            region "tree" source="tree" root-template="my/tree" form="compact" pinned=true
+            region "attention" root-template="my/attention" form="expanded"
+            region "tree" root-template="my/tree" form="compact" pinned=true
             "#,
         )
         .expect("regions parse");
@@ -3590,10 +3483,6 @@ region "attention" source="attention" root-template="r" form="full"
             vec!["attention", "tree"]
         );
         assert_eq!(config.regions[0].form, "expanded");
-        assert_eq!(
-            config.regions[0].attention_key.as_deref(),
-            Some("status.attention")
-        );
         assert!(config.regions[1].pinned);
     }
 
@@ -3705,7 +3594,7 @@ region "attention" source="attention" root-template="r" form="full"
     fn region_form_promotions_are_declared_in_order() {
         let config = parse_template_config_kdl(
             r#"
-            region "tree" source="tree" root-template="tree" form="compact" {
+            region "tree" root-template="tree" form="compact" {
               promote when="zellij.tab.active" form="full"
               promote when="rail.tab.pinned" form="full"
             }
@@ -3722,8 +3611,8 @@ region "attention" source="attention" root-template="r" form="full"
     fn configured_region_stack_replaces_bundled_stack_as_one_ordered_surface() {
         let config = parse_template_config_kdl(
             r#"
-            region "tree-first" source="tree" root-template="flotilla/region/tree" form="compact"
-            region "attention-second" source="attention" root-template="flotilla/region/attention" form="full" attention-key="status.attention"
+            region "tree-first" root-template="flotilla/region/tree" form="compact"
+            region "attention-second" root-template="flotilla/region/attention" form="full"
             "#,
         )
         .expect("regions parse");

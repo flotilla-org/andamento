@@ -5,11 +5,11 @@ use andamento_core::{
 };
 use std::io::Cursor;
 const CONFIG: &str = r#"
-region "tree" source="tree" root-template="heading" form="compact" placement="tree"
-region "convoys" source="tree" root-template="heading" form="compact" placement="convoys"
-region "vessels" source="tree" root-template="heading" form="compact" placement="vessels"
-region "repos" source="tree" root-template="heading" form="compact" placement="repos"
-region "issues" source="tree" root-template="heading" form="compact" placement="issues"
+region "tree" root-template="heading" form="compact" placement="tree"
+region "convoys" root-template="heading" form="compact" placement="convoys"
+region "vessels" root-template="heading" form="compact" placement="vessels"
+region "repos" root-template="heading" form="compact" placement="repos"
+region "issues" root-template="heading" form="compact" placement="issues"
 template "heading" { field "label" source="literal" value="Replay"; }
 placement "tree" {
   for "project" kind="project" {

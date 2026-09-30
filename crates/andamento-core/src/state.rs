@@ -1,27 +1,46 @@
+#[derive(Debug, Clone)]
+pub(crate) struct EvaluatedPlacement {
+    pub entity: EntityRef,
+    pub placement: Option<PlacementKey>,
+    pub label: String,
+    pub form: String,
+    pub tier: Option<crate::template_config::AbbreviationTier>,
+    pub metadata: BTreeMap<String, MetadataValue>,
+    pub templates: ResolvedTemplateSlots,
+    pub children: Vec<EvaluatedPlacement>,
+}
+#[derive(Debug)]
+pub(crate) struct EvaluatedSection {
+    pub definition: crate::template_config::SurfaceRegionDefinition,
+    pub root: Option<ResolvedTemplateSlot>,
+    pub entities: Vec<EvaluatedPlacement>,
+}
+#[derive(Debug, Default)]
+pub(crate) struct PlacementAnnotation {
+    pub layout: Option<String>,
+    pub related_detail: Vec<crate::template_config::TemplateConfigRenderedField>,
+}
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
-use crate::grouping_config::{GroupingConfigCatalog, GroupingRule, PresenceClass};
 use crate::host::PaneObservation;
 use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataStore};
 use crate::{
-    ControllerBootstrapSnapshot, ControllerViewModel, DisplayEntity, DisplayVariableValue,
-    EffectiveNodeVariables, EffectiveVariableValue, EntityRef, GroupPath, GroupSegment,
-    GroupingRuleDiagnostic, LatentMaterializationState, LatentTab, MetadataControls, MetadataEntry,
-    MetadataIdentity, MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey,
+    ControllerBootstrapSnapshot, ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables,
+    EffectiveVariableValue, EntityRef, LatentMaterializationState, LatentTab, MetadataControls,
+    MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey,
     ObservedMetadataIdentity, PaneTarget, PlacementKey, PlacementSegment, PluginPlacement,
-    PluginRegistrationHello, Priority, RailConfig, RailRow, RailUiAction, RailUiRevision,
-    RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateSlot,
-    ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabGroupingInfo, TabStatusSummary,
-    TemplateConfigDiagnostics, VariableSetterProvenance, DISPLAY_FORM_COMPACT, DISPLAY_FORM_FULL,
-    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER, PLACEMENT_LOOP_BINDING_KEY, PLACEMENT_LOOP_TIER_KEY,
+    PluginRegistrationHello, Priority, RailConfig, RailUiAction, RailUiRevision, RailUiState,
+    ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateSlot,
+    ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabStatusSummary,
+    TemplateConfigDiagnostics, VariableSetterProvenance, DISPLAY_FORM_COMPACT,
+    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 
 const SOURCE_ZELLIJ: &str = "zellij";
 const SOURCE_LATENT_MATERIALIZER: &str = "andamento-latent-materializer";
-const DIRECTORY_GROUPING_RULE: &str = "zellij.directory";
 const KEY_PANE_CWD: &str = "zellij.pane.cwd";
 const KEY_PANE_CWD_LABEL: &str = "zellij.pane.cwd.label";
 const KEY_ENTITY_KIND: &str = "entity.kind";
@@ -35,7 +54,7 @@ const KEY_SOURCE: &str = "source";
 const KEY_DISPLAY_LABEL: &str = "display.label";
 const FOCUSED_CWD_PRECEDENCE: i64 = 100;
 const NORMAL_CWD_PRECEDENCE: i64 = 0;
-// Opener-owned identity must outrank observational discovery such as cwd grouping.
+// Opener-owned identity must outrank observational discovery such as cwd-derived associations.
 const LATENT_MATERIALIZER_PRECEDENCE: i64 = 1_000;
 
 type TabSeedMetadata = HashMap<u64, BTreeMap<String, MetadataEntry>>;
@@ -46,52 +65,6 @@ pub struct ControllerTab {
     pub position: usize,
     pub name: String,
     pub active: bool,
-}
-
-/// THROWAWAY ADAPTER. Bends a placed entity into the `DisplayEntity` the
-/// current renderer expects, so the placement pipeline can render before the
-/// renderer learns about placements.
-///
-/// Do not build on this and do not widen it. It exists only until the renderer
-/// takes placements directly; treating it as the interface is how the old
-/// grouping shapes would survive the cutover.
-fn placed_display_entity(
-    mut display: crate::DisplayEntity,
-    loop_definition: &crate::template_config::PlacementLoop,
-    form: &str,
-) -> crate::DisplayEntity {
-    display.form = form.to_owned();
-    display.placement_layout = loop_definition.layout.clone();
-    display.metadata.insert(
-        PLACEMENT_LOOP_BINDING_KEY.to_owned(),
-        MetadataValue::Text(loop_definition.binding.clone()),
-    );
-    if let Some(tier) = loop_definition.tier {
-        display.metadata.insert(
-            PLACEMENT_LOOP_TIER_KEY.to_owned(),
-            MetadataValue::Text(tier.as_str().to_owned()),
-        );
-    } else {
-        display.metadata.remove(PLACEMENT_LOOP_TIER_KEY);
-    }
-    if !loop_definition.fields.is_empty() {
-        display.templates.compact = Some(crate::ResolvedTemplateSlot {
-            template_name: format!("placement:{}", loop_definition.binding),
-            fields: vec![],
-            render_ready: Some(crate::template_config::TemplateConfigRenderReady {
-                fields: loop_definition.fields.clone(),
-                controls: vec![],
-                chrome: Default::default(),
-            }),
-            setters: vec![],
-            effective_kdl: String::new(),
-            resolve_error: None,
-        });
-        if form != DISPLAY_FORM_COMPACT {
-            display.templates.detail = display.templates.compact.clone();
-        }
-    }
-    display
 }
 
 /// Catalog entities indexed by `(fact key, indexable text)`.
@@ -184,15 +157,6 @@ struct CatalogEntity {
     entity: EntityRef,
     values: BTreeMap<String, MetadataEntry>,
     ordinal: i64,
-    path: GroupPath,
-    presence: PresenceClass,
-    form: String,
-    visible_when: Option<String>,
-    template: Option<String>,
-    group_templates: BTreeMap<String, String>,
-    grouping_priority: i64,
-    collapse_single_member: bool,
-    show_empty: bool,
 }
 
 /// Resolved catalog and lookup tables shared by every pass of one model build.
@@ -201,28 +165,18 @@ struct CatalogEntity {
 struct CatalogEvaluation {
     entities: Vec<CatalogEntity>,
     by_entity: BTreeMap<EntityRef, usize>,
-    ordinal_by_path: BTreeMap<GroupPath, i64>,
-    collapsed: BTreeSet<EntityRef>,
 }
 
 impl CatalogEvaluation {
     fn new(entities: Vec<CatalogEntity>) -> Self {
-        let mut by_entity = BTreeMap::new();
-        let mut ordinal_by_path = BTreeMap::new();
-        for (index, entity) in entities.iter().enumerate() {
-            by_entity.insert(entity.entity.clone(), index);
-            // Catalog order is ordinal then path. Preserve the first match,
-            // including when several entities occupy the same group path.
-            ordinal_by_path
-                .entry(entity.path.clone())
-                .or_insert(entity.ordinal);
-        }
-        let collapsed = collapsed_child_entities(&entities);
+        let by_entity = entities
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.entity.clone(), i))
+            .collect();
         Self {
             entities,
             by_entity,
-            ordinal_by_path,
-            collapsed,
         }
     }
 
@@ -281,7 +235,6 @@ fn placement_sort_fact<'a>(entity: &'a CatalogEntity, key: &str) -> Option<Cow<'
 #[derive(Debug, Default)]
 struct ControllerRailUiState {
     revision: RailUiRevision,
-    collapsed_groups: BTreeSet<GroupPath>,
     collapsed_placements: BTreeSet<PlacementKey>,
     scroll_offset: isize,
     variables: BTreeMap<String, DisplayVariableValue>,
@@ -310,7 +263,7 @@ pub struct PluginRegistration {
     pub placement: PluginPlacement,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ControllerState {
     tabs: Vec<ControllerTab>,
     pane_to_tab: HashMap<PaneTarget, u64>,
@@ -321,8 +274,6 @@ pub struct ControllerState {
     clients: BTreeMap<u16, ControllerClientState>,
     sort_mode: SortMode,
     rail_config: RailConfig,
-    grouping_catalog: Option<GroupingConfigCatalog>,
-    active_grouping_template: Option<String>,
     template_catalog: Option<crate::template_config::TemplateConfigCatalog>,
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
@@ -332,6 +283,30 @@ pub struct ControllerState {
     rail_ui: ControllerRailUiState,
     rail_ui_writer_client_id: u16,
     node_variable_overrides: BTreeMap<NodeKey, BTreeMap<String, String>>,
+}
+impl Default for ControllerState {
+    fn default() -> Self {
+        Self {
+            tabs: Default::default(),
+            pane_to_tab: Default::default(),
+            panes: Default::default(),
+            metadata: Default::default(),
+            pane_statuses: Default::default(),
+            pinned_tabs: Default::default(),
+            clients: Default::default(),
+            sort_mode: Default::default(),
+            rail_config: Default::default(),
+            template_catalog: Some(Default::default()),
+            template_config: Default::default(),
+            receive_counter: Default::default(),
+            clock_ms: Default::default(),
+            pending_materialized_tab_names: Default::default(),
+            pending_latent_materializations: Default::default(),
+            rail_ui: Default::default(),
+            rail_ui_writer_client_id: Default::default(),
+            node_variable_overrides: Default::default(),
+        }
+    }
 }
 
 impl ControllerState {
@@ -647,11 +622,6 @@ impl ControllerState {
             writer_client_id: self.rail_ui_writer_client_id,
         };
         match action {
-            RailUiAction::ToggleGroup { path } => {
-                if !self.rail_ui.collapsed_groups.insert(path.clone()) {
-                    self.rail_ui.collapsed_groups.remove(&path);
-                }
-            }
             RailUiAction::TogglePlacement { key } => {
                 if !self.rail_ui.collapsed_placements.insert(key.clone()) {
                     self.rail_ui.collapsed_placements.remove(&key);
@@ -702,7 +672,6 @@ impl ControllerState {
     pub fn rail_ui_state(&self) -> RailUiState {
         RailUiState {
             revision: self.rail_ui.revision,
-            collapsed_groups: self.rail_ui.collapsed_groups.iter().cloned().collect(),
             collapsed_placements: self.rail_ui.collapsed_placements.iter().cloned().collect(),
             scroll_offset: self.rail_ui.scroll_offset,
             variables: self.rail_ui.variables.clone(),
@@ -715,7 +684,6 @@ impl ControllerState {
         }
         self.rail_ui = ControllerRailUiState {
             revision: state.revision,
-            collapsed_groups: state.collapsed_groups.into_iter().collect(),
             collapsed_placements: state.collapsed_placements.into_iter().collect(),
             scroll_offset: state.scroll_offset,
             variables: state.variables,
@@ -736,32 +704,6 @@ impl ControllerState {
                     .or_insert_with(|| variable.default.clone());
             }
         }
-        self.refresh_display_variable_warnings();
-    }
-
-    pub fn set_grouping_catalog(&mut self, catalog: Option<GroupingConfigCatalog>) {
-        self.grouping_catalog = Some(catalog.unwrap_or_default());
-        self.refresh_display_variable_warnings();
-    }
-
-    #[allow(dead_code)]
-    pub fn set_active_grouping_template(&mut self, name: Option<String>) -> bool {
-        if name.as_ref().is_some_and(|name| {
-            let configured = self
-                .grouping_catalog
-                .as_ref()
-                .is_some_and(|catalog| catalog.rules.iter().any(|rule| &rule.name == name));
-            let bundled = GroupingConfigCatalog::default()
-                .rules
-                .iter()
-                .any(|rule| &rule.name == name);
-            !(configured || bundled)
-        }) {
-            return false;
-        }
-        let changed = self.active_grouping_template != name;
-        self.active_grouping_template = name;
-        changed
     }
 
     pub fn set_template_config_diagnostics(&mut self, diagnostics: TemplateConfigDiagnostics) {
@@ -770,42 +712,6 @@ impl ControllerState {
 
     pub fn template_config_diagnostics(&self) -> &TemplateConfigDiagnostics {
         &self.template_config
-    }
-
-    pub fn refresh_display_variable_warnings(&mut self) {
-        let default_grouping_catalog = GroupingConfigCatalog::default();
-        let grouping_catalog = self
-            .grouping_catalog
-            .as_ref()
-            .unwrap_or(&default_grouping_catalog);
-        let declared = self
-            .template_catalog
-            .as_ref()
-            .map(|catalog| {
-                catalog
-                    .display_variables()
-                    .iter()
-                    .map(|variable| (variable.name.as_str(), &variable.variable_type))
-                    .collect::<BTreeMap<_, _>>()
-            })
-            .unwrap_or_default();
-        self.template_config.warnings = grouping_catalog
-            .rules
-            .iter()
-            .flat_map(|rule| &rule.presence)
-            .filter_map(|mapping| {
-                let name = mapping.visible_when.as_deref()?;
-                match declared.get(name) {
-                    Some(crate::template_config::TemplateVariableType::Bool) => None,
-                    Some(_) => Some(format!("visible-when references non-bool variable {name}")),
-                    None => Some(format!(
-                        "visible-when references undeclared variable {name}"
-                    )),
-                }
-            })
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
     }
 
     pub fn apply_metadata_patch(&mut self, patch: crate::MetadataPatch) -> bool {
@@ -1116,7 +1022,6 @@ impl ControllerState {
 
     pub fn view_model(&self) -> ControllerViewModel {
         let catalog = CatalogEvaluation::new(self.catalog_entities());
-        let grouping_by_tab = self.tab_grouping_infos(&catalog);
         let mut tabs: Vec<TabCard> = self
             .tabs
             .iter()
@@ -1127,7 +1032,6 @@ impl ControllerState {
                 active: tab.active,
                 pinned: self.pinned_tabs.contains(&tab.tab_id),
                 status: self.status_for_tab(tab.tab_id),
-                grouping: grouping_by_tab.get(&tab.tab_id).cloned(),
                 templates: ResolvedTemplateSlots::default(),
                 active_pane: self
                     .panes
@@ -1156,19 +1060,9 @@ impl ControllerState {
         let latent_tabs = self.latent_tabs_in(&catalog);
         let resolved_metadata = self.resolved_metadata_for_tabs(&tabs, &catalog);
         let observed_identities = observed_metadata_identities(&resolved_metadata);
-        self.resolve_tab_templates(&mut tabs, &resolved_metadata);
-        let rows = self.rows_with_group_templates(
-            self.catalog_group_rows(&tabs, &latent_tabs, &catalog),
-            &resolved_metadata,
-            &catalog,
-        );
         let region_catalog_entities = &catalog.entities;
-        let (effective_variables, variable_warnings) = self.resolve_effective_variables(
-            &rows,
-            &tabs,
-            &resolved_metadata,
-            region_catalog_entities,
-        );
+        let (effective_variables, variable_warnings) =
+            self.resolve_effective_variables(&resolved_metadata);
         let mut template_config = self.template_config.clone();
         template_config.effective_variables = effective_variables;
         for warning in variable_warnings {
@@ -1176,21 +1070,9 @@ impl ControllerState {
                 template_config.warnings.push(warning);
             }
         }
-        // Only built when something asks for it. Indexing every fact of every
-        // entity is pure cost on the legacy path, which is still the default.
-        let placement_index = self
-            .template_catalog
-            .as_ref()
-            .is_some_and(|catalog| {
-                catalog
-                    .regions()
-                    .iter()
-                    .any(|region| region.placement.is_some())
-            })
-            .then(|| PlacementIndex::build(region_catalog_entities))
-            .unwrap_or_default();
+        let placement_index = PlacementIndex::build(region_catalog_entities);
         let mut placement_layouts = BTreeMap::new();
-        let surface_regions: Vec<crate::DisplayRegion> = self
+        let surface_regions: Vec<EvaluatedSection> = self
             .template_catalog
             .as_ref()
             .map(|catalog| {
@@ -1208,8 +1090,6 @@ impl ControllerState {
                             .as_deref()
                             .and_then(|name| catalog.placement(name))
                         {
-                            // Placement pipeline. Only this region uses it; the
-                            // rest of the render stays on legacy grouping.
                             self.evaluate_placement(
                                 placement,
                                 region_catalog_entities,
@@ -1217,31 +1097,10 @@ impl ControllerState {
                                 &definition.form,
                                 &mut placement_layouts,
                             )
-                        } else if definition.source
-                            == crate::template_config::SurfaceRegionSource::Attention
-                        {
-                            let attention_key = definition
-                                .attention_key
-                                .as_deref()
-                                .unwrap_or("status.attention");
-                            region_catalog_entities
-                                .iter()
-                                .filter(|entity| entity.presence != PresenceClass::Hidden)
-                                .filter(|entity| self.entity_is_visible(entity))
-                                .filter(|entity| {
-                                    entity.values.get(attention_key).map(|entry| &entry.value)
-                                        == Some(&MetadataValue::Bool(true))
-                                })
-                                .map(|entity| {
-                                    let mut display = self.display_entity(entity);
-                                    display.form = definition.form.clone();
-                                    display
-                                })
-                                .collect()
                         } else {
                             vec![]
                         };
-                        crate::DisplayRegion {
+                        EvaluatedSection {
                             definition,
                             root: self.resolve_template_slot(
                                 crate::template_config::TemplateConfigSlot::Compact,
@@ -1282,14 +1141,29 @@ impl ControllerState {
             }
         }
 
+        fn collect_matched(nodes: &[EvaluatedPlacement], matched: &mut BTreeSet<EntityRef>) {
+            for node in nodes {
+                matched.insert(node.entity.clone());
+                collect_matched(&node.children, matched);
+            }
+        }
+        let mut matched = BTreeSet::new();
+        for section in &surface_regions {
+            collect_matched(&section.entities, &mut matched);
+        }
+        let unmatched_entities = catalog
+            .entities
+            .iter()
+            .filter(|entity| !matched.contains(&entity.entity))
+            .map(|entity| entity.entity.clone())
+            .collect();
         let mut model = ControllerViewModel {
+            unmatched_entities,
             sort_mode: self.sort_mode,
             config: self.rail_config,
             template_config,
             resolved_metadata,
             observed_identities,
-            grouping_diagnostics: self.grouping_diagnostics(),
-            rows,
             tabs,
             metadata_controls: self
                 .clients
@@ -1297,7 +1171,6 @@ impl ControllerState {
                 .map(|client| client.metadata_controls.clone())
                 .unwrap_or_default(),
             inspected_node: None,
-            collapsed_groups: self.rail_ui.collapsed_groups.iter().cloned().collect(),
             collapsed_placements: self.rail_ui.collapsed_placements.iter().cloned().collect(),
             display_variables: self
                 .template_catalog
@@ -1305,7 +1178,6 @@ impl ControllerState {
                 .map(|catalog| catalog.display_variables().to_vec())
                 .unwrap_or_default(),
             display_variable_values: self.rail_ui.variables.clone(),
-            surface_regions,
             presentation: None,
         };
         // Reuse this build's resolved facts. Re-running activation resolution for
@@ -1365,9 +1237,13 @@ impl ControllerState {
             .collect();
         model.presentation = Some(crate::presentation::SurfaceSnapshot::resolve(
             &model,
+            &surface_regions,
             &placement_layouts,
             &states,
         ));
+        if let Some(surface) = &mut model.presentation {
+            surface.cover_workspaces(&self.tabs);
+        }
         model
     }
 
@@ -1380,200 +1256,13 @@ impl ControllerState {
         model
     }
 
-    fn catalog_group_rows(
-        &self,
-        tabs: &[TabCard],
-        latent_tabs: &[LatentTab],
-        catalog: &CatalogEvaluation,
-    ) -> Vec<RailRow> {
-        let inline_entities = self.visible_inline_entities(&catalog.entities);
-        let compact_entities = self.compact_entities(&catalog.entities);
-        let mut path_to_tabs: BTreeMap<GroupPath, Vec<TabCard>> = BTreeMap::new();
-        let mut grouping_by_path: BTreeMap<GroupPath, TabGroupingInfo> = BTreeMap::new();
-        for tab in tabs {
-            if let Some(grouping) = tab.grouping.clone() {
-                grouping_by_path.insert(grouping.path.clone(), grouping.clone());
-                path_to_tabs
-                    .entry(grouping.path.clone())
-                    .or_default()
-                    .push(tab.clone());
-            }
-        }
-        let mut tab_count_by_prefix: BTreeMap<GroupPath, usize> = BTreeMap::new();
-        for (path, grouped_tabs) in &path_to_tabs {
-            for prefix in group_path_prefixes(path) {
-                *tab_count_by_prefix.entry(prefix).or_default() += grouped_tabs.len();
-            }
-        }
-        for latent in latent_tabs {
-            for prefix in group_path_prefixes(&latent.path) {
-                *tab_count_by_prefix.entry(prefix).or_default() += 1;
-            }
-        }
-        for inline in &inline_entities {
-            for prefix in group_path_prefixes(&inline.path) {
-                *tab_count_by_prefix.entry(prefix).or_default() += 1;
-            }
-        }
-        for entity in &compact_entities {
-            for prefix in group_path_prefixes(&compact_parent_path(&entity.path)) {
-                *tab_count_by_prefix.entry(prefix).or_default() += 1;
-            }
-        }
-        let mut latent_by_path: BTreeMap<GroupPath, Vec<LatentTab>> = BTreeMap::new();
-        for latent in latent_tabs {
-            latent_by_path
-                .entry(latent.path.clone())
-                .or_default()
-                .push(latent.clone());
-        }
-        let mut tab_order_by_path = BTreeMap::new();
-        for (index, tab) in tabs.iter().enumerate() {
-            if let Some(grouping) = tab.grouping.as_ref() {
-                tab_order_by_path
-                    .entry(grouping.path.clone())
-                    .or_insert(index);
-            }
-        }
-        let compact_parent_paths = compact_entities
-            .iter()
-            .map(|entity| compact_parent_path(&entity.path))
-            .collect::<Vec<_>>();
-        let mut ordered_paths = path_to_tabs
-            .keys()
-            .chain(latent_by_path.keys())
-            .chain(inline_entities.iter().map(|entity| &entity.path))
-            .chain(compact_parent_paths.iter())
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        ordered_paths.sort_by(|left, right| {
-            match (
-                catalog.ordinal_by_path.get(left).copied(),
-                catalog.ordinal_by_path.get(right).copied(),
-            ) {
-                (Some(left_ordinal), Some(right_ordinal)) => left_ordinal
-                    .cmp(&right_ordinal)
-                    .then_with(|| left.cmp(right)),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => tab_order_by_path
-                    .get(left)
-                    .cmp(&tab_order_by_path.get(right))
-                    .then_with(|| left.cmp(right)),
-            }
-        });
-
-        let ungrouped_tabs = tabs
-            .iter()
-            .enumerate()
-            .filter(|(_, tab)| tab.grouping.is_none())
-            .map(|(index, tab)| (index, tab))
-            .collect::<Vec<_>>();
-        let mut next_ungrouped = 0usize;
-        let mut rows = vec![];
-        let mut emitted_groups = HashSet::new();
-        for path in ordered_paths {
-            if let Some(group_index) = tab_order_by_path.get(&path).copied() {
-                while let Some((index, tab)) = ungrouped_tabs.get(next_ungrouped) {
-                    if *index >= group_index {
-                        break;
-                    }
-                    rows.push(RailRow::Tab {
-                        tab_id: tab.tab_id,
-                        indent: 0,
-                        parent_path: None,
-                    });
-                    next_ungrouped += 1;
-                }
-            }
-            let grouping = grouping_by_path.get(&path);
-            for prefix in group_path_prefixes(&path) {
-                if !emitted_groups.insert(prefix.clone()) {
-                    continue;
-                }
-                let (group_id, label, full_label) = grouping
-                    .map(|grouping| {
-                        group_header_identity_for_prefix(
-                            &prefix,
-                            &path,
-                            &grouping.key,
-                            &grouping.label,
-                            &grouping.full_label,
-                        )
-                    })
-                    .unwrap_or_else(|| group_header_identity_for_path(&prefix));
-                rows.push(RailRow::GroupHeader {
-                    group_id,
-                    path: prefix.clone(),
-                    label,
-                    full_label,
-                    tab_count: tab_count_by_prefix.get(&prefix).copied().unwrap_or(1),
-                    templates: ResolvedTemplateSlots::default(),
-                });
-            }
-            rows.extend(
-                path_to_tabs
-                    .get(&path)
-                    .into_iter()
-                    .flatten()
-                    .map(|tab| RailRow::Tab {
-                        tab_id: tab.tab_id,
-                        indent: path.0.len() * 2,
-                        parent_path: Some(path.clone()),
-                    }),
-            );
-            rows.extend(
-                latent_by_path
-                    .get(&path)
-                    .into_iter()
-                    .flatten()
-                    .map(|latent| RailRow::Latent {
-                        latent: latent.clone(),
-                        indent: path.0.len() * 2,
-                        parent_path: Some(path.clone()),
-                    }),
-            );
-            rows.extend(
-                compact_entities
-                    .iter()
-                    .filter(|entity| compact_parent_path(&entity.path) == path)
-                    .map(|entity| RailRow::Entity {
-                        entity: self.display_entity(entity),
-                        indent: path.0.len() * 2,
-                        parent_path: Some(path.clone()),
-                    }),
-            );
-        }
-        rows.extend(
-            ungrouped_tabs[next_ungrouped..]
-                .iter()
-                .map(|(_, tab)| RailRow::Tab {
-                    tab_id: tab.tab_id,
-                    indent: 0,
-                    parent_path: None,
-                }),
-        );
-        rows
-    }
-
-    fn display_entity(&self, entity: &CatalogEntity) -> DisplayEntity {
+    fn display_entity(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
         let metadata = entity_facts(&entity.entity, &entity.values);
-        let mut compact_metadata = metadata.clone();
-        if entity.form == DISPLAY_FORM_COMPACT {
-            if let Some(template) = entity.template.as_ref() {
-                compact_metadata.insert(
-                    "presentation.template".to_owned(),
-                    MetadataValue::Text(template.clone()),
-                );
-            }
-        }
         let templates = ResolvedTemplateSlots {
             compact: self.resolve_template_slot(
                 crate::template_config::TemplateConfigSlot::Compact,
                 crate::template_config::TemplateConfigNodeKind::Entity,
-                &compact_metadata,
+                &metadata,
             ),
             detail: self.resolve_template_slot(
                 crate::template_config::TemplateConfigSlot::Detail,
@@ -1582,93 +1271,18 @@ impl ControllerState {
             ),
             ..Default::default()
         };
-        DisplayEntity {
+        EvaluatedPlacement {
             entity: entity.entity.clone(),
             placement: None,
-            placement_layout: None,
+            tier: None,
             label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL)
                 .map(str::to_owned)
                 .unwrap_or_else(|| entity.entity.id.clone()),
-            form: entity.form.clone(),
+            form: DISPLAY_FORM_COMPACT.into(),
             metadata,
             templates,
             children: vec![],
         }
-    }
-
-    fn rows_with_group_templates(
-        &self,
-        rows: Vec<RailRow>,
-        resolved_metadata: &[ResolvedMetadata],
-        catalog: &CatalogEvaluation,
-    ) -> Vec<RailRow> {
-        let declared_templates = self.declared_group_templates(&catalog.entities);
-        rows.into_iter()
-            .map(|row| match row {
-                RailRow::GroupHeader {
-                    group_id,
-                    path,
-                    label,
-                    full_label,
-                    tab_count,
-                    mut templates,
-                } => {
-                    let mut metadata = group_template_metadata(
-                        &path,
-                        &label,
-                        &full_label,
-                        tab_count,
-                        resolved_metadata,
-                    );
-                    if let Some(template) = declared_templates.get(&path) {
-                        metadata.insert(
-                            "presentation.template".to_owned(),
-                            MetadataValue::Text(template.clone()),
-                        );
-                    }
-                    templates.group_header = self.resolve_template_slot(
-                        crate::template_config::TemplateConfigSlot::GroupHeader,
-                        crate::template_config::TemplateConfigNodeKind::Group,
-                        &metadata,
-                    );
-                    RailRow::GroupHeader {
-                        group_id,
-                        path,
-                        label,
-                        full_label,
-                        tab_count,
-                        templates,
-                    }
-                }
-                RailRow::Tab {
-                    tab_id,
-                    indent,
-                    parent_path,
-                } => RailRow::Tab {
-                    tab_id,
-                    indent,
-                    parent_path,
-                },
-                RailRow::Latent {
-                    latent,
-                    indent,
-                    parent_path,
-                } => RailRow::Latent {
-                    latent,
-                    indent,
-                    parent_path,
-                },
-                RailRow::Entity {
-                    entity,
-                    indent,
-                    parent_path,
-                } => RailRow::Entity {
-                    entity,
-                    indent,
-                    parent_path,
-                },
-            })
-            .collect()
     }
 
     /// Evaluate a placement's single loop into the entities it places.
@@ -1682,8 +1296,8 @@ impl ControllerState {
         entities: &[CatalogEntity],
         index: &PlacementIndex,
         form: &str,
-        layouts: &mut BTreeMap<PlacementKey, crate::PlacementAnnotation>,
-    ) -> Vec<crate::DisplayEntity> {
+        layouts: &mut BTreeMap<PlacementKey, PlacementAnnotation>,
+    ) -> Vec<EvaluatedPlacement> {
         placement
             .loops
             .iter()
@@ -1744,7 +1358,6 @@ impl ControllerState {
                     .all(|matches| matches.binary_search(position).is_ok())
             })
             .filter_map(|position| entities.get(*position))
-            .filter(|entity| self.entity_is_visible(entity))
             .filter(|entity| !ancestors.contains(&entity.entity))
             .collect::<Vec<_>>();
         matches.sort_by(|left, right| placement_entity_order(left, right, &loop_definition.order));
@@ -1756,7 +1369,7 @@ impl ControllerState {
     /// applied template does, and each loop renders its fields per match.
     fn related_detail_fields<'a>(
         &self,
-        display: &crate::DisplayEntity,
+        display: &EvaluatedPlacement,
         entity: &'a CatalogEntity,
         entities: &'a [CatalogEntity],
         index: &PlacementIndex,
@@ -1816,8 +1429,8 @@ impl ControllerState {
         ancestors: &[crate::EntityRef],
         parent_placement: &PlacementKey,
         depth: usize,
-        layouts: &mut BTreeMap<PlacementKey, crate::PlacementAnnotation>,
-    ) -> Vec<crate::DisplayEntity> {
+        layouts: &mut BTreeMap<PlacementKey, PlacementAnnotation>,
+    ) -> Vec<EvaluatedPlacement> {
         const MAX_PLACEMENT_DEPTH: usize = 64;
         if depth >= MAX_PLACEMENT_DEPTH {
             return vec![];
@@ -1826,8 +1439,26 @@ impl ControllerState {
         matches
             .into_iter()
             .map(|entity| {
-                let mut display =
-                    placed_display_entity(self.display_entity(entity), loop_definition, form);
+                let mut display = self.display_entity(entity);
+                display.form = form.to_owned();
+                display.tier = loop_definition.tier;
+                if !loop_definition.fields.is_empty() {
+                    display.templates.compact = Some(ResolvedTemplateSlot {
+                        template_name: format!("placement:{}", loop_definition.binding),
+                        fields: vec![],
+                        setters: vec![],
+                        effective_kdl: String::new(),
+                        resolve_error: None,
+                        render_ready: Some(crate::template_config::TemplateConfigRenderReady {
+                            fields: loop_definition.fields.clone(),
+                            controls: vec![],
+                            chrome: Default::default(),
+                        }),
+                    });
+                    if form != DISPLAY_FORM_COMPACT {
+                        display.templates.detail = display.templates.compact.clone();
+                    }
+                }
                 let mut placement = parent_placement.clone();
                 placement.0.push(PlacementSegment {
                     loop_name: loop_definition.binding.clone(),
@@ -1836,7 +1467,7 @@ impl ControllerState {
                 let related_detail = self.related_detail_fields(&display, entity, entities, index);
                 layouts.insert(
                     placement.clone(),
-                    crate::PlacementAnnotation {
+                    PlacementAnnotation {
                         layout: loop_definition.layout.clone(),
                         related_detail,
                     },
@@ -1935,187 +1566,35 @@ impl ControllerState {
 
     fn resolve_effective_variables(
         &self,
-        rows: &[RailRow],
-        tabs: &[TabCard],
         resolved_metadata: &[ResolvedMetadata],
-        catalog_entities: &[CatalogEntity],
     ) -> (Vec<EffectiveNodeVariables>, Vec<String>) {
         let Some(catalog) = self.template_catalog.as_ref() else {
             return (vec![], vec![]);
         };
-        let mut variable_warnings = BTreeSet::new();
-        let mut resolved_by_node = BTreeMap::<NodeKey, ResolvedNodeVariables>::new();
+        let mut warnings = BTreeSet::new();
         let root = NodeKey::Root;
-        let root_metadata = node_metadata(&root, resolved_metadata);
-        let root_values = self.resolve_variables_at_node(
+        let resolved = self.resolve_variables_at_node(
             catalog,
             &root,
             None,
-            &root_metadata,
+            &node_metadata(&root, resolved_metadata),
             None,
-            &mut variable_warnings,
+            &mut warnings,
         );
-        resolved_by_node.insert(root.clone(), root_values);
-
-        let mut groups = rows
-            .iter()
-            .filter_map(|row| match row {
-                RailRow::GroupHeader {
-                    path, templates, ..
-                } => Some((path.clone(), templates.group_header.as_ref())),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        groups.sort_by_key(|(path, _)| path.0.len());
-        for (path, template) in groups {
-            let node = NodeKey::Group(path.clone());
-            let parent = if path.0.len() <= 1 {
-                NodeKey::Root
-            } else {
-                NodeKey::Group(GroupPath(path.0[..path.0.len() - 1].to_vec()))
-            };
-            let metadata = node_metadata(&node, resolved_metadata);
-            let values = self.resolve_variables_at_node(
-                catalog,
-                &node,
-                resolved_by_node
-                    .get(&parent)
-                    .map(|resolved| &resolved.values),
-                &metadata,
-                template,
-                &mut variable_warnings,
-            );
-            resolved_by_node.insert(node, values);
-        }
-
-        let tab_by_id = tabs
-            .iter()
-            .map(|tab| (tab.tab_id, tab))
-            .collect::<HashMap<_, _>>();
-        for row in rows {
-            let (node, parent, metadata, template) = match row {
-                RailRow::Tab {
-                    tab_id,
-                    parent_path,
-                    ..
-                } => {
-                    let Some(tab) = tab_by_id.get(tab_id) else {
-                        continue;
-                    };
-                    let node = NodeKey::Tab(*tab_id);
-                    let parent = parent_path
-                        .clone()
-                        .map(NodeKey::Group)
-                        .unwrap_or(NodeKey::Root);
-                    (
-                        node.clone(),
-                        parent,
-                        node_metadata(&node, resolved_metadata),
-                        tab.templates.tab_title.as_ref(),
-                    )
-                }
-                RailRow::Latent {
-                    latent,
-                    parent_path,
-                    ..
-                } => {
-                    let node = NodeKey::Entity(latent.entity.clone());
-                    let parent = parent_path
-                        .clone()
-                        .map(NodeKey::Group)
-                        .unwrap_or(NodeKey::Root);
-                    (
-                        node.clone(),
-                        parent,
-                        node_metadata(&node, resolved_metadata),
-                        latent
-                            .templates
-                            .detail
-                            .as_ref()
-                            .or(latent.templates.compact.as_ref()),
-                    )
-                }
-                RailRow::Entity {
-                    entity,
-                    parent_path,
-                    ..
-                } => {
-                    let node = NodeKey::Entity(entity.entity.clone());
-                    let parent = parent_path
-                        .clone()
-                        .map(NodeKey::Group)
-                        .unwrap_or(NodeKey::Root);
-                    let template = if entity.form == DISPLAY_FORM_COMPACT {
-                        entity.templates.compact.as_ref()
-                    } else {
-                        entity.templates.detail.as_ref()
-                    };
-                    (node, parent, entity.metadata.clone(), template)
-                }
-                RailRow::GroupHeader { .. } => continue,
-            };
-            if resolved_by_node.contains_key(&node) {
-                continue;
-            }
-            let values = self.resolve_variables_at_node(
-                catalog,
-                &node,
-                resolved_by_node
-                    .get(&parent)
-                    .map(|resolved| &resolved.values),
-                &metadata,
-                template,
-                &mut variable_warnings,
-            );
-            resolved_by_node.insert(node, values);
-        }
-
-        for entity in catalog_entities {
-            let node = NodeKey::Entity(entity.entity.clone());
-            if resolved_by_node.contains_key(&node) {
-                continue;
-            }
-            let display = self.display_entity(entity);
-            let parent = if entity.path.0.is_empty() {
-                NodeKey::Root
-            } else {
-                NodeKey::Group(entity.path.clone())
-            };
-            let template = if display.form == DISPLAY_FORM_COMPACT {
-                display.templates.compact.as_ref()
-            } else {
-                display.templates.detail.as_ref()
-            };
-            let values = self.resolve_variables_at_node(
-                catalog,
-                &node,
-                resolved_by_node
-                    .get(&parent)
-                    .map(|resolved| &resolved.values),
-                &display.metadata,
-                template,
-                &mut variable_warnings,
-            );
-            resolved_by_node.insert(node, values);
-        }
-
         (
-            resolved_by_node
-                .into_iter()
-                .map(|(node, resolved)| EffectiveNodeVariables {
-                    node,
-                    values: resolved.values,
-                    declarations: resolved.declarations,
-                })
-                .collect(),
-            variable_warnings.into_iter().collect(),
+            vec![EffectiveNodeVariables {
+                node: root,
+                values: resolved.values,
+                declarations: resolved.declarations,
+            }],
+            warnings.into_iter().collect(),
         )
     }
 
     fn resolve_placement_variables(
         &self,
         catalog: &crate::template_config::TemplateConfigCatalog,
-        entity: &DisplayEntity,
+        entity: &EvaluatedPlacement,
         parent: &NodeKey,
         inherited_by_node: &mut BTreeMap<NodeKey, BTreeMap<String, EffectiveVariableValue>>,
         output: &mut Vec<EffectiveNodeVariables>,
@@ -2276,12 +1755,9 @@ impl ControllerState {
 
     fn latent_tabs_in(&self, catalog: &CatalogEvaluation) -> Vec<LatentTab> {
         let entities = &catalog.entities;
-        let collapsed = &catalog.collapsed;
         let live_targets = self.materialized_action_targets(catalog);
         entities
             .iter()
-            .filter(|entity| entity.presence == PresenceClass::Tab)
-            .filter(|entity| !collapsed.contains(&entity.entity))
             .filter_map(|entity| {
                 let display = self.display_entity(entity);
                 let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
@@ -2292,7 +1768,6 @@ impl ControllerState {
                 }
                 let name = metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL)
                     .map(str::to_owned)
-                    .or_else(|| entity.path.0.last().map(group_segment_label))
                     .unwrap_or_else(|| entity.entity.id.clone());
                 Some(LatentTab {
                     entity: entity.entity.clone(),
@@ -2305,7 +1780,6 @@ impl ControllerState {
                         LatentMaterializationState::Ready
                     },
                     action_target,
-                    path: entity.path.clone(),
                     name,
                     status_state: metadata_entry_text(&entity.values, KEY_STATUS_STATE)
                         .map(str::to_owned),
@@ -2325,8 +1799,6 @@ impl ControllerState {
     fn catalog_entities(&self) -> Vec<CatalogEntity> {
         #[cfg(test)]
         CATALOG_BUILDS.with(|count| count.set(count.get() + 1));
-        let default_catalog = GroupingConfigCatalog::default();
-        let catalog = self.grouping_catalog.as_ref().unwrap_or(&default_catalog);
         let mut entities = self
             .metadata
             .targets()
@@ -2335,212 +1807,22 @@ impl ControllerState {
                     return None;
                 };
                 let values = self.metadata.resolved_entries_for(target, self.now());
-                // An entity exists while some producer asserts it. Once every
-                // fact is unset or expired, its identity alone is not a catalog
-                // entry; open workspaces fall back to Other workspaces.
                 if values.is_empty() {
                     return None;
                 }
-                let facts = entity_facts(entity, &values);
-                let (rule, path, level_index) =
-                    if let Some(name) = self.active_grouping_template.as_deref() {
-                        let rule = catalog.named(name).filter(|rule| {
-                            rule.filter
-                                .as_ref()
-                                .is_none_or(|filter| filter.matches(&facts))
-                        })?;
-                        let (path, level_index) = grouping_path_for_facts(rule, &facts)?;
-                        (rule, path, level_index)
-                    } else {
-                        catalog.rules.iter().find_map(|rule| {
-                            if !rule
-                                .filter
-                                .as_ref()
-                                .is_none_or(|filter| filter.matches(&facts))
-                            {
-                                return None;
-                            }
-                            grouping_path_for_facts(rule, &facts)
-                                .map(|(path, level_index)| (rule, path, level_index))
-                        })?
-                    };
-                let mapping = rule
-                    .presence
-                    .iter()
-                    .find(|mapping| mapping.kind == entity.kind);
-                let presence = mapping
-                    .map(|mapping| mapping.class)
-                    .unwrap_or(PresenceClass::Hidden);
-                let form = mapping
-                    .map(|mapping| mapping.form.clone())
-                    .unwrap_or_else(|| DISPLAY_FORM_FULL.to_owned());
-                let visible_when = mapping.and_then(|mapping| mapping.visible_when.clone());
-                let template = mapping.and_then(|mapping| mapping.template.clone());
-                let level = &rule.levels[level_index];
-                let group_templates = rule
-                    .levels
-                    .iter()
-                    .filter_map(|level| {
-                        level
-                            .template
-                            .as_ref()
-                            .map(|template| (level.key.clone(), template.clone()))
-                    })
-                    .collect();
                 Some(CatalogEntity {
                     entity: entity.clone(),
                     values,
                     ordinal: self.metadata.target_ordinal(target).unwrap_or_default(),
-                    path,
-                    presence,
-                    form,
-                    visible_when,
-                    template,
-                    group_templates,
-                    grouping_priority: rule.priority,
-                    collapse_single_member: level.collapse_single_member,
-                    show_empty: level.show_empty,
                 })
             })
             .collect::<Vec<_>>();
-        entities.sort_by(|left, right| {
-            left.ordinal
-                .cmp(&right.ordinal)
-                .then_with(|| left.path.cmp(&right.path))
+        entities.sort_by(|a, b| {
+            a.ordinal
+                .cmp(&b.ordinal)
+                .then_with(|| a.entity.cmp(&b.entity))
         });
         entities
-    }
-
-    fn grouping_diagnostics(&self) -> Vec<GroupingRuleDiagnostic> {
-        let default_catalog = GroupingConfigCatalog::default();
-        let catalog = self.grouping_catalog.as_ref().unwrap_or(&default_catalog);
-        self.metadata
-            .targets()
-            .filter_map(|target| {
-                let EntityId::Entity(entity) = target else {
-                    return None;
-                };
-                let values = self.metadata.resolved_entries_for(target, self.now());
-                let facts = entity_facts(entity, &values);
-                let rules = self
-                    .active_grouping_template
-                    .as_deref()
-                    .and_then(|name| catalog.named(name))
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                let rules = if rules.is_empty() && self.active_grouping_template.is_none() {
-                    catalog.rules.iter().collect()
-                } else {
-                    rules
-                };
-                Some(
-                    rules
-                        .into_iter()
-                        .filter(|rule| {
-                            rule.filter
-                                .as_ref()
-                                .is_none_or(|filter| filter.matches(&facts))
-                        })
-                        .map_while(|rule| match derive_grouping_path(rule, &facts) {
-                            Ok(_) => None,
-                            Err(GroupingPathError::MissingNonOptionalLevel(key)) => {
-                                Some(GroupingRuleDiagnostic {
-                                    target: NodeKey::Entity(entity.clone()),
-                                    rule: rule.name.clone(),
-                                    message: format!(
-                                        "not captured: `{key}` absent (non-optional level)"
-                                    ),
-                                })
-                            }
-                            Err(GroupingPathError::NoDerivedLevels) => {
-                                Some(GroupingRuleDiagnostic {
-                                    target: NodeKey::Entity(entity.clone()),
-                                    rule: rule.name.clone(),
-                                    message: "not captured: no grouping levels derived".to_owned(),
-                                })
-                            }
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .flatten()
-            .collect()
-    }
-
-    fn declared_group_templates(&self, entities: &[CatalogEntity]) -> BTreeMap<GroupPath, String> {
-        let mut declarations: BTreeMap<GroupPath, (i64, String)> = BTreeMap::new();
-        for entity in entities {
-            for depth in 1..=entity.path.0.len() {
-                let prefix = GroupPath(entity.path.0[..depth].to_vec());
-                let key = &entity.path.0[depth - 1].key;
-                if let Some(template) = entity.group_templates.get(key) {
-                    declarations
-                        .entry(prefix)
-                        .and_modify(|(priority, selected)| {
-                            if entity.grouping_priority > *priority {
-                                *priority = entity.grouping_priority;
-                                *selected = template.clone();
-                            }
-                        })
-                        .or_insert_with(|| (entity.grouping_priority, template.clone()));
-                }
-            }
-        }
-
-        let default_catalog = GroupingConfigCatalog::default();
-        let catalog = self.grouping_catalog.as_ref().unwrap_or(&default_catalog);
-        let tab_seed_metadata = self.tab_seed_metadata_entries();
-        for tab in &self.tabs {
-            let metadata = self.tab_resolved_metadata_values(tab.tab_id, &tab_seed_metadata);
-            let selected = if let Some(name) = self.active_grouping_template.as_deref() {
-                catalog.named(name).and_then(|rule| {
-                    self.tab_grouping_for_rule(rule, &metadata)
-                        .map(|path| (rule, path))
-                })
-            } else {
-                catalog.rules.iter().find_map(|rule| {
-                    self.tab_grouping_for_rule(rule, &metadata)
-                        .map(|path| (rule, path))
-                })
-            };
-            let Some((rule, grouping)) = selected else {
-                continue;
-            };
-            for depth in 1..=grouping.path.0.len() {
-                let prefix = GroupPath(grouping.path.0[..depth].to_vec());
-                let key = &grouping.path.0[depth - 1].key;
-                if let Some(template) = rule
-                    .levels
-                    .iter()
-                    .find(|level| &level.key == key)
-                    .and_then(|level| level.template.as_ref())
-                {
-                    declarations
-                        .entry(prefix)
-                        .and_modify(|(priority, selected)| {
-                            if rule.priority > *priority {
-                                *priority = rule.priority;
-                                *selected = template.clone();
-                            }
-                        })
-                        .or_insert_with(|| (rule.priority, template.clone()));
-                }
-            }
-        }
-
-        // A non-compact presence declaration owns its exact full surface and
-        // takes precedence over the grouping level's default for that path.
-        for entity in entities {
-            if entity.form != DISPLAY_FORM_COMPACT {
-                if let Some(template) = &entity.template {
-                    declarations.insert(entity.path.clone(), (i64::MAX, template.clone()));
-                }
-            }
-        }
-        declarations
-            .into_iter()
-            .map(|(path, (_, template))| (path, template))
-            .collect()
     }
 
     fn materialized_action_targets(&self, catalog: &CatalogEvaluation) -> BTreeSet<String> {
@@ -2558,42 +1840,6 @@ impl ControllerState {
             .collect()
     }
 
-    fn visible_inline_entities<'a>(&self, entities: &'a [CatalogEntity]) -> Vec<&'a CatalogEntity> {
-        entities
-            .iter()
-            .filter(|entity| entity.presence == PresenceClass::Inline)
-            .filter(|entity| entity.form != DISPLAY_FORM_COMPACT)
-            .filter(|entity| self.entity_is_visible(entity))
-            .filter(|entity| {
-                entity.show_empty
-                    || entities.iter().any(|candidate| {
-                        candidate.entity != entity.entity
-                            && candidate.presence != PresenceClass::Hidden
-                            && candidate.path.0.starts_with(&entity.path.0)
-                    })
-            })
-            .collect()
-    }
-
-    fn compact_entities<'a>(&self, entities: &'a [CatalogEntity]) -> Vec<&'a CatalogEntity> {
-        entities
-            .iter()
-            .filter(|entity| entity.presence == PresenceClass::Inline)
-            .filter(|entity| entity.form == DISPLAY_FORM_COMPACT)
-            .filter(|entity| self.entity_is_visible(entity))
-            .collect()
-    }
-
-    fn entity_is_visible(&self, entity: &CatalogEntity) -> bool {
-        entity
-            .visible_when
-            .as_ref()
-            .is_none_or(|name| match self.rail_ui.variables.get(name) {
-                Some(DisplayVariableValue::Bool(value)) => *value,
-                _ => true,
-            })
-    }
-
     fn tab_entity_ref(
         &self,
         tab_id: u64,
@@ -2603,24 +1849,6 @@ impl ControllerState {
         let seed_values = tab_seed_metadata.get(&tab_id).cloned().unwrap_or_default();
         let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
         entity_ref_from_entries(&values)
-    }
-
-    fn presentation_path_for_entity(
-        &self,
-        target: &EntityRef,
-        catalog: &CatalogEvaluation,
-    ) -> Option<GroupPath> {
-        let entities = &catalog.entities;
-        let entity = catalog.entity(target)?;
-        if !catalog.collapsed.contains(target) {
-            return Some(entity.path.clone());
-        }
-        entities
-            .iter()
-            .filter(|parent| parent.presence == PresenceClass::Tab && parent.collapse_single_member)
-            .filter(|parent| direct_child_path(&parent.path, &entity.path))
-            .map(|parent| parent.path.clone())
-            .next()
     }
 
     pub fn can_materialize_latent(&self, request: &crate::MaterializeLatentRequest) -> bool {
@@ -2856,24 +2084,6 @@ impl ControllerState {
         })
     }
 
-    fn resolve_tab_templates(&self, tabs: &mut [TabCard], resolved_metadata: &[ResolvedMetadata]) {
-        for tab in tabs {
-            let metadata = tab_template_metadata(tab, resolved_metadata);
-            tab.templates.tab_title = self.resolve_template_slot(
-                crate::template_config::TemplateConfigSlot::TabTitle,
-                crate::template_config::TemplateConfigNodeKind::Tab,
-                &metadata,
-            );
-            if tab.status.is_some() {
-                tab.templates.tab_status = self.resolve_template_slot(
-                    crate::template_config::TemplateConfigSlot::TabStatus,
-                    crate::template_config::TemplateConfigNodeKind::Tab,
-                    &metadata,
-                );
-            }
-        }
-    }
-
     fn resolve_template_slot(
         &self,
         slot: crate::template_config::TemplateConfigSlot,
@@ -2903,11 +2113,6 @@ impl ControllerState {
                 });
             }
         };
-        if resolved.is_bundled && slot.is_rail_local() {
-            // These slots depend on rail-local state such as collapse and available width.
-            // Leave bundled resolution to the rail; configured overrides remain resolved here.
-            return None;
-        }
         Some(ResolvedTemplateSlot {
             template_name: resolved.name.clone(),
             fields: vec![],
@@ -2916,126 +2121,6 @@ impl ControllerState {
             effective_kdl: resolved.dump_kdl(),
             resolve_error: None,
         })
-    }
-
-    fn tab_grouping_infos(&self, catalog: &CatalogEvaluation) -> HashMap<u64, TabGroupingInfo> {
-        let tab_seed_metadata = self.tab_seed_metadata_entries();
-        let tab_entities: HashMap<u64, TabGroupingInfo> = self
-            .tabs
-            .iter()
-            .filter_map(|tab| {
-                self.tab_entity_grouping(tab.tab_id, &tab_seed_metadata, catalog)
-                    .map(|grouping| (tab.tab_id, grouping))
-            })
-            .collect();
-        let default_catalog = GroupingConfigCatalog::default();
-        let grouping_catalog = self.grouping_catalog.as_ref().unwrap_or(&default_catalog);
-        let mut groupings: HashMap<u64, TabGroupingInfo> = self
-            .tabs
-            .iter()
-            .filter(|tab| !tab_entities.contains_key(&tab.tab_id))
-            .filter_map(|tab| {
-                self.tab_rule_grouping(tab.tab_id, grouping_catalog, &tab_seed_metadata)
-                    .map(|grouping| (tab.tab_id, grouping))
-            })
-            .collect();
-        let directory_tab_ids = groupings
-            .iter()
-            .filter_map(|(tab_id, grouping)| {
-                grouping_uses_rule(grouping, DIRECTORY_GROUPING_RULE).then_some(*tab_id)
-            })
-            .collect::<HashSet<_>>();
-        if !directory_tab_ids.is_empty() {
-            let directory_seed_metadata = self.tab_seed_metadata_entries_for(&directory_tab_ids);
-            for tab_id in &directory_tab_ids {
-                if let Some(grouping) =
-                    self.tab_rule_grouping(*tab_id, grouping_catalog, &directory_seed_metadata)
-                {
-                    groupings.insert(*tab_id, grouping);
-                }
-            }
-        }
-        groupings.extend(tab_entities);
-        groupings
-    }
-
-    fn tab_rule_grouping(
-        &self,
-        tab_id: u64,
-        catalog: &GroupingConfigCatalog,
-        tab_seed_metadata: &TabSeedMetadata,
-    ) -> Option<TabGroupingInfo> {
-        let metadata = self.tab_resolved_metadata_values(tab_id, tab_seed_metadata);
-        if let Some(name) = self.active_grouping_template.as_deref() {
-            return catalog
-                .named(name)
-                .and_then(|rule| self.tab_grouping_for_rule(rule, &metadata));
-        }
-        catalog
-            .rules
-            .iter()
-            .find_map(|rule| self.tab_grouping_for_rule(rule, &metadata))
-    }
-
-    fn tab_grouping_for_rule(
-        &self,
-        rule: &GroupingRule,
-        metadata: &BTreeMap<String, MetadataValue>,
-    ) -> Option<TabGroupingInfo> {
-        if rule
-            .filter
-            .as_ref()
-            .is_some_and(|filter| !filter.matches(metadata))
-        {
-            return None;
-        }
-        let (path, _) = grouping_path_for_facts(rule, metadata)?;
-        let labels = path.0.iter().map(group_segment_label).collect::<Vec<_>>();
-        let key = format!(
-            "{}:{}",
-            rule.name,
-            path.0
-                .iter()
-                .map(|segment| format!(
-                    "{}={}",
-                    segment.key,
-                    metadata_value_display(&segment.value)
-                ))
-                .collect::<Vec<_>>()
-                .join("/")
-        );
-        let label = labels.last().cloned().unwrap_or_else(|| key.clone());
-        Some(TabGroupingInfo {
-            key,
-            path,
-            label,
-            full_label: labels.join(" / "),
-        })
-    }
-
-    fn tab_resolved_metadata_values(
-        &self,
-        tab_id: u64,
-        tab_seed_metadata: &TabSeedMetadata,
-    ) -> BTreeMap<String, MetadataValue> {
-        let target = EntityId::Tab(tab_id);
-        let seed_values = tab_seed_metadata.get(&tab_id).cloned().unwrap_or_default();
-        let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
-        values
-            .into_iter()
-            .map(|(key, entry)| (key, entry.value))
-            .collect()
-    }
-
-    fn tab_entity_grouping(
-        &self,
-        tab_id: u64,
-        tab_seed_metadata: &TabSeedMetadata,
-        catalog: &CatalogEvaluation,
-    ) -> Option<TabGroupingInfo> {
-        let entity = self.tab_entity_ref(tab_id, tab_seed_metadata)?;
-        let path = self.presentation_path_for_entity(&entity, catalog)?;
-        tab_grouping_info_for_entity_path(path)
     }
 
     fn tab_primary_metadata_entry(&self, tab_id: u64, key: &str) -> Option<MetadataEntry> {
@@ -3056,106 +2141,30 @@ impl ControllerState {
         tabs: &[TabCard],
         catalog: &CatalogEvaluation,
     ) -> Vec<ResolvedMetadata> {
-        let directory_tab_ids = tabs
-            .iter()
-            .filter_map(|tab| {
-                tab.grouping
-                    .as_ref()
-                    .filter(|grouping| grouping_uses_rule(grouping, DIRECTORY_GROUPING_RULE))
-                    .map(|_| tab.tab_id)
-            })
-            .collect::<HashSet<_>>();
-        let tab_seed_metadata = self.tab_seed_metadata_entries_for(&directory_tab_ids);
-        let mut by_target: BTreeMap<EntityId, BTreeMap<String, MetadataEntry>> = BTreeMap::new();
-        let mut sources_by_target: BTreeMap<EntityId, BTreeMap<String, Vec<MetadataSourceEntry>>> =
-            BTreeMap::new();
-        let mut identities_by_target: BTreeMap<EntityId, Vec<ReachableMetadataIdentity>> =
-            BTreeMap::new();
-        let catalog_entities = &catalog.entities;
-        let mut group_paths = catalog_entities
-            .iter()
-            .flat_map(|entity| group_path_prefixes(&entity.path))
-            .chain(self.metadata.targets().filter_map(|target| match target {
-                EntityId::Group(path) => Some(path.clone()),
-                _ => None,
-            }))
-            .collect::<BTreeSet<_>>();
-        let root_target = EntityId::Root;
-        let (root_values, root_sources, root_identities) =
-            self.resolve_target_metadata(&root_target, BTreeMap::new());
-        if !root_values.is_empty() || !root_sources.is_empty() || !root_identities.is_empty() {
-            by_target
-                .entry(root_target.clone())
-                .or_default()
-                .extend(root_values);
-            sources_by_target
-                .entry(root_target.clone())
-                .or_default()
-                .extend(root_sources);
-            identities_by_target
-                .entry(root_target)
-                .or_default()
-                .extend(root_identities);
-        }
-        for tab in tabs {
-            let tab_target = EntityId::Tab(tab.tab_id);
-            let tab_seed_values = tab_seed_metadata
-                .get(&tab.tab_id)
-                .cloned()
-                .unwrap_or_default();
-            let (tab_values, tab_sources, tab_identities) =
-                self.resolve_target_metadata(&tab_target, tab_seed_values);
-            by_target
-                .entry(tab_target.clone())
-                .or_default()
-                .extend(tab_values);
-            sources_by_target
-                .entry(tab_target.clone())
-                .or_default()
-                .extend(tab_sources);
-            identities_by_target
-                .entry(tab_target.clone())
-                .or_default()
-                .extend(tab_identities);
-            if let Some(grouping) = tab.grouping.as_ref() {
-                group_paths.extend(group_path_prefixes(&grouping.path));
-            }
-        }
-        for path in group_paths {
-            let group_target = EntityId::Group(path.clone());
-            let group_seed_values = self.group_path_seed_metadata_entries(&path);
-            let (mut group_values, mut group_sources, mut group_identities) =
-                self.resolve_target_metadata(&group_target, group_seed_values);
-            if let Some(entity) = catalog_entities.iter().find(|entity| entity.path == path) {
-                let entity_target = EntityId::Entity(entity.entity.clone());
-                let (entity_values, entity_sources, entity_identities) =
-                    self.resolve_target_metadata(&entity_target, BTreeMap::new());
-                group_values.extend(entity_values);
-                for (key, entries) in entity_sources {
-                    group_sources.entry(key).or_default().extend(entries);
+        let seeds = self.tab_seed_metadata_entries();
+        let targets = std::iter::once(EntityId::Root)
+            .chain(tabs.iter().map(|tab| EntityId::Tab(tab.tab_id)))
+            .chain(
+                catalog
+                    .entities
+                    .iter()
+                    .map(|entity| EntityId::Entity(entity.entity.clone())),
+            );
+        targets
+            .map(|target| {
+                let seed = if let EntityId::Tab(id) = target {
+                    seeds.get(&id).cloned().unwrap_or_default()
+                } else {
+                    BTreeMap::new()
+                };
+                let (values, source_entries, reachable_identities) =
+                    self.resolve_target_metadata(&target, seed);
+                ResolvedMetadata {
+                    target,
+                    values,
+                    source_entries,
+                    reachable_identities,
                 }
-                group_identities.extend(entity_identities);
-            }
-            by_target
-                .entry(group_target.clone())
-                .or_default()
-                .extend(group_values);
-            sources_by_target
-                .entry(group_target.clone())
-                .or_default()
-                .extend(group_sources);
-            identities_by_target
-                .entry(group_target)
-                .or_default()
-                .extend(group_identities);
-        }
-        by_target
-            .into_iter()
-            .map(|(target, values)| ResolvedMetadata {
-                source_entries: sources_by_target.remove(&target).unwrap_or_default(),
-                reachable_identities: identities_by_target.remove(&target).unwrap_or_default(),
-                target,
-                values,
             })
             .collect()
     }
@@ -3265,31 +2274,6 @@ impl ControllerState {
             .collect()
     }
 
-    fn group_path_seed_metadata_entries(
-        &self,
-        path: &GroupPath,
-    ) -> BTreeMap<String, MetadataEntry> {
-        path.0
-            .iter()
-            .map(|segment| {
-                (
-                    segment.key.clone(),
-                    self.seed_metadata_entry(segment.value.clone()),
-                )
-            })
-            .collect()
-    }
-
-    fn seed_metadata_entry(&self, value: MetadataValue) -> MetadataEntry {
-        MetadataEntry {
-            value,
-            updated_at: self.now(),
-            ttl_ms: None,
-            precedence: 0,
-            ordinal: 0,
-        }
-    }
-
     fn refresh_pane_cwd_metadata(&mut self, pane_id: PaneTarget) -> bool {
         let entity_id = EntityId::Pane(pane_id);
         let Some(pane) = self.panes.get(&pane_id) else {
@@ -3376,20 +2360,12 @@ impl ControllerState {
     }
 }
 
-fn grouping_path_for_facts(
-    rule: &GroupingRule,
-    facts: &BTreeMap<String, MetadataValue>,
-) -> Option<(GroupPath, usize)> {
-    derive_grouping_path(rule, facts).ok()
-}
-
 fn node_metadata(
     node: &NodeKey,
     resolved_metadata: &[ResolvedMetadata],
 ) -> BTreeMap<String, MetadataValue> {
     let target = match node {
         NodeKey::Root => crate::ResolvedMetadataTarget::Root,
-        NodeKey::Group(path) => crate::ResolvedMetadataTarget::Group(path.clone()),
         NodeKey::Tab(tab_id) => crate::ResolvedMetadataTarget::Tab(*tab_id),
         NodeKey::Entity(entity) => crate::ResolvedMetadataTarget::Entity(entity.clone()),
         NodeKey::Placement(key) => key
@@ -3435,43 +2411,6 @@ fn apply_variable_setter(
     );
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum GroupingPathError {
-    MissingNonOptionalLevel(String),
-    NoDerivedLevels,
-}
-
-fn derive_grouping_path(
-    rule: &GroupingRule,
-    facts: &BTreeMap<String, MetadataValue>,
-) -> Result<(GroupPath, usize), GroupingPathError> {
-    let mut segments = vec![];
-    let mut last_level = None;
-    for (index, level) in rule.levels.iter().enumerate() {
-        let Some(value) = facts.get(&level.key).cloned() else {
-            if level.optional {
-                continue;
-            }
-            return Err(GroupingPathError::MissingNonOptionalLevel(
-                level.key.clone(),
-            ));
-        };
-        let label = level
-            .label_key
-            .as_ref()
-            .and_then(|key| facts.get(key))
-            .map(metadata_value_display);
-        segments.push(GroupSegment {
-            key: level.key.clone(),
-            value,
-            label,
-        });
-        last_level = Some(index);
-    }
-    let last_level = last_level.ok_or(GroupingPathError::NoDerivedLevels)?;
-    Ok((GroupPath(segments), last_level))
-}
-
 fn entity_facts(
     entity: &EntityRef,
     values: &BTreeMap<String, MetadataEntry>,
@@ -3481,7 +2420,7 @@ fn entity_facts(
         .map(|(key, entry)| (key.clone(), entry.value.clone()))
         .collect::<BTreeMap<_, _>>();
     // The target is the canonical entity identity. Producers must not have to
-    // duplicate it in every patch's set map for grouping filters and templates.
+    // duplicate it in every patch's set map for placement queries and templates.
     facts.insert(
         KEY_ENTITY_KIND.to_owned(),
         MetadataValue::Text(entity.kind.clone()),
@@ -3500,59 +2439,6 @@ fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<
     })
 }
 
-fn direct_child_path(parent: &GroupPath, child: &GroupPath) -> bool {
-    child.0.len() == parent.0.len() + 1 && child.0.starts_with(&parent.0)
-}
-
-fn collapsed_child_entities(entities: &[CatalogEntity]) -> BTreeSet<EntityRef> {
-    let mut collapsed = BTreeSet::new();
-    for parent in entities
-        .iter()
-        .filter(|entity| entity.presence == PresenceClass::Tab && entity.collapse_single_member)
-    {
-        let children = entities
-            .iter()
-            .filter(|child| child.presence == PresenceClass::Tab)
-            .filter(|child| direct_child_path(&parent.path, &child.path))
-            .collect::<Vec<_>>();
-        if let [child] = children.as_slice() {
-            collapsed.insert(child.entity.clone());
-        }
-    }
-    collapsed
-}
-
-fn tab_grouping_info_for_entity_path(path: GroupPath) -> Option<TabGroupingInfo> {
-    if path.0.is_empty() {
-        return None;
-    }
-    let labels = path.0.iter().map(group_segment_label).collect::<Vec<_>>();
-    let key = format!(
-        "entity:{}",
-        path.0
-            .iter()
-            .map(|segment| format!("{}={}", segment.key, metadata_value_display(&segment.value)))
-            .collect::<Vec<_>>()
-            .join("/")
-    );
-    Some(TabGroupingInfo {
-        key,
-        path,
-        label: labels.last().cloned().unwrap_or_default(),
-        full_label: labels.join(" / "),
-    })
-}
-
-fn group_path_prefixes(path: &GroupPath) -> Vec<GroupPath> {
-    (1..=path.0.len())
-        .map(|depth| GroupPath(path.0[..depth].to_vec()))
-        .collect()
-}
-
-fn compact_parent_path(path: &GroupPath) -> GroupPath {
-    GroupPath(path.0[..path.0.len().saturating_sub(1)].to_vec())
-}
-
 fn metadata_entry_text<'a>(
     values: &'a BTreeMap<String, MetadataEntry>,
     key: &str,
@@ -3561,66 +2447,6 @@ fn metadata_entry_text<'a>(
         Some(MetadataValue::Text(value)) => Some(value),
         _ => None,
     }
-}
-
-fn group_header_identity_for_prefix(
-    prefix: &GroupPath,
-    leaf_path: &GroupPath,
-    leaf_key: &str,
-    leaf_label: &str,
-    leaf_full_label: &str,
-) -> (String, String, String) {
-    if prefix == leaf_path {
-        return (
-            leaf_key.to_owned(),
-            leaf_label.to_owned(),
-            leaf_full_label.to_owned(),
-        );
-    }
-    let labels = prefix.0.iter().map(group_segment_label).collect::<Vec<_>>();
-    let key = format!(
-        "group:{}",
-        prefix
-            .0
-            .iter()
-            .map(|segment| format!("{}={}", segment.key, metadata_value_display(&segment.value)))
-            .collect::<Vec<_>>()
-            .join("/")
-    );
-    let label = labels.last().cloned().unwrap_or_else(|| key.clone());
-    let full_label = labels.join(" / ");
-    (key, label, full_label)
-}
-
-fn group_header_identity_for_path(path: &GroupPath) -> (String, String, String) {
-    let labels = path.0.iter().map(group_segment_label).collect::<Vec<_>>();
-    let key = format!(
-        "group:{}",
-        path.0
-            .iter()
-            .map(|segment| format!("{}={}", segment.key, metadata_value_display(&segment.value)))
-            .collect::<Vec<_>>()
-            .join("/")
-    );
-    (
-        key,
-        labels.last().cloned().unwrap_or_default(),
-        labels.join(" / "),
-    )
-}
-
-fn group_segment_label(segment: &GroupSegment) -> String {
-    segment
-        .label
-        .clone()
-        .unwrap_or_else(|| metadata_value_display(&segment.value))
-}
-
-fn grouping_uses_rule(grouping: &TabGroupingInfo, rule_name: &str) -> bool {
-    grouping
-        .key
-        .split_once(':')
-        .is_some_and(|(selected_rule, _)| selected_rule == rule_name)
 }
 
 fn cwd_group_label(cwd: &str, all_group_cwds: &[String]) -> String {
@@ -3647,130 +2473,6 @@ fn cwd_group_label(cwd: &str, all_group_cwds: &[String]) -> String {
         .and_then(|parent| parent.to_str())
         .map(|parent| format!("{parent}/{basename}"))
         .unwrap_or_else(|| cwd.to_owned())
-}
-
-fn group_template_metadata(
-    path: &GroupPath,
-    label: &str,
-    full_label: &str,
-    tab_count: usize,
-    resolved_metadata: &[ResolvedMetadata],
-) -> BTreeMap<String, MetadataValue> {
-    let mut metadata = resolved_metadata_values(resolved_metadata, &EntityId::Group(path.clone()));
-    metadata.insert(
-        "group.label".to_owned(),
-        MetadataValue::Text(label.to_owned()),
-    );
-    metadata.insert(
-        "group.full_label".to_owned(),
-        MetadataValue::Text(full_label.to_owned()),
-    );
-    metadata.insert(
-        "group.tab_count".to_owned(),
-        MetadataValue::Integer(tab_count as i64),
-    );
-    if let Some(segment) = path.0.last() {
-        metadata.insert(
-            "group.key".to_owned(),
-            MetadataValue::Text(segment.key.clone()),
-        );
-        metadata.insert("group.value".to_owned(), segment.value.clone());
-        metadata.insert(
-            "group.segment.label".to_owned(),
-            MetadataValue::Text(group_segment_label(segment)),
-        );
-    }
-    for segment in &path.0 {
-        metadata.insert(segment.key.clone(), segment.value.clone());
-    }
-    metadata
-}
-
-fn tab_template_metadata(
-    tab: &TabCard,
-    resolved_metadata: &[ResolvedMetadata],
-) -> BTreeMap<String, MetadataValue> {
-    let mut metadata = resolved_metadata_values(resolved_metadata, &EntityId::Tab(tab.tab_id));
-    metadata.insert(
-        "zellij.tab.id".to_owned(),
-        MetadataValue::Integer(tab.tab_id as i64),
-    );
-    metadata.insert(
-        "zellij.tab.position".to_owned(),
-        MetadataValue::Integer(tab.position as i64),
-    );
-    metadata.insert(
-        "zellij.tab.name".to_owned(),
-        MetadataValue::Text(tab.name.clone()),
-    );
-    metadata.insert(
-        "zellij.tab.active".to_owned(),
-        MetadataValue::Bool(tab.active),
-    );
-    metadata.insert(
-        "rail.tab.pinned".to_owned(),
-        MetadataValue::Bool(tab.pinned),
-    );
-    if let Some(status) = tab.status.as_ref() {
-        metadata.insert(
-            "status.priority".to_owned(),
-            MetadataValue::Text(format!("{:?}", status.priority).to_ascii_lowercase()),
-        );
-        metadata.insert(
-            "status.title".to_owned(),
-            MetadataValue::Text(status.title.clone()),
-        );
-        if let Some(detail) = status.detail.as_ref() {
-            metadata.insert(
-                "status.detail".to_owned(),
-                MetadataValue::Text(detail.clone()),
-            );
-        }
-        metadata.insert(
-            "status.source_pane".to_owned(),
-            MetadataValue::Text(match status.source_pane {
-                PaneTarget::Terminal(id) => format!("terminal:{id}"),
-                PaneTarget::Plugin(id) => format!("plugin:{id}"),
-            }),
-        );
-    }
-    metadata
-}
-
-fn resolved_metadata_values(
-    resolved_metadata: &[ResolvedMetadata],
-    target: &EntityId,
-) -> BTreeMap<String, MetadataValue> {
-    resolved_metadata
-        .iter()
-        .find(|metadata| &metadata.target == target)
-        .map(|metadata| {
-            metadata
-                .values
-                .iter()
-                .map(|(key, entry)| (key.clone(), entry.value.clone()))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn metadata_value_display(value: &MetadataValue) -> String {
-    match value {
-        MetadataValue::Text(value) => value.clone(),
-        MetadataValue::Bool(value) => value.to_string(),
-        MetadataValue::Integer(value) => value.to_string(),
-        MetadataValue::StringList(values) => values.join(", "),
-        MetadataValue::GroupPath(segments) => segments
-            .iter()
-            .map(|segment| {
-                segment
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| segment.value.display())
-            })
-            .collect::<Vec<_>>()
-            .join(" / "),
-    }
 }
 
 fn observed_metadata_identities(
@@ -3801,9 +2503,30 @@ fn observed_metadata_identities(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn placement_loop(predicates: &[(&str, &str)]) -> crate::template_config::PlacementDefinition {
+        crate::template_config::PlacementDefinition {
+            name: "section".to_owned(),
+            loops: vec![crate::template_config::PlacementLoop {
+                binding: "item".to_owned(),
+                predicates: predicates
+                    .iter()
+                    .map(|(key, value)| crate::template_config::PlacementPredicate {
+                        key: (*key).to_owned(),
+                        value: Some((*value).to_owned()),
+                        of: None,
+                    })
+                    .collect(),
+                order: vec![],
+                fields: vec![],
+                layout: None,
+                tier: None,
+                loops: vec![],
+                apply_template: None,
+            }],
+        }
+    }
     use crate::{
-        GroupPath, GroupSegment, PluginPaneKind, PluginPlacement, PluginRegistrationHello, RailRow,
-        RailStructure, StatusIcon,
+        PluginPaneKind, PluginPlacement, PluginRegistrationHello, RailStructure, StatusIcon,
     };
 
     type EntityId = crate::MetadataTarget;
@@ -3837,102 +2560,6 @@ mod tests {
             kind: kind.to_owned(),
             id: id.to_owned(),
         }
-    }
-
-    #[test]
-    fn node_variables_inherit_and_config_layers_override_template_setters() {
-        let declaration = crate::template_config::parse_template_config_kdl(
-            r#"
-            variable "child-layout" default="cards" {
-              value "cards"
-              value "strip"
-            }
-            "#,
-        )
-        .expect("variable declaration");
-        let template = crate::template_config::parse_template_config_kdl(
-            r#"
-            template "tab/title" slot="tab-title" node-kind="tab" {
-              set "child-layout" "strip"
-            }
-            "#,
-        )
-        .expect("template setter");
-        let project =
-            crate::template_config::parse_template_config_kdl(r#"set "child-layout" "cards""#)
-                .expect("project setter");
-        let catalog = crate::template_config::TemplateConfigCatalog::from_layers(vec![
-            crate::template_config::TemplateConfigLayer::user("user.kdl", template),
-            crate::template_config::TemplateConfigLayer::project(
-                "flotilla-org/andamento",
-                "project.kdl",
-                project,
-            ),
-            crate::template_config::TemplateConfigLayer::bundled("bundled.kdl", declaration),
-        ]);
-        let mut state = ControllerState::default();
-        state.set_template_catalog(Some(catalog.clone()));
-
-        let plain_metadata = BTreeMap::new();
-        let resolved_template = state
-            .resolve_template_slot(
-                crate::template_config::TemplateConfigSlot::TabTitle,
-                crate::template_config::TemplateConfigNodeKind::Tab,
-                &plain_metadata,
-            )
-            .expect("user template resolves");
-        let mut warnings = BTreeSet::new();
-        let parent = NodeKey::Tab(1);
-        let parent_values = state.resolve_variables_at_node(
-            &catalog,
-            &parent,
-            None,
-            &plain_metadata,
-            Some(&resolved_template),
-            &mut warnings,
-        );
-        let child = NodeKey::Tab(2);
-        let child_values = state.resolve_variables_at_node(
-            &catalog,
-            &child,
-            Some(&parent_values.values),
-            &plain_metadata,
-            None,
-            &mut warnings,
-        );
-        let inherited = child_values
-            .values
-            .get("child-layout")
-            .expect("inherited child-layout");
-        assert_eq!(inherited.value, "strip");
-        assert_eq!(inherited.provenance.ancestor, parent);
-        assert_eq!(inherited.provenance.setter, "template tab/title");
-
-        let project_metadata = BTreeMap::from([(
-            "flotilla.project".to_owned(),
-            MetadataValue::Text("flotilla-org/andamento".to_owned()),
-        )]);
-        let project_node = NodeKey::Tab(3);
-        let project_values = state.resolve_variables_at_node(
-            &catalog,
-            &project_node,
-            None,
-            &project_metadata,
-            Some(&resolved_template),
-            &mut warnings,
-        );
-        let configured = project_values
-            .values
-            .get("child-layout")
-            .expect("configured child-layout");
-        assert_eq!(configured.value, "cards");
-        assert_eq!(configured.provenance.setter, "config");
-        assert_eq!(
-            configured.provenance.origin.membership.as_deref(),
-            Some("flotilla-org/andamento")
-        );
-        assert_eq!(configured.overridden[0].setter, "template tab/title");
-        assert!(warnings.is_empty());
     }
 
     #[test]
@@ -4040,279 +2667,11 @@ mod tests {
         });
     }
 
-    #[test]
-    fn snapshot_resolves_catalog_once_regardless_of_group_count() {
-        for count in [8, 32] {
-            let mut state = ControllerState::default();
-            let config = crate::grouping_config::parse_grouping_config_kdl(
-                r#"
-                grouping "entities" priority=1000 {
-                    presence kind="vessel" class="tab"
-                    level key="entity.id"
-                }
-            "#,
-            )
-            .unwrap();
-            state.set_grouping_catalog(Some(GroupingConfigCatalog::with_bundled_defaults(config)));
-            for i in 0..count {
-                apply_target_only_entity(
-                    &mut state,
-                    "vessel",
-                    &format!("v{i}"),
-                    i,
-                    &[
-                        (KEY_DISPLAY_LABEL, "Worker"),
-                        (KEY_MATERIALIZE_RECIPE, "true"),
-                    ],
-                );
-            }
-            CATALOG_BUILDS.with(|n| n.set(0));
-            let model = state.view_model();
-            assert_eq!(
-                model
-                    .rows
-                    .iter()
-                    .filter(|r| matches!(r, RailRow::Latent { .. }))
-                    .count(),
-                count as usize
-            );
-            assert_eq!(
-                CATALOG_BUILDS.with(|n| n.get()),
-                1,
-                "one catalog evaluation per snapshot, independent of group count"
-            );
-
-            // Observed workspaces previously rebuilt the catalog once per tab
-            // as well. Metadata changes between snapshots must remain visible.
-            state.observe_workspaces(
-                (0..count)
-                    .map(|i| tab_info(i as usize, i as usize, "Worker", i == 0))
-                    .collect(),
-            );
-            for i in 0..count {
-                state.apply_metadata_patch(crate::MetadataPatch {
-                    target: crate::MetadataTarget::Tab(i as u64),
-                    source_id: "host".into(),
-                    set: [
-                        (KEY_ENTITY_KIND, "vessel".to_string()),
-                        (KEY_ENTITY_ID, format!("v{i}")),
-                    ]
-                    .into_iter()
-                    .map(|(key, value)| {
-                        (
-                            key.to_owned(),
-                            crate::MetadataValueUpdate {
-                                value: MetadataValue::Text(value),
-                                ttl_ms: None,
-                                precedence: None,
-                                ordinal: None,
-                            },
-                        )
-                    })
-                    .collect(),
-                    unset: vec![],
-                });
-            }
-            CATALOG_BUILDS.with(|n| n.set(0));
-            let live = state.view_model();
-            assert_eq!(live.tabs.len(), count as usize);
-            assert!(live.tabs.iter().all(|tab| tab.grouping.is_some()));
-            assert!(!live
-                .rows
-                .iter()
-                .any(|row| matches!(row, RailRow::Latent { .. })));
-            assert_eq!(CATALOG_BUILDS.with(|n| n.get()), 1);
-        }
-    }
-
     fn directory_entity_state() -> ControllerState {
         let mut state = ControllerState::default();
         state.set_template_catalog(None);
         state.set_rail_config(RailConfig::default());
         state
-    }
-
-    #[test]
-    fn automatic_grouping_skips_a_matching_rule_without_a_derivable_path() {
-        use crate::grouping_config::{
-            ExternalGroupingConfig, GroupingLevel, GroupingRule, PresenceMapping,
-        };
-
-        let mut state = directory_entity_state();
-        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(
-            ExternalGroupingConfig {
-                version: 1,
-                rules: vec![
-                    GroupingRule {
-                        name: "missing-facts".to_owned(),
-                        priority: 100,
-                        filter: None,
-                        presence: vec![],
-                        levels: vec![GroupingLevel {
-                            key: "git.repo".to_owned(),
-                            optional: false,
-                            label_key: None,
-                            collapse_single_member: false,
-                            show_empty: false,
-                            template: None,
-                        }],
-                    },
-                    GroupingRule {
-                        name: "entity-target".to_owned(),
-                        priority: 50,
-                        filter: None,
-                        presence: vec![PresenceMapping {
-                            kind: "issue".to_owned(),
-                            class: PresenceClass::Inline,
-                            form: DISPLAY_FORM_COMPACT.to_owned(),
-                            visible_when: None,
-                            template: None,
-                        }],
-                        levels: vec![GroupingLevel {
-                            key: KEY_ENTITY_ID.to_owned(),
-                            optional: false,
-                            label_key: None,
-                            collapse_single_member: false,
-                            show_empty: false,
-                            template: None,
-                        }],
-                    },
-                ],
-            },
-        )));
-        apply_target_only_entity(
-            &mut state,
-            "issue",
-            "github/flotilla-org/andamento#37",
-            7,
-            &[(KEY_DISPLAY_LABEL, "#37")],
-        );
-
-        let entities = state.catalog_entities();
-        assert_eq!(entities.len(), 1);
-        assert_eq!(entities[0].path.0[0].key, KEY_ENTITY_ID);
-        assert_eq!(
-            entities[0].path.0[0].value,
-            MetadataValue::Text("github/flotilla-org/andamento#37".to_owned())
-        );
-    }
-
-    #[test]
-    fn required_partial_path_falls_through_to_a_later_rule() {
-        let mut state = directory_entity_state();
-        let grouping = crate::grouping_config::parse_grouping_config_kdl(
-            r#"
-            grouping "repo-branch" priority=100 {
-              presence kind="convoy" class="tab"
-              level key="vcs.repo"
-              level key="git.branch"
-            }
-            grouping "repo" priority=50 {
-              presence kind="convoy" class="tab"
-              level key="vcs.repo"
-            }
-            "#,
-        )
-        .expect("grouping config");
-        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
-        apply_target_only_entity(
-            &mut state,
-            "convoy",
-            "flotilla/partial-path@fleet",
-            1,
-            &[("vcs.repo", "flotilla-org/flotilla")],
-        );
-
-        let entities = state.catalog_entities();
-
-        assert_eq!(entities.len(), 1);
-        assert_eq!(entities[0].grouping_priority, 50);
-        assert_eq!(
-            entities[0]
-                .path
-                .0
-                .iter()
-                .map(|segment| segment.key.as_str())
-                .collect::<Vec<_>>(),
-            vec!["vcs.repo"]
-        );
-    }
-
-    #[test]
-    fn rejected_rule_explains_its_missing_non_optional_level() {
-        let mut state = directory_entity_state();
-        let grouping = crate::grouping_config::parse_grouping_config_kdl(
-            r#"
-            grouping "repo-branch" priority=100 {
-              presence kind="convoy" class="tab"
-              level key="vcs.repo"
-              level key="git.branch"
-            }
-            grouping "repo" priority=50 {
-              presence kind="convoy" class="tab"
-              level key="vcs.repo"
-            }
-            "#,
-        )
-        .expect("grouping config");
-        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
-        let entity = entity_ref("convoy", "flotilla/inspect-path@fleet");
-        apply_target_only_entity(
-            &mut state,
-            &entity.kind,
-            &entity.id,
-            1,
-            &[("vcs.repo", "flotilla-org/flotilla")],
-        );
-
-        let diagnostics = state.view_model().grouping_diagnostics;
-
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.target == NodeKey::Entity(entity.clone())
-                && diagnostic.rule == "repo-branch"
-                && diagnostic.message == "not captured: `git.branch` absent (non-optional level)"
-        }));
-    }
-
-    #[test]
-    fn optional_missing_level_places_entity_at_the_deepest_derived_group() {
-        let mut state = directory_entity_state();
-        let grouping = crate::grouping_config::parse_grouping_config_kdl(
-            r#"
-            grouping "repo-branch" priority=100 {
-              presence kind="convoy" class="tab"
-              level key="vcs.repo"
-              level key="git.branch" optional=true
-            }
-            grouping "repo" priority=50 {
-              presence kind="convoy" class="tab"
-              level key="vcs.repo"
-            }
-            "#,
-        )
-        .expect("grouping config");
-        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
-        apply_target_only_entity(
-            &mut state,
-            "convoy",
-            "flotilla/optional-path@fleet",
-            1,
-            &[("vcs.repo", "flotilla-org/flotilla")],
-        );
-
-        let entities = state.catalog_entities();
-
-        assert_eq!(entities.len(), 1);
-        assert_eq!(entities[0].grouping_priority, 100);
-        assert_eq!(
-            entities[0]
-                .path
-                .0
-                .iter()
-                .map(|segment| segment.key.as_str())
-                .collect::<Vec<_>>(),
-            vec!["vcs.repo"]
-        );
     }
 
     #[test]
@@ -4341,756 +2700,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("earlier", 2), ("later", 10)]
         );
-    }
-
-    #[test]
-    fn default_entity_template_collapses_a_single_vessel_into_its_convoy_tab() {
-        let mut state = directory_entity_state();
-        let shared_target = "flotilla:attach:dev/only@lab";
-        apply_entity(
-            &mut state,
-            "convoy",
-            "dev/only@lab",
-            1,
-            &[
-                ("flotilla.project", "dev"),
-                ("flotilla.project.name", "dev"),
-                ("flotilla.convoy", "dev/only@lab"),
-                ("flotilla.convoy.name", "only"),
-                (KEY_DISPLAY_LABEL, "only"),
-                (KEY_ACTION_TARGET, shared_target),
-                (KEY_MATERIALIZE_RECIPE, "flotilla attach dev/only"),
-            ],
-        );
-        apply_entity(
-            &mut state,
-            "vessel",
-            "dev/only/worker@lab",
-            2,
-            &[
-                ("flotilla.project", "dev"),
-                ("flotilla.project.name", "dev"),
-                ("flotilla.convoy", "dev/only@lab"),
-                ("flotilla.convoy.name", "only"),
-                ("flotilla.vessel", "dev/only/worker@lab"),
-                ("flotilla.vessel.name", "worker"),
-                (KEY_DISPLAY_LABEL, "worker"),
-                (KEY_ACTION_TARGET, shared_target),
-                (KEY_MATERIALIZE_RECIPE, "flotilla attach dev/only"),
-            ],
-        );
-
-        let model = state.view_model();
-        let latents = model
-            .rows
-            .iter()
-            .filter_map(|row| match row {
-                RailRow::Latent { latent, .. } => Some(latent),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(latents.len(), 1);
-        assert_eq!(latents[0].action_target, shared_target);
-        assert_ne!(latents[0].action_target, "dev/only@lab");
-        assert_eq!(latents[0].name, "only");
-        assert_eq!(latents[0].path.0.len(), 2);
-        assert_eq!(latents[0].path.0.last().unwrap().key, "flotilla.convoy");
-        assert_eq!(
-            state.activation_for_entity(&entity_ref("convoy", "dev/only@lab")),
-            latents[0]
-                .materialize_request()
-                .map(EntityActivation::Materialize)
-        );
-    }
-
-    #[test]
-    fn recipe_less_tab_entity_is_visible_but_not_openable() {
-        let mut state = directory_entity_state();
-        apply_entity(
-            &mut state,
-            "vessel",
-            "dev/solo/worker@lab",
-            1,
-            &[
-                ("flotilla.project", "dev"),
-                ("flotilla.project.name", "dev"),
-                ("flotilla.vessel", "dev/solo/worker@lab"),
-                ("flotilla.vessel.name", "worker"),
-                (KEY_DISPLAY_LABEL, "worker"),
-            ],
-        );
-
-        let model = state.view_model();
-        let latent = model
-            .rows
-            .iter()
-            .find_map(|row| match row {
-                RailRow::Latent { latent, .. } => Some(latent),
-                _ => None,
-            })
-            .expect("recipe-less vessel remains visible");
-
-        assert_eq!(latent.name, "worker");
-        assert!(latent.materialize_request().is_none());
-    }
-
-    #[test]
-    fn issue_entities_use_the_bundled_compact_form_and_class_toggle() {
-        let mut state = directory_entity_state();
-        apply_entity(
-            &mut state,
-            "issue",
-            "github/flotilla-org/flotilla#982",
-            1,
-            &[
-                ("flotilla.project", "dev"),
-                ("flotilla.project.name", "dev"),
-                ("flotilla.issue", "github/flotilla-org/flotilla#982"),
-                (KEY_DISPLAY_LABEL, "#982 entities-only cutover"),
-                ("summary.text", "Cached entity metadata survives"),
-            ],
-        );
-
-        let model = state.view_model();
-
-        assert!(model.rows.iter().any(|row| matches!(
-            row,
-            RailRow::Entity { entity, .. }
-                if entity.label == "#982 entities-only cutover"
-                    && entity.form == DISPLAY_FORM_COMPACT
-                    && entity.templates.compact.is_some()
-                    && entity.templates.detail.is_some()
-                    && matches!(
-                        entity.metadata.get("summary.text"),
-                        Some(MetadataValue::Text(summary))
-                            if summary == "Cached entity metadata survives"
-                    )
-        )));
-        assert!(!model
-            .rows
-            .iter()
-            .any(|row| matches!(row, RailRow::Latent { .. })));
-
-        state.apply_rail_ui_action(RailUiAction::ToggleVariable {
-            name: "show-issues".to_owned(),
-        });
-
-        assert!(!state
-            .view_model()
-            .rows
-            .iter()
-            .any(|row| matches!(row, RailRow::Entity { .. })));
-    }
-
-    #[test]
-    fn novel_wire_kind_reaches_the_generic_compact_template() {
-        let mut state = directory_entity_state();
-        let grouping = crate::grouping_config::parse_grouping_config_kdl(
-            r#"
-            grouping "deployments" priority=100 {
-              filter key="entity.kind"
-              presence kind="deployment" class="inline" form="compact"
-              level key="deployment.name" label-key="display.label"
-            }
-            "#,
-        )
-        .expect("grouping config");
-        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::default(),
-        ));
-        apply_entity(
-            &mut state,
-            "deployment",
-            "prod/api",
-            1,
-            &[
-                ("deployment.name", "api"),
-                (KEY_DISPLAY_LABEL, "API deployment"),
-            ],
-        );
-
-        let entity = state
-            .view_model()
-            .rows
-            .into_iter()
-            .find_map(|row| match row {
-                RailRow::Entity { entity, .. } => Some(entity),
-                _ => None,
-            })
-            .expect("novel entity renders inline");
-        let compact = entity
-            .templates
-            .compact
-            .expect("generic compact template resolves");
-
-        assert_eq!(entity.entity.kind, "deployment");
-        assert_eq!(compact.template_name, "deployment/compact");
-        assert!(compact.effective_kdl.contains("flotilla/entity/compact"));
-        assert!(compact.render_ready.is_some());
-    }
-
-    #[test]
-    fn attention_regions_promote_tab_presence_entities_from_normalized_facts() {
-        let mut state = directory_entity_state();
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::default(),
-        ));
-        apply_entity(
-            &mut state,
-            "convoy",
-            "flotilla/sidebar@fleet",
-            1,
-            &[
-                ("flotilla.convoy", "flotilla/sidebar@fleet"),
-                ("flotilla.convoy.name", "sidebar"),
-                (KEY_DISPLAY_LABEL, "Sidebar convoy"),
-            ],
-        );
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: crate::MetadataTarget::Entity(entity_ref("convoy", "flotilla/sidebar@fleet")),
-            source_id: "flotilla-connector".to_owned(),
-            set: BTreeMap::from([(
-                "status.attention".to_owned(),
-                crate::MetadataValueUpdate {
-                    value: MetadataValue::Bool(true),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: Some(1),
-                },
-            )]),
-            unset: vec![],
-        });
-
-        let model = state.view_model();
-        let attention = model
-            .surface_regions
-            .iter()
-            .find(|region| {
-                region.definition.source == crate::template_config::SurfaceRegionSource::Attention
-            })
-            .expect("bundled attention region");
-
-        assert!(attention.entities.iter().any(|entity| {
-            entity.entity == entity_ref("convoy", "flotilla/sidebar@fleet")
-                && entity.form == DISPLAY_FORM_FULL
-        }));
-        assert!(
-            !model.rows.iter().any(|row| matches!(row, RailRow::Entity { entity, .. } if entity.entity.kind == "convoy")),
-            "the promoted convoy normally has tab/latent presence, not inline presence"
-        );
-    }
-
-    #[test]
-    fn attention_promotion_highlights_inline_entities_without_removing_tree_navigation() {
-        let mut state = directory_entity_state();
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::default(),
-        ));
-        apply_entity(
-            &mut state,
-            "issue",
-            "github/flotilla-org/flotilla#1060",
-            1,
-            &[
-                ("flotilla.issue", "github/flotilla-org/flotilla#1060"),
-                (KEY_DISPLAY_LABEL, "#1060 region stack"),
-            ],
-        );
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: crate::MetadataTarget::Entity(entity_ref(
-                "issue",
-                "github/flotilla-org/flotilla#1060",
-            )),
-            source_id: "flotilla-connector".to_owned(),
-            set: BTreeMap::from([(
-                "status.attention".to_owned(),
-                crate::MetadataValueUpdate {
-                    value: MetadataValue::Bool(true),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: Some(1),
-                },
-            )]),
-            unset: vec![],
-        });
-
-        let model = state.view_model();
-        let issue = entity_ref("issue", "github/flotilla-org/flotilla#1060");
-        assert!(model
-            .rows
-            .iter()
-            .any(|row| matches!(row, RailRow::Entity { entity, .. } if entity.entity == issue)));
-        assert!(model.surface_regions.iter().any(|region| {
-            region.definition.source == crate::template_config::SurfaceRegionSource::Attention
-                && region.entities.iter().any(|entity| entity.entity == issue)
-        }));
-    }
-
-    #[test]
-    fn novel_inline_form_uses_the_full_surface_instead_of_disappearing() {
-        let mut state = directory_entity_state();
-        let grouping = crate::grouping_config::parse_grouping_config_kdl(
-            r#"
-            grouping "deployments" priority=100 {
-              filter key="entity.kind"
-              presence kind="deployment" class="inline" form="ribbon"
-              level key="deployment.name" label-key="display.label" show-empty=true
-            }
-            "#,
-        )
-        .expect("grouping config");
-        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
-        apply_entity(
-            &mut state,
-            "deployment",
-            "prod/api",
-            1,
-            &[
-                ("deployment.name", "api"),
-                (KEY_DISPLAY_LABEL, "API deployment"),
-            ],
-        );
-
-        let model = state.view_model();
-
-        assert!(model.rows.iter().any(|row| matches!(
-            row,
-            RailRow::GroupHeader { label, .. } if label == "API deployment"
-        )));
-        assert!(!model
-            .rows
-            .iter()
-            .any(|row| matches!(row, RailRow::Entity { .. })));
-    }
-
-    #[test]
-    fn presence_template_overrides_the_selected_form_without_leaking_to_detail() {
-        let mut state = directory_entity_state();
-        let grouping = crate::grouping_config::parse_grouping_config_kdl(
-            r#"
-                grouping "issues" priority=100 {
-                  filter key="entity.kind"
-                  presence kind="issue" class="inline" form="compact" template="issue/attention"
-                  level key="flotilla.project" optional=true
-                  level key="flotilla.issue"
-                }
-                "#,
-        )
-        .expect("grouping config");
-        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
-        let templates = crate::template_config::parse_template_config_kdl(
-            r#"
-            template "issue/attention" slot="compact" node-kind="entity" {
-              field "label" source="literal" value="attention"
-            }
-            template "issue/detail" slot="detail" node-kind="entity" {
-              field "label" key="display.label"
-            }
-            "#,
-        )
-        .expect("template config");
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::with_bundled_defaults(templates),
-        ));
-        apply_entity(
-            &mut state,
-            "issue",
-            "github/flotilla-org/flotilla#1058",
-            1,
-            &[
-                ("flotilla.project", "dev"),
-                ("flotilla.issue", "github/flotilla-org/flotilla#1058"),
-                (KEY_DISPLAY_LABEL, "#1058 template binding"),
-            ],
-        );
-
-        let entity = state
-            .view_model()
-            .rows
-            .into_iter()
-            .find_map(|row| match row {
-                RailRow::Entity { entity, .. } => Some(entity),
-                _ => None,
-            })
-            .expect("compact issue entity");
-
-        assert_eq!(
-            entity
-                .templates
-                .compact
-                .as_ref()
-                .map(|slot| slot.template_name.as_str()),
-            Some("issue/attention")
-        );
-        assert_eq!(
-            entity
-                .templates
-                .detail
-                .as_ref()
-                .map(|slot| slot.template_name.as_str()),
-            Some("issue/detail")
-        );
-    }
-
-    #[test]
-    fn group_template_comes_from_the_rule_that_produced_the_path() {
-        let mut state = directory_entity_state();
-        let grouping = crate::grouping_config::parse_grouping_config_kdl(
-            r#"
-            grouping "issues" priority=200 {
-              filter key="entity.kind" equals="issue"
-              level key="vcs.repo" template="wrong/full"
-              level key="flotilla.issue"
-            }
-            grouping "convoys" priority=100 {
-              filter key="entity.kind" equals="convoy"
-              presence kind="convoy" class="tab"
-              level key="vcs.repo" template="right/full"
-              level key="flotilla.convoy"
-            }
-            "#,
-        )
-        .expect("grouping config");
-        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
-        let templates = crate::template_config::parse_template_config_kdl(
-            r#"
-            template "wrong/full" slot="group-header" node-kind="group" {
-              field "label" source="literal" value="wrong"
-            }
-            template "right/full" slot="group-header" node-kind="group" {
-              field "label" source="literal" value="right"
-            }
-            "#,
-        )
-        .expect("template config");
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::from_config(templates),
-        ));
-        apply_entity(
-            &mut state,
-            "convoy",
-            "flotilla/review-regression@fleet",
-            1,
-            &[
-                ("vcs.repo", "flotilla-org/andamento"),
-                ("flotilla.convoy", "flotilla/review-regression@fleet"),
-                ("flotilla.convoy.name", "review-regression"),
-                (KEY_DISPLAY_LABEL, "review-regression"),
-            ],
-        );
-
-        let repo_template = state
-            .view_model()
-            .rows
-            .into_iter()
-            .find_map(|row| match row {
-                RailRow::GroupHeader {
-                    path, templates, ..
-                } if path.0.len() == 1 && path.0[0].key == "vcs.repo" => templates.group_header,
-                _ => None,
-            });
-
-        assert_eq!(
-            repo_template
-                .as_ref()
-                .map(|slot| slot.template_name.as_str()),
-            Some("right/full")
-        );
-    }
-
-    #[test]
-    fn colliding_group_paths_choose_the_higher_priority_rule_template() {
-        let mut state = directory_entity_state();
-        let grouping = crate::grouping_config::parse_grouping_config_kdl(
-            r#"
-            grouping "issues" priority=200 {
-              filter key="entity.kind" equals="issue"
-              presence kind="issue" class="tab"
-              level key="vcs.repo" template="high/full"
-            }
-            grouping "convoys" priority=100 {
-              filter key="entity.kind" equals="convoy"
-              presence kind="convoy" class="tab"
-              level key="vcs.repo" template="low/full"
-            }
-            "#,
-        )
-        .expect("grouping config");
-        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
-        let templates = crate::template_config::parse_template_config_kdl(
-            r#"
-            template "high/full" slot="group-header" node-kind="group" {
-              field "label" source="literal" value="high"
-            }
-            template "low/full" slot="group-header" node-kind="group" {
-              field "label" source="literal" value="low"
-            }
-            "#,
-        )
-        .expect("template config");
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::from_config(templates),
-        ));
-        apply_entity(
-            &mut state,
-            "convoy",
-            "flotilla/low@fleet",
-            1,
-            &[
-                ("vcs.repo", "flotilla-org/andamento"),
-                (KEY_DISPLAY_LABEL, "low"),
-            ],
-        );
-        apply_entity(
-            &mut state,
-            "issue",
-            "github/flotilla-org/andamento#41",
-            2,
-            &[
-                ("vcs.repo", "flotilla-org/andamento"),
-                (KEY_DISPLAY_LABEL, "high"),
-            ],
-        );
-
-        let repo_template = state
-            .view_model()
-            .rows
-            .into_iter()
-            .find_map(|row| match row {
-                RailRow::GroupHeader {
-                    path, templates, ..
-                } if path.0.len() == 1 && path.0[0].key == "vcs.repo" => templates.group_header,
-                _ => None,
-            });
-
-        assert_eq!(
-            repo_template
-                .as_ref()
-                .map(|slot| slot.template_name.as_str()),
-            Some("high/full")
-        );
-    }
-
-    #[test]
-    fn visible_when_mismatches_are_reported_without_breaking_fallback_rendering() {
-        let mut state = directory_entity_state();
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::from_config(
-                crate::template_config::ExternalTemplateConfig {
-                    placements: vec![],
-                    version: 1,
-                    templates: vec![],
-                    fragments: vec![],
-                    variables: vec![],
-                    display_variables: vec![],
-                    sets: vec![],
-                    regions: vec![],
-                },
-            ),
-        ));
-        assert_eq!(
-            state.template_config_diagnostics().warnings,
-            vec!["visible-when references undeclared variable show-issues"]
-        );
-
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::from_config(
-                crate::template_config::parse_template_config_kdl(
-                    r#"
-                    display-variable "show-issues" type="enum" default="all" label="Issues" icon="I" {
-                      value "all"
-                      value "none"
-                    }
-                    "#,
-                )
-                .unwrap(),
-            ),
-        ));
-        assert_eq!(
-            state.template_config_diagnostics().warnings,
-            vec!["visible-when references non-bool variable show-issues"]
-        );
-
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::from_config(
-                crate::template_config::parse_template_config_kdl(
-                    r#"display-variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
-                )
-                .unwrap(),
-            ),
-        ));
-        assert!(state.template_config_diagnostics().warnings.is_empty());
-    }
-
-    #[test]
-    fn bundled_rail_templates_stay_unresolved_until_the_rail_has_local_state() {
-        let mut state = ControllerState::default();
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::default(),
-        ));
-
-        let group_metadata = BTreeMap::from([
-            (
-                "group.key".to_owned(),
-                MetadataValue::Text("vcs.repo".to_owned()),
-            ),
-            (
-                "vcs.repo".to_owned(),
-                MetadataValue::Text("flotilla-org/andamento".to_owned()),
-            ),
-        ]);
-        assert!(state
-            .resolve_template_slot(
-                crate::template_config::TemplateConfigSlot::GroupHeader,
-                crate::template_config::TemplateConfigNodeKind::Group,
-                &group_metadata,
-            )
-            .is_none());
-
-        let entity_metadata = BTreeMap::from([
-            (
-                "entity.kind".to_owned(),
-                MetadataValue::Text("issue".to_owned()),
-            ),
-            (
-                "display.label".to_owned(),
-                MetadataValue::Text("#1057 template KDL migration".to_owned()),
-            ),
-        ]);
-        assert!(state
-            .resolve_template_slot(
-                crate::template_config::TemplateConfigSlot::Compact,
-                crate::template_config::TemplateConfigNodeKind::Entity,
-                &entity_metadata,
-            )
-            .is_some());
-    }
-
-    #[test]
-    fn missing_hierarchy_levels_are_skipped_without_inventing_repo_facts() {
-        let mut state = directory_entity_state();
-        apply_entity(
-            &mut state,
-            "convoy",
-            "dev/no-repo@lab",
-            1,
-            &[
-                ("flotilla.project", "dev"),
-                ("flotilla.project.name", "dev"),
-                ("flotilla.convoy", "dev/no-repo@lab"),
-                ("flotilla.convoy.name", "no repo"),
-            ],
-        );
-
-        let latent = state
-            .view_model()
-            .rows
-            .into_iter()
-            .find_map(|row| match row {
-                RailRow::Latent { latent, .. } => Some(latent),
-                _ => None,
-            })
-            .expect("convoy candidate");
-
-        assert_eq!(
-            latent
-                .path
-                .0
-                .iter()
-                .map(|segment| segment.key.as_str())
-                .collect::<Vec<_>>(),
-            vec!["flotilla.project", "flotilla.convoy"]
-        );
-    }
-
-    #[test]
-    fn changing_the_active_template_regroups_existing_entity_facts() {
-        use crate::grouping_config::{
-            ExternalGroupingConfig, GroupingLevel, GroupingRule, PresenceMapping,
-        };
-
-        let mut state = directory_entity_state();
-        state.set_grouping_catalog(Some(GroupingConfigCatalog::with_bundled_defaults(
-            ExternalGroupingConfig {
-                version: 1,
-                rules: vec![GroupingRule {
-                    name: "convoy-only".to_owned(),
-                    priority: 100,
-                    filter: None,
-                    presence: vec![PresenceMapping {
-                        kind: "convoy".to_owned(),
-                        class: PresenceClass::Tab,
-                        form: DISPLAY_FORM_FULL.to_owned(),
-                        visible_when: None,
-                        template: None,
-                    }],
-                    levels: vec![GroupingLevel {
-                        key: "flotilla.convoy".to_owned(),
-                        optional: true,
-                        label_key: Some("flotilla.convoy.name".to_owned()),
-                        collapse_single_member: false,
-                        show_empty: false,
-                        template: None,
-                    }],
-                }],
-            },
-        )));
-        assert!(state.set_active_grouping_template(Some("flotilla.default".to_owned())));
-        apply_entity(
-            &mut state,
-            "convoy",
-            "dev/regroup@lab",
-            1,
-            &[
-                ("flotilla.project", "dev"),
-                ("flotilla.project.name", "dev"),
-                ("flotilla.convoy", "dev/regroup@lab"),
-                ("flotilla.convoy.name", "regroup"),
-            ],
-        );
-        let default_path = state
-            .latent_tabs()
-            .into_iter()
-            .next()
-            .expect("default candidate")
-            .path;
-
-        assert!(state.set_active_grouping_template(Some("convoy-only".to_owned())));
-        let switched_path = state
-            .latent_tabs()
-            .into_iter()
-            .next()
-            .expect("regrouped candidate")
-            .path;
-
-        assert_eq!(default_path.0.len(), 2);
-        assert_eq!(switched_path.0.len(), 1);
-        assert_eq!(switched_path.0[0].key, "flotilla.convoy");
-    }
-
-    fn placement_loop(predicates: &[(&str, &str)]) -> crate::template_config::PlacementDefinition {
-        crate::template_config::PlacementDefinition {
-            name: "section".to_owned(),
-            loops: vec![crate::template_config::PlacementLoop {
-                binding: "item".to_owned(),
-                predicates: predicates
-                    .iter()
-                    .map(|(key, value)| crate::template_config::PlacementPredicate {
-                        key: (*key).to_owned(),
-                        value: Some((*value).to_owned()),
-                        of: None,
-                    })
-                    .collect(),
-                order: vec![],
-                fields: vec![],
-                layout: None,
-                tier: None,
-                loops: vec![],
-                apply_template: None,
-            }],
-        }
     }
 
     #[test]
@@ -5129,38 +2738,6 @@ mod tests {
             1,
             "restating identity in facts must not duplicate the placement: {:?}",
             placed.iter().map(|e| &e.entity).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn placed_entity_carries_its_loop_binding_and_explicit_tier() {
-        let mut state = directory_entity_state();
-        apply_entity(
-            &mut state,
-            "vessel",
-            "dev/focus/worker@lab",
-            1,
-            &[
-                ("flotilla.vessel", "dev/focus/worker@lab"),
-                ("display.label", "worker"),
-            ],
-        );
-        let entities = state.catalog_entities();
-        let index = PlacementIndex::build(&entities);
-        let mut placement = placement_loop(&[("entity.kind", "vessel")]);
-        placement.loops[0].binding = "convoy".to_owned();
-        placement.loops[0].tier = Some(crate::template_config::AbbreviationTier::Short);
-
-        let placed =
-            state.evaluate_placement(&placement, &entities, &index, "full", &mut BTreeMap::new());
-
-        assert_eq!(
-            placed[0].metadata.get(PLACEMENT_LOOP_BINDING_KEY),
-            Some(&MetadataValue::Text("convoy".to_owned()))
-        );
-        assert_eq!(
-            placed[0].metadata.get(PLACEMENT_LOOP_TIER_KEY),
-            Some(&MetadataValue::Text("short".to_owned()))
         );
     }
 
@@ -5347,50 +2924,6 @@ placement "identity-descending" {
     }
 
     #[test]
-    fn one_entity_is_rendered_in_tree_and_match_driven_attention_placements() {
-        let config = crate::template_config::parse_template_config_kdl(
-            r#"
-version 1
-region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="attention"
-region "tree" source="tree" root-template="flotilla/region/tree" form="full" placement="tree"
-placement "attention" {
-  for "attention-item" kind="vessel" {
-    match "status.attention" value="true"
-  }
-}
-placement "tree" {
-  for "tree-item" kind="vessel"
-}
-"#,
-        )
-        .expect("placement config");
-        let mut state = directory_entity_state();
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::with_bundled_defaults(config),
-        ));
-        apply_entity(
-            &mut state,
-            "vessel",
-            "dev/focus/worker@lab",
-            1,
-            &[
-                ("flotilla.vessel", "dev/focus/worker@lab"),
-                ("status.attention", "true"),
-            ],
-        );
-
-        let model = state.view_model();
-        let appearances = model
-            .surface_regions
-            .iter()
-            .flat_map(|region| &region.entities)
-            .filter(|display| display.entity.id == "dev/focus/worker@lab")
-            .collect::<Vec<_>>();
-        assert_eq!(appearances.len(), 2);
-        assert_ne!(appearances[0].placement, appearances[1].placement);
-    }
-
-    #[test]
     fn placement_layout_variables_are_scoped_by_the_full_key() {
         let entity = EntityRef {
             kind: "vessel".to_owned(),
@@ -5448,185 +2981,9 @@ placement "tree" {
     }
 
     #[test]
-    fn nested_placement_builds_one_tree_and_stops_an_ancestor_cycle() {
-        let config = crate::template_config::parse_template_config_kdl(r#"
-version 1
-region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="tree"
-placement "tree" {
-  for "project" kind="project" {
-    apply-template
-  }
-}
-template "project/line" {
-  field "label" {
-    value source="metadata-text" key="display.label"
-  }
-  for "convoy" kind="convoy" layout="inline" {
-    match "flotilla.project" of="project"
-    apply-template
-  }
-}
-template "convoy/line" {
-  field "label" {
-    value source="metadata-text" key="display.label"
-  }
-  for "vessel" kind="vessel" {
-    match "flotilla.convoy" of="convoy"
-    apply-template
-  }
-  for "project" kind="project" {
-    match "flotilla.project" of="convoy"
-  }
-}
-template "vessel/line" {
-  field "label" {
-    value source="metadata-text" key="display.label"
-  }
-}
-"#).expect("nested placement config");
-        let mut state = directory_entity_state();
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::with_bundled_defaults(config),
-        ));
-        apply_entity(
-            &mut state,
-            "project",
-            "p",
-            1,
-            &[("flotilla.project", "p"), ("display.label", "Project P")],
-        );
-        apply_entity(
-            &mut state,
-            "convoy",
-            "c",
-            1,
-            &[
-                ("flotilla.project", "p"),
-                ("flotilla.convoy", "c"),
-                ("display.label", "Convoy C"),
-            ],
-        );
-        apply_entity(
-            &mut state,
-            "vessel",
-            "v",
-            1,
-            &[("flotilla.convoy", "c"), ("display.label", "Vessel V")],
-        );
-
-        let model = state.view_model();
-        let roots = &model.surface_regions[0].entities;
-        assert_eq!(roots.len(), 1);
-        assert_eq!(roots[0].label, "Project P");
-        assert_eq!(roots[0].children.len(), 1);
-        assert_eq!(roots[0].children[0].label, "Convoy C");
-        assert_eq!(
-            roots[0].children[0].placement_layout.as_deref(),
-            Some("inline"),
-            "the renderer needs the producing loop's declaration"
-        );
-        assert_eq!(
-            roots[0].children[0].children.len(),
-            1,
-            "the project back-edge is cut while the vessel remains"
-        );
-        assert_eq!(roots[0].children[0].children[0].label, "Vessel V");
-        let rendered = format!(
-            "{}\n  {}\n    {}",
-            roots[0].label, roots[0].children[0].label, roots[0].children[0].children[0].label
-        );
-        insta::assert_snapshot!(rendered, @r###"
-        Project P
-          Convoy C
-            Vessel V
-        "###);
-    }
-
-    #[test]
-    fn applied_template_resolution_failure_is_visible_on_the_placed_entity() {
-        let config = crate::template_config::parse_template_config_kdl(
-            r#"
-version 1
-region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="tree"
-placement "tree" {
-  for "project" kind="project" {
-    apply-template
-  }
-}
-template "project/line" extends="missing/line" {
-  field "label" source="metadata-text" key="display.label"
-}
-"#,
-        )
-        .expect("placement config parses before template resolution");
-        let mut state = directory_entity_state();
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::with_bundled_defaults(config),
-        ));
-        apply_entity(
-            &mut state,
-            "project",
-            "p",
-            1,
-            &[("flotilla.project", "p"), ("display.label", "Project P")],
-        );
-
-        let slot = state.view_model().surface_regions[0].entities[0]
-            .templates
-            .compact
-            .clone()
-            .expect("applied template leaves visible resolution evidence");
-        assert_eq!(slot.template_name, "<resolve-error>");
-        assert!(slot
-            .resolve_error
-            .as_deref()
-            .is_some_and(|error| error.contains("missing/line")));
-    }
-
-    #[test]
-    fn explicitly_named_missing_applied_template_is_a_visible_error() {
-        let config = crate::template_config::parse_template_config_kdl(
-            r#"
-version 1
-region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="tree"
-placement "tree" {
-  for "project" kind="project" {
-    apply-template "missing/line"
-  }
-}
-"#,
-        )
-        .expect("placement config parses before template resolution");
-        let mut state = directory_entity_state();
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::with_bundled_defaults(config),
-        ));
-        apply_entity(
-            &mut state,
-            "project",
-            "p",
-            1,
-            &[("flotilla.project", "p"), ("display.label", "Project P")],
-        );
-
-        let slot = state.view_model().surface_regions[0].entities[0]
-            .templates
-            .compact
-            .clone()
-            .expect("an explicit missing template leaves visible error evidence");
-        assert_eq!(slot.template_name, "<resolve-error>");
-        assert_eq!(
-            slot.resolve_error.as_deref(),
-            Some("unknown applied template missing/line")
-        );
-    }
-
-    #[test]
-    fn an_inline_presence_entity_has_no_activation_and_falls_back_to_inspect() {
-        // The attention region admits every non-hidden presence class, but only
-        // Tab-presence entities become tabs. An issue is Inline, so it has no
-        // activation at all — the caller opens the inspector instead, which is
-        // what the row did before activation existed.
+    fn an_entity_without_workspace_or_recipe_falls_back_to_inspect() {
+        // A catalog issue without a workspace or recipe has no activation;
+        // the caller opens its inspector.
         let mut state = directory_entity_state();
         apply_entity(
             &mut state,
@@ -5652,107 +3009,8 @@ placement "tree" {
         assert_eq!(
             state.activation_for_entity(&issue),
             None,
-            "an inline-presence entity is neither focusable nor materializable"
+            "an entity without a workspace or recipe cannot activate"
         );
-    }
-
-    #[test]
-    fn materialization_focuses_an_existing_tab_with_the_same_action_target() {
-        let mut state = directory_entity_state();
-        let shared_target = "flotilla:attach:dev/focus@lab";
-        apply_entity(
-            &mut state,
-            "convoy",
-            "dev/focus@lab",
-            1,
-            &[
-                ("flotilla.project", "dev"),
-                ("flotilla.convoy", "dev/focus@lab"),
-                (KEY_ACTION_TARGET, shared_target),
-                (KEY_MATERIALIZE_RECIPE, "flotilla attach dev/focus"),
-            ],
-        );
-        apply_entity(
-            &mut state,
-            "vessel",
-            "dev/focus/worker@lab",
-            2,
-            &[
-                ("flotilla.project", "dev"),
-                ("flotilla.vessel", "dev/focus/worker@lab"),
-                (KEY_ACTION_TARGET, shared_target),
-            ],
-        );
-        state.update_tabs(vec![ControllerTab {
-            tab_id: 7,
-            position: 3,
-            name: "worker".to_owned(),
-            active: true,
-        }]);
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: crate::MetadataTarget::Tab(7),
-            source_id: "flotilla-actuator".to_owned(),
-            set: BTreeMap::from([
-                (
-                    KEY_ENTITY_KIND.to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text("vessel".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-                (
-                    KEY_ENTITY_ID.to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text("dev/focus/worker@lab".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-            ]),
-            unset: vec![],
-        });
-        let request = crate::MaterializeLatentRequest {
-            action_target: shared_target.to_owned(),
-            path: GroupPath::default(),
-            name: "focus".to_owned(),
-            recipe: "unused".to_owned(),
-            checkout_path: None,
-        };
-
-        assert_eq!(state.materialized_tab_position(&request), Some(3));
-        assert_eq!(
-            state.activation_for_entity(&entity_ref("convoy", "dev/focus@lab")),
-            Some(EntityActivation::FocusTab { position: 3 })
-        );
-        assert!(!state.begin_latent_materialization(&request));
-    }
-
-    #[test]
-    fn focused_pane_cwd_beats_more_common_cwd_for_tab_grouping() {
-        let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig::default());
-        state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "work".into(),
-            active: true,
-        }]);
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
-        state.set_test_pane(PaneTarget::Terminal(11), 1, true, false, 1);
-        state.set_test_pane(PaneTarget::Terminal(12), 1, true, true, 2);
-        state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/common".into());
-        state.set_pane_cwd(PaneTarget::Terminal(11), "/repo/common".into());
-        state.set_pane_cwd(PaneTarget::Terminal(12), "/repo/focused".into());
-
-        let model = state.view_model();
-
-        assert!(matches!(
-            &model.rows[0],
-            RailRow::GroupHeader { full_label, .. } if full_label == "focused"
-        ));
     }
 
     #[test]
@@ -5910,604 +3168,6 @@ placement "tree" {
         assert!(state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into()));
         state.observe_panes(manifest);
         assert_eq!(state.terminal_panes_for_cwd_refresh(), Vec::<u32>::new());
-    }
-
-    #[test]
-    fn count_breaks_ties_within_same_precedence() {
-        let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig::default());
-        state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "work".into(),
-            active: true,
-        }]);
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
-        state.set_test_pane(PaneTarget::Terminal(11), 1, true, false, 1);
-        state.set_test_pane(PaneTarget::Terminal(12), 1, true, false, 2);
-        state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into());
-        state.set_pane_cwd(PaneTarget::Terminal(11), "/repo/b".into());
-        state.set_pane_cwd(PaneTarget::Terminal(12), "/repo/b".into());
-
-        let model = state.view_model();
-
-        assert!(matches!(
-            &model.rows[0],
-            RailRow::GroupHeader { full_label, .. } if full_label == "b"
-        ));
-    }
-
-    #[test]
-    fn directory_fallback_rule_compacts_tabs_and_leaves_missing_cwd_ungrouped() {
-        let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig::default());
-        state.update_tabs(vec![
-            ControllerTab {
-                tab_id: 1,
-                position: 0,
-                name: "one".into(),
-                active: false,
-            },
-            ControllerTab {
-                tab_id: 2,
-                position: 1,
-                name: "two".into(),
-                active: true,
-            },
-            ControllerTab {
-                tab_id: 3,
-                position: 2,
-                name: "three".into(),
-                active: false,
-            },
-        ]);
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
-        state.set_test_pane(PaneTarget::Terminal(30), 3, true, false, 0);
-        state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into());
-        state.set_pane_cwd(PaneTarget::Terminal(30), "/repo/a".into());
-
-        let model = state.view_model();
-
-        assert_eq!(model.rows.len(), 4);
-        assert!(matches!(
-            &model.rows[0],
-            RailRow::GroupHeader { tab_count: 2, .. }
-        ));
-        assert!(matches!(
-            &model.rows[1],
-            RailRow::Tab {
-                tab_id: 1,
-                indent: 2,
-                ..
-            }
-        ));
-        assert!(matches!(
-            &model.rows[2],
-            RailRow::Tab {
-                tab_id: 3,
-                indent: 2,
-                ..
-            }
-        ));
-        assert!(matches!(
-            &model.rows[3],
-            RailRow::Tab {
-                tab_id: 2,
-                indent: 0,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn tabs_without_facts_for_any_grouping_rule_remain_flat() {
-        let mut state = ControllerState::default();
-        state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "one".into(),
-            active: true,
-        }]);
-
-        let model = state.view_model();
-
-        assert_eq!(model.rows.len(), 1);
-        assert!(matches!(
-            &model.rows[0],
-            RailRow::Tab {
-                tab_id: 1,
-                indent: 0,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn directory_fallback_rule_adds_cwd_grouping_metadata() {
-        let mut state = ControllerState::default();
-        state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "one".into(),
-            active: true,
-        }]);
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
-        state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into());
-
-        let model = state.view_model();
-        let grouping = model.tabs[0].grouping.as_ref().unwrap();
-
-        assert_eq!(grouping.key, "zellij.directory:zellij.pane.cwd=/repo/a");
-        assert_eq!(grouping.label, "a");
-        assert_eq!(grouping.full_label, "a");
-    }
-
-    #[test]
-    fn directory_fallback_rule_disambiguates_duplicate_cwd_basenames() {
-        let mut state = ControllerState::default();
-        state.update_tabs(vec![
-            ControllerTab {
-                tab_id: 1,
-                position: 0,
-                name: "one".into(),
-                active: true,
-            },
-            ControllerTab {
-                tab_id: 2,
-                position: 1,
-                name: "two".into(),
-                active: false,
-            },
-        ]);
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
-        state.set_test_pane(PaneTarget::Terminal(20), 2, true, false, 0);
-        state.set_pane_cwd(PaneTarget::Terminal(10), "/workspace/a/app".into());
-        state.set_pane_cwd(PaneTarget::Terminal(20), "/workspace/b/app".into());
-
-        let model = state.view_model();
-
-        assert_eq!(
-            model.tabs[0]
-                .grouping
-                .as_ref()
-                .map(|grouping| grouping.label.as_str()),
-            Some("a/app")
-        );
-        assert_eq!(
-            model.tabs[1]
-                .grouping
-                .as_ref()
-                .map(|grouping| grouping.label.as_str()),
-            Some("b/app")
-        );
-    }
-
-    #[test]
-    fn directory_fallback_ignores_matching_cwd_basename_in_a_git_group() {
-        let mut state = ControllerState::default();
-        state.update_tabs(vec![
-            ControllerTab {
-                tab_id: 1,
-                position: 0,
-                name: "repo".into(),
-                active: true,
-            },
-            ControllerTab {
-                tab_id: 2,
-                position: 1,
-                name: "shell".into(),
-                active: false,
-            },
-        ]);
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
-        state.set_test_pane(PaneTarget::Terminal(20), 2, true, false, 0);
-        state.set_pane_cwd(PaneTarget::Terminal(10), "/work/foo".into());
-        state.set_pane_cwd(PaneTarget::Terminal(20), "/tmp/foo".into());
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: EntityId::Tab(1),
-            source_id: "git-watcher".to_owned(),
-            set: BTreeMap::from([
-                (
-                    "vcs.repo".to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text("example/foo".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-                (
-                    "repo.name".to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text("foo".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-            ]),
-            unset: vec![],
-        });
-
-        let model = state.view_model();
-
-        assert!(model.tabs[0]
-            .grouping
-            .as_ref()
-            .is_some_and(|grouping| grouping_uses_rule(grouping, "andamento.git")));
-        assert_eq!(
-            model.tabs[1]
-                .grouping
-                .as_ref()
-                .map(|grouping| grouping.label.as_str()),
-            Some("foo")
-        );
-    }
-
-    #[test]
-    fn directory_fallback_rule_uses_cwd_group_path_identity() {
-        let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig::default());
-        state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "one".into(),
-            active: true,
-        }]);
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
-        state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into());
-
-        let model = state.view_model();
-        let expected_path = GroupPath(vec![GroupSegment {
-            key: KEY_PANE_CWD.to_owned(),
-            value: MetadataValue::Text("/repo/a".to_owned()),
-            label: Some("a".to_owned()),
-        }]);
-
-        assert_eq!(
-            model.tabs[0]
-                .grouping
-                .as_ref()
-                .map(|grouping| &grouping.path),
-            Some(&expected_path)
-        );
-        assert!(matches!(
-            &model.rows[0],
-            RailRow::GroupHeader { path, .. } if path == &expected_path
-        ));
-    }
-
-    #[test]
-    fn configured_grouping_rule_uses_resolved_identity_metadata_before_directory_fallback() {
-        let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig::default());
-        state.set_grouping_catalog(Some(
-            crate::grouping_config::GroupingConfigCatalog::from_config(
-                crate::grouping_config::ExternalGroupingConfig {
-                    version: 1,
-                    rules: vec![
-                        crate::grouping_config::GroupingRule {
-                            name: "proj-repo-branch".to_owned(),
-                            priority: 100,
-                            filter: None,
-                            presence: vec![],
-                            levels: vec![
-                                crate::grouping_config::GroupingLevel {
-                                    key: "andamento.project".to_owned(),
-                                    optional: true,
-                                    label_key: None,
-                                    collapse_single_member: false,
-                                    show_empty: false,
-                                    template: None,
-                                },
-                                crate::grouping_config::GroupingLevel {
-                                    key: "git.repo".to_owned(),
-                                    optional: false,
-                                    label_key: Some("repo.name".to_owned()),
-                                    collapse_single_member: false,
-                                    show_empty: false,
-                                    template: None,
-                                },
-                                crate::grouping_config::GroupingLevel {
-                                    key: "git.branch".to_owned(),
-                                    optional: false,
-                                    label_key: None,
-                                    collapse_single_member: false,
-                                    show_empty: false,
-                                    template: None,
-                                },
-                            ],
-                        },
-                        crate::grouping_config::GroupingRule {
-                            name: "directory".to_owned(),
-                            priority: 10,
-                            filter: None,
-                            presence: vec![],
-                            levels: vec![crate::grouping_config::GroupingLevel {
-                                key: KEY_PANE_CWD.to_owned(),
-                                optional: false,
-                                label_key: None,
-                                collapse_single_member: false,
-                                show_empty: false,
-                                template: None,
-                            }],
-                        },
-                    ],
-                },
-            ),
-        ));
-        state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "repo".into(),
-            active: true,
-        }]);
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
-        state.set_pane_cwd(PaneTarget::Terminal(10), "/Users/robert/dev/zellij".into());
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: EntityId::Identity(crate::MetadataIdentity {
-                key: KEY_PANE_CWD.to_owned(),
-                value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
-            }),
-            source_id: "git-watcher".to_owned(),
-            set: BTreeMap::from([
-                (
-                    "git.repo".to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text("zellij-org/zellij".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-                (
-                    "repo.name".to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text("zellij".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-                (
-                    "git.branch".to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text("feat/kitty-image-plumbing".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-            ]),
-            unset: vec![],
-        });
-
-        let model = state.view_model();
-        let grouping = model.tabs[0].grouping.as_ref().expect("tab grouping");
-
-        assert_eq!(
-            grouping.key,
-            "proj-repo-branch:git.repo=zellij-org/zellij/git.branch=feat/kitty-image-plumbing"
-        );
-        assert_eq!(grouping.label, "feat/kitty-image-plumbing");
-        assert_eq!(grouping.full_label, "zellij / feat/kitty-image-plumbing");
-        assert_eq!(grouping.path.0[0].label.as_deref(), Some("zellij"));
-        assert_eq!(
-            grouping.path,
-            GroupPath(vec![
-                GroupSegment {
-                    key: "git.repo".to_owned(),
-                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
-                    label: Some("zellij".to_owned()),
-                },
-                GroupSegment {
-                    key: "git.branch".to_owned(),
-                    value: MetadataValue::Text("feat/kitty-image-plumbing".to_owned()),
-                    label: None,
-                },
-            ])
-        );
-    }
-
-    #[test]
-    fn configured_grouping_rules_include_the_bundled_directory_fallback() {
-        let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig::default());
-        state.set_grouping_catalog(Some(
-            crate::grouping_config::GroupingConfigCatalog::with_bundled_defaults(
-                crate::grouping_config::ExternalGroupingConfig {
-                    version: 1,
-                    rules: vec![crate::grouping_config::GroupingRule {
-                        name: "repo".to_owned(),
-                        priority: 100,
-                        filter: None,
-                        presence: vec![],
-                        levels: vec![crate::grouping_config::GroupingLevel {
-                            key: "git.repo".to_owned(),
-                            optional: false,
-                            label_key: None,
-                            collapse_single_member: false,
-                            show_empty: false,
-                            template: None,
-                        }],
-                    }],
-                },
-            ),
-        ));
-        state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "repo".into(),
-            active: true,
-        }]);
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
-        state.set_pane_cwd(PaneTarget::Terminal(10), "/Users/robert/dev/zellij".into());
-
-        let model = state.view_model();
-        let grouping = model.tabs[0].grouping.as_ref().expect("tab grouping");
-
-        assert_eq!(
-            grouping.key,
-            "zellij.directory:zellij.pane.cwd=/Users/robert/dev/zellij"
-        );
-        assert_eq!(grouping.label, "zellij");
-        assert_eq!(grouping.full_label, "zellij");
-    }
-
-    #[test]
-    fn tab_with_required_partial_path_falls_through_to_a_later_rule() {
-        let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig::default());
-        let grouping = crate::grouping_config::parse_grouping_config_kdl(
-            r#"
-            grouping "repo-branch" priority=100 {
-              level key="git.repo"
-              level key="git.branch"
-            }
-            grouping "directory" priority=50 {
-              level key="zellij.pane.cwd"
-            }
-            "#,
-        )
-        .expect("grouping config");
-        state.set_grouping_catalog(Some(GroupingConfigCatalog::from_config(grouping)));
-        state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "repo".into(),
-            active: true,
-        }]);
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
-        state.set_pane_cwd(PaneTarget::Terminal(10), "/Users/robert/dev/zellij".into());
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: crate::MetadataTarget::Tab(1),
-            source_id: "git-watcher".to_owned(),
-            set: BTreeMap::from([(
-                "git.repo".to_owned(),
-                crate::MetadataValueUpdate {
-                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: None,
-                },
-            )]),
-            unset: vec![],
-        });
-
-        let model = state.view_model();
-        let grouping = model.tabs[0].grouping.as_ref().expect("tab grouping");
-
-        assert_eq!(
-            grouping.key,
-            "directory:zellij.pane.cwd=/Users/robert/dev/zellij"
-        );
-        assert_eq!(
-            grouping.path,
-            GroupPath(vec![GroupSegment {
-                key: KEY_PANE_CWD.to_owned(),
-                value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
-                label: None,
-            }])
-        );
-    }
-
-    #[test]
-    fn entity_identity_overrides_cwd_grouping_without_a_stamped_path() {
-        let mut state = directory_entity_state();
-        state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "overview".into(),
-            active: true,
-        }]);
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
-        state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/zellij".into());
-        apply_entity(
-            &mut state,
-            "repo",
-            "zellij-org/zellij",
-            1,
-            &[
-                ("vcs.repo", "zellij-org/zellij"),
-                ("vcs.repo.name", "zellij"),
-            ],
-        );
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: EntityId::Tab(1),
-            source_id: "test".to_owned(),
-            set: BTreeMap::from([
-                (
-                    KEY_ENTITY_KIND.to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text("repo".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-                (
-                    KEY_ENTITY_ID.to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text("zellij-org/zellij".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-            ]),
-            unset: vec![],
-        });
-
-        let model = state.view_model();
-        let grouping = model.tabs[0].grouping.as_ref().expect("tab grouping");
-
-        assert_eq!(grouping.label, "zellij");
-        assert_eq!(grouping.path.0.len(), 1);
-        assert_eq!(grouping.path.0[0].key, "vcs.repo");
-    }
-
-    #[test]
-    fn arbitrary_path_like_metadata_does_not_override_grouping() {
-        let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig::default());
-        state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "overview".into(),
-            active: true,
-        }]);
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
-        state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/zellij".into());
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: EntityId::Tab(1),
-            source_id: "test".to_owned(),
-            set: BTreeMap::from([(
-                "producer.path".to_owned(),
-                crate::MetadataValueUpdate {
-                    value: MetadataValue::GroupPath(vec![]),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: None,
-                },
-            )]),
-            unset: vec![],
-        });
-
-        let model = state.view_model();
-        let grouping = model.tabs[0].grouping.as_ref().expect("tab grouping");
-
-        assert_eq!(
-            grouping.key,
-            "zellij.directory:zellij.pane.cwd=/repo/zellij"
-        );
-        assert_eq!(
-            grouping.path,
-            GroupPath(vec![GroupSegment {
-                key: KEY_PANE_CWD.to_owned(),
-                value: MetadataValue::Text("/repo/zellij".to_owned()),
-                label: Some("zellij".to_owned()),
-            }])
-        );
     }
 
     #[test]
@@ -6679,268 +3339,6 @@ placement "tree" {
     }
 
     #[test]
-    fn view_model_keeps_group_header_render_payload_in_sync_with_effective_template() {
-        let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig::default());
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::from_config(
-                crate::template_config::parse_template_config_kdl(
-                    r#"
-                    template "group/full" slot="group-header" node-kind="group" {
-                      field "repo" key="git.repo" priority=100
-                      field "branch" key="git.branch" priority=60
-                    }
-                    "#,
-                )
-                .expect("valid template config"),
-            ),
-        ));
-        state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "repo".into(),
-            active: true,
-        }]);
-        state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
-        let cwd = "/Users/robert/dev/katzensteg".to_owned();
-        state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: EntityId::Identity(MetadataIdentity {
-                key: KEY_PANE_CWD.to_owned(),
-                value: MetadataValue::Text(cwd),
-            }),
-            source_id: "git-watcher".to_owned(),
-            set: BTreeMap::from([
-                (
-                    "git.repo".to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-                (
-                    "git.branch".to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text("main".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-            ]),
-            unset: vec![],
-        });
-
-        let model = state.view_model();
-        let group_slot = model
-            .rows
-            .iter()
-            .find_map(|row| match row {
-                RailRow::GroupHeader { templates, .. } => templates.group_header.as_ref(),
-                RailRow::Tab { .. } | RailRow::Latent { .. } | RailRow::Entity { .. } => None,
-            })
-            .expect("group header template");
-
-        assert_eq!(group_slot.template_name, "group/full");
-        assert_eq!(
-            group_slot
-                .render_ready
-                .as_ref()
-                .expect("render-ready template")
-                .fields
-                .iter()
-                .map(|field| (field.name.as_str(), field.priority))
-                .collect::<Vec<_>>(),
-            vec![("repo", Some(100)), ("branch", Some(60))]
-        );
-        assert!(group_slot
-            .effective_kdl
-            .contains("// origin: user (<memory>)"));
-        assert!(group_slot.effective_kdl.contains("template \"group/full\""));
-
-        let first_effective_kdl = group_slot.effective_kdl.clone();
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::from_config(
-                crate::template_config::parse_template_config_kdl(
-                    r#"
-                    template "group/full" slot="group-header" node-kind="group" {
-                      field "replacement" class="required" source="literal" value="updated"
-                    }
-                    "#,
-                )
-                .expect("updated template config"),
-            ),
-        ));
-
-        let updated_model = state.view_model();
-        let updated_slot = updated_model
-            .rows
-            .iter()
-            .find_map(|row| match row {
-                RailRow::GroupHeader { templates, .. } => templates.group_header.as_ref(),
-                RailRow::Tab { .. } | RailRow::Latent { .. } | RailRow::Entity { .. } => None,
-            })
-            .expect("updated group header template");
-
-        assert_ne!(updated_slot.effective_kdl, first_effective_kdl);
-        assert!(updated_slot.effective_kdl.contains("value=\"updated\""));
-        assert_eq!(
-            updated_slot
-                .render_ready
-                .as_ref()
-                .expect("updated render-ready template")
-                .fields
-                .iter()
-                .map(|field| field.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["replacement"]
-        );
-    }
-
-    #[test]
-    fn grouped_rows_anchor_tabs_to_their_exact_group_path() {
-        let mut state = ControllerState::default();
-        state.set_rail_config(RailConfig::default());
-        state.set_grouping_catalog(Some(
-            crate::grouping_config::GroupingConfigCatalog::from_config(
-                crate::grouping_config::ExternalGroupingConfig {
-                    version: 1,
-                    rules: vec![crate::grouping_config::GroupingRule {
-                        name: "repo-branch".to_owned(),
-                        priority: 100,
-                        filter: None,
-                        presence: vec![],
-                        levels: vec![
-                            crate::grouping_config::GroupingLevel {
-                                key: "git.repo".to_owned(),
-                                optional: false,
-                                label_key: None,
-                                collapse_single_member: false,
-                                show_empty: false,
-                                template: None,
-                            },
-                            crate::grouping_config::GroupingLevel {
-                                key: "git.branch".to_owned(),
-                                optional: true,
-                                label_key: None,
-                                collapse_single_member: false,
-                                show_empty: false,
-                                template: None,
-                            },
-                        ],
-                    }],
-                },
-            ),
-        ));
-        state.update_tabs(vec![
-            ControllerTab {
-                tab_id: 1,
-                position: 0,
-                name: "repo-overview".into(),
-                active: true,
-            },
-            ControllerTab {
-                tab_id: 2,
-                position: 1,
-                name: "branch-agent".into(),
-                active: false,
-            },
-        ]);
-        for (pane_id, tab_id, cwd, branch) in [
-            (
-                PaneTarget::Terminal(10),
-                1,
-                "/Users/robert/dev/zellij",
-                None,
-            ),
-            (
-                PaneTarget::Terminal(20),
-                2,
-                "/Users/robert/dev/zellij-feature",
-                Some("feat/kitty-image-plumbing"),
-            ),
-        ] {
-            state.set_test_pane(pane_id, tab_id, true, tab_id == 1, 0);
-            state.set_pane_cwd(pane_id, cwd.to_owned());
-            let mut set = BTreeMap::from([(
-                "git.repo".to_owned(),
-                crate::MetadataValueUpdate {
-                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: None,
-                },
-            )]);
-            if let Some(branch) = branch {
-                set.insert(
-                    "git.branch".to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text(branch.to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                );
-            }
-            state.apply_metadata_patch(crate::MetadataPatch {
-                target: EntityId::Identity(MetadataIdentity {
-                    key: KEY_PANE_CWD.to_owned(),
-                    value: MetadataValue::Text(cwd.to_owned()),
-                }),
-                source_id: "git-watcher".to_owned(),
-                set,
-                unset: vec![],
-            });
-        }
-
-        let model = state.view_model();
-        let repo_path = GroupPath(vec![GroupSegment {
-            key: "git.repo".to_owned(),
-            value: MetadataValue::Text("zellij-org/zellij".to_owned()),
-            label: None,
-        }]);
-        let branch_path = GroupPath(vec![
-            repo_path.0[0].clone(),
-            GroupSegment {
-                key: "git.branch".to_owned(),
-                value: MetadataValue::Text("feat/kitty-image-plumbing".to_owned()),
-                label: None,
-            },
-        ]);
-
-        assert!(model
-            .rows
-            .iter()
-            .any(|row| matches!(row, RailRow::GroupHeader { path, .. } if path == &repo_path)));
-        assert!(model
-            .rows
-            .iter()
-            .any(|row| matches!(row, RailRow::GroupHeader { path, .. } if path == &branch_path)));
-        assert!(model.rows.iter().any(|row| {
-            matches!(
-                row,
-                RailRow::Tab {
-                    tab_id: 1,
-                    parent_path: Some(parent_path),
-                    ..
-                } if parent_path == &repo_path
-            )
-        }));
-        assert!(model.rows.iter().any(|row| {
-            matches!(
-                row,
-                RailRow::Tab {
-                    tab_id: 2,
-                    parent_path: Some(parent_path),
-                    ..
-                } if parent_path == &branch_path
-            )
-        }));
-    }
-
-    #[test]
     fn view_model_exposes_observed_metadata_identity_index() {
         let mut state = ControllerState::default();
         state.set_rail_config(RailConfig::default());
@@ -6979,7 +3377,7 @@ placement "tree" {
                     key: KEY_PANE_CWD.to_owned(),
                     value: MetadataValue::Text(cwd.clone()),
                 }
-                && observed.target_count == 2
+                && observed.target_count == 1
                 && observed.nearest_distance == 1
         }));
         assert!(model.observed_identities.iter().any(|observed| {
@@ -6988,7 +3386,7 @@ placement "tree" {
                     key: "git.repo".to_owned(),
                     value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
                 }
-                && observed.target_count == 2
+                && observed.target_count == 1
                 && observed.nearest_distance == 2
         }));
     }
@@ -7100,7 +3498,6 @@ placement "tree" {
                     sequence: 1,
                     writer_client_id: 0,
                 },
-                collapsed_groups: vec![],
                 collapsed_placements: vec![],
                 scroll_offset: 8,
                 variables: BTreeMap::new(),
@@ -7147,7 +3544,6 @@ placement "tree" {
                 sequence: 1,
                 writer_client_id: 9,
             },
-            collapsed_groups: vec![],
             collapsed_placements: vec![],
             scroll_offset: 99,
             variables: BTreeMap::new(),
@@ -7159,7 +3555,6 @@ placement "tree" {
                     sequence: 2,
                     writer_client_id: 0,
                 },
-                collapsed_groups: vec![],
                 collapsed_placements: vec![],
                 scroll_offset: 10,
                 variables: BTreeMap::new(),
@@ -7304,34 +3699,6 @@ placement "tree" {
         assert_eq!(state.known_rail_count(), 1);
         assert_eq!(state.known_config_editor_count(), 0);
         assert_eq!(state.rail_plugin_ids(), vec![8]);
-    }
-
-    #[test]
-    fn renderer_cleanup_keeps_session_rail_ui_state() {
-        let path = GroupPath(vec![GroupSegment {
-            key: "zellij.pane.cwd".to_owned(),
-            value: MetadataValue::Text("/repo".to_owned()),
-            label: Some("repo".to_owned()),
-        }]);
-        let mut state = ControllerState::default();
-        state.apply_rail_ui_action(RailUiAction::ToggleGroup { path: path.clone() });
-        state.apply_rail_ui_action(RailUiAction::ScrollBy { delta: 7 });
-
-        state.retain_rails(&HashSet::new());
-
-        assert_eq!(
-            state.rail_ui_state(),
-            RailUiState {
-                revision: RailUiRevision {
-                    sequence: 2,
-                    writer_client_id: 0,
-                },
-                collapsed_groups: vec![path],
-                collapsed_placements: vec![],
-                scroll_offset: 7,
-                variables: BTreeMap::new(),
-            }
-        );
     }
 
     #[test]

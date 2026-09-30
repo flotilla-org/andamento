@@ -73,12 +73,13 @@ allowed values; invalid requests do not mutate state. Independent `Sidebar`
 instances have independent UI state. Existing Zellij rail synchronization
 continues through its adapter and is not exported as cross-process cooperation.
 
-The default tree still uses legacy grouping until #71. Native snapshots report
-a diagnostic for any tree/attention region lacking a placement declaration;
-they do not translate legacy GroupPath rows into the native contract. Use
-`crates/andamento-core/tests/fixtures/sidebar.kdl` for the first native slice.
-Keep #71's temporary adapter private and finish that cutover before treating
-the presentation contract as stable. The plugin can still render legacy regions.
+Placement is the default in every host after #71. Templates query the catalog
+and resolve directly into the semantic snapshot; the legacy renderer adapter
+and grouping configuration are removed. Sections may declare a placement query
+or contain only static content/controls. Unmatched catalog entities are listed
+in the existing Inspect surface pending #72. See the shipped
+`templates/flotilla-default.kdl` and the native fixture
+`crates/andamento-core/tests/fixtures/sidebar.kdl`.
 
 ## C ABI
 

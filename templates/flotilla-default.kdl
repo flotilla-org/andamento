@@ -1,170 +1,75 @@
 version 1
 
-variable "child-layout" default="cards" {
-  value "cards"
-  value "strip"
-}
-
 variable "convoy.tier" default="full" {
   value "full"
   value "medium"
   value "short"
 }
-
 variable "issue.tier" default="full" {
   value "full"
   value "medium"
   value "short"
 }
 
-display-variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
-
-region "header" source="header" root-template="flotilla/region/header" form="compact" pinned=true
-region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="attention"
-region "tree" source="tree" root-template="flotilla/region/tree" form="compact" {
-  promote when="zellij.tab.active" form="full"
-  promote when="rail.tab.pinned" form="full"
-}
-region "controls" source="controls" root-template="flotilla/region/controls" form="compact" pinned=true
+region "attention" root-template="flotilla/region/attention" form="compact" placement="attention" pinned=true
+region "tree" root-template="flotilla/region/tree" form="compact" placement="projects"
+region "controls" root-template="flotilla/region/controls" form="compact" pinned=true
 
 placement "attention" {
   for "attention" {
     match "status.attention" value="true"
   }
 }
-
-grouping "flotilla.default" priority=-1000 {
-  filter key="entity.kind"
-
-  presence kind="convoy" class="tab"
-  presence kind="vessel" class="tab"
-  presence kind="session" class="tab"
-  presence kind="issue" class="inline" form="compact" visible-when="show-issues"
-  presence kind="project" class="tab"
-  presence kind="repo" class="inline"
-  presence kind="checkout" class="inline"
-
-  level key="flotilla.project" label-key="flotilla.project.name" optional=true show-empty=true
-  level key="vcs.repo" label-key="vcs.repo.name" optional=true
-  level key="flotilla.convoy" label-key="flotilla.convoy.name" optional=true collapse-single-member=true
-  level key="flotilla.vessel" label-key="flotilla.vessel.name" optional=true
-  level key="flotilla.session" label-key="display.label" optional=true
-  level key="flotilla.issue" label-key="display.label" optional=true show-empty=true
-  level key="flotilla.checkout" label-key="display.label" optional=true show-empty=true
+placement "projects" {
+  for "project" kind="project" layout="lines" {
+    order "display.label"
+    apply-template "project/line"
+  }
 }
-
-grouping "andamento.git" priority=-2000 {
-  level key="andamento.project" optional=true
-  level key="vcs.repo" label-key="repo.name"
-  level key="git.branch" optional=true
-}
-
-grouping "zellij.directory" priority=-3000 {
-  level key="zellij.pane.cwd" label-key="zellij.pane.cwd.label"
-}
-
-fragment "flotilla/group-toggle" {
-  indent level=2
+template "project/line" {
   toggle collapsed="▶" expanded="▼"
-  fill glyph="─"
+  field "label" key="display.label"
+  for "independent" kind="role" layout="inline" {
+    match "flotilla.project" of="project"
+    field "label" key="display.label"
+  }
+  for "convoy" kind="convoy" layout="lines" {
+    match "flotilla.project" of="project"
+    order "display.label"
+    apply-template "convoy/line"
+  }
+  for "issue" kind="issue" layout="row" {
+    match "flotilla.project" of="project"
+    field "label" source="metadata-first-token" key="display.label"
+  }
 }
-
-template "flotilla/region/header" slot="compact" node-kind="entity" {
-  field "label" class="required" source="literal" value="◉ Overview"
+template "convoy/line" {
+  toggle collapsed="▶" expanded="▼"
+  field "label" key="display.label"
+  for "vessel" kind="vessel" layout="lines" {
+    match "flotilla.convoy" of="convoy"
+    apply-template "vessel/line"
+  }
 }
-
+template "vessel/line" {
+  toggle collapsed="▶" expanded="▼"
+  field "label" key="display.label"
+  for "session" kind="session" layout="lines" {
+    match "flotilla.vessel" of="vessel"
+    field "label" key="display.label"
+  }
+}
 template "flotilla/region/attention" slot="compact" node-kind="entity" {
-  field "label" class="required" source="literal" value="⚠ Attention"
+  field "label" source="literal" value="⚠ Attention"
 }
-
 template "flotilla/region/tree" slot="compact" node-kind="entity" {
-  field "label" class="required" source="literal" value="◇ Tree"
+  field "label" source="literal" value=""
 }
-
 template "flotilla/region/controls" slot="compact" node-kind="entity" {
   control "open-config" glyph="⚙"
-  control "display-variable" variable="show-issues"
   control "scroll-down" glyph="▼"
   control "scroll-up" glyph="▲"
   control "inspect-root"
-}
-
-fragment "flotilla/group-label" {
-  field "label" class="required" {
-    value source="metadata-text" key="group.segment.label"
-    value source="metadata-text-basename" key="group.value"
-    value source="metadata-text" key="group.label"
-  }
-}
-
-fragment "flotilla/group-label-verbatim" {
-  field "label" class="required" {
-    value source="metadata-text" key="group.segment.label"
-    value source="metadata-text" key="group.value"
-    value source="metadata-text" key="group.label"
-  }
-}
-
-template "flotilla/project/full" slot="group-header" node-kind="group" {
-  use "flotilla/group-toggle"
-  use "flotilla/group-label-verbatim"
-}
-
-template "flotilla/repo/full" slot="group-header" node-kind="group" {
-  use "flotilla/group-toggle"
-  use "flotilla/group-label"
-}
-
-template "flotilla/convoy/full" slot="group-header" node-kind="group" {
-  use "flotilla/group-toggle"
-  use "flotilla/group-label"
-}
-
-template "flotilla/vessel/full" slot="group-header" node-kind="group" {
-  use "flotilla/group-toggle"
-  use "flotilla/group-label"
-}
-
-template "flotilla/session/full" slot="group-header" node-kind="group" {
-  use "flotilla/group-toggle"
-  use "flotilla/group-label"
-}
-
-template "flotilla/issue/full" slot="group-header" node-kind="group" {
-  use "flotilla/group-toggle"
-  use "flotilla/group-label"
-}
-
-template "flotilla/checkout/full" slot="group-header" node-kind="group" {
-  use "flotilla/group-toggle"
-  use "flotilla/group-label"
-}
-
-template "flotilla/group/full" slot="group-header" node-kind="group" {
-  use "flotilla/group-toggle"
-  field "label" class="required" {
-    value source="metadata-text" key="group.label"
-    value source="literal" value="group"
-  }
-  field "count" class="optional" source="metadata-display" key="group.tab_count" prefix="(" suffix=")"
-  field "active" class="priority" source="active-tab-name" prefix=": " condition="collapsed"
-}
-
-template "flotilla/tab/title" slot="tab-title" node-kind="tab" {
-  box border="single"
-  indent level=2
-  dim when="rail.tab.latent"
-  field "latent-glyph" class="required" source="metadata-text" key="materialize.glyph"
-  field "title" class="required" {
-    value source="metadata-text" key="zellij.tab.name"
-    value source="tab-number"
-    value source="literal" value="Tab"
-  }
-}
-
-template "flotilla/tab/status" slot="tab-status" node-kind="tab" {
-  field "title" class="required" source="metadata-text" key="status.title"
-  field "detail" class="priority" source="metadata-text" key="status.detail" prefix=": "
 }
 
 template "flotilla/issue/compact" slot="compact" node-kind="entity" {

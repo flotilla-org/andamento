@@ -242,7 +242,7 @@ use std::time::Instant;
 
 use andamento_shared::StatusIcon;
 use andamento_shared::{
-    ConfigInspectRequest, ControllerViewModel, GroupPath, NodeKey, PluginPaneKind, PluginPlacement,
+    ConfigInspectRequest, ControllerViewModel, NodeKey, PluginPaneKind, PluginPlacement,
     PluginRegistrationHello, PluginStatsRecorder, RailSizeObserved, RailUiAction, RailUiState,
     RendererHello, StatsCollectRequest, MSG_CONFIG_INSPECT, MSG_RAIL_SIZE_OBSERVED,
     MSG_RAIL_SIZE_TARGET, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO,
@@ -579,7 +579,7 @@ impl ZellijPlugin for PluginState {
                 height: s.height,
                 width: s.width,
             }),
-            &self.rail_ui_state.collapsed_groups,
+            &self.rail_ui_state.collapsed_placements,
             None,
             &metadata_controls,
             self.rail_ui_state.scroll_offset,
@@ -607,7 +607,6 @@ impl ZellijPlugin for PluginState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use andamento_shared::RailUiRevision;
     use render::{VisibleCard, VisibleIconRect};
     use std::cell::Cell;
 
@@ -620,16 +619,6 @@ mod tests {
     #[no_mangle]
     extern "C" fn host_run_plugin_command() {
         HOST_PLUGIN_COMMAND_COUNT.with(|count| count.set(count.get() + 1));
-    }
-
-    fn pipe(name: &str, payload: String) -> PipeMessage {
-        PipeMessage {
-            source: PipeSource::Plugin(1),
-            name: name.to_owned(),
-            payload: Some(payload),
-            args: BTreeMap::new(),
-            is_private: false,
-        }
     }
 
     fn tab_info(tab_id: usize, position: usize, name: &str, active: bool) -> TabInfo {
@@ -734,7 +723,6 @@ mod tests {
                 col_end: 19,
                 tab_id: 2,
                 tab_position: 1,
-                group_path: None,
                 inspect_target: None,
                 materialize_request: None,
                 action: HitAction::SwitchTab,
@@ -767,7 +755,6 @@ mod tests {
                 col_end: 8,
                 tab_id: 0,
                 tab_position: 0,
-                group_path: None,
                 inspect_target: Some(target.clone()),
                 materialize_request: None,
                 action: HitAction::ShowDetail,
@@ -803,7 +790,6 @@ mod tests {
                 col_end: 8,
                 tab_id: 0,
                 tab_position: 0,
-                group_path: None,
                 inspect_target: Some(target.clone()),
                 materialize_request: None,
                 action: HitAction::ActivateEntity,
@@ -832,7 +818,6 @@ mod tests {
             col_end,
             tab_id: 0,
             tab_position: 0,
-            group_path: None,
             inspect_target: Some(target),
             materialize_request: None,
             action: HitAction::Materialize,
@@ -871,7 +856,6 @@ mod tests {
                     col_end: 6,
                     tab_id: 0,
                     tab_position: 0,
-                    group_path: None,
                     inspect_target: Some(first.clone()),
                     materialize_request: None,
                     action: HitAction::Materialize,
@@ -883,7 +867,6 @@ mod tests {
                     col_end: 15,
                     tab_id: 0,
                     tab_position: 0,
-                    group_path: None,
                     inspect_target: Some(second_row_target),
                     materialize_request: None,
                     action: HitAction::Materialize,
@@ -1133,34 +1116,6 @@ mod tests {
     }
 
     #[test]
-    fn latent_open_builds_an_identity_bearing_controller_request() {
-        let request = andamento_shared::MaterializeLatentRequest {
-            action_target: "flotilla:convoys/dev/latent-tabs".to_owned(),
-            path: andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
-                key: "flotilla.convoy".to_owned(),
-                value: andamento_shared::MetadataValue::Text("dev/latent-tabs".to_owned()),
-                label: Some("latent tabs".to_owned()),
-            }]),
-            name: "latent tabs".to_owned(),
-            recipe: "flotilla attach latent-tabs".to_owned(),
-            checkout_path: Some("/work/andamento".to_owned()),
-        };
-
-        let message =
-            build_materialize_latent_message("andamento-controller", 4, &request).unwrap();
-
-        assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
-        assert_eq!(message.destination_client_id, Some(4));
-        assert_eq!(
-            message.message_name,
-            andamento_shared::MSG_MATERIALIZE_LATENT
-        );
-        let payload: andamento_shared::MaterializeLatentRequest =
-            serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
-        assert_eq!(payload, request);
-    }
-
-    #[test]
     fn attention_activation_builds_an_entity_only_controller_request() {
         let entity = andamento_shared::EntityRef {
             kind: "vessel".to_owned(),
@@ -1191,28 +1146,6 @@ mod tests {
     }
 
     #[test]
-    fn group_toggle_builds_controller_request() {
-        let path = GroupPath(vec![andamento_shared::GroupSegment {
-            key: "zellij.pane.cwd".to_owned(),
-            value: andamento_shared::MetadataValue::Text("/repo".to_owned()),
-            label: Some("repo".to_owned()),
-        }]);
-
-        let message = build_rail_ui_action_message(
-            "andamento-controller",
-            RailUiAction::ToggleGroup { path: path.clone() },
-        )
-        .unwrap();
-
-        assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
-        assert_eq!(message.destination_client_id, None);
-        assert_eq!(message.message_name, MSG_RAIL_UI_ACTION);
-        let payload: RailUiAction =
-            serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
-        assert_eq!(payload, RailUiAction::ToggleGroup { path });
-    }
-
-    #[test]
     fn late_spawned_rail_requests_session_ui_state_without_a_client_filter() {
         let message = build_rail_ui_state_request_message("andamento-controller");
 
@@ -1220,84 +1153,6 @@ mod tests {
         assert_eq!(message.destination_plugin_id, None);
         assert_eq!(message.destination_client_id, None);
         assert_eq!(message.message_name, MSG_REQUEST_RAIL_UI_STATE);
-    }
-
-    #[test]
-    fn broadcast_snapshot_aligns_existing_and_late_spawned_rails() {
-        let path = GroupPath(vec![andamento_shared::GroupSegment {
-            key: "zellij.pane.cwd".to_owned(),
-            value: andamento_shared::MetadataValue::Text("/repo".to_owned()),
-            label: Some("repo".to_owned()),
-        }]);
-        let snapshot = RailUiState {
-            revision: RailUiRevision {
-                sequence: 3,
-                writer_client_id: 1,
-            },
-            collapsed_groups: vec![path],
-            collapsed_placements: vec![],
-            scroll_offset: 9,
-            variables: BTreeMap::new(),
-        };
-        let payload = serde_json::to_string(&snapshot).unwrap();
-        let mut existing = PluginState::default();
-        let mut late_spawned = PluginState::default();
-
-        assert!(existing.pipe(pipe(MSG_RAIL_UI_STATE, payload.clone())));
-        assert!(late_spawned.pipe(pipe(MSG_RAIL_UI_STATE, payload)));
-
-        assert_eq!(existing.rail_ui_state, snapshot);
-        assert_eq!(late_spawned.rail_ui_state, snapshot);
-    }
-
-    #[test]
-    fn rail_total_orders_same_sequence_broadcasts() {
-        let mut rail = PluginState::default();
-        let current = RailUiState {
-            revision: RailUiRevision {
-                sequence: 4,
-                writer_client_id: 1,
-            },
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            scroll_offset: 12,
-            variables: BTreeMap::new(),
-        };
-        let winner = RailUiState {
-            revision: RailUiRevision {
-                sequence: 4,
-                writer_client_id: 2,
-            },
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            scroll_offset: 14,
-            variables: BTreeMap::new(),
-        };
-        let stale = RailUiState {
-            revision: RailUiRevision {
-                sequence: 4,
-                writer_client_id: 0,
-            },
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            scroll_offset: 1,
-            variables: BTreeMap::new(),
-        };
-
-        assert!(rail.pipe(pipe(
-            MSG_RAIL_UI_STATE,
-            serde_json::to_string(&current).unwrap(),
-        )));
-        assert!(rail.pipe(pipe(
-            MSG_RAIL_UI_STATE,
-            serde_json::to_string(&winner).unwrap(),
-        )));
-        assert!(!rail.pipe(pipe(
-            MSG_RAIL_UI_STATE,
-            serde_json::to_string(&stale).unwrap(),
-        )));
-
-        assert_eq!(rail.rail_ui_state, winner);
     }
 
     #[test]
@@ -1338,7 +1193,6 @@ mod tests {
             col_end: 0,
             tab_id: 0,
             tab_position: 0,
-            group_path: None,
             inspect_target: Some(NodeKey::Tab(0)),
             materialize_request: None,
             action: HitAction::InspectNode,
@@ -1435,6 +1289,36 @@ mod tests {
 }
 
 impl PluginState {
+    fn sync_graphics(&mut self, visible_cards: &[VisibleCard]) {
+        let signature = visible_graphics_signature(visible_cards);
+        if self
+            .last_graphics_signature
+            .as_deref()
+            .map(|previous| previous == signature.as_slice())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let mut ops = vec![PluginGraphicsOp::ClearPlacements];
+        for entry in &signature {
+            let asset_id = self.asset_id_for_icon(&entry.icon, &mut ops);
+            ops.push(PluginGraphicsOp::PlaceImage {
+                placement_id: entry.placement_id,
+                asset_id,
+                destination: PluginCellRect {
+                    x: entry.rect.x as u32,
+                    y: entry.rect.y as u32,
+                    columns: None,
+                    rows: Some(entry.rect.rows as u32),
+                },
+                source: None,
+                z_index: 1,
+            });
+        }
+        apply_graphics_update(ops);
+        self.last_graphics_signature = Some(signature);
+    }
+
     fn controller_message(&self, name: &str) -> MessageToPlugin {
         let message = MessageToPlugin::new(name);
         if self.controller_plugin_url.trim().is_empty() {
@@ -1682,12 +1566,6 @@ impl PluginState {
                         self.toggle_pin(hit.tab_id);
                         false
                     }
-                    HitAction::ToggleGroup => {
-                        if let Some(group_path) = hit.group_path {
-                            self.toggle_group(group_path);
-                        }
-                        false
-                    }
                     HitAction::TogglePlacement => {
                         if let Some(NodeKey::Placement(key)) = hit.inspect_target {
                             self.send_rail_ui_action(RailUiAction::TogglePlacement { key });
@@ -1831,10 +1709,6 @@ impl PluginState {
         );
     }
 
-    fn toggle_group(&self, group_path: GroupPath) {
-        self.send_rail_ui_action(RailUiAction::ToggleGroup { path: group_path });
-    }
-
     fn send_rail_ui_action(&self, action: RailUiAction) {
         let Some(message) = build_rail_ui_action_message(&self.controller_plugin_url, action)
         else {
@@ -1883,36 +1757,6 @@ impl PluginState {
         self.own_tab_id()
             .or_else(|| self.active_tab_id())
             .map(NodeKey::Tab)
-    }
-
-    fn sync_graphics(&mut self, visible_cards: &[VisibleCard]) {
-        let signature = visible_graphics_signature(visible_cards);
-        if self
-            .last_graphics_signature
-            .as_deref()
-            .map(|previous| previous == signature.as_slice())
-            .unwrap_or(false)
-        {
-            return;
-        }
-        let mut ops = vec![PluginGraphicsOp::ClearPlacements];
-        for entry in &signature {
-            let asset_id = self.asset_id_for_icon(&entry.icon, &mut ops);
-            ops.push(PluginGraphicsOp::PlaceImage {
-                placement_id: entry.placement_id,
-                asset_id,
-                destination: PluginCellRect {
-                    x: entry.rect.x as u32,
-                    y: entry.rect.y as u32,
-                    columns: None,
-                    rows: Some(entry.rect.rows as u32),
-                },
-                source: None,
-                z_index: 1,
-            });
-        }
-        apply_graphics_update(ops);
-        self.last_graphics_signature = Some(signature);
     }
 
     fn asset_id_for_icon(&mut self, icon: &StatusIcon, ops: &mut Vec<PluginGraphicsOp>) -> u32 {
