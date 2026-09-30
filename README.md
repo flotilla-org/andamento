@@ -340,12 +340,56 @@ scripts/rail-preview my-experiment.kdl 46
 ```
 
 Width is worth varying deliberately: the strip layout degrades as it narrows,
-and several rail defects only show up at one size. Its scene comes from
-`scripts/rail-scene.py`, which mirrors what the Flotilla connector actually
-emits — same keys, same entity-id shapes — over projects and repos taken from
-real manifests, so the awkward cases are the ones that really occur. Point it
-at your own capture with `RAIL_PREVIEW_SCENE=path.jsonl`, or keep the model
-dump with `RAIL_PREVIEW_RAW=1`.
+and several rail defects only show up at one size. The scene is
+`fixtures/rail-scene.jsonl`, generated from query-row scenario inputs through Flotilla's real Rust projection. See
+[scenario regeneration](fixtures/scenarios/README.md). The old Python mirror
+has been removed; its frozen output remains as a replay compatibility fixture.
+Point the preview at your own capture with `RAIL_PREVIEW_SCENE=path.jsonl`, or
+keep the model dump with `RAIL_PREVIEW_RAW=1`.
+
+The independent Rust replay executable lives in `andamento-core`:
+
+```sh
+host=$(rustc -vV | sed -n 's/^host: //p')
+cargo build -p andamento-core --bin andamento-replay --target "$host"
+replay="target/$host/debug/andamento-replay"
+# Timestamp bare connector patches arriving on stdin; flush each complete line.
+"$replay" record < outgoing-patches.jsonl > capture.jsonl
+# Emit bare patches at recorded wall-clock speed (suitable as TUI FACTS_COMMAND).
+"$replay" play fixtures/scripted-roll.jsonl
+# Emit immediately for consumers accepting ordinary connector JSONL.
+"$replay" emit fixtures/rail-scene.jsonl > /tmp/rail-patches.jsonl
+# Evaluate a native semantic snapshot at an exact capture offset, including TTL.
+"$replay" snapshot fixtures/scripted-roll.jsonl sidebar.kdl 2000
+```
+
+The JSONL capture format is `{"offset_ms":123,"patch":{...}}`: one complete
+connector metadata patch per line, elapsed **monotonic milliseconds** from
+capture start. Equal offsets preserve file order; decreasing offsets and
+malformed lines fail with line numbers. TTL, ordinal, precedence, source and
+unsets remain untouched. Blank lines are ignored. Legacy bare patches are
+accepted at offset zero. Captures have no implicit end-time: tests can advance
+past the last patch to exercise expiry.
+
+`andamento_core::replay::Replay` exposes `step` (one timestamp) and `advance_to`
+against `Sidebar`; both use the real catalog clock. `andamento-replay snapshot`
+provides native snapshot evaluation, and the controller render harness accepts
+both capture and legacy JSONL. The standalone TUI's facts command can be
+`andamento-replay play CAPTURE`. `emit` removes timing for static import; it does
+not evaluate TTL, whereas `snapshot` does.
+
+For Wheelhouse's `--sidebar_diagnostics` fixture directory, ship the capture
+JSONL beside the KDL and use `andamento-replay emit CAPTURE` to produce its bare
+connector input, or `play` for timed ingestion. Wheelhouse-side clock/fixture
+wiring is a follow-up; this change requires no GUI checks. The independent-core
+check builds the replay binary without Zellij or Flotilla dependencies.
+
+The live connector tap belongs in Flotilla's shared `pm_connect::send_patches`
+boundary (initial/diff/reassert traffic); [Flotilla #2281](https://github.com/flotilla-org/flotilla/issues/2281)
+tracks that integration. `record` can timestamp a hand-captured outgoing stream
+now. No real roll was available here: the checked-in scripted roll covers
+hold/re-admission and attempt handover; [#105](https://github.com/flotilla-org/andamento/issues/105)
+tracks adding a real recording.
 
 Snapshots tell you a frame changed. They do not tell you whether the result
 reads well, which is what most of the rail's open questions are about.

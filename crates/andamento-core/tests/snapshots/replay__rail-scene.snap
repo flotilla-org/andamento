@@ -1,0 +1,2280 @@
+---
+source: crates/andamento-core/tests/replay.rs
+expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.nodes)).collect::<Vec<_>>()"
+---
+[
+    Array [
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/andamento@fleet"),
+                "kind": String("project"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' view 'project/flotilla/andamento'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("project:flotilla/andamento@fleet"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("project"),
+                },
+                "count.checkouts": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.convoys": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.independents": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.issues": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.total": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.vessels": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("a"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("project"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/cleat@fleet"),
+                "kind": String("project"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' view 'project/flotilla/cleat'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("project:flotilla/cleat@fleet"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("project"),
+                },
+                "count.checkouts": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.convoys": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.independents": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.issues": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.total": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.vessels": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("cleat"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("cleat"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("c"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/cleat@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("project"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/cleat@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("cleat"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/flotilla@fleet"),
+                "kind": String("project"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' view 'project/flotilla/flotilla'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("project:flotilla/flotilla@fleet"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("project"),
+                },
+                "count.checkouts": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.convoys": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.independents": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.issues": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.total": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.vessels": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("f"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("project"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+    ],
+    Array [
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/adhoc-triage@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "count.checkouts": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.convoys": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.independents": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.issues": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.total": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.vessels": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("adhoc-triage"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("a-triage"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("at"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/adhoc-triage@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/adhoc-triage@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("adhoc-triage"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/daemon-socket-identity@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "action.primary.direct.reason": Object {
+                    "type": String("text"),
+                    "value": String("no observed Cleat daemon endpoint for this session"),
+                },
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' attach --host 'lab' 'daemon-socket-identity/worker'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/daemon-socket-identity/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "count.checkouts": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.convoys": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.independents": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.issues": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.total": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.vessels": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("daemon-socket-identity"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("ds-identity"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("dsi"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/daemon-socket-identity@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/daemon-socket-identity@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("daemon-socket-identity"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/grouping-live-session@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "action.primary.direct.reason": Object {
+                    "type": String("text"),
+                    "value": String("no observed Cleat daemon endpoint for this session"),
+                },
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' attach --host 'lab' 'grouping-live-session/worker'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/grouping-live-session/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "count.checkouts": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.convoys": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.independents": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.issues": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.total": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.vessels": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("grouping-live-session"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("gl-session"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("gls"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/grouping-live-session@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/grouping-live-session@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("grouping-live-session"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/interactive-phase-setup@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "action.primary.direct.reason": Object {
+                    "type": String("text"),
+                    "value": String("no observed Cleat daemon endpoint for this session"),
+                },
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' attach --host 'lab' 'interactive-phase-setup/worker'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/interactive-phase-setup/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "count.checkouts": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.convoys": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.independents": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.issues": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.total": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.vessels": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("interactive-phase-setup"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("ip-setup"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("ips"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/interactive-phase-setup@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/interactive-phase-setup@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("interactive-phase-setup"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/manifest-extraction@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "count.checkouts": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.convoys": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.independents": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.issues": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.total": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.vessels": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("manifest-extraction"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("m-extraction"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("me"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("manifest-extraction"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/scoping-regression@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "action.primary.direct.reason": Object {
+                    "type": String("text"),
+                    "value": String("no observed Cleat daemon endpoint for this session"),
+                },
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' attach --host 'lab' 'scoping-regression/worker'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/scoping-regression/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "count.checkouts": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.convoys": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.independents": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.issues": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.total": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.vessels": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("scoping-regression"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("s-regression"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("sr"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/scoping-regression@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/scoping-regression@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("scoping-regression"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("landed"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/session-recording@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "action.primary.direct.reason": Object {
+                    "type": String("text"),
+                    "value": String("no observed Cleat daemon endpoint for this session"),
+                },
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' attach --host 'lab' 'session-recording/worker'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/session-recording/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "count.checkouts": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.convoys": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.independents": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.issues": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.total": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "count.vessels": Object {
+                    "type": String("integer"),
+                    "value": Number(0),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("session-recording"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("s-recording"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("sr"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/session-recording@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/session-recording@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("session-recording"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("interrupted"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/cleat@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("cleat"),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0 entries · 0 issues · 0 vessels · 0 checkouts"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+    ],
+    Array [
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/adhoc-triage/worker@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.direct.reason": Object {
+                    "type": String("text"),
+                    "value": String("no observed Cleat daemon endpoint for this session"),
+                },
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' attach --host 'lab' 'adhoc-triage/worker'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/adhoc-triage/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("w"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/adhoc-triage/worker@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/adhoc-triage@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("adhoc-triage"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/adhoc-triage/worker@lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/daemon-socket-identity/worker@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.direct.reason": Object {
+                    "type": String("text"),
+                    "value": String("no observed Cleat daemon endpoint for this session"),
+                },
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' attach --host 'lab' 'daemon-socket-identity/worker'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/daemon-socket-identity/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("w"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/daemon-socket-identity/worker@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/daemon-socket-identity@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("daemon-socket-identity"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/daemon-socket-identity/worker@lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/grouping-live-session/worker@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.direct.reason": Object {
+                    "type": String("text"),
+                    "value": String("no observed Cleat daemon endpoint for this session"),
+                },
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' attach --host 'lab' 'grouping-live-session/worker'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/grouping-live-session/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("w"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/grouping-live-session/worker@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/grouping-live-session@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("grouping-live-session"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/grouping-live-session/worker@lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/interactive-phase-setup/worker@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.direct.reason": Object {
+                    "type": String("text"),
+                    "value": String("no observed Cleat daemon endpoint for this session"),
+                },
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' attach --host 'lab' 'interactive-phase-setup/worker'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/interactive-phase-setup/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("w"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/interactive-phase-setup/worker@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/interactive-phase-setup@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("interactive-phase-setup"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("needs_you"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/interactive-phase-setup/worker@lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.attention": Object {
+                    "type": String("bool"),
+                    "value": Bool(true),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("waiting"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/manifest-extraction/coder@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.direct.reason": Object {
+                    "type": String("text"),
+                    "value": String("no observed Cleat daemon endpoint for this session"),
+                },
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' attach --host 'lab' 'manifest-extraction/coder'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/manifest-extraction/coder@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("coder"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("coder"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("c"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction/coder@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("manifest-extraction"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction/coder@lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("coder"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("coder"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/manifest-extraction/reviewer@fleet"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.direct.reason": Object {
+                    "type": String("text"),
+                    "value": String("no observed Cleat daemon endpoint for this session"),
+                },
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' attach --host 'fleet' 'manifest-extraction/reviewer'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/manifest-extraction/reviewer@fleet"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("reviewer"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("reviewer"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("r"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction/reviewer@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("manifest-extraction"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("needs_you"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction/reviewer@fleet"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("reviewer"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.attention": Object {
+                    "type": String("bool"),
+                    "value": Bool(true),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("waiting"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("reviewer"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/scoping-regression/worker@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.direct.reason": Object {
+                    "type": String("text"),
+                    "value": String("no observed Cleat daemon endpoint for this session"),
+                },
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' attach --host 'lab' 'scoping-regression/worker'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/scoping-regression/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("w"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/scoping-regression/worker@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/scoping-regression@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("scoping-regression"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("landed"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/scoping-regression/worker@lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("active"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/session-recording/worker@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.direct.reason": Object {
+                    "type": String("text"),
+                    "value": String("no observed Cleat daemon endpoint for this session"),
+                },
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("'flotilla' attach --host 'lab' 'session-recording/worker'"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/session-recording/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "display.label.medium": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "display.label.short": Object {
+                    "type": String("text"),
+                    "value": String("w"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/session-recording/worker@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/session-recording@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("session-recording"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("interrupted"),
+                },
+                "flotilla.convoy.superseded": Object {
+                    "type": String("bool"),
+                    "value": Bool(false),
+                },
+                "flotilla.surface.state": Object {
+                    "type": String("text"),
+                    "value": String("needs_you"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/session-recording/worker@lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.attention": Object {
+                    "type": String("bool"),
+                    "value": Bool(true),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("waiting"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+    ],
+    Array [],
+    Array [
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("https://github.com/flotilla-org/andamento#61"),
+                "kind": String("issue"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("issue"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("Hover does nothing on UI elements"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("https://github.com/flotilla-org/andamento#61"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("issue"),
+                },
+                "flotilla.issue": Object {
+                    "type": String("text"),
+                    "value": String("https://github.com/flotilla-org/andamento#61"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("idle"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("Hover does nothing on UI elements"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("https://github.com/flotilla-org/andamento#62"),
+                "kind": String("issue"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("issue"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("Clicking an attention item opens the config panel"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("https://github.com/flotilla-org/andamento#62"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("issue"),
+                },
+                "flotilla.issue": Object {
+                    "type": String("text"),
+                    "value": String("https://github.com/flotilla-org/andamento#62"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("idle"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("Clicking an attention item opens the config panel"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("https://github.com/flotilla-org/flotilla#1456"),
+                "kind": String("issue"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("issue"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("Publish abbreviated display label tiers"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("https://github.com/flotilla-org/flotilla#1456"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("issue"),
+                },
+                "flotilla.issue": Object {
+                    "type": String("text"),
+                    "value": String("https://github.com/flotilla-org/flotilla#1456"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("idle"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("Publish abbreviated display label tiers"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+    ],
+]

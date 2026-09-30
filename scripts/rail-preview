@@ -12,7 +12,7 @@
 #   scripts/rail-preview 30 46 80                         default template, three widths
 #   scripts/rail-preview my-experiment.kdl 46
 #
-# The scene comes from scripts/rail-scene.py unless RAIL_PREVIEW_SCENE names a
+# The scene comes from fixtures/rail-scene.jsonl unless RAIL_PREVIEW_SCENE names a
 # connector-format JSONL file. Set RAIL_PREVIEW_RAW=1 to keep the controller's
 # model dump, which is where grouping paths and resolved templates are visible.
 set -euo pipefail
@@ -51,9 +51,7 @@ scene="${RAIL_PREVIEW_SCENE:-}"
 if [ -n "$scene" ]; then
     scene="$(resolve "$scene")"
 else
-    scene="$(mktemp "${TMPDIR:-/tmp}/rail-preview-scene.XXXXXX")"
-    scratch+=("$scene")
-    python3 "$repo_root/scripts/rail-scene.py" > "$scene"
+    scene="$repo_root/fixtures/rail-scene.jsonl"
 fi
 
 cd "$repo_root"

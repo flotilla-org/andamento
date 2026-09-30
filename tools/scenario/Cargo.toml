@@ -1,0 +1,11 @@
+[package]
+name = "andamento-scenario"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[workspace]
+[dependencies]
+flotilla-manifest = { git = "https://github.com/flotilla-org/flotilla", rev = "87f03e9d11e34293fa25902d23b03cd6bc5402c0" }
+flotilla-protocol = { git = "https://github.com/flotilla-org/flotilla", rev = "87f03e9d11e34293fa25902d23b03cd6bc5402c0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
