@@ -379,11 +379,17 @@ So the rule against operators is a performance property, not a style
 preference — which is the point. A later agent wanting `!=` has to argue against
 the index, not against taste.
 
-The accepted cost: no negation, no `not exists`. "Attention things that aren't
+The accepted cost for query selection: no negation, no `not exists`. "Attention things that aren't
 done" is not expressible and must arrive as a fact. flotilla already computes
 exactly this (`badge.attention` → `status.attention`), so today it costs
 nothing — but some future filter will need a connector change rather than a
 config change, and that will be irritating at the time.
+
+Visibility policies are a separate, opt-in post-selection step. They evaluate
+constant equality/existence rules once per catalog snapshot and cache a boolean
+per entity. They do not add query operators or nested catalog scans. See
+`core-interface.md` for the syntax, first-match rules and display-variable
+contract. This restores configurable visibility after the grouping cutover.
 
 **References are by loop name.** `of="project"` refers to the enclosing loop
 called `project`, not to a positional `^`. Names reach a grandparent without
