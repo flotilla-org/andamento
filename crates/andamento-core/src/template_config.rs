@@ -22,8 +22,14 @@ pub fn parse_template_config_kdl(
     let document = input
         .parse::<KdlDocument>()
         .map_err(|source| TemplateConfigError::Parse(source.to_string()))?;
-    if document.nodes().iter().any(|node| node.name().value() == "grouping") {
-        return Err(TemplateConfigError::Validation("grouping rules were replaced by placement queries".into()));
+    if document
+        .nodes()
+        .iter()
+        .any(|node| node.name().value() == "grouping")
+    {
+        return Err(TemplateConfigError::Validation(
+            "grouping rules were replaced by placement queries".into(),
+        ));
     }
     let version = document
         .get_arg("version")
@@ -1096,7 +1102,6 @@ fn template_name_for(context: TemplateConfigMatchContext<'_>) -> Option<(String,
     Some((name, false))
 }
 
-
 fn find_template<'a>(
     stack: &'a [&'a TemplateConfigLayer],
     name: &str,
@@ -1616,7 +1621,6 @@ pub enum TemplateConfigSlot {
 }
 
 impl TemplateConfigSlot {
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Compact => "compact",
@@ -2290,7 +2294,9 @@ fn parse_kdl_placement_predicate(
 
 fn parse_kdl_region(node: &KdlNode) -> Result<SurfaceRegionDefinition, TemplateConfigError> {
     if node.get("source").is_some() || node.get("attention-key").is_some() {
-        return Err(TemplateConfigError::Validation("region source and attention-key were replaced by placement queries".into()));
+        return Err(TemplateConfigError::Validation(
+            "region source and attention-key were replaced by placement queries".into(),
+        ));
     }
     Ok(SurfaceRegionDefinition {
         name: kdl_required_arg_string(node, 0, "region name")?,
@@ -2871,7 +2877,6 @@ mod tests {
         );
         assert!(!resolved.is_bundled);
     }
-
 
     #[test]
     fn extends_replaces_removes_interleaves_and_inlines_fragments_with_origins() {

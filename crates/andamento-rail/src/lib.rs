@@ -607,7 +607,6 @@ impl ZellijPlugin for PluginState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use andamento_shared::RailUiRevision;
     use render::{VisibleCard, VisibleIconRect};
     use std::cell::Cell;
 
@@ -620,16 +619,6 @@ mod tests {
     #[no_mangle]
     extern "C" fn host_run_plugin_command() {
         HOST_PLUGIN_COMMAND_COUNT.with(|count| count.set(count.get() + 1));
-    }
-
-    fn pipe(name: &str, payload: String) -> PipeMessage {
-        PipeMessage {
-            source: PipeSource::Plugin(1),
-            name: name.to_owned(),
-            payload: Some(payload),
-            args: BTreeMap::new(),
-            is_private: false,
-        }
     }
 
     fn tab_info(tab_id: usize, position: usize, name: &str, active: bool) -> TabInfo {
@@ -867,7 +856,7 @@ mod tests {
                     col_end: 6,
                     tab_id: 0,
                     tab_position: 0,
-                        inspect_target: Some(first.clone()),
+                    inspect_target: Some(first.clone()),
                     materialize_request: None,
                     action: HitAction::Materialize,
                 },
@@ -878,7 +867,7 @@ mod tests {
                     col_end: 15,
                     tab_id: 0,
                     tab_position: 0,
-                        inspect_target: Some(second_row_target),
+                    inspect_target: Some(second_row_target),
                     materialize_request: None,
                     action: HitAction::Materialize,
                 },
@@ -1126,7 +1115,6 @@ mod tests {
         assert_eq!(payload.controller_plugin_url, "andamento-controller");
     }
 
-
     #[test]
     fn attention_activation_builds_an_entity_only_controller_request() {
         let entity = andamento_shared::EntityRef {
@@ -1157,7 +1145,6 @@ mod tests {
         assert_eq!(payload.inspect_fallback.origin_tab_id, 7);
     }
 
-
     #[test]
     fn late_spawned_rail_requests_session_ui_state_without_a_client_filter() {
         let message = build_rail_ui_state_request_message("andamento-controller");
@@ -1167,8 +1154,6 @@ mod tests {
         assert_eq!(message.destination_client_id, None);
         assert_eq!(message.message_name, MSG_REQUEST_RAIL_UI_STATE);
     }
-
-
 
     #[test]
     fn inspect_defaults_to_rail_own_tab_before_global_active_tab() {
@@ -1724,7 +1709,6 @@ impl PluginState {
         );
     }
 
-
     fn send_rail_ui_action(&self, action: RailUiAction) {
         let Some(message) = build_rail_ui_action_message(&self.controller_plugin_url, action)
         else {
@@ -1774,7 +1758,6 @@ impl PluginState {
             .or_else(|| self.active_tab_id())
             .map(NodeKey::Tab)
     }
-
 
     fn asset_id_for_icon(&mut self, icon: &StatusIcon, ops: &mut Vec<PluginGraphicsOp>) -> u32 {
         if let Some(asset_id) = self.icon_asset_ids.get(icon).copied() {

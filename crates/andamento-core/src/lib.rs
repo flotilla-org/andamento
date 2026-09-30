@@ -119,11 +119,8 @@ pub struct ConfigInspectRequest {
 
 /// Activate the entity behind a row.
 ///
-/// Not every entity in a region can be focused or materialized — the attention
-/// region admits every non-hidden presence class, and only `Tab`-presence
-/// entities become tabs. Those rows carry the inspector request they used to
-/// send, so a row that cannot be activated still does something rather than
-/// becoming a dead click.
+/// Entities without an observed workspace or a materialization recipe use the
+/// inspector fallback, so every placed entity remains inspectable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntityActivationRequest {
     pub entity: EntityRef,
@@ -284,7 +281,7 @@ pub enum LatentMaterializationState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LatentTab {
-    /// Presentation entity whose tab-presence is not currently materialized.
+    /// Catalog entity whose workspace is not currently materialized.
     pub entity: EntityRef,
     /// Stable producer-owned identity used to deduplicate materializations.
     pub action_target: String,
@@ -316,7 +313,6 @@ pub struct MaterializeLatentRequest {
     pub checkout_path: Option<String>,
 }
 
-
 impl LatentTab {
     pub fn materialize_request(&self) -> Option<MaterializeLatentRequest> {
         if self.materialization == LatentMaterializationState::Opening {
@@ -330,7 +326,6 @@ impl LatentTab {
         })
     }
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -439,9 +434,8 @@ pub struct EntityRef {
 
 /// The identity of one rendered appearance of an entity.
 ///
-/// Each segment records the loop that selected the entity at that depth. This
-/// deliberately parallels `GroupPath`, while remaining outside metadata's
-/// target space.
+/// Each segment records the loop that selected the entity at that depth.
+/// Placement identity remains outside metadata's target space.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PlacementKey(pub Vec<PlacementSegment>);
 
@@ -571,9 +565,6 @@ pub struct ObservedMetadataIdentity {
     pub nearest_distance: usize,
 }
 
-
-
-
 /// Conventional form that uses the rail's wrapped ribbon layout.
 ///
 /// Form names remain an open string vocabulary; only this form has distinct
@@ -582,8 +573,6 @@ pub const DISPLAY_FORM_COMPACT: &str = "compact";
 
 /// Conventional name for the default full surface.
 pub const DISPLAY_FORM_FULL: &str = "full";
-
-
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedTemplateSlots {
@@ -706,7 +695,6 @@ pub struct ControllerViewModel {
     pub presentation: Option<presentation::SurfaceSnapshot>,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MetadataTriState {
@@ -756,7 +744,6 @@ pub struct VariableSetterProvenance {
     pub ancestor: NodeKey,
     pub origin: template_config::TemplateConfigOrigin,
 }
-
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetadataControls {
@@ -843,7 +830,6 @@ impl ControllerViewModel {
     pub fn tab_by_id(&self, tab_id: u64) -> Option<&TabCard> {
         self.tabs.iter().find(|tab| tab.tab_id == tab_id)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -993,7 +979,6 @@ mod tests {
         assert_eq!(decoded, message);
     }
 
-
     #[test]
     fn config_inspect_request_round_trips_json() {
         let request = ConfigInspectRequest {
@@ -1028,7 +1013,6 @@ mod tests {
 
         assert_eq!(decoded, hello);
     }
-
 
     #[test]
     fn rail_config_defaults_to_joined_cells() {
@@ -1105,8 +1089,6 @@ mod tests {
         assert_eq!(snapshot.spans[0].max_us, 25);
     }
 
-
-
     #[test]
     fn placement_key_round_trips_as_an_ordered_loop_entity_path() {
         let key = PlacementKey(vec![
@@ -1129,8 +1111,6 @@ mod tests {
         let decoded: PlacementKey = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, key);
     }
-
-
 
     #[test]
     fn metadata_target_entity_round_trips_json() {
@@ -1211,7 +1191,6 @@ mod tests {
 
         assert_eq!(decoded, ExternalMessage::MetadataPatch(patch));
     }
-
 
     #[test]
     fn rail_config_round_trips_json() {

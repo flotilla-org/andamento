@@ -4,13 +4,13 @@ use std::{collections::BTreeMap, ops::ControlFlow};
 use serde::{Deserialize, Serialize};
 
 use crate::template_config::{
-    ChromeSpec, TemplateConfigFieldClass, TemplateConfigMatchContext,
-    TemplateConfigNodeKind, TemplateConfigRenderedField, TemplateConfigSlot, TemplateControlSpec,
+    ChromeSpec, TemplateConfigFieldClass, TemplateConfigMatchContext, TemplateConfigNodeKind,
+    TemplateConfigRenderedField, TemplateConfigSlot, TemplateControlSpec,
     TemplateVariableDefinition,
 };
 use crate::{
-    ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EntityRef,
-    MetadataValue, NodeKey, PlacementKey, ResolvedTemplateSlot,
+    ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EntityRef, MetadataValue,
+    NodeKey, PlacementKey, ResolvedTemplateSlot,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,8 +217,13 @@ impl SurfaceSnapshot {
 /// Resolve the declared tier without measuring or shortening producer text.
 /// Returns true when a shorter tier had to fall back to the full label; a
 /// frontend may apply its own measured elision to that fallback.
-pub fn apply_declared_abbreviation(metadata: &mut BTreeMap<String, MetadataValue>, binding: &str, explicit: Option<crate::template_config::AbbreviationTier>) -> bool {
-    let tier = explicit.map(|tier| tier.as_str())
+pub fn apply_declared_abbreviation(
+    metadata: &mut BTreeMap<String, MetadataValue>,
+    binding: &str,
+    explicit: Option<crate::template_config::AbbreviationTier>,
+) -> bool {
+    let tier = explicit
+        .map(|tier| tier.as_str())
         .or_else(|| metadata_text(metadata, &format!("var.{binding}.tier")))
         .unwrap_or("full");
     let full = metadata_text(metadata, "display.label").map(str::to_owned);

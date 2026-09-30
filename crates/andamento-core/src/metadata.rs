@@ -359,10 +359,7 @@ mod tests {
     fn select_primary_value(entries: &[CandidateEntry]) -> Option<MetadataValue> {
         select_primary_entry(entries).map(|candidate| candidate.entry.value)
     }
-    use crate::{
-        MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate,
-        PaneTarget,
-    };
+    use crate::{MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate, PaneTarget};
 
     fn entry(value: &str, precedence: i64, ordinal: i64, updated_at: u64) -> MetadataEntry {
         MetadataEntry {
@@ -492,7 +489,6 @@ mod tests {
             )
             .is_empty());
     }
-
 
     #[test]
     fn metadata_patch_sets_values_with_controller_timestamp() {

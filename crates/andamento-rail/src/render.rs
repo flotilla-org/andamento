@@ -24,4 +24,3 @@ pub fn theme_from_zellij(colors: zellij_tile::prelude::Styling) -> RenderTheme {
         segment_between_background: color_from_zellij(colors.text_unselected.background),
     }
 }
-

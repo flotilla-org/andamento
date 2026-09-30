@@ -14,16 +14,16 @@ use andamento_shared::PluginStatsRecorder;
 use andamento_shared::MSG_RAIL_SIZE_TARGET;
 use andamento_shared::MSG_VIEW_MODEL;
 use andamento_shared::{
-    ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage, 
+    ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage,
     MetadataVisibilitySetRequest, NodeVariableSetRequest, PluginRegistrationHello, RailConfig,
     RailRgbColor, RailSize, RailSizeObserved, RailSizeTarget, RailStructure, RailUiAction,
     RailUiState, RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH,
     MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT,
     MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES,
     MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO,
-    MSG_REQUEST_RAIL_UI_STATE, MSG_REQUEST_STATE, 
-    MSG_SET_METADATA_VISIBILITY, MSG_SET_NODE_VARIABLE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG,
-    MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
+    MSG_REQUEST_RAIL_UI_STATE, MSG_REQUEST_STATE, MSG_SET_METADATA_VISIBILITY,
+    MSG_SET_NODE_VARIABLE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE,
+    MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
@@ -123,15 +123,20 @@ fn main() {
         if let Some(surface) = &model.presentation {
             fn dump(nodes: &[andamento_shared::presentation::PlacementNode], slot: &str) {
                 for node in nodes {
-                    let content = if slot == "detail" { &node.detail } else { &node.content };
+                    let content = if slot == "detail" {
+                        &node.detail
+                    } else {
+                        &node.content
+                    };
                     std::println!("{}: {}", node.label, content.effective_kdl);
                     dump(&node.children, slot);
                 }
             }
-            for section in &surface.sections { dump(&section.nodes, slot); }
+            for section in &surface.sections {
+                dump(&section.nodes, slot);
+            }
         }
     }
-
 }
 
 /// Render the derived rows through the real rail renderer — actual template
@@ -170,7 +175,6 @@ fn render_rail_lines(model: &andamento_shared::ControllerViewModel, config_kdl: 
         std::println!("{line}");
     }
 }
-
 
 #[cfg(target_family = "wasm")]
 fn render_rail_lines(_model: &andamento_shared::ControllerViewModel, _config_kdl: &str) {}
@@ -524,7 +528,6 @@ impl PluginState {
         }
     }
 
-
     fn request_bootstrap_snapshot(&mut self) {
         if !self.permissions_granted || self.bootstrap_requested {
             return;
@@ -782,9 +785,7 @@ impl PluginState {
                 self.materialize_latent(request)
             }
             None => {
-                // Nothing to focus and nothing to materialize — an inline
-                // presence class, say. Fall back to the inspector rather than
-                // swallowing the click.
+                // No observed workspace or recipe: keep the entity inspectable.
                 self.stats.increment("entity.activate.inspect-fallback");
                 self.open_or_focus_config_editor(&request.inspect_fallback);
                 false
@@ -1193,7 +1194,6 @@ fn template_config_path_from_configuration(
     path_from_configuration(configuration, "template_config_path")
 }
 
-
 fn path_from_configuration(configuration: &BTreeMap<String, String>, key: &str) -> Option<String> {
     configuration
         .get(key)
@@ -1563,7 +1563,7 @@ fn parse_controller_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use andamento_shared::{PaneTarget, Priority, RailUiRevision, SetPaneStatus};
+    use andamento_shared::{PaneTarget, Priority, SetPaneStatus};
 
     fn pipe(name: &str, payload: Option<String>, args: BTreeMap<String, String>) -> PipeMessage {
         PipeMessage {
@@ -1583,34 +1583,6 @@ mod tests {
             args: BTreeMap::new(),
             is_private: false,
         }
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    fn rail_frame_snapshot(lines: &[String], cols: usize) -> String {
-        let mut snapshot = format!("frame {cols}x{}", lines.len());
-        for (index, line) in lines.iter().enumerate() {
-            let mut plain = String::new();
-            let mut chars = line.chars().peekable();
-            while let Some(ch) = chars.next() {
-                if ch == '\u{1b}' && chars.peek() == Some(&'[') {
-                    let _ = chars.next();
-                    for code_ch in chars.by_ref() {
-                        if code_ch.is_ascii_alphabetic() {
-                            break;
-                        }
-                    }
-                } else {
-                    plain.push(ch);
-                }
-            }
-            let content = plain.trim_end();
-            let trailing = cols.saturating_sub(content.chars().count());
-            snapshot.push_str(&format!("\n{index:02} |{content}|"));
-            if trailing > 0 {
-                snapshot.push_str(&format!(" + {trailing} spaces"));
-            }
-        }
-        snapshot
     }
 
     #[test]
@@ -1714,7 +1686,6 @@ mod tests {
 
         assert_eq!(parsed, Some(ControllerMessage::ConfigInspect(request)));
     }
-
 
     #[test]
     fn parses_activate_entity_request() {
@@ -1907,7 +1878,6 @@ mod tests {
         assert_eq!(path.as_deref(), Some("/host/tmp/andamento.kdl"));
     }
 
-
     #[test]
     fn parses_set_rail_config_payload() {
         let config = RailConfig {
@@ -2048,7 +2018,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn rail_ui_actions_update_one_session_snapshot() {
         let mut state = ControllerState::default();
@@ -2078,8 +2047,6 @@ mod tests {
 
         assert_eq!(state.rail_ui_state().scroll_offset, 0);
     }
-
-
 
     #[test]
     fn display_variable_action_broadcasts_state_and_pushes_a_new_view_model() {
@@ -2113,7 +2080,6 @@ mod tests {
             Some(&andamento_shared::DisplayVariableValue::Bool(false))
         );
     }
-
 
     #[test]
     fn node_variable_request_sets_root_config_override() {
@@ -2179,7 +2145,6 @@ mod tests {
         assert_eq!(state.view_model().config, config);
     }
 
-
     #[test]
     fn metadata_patch_message_updates_resolved_tab_metadata() {
         let mut state = ControllerState::default();
@@ -2239,59 +2204,6 @@ mod tests {
             Some("test")
         );
     }
-
-
-    // Native-only because this is the captured render-harness scenario and
-    // renders through andamento-rail.
-
-    // Native-only because this exercises the #53 frame-snapshot seam through
-    // the controller's real grouping pipeline and the real rail renderer.
-
-    /// Config for the placement pipeline: the attention region pulls its own
-    /// contents instead of being handed everything carrying an attention fact.
-    #[cfg(not(target_family = "wasm"))]
-    const PLACEMENT_KDL: &str = r#"
-version 1
-
-region "attention" root-template="flotilla/region/attention" form="full" placement="attention"
-
-placement "attention" {
-  for "item" kind="vessel" {
-    match "status.attention" value="true"
-    order "display.label" direction="descending" absent="last"
-    field "label" {
-      value source="metadata-text" key="display.label"
-    }
-  }
-}
-"#;
-
-    #[cfg(not(target_family = "wasm"))]
-    fn attention_vessel_patch(id: &str, label: &str, attention: bool) -> String {
-        serde_json::json!({
-            "type": "metadata-patch",
-            "target": { "kind": "entity", "value": { "kind": "vessel", "id": id } },
-            "source_id": "flotilla-connector",
-            "set": {
-                "flotilla.vessel": {
-                    "value": { "type": "text", "value": id },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                },
-                "display.label": {
-                    "value": { "type": "text", "value": label },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                },
-                "status.attention": {
-                    "value": { "type": "bool", "value": attention },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                }
-            }
-        })
-        .to_string()
-    }
-
-    // Native-only for the same reason as the grouping frame snapshot above:
-    // this drives the real controller and the real rail renderer.
 
     #[test]
     fn metadata_patch_cli_pipe_is_unblocked_without_output() {

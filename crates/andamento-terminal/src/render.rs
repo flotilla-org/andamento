@@ -1,6 +1,11 @@
 use andamento_core::presentation::{Content, PlacementNode, PresentationState, SurfaceSnapshot};
-use andamento_core::template_config::{TemplateConfigCatalog, TemplateConfigFieldClass, TemplateControlKind};
-use andamento_core::{ControllerViewModel, MetadataControls, NodeKey, PlacementKey, MaterializeLatentRequest, Priority, StatusIcon};
+use andamento_core::template_config::{
+    TemplateConfigCatalog, TemplateConfigFieldClass, TemplateControlKind,
+};
+use andamento_core::{
+    ControllerViewModel, MaterializeLatentRequest, MetadataControls, NodeKey, PlacementKey,
+    Priority, StatusIcon,
+};
 use ansi_term::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// Terminal-owned colors; the host adapter translates its theme.
@@ -272,10 +277,7 @@ enum TemplateField {
     Required(String),
     Optional(String),
     Priority(String),
-    Prioritized {
-        value: String,
-        priority: i64,
-    },
+    Prioritized { value: String, priority: i64 },
 }
 #[derive(Debug)]
 struct PlacementRenderLine<'a> {
@@ -319,7 +321,9 @@ fn append_placement_loop_instance<'a>(
     while start < entities.len() {
         let loop_key = &entities[start].loop_key;
         let mut end = start + 1;
-        while end < entities.len() && &entities[end].loop_key == loop_key { end += 1; }
+        while end < entities.len() && &entities[end].loop_key == loop_key {
+            end += 1;
+        }
         let siblings = &entities[start..end];
         let item_texts = resolve_placement_loop_fields(siblings, cols);
         let layout = siblings[0].layout.as_deref();
@@ -357,10 +361,7 @@ fn append_placement_loop_instance<'a>(
                         parent_row,
                         &entity.children,
                         depth + 1,
-
-
                         cols,
-
                     );
                 }
             } else {
@@ -418,10 +419,7 @@ fn append_placement_loop_instance<'a>(
                         item_parent,
                         &entity.children,
                         depth + 1,
-
-
                         cols,
-
                     );
                 }
             }
@@ -436,32 +434,26 @@ fn append_placement_loop_instance<'a>(
                 if entity.collapsed {
                     continue;
                 }
-                append_placement_loop_instance(
-                    lines,
-                    row,
-                    &entity.children,
-                    depth + 1,
-
-
-                    cols,
-
-                );
+                append_placement_loop_instance(lines, row, &entity.children, depth + 1, cols);
             }
         }
         start = end;
     }
 }
 
-fn resolve_placement_loop_fields(
-    entities: &[PlacementNode],
-    cols: usize,
-) -> Vec<String> {
+fn resolve_placement_loop_fields(entities: &[PlacementNode], cols: usize) -> Vec<String> {
     let rows = entities
         .iter()
         .map(|entity| {
             let mut fields = semantic_fields(&entity.content);
             if let Some((collapsed, expanded)) = entity.content.chrome.toggle() {
-                let glyph = if entity.children.is_empty() { " " } else if entity.collapsed { collapsed } else { expanded };
+                let glyph = if entity.children.is_empty() {
+                    " "
+                } else if entity.collapsed {
+                    collapsed
+                } else {
+                    expanded
+                };
                 fields.insert(0, TemplateField::Required(glyph.into()));
             }
             fields
@@ -544,7 +536,9 @@ fn resolve_placement_loop_fields(
                 })
                 .collect::<Vec<_>>();
             let text = selected.join(" ").trim_end().to_owned();
-            if text.is_empty() {
+            if let Some(error) = &entity.content.error {
+                format!("{} [template error: {error}]", entity.label)
+            } else if text.is_empty() && entity.content.template_name.is_none() {
                 entity.label.clone()
             } else {
                 text
@@ -558,13 +552,33 @@ fn node_hit(node: &PlacementNode, row: usize, cols: std::ops::Range<usize>) -> H
         PresentationState::Live { workspace_id, .. } => (workspace_id, HitAction::SwitchTab),
         _ => (0, HitAction::ActivateEntity),
     };
-    HitRegion { row_start: row, row_end: row, col_start: cols.start,
-        col_end: cols.end.saturating_sub(1), tab_id, tab_position: 0,
-        inspect_target: Some(NodeKey::Placement(node.key.clone())), materialize_request: None,
-        action: if node.children.is_empty() { action } else { HitAction::TogglePlacement } }
+    HitRegion {
+        row_start: row,
+        row_end: row,
+        col_start: cols.start,
+        col_end: cols.end.saturating_sub(1),
+        tab_id,
+        tab_position: 0,
+        inspect_target: Some(NodeKey::Placement(node.key.clone())),
+        materialize_request: None,
+        action,
+    }
 }
 
-fn control_line(content: &Content, surface: &SurfaceSnapshot, cols: usize, can_scroll: bool) -> (String, Vec<HitRegion>) {
+fn add_toggle_hit(hits: &mut Vec<HitRegion>, node: &PlacementNode, col: usize, end: usize) {
+    if !node.children.is_empty() && node.content.chrome.toggle().is_some() && col < end {
+        let mut hit = node_hit(node, 0, col..col + 1);
+        hit.action = HitAction::TogglePlacement;
+        hits.push(hit);
+    }
+}
+
+fn control_line(
+    content: &Content,
+    surface: &SurfaceSnapshot,
+    cols: usize,
+    can_scroll: bool,
+) -> (String, Vec<HitRegion>) {
     let mut cells = vec![' '; cols];
     let mut hits = Vec::new();
     let mut left = 0;
@@ -577,86 +591,379 @@ fn control_line(content: &Content, surface: &SurfaceSnapshot, cols: usize, can_s
             TemplateControlKind::ScrollDown if can_scroll => ('▼', HitAction::ScrollRailDown, true),
             TemplateControlKind::ScrollUp | TemplateControlKind::ScrollDown => continue,
             TemplateControlKind::DisplayVariable => {
-                let Some(index) = surface.display_variables.iter().position(|v| Some(&v.name) == control.variable.as_ref()) else { continue; };
+                let Some(index) = surface
+                    .display_variables
+                    .iter()
+                    .position(|v| Some(&v.name) == control.variable.as_ref())
+                else {
+                    continue;
+                };
                 let v = &surface.display_variables[index];
-                let glyph = if surface.display_values.get(&v.name) == Some(&andamento_core::DisplayVariableValue::Bool(false)) {
+                let glyph = if surface.display_values.get(&v.name)
+                    == Some(&andamento_core::DisplayVariableValue::Bool(false))
+                {
                     '·'
-                } else { v.icon.chars().next().unwrap_or('·') };
+                } else {
+                    v.icon.chars().next().unwrap_or('·')
+                };
                 (glyph, HitAction::ToggleVariable(index), false)
             }
         };
-        if left >= right { break; }
-        let col = if at_right { right -= 1; right } else { let col = left; left += 1; col };
-        cells[col] = control.glyph.as_deref().and_then(|s| s.chars().next()).unwrap_or(fallback);
-        hits.push(HitRegion { row_start: 0, row_end: 0, col_start: col, col_end: col,
-            tab_id: 0, tab_position: 0, inspect_target: (action == HitAction::InspectNode).then_some(NodeKey::Root),
-            materialize_request: None, action });
+        if left >= right {
+            break;
+        }
+        let col = if at_right {
+            right -= 1;
+            right
+        } else {
+            let col = left;
+            left += 1;
+            col
+        };
+        cells[col] = control
+            .glyph
+            .as_deref()
+            .and_then(|s| s.chars().next())
+            .unwrap_or(fallback);
+        hits.push(HitRegion {
+            row_start: 0,
+            row_end: 0,
+            col_start: col,
+            col_end: col,
+            tab_id: 0,
+            tab_position: 0,
+            inspect_target: (action == HitAction::InspectNode).then_some(NodeKey::Root),
+            materialize_request: None,
+            action,
+        });
     }
     (cells.into_iter().collect(), hits)
 }
 
-fn render_snapshot(model: Option<&ControllerViewModel>, tabs: &[LocalTab], rows: usize, cols: usize,
-    theme: Option<RenderTheme>, offset: isize, ensure_active: bool, detail_target: Option<&NodeKey>, detail: bool) -> RenderedRail {
-    let mut result = RenderedRail { lines: vec![blank(cols); rows], hit_regions: vec![], visible_cards: vec![],
-        content_height: 0, available_rows: rows, ensure_visible_offset: None, ensure_active_resolved: false };
-    if cols == 0 || rows == 0 { return result; }
-    let Some(surface) = model.and_then(|model| model.presentation.as_ref()) else {
-        for (row,tab) in tabs.iter().take(rows).enumerate() {
+struct BufferedLine {
+    text: String,
+    hits: Vec<HitRegion>,
+    active: bool,
+    card: Option<VisibleCard>,
+}
+
+fn contains_selected(node: &PlacementNode) -> bool {
+    matches!(node.state, PresentationState::Live { selected: true, .. })
+        || node.children.iter().any(contains_selected)
+}
+
+fn show_metadata(model: &ControllerViewModel, node: &PlacementNode) -> bool {
+    let controls = &model.metadata_controls;
+    let mut inherited = controls.propagates_to_children(&NodeKey::Root, false);
+    for depth in 1..node.key.0.len() {
+        inherited = controls.propagates_to_children(
+            &NodeKey::Placement(PlacementKey(node.key.0[..depth].to_vec())),
+            inherited,
+        );
+    }
+    let placement = NodeKey::Placement(node.key.clone());
+    let target = if controls.per_node.contains_key(&placement) {
+        placement
+    } else {
+        NodeKey::Entity(node.entity.clone())
+    };
+    controls.effective_show(&target, inherited)
+}
+
+fn buffer_section<'a>(
+    model: &ControllerViewModel,
+    section: &'a andamento_core::presentation::Section,
+    cols: usize,
+) -> Vec<BufferedLine> {
+    let mut lines = render_placement_lines(section.content.text(), &section.nodes, cols);
+    if lines
+        .first()
+        .is_some_and(|l| l.text.is_empty() && l.inline_hits.is_empty())
+    {
+        lines.remove(0);
+    }
+    let mut buffered = Vec::new();
+    for line in lines {
+        let nodes = line
+            .entity
+            .into_iter()
+            .chain(line.inline_hits.iter().map(|(node, _)| *node))
+            .collect::<Vec<_>>();
+        let active = nodes.iter().any(|node| {
+            matches!(node.state, PresentationState::Live { selected: true, .. })
+                || (node.collapsed && contains_selected(node))
+        });
+        let mut hits = Vec::new();
+        if let Some(node) = line.entity {
+            hits.push(node_hit(node, 0, 0..cols));
+            add_toggle_hit(
+                &mut hits,
+                node,
+                line.text.chars().take_while(|c| *c == ' ').count(),
+                cols,
+            );
+        }
+        for (node, range) in line.inline_hits {
+            if range.start < cols && range.end > range.start {
+                hits.push(node_hit(node, 0, range.start..range.end.min(cols)));
+                add_toggle_hit(&mut hits, node, range.start, range.end.min(cols));
+            }
+        }
+        buffered.push(BufferedLine {
+            text: line.text,
+            hits,
+            active,
+            card: None,
+        });
+        for node in nodes {
+            if let PresentationState::Live { workspace_id, .. } = node.state {
+                if let Some(tab) = model.tab_by_id(workspace_id) {
+                    let mut pin = node_hit(node, 0, cols.saturating_sub(1)..cols);
+                    pin.action = HitAction::TogglePin;
+                    let icon = tab.status.as_ref().and_then(|s| s.icon.clone());
+                    let title = tab.status.as_ref().map(|s| s.title.as_str()).unwrap_or("");
+                    let text = format!(
+                        "{}{}",
+                        pad_to_width(
+                            &truncate_to_width(&format!("  {title}"), cols.saturating_sub(1)),
+                            cols.saturating_sub(1)
+                        ),
+                        if tab.pinned { "◆" } else { "◇" }
+                    );
+                    buffered.push(BufferedLine {
+                        text,
+                        hits: vec![node_hit(node, 0, 0..cols), pin],
+                        active: false,
+                        card: Some(VisibleCard {
+                            tab_id: tab.tab_id,
+                            tab_position: tab.position,
+                            row_start: 0,
+                            status_row: Some(0),
+                            status_icon_rect: icon.as_ref().filter(|_| cols > 2).map(|_| {
+                                VisibleIconRect {
+                                    x: 0,
+                                    y: 0,
+                                    columns: 1,
+                                    rows: 1,
+                                }
+                            }),
+                            status_priority: tab.status.as_ref().map(|s| s.priority),
+                            status_icon: icon,
+                        }),
+                    });
+                }
+            }
+            if show_metadata(model, node) {
+                for (key, value) in &node.facts {
+                    buffered.push(BufferedLine {
+                        text: format!("    {key}: {value:?}"),
+                        hits: vec![],
+                        active: false,
+                        card: None,
+                    });
+                }
+            }
+            if !node.content.controls.is_empty() {
+                // Widgets are content, so they follow the entity they belong to.
+                let surface = model.presentation.as_ref().unwrap();
+                let (text, hits) = control_line(&node.content, surface, cols, false);
+                buffered.push(BufferedLine {
+                    text,
+                    hits,
+                    active: false,
+                    card: None,
+                });
+            }
+        }
+    }
+    buffered
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_snapshot(
+    model: Option<&ControllerViewModel>,
+    tabs: &[LocalTab],
+    rows: usize,
+    cols: usize,
+    theme: Option<RenderTheme>,
+    offset: isize,
+    ensure_active: bool,
+    detail_target: Option<&NodeKey>,
+    detail: bool,
+) -> RenderedRail {
+    let mut result = RenderedRail {
+        lines: vec![blank(cols); rows],
+        hit_regions: vec![],
+        visible_cards: vec![],
+        content_height: 0,
+        available_rows: rows,
+        ensure_visible_offset: None,
+        ensure_active_resolved: false,
+    };
+    if cols == 0 || rows == 0 {
+        return result;
+    }
+    let Some((model, surface)) =
+        model.and_then(|model| model.presentation.as_ref().map(|surface| (model, surface)))
+    else {
+        for (row, tab) in tabs.iter().take(rows).enumerate() {
             result.lines[row] = pad_to_width(&truncate_to_width(&tab.name, cols), cols);
-            result.hit_regions.push(HitRegion {row_start:row,row_end:row,col_start:0,col_end:cols-1,
-                tab_id:tab.tab_id,tab_position:tab.position,inspect_target:Some(NodeKey::Tab(tab.tab_id)),
-                materialize_request:None,action:HitAction::SwitchTab});
+            result.hit_regions.push(HitRegion {
+                row_start: row,
+                row_end: row,
+                col_start: 0,
+                col_end: cols - 1,
+                tab_id: tab.tab_id,
+                tab_position: tab.position,
+                inspect_target: Some(NodeKey::Tab(tab.tab_id)),
+                materialize_request: None,
+                action: HitAction::SwitchTab,
+            });
         }
         return result;
     };
-    let detail_rows = if detail { DETAIL_PANEL_HEIGHT.min(rows.saturating_sub(1)) } else {0};
-    let mut body = Vec::new();
-    let mut pinned = Vec::new();
-    let mut controls = Vec::new();
-    for section in &surface.sections {
-        let mut lines = render_placement_lines(section.content.text(), &section.nodes, cols);
-        if lines.first().is_some_and(|l| l.text.is_empty() && l.inline_hits.is_empty()) { lines.remove(0); }
-        if section.pinned { pinned.extend(lines); } else { body.extend(lines); }
-        if !section.content.controls.is_empty() { controls.push(&section.content); }
-    }
-    let fixed = pinned.len() + controls.len() + detail_rows;
-    let available = rows.saturating_sub(fixed);
+    let detail_rows = if detail {
+        DETAIL_PANEL_HEIGHT.min(rows.saturating_sub(1))
+    } else {
+        0
+    };
+    let mut sections = surface
+        .sections
+        .iter()
+        .map(|section| buffer_section(model, section, cols))
+        .collect::<Vec<_>>();
+    let height = |index: usize, lines: &[BufferedLine]| {
+        lines.len() + usize::from(!surface.sections[index].content.controls.is_empty())
+    };
+    let fixed = sections
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| surface.sections[*i].pinned)
+        .map(|(i, lines)| height(i, lines))
+        .sum::<usize>();
+    let available = rows.saturating_sub(fixed + detail_rows);
     result.available_rows = available;
-    result.content_height = body.len();
-    let mut start = (offset.max(0) as usize).min(body.len().saturating_sub(available));
+    result.content_height = sections
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !surface.sections[*i].pinned)
+        .map(|(i, lines)| height(i, lines))
+        .sum();
+    let can_scroll = result.can_scroll();
+    for (section, lines) in surface.sections.iter().zip(&mut sections) {
+        if !section.content.controls.is_empty() {
+            let (text, hits) = control_line(&section.content, surface, cols, can_scroll);
+            lines.push(BufferedLine {
+                text,
+                hits,
+                active: false,
+                card: None,
+            });
+        }
+    }
+    let mut start = (offset.max(0) as usize).min(result.content_height.saturating_sub(available));
     if ensure_active && available > 0 {
-        let selected = |node: &PlacementNode| matches!(node.state, PresentationState::Live { selected: true, .. });
-        if let Some(index) = body.iter().position(|line| line.entity.is_some_and(selected) || line.inline_hits.iter().any(|(n,_)| selected(n))) {
+        if let Some(index) = sections
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !surface.sections[*i].pinned)
+            .flat_map(|(_, lines)| lines)
+            .position(|line| line.active)
+        {
             result.ensure_active_resolved = true;
-            let next = if index < start {index} else if index >= start + available {index + 1 - available} else {start};
-            if next != start { result.ensure_visible_offset = Some(next as isize); start = next; }
+            let next = if index < start {
+                index
+            } else if index >= start + available {
+                index + 1 - available
+            } else {
+                start
+            };
+            if next != start {
+                result.ensure_visible_offset = Some(next as isize);
+                start = next;
+            }
         }
     }
-    let content_rows = rows.saturating_sub(controls.len() + detail_rows);
-    for (row,line) in pinned.into_iter().chain(body.into_iter().skip(start).take(available)).take(content_rows).enumerate() {
-        result.lines[row] = style_body_text(pad_to_width(&truncate_to_width(&line.text, cols), cols), theme);
-        if let Some(node) = line.entity { result.hit_regions.push(node_hit(node, row, 0..cols)); }
-        for (node,range) in line.inline_hits {
-            if range.start < cols { result.hit_regions.push(node_hit(node,row,range.start..range.end.min(cols))); }
+    let suffix_start = surface
+        .sections
+        .iter()
+        .rposition(|section| !section.pinned)
+        .map(|i| i + 1)
+        .unwrap_or(surface.sections.len());
+    let suffix_rows = sections[suffix_start..]
+        .iter()
+        .map(Vec::len)
+        .sum::<usize>()
+        .min(rows.saturating_sub(detail_rows));
+    let suffix_row = rows - suffix_rows;
+    let body_end = suffix_row.saturating_sub(detail_rows);
+    let mut row = 0;
+    let mut ordinal = 0;
+    for (index, lines) in sections.into_iter().enumerate() {
+        if index == suffix_start {
+            row = suffix_row;
         }
-    }
-    let control_count = controls.len().min(rows);
-    for (i,content) in controls.into_iter().take(control_count).enumerate() {
-        let row = rows - control_count + i;
-        let (line,mut hits) = control_line(content,surface,cols,result.can_scroll());
-        result.lines[row] = style_body_text(line,theme);
-        for hit in &mut hits { hit.row_start=row; hit.row_end=row; }
-        result.hit_regions.extend(hits);
-    }
-    for hit in &mut result.hit_regions {
-        if let Some(tab) = model.and_then(|model| model.tab_by_id(hit.tab_id)) { hit.tab_position = tab.position; }
+        for mut line in lines {
+            if !surface.sections[index].pinned {
+                let visible = ordinal >= start && ordinal < start + available;
+                ordinal += 1;
+                if !visible {
+                    continue;
+                }
+            }
+            let limit = if index >= suffix_start {
+                rows
+            } else {
+                body_end
+            };
+            if row >= limit {
+                continue;
+            }
+            let text = pad_to_width(&truncate_to_width(&line.text, cols), cols);
+            result.lines[row] = if line.active {
+                Style::new().bold().paint(text).to_string()
+            } else {
+                style_body_text(text, theme)
+            };
+            for hit in &mut line.hits {
+                hit.row_start = row;
+                hit.row_end = row;
+                if let Some(tab) = model.tab_by_id(hit.tab_id) {
+                    hit.tab_position = tab.position;
+                }
+            }
+            if let Some(mut card) = line.card {
+                card.row_start = row;
+                card.status_row = Some(row);
+                if let Some(rect) = &mut card.status_icon_rect {
+                    rect.y = row;
+                }
+                result.visible_cards.push(card);
+            }
+            result.hit_regions.extend(line.hits);
+            row += 1;
+        }
     }
     if detail_rows > 0 {
-        let node = match detail_target { Some(NodeKey::Placement(key)) => surface.node(key), _ => None };
-        let content = node.map(|node| node.detail.fields.iter().map(|f| f.value.clone()).collect::<Vec<_>>()).unwrap_or_default();
-        let details = render_detail_card(&content, detail_rows, cols, theme);
-        let start = rows.saturating_sub(control_count + detail_rows);
-        for (row,line) in details.into_iter().enumerate().take(rows-start) { result.lines[start+row]=line; }
+        let node = match detail_target {
+            Some(NodeKey::Placement(key)) => surface.node(key),
+            _ => None,
+        };
+        let content = node
+            .map(|node| {
+                node.detail
+                    .fields
+                    .iter()
+                    .map(|f| f.value.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for (row, line) in render_detail_card(&content, detail_rows, cols, theme)
+            .into_iter()
+            .enumerate()
+        {
+            result.lines[body_end + row] = line;
+        }
     }
     result
 }
@@ -809,8 +1116,24 @@ pub fn render_lines_with_detail_surface(
     ensure_active_visible: bool,
     detail_target: Option<&NodeKey>,
 ) -> RenderedRail {
-    let _ = (controller_available, terminal_cell_size, collapsed_placements, template_catalog, metadata_controls);
-    render_snapshot(model,tabs,rows,cols,theme,rail_scroll_offset,ensure_active_visible,detail_target,true)
+    let _ = (
+        controller_available,
+        terminal_cell_size,
+        collapsed_placements,
+        template_catalog,
+        metadata_controls,
+    );
+    render_snapshot(
+        model,
+        tabs,
+        rows,
+        cols,
+        theme,
+        rail_scroll_offset,
+        ensure_active_visible,
+        detail_target,
+        true,
+    )
 }
 #[allow(clippy::too_many_arguments)]
 pub fn render_lines_with_rail_viewport(
@@ -827,6 +1150,22 @@ pub fn render_lines_with_rail_viewport(
     rail_scroll_offset: isize,
     ensure_active_visible: bool,
 ) -> RenderedRail {
-    let _ = (controller_available, terminal_cell_size, collapsed_placements, template_catalog, metadata_controls);
-    render_snapshot(model,tabs,rows,cols,theme,rail_scroll_offset,ensure_active_visible,None,false)
+    let _ = (
+        controller_available,
+        terminal_cell_size,
+        collapsed_placements,
+        template_catalog,
+        metadata_controls,
+    );
+    render_snapshot(
+        model,
+        tabs,
+        rows,
+        cols,
+        theme,
+        rail_scroll_offset,
+        ensure_active_visible,
+        None,
+        false,
+    )
 }

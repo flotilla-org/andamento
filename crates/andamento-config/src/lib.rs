@@ -8,8 +8,7 @@ use andamento_shared::{
     ConfigInspectRequest, ControllerViewModel, MetadataEntry, MetadataSourceEntry,
     MetadataTriState, MetadataValue, MetadataVisibilitySetRequest, NodeKey, NodeVariableSetRequest,
     PluginPaneKind, PluginPlacement, PluginRegistrationHello, PluginStatsSnapshot, RailConfig,
-    RailStructure, ResolvedMetadataTarget, TabCard,
-    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
+    RailStructure, ResolvedMetadataTarget, TabCard, NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -861,14 +860,16 @@ fn inspect_target_for<'a>(
                 kind: InspectTargetKind::Entity,
                 node_key,
                 tab: None,
-                placement: model.presentation.as_ref().and_then(|surface| surface.node(&key)),
+                placement: model
+                    .presentation
+                    .as_ref()
+                    .and_then(|surface| surface.node(&key)),
                 metadata,
                 sources,
             }
         }
     }
 }
-
 
 fn parse_scope_node_key(scope: &str) -> Option<NodeKey> {
     if scope == "root" {
@@ -910,7 +911,6 @@ fn resolved_metadata_for_node<'a>(
         .iter()
         .find(|metadata| metadata.target == target)
 }
-
 
 #[cfg(test)]
 fn render_config(
@@ -1142,7 +1142,6 @@ fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTarg
     }
 }
 
-
 fn push_inspect_options_section(
     frame: &mut ConfigUiFrame,
     model: &ControllerViewModel,
@@ -1158,7 +1157,9 @@ fn push_inspect_options_section(
         .effective_variables
         .iter()
         .find(|variables| variables.node == target.node_key);
-    let declarations = node_variables.map(|variables| variables.declarations.as_slice()).unwrap_or_default();
+    let declarations = node_variables
+        .map(|variables| variables.declarations.as_slice())
+        .unwrap_or_default();
     let label_width = std::iter::once("Metadata")
         .chain(
             declarations
@@ -1279,19 +1280,28 @@ fn push_inspect_sources_section(frame: &mut ConfigUiFrame, target: &InspectTarge
 
 fn push_inspect_templates_section(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {
     push_section_header(frame, "Templates");
-    let Some(node) = target.placement else { frame.push_plain("  <none>"); return; };
+    let Some(node) = target.placement else {
+        frame.push_plain("  <none>");
+        return;
+    };
     for (label, content) in [("line", &node.content), ("detail", &node.detail)] {
-        push_key_value(frame, label, content.template_name.as_deref().unwrap_or("<none>"));
-        for line in content.effective_kdl.lines() { frame.push_plain(line); }
-        if let Some(error) = &content.error { frame.push_plain(error); }
+        push_key_value(
+            frame,
+            label,
+            content.template_name.as_deref().unwrap_or("<none>"),
+        );
+        for line in content.effective_kdl.lines() {
+            frame.push_plain(line);
+        }
+        if let Some(error) = &content.error {
+            frame.push_plain(error);
+        }
     }
 }
-
 
 fn push_key_value(frame: &mut ConfigUiFrame, key: &str, value: &str) {
     frame.push_plain(&format!("{key:<9} {value}"));
 }
-
 
 fn push_section_header(frame: &mut ConfigUiFrame, title: &str) {
     frame.push_plain(&section_divider(title, frame.cols));
@@ -1445,17 +1455,20 @@ fn push_templates_page(frame: &mut ConfigUiFrame, model: Option<&ControllerViewM
     frame.push_plain("resolved templates");
     fn show(frame: &mut ConfigUiFrame, nodes: &[andamento_shared::presentation::PlacementNode]) {
         for node in nodes {
-            frame.push_plain(&format!("{}: {}", node.label, node.content.template_name.as_deref().unwrap_or("<none>")));
+            frame.push_plain(&format!(
+                "{}: {}",
+                node.label,
+                node.content.template_name.as_deref().unwrap_or("<none>")
+            ));
             show(frame, &node.children);
         }
     }
     if let Some(surface) = &model.presentation {
-        for section in &surface.sections { show(frame, &section.nodes); }
+        for section in &surface.sections {
+            show(frame, &section.nodes);
+        }
     }
-
 }
-
-
 
 fn template_config_state_text(state: andamento_shared::TemplateConfigState) -> &'static str {
     match state {
@@ -1528,15 +1541,19 @@ fn render_tab_row(page: ConfigPage, cols: usize) -> RenderedTabRow {
 
 fn push_cwd_metadata(frame: &mut ConfigUiFrame, model: Option<&ControllerViewModel>) {
     frame.push_plain("cwd metadata");
-    let Some(model) = model else { frame.push_plain("no controller state yet"); return; };
+    let Some(model) = model else {
+        frame.push_plain("no controller state yet");
+        return;
+    };
     for tab in &model.tabs {
         let metadata = metadata_for_node(model, &NodeKey::Tab(tab.tab_id));
-        let value = metadata.get("zellij.pane.cwd").map(|v| format_metadata_value(&v.value)).unwrap_or_else(|| "<none>".into());
+        let value = metadata
+            .get("zellij.pane.cwd")
+            .map(|v| format_metadata_value(&v.value))
+            .unwrap_or_else(|| "<none>".into());
         frame.push_plain(&format!("{}: {}", tab.name, value));
     }
 }
-
-
 
 fn format_metadata_value(value: &MetadataValue) -> String {
     match value {
@@ -1674,15 +1691,24 @@ mod tests {
         }
     }
 
-    fn placement_model_with_declarations(declarations: Vec<andamento_shared::template_config::NodeVariableDefinition>) -> ControllerViewModel {
+    fn placement_model_with_declarations(
+        declarations: Vec<andamento_shared::template_config::NodeVariableDefinition>,
+    ) -> ControllerViewModel {
         let mut model = model_with_tab(1, "fixture");
         let key = andamento_shared::PlacementKey(vec![andamento_shared::PlacementSegment {
-            loop_name: "project".into(), entity: andamento_shared::EntityRef { kind: "project".into(), id: "p".into() }
+            loop_name: "project".into(),
+            entity: andamento_shared::EntityRef {
+                kind: "project".into(),
+                id: "p".into(),
+            },
         }]);
         model.inspected_node = Some(NodeKey::Placement(key.clone()));
-        model.template_config.effective_variables = vec![andamento_shared::EffectiveNodeVariables {
-            node: NodeKey::Placement(key), values: BTreeMap::new(), declarations
-        }];
+        model.template_config.effective_variables =
+            vec![andamento_shared::EffectiveNodeVariables {
+                node: NodeKey::Placement(key),
+                values: BTreeMap::new(),
+                declarations,
+            }];
         model
     }
 
@@ -2022,11 +2048,6 @@ mod tests {
         assert!(target.tab.is_none());
     }
 
-
-
-
-
-
     #[test]
     fn inspect_target_falls_back_to_rail_scope() {
         let model = model_with_tab(7, "repo");
@@ -2038,7 +2059,6 @@ mod tests {
         assert_eq!(target.tab.map(|tab| tab.tab_id), Some(7));
     }
 
-
     fn child_layout_declaration() -> andamento_shared::template_config::NodeVariableDefinition {
         andamento_shared::template_config::NodeVariableDefinition {
             name: "child-layout".to_owned(),
@@ -2046,7 +2066,6 @@ mod tests {
             values: vec!["cards".to_owned(), "strip".to_owned()],
         }
     }
-
 
     fn option_column(lines: &[String], label: &str) -> Option<usize> {
         lines
@@ -2125,7 +2144,6 @@ mod tests {
             "the click was aimed at a frame that is no longer on screen"
         );
     }
-
 
     #[test]
     fn declared_variable_rows_share_one_option_column_whatever_they_are_named() {
@@ -2206,7 +2224,6 @@ mod tests {
             rendered.lines
         );
     }
-
 
     #[test]
     fn inspect_root_options_expose_inheritable_child_layout_actions() {
@@ -2383,7 +2400,6 @@ mod tests {
         assert_eq!(updated.structure, RailStructure::BoxPerTab);
     }
 
-
     #[test]
     fn renders_stats_page_collect_action() {
         let rendered = render_config(
@@ -2467,8 +2483,6 @@ mod tests {
             .iter()
             .any(|line| line.contains("counter-03")));
     }
-
-
 
     #[test]
     fn granted_permission_should_resync_with_controller() {

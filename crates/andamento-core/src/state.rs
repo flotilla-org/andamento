@@ -1,4 +1,3 @@
-
 #[derive(Debug, Clone)]
 pub(crate) struct EvaluatedPlacement {
     pub entity: EntityRef,
@@ -29,13 +28,12 @@ use std::path::Path;
 use crate::host::PaneObservation;
 use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataStore};
 use crate::{
-    ControllerBootstrapSnapshot, ControllerViewModel, DisplayVariableValue,
-    EffectiveNodeVariables, EffectiveVariableValue, EntityRef,
-    LatentMaterializationState, LatentTab, MetadataControls, MetadataEntry,
-    MetadataIdentity, MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey,
+    ControllerBootstrapSnapshot, ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables,
+    EffectiveVariableValue, EntityRef, LatentMaterializationState, LatentTab, MetadataControls,
+    MetadataEntry, MetadataIdentity, MetadataSourceEntry, MetadataTriState, MetadataValue, NodeKey,
     ObservedMetadataIdentity, PaneTarget, PlacementKey, PlacementSegment, PluginPlacement,
-    PluginRegistrationHello, Priority, RailConfig, RailUiAction, RailUiRevision,
-    RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateSlot,
+    PluginRegistrationHello, Priority, RailConfig, RailUiAction, RailUiRevision, RailUiState,
+    ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateSlot,
     ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabStatusSummary,
     TemplateConfigDiagnostics, VariableSetterProvenance, DISPLAY_FORM_COMPACT,
     NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
@@ -68,7 +66,6 @@ pub struct ControllerTab {
     pub name: String,
     pub active: bool,
 }
-
 
 /// Catalog entities indexed by `(fact key, indexable text)`.
 ///
@@ -172,8 +169,15 @@ struct CatalogEvaluation {
 
 impl CatalogEvaluation {
     fn new(entities: Vec<CatalogEntity>) -> Self {
-        let by_entity = entities.iter().enumerate().map(|(i, e)| (e.entity.clone(), i)).collect();
-        Self { entities, by_entity }
+        let by_entity = entities
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.entity.clone(), i))
+            .collect();
+        Self {
+            entities,
+            by_entity,
+        }
     }
 
     fn entity(&self, target: &EntityRef) -> Option<&CatalogEntity> {
@@ -259,7 +263,7 @@ pub struct PluginRegistration {
     pub placement: PluginPlacement,
 }
 
-# [derive(Debug)]
+#[derive(Debug)]
 pub struct ControllerState {
     tabs: Vec<ControllerTab>,
     pane_to_tab: HashMap<PaneTarget, u64>,
@@ -304,7 +308,6 @@ impl Default for ControllerState {
         }
     }
 }
-
 
 impl ControllerState {
     /// Opt into host-supplied monotonic time. Legacy adapters retain receipt-clock behavior.
@@ -703,8 +706,6 @@ impl ControllerState {
         }
     }
 
-
-
     pub fn set_template_config_diagnostics(&mut self, diagnostics: TemplateConfigDiagnostics) {
         self.template_config = diagnostics;
     }
@@ -712,7 +713,6 @@ impl ControllerState {
     pub fn template_config_diagnostics(&self) -> &TemplateConfigDiagnostics {
         &self.template_config
     }
-
 
     pub fn apply_metadata_patch(&mut self, patch: crate::MetadataPatch) -> bool {
         let next_receive_counter = self.receive_counter.saturating_add(1);
@@ -1061,7 +1061,8 @@ impl ControllerState {
         let resolved_metadata = self.resolved_metadata_for_tabs(&tabs, &catalog);
         let observed_identities = observed_metadata_identities(&resolved_metadata);
         let region_catalog_entities = &catalog.entities;
-        let (effective_variables, variable_warnings) = self.resolve_effective_variables(&resolved_metadata);
+        let (effective_variables, variable_warnings) =
+            self.resolve_effective_variables(&resolved_metadata);
         let mut template_config = self.template_config.clone();
         template_config.effective_variables = effective_variables;
         for warning in variable_warnings {
@@ -1096,7 +1097,9 @@ impl ControllerState {
                                 &definition.form,
                                 &mut placement_layouts,
                             )
-                        } else { vec![] };
+                        } else {
+                            vec![]
+                        };
                         EvaluatedSection {
                             definition,
                             root: self.resolve_template_slot(
@@ -1139,12 +1142,21 @@ impl ControllerState {
         }
 
         fn collect_matched(nodes: &[EvaluatedPlacement], matched: &mut BTreeSet<EntityRef>) {
-            for node in nodes { matched.insert(node.entity.clone()); collect_matched(&node.children, matched); }
+            for node in nodes {
+                matched.insert(node.entity.clone());
+                collect_matched(&node.children, matched);
+            }
         }
         let mut matched = BTreeSet::new();
-        for section in &surface_regions { collect_matched(&section.entities, &mut matched); }
-        let unmatched_entities = catalog.entities.iter().filter(|entity| !matched.contains(&entity.entity))
-            .map(|entity| entity.entity.clone()).collect();
+        for section in &surface_regions {
+            collect_matched(&section.entities, &mut matched);
+        }
+        let unmatched_entities = catalog
+            .entities
+            .iter()
+            .filter(|entity| !matched.contains(&entity.entity))
+            .map(|entity| entity.entity.clone())
+            .collect();
         let mut model = ControllerViewModel {
             unmatched_entities,
             sort_mode: self.sort_mode,
@@ -1229,7 +1241,9 @@ impl ControllerState {
             &placement_layouts,
             &states,
         ));
-        if let Some(surface) = &mut model.presentation { surface.cover_workspaces(&self.tabs); }
+        if let Some(surface) = &mut model.presentation {
+            surface.cover_workspaces(&self.tabs);
+        }
         model
     }
 
@@ -1241,7 +1255,6 @@ impl ControllerState {
         }
         model
     }
-
 
     fn display_entity(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
         let metadata = entity_facts(&entity.entity, &entity.values);
@@ -1271,7 +1284,6 @@ impl ControllerState {
             children: vec![],
         }
     }
-
 
     /// Evaluate a placement's single loop into the entities it places.
     ///
@@ -1433,12 +1445,19 @@ impl ControllerState {
                 if !loop_definition.fields.is_empty() {
                     display.templates.compact = Some(ResolvedTemplateSlot {
                         template_name: format!("placement:{}", loop_definition.binding),
-                        fields: vec![], setters: vec![], effective_kdl: String::new(), resolve_error: None,
+                        fields: vec![],
+                        setters: vec![],
+                        effective_kdl: String::new(),
+                        resolve_error: None,
                         render_ready: Some(crate::template_config::TemplateConfigRenderReady {
-                            fields: loop_definition.fields.clone(), controls: vec![], chrome: Default::default()
+                            fields: loop_definition.fields.clone(),
+                            controls: vec![],
+                            chrome: Default::default(),
                         }),
                     });
-                    if form != DISPLAY_FORM_COMPACT { display.templates.detail = display.templates.compact.clone(); }
+                    if form != DISPLAY_FORM_COMPACT {
+                        display.templates.detail = display.templates.compact.clone();
+                    }
                 }
                 let mut placement = parent_placement.clone();
                 placement.0.push(PlacementSegment {
@@ -1545,13 +1564,31 @@ impl ControllerState {
             .collect()
     }
 
-    fn resolve_effective_variables(&self, resolved_metadata: &[ResolvedMetadata]) -> (Vec<EffectiveNodeVariables>, Vec<String>) {
-        let Some(catalog) = self.template_catalog.as_ref() else { return (vec![],vec![]); };
+    fn resolve_effective_variables(
+        &self,
+        resolved_metadata: &[ResolvedMetadata],
+    ) -> (Vec<EffectiveNodeVariables>, Vec<String>) {
+        let Some(catalog) = self.template_catalog.as_ref() else {
+            return (vec![], vec![]);
+        };
         let mut warnings = BTreeSet::new();
         let root = NodeKey::Root;
-        let resolved = self.resolve_variables_at_node(catalog, &root, None,
-            &node_metadata(&root, resolved_metadata), None, &mut warnings);
-        (vec![EffectiveNodeVariables { node: root, values: resolved.values, declarations: resolved.declarations }], warnings.into_iter().collect())
+        let resolved = self.resolve_variables_at_node(
+            catalog,
+            &root,
+            None,
+            &node_metadata(&root, resolved_metadata),
+            None,
+            &mut warnings,
+        );
+        (
+            vec![EffectiveNodeVariables {
+                node: root,
+                values: resolved.values,
+                declarations: resolved.declarations,
+            }],
+            warnings.into_iter().collect(),
+        )
     }
 
     fn resolve_placement_variables(
@@ -1762,18 +1799,31 @@ impl ControllerState {
     fn catalog_entities(&self) -> Vec<CatalogEntity> {
         #[cfg(test)]
         CATALOG_BUILDS.with(|count| count.set(count.get() + 1));
-        let mut entities = self.metadata.targets().filter_map(|target| {
-            let EntityId::Entity(entity) = target else { return None; };
-            let values = self.metadata.resolved_entries_for(target, self.now());
-            if values.is_empty() { return None; }
-            Some(CatalogEntity { entity: entity.clone(), values,
-                ordinal: self.metadata.target_ordinal(target).unwrap_or_default() })
-        }).collect::<Vec<_>>();
-        entities.sort_by(|a,b| a.ordinal.cmp(&b.ordinal).then_with(|| a.entity.cmp(&b.entity)));
+        let mut entities = self
+            .metadata
+            .targets()
+            .filter_map(|target| {
+                let EntityId::Entity(entity) = target else {
+                    return None;
+                };
+                let values = self.metadata.resolved_entries_for(target, self.now());
+                if values.is_empty() {
+                    return None;
+                }
+                Some(CatalogEntity {
+                    entity: entity.clone(),
+                    values,
+                    ordinal: self.metadata.target_ordinal(target).unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>();
+        entities.sort_by(|a, b| {
+            a.ordinal
+                .cmp(&b.ordinal)
+                .then_with(|| a.entity.cmp(&b.entity))
+        });
         entities
     }
-
-
 
     fn materialized_action_targets(&self, catalog: &CatalogEvaluation) -> BTreeSet<String> {
         let tab_seed_metadata = self.tab_seed_metadata_entries();
@@ -1790,9 +1840,6 @@ impl ControllerState {
             .collect()
     }
 
-
-
-
     fn tab_entity_ref(
         &self,
         tab_id: u64,
@@ -1803,7 +1850,6 @@ impl ControllerState {
         let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
         entity_ref_from_entries(&values)
     }
-
 
     pub fn can_materialize_latent(&self, request: &crate::MaterializeLatentRequest) -> bool {
         // This exact equality check is the security boundary for controller pipe callers:
@@ -2038,7 +2084,6 @@ impl ControllerState {
         })
     }
 
-
     fn resolve_template_slot(
         &self,
         slot: crate::template_config::TemplateConfigSlot,
@@ -2078,11 +2123,6 @@ impl ControllerState {
         })
     }
 
-
-
-
-
-
     fn tab_primary_metadata_entry(&self, tab_id: u64, key: &str) -> Option<MetadataEntry> {
         let entries: Vec<CandidateEntry> = self
             .panes
@@ -2096,16 +2136,37 @@ impl ControllerState {
         select_primary_entry(&entries).map(|candidate| candidate.entry)
     }
 
-    fn resolved_metadata_for_tabs(&self, tabs: &[TabCard], catalog: &CatalogEvaluation) -> Vec<ResolvedMetadata> {
+    fn resolved_metadata_for_tabs(
+        &self,
+        tabs: &[TabCard],
+        catalog: &CatalogEvaluation,
+    ) -> Vec<ResolvedMetadata> {
         let seeds = self.tab_seed_metadata_entries();
         let targets = std::iter::once(EntityId::Root)
             .chain(tabs.iter().map(|tab| EntityId::Tab(tab.tab_id)))
-            .chain(catalog.entities.iter().map(|entity| EntityId::Entity(entity.entity.clone())));
-        targets.map(|target| {
-            let seed = if let EntityId::Tab(id) = target { seeds.get(&id).cloned().unwrap_or_default() } else { BTreeMap::new() };
-            let (values, source_entries, reachable_identities) = self.resolve_target_metadata(&target, seed);
-            ResolvedMetadata { target, values, source_entries, reachable_identities }
-        }).collect()
+            .chain(
+                catalog
+                    .entities
+                    .iter()
+                    .map(|entity| EntityId::Entity(entity.entity.clone())),
+            );
+        targets
+            .map(|target| {
+                let seed = if let EntityId::Tab(id) = target {
+                    seeds.get(&id).cloned().unwrap_or_default()
+                } else {
+                    BTreeMap::new()
+                };
+                let (values, source_entries, reachable_identities) =
+                    self.resolve_target_metadata(&target, seed);
+                ResolvedMetadata {
+                    target,
+                    values,
+                    source_entries,
+                    reachable_identities,
+                }
+            })
+            .collect()
     }
 
     fn resolve_target_metadata(
@@ -2213,8 +2274,6 @@ impl ControllerState {
             .collect()
     }
 
-
-
     fn refresh_pane_cwd_metadata(&mut self, pane_id: PaneTarget) -> bool {
         let entity_id = EntityId::Pane(pane_id);
         let Some(pane) = self.panes.get(&pane_id) else {
@@ -2301,7 +2360,6 @@ impl ControllerState {
     }
 }
 
-
 fn node_metadata(
     node: &NodeKey,
     resolved_metadata: &[ResolvedMetadata],
@@ -2353,8 +2411,6 @@ fn apply_variable_setter(
     );
 }
 
-
-
 fn entity_facts(
     entity: &EntityRef,
     values: &BTreeMap<String, MetadataEntry>,
@@ -2383,11 +2439,6 @@ fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<
     })
 }
 
-
-
-
-
-
 fn metadata_entry_text<'a>(
     values: &'a BTreeMap<String, MetadataEntry>,
     key: &str,
@@ -2397,10 +2448,6 @@ fn metadata_entry_text<'a>(
         _ => None,
     }
 }
-
-
-
-
 
 fn cwd_group_label(cwd: &str, all_group_cwds: &[String]) -> String {
     let basename = Path::new(cwd)
@@ -2427,10 +2474,6 @@ fn cwd_group_label(cwd: &str, all_group_cwds: &[String]) -> String {
         .map(|parent| format!("{parent}/{basename}"))
         .unwrap_or_else(|| cwd.to_owned())
 }
-
-
-
-
 
 fn observed_metadata_identities(
     resolved_metadata: &[ResolvedMetadata],
@@ -2483,8 +2526,7 @@ mod tests {
         }
     }
     use crate::{
-        PluginPaneKind, PluginPlacement, PluginRegistrationHello,
-        RailStructure, StatusIcon,
+        PluginPaneKind, PluginPlacement, PluginRegistrationHello, RailStructure, StatusIcon,
     };
 
     type EntityId = crate::MetadataTarget;
@@ -2519,7 +2561,6 @@ mod tests {
             id: id.to_owned(),
         }
     }
-
 
     #[test]
     fn cross_layer_variable_setter_warnings_reach_template_diagnostics() {
@@ -2626,17 +2667,12 @@ mod tests {
         });
     }
 
-
     fn directory_entity_state() -> ControllerState {
         let mut state = ControllerState::default();
         state.set_template_catalog(None);
         state.set_rail_config(RailConfig::default());
         state
     }
-
-
-
-
 
     #[test]
     fn target_only_entities_keep_patch_ordinals_for_catalog_ordering() {
@@ -2665,16 +2701,6 @@ mod tests {
             vec![("earlier", 2), ("later", 10)]
         );
     }
-
-
-
-
-
-
-
-
-
-
 
     #[test]
     fn an_entity_whose_facts_restate_its_kind_is_placed_once() {
@@ -2714,7 +2740,6 @@ mod tests {
             placed.iter().map(|e| &e.entity).collect::<Vec<_>>()
         );
     }
-
 
     #[test]
     fn a_loop_matching_nothing_places_nothing() {
@@ -2898,7 +2923,6 @@ placement "identity-descending" {
         assert_eq!(state.view_model().collapsed_placements, vec![tree]);
     }
 
-
     #[test]
     fn placement_layout_variables_are_scoped_by_the_full_key() {
         let entity = EntityRef {
@@ -2956,15 +2980,10 @@ placement "identity-descending" {
             .contains(&renamed));
     }
 
-
-
-
     #[test]
-    fn an_inline_presence_entity_has_no_activation_and_falls_back_to_inspect() {
-        // The attention region admits every non-hidden presence class, but only
-        // Tab-presence entities become tabs. An issue is Inline, so it has no
-        // activation at all — the caller opens the inspector instead, which is
-        // what the row did before activation existed.
+    fn an_entity_without_workspace_or_recipe_falls_back_to_inspect() {
+        // A catalog issue without a workspace or recipe has no activation;
+        // the caller opens its inspector.
         let mut state = directory_entity_state();
         apply_entity(
             &mut state,
@@ -2990,11 +3009,9 @@ placement "identity-descending" {
         assert_eq!(
             state.activation_for_entity(&issue),
             None,
-            "an inline-presence entity is neither focusable nor materializable"
+            "an entity without a workspace or recipe cannot activate"
         );
     }
-
-
 
     #[test]
     fn unchanged_tab_update_is_not_a_controller_change() {
@@ -3152,18 +3169,6 @@ placement "identity-descending" {
         state.observe_panes(manifest);
         assert_eq!(state.terminal_panes_for_cwd_refresh(), Vec::<u32>::new());
     }
-
-
-
-
-
-
-
-
-
-
-
-
 
     #[test]
     fn resolved_tab_metadata_follows_transitive_identity_facts() {
@@ -3332,8 +3337,6 @@ placement "identity-descending" {
                 }
                 && reachable.distance == 1));
     }
-
-
 
     #[test]
     fn view_model_exposes_observed_metadata_identity_index() {
@@ -3697,7 +3700,6 @@ placement "identity-descending" {
         assert_eq!(state.known_config_editor_count(), 0);
         assert_eq!(state.rail_plugin_ids(), vec![8]);
     }
-
 
     #[test]
     fn config_editor_target_prefers_same_client_and_tab() {
