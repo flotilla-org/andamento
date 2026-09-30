@@ -286,3 +286,53 @@ never materializes a workspace.
 The optional typed content-plan interface reconciles one command terminal slot
 without recreating its workspace. See [Managed primary content](managed-primary-content.md)
 for producer facts, host commit tokens, expiry and retry semantics.
+
+### Placement visibility policies
+
+A loop can opt into `visibility="activity"`. The named policy checks the
+selected entity's facts and reads existing boolean display variables:
+
+```kdl
+display-variable "show-finished" type="bool" default=false label="Finished" icon="F" persist=true
+visibility "activity" {
+  when kind="vessel" visible-when="show-finished" {
+    match "flotilla.convoy.phase" value="landed"
+  }
+}
+placement "work" {
+  for "vessel" kind="vessel" visibility="activity" {
+    field "label" key="display.label"
+  }
+}
+```
+
+Rules run in declaration order. The first rule whose predicates all match
+uses its `visible-when` variable; an entity matching no rule remains visible.
+`kind=` adds an `entity.kind` equality predicate. Policy matches support a
+constant string `value=` (using the same scalar normalization as indexed
+queries), or `exists=true/false`. Existence includes non-scalar facts. Policies
+have no loop bindings or `of=` joins.
+
+Policies referenced by configured loops are evaluated once per view-model
+build, with cost proportional to entity count times rule count. A loop's indexed query checks the cached result
+for each candidate. This preserves indexed placement selection without adding
+catalog scans inside nested loops. Query predicates themselves remain equality
+only. Policies cannot select an entity, change its placement key, or affect its
+activation recipe.
+
+Loops without a policy remain unfiltered, including detail loops. Apply the
+same policy explicitly to Attention aliases when they should share visibility.
+Children of a hidden parent are not placed. Hidden entities remain in metadata
+and Inspect; observed workspaces without a placement use the existing fallback
+section.
+
+Policies merge by name using normal config-layer precedence; a higher layer
+replaces the whole policy. Each config must declare the policies its loops
+reference and the boolean display variables its policies reference. A higher
+layer can override variable defaults. Persisted values continue to use the
+existing rail UI state. If a layered override supplies a non-boolean value, the
+matching rule is hidden and template diagnostics include a warning. Empty
+policies allow all entities.
+
+The typed C ABI is unchanged. Native hosts render the resulting snapshot and
+use the existing display-variable actions; no host filtering is required.

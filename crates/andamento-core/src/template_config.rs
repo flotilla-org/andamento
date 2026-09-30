@@ -78,6 +78,12 @@ pub fn parse_template_config_kdl(
         .filter(|node| node.name().value() == "placement")
         .map(parse_kdl_placement)
         .collect::<Result<Vec<_>, _>>()?;
+    let visibility = document
+        .nodes()
+        .iter()
+        .filter(|node| node.name().value() == "visibility")
+        .map(parse_kdl_visibility)
+        .collect::<Result<Vec<_>, _>>()?;
     let config = ExternalTemplateConfig {
         version,
         templates,
@@ -87,6 +93,7 @@ pub fn parse_template_config_kdl(
         sets,
         regions,
         placements,
+        visibility,
     };
     config.validate()?;
     Ok(config)
@@ -111,6 +118,8 @@ pub struct ExternalTemplateConfig {
     pub regions: Vec<SurfaceRegionDefinition>,
     #[serde(default)]
     pub placements: Vec<PlacementDefinition>,
+    #[serde(default)]
+    pub visibility: Vec<PlacementVisibility>,
 }
 
 impl ExternalTemplateConfig {
@@ -270,6 +279,42 @@ impl ExternalTemplateConfig {
             }
             variable.validate()?;
         }
+        let mut visibility_names = BTreeSet::new();
+        for policy in &self.visibility {
+            if policy.name.trim().is_empty() || !visibility_names.insert(policy.name.clone()) {
+                return Err(TemplateConfigError::Validation(
+                    "visibility policy names must be nonempty and unique".into(),
+                ));
+            }
+            for rule in &policy.rules {
+                if !self.display_variables.iter().any(|variable| {
+                    variable.name == rule.visible_when
+                        && matches!(variable.variable_type, TemplateVariableType::Bool)
+                }) {
+                    return Err(TemplateConfigError::Validation(format!(
+                        "visibility {} requires boolean display variable {} in the same config",
+                        policy.name, rule.visible_when
+                    )));
+                }
+                if rule.predicates.is_empty()
+                    || rule.predicates.iter().any(|predicate| {
+                        predicate.key.is_empty()
+                            || predicate.value.is_some() == predicate.exists.is_some()
+                    })
+                {
+                    return Err(TemplateConfigError::Validation(format!(
+                        "visibility {} requires predicates with exactly one of value or exists",
+                        policy.name
+                    )));
+                }
+            }
+        }
+        for template in &self.templates {
+            check_visibility(&template.loops, &visibility_names)?;
+        }
+        for placement in &self.placements {
+            check_visibility(&placement.loops, &visibility_names)?;
+        }
         let mut setter_names = BTreeSet::new();
         for setter in &self.sets {
             setter.validate()?;
@@ -330,6 +375,35 @@ impl ExternalTemplateConfig {
         }
         Ok(())
     }
+}
+
+fn collect_visibility_names(loops: &[PlacementLoop], names: &mut BTreeSet<String>) {
+    for item in loops {
+        if let Some(name) = &item.visibility {
+            names.insert(name.clone());
+        }
+        collect_visibility_names(&item.loops, names);
+    }
+}
+
+fn check_visibility(
+    loops: &[PlacementLoop],
+    names: &BTreeSet<String>,
+) -> Result<(), TemplateConfigError> {
+    for item in loops {
+        if item
+            .visibility
+            .as_ref()
+            .is_some_and(|name| !names.contains(name))
+        {
+            return Err(TemplateConfigError::Validation(format!(
+                "loop {} references an undeclared visibility policy",
+                item.binding
+            )));
+        }
+        check_visibility(&item.loops, names)?;
+    }
+    Ok(())
 }
 
 fn validate_placement_loops(
@@ -508,6 +582,7 @@ pub struct TemplateConfigCatalog {
     display_variables: Vec<TemplateVariableDefinition>,
     regions: Vec<SurfaceRegionDefinition>,
     placements: Vec<PlacementDefinition>,
+    visibility: Vec<PlacementVisibility>,
 }
 
 impl Default for TemplateConfigCatalog {
@@ -550,10 +625,29 @@ impl TemplateConfigCatalog {
             })
             .unwrap_or_default();
         let mut seen_placements = BTreeSet::new();
-        let placements = layers
+        let placements: Vec<PlacementDefinition> = layers
             .iter()
             .flat_map(|layer| layer.config.placements.iter())
             .filter(|placement| seen_placements.insert(placement.name.clone()))
+            .cloned()
+            .collect();
+        let mut referenced_visibility = BTreeSet::new();
+        for placement in &placements {
+            collect_visibility_names(&placement.loops, &mut referenced_visibility);
+        }
+        for layer in &layers {
+            for template in &layer.config.templates {
+                collect_visibility_names(&template.loops, &mut referenced_visibility);
+            }
+        }
+        let mut seen_visibility = BTreeSet::new();
+        let visibility = layers
+            .iter()
+            .flat_map(|layer| &layer.config.visibility)
+            .filter(|policy| {
+                referenced_visibility.contains(&policy.name)
+                    && seen_visibility.insert(policy.name.clone())
+            })
             .cloned()
             .collect();
         Self {
@@ -561,6 +655,7 @@ impl TemplateConfigCatalog {
             display_variables,
             regions,
             placements,
+            visibility,
         }
     }
 
@@ -633,6 +728,10 @@ impl TemplateConfigCatalog {
             .flat_map(|layer| layer.config.templates.iter())
             .map(|template| template.name.clone())
             .collect()
+    }
+
+    pub fn visibility(&self) -> &[PlacementVisibility] {
+        &self.visibility
     }
 
     pub fn display_variables(&self) -> &[TemplateVariableDefinition] {
@@ -827,6 +926,9 @@ pub struct PlacementDefinition {
 pub struct PlacementLoop {
     /// The lexical binding and placement-identity component of this loop.
     pub binding: String,
+    /// Optional shared visibility policy, applied after indexed selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
     pub predicates: Vec<PlacementPredicate>,
     /// Fact keys are compared in declaration order. Entity identity is always
     /// appended as the final tie-break, so both declared and undeclared order
@@ -845,6 +947,32 @@ pub struct PlacementLoop {
     pub loops: Vec<PlacementLoop>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apply_template: Option<String>,
+}
+
+/// Ordered, first-match visibility rules. Unmatched entities remain visible.
+/// Policies never select entities or change activation; loops opt into them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct PlacementVisibility {
+    pub name: String,
+    pub rules: Vec<PlacementVisibilityRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct PlacementVisibilityRule {
+    pub predicates: Vec<VisibilityPredicate>,
+    pub visible_when: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct VisibilityPredicate {
+    pub key: String,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub exists: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2216,6 +2344,10 @@ fn parse_kdl_placement_loop(
         .transpose()?;
     Ok(PlacementLoop {
         binding,
+        visibility: node
+            .get("visibility")
+            .map(|_| kdl_required_prop_string(node, "visibility"))
+            .transpose()?,
         predicates,
         order,
         fields,
@@ -2224,6 +2356,61 @@ fn parse_kdl_placement_loop(
         loops,
         apply_template,
     })
+}
+
+fn parse_kdl_visibility(node: &KdlNode) -> Result<PlacementVisibility, TemplateConfigError> {
+    let name = kdl_required_arg_string(node, 0, "visibility policy name")?;
+    let mut rules = vec![];
+    if let Some(children) = node.children() {
+        for rule in children.nodes() {
+            if rule.name().value() != "when" {
+                return Err(TemplateConfigError::Validation(format!(
+                    "visibility {name} only accepts when rules"
+                )));
+            }
+            let visible_when = kdl_required_prop_string(rule, "visible-when")?;
+            let mut predicates = vec![];
+            if rule.get("kind").is_some() {
+                let kind = kdl_required_prop_string(rule, "kind")?;
+                predicates.push(VisibilityPredicate {
+                    key: "entity.kind".into(),
+                    value: Some(kind),
+                    exists: None,
+                });
+            }
+            if let Some(matches) = rule.children() {
+                for predicate in matches.nodes() {
+                    if predicate.name().value() != "match" || predicate.get("of").is_some() {
+                        return Err(TemplateConfigError::Validation(format!(
+                            "visibility {name} only accepts constant fact matches"
+                        )));
+                    }
+                    predicates.push(VisibilityPredicate {
+                        key: kdl_required_arg_string(predicate, 0, "visibility fact key")?,
+                        value: predicate
+                            .get("value")
+                            .map(|_| kdl_required_prop_string(predicate, "value"))
+                            .transpose()?,
+                        exists: predicate
+                            .get("exists")
+                            .map(|entry| {
+                                entry.value().as_bool().ok_or_else(|| {
+                                    TemplateConfigError::Validation(
+                                        "visibility exists must be boolean".into(),
+                                    )
+                                })
+                            })
+                            .transpose()?,
+                    });
+                }
+            }
+            rules.push(PlacementVisibilityRule {
+                predicates,
+                visible_when,
+            });
+        }
+    }
+    Ok(PlacementVisibility { name, rules })
 }
 
 fn parse_kdl_placement_order(node: &KdlNode) -> Result<PlacementOrder, TemplateConfigError> {
@@ -3291,6 +3478,7 @@ region "attention" root-template="r" form="full"
             sets: vec![],
             regions: vec![],
             placements: vec![],
+            visibility: vec![],
         };
         let catalog = TemplateConfigCatalog::from_layers(vec![
             TemplateConfigLayer::bundled("bundled.kdl", empty()),

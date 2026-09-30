@@ -1214,3 +1214,6 @@ mod tests {
 
 #[cfg(test)]
 mod cutover_tests;
+
+#[cfg(test)]
+mod visibility_tests;
