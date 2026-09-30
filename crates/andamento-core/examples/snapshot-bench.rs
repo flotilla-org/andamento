@@ -1,4 +1,4 @@
-// Synthetic catalog scaling probe. Run with a host grouping/template configuration.
+// Synthetic catalog scaling probe. Run with a placement template configuration.
 use andamento_core::{
     EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
 };

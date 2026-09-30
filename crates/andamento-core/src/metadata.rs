@@ -177,7 +177,7 @@ impl MetadataStore {
                 }
             }
         }
-        // Entity identity can itself participate in grouping even after all
+        // Entity identity can itself participate in placement queries even after all
         // its facts expire. Removing the last expired contribution removes it.
         outcome.view_changed |= target_existed != self.entries.contains_key(&target);
         outcome

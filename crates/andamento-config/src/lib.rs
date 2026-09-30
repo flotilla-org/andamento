@@ -1715,6 +1715,31 @@ mod tests {
     use andamento_shared::{MetadataValue, SortMode};
 
     #[test]
+    fn inspect_lists_unmatched_catalog_count_and_ids() {
+        let mut model = model_with_tab(7, "workspace");
+        model.unmatched_entities = vec![
+            andamento_shared::EntityRef {
+                kind: "novel".into(),
+                id: "unmatched-one".into(),
+            },
+            andamento_shared::EntityRef {
+                kind: "repo".into(),
+                id: "unmatched-two".into(),
+            },
+        ];
+        let mut frame = ConfigUiFrame::new(100, 100);
+        push_inspect_page(&mut frame, Some(&model), None);
+        let text = frame.lines.join("\n");
+        assert!(text.contains("Unmatched catalog entities"));
+        assert!(frame
+            .lines
+            .iter()
+            .any(|line| line.contains("count") && line.contains('2')));
+        assert!(text.contains("novel: unmatched-one"));
+        assert!(text.contains("repo: unmatched-two"));
+    }
+
+    #[test]
     fn renders_selected_config() {
         let rendered = render_config(
             RailConfig {

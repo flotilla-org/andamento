@@ -12,10 +12,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "kind": String("convoy"),
             },
             "facts": Object {
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("convoy"),
-                },
                 "display.label": Object {
                     "type": String("text"),
                     "value": String("scoping-regression"),
@@ -39,10 +35,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "repo.name": Object {
                     "type": String("text"),
                     "value": String("andamento"),
-                },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
                 },
                 "var.convoy.tier": Object {
                     "type": String("text"),
@@ -65,10 +57,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "kind": String("convoy"),
             },
             "facts": Object {
-                "andamento.placement.loop-binding": Object {
-                    "type": String("text"),
-                    "value": String("convoy"),
-                },
                 "display.label": Object {
                     "type": String("text"),
                     "value": String("second-convoy"),
@@ -92,10 +80,6 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
                 "repo.name": Object {
                     "type": String("text"),
                     "value": String("andamento"),
-                },
-                "var.child-layout": Object {
-                    "type": String("text"),
-                    "value": String("cards"),
                 },
                 "var.convoy.tier": Object {
                     "type": String("text"),

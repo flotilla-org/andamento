@@ -812,8 +812,7 @@ pub struct SurfaceFormPromotion {
     pub form: String,
 }
 
-/// A named placement: a section built by pulling entities in, rather than by
-/// entities pushing themselves into a grouping path.
+/// A named placement selects a section's entities using catalog queries.
 ///
 /// Loops nest lexically or hand off to a named entity template.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

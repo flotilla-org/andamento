@@ -41,10 +41,9 @@ and review follow-ups carry `from-review`.
 2. Keep the core independent of its presentation surface. Zellij remains a
    supported host through the plugin adapters, but behaviour belongs in the
    surface-agnostic model and renderer, with thin adapters per surface.
-3. Finish the placement pipeline and cut over. The legacy grouping layer and
-   its throwaway renderer adapter stay byte-identical until the declared
-   cut-over slice removes them; open template-semantics decisions are settled
-   on their tickets before the slices that depend on them are dispatched.
+3. Placement is the default after #71; the legacy grouping layer and renderer
+   adapter are removed. Settle open template-semantics decisions on their
+   tickets before dispatching slices that depend on them.
 4. Daily-driver quality (visible regressions, latent materialization
    correctness, empty-project visibility) is part of the work, not a reason to
    bypass the declared template direction.

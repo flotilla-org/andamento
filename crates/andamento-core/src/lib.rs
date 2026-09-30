@@ -363,6 +363,8 @@ pub enum MetadataValue {
     Bool(bool),
     Integer(i64),
     StringList(Vec<String>),
+    /// Structured producer metadata, not a UI identity or a grouping rule.
+    /// Placement state is keyed exclusively by `PlacementKey`.
     GroupPath(Vec<MetadataPathSegmentValue>),
 }
 

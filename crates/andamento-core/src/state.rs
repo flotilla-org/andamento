@@ -54,7 +54,7 @@ const KEY_SOURCE: &str = "source";
 const KEY_DISPLAY_LABEL: &str = "display.label";
 const FOCUSED_CWD_PRECEDENCE: i64 = 100;
 const NORMAL_CWD_PRECEDENCE: i64 = 0;
-// Opener-owned identity must outrank observational discovery such as cwd grouping.
+// Opener-owned identity must outrank observational discovery such as cwd-derived associations.
 const LATENT_MATERIALIZER_PRECEDENCE: i64 = 1_000;
 
 type TabSeedMetadata = HashMap<u64, BTreeMap<String, MetadataEntry>>;
@@ -2420,7 +2420,7 @@ fn entity_facts(
         .map(|(key, entry)| (key.clone(), entry.value.clone()))
         .collect::<BTreeMap<_, _>>();
     // The target is the canonical entity identity. Producers must not have to
-    // duplicate it in every patch's set map for grouping filters and templates.
+    // duplicate it in every patch's set map for placement queries and templates.
     facts.insert(
         KEY_ENTITY_KIND.to_owned(),
         MetadataValue::Text(entity.kind.clone()),

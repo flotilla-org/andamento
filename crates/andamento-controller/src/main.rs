@@ -73,6 +73,14 @@ fn rail_ui_state_broadcast_message(state: &RailUiState) -> Option<MessageToPlugi
 ///       [--dump-template <compact|detail>]
 #[cfg(not(target_family = "wasm"))]
 fn main() {
+    if let Err(error) = run_harness() {
+        std::eprintln!("render-harness: {error}");
+        std::process::exit(2);
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn run_harness() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let Some(patches_path) = args.next() else {
         std::eprintln!(
@@ -81,30 +89,32 @@ fn main() {
         );
         std::process::exit(2);
     };
-    let mut grouping_path = None;
+    let mut template_path = None;
     let mut dump_template = None;
     while let Some(argument) = args.next() {
         if argument == "--dump-template" {
-            dump_template = Some(args.next().expect("--dump-template requires a slot"));
-        } else if grouping_path.replace(argument).is_some() {
-            panic!("only one grouping/template KDL path may be supplied");
+            dump_template = Some(args.next().ok_or("--dump-template requires a slot")?);
+        } else if template_path.replace(argument).is_some() {
+            return Err("only one template KDL path may be supplied".into());
         }
     }
-    let grouping_kdl = match grouping_path {
-        Some(path) => std::fs::read_to_string(&path).expect("read grouping kdl"),
+    let template_kdl = match template_path {
+        Some(path) => std::fs::read_to_string(&path)
+            .map_err(|error| format!("read template {path}: {error}"))?,
         None => include_str!("../../../templates/flotilla-default.kdl").to_owned(),
     };
 
     let mut state = ControllerState::default();
-    let templates = andamento_shared::template_config::parse_template_config_kdl(&grouping_kdl)
-        .expect("parse template kdl");
+    let templates = andamento_shared::template_config::parse_template_config_kdl(&template_kdl)
+        .map_err(|error| format!("parse template KDL: {error:?}"))?;
     state.set_template_catalog(Some(
         andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(templates),
     ));
-    let raw = std::fs::read_to_string(&patches_path).expect("read patches file");
+    let raw = std::fs::read_to_string(&patches_path)
+        .map_err(|error| format!("read patches {patches_path}: {error}"))?;
     let (mut applied, mut failed) = (0usize, 0usize);
-    let frames =
-        andamento_shared::replay::read(std::io::Cursor::new(raw)).expect("parse replay stream");
+    let frames = andamento_shared::replay::read(std::io::Cursor::new(raw))
+        .map_err(|error| format!("parse replay stream: {error}"))?;
     for frame in frames {
         state.advance_time(frame.offset_ms);
         let target = frame.patch.target.clone();
@@ -118,7 +128,7 @@ fn main() {
 
     let model = state.view_model();
     std::println!("{applied} patches applied, {failed} no-op");
-    render_rail_lines(&model, &grouping_kdl);
+    render_rail_lines(&model);
     if let Some(slot) = dump_template.as_deref() {
         if let Some(surface) = &model.presentation {
             fn dump(nodes: &[andamento_shared::presentation::PlacementNode], slot: &str) {
@@ -137,36 +147,20 @@ fn main() {
             }
         }
     }
+    Ok(())
 }
 
 /// Render the derived rows through the real rail renderer — actual template
 /// selection, actual field composition, actual truncation — so template-level
 /// questions are answerable here instead of only in a running zellij.
 #[cfg(not(target_family = "wasm"))]
-fn render_rail_lines(model: &andamento_shared::ControllerViewModel, config_kdl: &str) {
-    use andamento_shared::template_config::TemplateConfigCatalog;
-    let templates = match andamento_shared::template_config::parse_template_config_kdl(config_kdl) {
-        Ok(config) => Some(TemplateConfigCatalog::with_bundled_defaults(config)),
-        Err(error) => {
-            std::eprintln!(
-                "template config parse failed (rendering with bundled templates only): {error:?}"
-            );
-            None
-        }
-    };
+fn render_rail_lines(model: &andamento_shared::ControllerViewModel) {
     let cols = std::env::var("HARNESS_COLS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(46usize);
     let rows = 80;
-    let rendered = andamento_rail::render::render_lines_with_template_catalog(
-        Some(model),
-        &[],
-        rows,
-        cols,
-        true,
-        templates.as_ref(),
-    );
+    let rendered = andamento_rail::render::render_lines(Some(model), &[], rows, cols, true);
     std::println!(
         "=== rendered ({} lines @ {cols} cols) ===",
         rendered.lines.len()
@@ -175,9 +169,6 @@ fn render_rail_lines(model: &andamento_shared::ControllerViewModel, config_kdl: 
         std::println!("{line}");
     }
 }
-
-#[cfg(target_family = "wasm")]
-fn render_rail_lines(_model: &andamento_shared::ControllerViewModel, _config_kdl: &str) {}
 
 #[derive(Default)]
 pub struct PluginState {
