@@ -386,7 +386,7 @@ nothing — but some future filter will need a connector change rather than a
 config change, and that will be irritating at the time.
 
 Visibility policies are a separate, opt-in post-selection step. They evaluate
-constant equality/existence rules once per catalog snapshot and cache a boolean
+constant equality/existence rules once per view-model build and cache a boolean
 per entity. They do not add query operators or nested catalog scans. See
 `core-interface.md` for the syntax, first-match rules and display-variable
 contract. This restores configurable visibility after the grouping cutover.

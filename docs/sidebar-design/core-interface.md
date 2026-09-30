@@ -313,8 +313,8 @@ constant string `value=` (using the same scalar normalization as indexed
 queries), or `exists=true/false`. Existence includes non-scalar facts. Policies
 have no loop bindings or `of=` joins.
 
-Each policy is evaluated once per catalog snapshot, with cost proportional to
-entity count times rule count. A loop's indexed query checks the cached result
+Policies referenced by configured loops are evaluated once per view-model
+build, with cost proportional to entity count times rule count. A loop's indexed query checks the cached result
 for each candidate. This preserves indexed placement selection without adding
 catalog scans inside nested loops. Query predicates themselves remain equality
 only. Policies cannot select an entity, change its placement key, or affect its
@@ -331,7 +331,8 @@ replaces the whole policy. Each config must declare the policies its loops
 reference and the boolean display variables its policies reference. A higher
 layer can override variable defaults. Persisted values continue to use the
 existing rail UI state. If a layered override supplies a non-boolean value, the
-matching rule is hidden. Empty policies allow all entities.
+matching rule is hidden and template diagnostics include a warning. Empty
+policies allow all entities.
 
 The typed C ABI is unchanged. Native hosts render the resulting snapshot and
 use the existing display-variable actions; no host filtering is required.

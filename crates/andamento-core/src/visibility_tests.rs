@@ -193,18 +193,72 @@ fn json_uses_the_same_policy_validation() {
     use crate::template_config::parse_template_config_json;
     let mut document = serde_json::json!({
         "version": 1,
-        "display-variables": [{"name":"show", "type":"bool", "default":true, "label":"Show", "icon":"S", "persist":true}],
+        "display-variables": [{"name":"show", "type":{"kind":"bool"}, "default":true, "label":"Show", "icon":"S", "persist":true}],
         "visibility": [{"name":"policy", "rules":[{"visible-when":"show", "predicates":[{"key":"flag", "exists":true}]}]}]
     });
-    // Use a parsed declaration so this test is independent of the variable's wire enum shape.
-    let declaration = parse_template_config_kdl(
-        "display-variable \"show\" type=\"bool\" default=true label=\"Show\" icon=\"S\"",
-    )
-    .unwrap()
-    .display_variables
-    .remove(0);
-    document["display-variables"] = serde_json::to_value(vec![declaration]).unwrap();
     assert!(parse_template_config_json(&document.to_string()).is_ok());
     document["visibility"][0]["rules"][0]["predicates"][0]["value"] = "true".into();
     assert!(parse_template_config_json(&document.to_string()).is_err());
+}
+
+#[test]
+fn absence_and_identity_rules_hide_parent_subtrees_until_enabled() {
+    let input = CONFIG.replace(
+        "when kind=\"vessel\" visible-when=\"finished\" { match \"phase\" value=\"done\"; }",
+        "when visible-when=\"finished\" { match \"entity.id\" value=\"parent\"; match \"exempt\" exists=false; }",
+    ).replace(
+        "for \"vessel\" kind=\"vessel\" visibility=\"activity\" { field \"label\" key=\"entity.id\"; }",
+        "for \"vessel\" kind=\"vessel\" visibility=\"activity\" { match \"entity.id\" value=\"parent\"; apply-template \"parent/line\"; }",
+    ) + "\ntemplate \"parent/line\" { for \"child\" kind=\"vessel\" { match \"entity.id\" value=\"child\"; }; }\n";
+    let mut state = ControllerState::default();
+    state.set_template_catalog(Some(config(&input)));
+    for id in ["parent", "child"] {
+        publish(
+            &mut state,
+            id,
+            &[("display.label", MetadataValue::Text(id.into()))],
+        );
+    }
+    assert!(ids(&state, "tree").is_empty());
+    toggle(&mut state, "finished");
+    let model = state.view_model();
+    let nodes = &model.presentation.as_ref().unwrap().sections[0].nodes;
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].entity.id, "parent");
+    assert_eq!(nodes[0].children[0].entity.id, "child");
+    toggle(&mut state, "finished");
+    assert!(ids(&state, "tree").is_empty());
+    publish(
+        &mut state,
+        "parent",
+        &[("exempt", MetadataValue::Bool(false))],
+    );
+    assert_eq!(ids(&state, "tree"), ["parent"]); // present false is not absence
+}
+
+#[test]
+fn unused_policies_are_not_evaluated_and_non_boolean_overrides_are_diagnosed() {
+    let input = format!(
+        "{CONFIG}\nvisibility \"unused\" {{ when kind=\"vessel\" visible-when=\"finished\"; }}"
+    );
+    let bundled = parse_template_config_kdl(&input).unwrap();
+    let user = parse_template_config_kdl("display-variable \"finished\" type=\"enum\" default=\"yes\" label=\"Finished\" icon=\"F\" { value \"yes\"; }").unwrap();
+    let catalog = TemplateConfigCatalog::from_layers(vec![
+        TemplateConfigLayer::bundled("bundled", bundled),
+        TemplateConfigLayer::user("user", user),
+    ]);
+    assert_eq!(catalog.visibility().len(), 1);
+    assert_eq!(catalog.visibility()[0].name, "activity");
+    let mut state = ControllerState::default();
+    state.set_template_catalog(Some(catalog));
+    publish(
+        &mut state,
+        "done",
+        &[("phase", MetadataValue::Text("done".into()))],
+    );
+    assert!(ids(&state, "tree").is_empty());
+    let warnings = state.view_model().template_config.warnings;
+    assert!(warnings.iter().any(|warning| warning
+        .contains("visibility activity requires boolean display variable finished")));
+    assert!(!warnings.iter().any(|warning| warning.contains("unused")));
 }

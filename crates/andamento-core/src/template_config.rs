@@ -309,25 +309,6 @@ impl ExternalTemplateConfig {
                 }
             }
         }
-        fn check_visibility(
-            loops: &[PlacementLoop],
-            names: &BTreeSet<String>,
-        ) -> Result<(), TemplateConfigError> {
-            for item in loops {
-                if item
-                    .visibility
-                    .as_ref()
-                    .is_some_and(|name| !names.contains(name))
-                {
-                    return Err(TemplateConfigError::Validation(format!(
-                        "loop {} references an undeclared visibility policy",
-                        item.binding
-                    )));
-                }
-                check_visibility(&item.loops, names)?;
-            }
-            Ok(())
-        }
         for template in &self.templates {
             check_visibility(&template.loops, &visibility_names)?;
         }
@@ -394,6 +375,35 @@ impl ExternalTemplateConfig {
         }
         Ok(())
     }
+}
+
+fn collect_visibility_names(loops: &[PlacementLoop], names: &mut BTreeSet<String>) {
+    for item in loops {
+        if let Some(name) = &item.visibility {
+            names.insert(name.clone());
+        }
+        collect_visibility_names(&item.loops, names);
+    }
+}
+
+fn check_visibility(
+    loops: &[PlacementLoop],
+    names: &BTreeSet<String>,
+) -> Result<(), TemplateConfigError> {
+    for item in loops {
+        if item
+            .visibility
+            .as_ref()
+            .is_some_and(|name| !names.contains(name))
+        {
+            return Err(TemplateConfigError::Validation(format!(
+                "loop {} references an undeclared visibility policy",
+                item.binding
+            )));
+        }
+        check_visibility(&item.loops, names)?;
+    }
+    Ok(())
 }
 
 fn validate_placement_loops(
@@ -615,17 +625,29 @@ impl TemplateConfigCatalog {
             })
             .unwrap_or_default();
         let mut seen_placements = BTreeSet::new();
-        let placements = layers
+        let placements: Vec<PlacementDefinition> = layers
             .iter()
             .flat_map(|layer| layer.config.placements.iter())
             .filter(|placement| seen_placements.insert(placement.name.clone()))
             .cloned()
             .collect();
+        let mut referenced_visibility = BTreeSet::new();
+        for placement in &placements {
+            collect_visibility_names(&placement.loops, &mut referenced_visibility);
+        }
+        for layer in &layers {
+            for template in &layer.config.templates {
+                collect_visibility_names(&template.loops, &mut referenced_visibility);
+            }
+        }
         let mut seen_visibility = BTreeSet::new();
         let visibility = layers
             .iter()
             .flat_map(|layer| &layer.config.visibility)
-            .filter(|policy| seen_visibility.insert(policy.name.clone()))
+            .filter(|policy| {
+                referenced_visibility.contains(&policy.name)
+                    && seen_visibility.insert(policy.name.clone())
+            })
             .cloned()
             .collect();
         Self {

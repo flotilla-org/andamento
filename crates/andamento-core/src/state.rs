@@ -113,7 +113,8 @@ impl PlacementIndex {
         entities: &[CatalogEntity],
         catalog: &crate::template_config::TemplateConfigCatalog,
         variables: &BTreeMap<String, crate::DisplayVariableValue>,
-    ) {
+    ) -> Vec<String> {
+        let mut warnings = BTreeSet::new();
         for policy in catalog.visibility() {
             let enabled: Vec<bool> = policy
                 .rules
@@ -126,38 +127,25 @@ impl PlacementIndex {
                             .find(|variable| variable.name == rule.visible_when)
                             .map(|variable| &variable.default)
                     });
+                    if !matches!(value, Some(crate::DisplayVariableValue::Bool(_))) {
+                        warnings.insert(format!("visibility {} requires boolean display variable {}; matching entities are hidden", policy.name, rule.visible_when));
+                    }
                     matches!(value, Some(crate::DisplayVariableValue::Bool(true)))
                 })
                 .collect();
             let visible = entities
                 .iter()
                 .map(|entity| {
-                    let rule = policy.rules.iter().position(|rule| {
-                        rule.predicates.iter().all(|predicate| {
-                            let identity = match predicate.key.as_str() {
-                                "entity.kind" => Some(&entity.entity.kind),
-                                "entity.id" => Some(&entity.entity.id),
-                                _ => None,
-                            };
-                            let fact = entity.values.get(&predicate.key);
-                            if let Some(exists) = predicate.exists {
-                                return exists == (identity.is_some() || fact.is_some());
-                            }
-                            let value = identity.cloned().or_else(|| {
-                                fact.and_then(|entry| {
-                                    crate::template_config::placement_index_text(&entry.value)
-                                })
-                            });
-                            value
-                                .as_ref()
-                                .is_some_and(|value| Some(value) == predicate.value.as_ref())
-                        })
-                    });
+                    let rule = policy
+                        .rules
+                        .iter()
+                        .position(|rule| visibility_rule_matches(entity, rule));
                     rule.is_none_or(|position| enabled[position])
                 })
                 .collect();
             self.visibility.insert(policy.name.clone(), visible);
         }
+        warnings.into_iter().collect()
     }
 
     fn lookup_value(&self, key: &str, value: &str) -> &[usize] {
@@ -166,6 +154,35 @@ impl PlacementIndex {
             .map(Vec::as_slice)
             .unwrap_or_default()
     }
+}
+
+fn visibility_rule_matches(
+    entity: &CatalogEntity,
+    rule: &crate::template_config::PlacementVisibilityRule,
+) -> bool {
+    rule.predicates.iter().all(|predicate| {
+        let identity = match predicate.key.as_str() {
+            "entity.kind" => Some(entity.entity.kind.as_str()),
+            "entity.id" => Some(entity.entity.id.as_str()),
+            _ => None,
+        };
+        let fact = entity.values.get(&predicate.key);
+        if let Some(exists) = predicate.exists {
+            return exists == (identity.is_some() || fact.is_some());
+        }
+        let expected = predicate.value.as_deref();
+        if let Some(identity) = identity {
+            return Some(identity) == expected;
+        }
+        match fact.map(|entry| &entry.value) {
+            Some(MetadataValue::Text(text)) => Some(text.as_str()) == expected,
+            Some(MetadataValue::Bool(value)) => {
+                Some(if *value { "true" } else { "false" }) == expected
+            }
+            Some(MetadataValue::Integer(value)) => Some(value.to_string().as_str()) == expected,
+            _ => false,
+        }
+    })
 }
 
 /// What a node resolved to: the variable values in effect, and the declarations
@@ -1130,11 +1147,15 @@ impl ControllerState {
         }
         let mut placement_index = PlacementIndex::build(region_catalog_entities);
         if let Some(config) = self.template_catalog.as_ref() {
-            placement_index.evaluate_visibility(
+            for warning in placement_index.evaluate_visibility(
                 region_catalog_entities,
                 config,
                 &self.rail_ui.variables,
-            );
+            ) {
+                if !template_config.warnings.contains(&warning) {
+                    template_config.warnings.push(warning);
+                }
+            }
         }
         let mut placement_layouts = BTreeMap::new();
         let surface_regions: Vec<EvaluatedSection> = self
@@ -1424,6 +1445,10 @@ impl ControllerState {
             })
             .filter(|position| {
                 loop_definition.visibility.as_ref().is_none_or(|name| {
+                    debug_assert!(
+                        index.visibility.contains_key(name),
+                        "validated visibility policy {name} was not evaluated"
+                    );
                     index
                         .visibility
                         .get(name)
