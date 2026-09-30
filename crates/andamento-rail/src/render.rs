@@ -25,7 +25,3 @@ pub fn theme_from_zellij(colors: zellij_tile::prelude::Styling) -> RenderTheme {
     }
 }
 
-#[cfg(test)]
-mod frame_snapshots;
-#[cfg(test)]
-mod test_fixtures;

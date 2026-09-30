@@ -1,19 +1,16 @@
-//! Semantic placement snapshots. No terminal coordinates, ANSI, host SDK types,
-//! or GroupPath rows cross this interface. The legacy model is an internal input
-//! until the placement cutover removes it; consumers use these types instead.
+//! Semantic placement snapshots shared by all frontends.
 use std::{collections::BTreeMap, ops::ControlFlow};
 
 use serde::{Deserialize, Serialize};
 
 use crate::template_config::{
-    ChromeSpec, SurfaceRegionSource, TemplateConfigFieldClass, TemplateConfigMatchContext,
+    ChromeSpec, TemplateConfigFieldClass, TemplateConfigMatchContext,
     TemplateConfigNodeKind, TemplateConfigRenderedField, TemplateConfigSlot, TemplateControlSpec,
     TemplateVariableDefinition,
 };
 use crate::{
-    ControllerViewModel, DisplayEntity, DisplayVariableValue, EffectiveNodeVariables, EntityRef,
-    MetadataValue, NodeKey, PlacementKey, ResolvedTemplateSlot, PLACEMENT_LOOP_BINDING_KEY,
-    PLACEMENT_LOOP_TIER_KEY,
+    ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EntityRef,
+    MetadataValue, NodeKey, PlacementKey, ResolvedTemplateSlot,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,8 +18,7 @@ pub struct SurfaceSnapshot {
     pub sections: Vec<Section>,
     pub display_variables: Vec<TemplateVariableDefinition>,
     pub display_values: BTreeMap<String, DisplayVariableValue>,
-    /// Legacy tree regions are deliberately not exported as a native contract.
-    /// Configure placements for them; these diagnostics prevent silent omission.
+    /// Diagnostics attached to a semantic snapshot.
     pub diagnostics: Vec<String>,
 }
 
@@ -189,7 +185,8 @@ impl SurfaceSnapshot {
 
     pub(crate) fn resolve(
         model: &ControllerViewModel,
-        layouts: &BTreeMap<PlacementKey, crate::PlacementAnnotation>,
+        sections: &[crate::state::EvaluatedSection],
+        layouts: &BTreeMap<PlacementKey, crate::state::PlacementAnnotation>,
         states: &BTreeMap<EntityRef, PresentationState>,
     ) -> Self {
         let mut snapshot = Self {
@@ -197,20 +194,8 @@ impl SurfaceSnapshot {
             display_values: model.display_variable_values.clone(),
             ..Self::default()
         };
-        for region in &model.surface_regions {
+        for region in sections {
             let definition = &region.definition;
-            if definition.placement.is_none()
-                && matches!(
-                    definition.source,
-                    SurfaceRegionSource::Tree | SurfaceRegionSource::Attention
-                )
-            {
-                snapshot.diagnostics.push(format!(
-                    "region {} needs a placement declaration for native rendering",
-                    definition.name
-                ));
-                continue;
-            }
             let mut metadata = BTreeMap::new();
             effective_metadata(model, &NodeKey::Root, &mut metadata);
             let content = resolve_content(region.root.as_ref(), &metadata, false, false, false);
@@ -232,12 +217,8 @@ impl SurfaceSnapshot {
 /// Resolve the declared tier without measuring or shortening producer text.
 /// Returns true when a shorter tier had to fall back to the full label; a
 /// frontend may apply its own measured elision to that fallback.
-pub fn apply_declared_abbreviation(metadata: &mut BTreeMap<String, MetadataValue>) -> bool {
-    let Some(binding) = metadata_text(metadata, PLACEMENT_LOOP_BINDING_KEY).map(str::to_owned)
-    else {
-        return false;
-    };
-    let tier = metadata_text(metadata, PLACEMENT_LOOP_TIER_KEY)
+pub fn apply_declared_abbreviation(metadata: &mut BTreeMap<String, MetadataValue>, binding: &str, explicit: Option<crate::template_config::AbbreviationTier>) -> bool {
+    let tier = explicit.map(|tier| tier.as_str())
         .or_else(|| metadata_text(metadata, &format!("var.{binding}.tier")))
         .unwrap_or("full");
     let full = metadata_text(metadata, "display.label").map(str::to_owned);
@@ -287,9 +268,9 @@ fn effective_metadata(
 
 fn resolve_node(
     model: &ControllerViewModel,
-    entity: &DisplayEntity,
+    entity: &crate::state::EvaluatedPlacement,
     region: &crate::template_config::SurfaceRegionDefinition,
-    layouts: &BTreeMap<PlacementKey, crate::PlacementAnnotation>,
+    layouts: &BTreeMap<PlacementKey, crate::state::PlacementAnnotation>,
     states: &BTreeMap<EntityRef, PresentationState>,
 ) -> Option<PlacementNode> {
     let key = entity.placement.clone()?;
@@ -309,7 +290,7 @@ fn resolve_node(
         entity.templates.detail.as_ref()
     };
     let mut display_facts = facts.clone();
-    apply_declared_abbreviation(&mut display_facts);
+    apply_declared_abbreviation(&mut display_facts, &key.0.last()?.loop_name, entity.tier);
     Some(PlacementNode {
         content: resolve_content(
             slot,

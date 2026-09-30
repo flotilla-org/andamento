@@ -5,10 +5,10 @@ use std::time::Instant;
 
 use andamento_shared::segment_bar;
 use andamento_shared::{
-    ConfigInspectRequest, ControllerViewModel, GroupPath, MetadataEntry, MetadataSourceEntry,
+    ConfigInspectRequest, ControllerViewModel, MetadataEntry, MetadataSourceEntry,
     MetadataTriState, MetadataValue, MetadataVisibilitySetRequest, NodeKey, NodeVariableSetRequest,
     PluginPaneKind, PluginPlacement, PluginRegistrationHello, PluginStatsSnapshot, RailConfig,
-    RailRow, RailStructure, ResolvedMetadataTarget, ResolvedTemplateSlots, TabCard,
+    RailStructure, ResolvedMetadataTarget, TabCard,
     NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 use unicode_width::UnicodeWidthStr;
@@ -650,7 +650,6 @@ impl PluginState {
         let client_id = self.own_client_id?;
         let node_key = match self.clicked_node()? {
             NodeKey::Root => NodeKey::Root,
-            NodeKey::Group(path) => NodeKey::Group(path),
             NodeKey::Placement(key) => NodeKey::Placement(key),
             NodeKey::Tab(_) | NodeKey::Entity(_) => return None,
         };
@@ -770,7 +769,6 @@ fn inspect_scope_label(key: &NodeKey) -> String {
     match key {
         NodeKey::Root => "root".to_owned(),
         NodeKey::Tab(tab_id) => format!("tab:{tab_id}"),
-        NodeKey::Group(_) => "group".to_owned(),
         NodeKey::Entity(entity) => format!("entity:{}:{}", entity.kind, entity.id),
         NodeKey::Placement(key) => format!(
             "placement:{}",
@@ -789,7 +787,6 @@ fn inspect_scope_label(key: &NodeKey) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InspectTargetKind {
     Root,
-    Group,
     Tab,
     Entity,
     Missing,
@@ -800,7 +797,7 @@ struct InspectTargetView<'a> {
     kind: InspectTargetKind,
     node_key: NodeKey,
     tab: Option<&'a TabCard>,
-    group_templates: Option<&'a ResolvedTemplateSlots>,
+    placement: Option<&'a andamento_shared::presentation::PlacementNode>,
     metadata: BTreeMap<String, MetadataEntry>,
     sources: BTreeMap<String, Vec<MetadataSourceEntry>>,
 }
@@ -822,7 +819,7 @@ fn inspect_target_for<'a>(
             kind: InspectTargetKind::Root,
             node_key,
             tab: None,
-            group_templates: None,
+            placement: None,
             metadata,
             sources,
         },
@@ -832,7 +829,7 @@ fn inspect_target_for<'a>(
                 kind: InspectTargetKind::Tab,
                 node_key,
                 tab: Some(tab),
-                group_templates: None,
+                placement: None,
                 metadata,
                 sources,
             },
@@ -841,32 +838,17 @@ fn inspect_target_for<'a>(
                 kind: InspectTargetKind::Missing,
                 node_key,
                 tab: None,
-                group_templates: None,
+                placement: None,
                 metadata,
                 sources,
             },
-        },
-        NodeKey::Group(path) => InspectTargetView {
-            label: format!("Group {}", format_group_path(&path)),
-            kind: InspectTargetKind::Group,
-            node_key,
-            tab: None,
-            group_templates: group_templates_for_path(model, &path),
-            metadata,
-            sources,
         },
         NodeKey::Entity(entity) => InspectTargetView {
             label: format!("{} {}", entity.kind, entity.id),
             kind: InspectTargetKind::Entity,
             node_key,
             tab: None,
-            group_templates: model.rows.iter().find_map(|row| match row {
-                RailRow::Entity {
-                    entity: display_entity,
-                    ..
-                } if display_entity.entity == entity => Some(&display_entity.templates),
-                _ => None,
-            }),
+            placement: None,
             metadata,
             sources,
         },
@@ -879,8 +861,7 @@ fn inspect_target_for<'a>(
                 kind: InspectTargetKind::Entity,
                 node_key,
                 tab: None,
-                group_templates: display_entity_for_placement(model, &key)
-                    .map(|entity| &entity.templates),
+                placement: model.presentation.as_ref().and_then(|surface| surface.node(&key)),
                 metadata,
                 sources,
             }
@@ -888,26 +869,6 @@ fn inspect_target_for<'a>(
     }
 }
 
-fn display_entity_for_placement<'a>(
-    model: &'a ControllerViewModel,
-    target: &andamento_shared::PlacementKey,
-) -> Option<&'a andamento_shared::DisplayEntity> {
-    fn find<'a>(
-        entities: &'a [andamento_shared::DisplayEntity],
-        target: &andamento_shared::PlacementKey,
-    ) -> Option<&'a andamento_shared::DisplayEntity> {
-        entities.iter().find_map(|entity| {
-            (entity.placement.as_ref() == Some(target))
-                .then_some(entity)
-                .or_else(|| find(&entity.children, target))
-        })
-    }
-
-    model
-        .surface_regions
-        .iter()
-        .find_map(|region| find(&region.entities, target))
-}
 
 fn parse_scope_node_key(scope: &str) -> Option<NodeKey> {
     if scope == "root" {
@@ -941,7 +902,6 @@ fn resolved_metadata_for_node<'a>(
     let target = match node_key {
         NodeKey::Root => ResolvedMetadataTarget::Root,
         NodeKey::Tab(tab_id) => ResolvedMetadataTarget::Tab(*tab_id),
-        NodeKey::Group(path) => ResolvedMetadataTarget::Group(path.clone()),
         NodeKey::Entity(entity) => ResolvedMetadataTarget::Entity(entity.clone()),
         NodeKey::Placement(key) => ResolvedMetadataTarget::Entity(key.0.last()?.entity.clone()),
     };
@@ -951,19 +911,6 @@ fn resolved_metadata_for_node<'a>(
         .find(|metadata| metadata.target == target)
 }
 
-fn group_templates_for_path<'a>(
-    model: &'a ControllerViewModel,
-    path: &GroupPath,
-) -> Option<&'a ResolvedTemplateSlots> {
-    model.rows.iter().find_map(|row| match row {
-        RailRow::GroupHeader {
-            path: row_path,
-            templates,
-            ..
-        } if row_path == path => Some(templates),
-        _ => None,
-    })
-}
 
 #[cfg(test)]
 fn render_config(
@@ -1100,7 +1047,11 @@ fn push_inspect_page(
     frame.push_blank();
     push_inspect_identity_section(frame, &target);
     frame.push_blank();
-    push_inspect_grouping_section(frame, model, &target);
+    push_section_header(frame, "Unmatched catalog entities");
+    push_key_value(frame, "count", &model.unmatched_entities.len().to_string());
+    for entity in &model.unmatched_entities {
+        frame.push_plain(&format!("{}: {}", entity.kind, entity.id));
+    }
     frame.push_blank();
     push_inspect_options_section(frame, model, &target);
     frame.push_blank();
@@ -1162,11 +1113,6 @@ fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTarg
         InspectTargetKind::Root => {
             push_key_value(frame, "scope", "session");
         }
-        InspectTargetKind::Group => {
-            if let NodeKey::Group(path) = &target.node_key {
-                push_group_path(frame, "path", None, path);
-            }
-        }
         InspectTargetKind::Tab => {
             if let Some(tab) = target.tab {
                 push_key_value(frame, "name", &tab.name);
@@ -1174,11 +1120,6 @@ fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTarg
                 push_key_value(frame, "position", &tab.position.to_string());
                 push_key_value(frame, "active", if tab.active { "yes" } else { "no" });
                 push_key_value(frame, "pinned", if tab.pinned { "yes" } else { "no" });
-                if let Some(grouping) = tab.grouping.as_ref() {
-                    push_group_path(frame, "group", Some(&grouping.label), &grouping.path);
-                } else {
-                    push_key_value(frame, "group", "<none>");
-                }
                 if let Some(active_pane) = tab.active_pane.as_ref() {
                     push_key_value(frame, "pane", &format_pane_target(active_pane));
                 }
@@ -1201,25 +1142,6 @@ fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTarg
     }
 }
 
-fn push_inspect_grouping_section(
-    frame: &mut ConfigUiFrame,
-    model: &ControllerViewModel,
-    target: &InspectTargetView<'_>,
-) {
-    push_section_header(frame, "Grouping");
-    let mut diagnostics = model
-        .grouping_diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.target == target.node_key)
-        .peekable();
-    if diagnostics.peek().is_none() {
-        frame.push_plain("  <none>");
-        return;
-    }
-    for diagnostic in diagnostics {
-        frame.push_plain(&format!("{}: {}", diagnostic.rule, diagnostic.message));
-    }
-}
 
 fn push_inspect_options_section(
     frame: &mut ConfigUiFrame,
@@ -1236,14 +1158,7 @@ fn push_inspect_options_section(
         .effective_variables
         .iter()
         .find(|variables| variables.node == target.node_key);
-    let declarations =
-        if target.kind == InspectTargetKind::Root || target.kind == InspectTargetKind::Group {
-            node_variables
-                .map(|variables| variables.declarations.as_slice())
-                .unwrap_or_default()
-        } else {
-            &[][..]
-        };
+    let declarations = node_variables.map(|variables| variables.declarations.as_slice()).unwrap_or_default();
     let label_width = std::iter::once("Metadata")
         .chain(
             declarations
@@ -1287,8 +1202,6 @@ fn push_inspect_options_section(
     );
     // Node variables render from their declarations: one segmented control per
     // variable in scope at this node, offering inherit plus its allowed values.
-    // The Root/Group gate is the one piece still hardcoded — a declaration says
-    // nothing yet about where it is legal to set.
     for (variable, declaration) in declarations.iter().enumerate() {
         let effective =
             node_variables.and_then(|variables| variables.values.get(&declaration.name));
@@ -1366,94 +1279,19 @@ fn push_inspect_sources_section(frame: &mut ConfigUiFrame, target: &InspectTarge
 
 fn push_inspect_templates_section(frame: &mut ConfigUiFrame, target: &InspectTargetView<'_>) {
     push_section_header(frame, "Templates");
-    match target.kind {
-        InspectTargetKind::Tab => {
-            let Some(tab) = target.tab else {
-                frame.push_plain("  <none>");
-                return;
-            };
-            push_template_slot_row(frame, "tab title", tab.templates.tab_title.as_ref());
-            push_template_slot_row(frame, "tab status", tab.templates.tab_status.as_ref());
-        }
-        InspectTargetKind::Group => {
-            let Some(templates) = target.group_templates else {
-                frame.push_plain("  <none>");
-                return;
-            };
-            push_template_slot_row(frame, "group hdr", templates.group_header.as_ref());
-        }
-        InspectTargetKind::Entity => {
-            let Some(templates) = target.group_templates else {
-                frame.push_plain("  <none>");
-                return;
-            };
-            push_template_slot_row(frame, "compact", templates.compact.as_ref());
-            push_template_slot_row(frame, "detail", templates.detail.as_ref());
-        }
-        InspectTargetKind::Root | InspectTargetKind::Missing => {
-            frame.push_plain("  <none>");
-        }
+    let Some(node) = target.placement else { frame.push_plain("  <none>"); return; };
+    for (label, content) in [("line", &node.content), ("detail", &node.detail)] {
+        push_key_value(frame, label, content.template_name.as_deref().unwrap_or("<none>"));
+        for line in content.effective_kdl.lines() { frame.push_plain(line); }
+        if let Some(error) = &content.error { frame.push_plain(error); }
     }
 }
 
-fn push_template_slot_row(
-    frame: &mut ConfigUiFrame,
-    label: &str,
-    slot: Option<&andamento_shared::ResolvedTemplateSlot>,
-) {
-    match slot {
-        Some(slot) => push_key_value(frame, label, &format_resolved_slot(slot)),
-        None => push_key_value(frame, label, "<none>"),
-    }
-}
 
 fn push_key_value(frame: &mut ConfigUiFrame, key: &str, value: &str) {
     frame.push_plain(&format!("{key:<9} {value}"));
 }
 
-fn push_group_path(
-    frame: &mut ConfigUiFrame,
-    key: &str,
-    value_prefix: Option<&str>,
-    path: &GroupPath,
-) {
-    if path.0.is_empty() {
-        push_key_value(
-            frame,
-            key,
-            &value_prefix
-                .map(|prefix| format!("{prefix} <none>"))
-                .unwrap_or_else(|| "<none>".to_owned()),
-        );
-        return;
-    }
-
-    let first_prefix = format!("{key:<9} ");
-    let continuation_prefix = " ".repeat(first_prefix.width());
-    let mut line = first_prefix.clone();
-    if let Some(value_prefix) = value_prefix {
-        line.push_str(value_prefix);
-    }
-
-    for (index, segment) in path.0.iter().enumerate() {
-        let mut component = format_group_path_segment(segment);
-        if index + 1 < path.0.len() {
-            component.push_str(" >");
-        }
-        let has_line_value = line.width() > first_prefix.width();
-        let separator_width = usize::from(has_line_value);
-        if has_line_value && line.width() + separator_width + component.width() > frame.cols {
-            frame.push_plain(&line);
-            line = continuation_prefix.clone();
-        }
-        if line.width() > first_prefix.width() {
-            line.push(' ');
-        }
-        line.push_str(&component);
-    }
-
-    frame.push_plain(&line);
-}
 
 fn push_section_header(frame: &mut ConfigUiFrame, title: &str) {
     frame.push_plain(&section_divider(title, frame.cols));
@@ -1481,7 +1319,6 @@ fn push_button(frame: &mut ConfigUiFrame, label: &str, action: ConfigAction) {
 fn inspect_target_kind_label(kind: InspectTargetKind) -> &'static str {
     match kind {
         InspectTargetKind::Root => "Root",
-        InspectTargetKind::Group => "Group",
         InspectTargetKind::Tab => "Tab",
         InspectTargetKind::Missing => "Missing",
         InspectTargetKind::Entity => "Entity",
@@ -1605,77 +1442,20 @@ fn push_templates_page(frame: &mut ConfigUiFrame, model: Option<&ControllerViewM
         }
     }
     frame.push_blank();
-    frame.push_plain("resolved slots");
-    for row in &model.rows {
-        match row {
-            andamento_shared::RailRow::GroupHeader {
-                label, templates, ..
-            } => {
-                if let Some(slot) = templates.group_header.as_ref() {
-                    frame.push_plain(&format!("group {label}: {}", format_resolved_slot(slot)));
-                }
-            }
-            andamento_shared::RailRow::Tab { .. } => {
-                if let Some(tab) = model.tab_for_row(row) {
-                    push_tab_template_slot(
-                        frame,
-                        &tab.name,
-                        "title",
-                        tab.templates.tab_title.as_ref(),
-                    );
-                    push_tab_template_slot(
-                        frame,
-                        &tab.name,
-                        "status",
-                        tab.templates.tab_status.as_ref(),
-                    );
-                }
-            }
-            andamento_shared::RailRow::Latent { .. } => {}
-            andamento_shared::RailRow::Entity { entity, .. } => {
-                push_tab_template_slot(
-                    frame,
-                    &entity.label,
-                    "compact",
-                    entity.templates.compact.as_ref(),
-                );
-                push_tab_template_slot(
-                    frame,
-                    &entity.label,
-                    "detail",
-                    entity.templates.detail.as_ref(),
-                );
-            }
+    frame.push_plain("resolved templates");
+    fn show(frame: &mut ConfigUiFrame, nodes: &[andamento_shared::presentation::PlacementNode]) {
+        for node in nodes {
+            frame.push_plain(&format!("{}: {}", node.label, node.content.template_name.as_deref().unwrap_or("<none>")));
+            show(frame, &node.children);
         }
     }
+    if let Some(surface) = &model.presentation {
+        for section in &surface.sections { show(frame, &section.nodes); }
+    }
+
 }
 
-fn push_tab_template_slot(
-    frame: &mut ConfigUiFrame,
-    tab_name: &str,
-    slot_name: &str,
-    slot: Option<&andamento_shared::ResolvedTemplateSlot>,
-) {
-    if let Some(slot) = slot {
-        frame.push_plain(&format!(
-            "tab {tab_name} {slot_name}: {}",
-            format_resolved_slot(slot)
-        ));
-    }
-}
 
-fn format_resolved_slot(slot: &andamento_shared::ResolvedTemplateSlot) -> String {
-    let fields = slot
-        .fields
-        .iter()
-        .map(|field| format!("{}({})", field.text, field.priority))
-        .collect::<Vec<_>>();
-    if fields.is_empty() {
-        slot.template_name.clone()
-    } else {
-        format!("{} [{}]", slot.template_name, fields.join(", "))
-    }
-}
 
 fn template_config_state_text(state: andamento_shared::TemplateConfigState) -> &'static str {
     match state {
@@ -1748,42 +1528,15 @@ fn render_tab_row(page: ConfigPage, cols: usize) -> RenderedTabRow {
 
 fn push_cwd_metadata(frame: &mut ConfigUiFrame, model: Option<&ControllerViewModel>) {
     frame.push_plain("cwd metadata");
-    let Some(model) = model else {
-        frame.push_plain("no controller state yet");
-        return;
-    };
-    if model.tabs.is_empty() {
-        frame.push_plain("no tabs");
-        return;
-    }
+    let Some(model) = model else { frame.push_plain("no controller state yet"); return; };
     for tab in &model.tabs {
-        let Some(grouping) = tab.grouping.as_ref() else {
-            frame.push_plain(&format!("{}: zellij.pane.cwd=<none>", tab.name));
-            continue;
-        };
-        frame.push_plain(&format!(
-            "{}: {} {}",
-            tab.name,
-            grouping.label,
-            format_group_path(&grouping.path)
-        ));
+        let metadata = metadata_for_node(model, &NodeKey::Tab(tab.tab_id));
+        let value = metadata.get("zellij.pane.cwd").map(|v| format_metadata_value(&v.value)).unwrap_or_else(|| "<none>".into());
+        frame.push_plain(&format!("{}: {}", tab.name, value));
     }
 }
 
-fn format_group_path(path: &GroupPath) -> String {
-    if path.0.is_empty() {
-        return "<none>".to_owned();
-    }
-    path.0
-        .iter()
-        .map(format_group_path_segment)
-        .collect::<Vec<_>>()
-        .join(" > ")
-}
 
-fn format_group_path_segment(segment: &andamento_shared::GroupSegment) -> String {
-    format!("{}={}", segment.key, format_metadata_value(&segment.value))
-}
 
 fn format_metadata_value(value: &MetadataValue) -> String {
     match value {
@@ -1889,7 +1642,51 @@ fn display_width_slice(text: &str, start: usize, end: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use andamento_shared::{GroupPath, GroupSegment, MetadataValue, SortMode, TabGroupingInfo};
+    fn model_with_tab(tab_id: u64, name: &str) -> ControllerViewModel {
+        ControllerViewModel {
+            unmatched_entities: vec![],
+            sort_mode: SortMode::Position,
+            config: RailConfig::default(),
+            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
+            tabs: vec![TabCard {
+                tab_id,
+                position: 0,
+                name: name.to_owned(),
+                active: true,
+                pinned: false,
+                status: None,
+
+                templates: andamento_shared::ResolvedTemplateSlots::default(),
+                active_pane: None,
+            }],
+
+            resolved_metadata: vec![],
+            observed_identities: vec![],
+
+            metadata_controls: andamento_shared::MetadataControls::default(),
+            inspected_node: None,
+
+            collapsed_placements: vec![],
+            display_variables: vec![],
+            display_variable_values: BTreeMap::new(),
+
+            presentation: None,
+        }
+    }
+
+    fn placement_model_with_declarations(declarations: Vec<andamento_shared::template_config::NodeVariableDefinition>) -> ControllerViewModel {
+        let mut model = model_with_tab(1, "fixture");
+        let key = andamento_shared::PlacementKey(vec![andamento_shared::PlacementSegment {
+            loop_name: "project".into(), entity: andamento_shared::EntityRef { kind: "project".into(), id: "p".into() }
+        }]);
+        model.inspected_node = Some(NodeKey::Placement(key.clone()));
+        model.template_config.effective_variables = vec![andamento_shared::EffectiveNodeVariables {
+            node: NodeKey::Placement(key), values: BTreeMap::new(), declarations
+        }];
+        model
+    }
+
+    use andamento_shared::{MetadataValue, SortMode};
 
     #[test]
     fn renders_selected_config() {
@@ -2225,354 +2022,10 @@ mod tests {
         assert!(target.tab.is_none());
     }
 
-    #[test]
-    fn inspect_entity_explains_rule_non_capture() {
-        let entity = andamento_shared::EntityRef {
-            kind: "convoy".to_owned(),
-            id: "flotilla/inspect-path@fleet".to_owned(),
-        };
-        let mut model = model_with_tab(7, "repo");
-        model.inspected_node = Some(NodeKey::Entity(entity.clone()));
-        model.grouping_diagnostics = vec![andamento_shared::GroupingRuleDiagnostic {
-            target: NodeKey::Entity(entity),
-            rule: "repo-branch".to_owned(),
-            message: "not captured: `git.branch` absent (non-optional level)".to_owned(),
-        }];
 
-        let rendered = render_config(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Inspect,
-            24,
-            80,
-            &[],
-            false,
-            0,
-        );
 
-        assert!(rendered.lines.iter().any(|line| {
-            line.trim() == "repo-branch: not captured: `git.branch` absent (non-optional level)"
-        }));
-    }
 
-    #[test]
-    fn inspect_target_resolves_group() {
-        let path = GroupPath(vec![GroupSegment {
-            key: "git.repo".to_owned(),
-            value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
-            label: Some("flotilla".to_owned()),
-        }]);
-        let model = ControllerViewModel {
-            sort_mode: SortMode::Position,
-            config: RailConfig::default(),
-            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
-            tabs: vec![],
-            rows: vec![RailRow::GroupHeader {
-                group_id: "git.repo=flotilla-org/flotilla".to_owned(),
-                path: path.clone(),
-                label: "flotilla".to_owned(),
-                full_label: "flotilla-org/flotilla".to_owned(),
-                tab_count: 2,
-                templates: ResolvedTemplateSlots {
-                    group_header: Some(andamento_shared::ResolvedTemplateSlot {
-                        template_name: "repo-header".to_owned(),
-                        fields: vec![],
-                        render_ready: None,
-                        setters: vec![],
-                        effective_kdl: String::new(),
-                        resolve_error: None,
-                    }),
-                    ..Default::default()
-                },
-            }],
-            resolved_metadata: vec![],
-            observed_identities: vec![],
-            grouping_diagnostics: vec![],
-            metadata_controls: andamento_shared::MetadataControls::default(),
-            inspected_node: Some(NodeKey::Group(path.clone())),
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            display_variables: vec![],
-            display_variable_values: BTreeMap::new(),
-            surface_regions: vec![],
-            presentation: None,
-        };
 
-        let target = inspect_target_for(model.inspected_node.as_ref(), None, &model);
-
-        assert_eq!(target.node_key, NodeKey::Group(path));
-        assert_eq!(target.kind, InspectTargetKind::Group);
-        assert_eq!(target.label, "Group git.repo=flotilla-org/flotilla");
-        assert_eq!(
-            target
-                .group_templates
-                .and_then(|templates| templates.group_header.as_ref())
-                .map(|slot| slot.template_name.as_str()),
-            Some("repo-header")
-        );
-    }
-
-    #[test]
-    fn inspect_target_resolves_nested_placement_identity_templates_and_controls() {
-        let parent_ref = andamento_shared::EntityRef {
-            kind: "project".to_owned(),
-            id: "andamento".to_owned(),
-        };
-        let child_ref = andamento_shared::EntityRef {
-            kind: "issue".to_owned(),
-            id: "89".to_owned(),
-        };
-        let parent_key = andamento_shared::PlacementKey(vec![andamento_shared::PlacementSegment {
-            loop_name: "projects".to_owned(),
-            entity: parent_ref.clone(),
-        }]);
-        let child_key = andamento_shared::PlacementKey(vec![
-            parent_key.0[0].clone(),
-            andamento_shared::PlacementSegment {
-                loop_name: "issues".to_owned(),
-                entity: child_ref.clone(),
-            },
-        ]);
-        let detail = andamento_shared::ResolvedTemplateSlot {
-            template_name: "issue-detail".to_owned(),
-            fields: vec![],
-            render_ready: None,
-            setters: vec![],
-            effective_kdl: String::new(),
-            resolve_error: None,
-        };
-        let mut model = model_with_tab(7, "repo");
-        model.inspected_node = Some(NodeKey::Placement(child_key.clone()));
-        model.surface_regions = vec![andamento_shared::DisplayRegion {
-            definition: andamento_shared::template_config::SurfaceRegionDefinition {
-                name: "attention".to_owned(),
-                source: andamento_shared::template_config::SurfaceRegionSource::Attention,
-                root_template: "region/attention".to_owned(),
-                form: "detail".to_owned(),
-                attention_key: None,
-                placement: Some("tree".to_owned()),
-                pinned: false,
-                promotions: vec![],
-            },
-            root: None,
-            entities: vec![andamento_shared::DisplayEntity {
-                entity: parent_ref,
-                placement: Some(parent_key),
-                placement_layout: None,
-                label: "Andamento".to_owned(),
-                form: "detail".to_owned(),
-                metadata: BTreeMap::new(),
-                templates: ResolvedTemplateSlots::default(),
-                children: vec![andamento_shared::DisplayEntity {
-                    entity: child_ref.clone(),
-                    placement: Some(child_key.clone()),
-                    placement_layout: None,
-                    label: "Issue 89".to_owned(),
-                    form: "detail".to_owned(),
-                    metadata: BTreeMap::new(),
-                    templates: ResolvedTemplateSlots {
-                        detail: Some(detail),
-                        ..Default::default()
-                    },
-                    children: vec![],
-                }],
-            }],
-        }];
-        model.resolved_metadata = vec![andamento_shared::ResolvedMetadata {
-            target: ResolvedMetadataTarget::Entity(child_ref),
-            values: BTreeMap::from([(
-                "status".to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text("open".to_owned()),
-                    updated_at: 1,
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal: 0,
-                },
-            )]),
-            source_entries: BTreeMap::new(),
-            reachable_identities: vec![],
-        }];
-        model.template_config.effective_variables =
-            vec![andamento_shared::EffectiveNodeVariables {
-                node: NodeKey::Placement(child_key.clone()),
-                values: BTreeMap::new(),
-                declarations: vec![child_layout_declaration()],
-            }];
-
-        let target = inspect_target_for(model.inspected_node.as_ref(), None, &model);
-        assert_eq!(
-            target
-                .group_templates
-                .and_then(|templates| templates.detail.as_ref())
-                .map(|slot| slot.template_name.as_str()),
-            Some("issue-detail")
-        );
-        assert_eq!(
-            target.metadata.get("status").map(|entry| &entry.value),
-            Some(&MetadataValue::Text("open".to_owned()))
-        );
-
-        let rendered = render_config(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Inspect,
-            40,
-            100,
-            &[],
-            false,
-            0,
-        );
-        let text = rendered.lines.join("\n");
-        assert!(text.contains("kind      issue"));
-        assert!(text.contains("id        89"));
-        assert!(text.contains("issue-detail"));
-
-        let plugin = PluginState {
-            own_client_id: Some(3),
-            rendered_for_node: Some(NodeKey::Placement(child_key)),
-            model: Some(model),
-            ..Default::default()
-        };
-        assert_eq!(
-            plugin.node_variable_request(0, Some(1)).map(|request| (
-                request.node_key,
-                request.name,
-                request.value
-            )),
-            Some((
-                plugin.current_inspected_node(),
-                "child-layout".to_owned(),
-                Some("strip".to_owned()),
-            ))
-        );
-    }
-
-    #[test]
-    fn inspect_group_path_wraps_at_components_and_indents_continuations() {
-        let path = GroupPath(vec![
-            GroupSegment {
-                key: "scope".to_owned(),
-                value: MetadataValue::Text("engineering".to_owned()),
-                label: None,
-            },
-            GroupSegment {
-                key: "project".to_owned(),
-                value: MetadataValue::Text("andamento".to_owned()),
-                label: None,
-            },
-            GroupSegment {
-                key: "branch".to_owned(),
-                value: MetadataValue::Text("inspect-path-wrap".to_owned()),
-                label: None,
-            },
-        ]);
-        let model = ControllerViewModel {
-            sort_mode: SortMode::Position,
-            config: RailConfig::default(),
-            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
-            tabs: vec![],
-            rows: vec![RailRow::GroupHeader {
-                group_id: "scope=engineering/project=andamento/branch=inspect-path-wrap".to_owned(),
-                path: path.clone(),
-                label: "inspect-path-wrap".to_owned(),
-                full_label: "inspect-path-wrap".to_owned(),
-                tab_count: 1,
-                templates: ResolvedTemplateSlots::default(),
-            }],
-            resolved_metadata: vec![],
-            observed_identities: vec![],
-            grouping_diagnostics: vec![],
-            metadata_controls: andamento_shared::MetadataControls::default(),
-            inspected_node: Some(NodeKey::Group(path)),
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            display_variables: vec![],
-            display_variable_values: BTreeMap::new(),
-            surface_regions: vec![],
-            presentation: None,
-        };
-
-        let rendered = render_config_with_scope(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Inspect,
-            None,
-            40,
-            34,
-            &[],
-            false,
-            0,
-        );
-        let identity_lines = rendered
-            .lines
-            .iter()
-            .skip_while(|line| !line.trim().starts_with("── Identity "))
-            .skip(1)
-            .take_while(|line| !line.trim().is_empty())
-            .map(|line| line.trim_end())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            identity_lines,
-            vec![
-                "type      Group",
-                "path      scope=engineering >",
-                "          project=andamento >",
-                "          branch=inspect-path-wrap",
-            ]
-        );
-    }
-
-    #[test]
-    fn inspect_tab_group_path_wraps_without_dropping_the_group_label() {
-        let mut model = model_with_tab(7, "repo");
-        model.tabs[0].grouping = Some(TabGroupingInfo {
-            key: "scope=engineering/project=andamento".to_owned(),
-            path: GroupPath(vec![
-                GroupSegment {
-                    key: "scope".to_owned(),
-                    value: MetadataValue::Text("engineering".to_owned()),
-                    label: None,
-                },
-                GroupSegment {
-                    key: "project".to_owned(),
-                    value: MetadataValue::Text("andamento".to_owned()),
-                    label: None,
-                },
-            ]),
-            label: "repo".to_owned(),
-            full_label: "repo".to_owned(),
-        });
-        model.inspected_node = Some(NodeKey::Tab(7));
-
-        let rendered = render_config_with_scope(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Inspect,
-            None,
-            40,
-            34,
-            &[],
-            false,
-            0,
-        );
-        let group_lines = rendered
-            .lines
-            .iter()
-            .skip_while(|line| !line.trim_start().starts_with("group"))
-            .take(2)
-            .map(|line| line.trim_end())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            group_lines,
-            vec![
-                "group     repo scope=engineering >",
-                "          project=andamento",
-            ]
-        );
-    }
 
     #[test]
     fn inspect_target_falls_back_to_rail_scope() {
@@ -2585,100 +2038,6 @@ mod tests {
         assert_eq!(target.tab.map(|tab| tab.tab_id), Some(7));
     }
 
-    #[test]
-    fn inspect_page_renders_selected_tab_details() {
-        let mut model = ControllerViewModel {
-            sort_mode: SortMode::Position,
-            config: RailConfig::default(),
-            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
-            tabs: vec![TabCard {
-                tab_id: 7,
-                position: 2,
-                name: "repo".to_owned(),
-                active: true,
-                pinned: false,
-                status: None,
-                grouping: Some(TabGroupingInfo {
-                    key: "git:/repo".to_owned(),
-                    path: GroupPath(vec![GroupSegment {
-                        key: "git.repo".to_owned(),
-                        value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
-                        label: Some("flotilla".to_owned()),
-                    }]),
-                    label: "flotilla".to_owned(),
-                    full_label: "flotilla-org/flotilla".to_owned(),
-                }),
-                templates: andamento_shared::ResolvedTemplateSlots::default(),
-                active_pane: None,
-            }],
-            rows: vec![],
-            resolved_metadata: vec![],
-            observed_identities: vec![],
-            grouping_diagnostics: vec![],
-            metadata_controls: andamento_shared::MetadataControls::default(),
-            inspected_node: None,
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            display_variables: vec![],
-            display_variable_values: BTreeMap::new(),
-            surface_regions: vec![],
-            presentation: None,
-        };
-        model.inspected_node = Some(NodeKey::Tab(7));
-
-        let rendered = render_config_with_scope(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Inspect,
-            Some("tab:7"),
-            40,
-            80,
-            &[],
-            false,
-            0,
-        );
-        let rendered_text = rendered.lines.join("\n");
-
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("Inspect: Tab \"repo\" #7")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim().starts_with("── Identity ")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim().starts_with("── Options ")));
-        assert!(rendered_text.contains("Metadata"));
-        assert!(!rendered_text.contains("This item"));
-        assert!(rendered_text.contains("item"));
-        assert!(rendered_text.contains("subtree"));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim().starts_with("── Metadata ")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim().starts_with("── Sources ")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim().starts_with("── Templates ")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim() == "type      Tab"));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim() == "group     flotilla git.repo=flotilla-org/flotilla"));
-        assert!(!rendered_text.contains("Root metadata"));
-        assert!(!rendered_text.contains("[cycle inspected metadata]"));
-        assert!(!rendered_text.contains("model: tabs="));
-    }
 
     fn child_layout_declaration() -> andamento_shared::template_config::NodeVariableDefinition {
         andamento_shared::template_config::NodeVariableDefinition {
@@ -2688,47 +2047,6 @@ mod tests {
         }
     }
 
-    fn group_model_with_declarations(
-        declarations: Vec<andamento_shared::template_config::NodeVariableDefinition>,
-    ) -> ControllerViewModel {
-        let path = GroupPath(vec![GroupSegment {
-            key: "git.repo".to_owned(),
-            value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
-            label: Some("flotilla".to_owned()),
-        }]);
-        let mut model = ControllerViewModel {
-            sort_mode: SortMode::Position,
-            config: RailConfig::default(),
-            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
-            tabs: vec![],
-            rows: vec![RailRow::GroupHeader {
-                group_id: "git.repo=flotilla-org/flotilla".to_owned(),
-                path: path.clone(),
-                label: "flotilla".to_owned(),
-                full_label: "flotilla-org/flotilla".to_owned(),
-                tab_count: 2,
-                templates: ResolvedTemplateSlots::default(),
-            }],
-            resolved_metadata: vec![],
-            observed_identities: vec![],
-            grouping_diagnostics: vec![],
-            metadata_controls: andamento_shared::MetadataControls::default(),
-            inspected_node: Some(NodeKey::Group(path.clone())),
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            display_variables: vec![],
-            display_variable_values: BTreeMap::new(),
-            surface_regions: vec![],
-            presentation: None,
-        };
-        model.template_config.effective_variables =
-            vec![andamento_shared::EffectiveNodeVariables {
-                node: NodeKey::Group(path),
-                values: BTreeMap::new(),
-                declarations,
-            }];
-        model
-    }
 
     fn option_column(lines: &[String], label: &str) -> Option<usize> {
         lines
@@ -2743,7 +2061,7 @@ mod tests {
         // move on before the click lands, so resolution must fail closed.
         let mut plugin = PluginState::default();
         plugin.own_client_id = Some(3);
-        plugin.model = Some(group_model_with_declarations(vec![
+        plugin.model = Some(placement_model_with_declarations(vec![
             child_layout_declaration(),
         ]));
         plugin.rendered_for_node = Some(plugin.current_inspected_node());
@@ -2767,7 +2085,7 @@ mod tests {
 
         // The same click against a model whose declarations have changed under
         // it resolves to the new declaration or to nothing, never to the old one.
-        plugin.model = Some(group_model_with_declarations(vec![
+        plugin.model = Some(placement_model_with_declarations(vec![
             andamento_shared::template_config::NodeVariableDefinition {
                 name: "caption".to_owned(),
                 default: "none".to_owned(),
@@ -2788,7 +2106,7 @@ mod tests {
         // fail a test rather than pass silently.
         let mut plugin = PluginState::default();
         plugin.own_client_id = Some(3);
-        plugin.model = Some(group_model_with_declarations(vec![
+        plugin.model = Some(placement_model_with_declarations(vec![
             child_layout_declaration(),
         ]));
         plugin.rendered_for_node = Some(plugin.current_inspected_node());
@@ -2808,54 +2126,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_click_aimed_at_a_replaced_frame_does_not_apply_to_the_new_node() {
-        // hit regions are captured at render and consumed on a later event. A
-        // controller push in between swaps the model and the inspected node, so
-        // a click carrying indices from the old frame must be dropped, not
-        // re-resolved against a different node of the same shape.
-        let mut plugin = PluginState::default();
-        plugin.own_client_id = Some(3);
-        plugin.model = Some(group_model_with_declarations(vec![
-            child_layout_declaration(),
-        ]));
-        plugin.rendered_for_node = Some(plugin.current_inspected_node());
-
-        assert!(
-            plugin.node_variable_request(0, Some(1)).is_some(),
-            "a click against the frame on screen resolves"
-        );
-
-        // Same shape, different node — one declaration at index 0, so the index
-        // is in range and only the node identity distinguishes them.
-        let mut moved = group_model_with_declarations(vec![child_layout_declaration()]);
-        let elsewhere = GroupPath(vec![GroupSegment {
-            key: "git.repo".to_owned(),
-            value: MetadataValue::Text("flotilla-org/andamento".to_owned()),
-            label: Some("andamento".to_owned()),
-        }]);
-        moved.inspected_node = Some(NodeKey::Group(elsewhere.clone()));
-        moved.template_config.effective_variables =
-            vec![andamento_shared::EffectiveNodeVariables {
-                node: NodeKey::Group(elsewhere),
-                values: BTreeMap::new(),
-                declarations: vec![child_layout_declaration()],
-            }];
-        plugin.model = Some(moved);
-
-        assert_eq!(
-            plugin.node_variable_request(0, Some(1)),
-            None,
-            "the click was aimed at a frame that is no longer on screen"
-        );
-    }
 
     #[test]
     fn declared_variable_rows_share_one_option_column_whatever_they_are_named() {
         // The column width used to come from a hardcoded "Child layout"
         // placeholder, so any declaration named something longer rendered its
         // control further right than the Metadata row and its siblings.
-        let model = group_model_with_declarations(vec![
+        let model = placement_model_with_declarations(vec![
             child_layout_declaration(),
             andamento_shared::template_config::NodeVariableDefinition {
                 name: "attention.density.preference".to_owned(),
@@ -2894,7 +2171,7 @@ mod tests {
         // finite set of segments to offer. It renders inherit alone rather than
         // an empty row. Setting a free-form value from the inspector needs a
         // different control — see the follow-up issue.
-        let model = group_model_with_declarations(vec![
+        let model = placement_model_with_declarations(vec![
             andamento_shared::template_config::NodeVariableDefinition {
                 name: "caption".to_owned(),
                 default: "none".to_owned(),
@@ -2930,94 +2207,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn inspect_group_options_expose_direct_child_layout_actions() {
-        let path = GroupPath(vec![GroupSegment {
-            key: "git.repo".to_owned(),
-            value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
-            label: Some("flotilla".to_owned()),
-        }]);
-        let mut model = ControllerViewModel {
-            sort_mode: SortMode::Position,
-            config: RailConfig::default(),
-            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
-            tabs: vec![],
-            rows: vec![RailRow::GroupHeader {
-                group_id: "git.repo=flotilla-org/flotilla".to_owned(),
-                path: path.clone(),
-                label: "flotilla".to_owned(),
-                full_label: "flotilla-org/flotilla".to_owned(),
-                tab_count: 2,
-                templates: ResolvedTemplateSlots::default(),
-            }],
-            resolved_metadata: vec![],
-            observed_identities: vec![],
-            grouping_diagnostics: vec![],
-            metadata_controls: andamento_shared::MetadataControls::default(),
-            inspected_node: Some(NodeKey::Group(path)),
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            display_variables: vec![],
-            display_variable_values: BTreeMap::new(),
-            surface_regions: vec![],
-            presentation: None,
-        };
-        model.template_config.effective_variables =
-            vec![andamento_shared::EffectiveNodeVariables {
-                node: model.inspected_node.clone().expect("inspected group"),
-                values: BTreeMap::new(),
-                declarations: vec![child_layout_declaration()],
-            }];
-
-        let rendered = render_config_with_scope(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Inspect,
-            None,
-            40,
-            100,
-            &[],
-            false,
-            0,
-        );
-        let rendered_text = rendered.lines.join("\n");
-
-        assert!(rendered_text.contains("Options"));
-        assert!(rendered_text.contains("Metadata"));
-        assert!(rendered_text.contains("child-layout"));
-        let metadata_options_line = rendered
-            .lines
-            .iter()
-            .find(|line| line.trim_start().starts_with("Metadata"))
-            .expect("metadata options row");
-        let child_layout_options_line = rendered
-            .lines
-            .iter()
-            .find(|line| line.trim_start().starts_with("child-layout"))
-            .expect("child layout options row");
-        assert_eq!(
-            metadata_options_line.find("● inherit"),
-            child_layout_options_line.find("● inherit"),
-            "option controls should align in one form column: metadata={metadata_options_line:?} child_layout={child_layout_options_line:?}"
-        );
-        assert!(rendered.hit_regions.iter().any(|hit| {
-            hit.action == ConfigAction::SetInspectedMetadata(Some(MetadataTriState::MetaChildren))
-        }));
-        assert!(rendered.hit_regions.iter().any(|hit| {
-            hit.action
-                == ConfigAction::SetNodeVariable {
-                    variable: 0,
-                    value: Some(1),
-                }
-        }));
-        assert!(rendered.hit_regions.iter().any(|hit| {
-            hit.action
-                == ConfigAction::SetNodeVariable {
-                    variable: 0,
-                    value: None,
-                }
-        }));
-    }
 
     #[test]
     fn inspect_root_options_expose_inheritable_child_layout_actions() {
@@ -3194,59 +2383,6 @@ mod tests {
         assert_eq!(updated.structure, RailStructure::BoxPerTab);
     }
 
-    #[test]
-    fn renders_template_page_diagnostics() {
-        let model = ControllerViewModel {
-            sort_mode: SortMode::Position,
-            config: RailConfig::default(),
-            template_config: andamento_shared::TemplateConfigDiagnostics {
-                path: Some("/host/tmp/andamento.kdl".to_owned()),
-                state: andamento_shared::TemplateConfigState::Loaded,
-                template_count: 1,
-                template_names: vec!["andamento.git.group-header".to_owned()],
-                last_error: None,
-                warnings: vec![],
-                effective_variables: vec![],
-            },
-            tabs: vec![],
-            rows: vec![],
-            resolved_metadata: vec![],
-            observed_identities: vec![],
-            grouping_diagnostics: vec![],
-            metadata_controls: andamento_shared::MetadataControls::default(),
-            inspected_node: None,
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            display_variables: vec![],
-            display_variable_values: BTreeMap::new(),
-            surface_regions: vec![],
-            presentation: None,
-        };
-
-        let rendered = render_config(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Templates,
-            16,
-            80,
-            &[],
-            false,
-            0,
-        );
-
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("state: loaded")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("/host/tmp/andamento.kdl")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("andamento.git.group-header")));
-    }
 
     #[test]
     fn renders_stats_page_collect_action() {
@@ -3332,114 +2468,7 @@ mod tests {
             .any(|line| line.contains("counter-03")));
     }
 
-    #[test]
-    fn renders_collected_cwd_metadata_from_model() {
-        let model = ControllerViewModel {
-            sort_mode: SortMode::Position,
-            config: RailConfig::default(),
-            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
-            tabs: vec![
-                TabCard {
-                    tab_id: 1,
-                    position: 0,
-                    name: "server".to_owned(),
-                    active: true,
-                    pinned: false,
-                    status: None,
-                    grouping: Some(TabGroupingInfo {
-                        key: "cwd:/repo/app".to_owned(),
-                        path: GroupPath(vec![GroupSegment {
-                            key: "zellij.pane.cwd".to_owned(),
-                            value: MetadataValue::Text("/repo/app".to_owned()),
-                            label: None,
-                        }]),
-                        label: "app".to_owned(),
-                        full_label: "/repo/app".to_owned(),
-                    }),
-                    templates: andamento_shared::ResolvedTemplateSlots::default(),
-                    active_pane: None,
-                },
-                TabCard {
-                    tab_id: 2,
-                    position: 1,
-                    name: "scratch".to_owned(),
-                    active: false,
-                    pinned: false,
-                    status: None,
-                    grouping: None,
-                    templates: andamento_shared::ResolvedTemplateSlots::default(),
-                    active_pane: None,
-                },
-            ],
-            rows: vec![],
-            resolved_metadata: vec![],
-            observed_identities: vec![],
-            grouping_diagnostics: vec![],
-            metadata_controls: andamento_shared::MetadataControls::default(),
-            inspected_node: None,
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            display_variables: vec![],
-            display_variable_values: BTreeMap::new(),
-            surface_regions: vec![],
-            presentation: None,
-        };
 
-        let rendered = render_config(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Settings,
-            24,
-            40,
-            &[],
-            false,
-            0,
-        );
-
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim() == "cwd metadata"));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim() == "server: app zellij.pane.cwd=/repo/app"));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim() == "scratch: zellij.pane.cwd=<none>"));
-    }
-
-    fn model_with_tab(tab_id: u64, name: &str) -> ControllerViewModel {
-        ControllerViewModel {
-            sort_mode: SortMode::Position,
-            config: RailConfig::default(),
-            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
-            tabs: vec![TabCard {
-                tab_id,
-                position: 0,
-                name: name.to_owned(),
-                active: true,
-                pinned: false,
-                status: None,
-                grouping: None,
-                templates: andamento_shared::ResolvedTemplateSlots::default(),
-                active_pane: None,
-            }],
-            rows: vec![],
-            resolved_metadata: vec![],
-            observed_identities: vec![],
-            grouping_diagnostics: vec![],
-            metadata_controls: andamento_shared::MetadataControls::default(),
-            inspected_node: None,
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            display_variables: vec![],
-            display_variable_values: BTreeMap::new(),
-            surface_regions: vec![],
-            presentation: None,
-        }
-    }
 
     #[test]
     fn granted_permission_should_resync_with_controller() {

@@ -1,0 +1,20 @@
+---
+source: crates/andamento-terminal/src/placement_tests.rs
+expression: snapshot(&frame)
+---
+|⚠ Attention             |
+|  ▼ Andamento           |
+|    governor  tui       |
+|    ▼ Placement cutover |
+|      ▼ work            |
+|        coder           |
+|    #71  #72            |
+|    Empty project       |
+|                        |
+|                        |
+|                        |
+|                        |
+|                        |
+|                        |
+|                        |
+|⚙                      ◇|

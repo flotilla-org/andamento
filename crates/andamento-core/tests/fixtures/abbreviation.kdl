@@ -3,7 +3,7 @@ variable "item.tier" default="medium" {
   value "medium"
   value "short"
 }
-region "tree" source="tree" root-template="title" form="compact" placement="tree"
+region "tree" root-template="title" form="compact" placement="tree"
 template "title" { field "label" source="literal" value="Vessels"; }
 placement "tree" {
   for "item" kind="vessel" {

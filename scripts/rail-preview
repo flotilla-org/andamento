@@ -14,7 +14,8 @@
 #
 # The scene comes from fixtures/rail-scene.jsonl unless RAIL_PREVIEW_SCENE names a
 # connector-format JSONL file. Set RAIL_PREVIEW_RAW=1 to keep the controller's
-# model dump, which is where grouping paths and resolved templates are visible.
+# harness output, including the patch count. Use --dump-template in the native
+# harness to inspect resolved templates.
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"

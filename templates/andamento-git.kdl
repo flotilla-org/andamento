@@ -1,19 +1,22 @@
 version 1
 
-// Optional standalone git override and focused catalog fixture. The shipped
-// layouts bind flotilla-default.kdl, which bundles this rule as a fallback.
-grouping "andamento.git" priority=-2000 {
-  level key="andamento.project" optional=true
-  level key="vcs.repo" label-key="repo.name" template="repo/full"
-  level key="git.branch" optional=true
+// Optional catalog presentation for producers that publish repository entities.
+region "repositories" root-template="repositories/title" form="compact" placement="repositories"
+placement "repositories" {
+  for "repo" kind="repo" {
+    order "display.label"
+    apply-template "repo/line"
+  }
 }
-
-// The declaration above makes this choice explicit for repository groups.
-// Extending the namespaced bundled template preserves its toggle and allows
-// this file to replace only the label field.
-template "repo/full" extends="flotilla/repo/full" {
-  field "label" class="required" priority=100 {
-    value key="vcs.repo"
-    value key="group.label"
+template "repositories/title" {
+  field "label" source="literal" value="Repositories"
+}
+template "repo/line" {
+  toggle collapsed="▶" expanded="▼"
+  field "label" key="display.label"
+  for "checkout" kind="checkout" {
+    match "vcs.repo" of="repo"
+    field "label" key="display.label"
+    field "branch" key="git.branch"
   }
 }

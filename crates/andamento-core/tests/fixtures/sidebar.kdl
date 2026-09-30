@@ -4,9 +4,9 @@ variable "density" default="roomy" {
 }
 display-variable "show-issues" type="bool" default=true label="Issues" icon="I"
 
-region "tree" source="tree" root-template="tree/title" form="compact" placement="tree"
-region "attention" source="attention" root-template="attention/title" form="compact" placement="attention"
-region "controls" source="controls" root-template="controls/title" form="compact" pinned=true
+region "tree" root-template="tree/title" form="compact" placement="tree"
+region "attention" root-template="attention/title" form="compact" placement="attention"
+region "controls" root-template="controls/title" form="compact" pinned=true
 
 template "tree/title" slot="compact" node-kind="entity" {
   field "label" source="literal" value="Projects"

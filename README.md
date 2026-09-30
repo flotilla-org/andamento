@@ -77,255 +77,96 @@ scroll position never left the originating rail at all. Rails now send actions
 to the controller, consume one totally ordered collapse/scroll snapshot, and
 request that current snapshot whenever a new instance starts.
 
-## Grouping Catalog
+## Placement templates
 
-The controller derives every tab and entity group through one ordered rule
-catalog. The bundled catalog tries the Flotilla hierarchy first, then git
-repository/branch facts, then the exact pane cwd as the lowest-priority
-fallback. Tabs without facts for any rule remain flat. There is no independent
-grouping mode or directory-specific rendering path.
+Placement is the only presentation pipeline. Producers publish entity facts;
+section templates query them using named, nested loops. No grouping catalog,
+presence classes, derived group paths, or pipeline switch remain.
 
-```kdl
-plugin location="andamento-controller" {
-    grouping_config_path "file:$ANDAMENTO_ROOT/templates/flotilla-default.kdl"
-    rail_segment_between_color "#282c34"
-}
-```
-
-`rail_segment_between_color` is optional. It controls the in-between colour used by tab-strip separators; set it to your terminal background colour when you want those segments to blend into the rail instead of using Zellij's ribbon background.
-
-## External Grouping Rules
-
-The controller derives presentation paths from flat entity facts. Producers
-publish `MetadataTarget::Entity({ kind, id })` patches with facts such as
-`flotilla.project`, `vcs.repo`, and `flotilla.convoy`; they do not publish
-group targets or paths. The bundled `flotilla.default` rule orders the
-spine as project → repo → convoy → vessel → session → issue → checkout.
-Convoys and vessels are tab candidates, issues are inline-only, and a
-single vessel collapses into its convoy because both expose the same primary
-action target.
-
-The controller can also load named grouping templates from a real filesystem
-path exposed to the plugin. Rules are tried by priority and project resolved
-metadata into a hierarchical `GroupPath`; missing optional facts are skipped
-rather than invented, while a missing non-optional fact rejects that rule. The
-local example binds both config loaders to the Flotilla-first default:
+The bundled `templates/flotilla-default.kdl` selects projects, places their
+standing roles as pills on the project line, renders convoys and their vessels
+beneath them, and collects issues in a number row. Single children stay nested.
+A project's repository facts do not create extra levels. Catalog entries that
+no placement loop selected appear as a count and an ID list in the existing
+Inspect page. This interim diagnostic leaves #72's final destination and
+intentional-hiding distinction open.
 
 ```kdl
 plugin location="andamento-controller" {
     template_config_path "file:$ANDAMENTO_ROOT/templates/flotilla-default.kdl"
-    grouping_config_path "file:$ANDAMENTO_ROOT/templates/flotilla-default.kdl"
 }
 ```
 
-Example grouping rules:
+A surface is an ordered set of sections. Each names a root template and may
+name a placement query; a section containing only fields or controls needs no
+query. `pinned=true` reserves its rows outside the scrolling content.
 
 ```kdl
-grouping "andamento.git" priority=-2000 {
-    level key="andamento.project" optional=true
-    level key="vcs.repo" label-key="repo.name" template="repo/full"
-    level key="git.branch" optional=true
+region "tree" root-template="tree/title" form="compact" placement="projects"
+template "tree/title" {
+    field "label" source="literal" value="Projects"
+}
+placement "projects" {
+    for "project" kind="project" {
+        order "display.label"
+        apply-template "project/line"
+    }
+}
+template "project/line" {
+    toggle collapsed="▶" expanded="▼"
+    field "label" key="display.label"
+    for "convoy" kind="convoy" layout="lines" {
+        match "flotilla.project" of="project"
+        apply-template
+    }
 }
 ```
 
-`templates/andamento-git.kdl` remains available as an optional standalone git
-override and focused catalog fixture; the shipped layouts bind
-`templates/flotilla-default.kdl`.
+Queries use indexed equality predicates. `of=` refers to an enclosing loop's
+binding; `apply-template` starts a fresh binding environment. Bare
+`apply-template` selects `<entity.kind>/line`. Entity forms use
+`<entity.kind>/compact` and `<entity.kind>/detail`, with a generic bundled
+fallback for unknown kinds. The old `group-header`, `tab-title`, and
+`tab-status` slots are rejected.
 
-Every non-optional level must derive for a rule to capture an entity. A missing
-`optional=true` level keeps the entity captured and places it at the deepest
-derived group. Each level also accepts `collapse-single-member=true` and
-`show-empty=true`.
-Presence mappings classify an entity kind as `tab`, `inline`, or `hidden`.
-Inline entities can select `form="compact"` to reuse the rail's wrapped
-Zellij-ribbon collection rendering. `visible-when="variable-name"` gates the
-whole class through a declared display variable; it does not introduce a
-kind-specific switch in the renderer. Both `level` and `presence` declarations
-accept `template="..."` when they need to override convention binding.
-The built-in entity renderers show the flat `source` fact as a compact
-`[producer]` badge on group and tab labels.
-The bundled template is available as
-`templates/flotilla-default.kdl`. Switch named templates at runtime by
-sending `andamento-set-grouping-template` a JSON payload such as
-`{"name":"flotilla.default"}`; send `{"name":null}` to resume priority
-selection. Stored entity facts are unchanged.
+`layout="lines"` renders siblings vertically. `layout="inline"` puts a
+complete loop instance on its parent's line when it fits; otherwise every item
+moves to dedicated rows. `layout="row"` always uses dedicated rows, as the
+bundled issue loop does. Widths and optional columns are resolved together for
+siblings. Declared `tier="full|medium|short"` selects producer abbreviations
+without trying tiers until content fits.
 
-`GroupingConfigCatalog::with_bundled_defaults` appends any missing bundled
-rules by name, so a live custom config still retains the lower-priority git
-and cwd fallbacks. Override a bundled rule by declaring the same name.
+Templates still support `extends`, reusable `fragment`/`use`, field replacement,
+`remove`, chrome, and effective-KDL inspection. User, repository, project,
+fleet, and bundled layers retain their precedence. Node variables inherit down
+the placement tree; Inspect renders their declared controls and setter
+provenance. Collapse and variable overrides use placement keys, so two
+appearances of one entity have independent state. Renaming a loop resets state
+beneath that loop.
 
-## External Rail Templates
-
-The controller can load a KDL template config from a real filesystem path exposed to the plugin, resolve templates against metadata, and send resolved fields to each rail:
+Controls are declared template content:
 
 ```kdl
-plugin location="andamento-controller" {
-    template_config_path "file:$ANDAMENTO_ROOT/templates/andamento-git.kdl"
-}
-```
-
-Template load status, errors, and resolved slots are visible in the config
-plugin's `templates` tab.
-
-Display variables and entity forms live in the same template model. Boolean
-and enum variables have a default, label, icon, and persistence policy. A
-display-variable control refers to its declaration by name, and values are
-shared by all rails through the session rail-state broadcast. Controls are a
-template content type alongside fields (and loops):
-
-```kdl
-display-variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
-
-template "region/controls" slot="compact" node-kind="entity" {
+template "controls" {
     control "open-config" glyph="⚙"
-    control "display-variable" variable="show-issues"
     control "scroll-down" glyph="▼"
     control "scroll-up" glyph="▲"
     control "inspect-root"
 }
-
-template "issue/compact" slot="compact" node-kind="entity" {
-    field "label" source="metadata-first-token" key="display.label"
-}
-
-template "issue/detail" slot="detail" node-kind="entity" {
-    field "label" key="display.label"
-    field "summary" class="priority" key="summary.text" priority=50
-}
 ```
 
-The bundled `controls` region is pinned and its root template contains only
-control widgets. Templates do not require a loop, so the section occupies one
-fixed row and does not scroll away with tree content.
+Display-variable controls remain available for declared variables. The old
+presence-class `show-issues` gate is removed with presence classes; no new
+suppression declaration replaces it. The detail card reserves four rows and
+shows a hovered placement's full detail fields.
 
-Compact entities expose their `detail` form in the rail's fixed multi-row card.
-Pointer hover updates it immediately; clicking an entity keeps it as the
-selection fallback when the pointer leaves.
-
-A custom pack can factor shared fields into fragments:
-
-```kdl
-fragment "repo/status" {
-    field "branch" key="git.branch" priority=60 prefix=" "
-}
-
-template "repo/full" extends="flotilla/repo/full" {
-    field "label" priority=100 {
-        value key="vcs.repo"
-        value key="group.label"
-    }
-    use "repo/status"
-}
-```
-
-Templates bind by name instead of predicates. Entity forms use
-`<entity.kind>/<compact|detail>`, groups use `<kind>/full`, and tabs use
-`tab/title` or `tab/status`. A grouping or presence declaration's `template=`
-value overrides that convention for the affected node.
-Entity kinds and forms are open strings. A publisher can introduce a new kind
-without a renderer change; a matching user template wins by convention, and
-otherwise the bundled `entity/<form>` template supplies the generic fallback.
-
-Chrome is part of the same effective document:
-
-```kdl
-template "tab/title" slot="tab-title" node-kind="tab" {
-    box border="single"
-    indent level=2
-    dim when="rail.tab.latent"
-    field "title" key="zellij.tab.name"
-}
-```
-
-`box`, `toggle`, `fill`, `dim`, and `indent` decide whether and where chrome
-appears. The renderer still owns terminal glyph/style mechanics. Resolved
-chrome and field programs travel with the controller view model, while the
-flattened KDL remains inspect evidence; the rail does not parse KDL per frame.
-Chrome is opt-in for replacement templates: a template that replaces
-`tab/title` or a group header without `extends=` must declare the primitives
-it wants. Extend the corresponding bundled template or reuse its fragment to
-preserve the previous box, indentation, dimming, toggle, and fill treatment.
-Wholesale `tab/title` replacements should also render the
-`materialize.glyph` metadata field if they want the latent-state marker.
-A matched template wins even when its fields render no text, because a
-chrome-only or intentionally empty template is itself a complete result.
-
-`extends=` names one parent. A child field with the same name replaces its
-parent in place; `remove "field-name"` deletes one; new fields are interleaved
-by numeric priority. `use "fragment-name"` expands a reusable fragment.
-Same-named templates in a more specific layer replace the lower layer
-definition unless they explicitly extend it. Fields therefore require stable
-names. Field order is render order, and lower numeric `priority` fields are
-dropped first when the sidebar is narrow. A `key=` value reads metadata and
-renders it by value type.
-
-The resolver walks user → repository → project → fleet → bundled layers for
-each node. Repository and project layers participate only when that node's
-`vcs.repo` or `flotilla.project` membership matches, preventing configuration
-from leaking across nodes. The complete namespaced fallback pack is published
-in `templates/flotilla-default.kdl`.
-
-The same document can declare node-scoped variables. A variable has a default
-and an allowed value set; templates and applicable configuration layers can set
-it, and template fields can read its effective value through the `var.*`
-namespace:
-
-```kdl
-variable "child-layout" default="cards" {
-    value "cards"
-    value "strip"
-}
-
-set "child-layout" "cards"
-
-template "repo/full" slot="group-header" node-kind="group" {
-    set "child-layout" "strip"
-    field "layout" key="var.child-layout"
-}
-```
-
-Values inherit from the nearest ancestor. At a node, an applicable
-configuration-layer `set` wins over a template `set`; the Inspect view shows
-the effective value, winning setter, ancestor, source layer/file, and overridden
-history. The bundled `child-layout` variable replaces the former rail-specific
-child-layout metadata control and accepts only `cards` or `strip`.
-
-The sidebar itself is an ordered stack declared in that same surface config:
-
-```kdl
-region "header" source="header" root-template="flotilla/region/header" form="compact" pinned=true
-region "attention" source="attention" root-template="flotilla/region/attention" form="full" attention-key="status.attention"
-region "tree" source="tree" root-template="flotilla/region/tree" form="compact" {
-    promote when="zellij.tab.active" form="full"
-    promote when="rail.tab.pinned" form="full"
-}
-region "controls" source="controls" root-template="flotilla/region/controls" form="compact" pinned=true
-```
-
-Declaration order is render order. A configured stack replaces the bundled
-stack as one unit, so regions can be reordered without renderer changes. Each
-region selects its root template and entity form independently. Attention
-regions promote entities whose configured boolean fact is true; the bundled
-surface consumes Flotilla's normalized `status.attention` fact and uses the
-full form. The tree defaults to the `compact` form, promoting active or pinned
-tabs to `full` in declaration order. Promotion is a highlight projection: the
-entity keeps its stable navigation position in the tree. A
-pinned border-adjacent region reserves its rows while the intervening region
-viewport is clipped.
-
-Select a row's inspect glyph to see the effective flattened KDL. Its comments
-show the inheritance chain and the source layer/file for every field; missing
-parents, fragments, declaration targets, and inheritance cycles are shown as
-resolution errors.
-
-The native harness replays connector-format JSONL through the controller and
-real rail renderer. It can also print the effective document for each resolved
-slot in the captured model:
+The harness replays connector JSONL through the controller and terminal
+renderer. `--dump-template compact` or `detail` prints effective template KDL:
 
 ```sh
-cargo run -p andamento-controller --target "$(rustc -vV | sed -n 's/^host: //p')" -- \
-  fixtures/flotilla-connector-patches.jsonl templates/andamento-git.kdl \
-  --dump-template group-header
+cargo run -p andamento-controller --target x86_64-unknown-linux-gnu -- \
+  crates/andamento-core/tests/fixtures/default.jsonl --dump-template compact
+scripts/rail-preview 24 46 64
 ```
 
 To look at the rail rather than inspect one model, `scripts/rail-preview`
@@ -394,15 +235,13 @@ tracks adding a real recording.
 Snapshots tell you a frame changed. They do not tell you whether the result
 reads well, which is what most of the rail's open questions are about.
 
-Switch the rail into the generic metadata inspection projection:
+The before frame is recorded in
+[`default-before.txt`](docs/sidebar-design/snapshots/default-before.txt).
+The default tree and terminal frames at 24 and 64 columns are tested snapshots.
+Open host workspaces keep their existing fallback navigation when no catalog
+placement covers them; this does not insert unmatched catalog entities into
+the rail.
 
-```kdl
-plugin location="andamento-controller" {
-    rail_view "metadata"
-}
-```
-
-Use `rail_view "normal"` or omit the setting for the normal navigation rail.
 
 ## Rail Placement
 

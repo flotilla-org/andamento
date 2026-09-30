@@ -1,6 +1,10 @@
-# Grouping As Built
+# Historical grouping layer (retired by #71)
 
-A factual description of what the grouping configuration actually does today.
+This is a historical record of the deleted push-based grouping layer, before
+the placement cutover. It is not the current implementation or a specification.
+See `placement-model.md` and the README for the shipped placement templates.
+
+The remainder records what the old grouping configuration did.
 No proposals. Written because the shipped behaviour had drifted from anything
 written down, and successive changes were being designed against guesses.
 

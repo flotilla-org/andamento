@@ -1,5 +1,21 @@
 # The Placement Model
 
+Cutover status (2026-09-30): placement is now the only pipeline. The legacy
+grouping catalog, structural slots, GroupPath UI identity, and renderer adapter
+are deleted. `current-grouping.md` is historical. The migration discussion below
+records the design sequence, not a switch that remains available.
+
+The shipped defaults select projects, place their standing roles inline, nest
+convoys/vessels/sessions, and render issue numbers in a dedicated loop row.
+`layout="row"` uses the same per-instance width and wrapping rules as inline
+loops, without attempting the parent line. No single-child fusion is applied.
+Unmatched catalog entities are listed with a count in Inspect as the interim
+#72 rule; no suppression declaration or new unmatched surface is introduced.
+
+Loop binding and explicit tier are now typed evaluation data. Frontends consume
+semantic placement snapshots directly. Layout remains on each placement node;
+this cutover does not introduce a loop-instance node on the wire.
+
 Agreed 2026-08-08; syntax and migration added 2026-08-11; revised the same day
 after review. All in grilling sessions. This records decisions and the reasons
 for them. It is not an implementation plan.

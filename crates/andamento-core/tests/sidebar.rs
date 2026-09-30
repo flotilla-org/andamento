@@ -592,16 +592,7 @@ fn placements_cover_aliases_and_collapsed_children_but_filtered_workspaces_fall_
     // Hide every provider placement while retaining the observed workspace and
     // its binding. Reconfiguring back restores both aliases without a fallback.
     sidebar
-        .configure(&format!(
-            r#"{CONFIG}
-        display-variable "show-vessels" type="bool" default=false label="Vessels" icon="V"
-        grouping "hidden-vessels" priority=9999 {{
-            filter key="entity.kind" equals="vessel"
-            presence kind="vessel" class="tab" visible-when="show-vessels"
-            level key="entity.id"
-        }}
-    "#
-        ))
+        .configure(&CONFIG.replace("kind=\"vessel\"", "kind=\"unselected-kind\""))
         .unwrap();
     let nodes = fallback(&sidebar);
     assert_eq!(nodes.len(), 1);
@@ -932,12 +923,7 @@ fn materializing_the_current_resolution_records_its_managed_target() {
 #[test]
 fn detail_templates_list_related_entities_through_their_own_loops() {
     const CONFIG: &str = r#"
-grouping "all" {
-  filter key="entity.kind"
-  presence kind="project" class="tab"
-  level key="entity.id"
-}
-region "tree" source="tree" root-template="root" form="compact" placement="tree"
+region "tree" root-template="root" form="compact" placement="tree"
 template "root" slot="compact" node-kind="entity" {
   field "label" source="literal" value="Projects"
 }
@@ -1062,12 +1048,7 @@ fn materialized_target_is_recorded_when_the_resolution_has_a_working_directory()
 
 #[test]
 fn retracted_and_expired_entities_leave_the_catalog() {
-    // Grouping on identity (as the Wheelhouse daily driver does) matches every
-    // entity, so only the absence of facts can keep a retracted one out.
-    let config = format!(
-        "{CONFIG}\ngrouping \"identity\" {{\n  filter key=\"entity.kind\"\n  presence kind=\"project\" class=\"tab\"\n  level key=\"entity.id\"\n}}\n"
-    );
-    let mut sidebar = Sidebar::new(&config).unwrap();
+    let mut sidebar = Sidebar::new(CONFIG).unwrap();
     let placed = |sidebar: &mut Sidebar, id: &str| {
         let snapshot = sidebar.snapshot();
         let mut stack = snapshot

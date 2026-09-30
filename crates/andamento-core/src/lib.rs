@@ -4,7 +4,6 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-pub mod grouping_config;
 pub mod host;
 pub mod managed;
 mod metadata;
@@ -22,7 +21,6 @@ pub const MSG_VIEW_MODEL: &str = "andamento-view-model";
 pub const MSG_TOGGLE_PIN: &str = "andamento-toggle-pin";
 pub const MSG_SET_SORT_MODE: &str = "andamento-set-sort-mode";
 pub const MSG_SET_RAIL_CONFIG: &str = "andamento-set-rail-config";
-pub const MSG_SET_GROUPING_TEMPLATE: &str = "andamento-set-grouping-template";
 pub const MSG_SET_PANE_STATUS: &str = "andamento-set-pane-status";
 pub const MSG_CLEAR_PANE_STATUS: &str = "andamento-clear-pane-status";
 pub const MSG_APPLY_METADATA_PATCH: &str = "andamento-apply-metadata-patch";
@@ -150,7 +148,6 @@ pub struct NodeVariableSetRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum RailUiAction {
-    ToggleGroup { path: GroupPath },
     TogglePlacement { key: PlacementKey },
     ToggleVariable { name: String },
     ScrollBy { delta: isize },
@@ -168,8 +165,6 @@ pub struct RailUiRevision {
 pub struct RailUiState {
     #[serde(default)]
     pub revision: RailUiRevision,
-    #[serde(default)]
-    pub collapsed_groups: Vec<GroupPath>,
     #[serde(default)]
     pub collapsed_placements: Vec<PlacementKey>,
     #[serde(default)]
@@ -272,8 +267,6 @@ pub struct TabCard {
     pub pinned: bool,
     pub status: Option<TabStatusSummary>,
     #[serde(default)]
-    pub grouping: Option<TabGroupingInfo>,
-    #[serde(default)]
     pub templates: ResolvedTemplateSlots,
     /// The currently-focused pane on this tab, if any. Useful for
     /// templates and debugging.
@@ -295,7 +288,6 @@ pub struct LatentTab {
     pub entity: EntityRef,
     /// Stable producer-owned identity used to deduplicate materializations.
     pub action_target: String,
-    pub path: GroupPath,
     pub name: String,
     /// The opener-owned lifecycle while this catalog entry has no live tab.
     #[serde(default)]
@@ -318,18 +310,12 @@ pub struct LatentTab {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MaterializeLatentRequest {
     pub action_target: String,
-    pub path: GroupPath,
     pub name: String,
     pub recipe: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout_path: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GroupingTemplateSetRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
 
 impl LatentTab {
     pub fn materialize_request(&self) -> Option<MaterializeLatentRequest> {
@@ -338,7 +324,6 @@ impl LatentTab {
         }
         Some(MaterializeLatentRequest {
             action_target: self.action_target.clone(),
-            path: self.path.clone(),
             name: self.name.clone(),
             recipe: self.materialize_recipe.clone()?,
             checkout_path: self.checkout_path.clone(),
@@ -346,14 +331,6 @@ impl LatentTab {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TabGroupingInfo {
-    pub key: String,
-    #[serde(default)]
-    pub path: GroupPath,
-    pub label: String,
-    pub full_label: String,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -448,46 +425,6 @@ impl MetadataPathValue {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct GroupPath(pub Vec<GroupSegment>);
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GroupSegment {
-    pub key: String,
-    pub value: MetadataValue,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-}
-
-impl PartialEq for GroupSegment {
-    fn eq(&self, other: &Self) -> bool {
-        self.key == other.key && self.value == other.value
-    }
-}
-
-impl Eq for GroupSegment {}
-
-impl PartialOrd for GroupSegment {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for GroupSegment {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.key
-            .cmp(&other.key)
-            .then_with(|| self.value.cmp(&other.value))
-    }
-}
-
-impl std::hash::Hash for GroupSegment {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.key.hash(state);
-        self.value.hash(state);
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct MetadataIdentity {
     pub key: String,
@@ -563,7 +500,6 @@ pub enum ResolvedMetadataTarget {
     Tab(u64),
     Entity(EntityRef),
     Identity(MetadataIdentity),
-    Group(GroupPath),
 }
 
 impl From<MetadataTarget> for ResolvedMetadataTarget {
@@ -635,70 +571,8 @@ pub struct ObservedMetadataIdentity {
     pub nearest_distance: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum RailRow {
-    GroupHeader {
-        group_id: String,
-        #[serde(default)]
-        path: GroupPath,
-        label: String,
-        full_label: String,
-        tab_count: usize,
-        #[serde(default)]
-        templates: ResolvedTemplateSlots,
-    },
-    Tab {
-        tab_id: u64,
-        indent: usize,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        parent_path: Option<GroupPath>,
-    },
-    Latent {
-        latent: LatentTab,
-        indent: usize,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        parent_path: Option<GroupPath>,
-    },
-    Entity {
-        entity: DisplayEntity,
-        indent: usize,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        parent_path: Option<GroupPath>,
-    },
-}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DisplayEntity {
-    pub entity: EntityRef,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub placement: Option<PlacementKey>,
-    /// Layout declared by the loop that produced this placement.
-    ///
-    /// Siblings from the same loop are resolved together by the renderer; this
-    /// value is repeated on each item so the wire model remains a tree rather
-    /// than exposing controller-internal loop definitions.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub placement_layout: Option<String>,
-    pub label: String,
-    pub form: String,
-    #[serde(default)]
-    pub metadata: BTreeMap<String, MetadataValue>,
-    #[serde(default)]
-    pub templates: ResolvedTemplateSlots,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub children: Vec<DisplayEntity>,
-}
 
-/// Per-placement presentation resolved during placement evaluation.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct PlacementAnnotation {
-    /// Layout declared by the loop that produced the placement.
-    pub layout: Option<String>,
-    /// Fields contributed to the detail content by the detail template's own
-    /// loops, one set per related entity, in loop order.
-    pub related_detail: Vec<template_config::TemplateConfigRenderedField>,
-}
 
 /// Conventional form that uses the rail's wrapped ribbon layout.
 ///
@@ -709,21 +583,10 @@ pub const DISPLAY_FORM_COMPACT: &str = "compact";
 /// Conventional name for the default full surface.
 pub const DISPLAY_FORM_FULL: &str = "full";
 
-/// Internal metadata carried by the temporary placement adapter so renderers
-/// can resolve the loop-scoped abbreviation variable.
-pub const PLACEMENT_LOOP_BINDING_KEY: &str = "andamento.placement.loop-binding";
 
-/// Internal metadata carrying an explicit loop-local abbreviation tier.
-pub const PLACEMENT_LOOP_TIER_KEY: &str = "andamento.placement.loop-tier";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedTemplateSlots {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group_header: Option<ResolvedTemplateSlot>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tab_title: Option<ResolvedTemplateSlot>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tab_status: Option<ResolvedTemplateSlot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact: Option<ResolvedTemplateSlot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -818,45 +681,31 @@ impl Default for RailConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControllerViewModel {
+    /// Catalog entries no placement loop selected; exposed in the existing inspector.
+    pub unmatched_entities: Vec<EntityRef>,
     pub sort_mode: SortMode,
     pub config: RailConfig,
     #[serde(default)]
     pub template_config: TemplateConfigDiagnostics,
     pub tabs: Vec<TabCard>,
     #[serde(default)]
-    pub rows: Vec<RailRow>,
-    #[serde(default)]
     pub resolved_metadata: Vec<ResolvedMetadata>,
     #[serde(default)]
     pub observed_identities: Vec<ObservedMetadataIdentity>,
     #[serde(default)]
-    pub grouping_diagnostics: Vec<GroupingRuleDiagnostic>,
-    #[serde(default)]
     pub metadata_controls: MetadataControls,
     #[serde(default)]
     pub inspected_node: Option<NodeKey>,
-    #[serde(default)]
-    pub collapsed_groups: Vec<GroupPath>,
     #[serde(default)]
     pub collapsed_placements: Vec<PlacementKey>,
     #[serde(default)]
     pub display_variables: Vec<template_config::TemplateVariableDefinition>,
     #[serde(default)]
     pub display_variable_values: BTreeMap<String, DisplayVariableValue>,
-    #[serde(default)]
-    pub surface_regions: Vec<DisplayRegion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presentation: Option<presentation::SurfaceSnapshot>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DisplayRegion {
-    pub definition: template_config::SurfaceRegionDefinition,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root: Option<ResolvedTemplateSlot>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub entities: Vec<DisplayEntity>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -870,7 +719,6 @@ pub enum MetadataTriState {
 #[serde(rename_all = "kebab-case", tag = "kind", content = "value")]
 pub enum NodeKey {
     Root,
-    Group(GroupPath),
     Tab(u64),
     Entity(EntityRef),
     Placement(PlacementKey),
@@ -909,12 +757,6 @@ pub struct VariableSetterProvenance {
     pub origin: template_config::TemplateConfigOrigin,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GroupingRuleDiagnostic {
-    pub target: NodeKey,
-    pub rule: String,
-    pub message: String,
-}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetadataControls {
@@ -1002,12 +844,6 @@ impl ControllerViewModel {
         self.tabs.iter().find(|tab| tab.tab_id == tab_id)
     }
 
-    pub fn tab_for_row(&self, row: &RailRow) -> Option<&TabCard> {
-        match row {
-            RailRow::Tab { tab_id, .. } => self.tab_by_id(*tab_id),
-            RailRow::GroupHeader { .. } | RailRow::Latent { .. } | RailRow::Entity { .. } => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1157,60 +993,6 @@ mod tests {
         assert_eq!(decoded, message);
     }
 
-    #[test]
-    fn controller_view_model_round_trips_json() {
-        let model = ControllerViewModel {
-            sort_mode: SortMode::Controller,
-            config: RailConfig::default(),
-            template_config: TemplateConfigDiagnostics::default(),
-            tabs: vec![TabCard {
-                tab_id: 10,
-                position: 0,
-                name: "work".to_owned(),
-                active: true,
-                pinned: true,
-                status: Some(TabStatusSummary {
-                    priority: Priority::Error,
-                    title: "Tests failed".to_owned(),
-                    detail: None,
-                    icon: Some(StatusIcon::PngFile(PathBuf::from("/tmp/error.png"))),
-                    source_pane: PaneTarget::Terminal(3),
-                }),
-                grouping: None,
-                templates: ResolvedTemplateSlots::default(),
-                active_pane: None,
-            }],
-            rows: vec![],
-            resolved_metadata: vec![],
-            observed_identities: vec![ObservedMetadataIdentity {
-                identity: MetadataIdentity {
-                    key: "git.repo".to_owned(),
-                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
-                },
-                target_count: 2,
-                nearest_distance: 1,
-            }],
-            grouping_diagnostics: vec![GroupingRuleDiagnostic {
-                target: NodeKey::Entity(EntityRef {
-                    kind: "convoy".to_owned(),
-                    id: "flotilla/partial@fleet".to_owned(),
-                }),
-                rule: "repo-branch".to_owned(),
-                message: "not captured: `git.branch` absent (non-optional level)".to_owned(),
-            }],
-            metadata_controls: MetadataControls::default(),
-            inspected_node: None,
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            display_variables: vec![],
-            display_variable_values: BTreeMap::new(),
-            surface_regions: vec![],
-            presentation: None,
-        };
-        let encoded = serde_json::to_string(&model).unwrap();
-        let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, model);
-    }
 
     #[test]
     fn config_inspect_request_round_trips_json() {
@@ -1247,31 +1029,6 @@ mod tests {
         assert_eq!(decoded, hello);
     }
 
-    #[test]
-    fn metadata_control_requests_round_trip_json() {
-        let visibility = MetadataVisibilitySetRequest {
-            client_id: 4,
-            node_key: NodeKey::Tab(7),
-            state: Some(MetadataTriState::MetaChildren),
-        };
-        let encoded = serde_json::to_string(&visibility).unwrap();
-        let decoded: MetadataVisibilitySetRequest = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, visibility);
-
-        let child_layout = NodeVariableSetRequest {
-            client_id: 4,
-            node_key: NodeKey::Group(GroupPath(vec![GroupSegment {
-                key: "git.repo".to_owned(),
-                value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
-                label: Some("flotilla".to_owned()),
-            }])),
-            name: "child-layout".to_owned(),
-            value: Some("strip".to_owned()),
-        };
-        let encoded = serde_json::to_string(&child_layout).unwrap();
-        let decoded: NodeVariableSetRequest = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, child_layout);
-    }
 
     #[test]
     fn rail_config_defaults_to_joined_cells() {
@@ -1348,116 +1105,7 @@ mod tests {
         assert_eq!(snapshot.spans[0].max_us, 25);
     }
 
-    #[test]
-    fn controller_view_model_with_group_rows_round_trips_json() {
-        let group_path = GroupPath(vec![GroupSegment {
-            key: "zellij.pane.cwd".to_owned(),
-            value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
-            label: None,
-        }]);
-        let model = ControllerViewModel {
-            sort_mode: SortMode::Position,
-            config: RailConfig {
-                structure: RailStructure::JoinedCells,
-                segment_between_color: None,
-            },
-            template_config: TemplateConfigDiagnostics::default(),
-            tabs: vec![TabCard {
-                tab_id: 1,
-                position: 0,
-                name: "server".to_owned(),
-                active: true,
-                pinned: false,
-                status: None,
-                grouping: Some(TabGroupingInfo {
-                    key: "cwd:/Users/robert/dev/zellij".to_owned(),
-                    path: group_path.clone(),
-                    label: "zellij".to_owned(),
-                    full_label: "/Users/robert/dev/zellij".to_owned(),
-                }),
-                templates: ResolvedTemplateSlots::default(),
-                active_pane: None,
-            }],
-            rows: vec![
-                RailRow::GroupHeader {
-                    group_id: "cwd:/Users/robert/dev/zellij".to_owned(),
-                    path: group_path.clone(),
-                    label: "zellij".to_owned(),
-                    full_label: "/Users/robert/dev/zellij".to_owned(),
-                    tab_count: 1,
-                    templates: ResolvedTemplateSlots::default(),
-                },
-                RailRow::Tab {
-                    tab_id: 1,
-                    indent: 2,
-                    parent_path: Some(group_path.clone()),
-                },
-                RailRow::Latent {
-                    latent: LatentTab {
-                        entity: EntityRef {
-                            kind: "convoy".to_owned(),
-                            id: "dev/latent-tabs@fleet".to_owned(),
-                        },
-                        action_target: "flotilla:convoys/dev/latent-tabs".to_owned(),
-                        path: group_path.clone(),
-                        name: "latent tabs".to_owned(),
-                        materialization: LatentMaterializationState::Ready,
-                        status_state: Some("waiting".to_owned()),
-                        summary: Some("1 vessel ready".to_owned()),
-                        source: Some("flotilla".to_owned()),
-                        materialize_recipe: Some("flotilla attach latent-tabs".to_owned()),
-                        checkout_path: Some("/work/andamento".to_owned()),
-                        templates: ResolvedTemplateSlots::default(),
-                    },
-                    indent: 2,
-                    parent_path: Some(group_path.clone()),
-                },
-            ],
-            resolved_metadata: vec![],
-            observed_identities: vec![],
-            grouping_diagnostics: vec![],
-            metadata_controls: MetadataControls::default(),
-            inspected_node: None,
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            display_variables: vec![],
-            display_variable_values: BTreeMap::new(),
-            surface_regions: vec![],
-            presentation: None,
-        };
 
-        let encoded = serde_json::to_string(&model).unwrap();
-        let decoded: ControllerViewModel = serde_json::from_str(&encoded).unwrap();
-
-        assert_eq!(decoded, model);
-        assert_eq!(
-            decoded
-                .tab_for_row(&decoded.rows[1])
-                .map(|tab| tab.name.as_str()),
-            Some("server")
-        );
-    }
-
-    #[test]
-    fn group_path_round_trips_json() {
-        let path = GroupPath(vec![
-            GroupSegment {
-                key: "project.name".to_owned(),
-                value: MetadataValue::Text("zellij".to_owned()),
-                label: None,
-            },
-            GroupSegment {
-                key: "zellij.pane.cwd".to_owned(),
-                value: MetadataValue::Text("/Users/robert/dev/zellij".to_owned()),
-                label: None,
-            },
-        ]);
-
-        let encoded = serde_json::to_string(&path).unwrap();
-        let decoded: GroupPath = serde_json::from_str(&encoded).unwrap();
-
-        assert_eq!(decoded, path);
-    }
 
     #[test]
     fn placement_key_round_trips_as_an_ordered_loop_entity_path() {
@@ -1482,39 +1130,7 @@ mod tests {
         assert_eq!(decoded, key);
     }
 
-    #[test]
-    fn group_path_identity_ignores_display_labels() {
-        let identity = GroupPath(vec![GroupSegment {
-            key: "git.repo".to_owned(),
-            value: MetadataValue::Text("zellij-org/zellij".to_owned()),
-            label: None,
-        }]);
-        let labelled = GroupPath(vec![GroupSegment {
-            key: "git.repo".to_owned(),
-            value: MetadataValue::Text("zellij-org/zellij".to_owned()),
-            label: Some("zellij".to_owned()),
-        }]);
 
-        assert_eq!(identity, labelled);
-    }
-
-    #[test]
-    fn metadata_value_group_path_round_trips_json() {
-        let value = MetadataValue::GroupPath(vec![MetadataPathSegmentValue {
-            key: "git.repo".to_owned(),
-            value: MetadataPathValue::Text("flotilla-org/flotilla".to_owned()),
-            label: Some("flotilla".to_owned()),
-        }]);
-
-        let encoded = serde_json::to_string(&value).unwrap();
-        let decoded: MetadataValue = serde_json::from_str(&encoded).unwrap();
-
-        assert_eq!(decoded, value);
-        assert_eq!(
-            encoded,
-            r#"{"type":"group-path","value":[{"key":"git.repo","value":{"type":"text","value":"flotilla-org/flotilla"},"label":"flotilla"}]}"#
-        );
-    }
 
     #[test]
     fn metadata_target_entity_round_trips_json() {
@@ -1596,38 +1212,6 @@ mod tests {
         assert_eq!(decoded, ExternalMessage::MetadataPatch(patch));
     }
 
-    #[test]
-    fn parses_hierarchical_grouping_rules_from_kdl() {
-        let config = crate::grouping_config::parse_grouping_config_kdl(
-            r#"
-            version 1
-
-            grouping "proj-repo-branch" {
-              priority 100
-              level key="andamento.project" optional=true
-              level key="git.repo" label-key="repo.name"
-              level key="git.branch"
-            }
-
-            grouping "directory" priority=10 {
-              level key="zellij.pane.cwd"
-            }
-            "#,
-        )
-        .expect("grouping config parses");
-
-        assert_eq!(config.rules.len(), 2);
-        assert_eq!(config.rules[0].name, "proj-repo-branch");
-        assert_eq!(config.rules[0].priority, 100);
-        assert_eq!(config.rules[0].levels[0].key, "andamento.project");
-        assert!(config.rules[0].levels[0].optional);
-        assert_eq!(
-            config.rules[0].levels[1].label_key.as_deref(),
-            Some("repo.name")
-        );
-        assert_eq!(config.rules[1].name, "directory");
-        assert_eq!(config.rules[1].priority, 10);
-    }
 
     #[test]
     fn rail_config_round_trips_json() {
@@ -1646,3 +1230,6 @@ mod tests {
         assert_eq!(decoded, config);
     }
 }
+
+#[cfg(test)]
+mod cutover_tests;

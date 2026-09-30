@@ -14,14 +14,14 @@ use andamento_shared::PluginStatsRecorder;
 use andamento_shared::MSG_RAIL_SIZE_TARGET;
 use andamento_shared::MSG_VIEW_MODEL;
 use andamento_shared::{
-    ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage, GroupingTemplateSetRequest,
+    ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage, 
     MetadataVisibilitySetRequest, NodeVariableSetRequest, PluginRegistrationHello, RailConfig,
     RailRgbColor, RailSize, RailSizeObserved, RailSizeTarget, RailStructure, RailUiAction,
     RailUiState, RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH,
     MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT,
     MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES,
     MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO,
-    MSG_REQUEST_RAIL_UI_STATE, MSG_REQUEST_STATE, MSG_SET_GROUPING_TEMPLATE,
+    MSG_REQUEST_RAIL_UI_STATE, MSG_REQUEST_STATE, 
     MSG_SET_METADATA_VISIBILITY, MSG_SET_NODE_VARIABLE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG,
     MSG_SET_SORT_MODE, MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
@@ -69,14 +69,14 @@ fn rail_ui_state_broadcast_message(state: &RailUiState) -> Option<MessageToPlugi
 /// controller pipeline and print the derived rail — the presentation stack's
 /// composition, testable in seconds without zellij (andamento#37 postmortem).
 ///
-///   cargo run -p andamento-controller -- <patches.jsonl> [grouping.kdl]
-///       [--dump-template <group-header|tab-title|tab-status|compact|detail>]
+///   cargo run -p andamento-controller -- <patches.jsonl> [templates.kdl]
+///       [--dump-template <compact|detail>]
 #[cfg(not(target_family = "wasm"))]
 fn main() {
     let mut args = std::env::args().skip(1);
     let Some(patches_path) = args.next() else {
         std::eprintln!(
-            "usage: render-harness <patches.jsonl> [grouping.kdl] \
+            "usage: render-harness <patches.jsonl> [templates.kdl] \
              [--dump-template <slot>]"
         );
         std::process::exit(2);
@@ -101,11 +101,6 @@ fn main() {
     state.set_template_catalog(Some(
         andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(templates),
     ));
-    let live = andamento_shared::grouping_config::parse_grouping_config_kdl(&grouping_kdl)
-        .expect("parse grouping kdl");
-    state.set_grouping_catalog(Some(
-        andamento_shared::grouping_config::GroupingConfigCatalog::with_bundled_defaults(live),
-    ));
     let raw = std::fs::read_to_string(&patches_path).expect("read patches file");
     let (mut applied, mut failed) = (0usize, 0usize);
     let frames =
@@ -122,45 +117,21 @@ fn main() {
     }
 
     let model = state.view_model();
-    std::println!(
-        "=== rail ({} patches applied, {} no-op; {} tabs, {} rows) ===",
-        applied,
-        failed,
-        model.tabs.len(),
-        model.rows.len()
-    );
-    for row in &model.rows {
-        match row {
-            andamento_shared::RailRow::GroupHeader {
-                label,
-                full_label,
-                tab_count,
-                ..
-            } => {
-                std::println!("[group] {label}  ({full_label}, tabs={tab_count})");
+    std::println!("{applied} patches applied, {failed} no-op");
+    render_rail_lines(&model, &grouping_kdl);
+    if let Some(slot) = dump_template.as_deref() {
+        if let Some(surface) = &model.presentation {
+            fn dump(nodes: &[andamento_shared::presentation::PlacementNode], slot: &str) {
+                for node in nodes {
+                    let content = if slot == "detail" { &node.detail } else { &node.content };
+                    std::println!("{}: {}", node.label, content.effective_kdl);
+                    dump(&node.children, slot);
+                }
             }
-            andamento_shared::RailRow::Tab { tab_id, indent, .. } => {
-                std::println!("{}tab #{tab_id}", "  ".repeat(*indent));
-            }
-            andamento_shared::RailRow::Latent { latent, indent, .. } => {
-                std::println!("{}(latent) {:?}", "  ".repeat(*indent), latent);
-            }
-            andamento_shared::RailRow::Entity { entity, indent, .. } => {
-                std::println!(
-                    "{}(entity:{}:{:?}) {}",
-                    "  ".repeat(*indent),
-                    entity.entity.id,
-                    entity.form,
-                    entity.label
-                );
-            }
+            for section in &surface.sections { dump(&section.nodes, slot); }
         }
     }
 
-    render_rail_lines(&model, &grouping_kdl);
-    if let Some(slot) = dump_template.as_deref() {
-        dump_effective_templates(&model, slot);
-    }
 }
 
 /// Render the derived rows through the real rail renderer — actual template
@@ -182,7 +153,7 @@ fn render_rail_lines(model: &andamento_shared::ControllerViewModel, config_kdl: 
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(46usize);
-    let rows = model.rows.len() * 4 + 8;
+    let rows = 80;
     let rendered = andamento_rail::render::render_lines_with_template_catalog(
         Some(model),
         &[],
@@ -200,68 +171,6 @@ fn render_rail_lines(model: &andamento_shared::ControllerViewModel, config_kdl: 
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
-fn dump_effective_templates(model: &andamento_shared::ControllerViewModel, requested_slot: &str) {
-    use andamento_shared::{RailRow, ResolvedTemplateSlot};
-
-    fn print_dump(label: &str, slot: Option<&ResolvedTemplateSlot>) -> bool {
-        let Some(slot) = slot else {
-            return false;
-        };
-        std::println!("=== effective template: {label} ===");
-        if slot.effective_kdl.is_empty() {
-            std::println!("// resolved template: {}", slot.template_name);
-        } else {
-            std::print!("{}", slot.effective_kdl);
-        }
-        true
-    }
-
-    let mut dumped = false;
-    match requested_slot {
-        "group-header" => {
-            for row in &model.rows {
-                if let RailRow::GroupHeader {
-                    full_label,
-                    templates,
-                    ..
-                } = row
-                {
-                    dumped |= print_dump(full_label, templates.group_header.as_ref());
-                }
-            }
-        }
-        "compact" | "detail" => {
-            for row in &model.rows {
-                if let RailRow::Entity { entity, .. } = row {
-                    let slot = if requested_slot == "compact" {
-                        entity.templates.compact.as_ref()
-                    } else {
-                        entity.templates.detail.as_ref()
-                    };
-                    dumped |= print_dump(&entity.label, slot);
-                }
-            }
-        }
-        "tab-title" | "tab-status" => {
-            for tab in &model.tabs {
-                let slot = if requested_slot == "tab-title" {
-                    tab.templates.tab_title.as_ref()
-                } else {
-                    tab.templates.tab_status.as_ref()
-                };
-                dumped |= print_dump(&tab.name, slot);
-            }
-        }
-        other => {
-            std::eprintln!("unknown template slot: {other}");
-            return;
-        }
-    }
-    if !dumped {
-        std::eprintln!("no resolved {requested_slot} templates in the captured model");
-    }
-}
 
 #[cfg(target_family = "wasm")]
 fn render_rail_lines(_model: &andamento_shared::ControllerViewModel, _config_kdl: &str) {}
@@ -270,14 +179,11 @@ fn render_rail_lines(_model: &andamento_shared::ControllerViewModel, _config_kdl
 pub struct PluginState {
     state: ControllerState,
     template_config_path: Option<String>,
-    grouping_config_path: Option<String>,
     permissions_granted: bool,
     own_identity: Option<RendererHello>,
     bootstrap_requested: bool,
     template_reload_pending: bool,
     template_reload_attempts: u8,
-    grouping_rule_count: usize,
-    grouping_config_error: Option<String>,
     stats: PluginStatsRecorder,
     pending_view_model_push: PendingViewModelPush,
     pending_rail_size_sync: PendingRailSizeSync,
@@ -298,7 +204,6 @@ impl ZellijPlugin for PluginState {
         self.state
             .set_rail_config(parse_rail_config(&configuration));
         self.template_config_path = template_config_path_from_configuration(&configuration);
-        self.grouping_config_path = grouping_config_path_from_configuration(&configuration);
         self.state
             .set_template_config_diagnostics(initial_template_config_diagnostics(
                 self.template_config_path.clone(),
@@ -527,16 +432,6 @@ impl ZellijPlugin for PluginState {
             ),
             format!("template count: {}", diagnostics.template_count),
         ];
-        lines.push(format!(
-            "grouping config path: {}",
-            self.grouping_config_path
-                .as_deref()
-                .unwrap_or("<not configured>")
-        ));
-        lines.push(format!("grouping rule count: {}", self.grouping_rule_count));
-        if let Some(error) = self.grouping_config_error.as_ref() {
-            lines.push(format!("grouping config error: {error}"));
-        }
         if !diagnostics.template_names.is_empty() {
             lines.push(format!(
                 "template names: {}",
@@ -568,9 +463,8 @@ impl ZellijPlugin for PluginState {
 
 impl PluginState {
     fn schedule_template_reload(&mut self) {
-        if self.template_config_path.is_none() && self.grouping_config_path.is_none() {
+        if self.template_config_path.is_none() {
             self.reload_template_catalog();
-            self.reload_grouping_catalog();
             self.push_view_model_to_rails_with_pending(ViewModelPushReason::UpdateTemplate);
             return;
         }
@@ -586,7 +480,7 @@ impl PluginState {
 
     fn retry_template_catalog_reload(&mut self) -> bool {
         self.template_reload_attempts = self.template_reload_attempts.saturating_add(1);
-        let loaded = self.reload_template_catalog() & self.reload_grouping_catalog();
+        let loaded = self.reload_template_catalog();
         self.template_reload_pending =
             should_retry_template_load(self.template_reload_attempts, loaded);
         if self.template_reload_pending {
@@ -630,29 +524,6 @@ impl PluginState {
         }
     }
 
-    fn reload_grouping_catalog(&mut self) -> bool {
-        let Some(path) = self.grouping_config_path.as_deref() else {
-            self.state.set_grouping_catalog(None);
-            self.grouping_rule_count = 0;
-            self.grouping_config_error = None;
-            return true;
-        };
-        match andamento_shared::grouping_config::load_grouping_catalog_from_file(path) {
-            Ok(catalog) => {
-                self.grouping_rule_count = catalog.rules.len();
-                self.grouping_config_error = None;
-                self.state.set_grouping_catalog(Some(catalog));
-                true
-            }
-            Err(error) => {
-                eprintln!("andamento-controller: failed to load grouping config: {error}");
-                self.grouping_rule_count = 0;
-                self.grouping_config_error = Some(error.to_string());
-                self.state.set_grouping_catalog(None);
-                false
-            }
-        }
-    }
 
     fn request_bootstrap_snapshot(&mut self) {
         if !self.permissions_granted || self.bootstrap_requested {
@@ -1194,14 +1065,6 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
                 ..HandlePipeResult::default()
             }
         }
-        Ok(Some(ControllerMessage::SetGroupingTemplate(request))) => {
-            let state_changed = state.set_active_grouping_template(request.name);
-            HandlePipeResult {
-                state_changed,
-                view_model_push_reason: state_changed.then_some(ViewModelPushReason::PipeConfig),
-                ..HandlePipeResult::default()
-            }
-        }
         Ok(Some(ControllerMessage::RequestState)) => HandlePipeResult {
             state_changed: true,
             view_model_push_reason: Some(ViewModelPushReason::PipeRequestState),
@@ -1330,11 +1193,6 @@ fn template_config_path_from_configuration(
     path_from_configuration(configuration, "template_config_path")
 }
 
-fn grouping_config_path_from_configuration(
-    configuration: &BTreeMap<String, String>,
-) -> Option<String> {
-    path_from_configuration(configuration, "grouping_config_path")
-}
 
 fn path_from_configuration(configuration: &BTreeMap<String, String>, key: &str) -> Option<String> {
     configuration
@@ -1423,7 +1281,6 @@ fn inspect_scope_label(key: &andamento_shared::NodeKey) -> String {
     match key {
         andamento_shared::NodeKey::Root => "root".to_owned(),
         andamento_shared::NodeKey::Tab(tab_id) => format!("tab:{tab_id}"),
-        andamento_shared::NodeKey::Group(_) => "group".to_owned(),
         andamento_shared::NodeKey::Entity(entity) => {
             format!("entity:{}:{}", entity.kind, entity.id)
         }
@@ -1499,7 +1356,6 @@ enum ControllerMessage {
     TogglePin(u64),
     SetSortMode(SortMode),
     SetRailConfig(RailConfig),
-    SetGroupingTemplate(GroupingTemplateSetRequest),
     RequestState,
     BootstrapRequest(RendererHello),
     BootstrapState(ControllerBootstrapSnapshot),
@@ -1581,16 +1437,7 @@ fn parse_controller_message(
             })
             .map(ControllerMessage::SetRailConfig)
             .map(Some),
-        MSG_SET_GROUPING_TEMPLATE => pipe_message
-            .payload
-            .as_deref()
-            .ok_or_else(|| "set-grouping-template requires payload".to_owned())
-            .and_then(|payload| {
-                serde_json::from_str::<GroupingTemplateSetRequest>(payload)
-                    .map_err(|e| format!("invalid grouping template request: {e}"))
-            })
-            .map(ControllerMessage::SetGroupingTemplate)
-            .map(Some),
+
         MSG_SET_METADATA_VISIBILITY => pipe_message
             .payload
             .as_deref()
@@ -1868,30 +1715,6 @@ mod tests {
         assert_eq!(parsed, Some(ControllerMessage::ConfigInspect(request)));
     }
 
-    #[test]
-    fn parses_materialize_latent_request() {
-        let request = andamento_shared::MaterializeLatentRequest {
-            action_target: "flotilla:convoys/dev/latent-tabs".to_owned(),
-            path: andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
-                key: "flotilla.convoy".to_owned(),
-                value: andamento_shared::MetadataValue::Text("dev/latent-tabs".to_owned()),
-                label: Some("latent tabs".to_owned()),
-            }]),
-            name: "latent tabs".to_owned(),
-            recipe: "flotilla attach latent-tabs".to_owned(),
-            checkout_path: Some("/work/andamento".to_owned()),
-        };
-        let payload = serde_json::to_string(&request).unwrap();
-
-        let parsed = parse_controller_message(&pipe(
-            andamento_shared::MSG_MATERIALIZE_LATENT,
-            Some(payload),
-            BTreeMap::new(),
-        ))
-        .unwrap();
-
-        assert_eq!(parsed, Some(ControllerMessage::MaterializeLatent(request)));
-    }
 
     #[test]
     fn parses_activate_entity_request() {
@@ -2084,18 +1907,6 @@ mod tests {
         assert_eq!(path.as_deref(), Some("/host/tmp/andamento.kdl"));
     }
 
-    #[test]
-    fn parses_grouping_config_path_from_plugin_configuration() {
-        let mut configuration = BTreeMap::new();
-        configuration.insert(
-            "grouping_config_path".to_owned(),
-            " /host/tmp/andamento-groups.kdl ".to_owned(),
-        );
-
-        let path = grouping_config_path_from_configuration(&configuration);
-
-        assert_eq!(path.as_deref(), Some("/host/tmp/andamento-groups.kdl"));
-    }
 
     #[test]
     fn parses_set_rail_config_payload() {
@@ -2237,70 +2048,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn collapse_state_from_one_rail_is_projected_to_every_rail() {
-        let path = andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
-            key: "zellij.pane.cwd".to_owned(),
-            value: andamento_shared::MetadataValue::Text("/repo".to_owned()),
-            label: Some("repo".to_owned()),
-        }]);
-        let mut state = ControllerState::default();
-        for (plugin_id, tab_id) in [(11, 1), (22, 2)] {
-            let hello = PluginRegistrationHello {
-                identity: RendererHello {
-                    plugin_id,
-                    client_id: 4,
-                },
-                placement: PluginPlacement::Tab {
-                    tab_id,
-                    pane_kind: andamento_shared::PluginPaneKind::Tiled,
-                },
-            };
-            let payload = serde_json::to_string(&hello).unwrap();
-            handle_pipe_message(
-                &mut state,
-                pipe(MSG_RENDERER_HELLO, Some(payload), BTreeMap::new()),
-            );
-        }
-        let request = andamento_shared::RailUiAction::ToggleGroup { path: path.clone() };
-        let payload = serde_json::to_string(&request).unwrap();
-
-        let result = handle_pipe_message(
-            &mut state,
-            pipe(
-                andamento_shared::MSG_RAIL_UI_ACTION,
-                Some(payload.clone()),
-                BTreeMap::new(),
-            ),
-        );
-
-        assert!(result.broadcast_rail_ui_state);
-        let targets = state.rail_plugin_targets();
-        assert_eq!(targets.len(), 2);
-        assert!(targets.into_iter().all(|target| state
-            .view_model_for_client(target.client_id)
-            .collapsed_groups
-            == vec![path.clone()]));
-        assert_eq!(
-            state.view_model_for_client(5).collapsed_groups,
-            vec![path.clone()]
-        );
-
-        let result = handle_pipe_message(
-            &mut state,
-            pipe(
-                andamento_shared::MSG_RAIL_UI_ACTION,
-                Some(payload),
-                BTreeMap::new(),
-            ),
-        );
-
-        assert!(result.broadcast_rail_ui_state);
-        assert!(state.rail_plugin_targets().into_iter().all(|target| state
-            .view_model_for_client(target.client_id)
-            .collapsed_groups
-            .is_empty()));
-    }
 
     #[test]
     fn rail_ui_actions_update_one_session_snapshot() {
@@ -2332,105 +2079,7 @@ mod tests {
         assert_eq!(state.rail_ui_state().scroll_offset, 0);
     }
 
-    #[test]
-    fn controller_clone_total_orders_same_sequence_broadcasts() {
-        let mut clone = ControllerState::default();
-        let current = RailUiState {
-            revision: RailUiRevision {
-                sequence: 7,
-                writer_client_id: 2,
-            },
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            scroll_offset: 11,
-            variables: BTreeMap::new(),
-        };
-        let winner = RailUiState {
-            revision: RailUiRevision {
-                sequence: 7,
-                writer_client_id: 3,
-            },
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            scroll_offset: 13,
-            variables: BTreeMap::new(),
-        };
-        let stale = RailUiState {
-            revision: RailUiRevision {
-                sequence: 7,
-                writer_client_id: 1,
-            },
-            collapsed_groups: vec![],
-            collapsed_placements: vec![],
-            scroll_offset: 1,
-            variables: BTreeMap::new(),
-        };
 
-        handle_pipe_message(
-            &mut clone,
-            pipe(
-                MSG_RAIL_UI_STATE,
-                Some(serde_json::to_string(&current).unwrap()),
-                BTreeMap::new(),
-            ),
-        );
-        handle_pipe_message(
-            &mut clone,
-            pipe(
-                MSG_RAIL_UI_STATE,
-                Some(serde_json::to_string(&winner).unwrap()),
-                BTreeMap::new(),
-            ),
-        );
-        handle_pipe_message(
-            &mut clone,
-            pipe(
-                MSG_RAIL_UI_STATE,
-                Some(serde_json::to_string(&stale).unwrap()),
-                BTreeMap::new(),
-            ),
-        );
-
-        assert_eq!(clone.rail_ui_state(), winner);
-    }
-
-    #[test]
-    fn late_rail_request_rebroadcasts_current_ui_state_without_target_filters() {
-        let mut state = ControllerState::default();
-        state.set_rail_ui_writer_client_id(6);
-        let action = serde_json::to_string(&RailUiAction::ScrollBy { delta: 4 }).unwrap();
-        let action_result = handle_pipe_message(
-            &mut state,
-            pipe(MSG_RAIL_UI_ACTION, Some(action), BTreeMap::new()),
-        );
-
-        let result = handle_pipe_message(
-            &mut state,
-            pipe(MSG_REQUEST_RAIL_UI_STATE, None, BTreeMap::new()),
-        );
-        let message = rail_ui_state_broadcast_message(&state.rail_ui_state()).unwrap();
-
-        assert!(action_result.broadcast_rail_ui_state);
-        assert!(result.broadcast_rail_ui_state);
-        assert_eq!(message.plugin_url, None);
-        assert_eq!(message.destination_plugin_id, None);
-        assert_eq!(message.destination_client_id, None);
-        assert_eq!(message.message_name, MSG_RAIL_UI_STATE);
-        assert_eq!(
-            serde_json::from_str::<RailUiState>(message.message_payload.as_deref().unwrap())
-                .unwrap(),
-            RailUiState {
-                revision: RailUiRevision {
-                    sequence: 1,
-                    writer_client_id: 6,
-                },
-                collapsed_groups: vec![],
-                collapsed_placements: vec![],
-                scroll_offset: 4,
-                variables: BTreeMap::new(),
-            }
-        );
-    }
 
     #[test]
     fn display_variable_action_broadcasts_state_and_pushes_a_new_view_model() {
@@ -2465,97 +2114,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn node_variable_request_sets_group_config_override() {
-        let group_path = andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
-            key: "vcs.repo".to_owned(),
-            value: andamento_shared::MetadataValue::Text("example/repo".to_owned()),
-            label: Some("repo".to_owned()),
-        }]);
-        let request = andamento_shared::NodeVariableSetRequest {
-            client_id: 4,
-            node_key: NodeKey::Group(group_path.clone()),
-            name: "child-layout".to_owned(),
-            value: Some("strip".to_owned()),
-        };
-        let payload = serde_json::to_string(&request).unwrap();
-        let mut state = ControllerState::default();
-        state.set_template_catalog(None);
-        state.set_rail_config(RailConfig::default());
-        state.apply_metadata_patch(andamento_shared::MetadataPatch {
-            target: andamento_shared::MetadataTarget::Entity(andamento_shared::EntityRef {
-                kind: "repo".to_owned(),
-                id: "example/repo".to_owned(),
-            }),
-            source_id: "test".to_owned(),
-            set: BTreeMap::from([
-                (
-                    "entity.kind".to_owned(),
-                    andamento_shared::MetadataValueUpdate {
-                        value: andamento_shared::MetadataValue::Text("repo".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-                (
-                    "entity.id".to_owned(),
-                    andamento_shared::MetadataValueUpdate {
-                        value: andamento_shared::MetadataValue::Text("example/repo".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-                (
-                    "vcs.repo".to_owned(),
-                    andamento_shared::MetadataValueUpdate {
-                        value: andamento_shared::MetadataValue::Text("example/repo".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-            ]),
-            unset: vec![],
-        });
-        state.update_tabs(vec![state::ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "repo".to_owned(),
-            active: true,
-        }]);
-        state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
-        state.set_pane_cwd(PaneTarget::Terminal(1), "/repo".to_owned());
-
-        let changed = handle_pipe_message(
-            &mut state,
-            pipe(
-                andamento_shared::MSG_SET_NODE_VARIABLE,
-                Some(payload),
-                BTreeMap::new(),
-            ),
-        );
-
-        assert!(changed.state_changed);
-        assert_eq!(
-            changed.view_model_push_reason,
-            Some(ViewModelPushReason::PipeMetadataControls)
-        );
-        assert!(!state.set_node_variable(
-            NodeKey::Group(group_path),
-            "child-layout".to_owned(),
-            Some("strip".to_owned()),
-        ));
-    }
 
     #[test]
     fn node_variable_request_sets_root_config_override() {
         let request = andamento_shared::NodeVariableSetRequest {
             client_id: 4,
             node_key: NodeKey::Root,
-            name: "child-layout".to_owned(),
-            value: Some("strip".to_owned()),
+            name: "convoy.tier".to_owned(),
+            value: Some("short".to_owned()),
         };
         let payload = serde_json::to_string(&request).unwrap();
         let mut state = ControllerState::default();
@@ -2585,9 +2151,9 @@ mod tests {
         assert_eq!(
             root_variables
                 .values
-                .get("child-layout")
+                .get("convoy.tier")
                 .map(|entry| entry.value.as_str()),
-            Some("strip")
+            Some("short")
         );
     }
 
@@ -2613,25 +2179,6 @@ mod tests {
         assert_eq!(state.view_model().config, config);
     }
 
-    #[test]
-    fn grouping_template_message_switches_projection_without_metadata_changes() {
-        let request = GroupingTemplateSetRequest {
-            name: Some("flotilla.default".to_owned()),
-        };
-        let payload = serde_json::to_string(&request).unwrap();
-        let mut state = ControllerState::default();
-
-        let changed = handle_pipe_message(
-            &mut state,
-            pipe(MSG_SET_GROUPING_TEMPLATE, Some(payload), BTreeMap::new()),
-        );
-
-        assert!(changed.state_changed);
-        assert_eq!(
-            changed.view_model_push_reason,
-            Some(ViewModelPushReason::PipeConfig)
-        );
-    }
 
     #[test]
     fn metadata_patch_message_updates_resolved_tab_metadata() {
@@ -2693,528 +2240,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn entity_target_patch_stream_renders_latent_nodes_without_live_panes() {
-        let mut state = ControllerState::default();
-        state.set_template_catalog(None);
-        let live_grouping_config = andamento_shared::grouping_config::parse_grouping_config_kdl(
-            include_str!("../../../templates/andamento-git.kdl"),
-        )
-        .unwrap();
-        state.set_grouping_catalog(Some(
-            andamento_shared::grouping_config::GroupingConfigCatalog::with_bundled_defaults(
-                live_grouping_config,
-            ),
-        ));
-        state.set_rail_config(RailConfig::default());
-        let project_patch = serde_json::json!({
-            "type": "metadata-patch",
-            "target": {
-                "kind": "entity",
-                "value": {
-                    "kind": "project",
-                    "id": "flotilla/andamento@fleet"
-                }
-            },
-            "source_id": "flotilla-connector",
-            "set": {
-                "flotilla.project": {
-                    "value": {
-                        "type": "text",
-                        "value": "flotilla/andamento@fleet"
-                    },
-                    "ttl_ms": null,
-                    "precedence": null,
-                    "ordinal": 1
-                },
-                "flotilla.project.name": {
-                    "value": {
-                        "type": "text",
-                        "value": "andamento"
-                    },
-                    "ttl_ms": null,
-                    "precedence": null,
-                    "ordinal": 1
-                },
-                "action.primary.key": {
-                    "value": {
-                        "type": "text",
-                        "value": "open"
-                    },
-                    "ttl_ms": null,
-                    "precedence": null,
-                    "ordinal": 1
-                },
-                "count.convoys": {
-                    "value": {
-                        "type": "integer",
-                        "value": 1
-                    },
-                    "ttl_ms": null,
-                    "precedence": null,
-                    "ordinal": 1
-                }
-            }
-        })
-        .to_string();
-        let convoy_patch = serde_json::json!({
-            "type": "metadata-patch",
-            "target": {
-                "kind": "entity",
-                "value": {
-                    "kind": "convoy",
-                    "id": "andamento/fix-entity-patches-vanish@fleet"
-                }
-            },
-            "source_id": "flotilla-connector",
-            "set": {
-                "flotilla.project": {
-                    "value": {
-                        "type": "text",
-                        "value": "flotilla/andamento@fleet"
-                    },
-                    "ttl_ms": null,
-                    "precedence": null,
-                    "ordinal": 2
-                },
-                "flotilla.project.name": {
-                    "value": {
-                        "type": "text",
-                        "value": "andamento"
-                    },
-                    "ttl_ms": null,
-                    "precedence": null,
-                    "ordinal": 2
-                },
-                "flotilla.convoy": {
-                    "value": {
-                        "type": "text",
-                        "value": "andamento/fix-entity-patches-vanish@fleet"
-                    },
-                    "ttl_ms": null,
-                    "precedence": null,
-                    "ordinal": 2
-                },
-                "flotilla.convoy.name": {
-                    "value": {
-                        "type": "text",
-                        "value": "fix entity patches vanish"
-                    },
-                    "ttl_ms": null,
-                    "precedence": null,
-                    "ordinal": 2
-                },
-                "display.label": {
-                    "value": {
-                        "type": "text",
-                        "value": "fix entity patches vanish"
-                    },
-                    "ttl_ms": null,
-                    "precedence": null,
-                    "ordinal": 2
-                }
-            }
-        })
-        .to_string();
-        let issue_patch = serde_json::json!({
-            "type": "metadata-patch",
-            "target": {
-                "kind": "entity",
-                "value": {
-                    "kind": "issue",
-                    "id": "github/flotilla-org/andamento#37"
-                }
-            },
-            "source_id": "flotilla-connector",
-            "set": {
-                "flotilla.project": {
-                    "value": {
-                        "type": "text",
-                        "value": "flotilla/andamento@fleet"
-                    },
-                    "ttl_ms": null,
-                    "precedence": null,
-                    "ordinal": 3
-                },
-                "flotilla.project.name": {
-                    "value": {
-                        "type": "text",
-                        "value": "andamento"
-                    },
-                    "ttl_ms": null,
-                    "precedence": null,
-                    "ordinal": 3
-                },
-                "flotilla.issue": {
-                    "value": {
-                        "type": "text",
-                        "value": "github/flotilla-org/andamento#37"
-                    },
-                    "ttl_ms": null,
-                    "precedence": null,
-                    "ordinal": 3
-                },
-                "display.label": {
-                    "value": {
-                        "type": "text",
-                        "value": "#37 entity patches vanish"
-                    },
-                    "ttl_ms": null,
-                    "precedence": null,
-                    "ordinal": 3
-                }
-            }
-        })
-        .to_string();
-
-        for payload in [project_patch, convoy_patch, issue_patch] {
-            let result = handle_pipe_message(
-                &mut state,
-                pipe(MSG_APPLY_METADATA_PATCH, Some(payload), BTreeMap::new()),
-            );
-            assert!(result.state_changed);
-            assert_eq!(
-                result.view_model_push_reason,
-                Some(ViewModelPushReason::PipeMetadata)
-            );
-        }
-
-        let model = state.view_model();
-        assert!(model.tabs.is_empty());
-        assert!(model.rows.iter().any(|row| matches!(
-            row,
-            andamento_shared::RailRow::GroupHeader { path, .. }
-                if path.0.iter().any(|segment| {
-                    segment.key == "flotilla.project"
-                        && segment.value
-                            == andamento_shared::MetadataValue::Text(
-                                "flotilla/andamento@fleet".to_owned()
-                            )
-                })
-        )));
-        assert!(model.rows.iter().any(|row| matches!(
-            row,
-            andamento_shared::RailRow::Latent { latent, .. }
-                if latent.name == "fix entity patches vanish"
-                    && latent.path.0.iter().any(|segment| segment.key == "flotilla.convoy")
-        )));
-        assert!(model.rows.iter().any(|row| matches!(
-            row,
-            andamento_shared::RailRow::Entity { entity, .. }
-                if entity.entity.kind == "issue"
-                    && entity.label == "#37 entity patches vanish"
-                    && entity.templates.compact.is_some()
-                    && entity.templates.detail.is_some()
-        )));
-    }
 
     // Native-only because this is the captured render-harness scenario and
     // renders through andamento-rail.
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn git_rule_keeps_branchless_convoy_siblings_visible_under_their_repo() {
-        let config_kdl = include_str!("../../../templates/andamento-git.kdl");
-        let mut state = ControllerState::default();
-        state.set_template_catalog(Some(
-            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
-                andamento_shared::template_config::parse_template_config_kdl(config_kdl).unwrap(),
-            ),
-        ));
-        let live_grouping_config =
-            andamento_shared::grouping_config::parse_grouping_config_kdl(config_kdl).unwrap();
-        state.set_grouping_catalog(Some(
-            andamento_shared::grouping_config::GroupingConfigCatalog::with_bundled_defaults(
-                live_grouping_config,
-            ),
-        ));
-        state.set_rail_config(RailConfig::default());
-        // Two convoys under one repo, so single-member conflation cannot fold
-        // the repo group away and its header genuinely renders.
-        for (index, name) in [(1, "scoping-regression"), (2, "second-convoy")] {
-            let convoy_patch = serde_json::json!({
-                "type": "metadata-patch",
-                "target": {
-                    "kind": "entity",
-                    "value": { "kind": "convoy", "id": format!("flotilla/{name}@fleet") }
-                },
-                "source_id": "flotilla-connector",
-                "set": {
-                    "vcs.repo": {
-                        "value": { "type": "text", "value": "flotilla-org/andamento" },
-                        "ttl_ms": null, "precedence": null, "ordinal": index
-                    },
-                    "repo.name": {
-                        "value": { "type": "text", "value": "andamento" },
-                        "ttl_ms": null, "precedence": null, "ordinal": index
-                    },
-                    "flotilla.convoy": {
-                        "value": { "type": "text", "value": format!("flotilla/{name}@fleet") },
-                        "ttl_ms": null, "precedence": null, "ordinal": index
-                    },
-                    "flotilla.convoy.name": {
-                        "value": { "type": "text", "value": name },
-                        "ttl_ms": null, "precedence": null, "ordinal": index
-                    },
-                    "display.label": {
-                        "value": { "type": "text", "value": name },
-                        "ttl_ms": null, "precedence": null, "ordinal": index
-                    }
-                }
-            })
-            .to_string();
-            let result = handle_pipe_message(
-                &mut state,
-                pipe(
-                    MSG_APPLY_METADATA_PATCH,
-                    Some(convoy_patch),
-                    BTreeMap::new(),
-                ),
-            );
-            assert!(result.state_changed);
-        }
-
-        let model = state.view_model();
-        let repo_path = andamento_shared::GroupPath(vec![andamento_shared::GroupSegment {
-            key: "vcs.repo".to_owned(),
-            value: andamento_shared::MetadataValue::Text("flotilla-org/andamento".to_owned()),
-            label: Some("andamento".to_owned()),
-        }]);
-        let latent_rows = model
-            .rows
-            .iter()
-            .filter_map(|row| match row {
-                andamento_shared::RailRow::Latent {
-                    latent,
-                    parent_path,
-                    ..
-                } => Some((latent, parent_path)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(latent_rows.len(), 2);
-        assert!(latent_rows.iter().all(|(latent, parent_path)| {
-            latent.path.0.starts_with(&repo_path.0)
-                && latent.path.0.last().is_some_and(|segment| {
-                    segment.key == "flotilla.convoy"
-                        && segment.value
-                            == andamento_shared::MetadataValue::Text(latent.entity.id.clone())
-                })
-                && parent_path.as_ref() == Some(&latent.path)
-        }));
-
-        let templates =
-            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
-                andamento_shared::template_config::parse_template_config_kdl(config_kdl).unwrap(),
-            );
-        let rendered = andamento_rail::render::render_lines_with_template_catalog(
-            Some(&model),
-            &[],
-            model.rows.len() * 4 + 8,
-            60,
-            true,
-            Some(&templates),
-        );
-
-        // Repo-level group header renders the repo through the git template.
-        assert!(
-            rendered
-                .lines
-                .iter()
-                .any(|line| line.contains("flotilla-org/andamento")),
-            "repo-level header should render the vcs.repo value; rows={:?}, lines={:?}",
-            model.rows,
-            rendered.lines,
-        );
-        for label in ["scoping-regression", "second-convoy"] {
-            assert!(
-                rendered.lines.iter().any(|line| line.contains(label)),
-                "branchless convoy {label} must render beneath its repo: {:?}",
-                rendered.lines
-            );
-        }
-    }
 
     // Native-only because this exercises the #53 frame-snapshot seam through
     // the controller's real grouping pipeline and the real rail renderer.
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn vessel_with_project_facts_renders_under_its_project_before_its_repo() {
-        let git_config_kdl = include_str!("../../../templates/andamento-git.kdl");
-        let mut state = ControllerState::default();
-        state.set_template_catalog(Some(
-            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
-                andamento_shared::template_config::parse_template_config_kdl(git_config_kdl)
-                    .unwrap(),
-            ),
-        ));
-        state.set_grouping_catalog(Some(
-            andamento_shared::grouping_config::GroupingConfigCatalog::with_bundled_defaults(
-                andamento_shared::grouping_config::parse_grouping_config_kdl(git_config_kdl)
-                    .unwrap(),
-            ),
-        ));
-        state.set_rail_config(RailConfig::default());
-        state.update_tabs(vec![state::ControllerTab {
-            tab_id: 1,
-            position: 0,
-            name: "work".to_owned(),
-            active: true,
-        }]);
-
-        let project_patch = serde_json::json!({
-            "type": "metadata-patch",
-            "target": {
-                "kind": "entity",
-                "value": { "kind": "project", "id": "flotilla/andamento@fleet" }
-            },
-            "source_id": "flotilla-connector",
-            "set": {
-                "flotilla.project": {
-                    "value": { "type": "text", "value": "flotilla/andamento@fleet" },
-                    "ttl_ms": null, "precedence": null, "ordinal": 0
-                },
-                "flotilla.project.name": {
-                    "value": { "type": "text", "value": "Andamento" },
-                    "ttl_ms": null, "precedence": null, "ordinal": 0
-                },
-                "display.label": {
-                    "value": { "type": "text", "value": "Andamento" },
-                    "ttl_ms": null, "precedence": null, "ordinal": 0
-                }
-            }
-        })
-        .to_string();
-        assert!(
-            handle_pipe_message(
-                &mut state,
-                pipe(
-                    MSG_APPLY_METADATA_PATCH,
-                    Some(project_patch),
-                    BTreeMap::new(),
-                ),
-            )
-            .state_changed
-        );
-
-        let vessel_id = "flotilla/rail-grouping-unification/work@fleet";
-        let vessel_patch = serde_json::json!({
-            "type": "metadata-patch",
-            "target": {
-                "kind": "entity",
-                "value": { "kind": "vessel", "id": vessel_id }
-            },
-            "source_id": "flotilla-connector",
-            "set": {
-                "flotilla.project": {
-                    "value": { "type": "text", "value": "flotilla/andamento@fleet" },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                },
-                "flotilla.project.name": {
-                    "value": { "type": "text", "value": "Andamento" },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                },
-                "vcs.repo": {
-                    "value": { "type": "text", "value": "flotilla-org/andamento" },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                },
-                "vcs.repo.name": {
-                    "value": { "type": "text", "value": "andamento" },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                },
-                "repo.name": {
-                    "value": { "type": "text", "value": "andamento" },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                },
-                "flotilla.vessel": {
-                    "value": { "type": "text", "value": vessel_id },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                },
-                "flotilla.vessel.name": {
-                    "value": { "type": "text", "value": "work" },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                },
-                "display.label": {
-                    "value": { "type": "text", "value": "work" },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                }
-            }
-        })
-        .to_string();
-        assert!(
-            handle_pipe_message(
-                &mut state,
-                pipe(
-                    MSG_APPLY_METADATA_PATCH,
-                    Some(vessel_patch),
-                    BTreeMap::new(),
-                ),
-            )
-            .state_changed
-        );
-        state.apply_metadata_patch(andamento_shared::MetadataPatch {
-            target: andamento_shared::MetadataTarget::Tab(1),
-            source_id: "flotilla-actuator".to_owned(),
-            set: BTreeMap::from([
-                (
-                    "entity.kind".to_owned(),
-                    andamento_shared::MetadataValueUpdate {
-                        value: andamento_shared::MetadataValue::Text("vessel".to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-                (
-                    "entity.id".to_owned(),
-                    andamento_shared::MetadataValueUpdate {
-                        value: andamento_shared::MetadataValue::Text(vessel_id.to_owned()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                ),
-            ]),
-            unset: vec![],
-        });
-
-        let model = state.view_model();
-        let root_path = model
-            .rows
-            .iter()
-            .find_map(|row| match row {
-                andamento_shared::RailRow::GroupHeader { path, .. } => Some(path),
-                _ => None,
-            })
-            .expect("project root group");
-        assert_eq!(
-            root_path.0.first().map(|segment| segment.key.as_str()),
-            Some("flotilla.project"),
-            "a Flotilla vessel must be rooted under its project, not its vcs repo"
-        );
-
-        let templates =
-            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
-                andamento_shared::template_config::parse_template_config_kdl(git_config_kdl)
-                    .unwrap(),
-            );
-        let rendered = andamento_rail::render::render_lines_with_template_catalog(
-            Some(&model),
-            &[],
-            20,
-            48,
-            true,
-            Some(&templates),
-        );
-        assert!(
-            rendered.lines.iter().any(|line| line.contains("Andamento")),
-            "the project group must be visible in the rendered frame: {:?}",
-            rendered.lines
-        );
-        insta::assert_snapshot!(
-            "vessel_with_project_facts_renders_under_its_project_before_its_repo",
-            rail_frame_snapshot(&rendered.lines, 48)
-        );
-    }
 
     /// Config for the placement pipeline: the attention region pulls its own
     /// contents instead of being handed everything carrying an attention fact.
@@ -3222,7 +2253,7 @@ mod tests {
     const PLACEMENT_KDL: &str = r#"
 version 1
 
-region "attention" source="attention" root-template="flotilla/region/attention" form="full" placement="attention"
+region "attention" root-template="flotilla/region/attention" form="full" placement="attention"
 
 placement "attention" {
   for "item" kind="vessel" {
@@ -3261,112 +2292,6 @@ placement "attention" {
 
     // Native-only for the same reason as the grouping frame snapshot above:
     // this drives the real controller and the real rail renderer.
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn placement_pipeline_renders_a_region_from_a_loop() {
-        let mut state = ControllerState::default();
-        state.set_template_catalog(Some(
-            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
-                andamento_shared::template_config::parse_template_config_kdl(PLACEMENT_KDL)
-                    .unwrap(),
-            ),
-        ));
-        // The placement selects from the entity catalog, which the grouping
-        // catalog still populates in this slice.
-        state.set_grouping_catalog(Some(
-            andamento_shared::grouping_config::GroupingConfigCatalog::with_bundled_defaults(
-                andamento_shared::grouping_config::parse_grouping_config_kdl(PLACEMENT_KDL)
-                    .unwrap(),
-            ),
-        ));
-        state.set_rail_config(RailConfig::default());
-
-        for (id, label, attention) in [
-            ("flotilla/alpha/worker@lab", "alpha-worker", true),
-            ("flotilla/beta/worker@lab", "beta-worker", false),
-            ("flotilla/gamma/worker@lab", "gamma-worker", true),
-        ] {
-            assert!(
-                handle_pipe_message(
-                    &mut state,
-                    pipe(
-                        MSG_APPLY_METADATA_PATCH,
-                        Some(attention_vessel_patch(id, label, attention)),
-                        BTreeMap::new(),
-                    ),
-                )
-                .state_changed
-            );
-        }
-        // A convoy also carrying the attention fact. The legacy region would
-        // place it; the loop asks for vessels, so it must not appear.
-        let convoy_patch = serde_json::json!({
-            "type": "metadata-patch",
-            "target": { "kind": "entity", "value": { "kind": "convoy", "id": "flotilla/alpha@lab" } },
-            "source_id": "flotilla-connector",
-            "set": {
-                "flotilla.convoy": {
-                    "value": { "type": "text", "value": "flotilla/alpha@lab" },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                },
-                "display.label": {
-                    "value": { "type": "text", "value": "alpha-convoy" },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                },
-                "status.attention": {
-                    "value": { "type": "bool", "value": true },
-                    "ttl_ms": null, "precedence": null, "ordinal": 1
-                }
-            }
-        })
-        .to_string();
-        assert!(
-            handle_pipe_message(
-                &mut state,
-                pipe(
-                    MSG_APPLY_METADATA_PATCH,
-                    Some(convoy_patch),
-                    BTreeMap::new()
-                ),
-            )
-            .state_changed
-        );
-
-        let model = state.view_model();
-        let attention = model
-            .surface_regions
-            .iter()
-            .find(|region| region.definition.name == "attention")
-            .expect("attention region");
-        let placed = attention
-            .entities
-            .iter()
-            .map(|entity| entity.label.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            placed,
-            vec!["gamma-worker", "alpha-worker"],
-            "the loop's declared order overrides the catalog's alphabetical order"
-        );
-
-        let templates =
-            andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(
-                andamento_shared::template_config::parse_template_config_kdl(PLACEMENT_KDL)
-                    .unwrap(),
-            );
-        let rendered = andamento_rail::render::render_lines_with_template_catalog(
-            Some(&model),
-            &[],
-            10,
-            40,
-            true,
-            Some(&templates),
-        );
-        insta::assert_snapshot!(
-            "placement_pipeline_renders_a_region_from_a_loop",
-            rail_frame_snapshot(&rendered.lines, 40)
-        );
-    }
 
     #[test]
     fn metadata_patch_cli_pipe_is_unblocked_without_output() {

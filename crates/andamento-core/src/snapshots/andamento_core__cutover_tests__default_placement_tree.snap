@@ -1,0 +1,16 @@
+---
+source: crates/andamento-core/src/cutover_tests.rs
+expression: text
+---
+section attention pinned=true
+section tree pinned=false
+  project:p [lines] Andamento
+    role:governor [inline] governor
+    role:tui [inline] tui
+    convoy:c [lines] Placement cutover
+      vessel:v [lines] work
+        session:s [lines] coder
+    issue:71 [row] #71
+    issue:72 [row] #72
+  project:empty [lines] Empty project
+section controls pinned=true

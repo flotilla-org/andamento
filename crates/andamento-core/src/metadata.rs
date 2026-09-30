@@ -275,7 +275,6 @@ impl MetadataStore {
                     EntityId::Tab(tab) => MetadataTarget::Tab(tab),
                     EntityId::Entity(entity) => MetadataTarget::Entity(entity),
                     EntityId::Identity(identity) => MetadataTarget::Identity(identity),
-                    EntityId::Group(_) => return None,
                 };
                 Some(MetadataPatch {
                     target,
@@ -361,7 +360,7 @@ mod tests {
         select_primary_entry(entries).map(|candidate| candidate.entry.value)
     }
     use crate::{
-        GroupPath, GroupSegment, MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate,
+        MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate,
         PaneTarget,
     };
 
@@ -494,29 +493,6 @@ mod tests {
             .is_empty());
     }
 
-    #[test]
-    fn derived_group_targets_are_distinct_internal_metadata_entities() {
-        let mut store = MetadataStore::default();
-        let group = GroupPath(vec![GroupSegment {
-            key: "project.name".to_owned(),
-            value: MetadataValue::Text("zellij".to_owned()),
-            label: None,
-        }]);
-        store.set(
-            EntityId::Group(group.clone()),
-            "summary.local_llm",
-            "flotilla",
-            entry("running tests", 0, 0, 1),
-        );
-
-        let entries = store.entries_for(&EntityId::Group(group), "summary.local_llm", 1);
-
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0].entry.value,
-            MetadataValue::Text("running tests".to_owned())
-        );
-    }
 
     #[test]
     fn metadata_patch_sets_values_with_controller_timestamp() {
