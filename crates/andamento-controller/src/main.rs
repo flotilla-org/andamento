@@ -108,17 +108,16 @@ fn main() {
     ));
     let raw = std::fs::read_to_string(&patches_path).expect("read patches file");
     let (mut applied, mut failed) = (0usize, 0usize);
-    for line in raw.lines().filter(|l| !l.trim().is_empty()) {
-        let patch = serde_json::from_str::<andamento_shared::MetadataPatch>(line)
-            .expect("parse metadata patch");
-        if state.apply_metadata_patch(patch) {
+    let frames =
+        andamento_shared::replay::read(std::io::Cursor::new(raw)).expect("parse replay stream");
+    for frame in frames {
+        state.advance_time(frame.offset_ms);
+        let target = frame.patch.target.clone();
+        if state.apply_metadata_patch(frame.patch) {
             applied += 1;
         } else {
             failed += 1;
-            std::eprintln!(
-                "no-op patch: {}",
-                line.chars().take(160).collect::<String>()
-            );
+            std::eprintln!("no-op patch at {} ms: {:?}", frame.offset_ms, target);
         }
     }
 

@@ -1,0 +1,555 @@
+[
+  {
+    "offset_ms": 0,
+    "convoys": [
+      {
+        "resource": {
+          "api_version": "flotilla.work/v1",
+          "kind": "Convoy",
+          "namespace": "flotilla",
+          "name": "interactive-phase-setup"
+        },
+        "name": "interactive-phase-setup",
+        "workflow_ref": "implement-review",
+        "phase": "active",
+        "initializing": false,
+        "surface_state": {
+          "state": "working"
+        },
+        "vessels": [
+          {
+            "resource": {
+              "api_version": "flotilla.work/v1",
+              "kind": "Convoy",
+              "namespace": "flotilla",
+              "name": "interactive-phase-setup",
+              "subresource": "vessels/worker"
+            },
+            "name": "worker",
+            "host": "lab",
+            "phase": "running",
+            "complete_work": false,
+            "surface_state": {
+              "state": "needs_you"
+            },
+            "materialize": "interactive-phase-setup/worker",
+            "crew": [
+              {
+                "role": "coder",
+                "command_preview": ""
+              },
+              {
+                "role": "reviewer",
+                "command_preview": ""
+              }
+            ],
+            "message": "review requested on #1456"
+          }
+        ],
+        "project_ref": "flotilla/andamento",
+        "repo": "flotilla-org/andamento",
+        "change_request": {
+          "id": "1456",
+          "status": "Open",
+          "repository_key": "flotilla-org/andamento"
+        }
+      },
+      {
+        "resource": {
+          "api_version": "flotilla.work/v1",
+          "kind": "Convoy",
+          "namespace": "flotilla",
+          "name": "grouping-live-session"
+        },
+        "name": "grouping-live-session",
+        "workflow_ref": "implement-review",
+        "phase": "active",
+        "initializing": false,
+        "surface_state": {
+          "state": "working"
+        },
+        "vessels": [
+          {
+            "resource": {
+              "api_version": "flotilla.work/v1",
+              "kind": "Convoy",
+              "namespace": "flotilla",
+              "name": "grouping-live-session",
+              "subresource": "vessels/worker"
+            },
+            "name": "worker",
+            "host": "lab",
+            "phase": "running",
+            "complete_work": false,
+            "surface_state": {
+              "state": "working"
+            },
+            "materialize": "grouping-live-session/worker",
+            "crew": [
+              {
+                "role": "coder",
+                "command_preview": ""
+              }
+            ],
+            "message": "rendering placement loops"
+          }
+        ],
+        "project_ref": "flotilla/andamento",
+        "repo": "flotilla-org/andamento"
+      },
+      {
+        "resource": {
+          "api_version": "flotilla.work/v1",
+          "kind": "Convoy",
+          "namespace": "flotilla",
+          "name": "scoping-regression"
+        },
+        "name": "scoping-regression",
+        "workflow_ref": "single-agent-trusted",
+        "phase": "landed",
+        "initializing": false,
+        "surface_state": {
+          "state": "working"
+        },
+        "vessels": [
+          {
+            "resource": {
+              "api_version": "flotilla.work/v1",
+              "kind": "Convoy",
+              "namespace": "flotilla",
+              "name": "scoping-regression",
+              "subresource": "vessels/worker"
+            },
+            "name": "worker",
+            "host": "lab",
+            "phase": "complete",
+            "complete_work": false,
+            "surface_state": {
+              "state": "working"
+            },
+            "materialize": "scoping-regression/worker",
+            "crew": [
+              {
+                "role": "coder",
+                "command_preview": ""
+              }
+            ]
+          }
+        ],
+        "project_ref": "flotilla/andamento",
+        "repo": "flotilla-org/andamento",
+        "change_request": {
+          "id": "63",
+          "status": "Open",
+          "repository_key": "flotilla-org/andamento"
+        }
+      },
+      {
+        "resource": {
+          "api_version": "flotilla.work/v1",
+          "kind": "Convoy",
+          "namespace": "flotilla",
+          "name": "session-recording"
+        },
+        "name": "session-recording",
+        "workflow_ref": "implement-review",
+        "phase": "interrupted",
+        "initializing": false,
+        "surface_state": {
+          "state": "working"
+        },
+        "vessels": [
+          {
+            "resource": {
+              "api_version": "flotilla.work/v1",
+              "kind": "Convoy",
+              "namespace": "flotilla",
+              "name": "session-recording",
+              "subresource": "vessels/worker"
+            },
+            "name": "worker",
+            "host": "lab",
+            "phase": "stalled",
+            "complete_work": false,
+            "surface_state": {
+              "state": "needs_you"
+            },
+            "materialize": "session-recording/worker",
+            "crew": [
+              {
+                "role": "coder",
+                "command_preview": ""
+              }
+            ],
+            "message": "needs lab forgejo token"
+          }
+        ],
+        "project_ref": "flotilla/cleat",
+        "repo": "flotilla-org/cleat",
+        "message": "waiting on credential grant"
+      },
+      {
+        "resource": {
+          "api_version": "flotilla.work/v1",
+          "kind": "Convoy",
+          "namespace": "flotilla",
+          "name": "manifest-extraction"
+        },
+        "name": "manifest-extraction",
+        "workflow_ref": "implement-review",
+        "phase": "active",
+        "initializing": false,
+        "surface_state": {
+          "state": "working"
+        },
+        "vessels": [
+          {
+            "resource": {
+              "api_version": "flotilla.work/v1",
+              "kind": "Convoy",
+              "namespace": "flotilla",
+              "name": "manifest-extraction",
+              "subresource": "vessels/coder"
+            },
+            "name": "coder",
+            "host": "lab",
+            "phase": "running",
+            "complete_work": false,
+            "surface_state": {
+              "state": "working"
+            },
+            "materialize": "manifest-extraction/coder",
+            "crew": [
+              {
+                "role": "coder",
+                "command_preview": ""
+              }
+            ],
+            "message": "extracting wire mirror"
+          },
+          {
+            "resource": {
+              "api_version": "flotilla.work/v1",
+              "kind": "Convoy",
+              "namespace": "flotilla",
+              "name": "manifest-extraction",
+              "subresource": "vessels/reviewer"
+            },
+            "name": "reviewer",
+            "host": "fleet",
+            "phase": "running",
+            "complete_work": false,
+            "surface_state": {
+              "state": "needs_you"
+            },
+            "materialize": "manifest-extraction/reviewer",
+            "crew": [
+              {
+                "role": "reviewer",
+                "command_preview": ""
+              }
+            ],
+            "message": "second opinion on ADR 0018"
+          }
+        ],
+        "project_ref": "flotilla/flotilla",
+        "repo": "flotilla-org/flotilla",
+        "change_request": {
+          "id": "708",
+          "status": "Open",
+          "repository_key": "flotilla-org/flotilla"
+        }
+      },
+      {
+        "resource": {
+          "api_version": "flotilla.work/v1",
+          "kind": "Convoy",
+          "namespace": "flotilla",
+          "name": "daemon-socket-identity"
+        },
+        "name": "daemon-socket-identity",
+        "workflow_ref": "single-agent-trusted",
+        "phase": "active",
+        "initializing": false,
+        "surface_state": {
+          "state": "working"
+        },
+        "vessels": [
+          {
+            "resource": {
+              "api_version": "flotilla.work/v1",
+              "kind": "Convoy",
+              "namespace": "flotilla",
+              "name": "daemon-socket-identity",
+              "subresource": "vessels/worker"
+            },
+            "name": "worker",
+            "host": "lab",
+            "phase": "running",
+            "complete_work": false,
+            "surface_state": {
+              "state": "working"
+            },
+            "materialize": "daemon-socket-identity/worker",
+            "crew": [
+              {
+                "role": "coder",
+                "command_preview": ""
+              }
+            ],
+            "message": "socket root mismatch"
+          }
+        ],
+        "project_ref": "flotilla/flotilla",
+        "repo": "flotilla-org/flotilla"
+      },
+      {
+        "resource": {
+          "api_version": "flotilla.work/v1",
+          "kind": "Convoy",
+          "namespace": "flotilla",
+          "name": "adhoc-triage"
+        },
+        "name": "adhoc-triage",
+        "workflow_ref": "single-agent-trusted",
+        "phase": "active",
+        "initializing": false,
+        "surface_state": {
+          "state": "working"
+        },
+        "vessels": [
+          {
+            "resource": {
+              "api_version": "flotilla.work/v1",
+              "kind": "Convoy",
+              "namespace": "flotilla",
+              "name": "adhoc-triage",
+              "subresource": "vessels/worker"
+            },
+            "name": "worker",
+            "host": "lab",
+            "phase": "running",
+            "complete_work": false,
+            "surface_state": {
+              "state": "working"
+            },
+            "materialize": "adhoc-triage/worker",
+            "crew": [],
+            "message": "chasing a flaky test"
+          }
+        ]
+      }
+    ],
+    "awareness": [
+      {
+        "kind": "project",
+        "id": "project/flotilla/andamento",
+        "label": "andamento",
+        "state": "active",
+        "as_of": "2026-09-30T00:00:00Z",
+        "entries": [
+          {
+            "kind": "issue",
+            "id": "https://github.com/flotilla-org/andamento#61",
+            "label": "Hover does nothing on UI elements",
+            "state": "pending",
+            "as_of": "2026-09-30T00:00:00Z"
+          },
+          {
+            "kind": "issue",
+            "id": "https://github.com/flotilla-org/andamento#62",
+            "label": "Clicking an attention item opens the config panel",
+            "state": "pending",
+            "as_of": "2026-09-30T00:00:00Z"
+          },
+          {
+            "kind": "convoy",
+            "id": "convoy/flotilla/interactive-phase-setup",
+            "label": "interactive-phase-setup",
+            "state": "active",
+            "as_of": "2026-09-30T00:00:00Z"
+          },
+          {
+            "kind": "convoy",
+            "id": "convoy/flotilla/grouping-live-session",
+            "label": "grouping-live-session",
+            "state": "active",
+            "as_of": "2026-09-30T00:00:00Z"
+          },
+          {
+            "kind": "convoy",
+            "id": "convoy/flotilla/scoping-regression",
+            "label": "scoping-regression",
+            "state": "active",
+            "as_of": "2026-09-30T00:00:00Z"
+          }
+        ]
+      },
+      {
+        "kind": "project",
+        "id": "project/flotilla/cleat",
+        "label": "cleat",
+        "state": "active",
+        "as_of": "2026-09-30T00:00:00Z",
+        "entries": [
+          {
+            "kind": "convoy",
+            "id": "convoy/flotilla/session-recording",
+            "label": "session-recording",
+            "state": "active",
+            "as_of": "2026-09-30T00:00:00Z"
+          }
+        ]
+      },
+      {
+        "kind": "project",
+        "id": "project/flotilla/flotilla",
+        "label": "flotilla",
+        "state": "active",
+        "as_of": "2026-09-30T00:00:00Z",
+        "entries": [
+          {
+            "kind": "issue",
+            "id": "https://github.com/flotilla-org/flotilla#1456",
+            "label": "Publish abbreviated display label tiers",
+            "state": "pending",
+            "as_of": "2026-09-30T00:00:00Z"
+          },
+          {
+            "kind": "convoy",
+            "id": "convoy/flotilla/manifest-extraction",
+            "label": "manifest-extraction",
+            "state": "active",
+            "as_of": "2026-09-30T00:00:00Z"
+          },
+          {
+            "kind": "convoy",
+            "id": "convoy/flotilla/daemon-socket-identity",
+            "label": "daemon-socket-identity",
+            "state": "active",
+            "as_of": "2026-09-30T00:00:00Z"
+          }
+        ]
+      },
+      {
+        "kind": "convoy",
+        "id": "convoy/flotilla/interactive-phase-setup",
+        "label": "interactive-phase-setup",
+        "state": "active",
+        "as_of": "2026-09-30T00:00:00Z",
+        "entries": [
+          {
+            "kind": "vessel",
+            "id": "vessel/flotilla/interactive-phase-setup/worker",
+            "label": "worker",
+            "state": "waiting",
+            "as_of": "2026-09-30T00:00:00Z"
+          }
+        ]
+      },
+      {
+        "kind": "convoy",
+        "id": "convoy/flotilla/grouping-live-session",
+        "label": "grouping-live-session",
+        "state": "active",
+        "as_of": "2026-09-30T00:00:00Z",
+        "entries": [
+          {
+            "kind": "vessel",
+            "id": "vessel/flotilla/grouping-live-session/worker",
+            "label": "worker",
+            "state": "active",
+            "as_of": "2026-09-30T00:00:00Z"
+          }
+        ]
+      },
+      {
+        "kind": "convoy",
+        "id": "convoy/flotilla/scoping-regression",
+        "label": "scoping-regression",
+        "state": "active",
+        "as_of": "2026-09-30T00:00:00Z",
+        "entries": [
+          {
+            "kind": "vessel",
+            "id": "vessel/flotilla/scoping-regression/worker",
+            "label": "worker",
+            "state": "active",
+            "as_of": "2026-09-30T00:00:00Z"
+          }
+        ]
+      },
+      {
+        "kind": "convoy",
+        "id": "convoy/flotilla/session-recording",
+        "label": "session-recording",
+        "state": "active",
+        "as_of": "2026-09-30T00:00:00Z",
+        "entries": [
+          {
+            "kind": "vessel",
+            "id": "vessel/flotilla/session-recording/worker",
+            "label": "worker",
+            "state": "waiting",
+            "as_of": "2026-09-30T00:00:00Z"
+          }
+        ]
+      },
+      {
+        "kind": "convoy",
+        "id": "convoy/flotilla/manifest-extraction",
+        "label": "manifest-extraction",
+        "state": "active",
+        "as_of": "2026-09-30T00:00:00Z",
+        "entries": [
+          {
+            "kind": "vessel",
+            "id": "vessel/flotilla/manifest-extraction/coder",
+            "label": "coder",
+            "state": "active",
+            "as_of": "2026-09-30T00:00:00Z"
+          },
+          {
+            "kind": "vessel",
+            "id": "vessel/flotilla/manifest-extraction/reviewer",
+            "label": "reviewer",
+            "state": "waiting",
+            "as_of": "2026-09-30T00:00:00Z"
+          }
+        ]
+      },
+      {
+        "kind": "convoy",
+        "id": "convoy/flotilla/daemon-socket-identity",
+        "label": "daemon-socket-identity",
+        "state": "active",
+        "as_of": "2026-09-30T00:00:00Z",
+        "entries": [
+          {
+            "kind": "vessel",
+            "id": "vessel/flotilla/daemon-socket-identity/worker",
+            "label": "worker",
+            "state": "active",
+            "as_of": "2026-09-30T00:00:00Z"
+          }
+        ]
+      },
+      {
+        "kind": "convoy",
+        "id": "convoy/flotilla/adhoc-triage",
+        "label": "adhoc-triage",
+        "state": "active",
+        "as_of": "2026-09-30T00:00:00Z",
+        "entries": [
+          {
+            "kind": "vessel",
+            "id": "vessel/flotilla/adhoc-triage/worker",
+            "label": "worker",
+            "state": "active",
+            "as_of": "2026-09-30T00:00:00Z"
+          }
+        ]
+      }
+    ]
+  }
+]

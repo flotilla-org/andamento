@@ -9,6 +9,7 @@ pub mod host;
 pub mod managed;
 mod metadata;
 pub mod presentation;
+pub mod replay;
 pub mod sidebar;
 pub mod state;
 pub use sidebar::Sidebar;

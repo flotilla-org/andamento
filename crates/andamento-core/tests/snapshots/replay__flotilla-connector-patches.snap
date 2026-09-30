@@ -1,0 +1,118 @@
+---
+source: crates/andamento-core/tests/replay.rs
+expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.nodes)).collect::<Vec<_>>()"
+---
+[
+    Array [],
+    Array [
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/scoping-regression@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("scoping-regression"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/scoping-regression@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/scoping-regression@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("scoping-regression"),
+                },
+                "repo.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/andamento"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/second-convoy@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("second-convoy"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/second-convoy@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/second-convoy@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("second-convoy"),
+                },
+                "repo.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/andamento"),
+                },
+            },
+        },
+    ],
+    Array [],
+    Array [],
+    Array [],
+]

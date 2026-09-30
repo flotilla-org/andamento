@@ -1,0 +1,2135 @@
+---
+source: crates/andamento-core/tests/replay.rs
+expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.nodes)).collect::<Vec<_>>()"
+---
+[
+    Array [
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/andamento@fleet"),
+                "kind": String("project"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("project"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("project"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/cleat@fleet"),
+                "kind": String("project"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("project"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("cleat"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/cleat@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("project"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/cleat@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("cleat"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/flotilla@fleet"),
+                "kind": String("project"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("project"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("project"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+    ],
+    Array [
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/adhoc-triage@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach adhoc-triage"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/adhoc-triage/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("adhoc-triage"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/adhoc-triage@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/adhoc-triage@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("adhoc-triage"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("implementing"),
+                },
+                "flotilla.convoy.workflow": Object {
+                    "type": String("text"),
+                    "value": String("single-agent-trusted"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("implementing"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0/1 vessels done"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/daemon-socket-identity@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach daemon-socket-identity"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/daemon-socket-identity/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("daemon-socket-identity"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/daemon-socket-identity@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/daemon-socket-identity@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("daemon-socket-identity"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("implementing"),
+                },
+                "flotilla.convoy.workflow": Object {
+                    "type": String("text"),
+                    "value": String("single-agent-trusted"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("implementing"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0/1 vessels done"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/flotilla"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/grouping-live-session@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach grouping-live-session"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/grouping-live-session/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("grouping-live-session"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/grouping-live-session@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/grouping-live-session@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("grouping-live-session"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("implementing"),
+                },
+                "flotilla.convoy.workflow": Object {
+                    "type": String("text"),
+                    "value": String("implement-review"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("implementing"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0/1 vessels done"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/andamento"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/interactive-phase-setup@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach interactive-phase-setup"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/interactive-phase-setup/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "change_request.number": Object {
+                    "type": String("text"),
+                    "value": String("1456"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("interactive-phase-setup"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/interactive-phase-setup@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/interactive-phase-setup@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("interactive-phase-setup"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("implementing"),
+                },
+                "flotilla.convoy.workflow": Object {
+                    "type": String("text"),
+                    "value": String("implement-review"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.attention": Object {
+                    "type": String("bool"),
+                    "value": Bool(true),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("attention"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0/1 vessels done"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/andamento"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/manifest-extraction@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "change_request.number": Object {
+                    "type": String("text"),
+                    "value": String("708"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("manifest-extraction"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("manifest-extraction"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("implementing"),
+                },
+                "flotilla.convoy.workflow": Object {
+                    "type": String("text"),
+                    "value": String("implement-review"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.attention": Object {
+                    "type": String("bool"),
+                    "value": Bool(true),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("attention"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0/2 vessels done"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/flotilla"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/scoping-regression@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach scoping-regression"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/scoping-regression/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "change_request.number": Object {
+                    "type": String("text"),
+                    "value": String("63"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("scoping-regression"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/scoping-regression@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/scoping-regression@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("scoping-regression"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("complete"),
+                },
+                "flotilla.convoy.workflow": Object {
+                    "type": String("text"),
+                    "value": String("single-agent-trusted"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("complete"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("1/1 vessels done"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/andamento"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/session-recording@fleet"),
+                "kind": String("convoy"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach session-recording"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/session-recording/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("session-recording"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/session-recording@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("convoy"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/session-recording@fleet"),
+                },
+                "flotilla.convoy.message": Object {
+                    "type": String("text"),
+                    "value": String("waiting on credential grant"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("session-recording"),
+                },
+                "flotilla.convoy.phase": Object {
+                    "type": String("text"),
+                    "value": String("blocked"),
+                },
+                "flotilla.convoy.workflow": Object {
+                    "type": String("text"),
+                    "value": String("implement-review"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/cleat@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("cleat"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.attention": Object {
+                    "type": String("bool"),
+                    "value": Bool(true),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("attention"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("0/1 vessels done"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/cleat"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("cleat"),
+                },
+            },
+        },
+    ],
+    Array [
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/adhoc-triage/worker@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach adhoc-triage/worker"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/adhoc-triage/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/adhoc-triage/worker@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/adhoc-triage@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("adhoc-triage"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/adhoc-triage/worker@lab"),
+                },
+                "flotilla.vessel.host": Object {
+                    "type": String("text"),
+                    "value": String("lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "flotilla.work.phase": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("chasing a flaky test"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/daemon-socket-identity/worker@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach daemon-socket-identity/worker"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/daemon-socket-identity/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/daemon-socket-identity/worker@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/daemon-socket-identity@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("daemon-socket-identity"),
+                },
+                "flotilla.crew.roles": Object {
+                    "type": String("string-list"),
+                    "value": Array [
+                        String("coder"),
+                    ],
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/daemon-socket-identity/worker@lab"),
+                },
+                "flotilla.vessel.host": Object {
+                    "type": String("text"),
+                    "value": String("lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "flotilla.work.phase": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("socket root mismatch"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/flotilla"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/grouping-live-session/worker@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach grouping-live-session/worker"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/grouping-live-session/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/grouping-live-session/worker@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/grouping-live-session@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("grouping-live-session"),
+                },
+                "flotilla.crew.roles": Object {
+                    "type": String("string-list"),
+                    "value": Array [
+                        String("coder"),
+                    ],
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/grouping-live-session/worker@lab"),
+                },
+                "flotilla.vessel.host": Object {
+                    "type": String("text"),
+                    "value": String("lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "flotilla.work.phase": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("rendering placement loops"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/andamento"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/interactive-phase-setup/worker@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach interactive-phase-setup/worker"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/interactive-phase-setup/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/interactive-phase-setup/worker@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/interactive-phase-setup@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("interactive-phase-setup"),
+                },
+                "flotilla.crew.roles": Object {
+                    "type": String("string-list"),
+                    "value": Array [
+                        String("coder"),
+                        String("reviewer"),
+                    ],
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/interactive-phase-setup/worker@lab"),
+                },
+                "flotilla.vessel.host": Object {
+                    "type": String("text"),
+                    "value": String("lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "flotilla.work.phase": Object {
+                    "type": String("text"),
+                    "value": String("review"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.attention": Object {
+                    "type": String("bool"),
+                    "value": Bool(true),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("attention"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("review requested on #1456"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/andamento"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/manifest-extraction/coder@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach manifest-extraction/coder"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/manifest-extraction/coder@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("coder"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction/coder@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("manifest-extraction"),
+                },
+                "flotilla.crew.roles": Object {
+                    "type": String("string-list"),
+                    "value": Array [
+                        String("coder"),
+                    ],
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction/coder@lab"),
+                },
+                "flotilla.vessel.host": Object {
+                    "type": String("text"),
+                    "value": String("lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("coder"),
+                },
+                "flotilla.work.phase": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("working"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("extracting wire mirror"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/flotilla"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/manifest-extraction/reviewer@fleet"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach manifest-extraction/reviewer"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/manifest-extraction/reviewer@fleet"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("reviewer"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction/reviewer@fleet"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("manifest-extraction"),
+                },
+                "flotilla.crew.roles": Object {
+                    "type": String("string-list"),
+                    "value": Array [
+                        String("reviewer"),
+                    ],
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/manifest-extraction/reviewer@fleet"),
+                },
+                "flotilla.vessel.host": Object {
+                    "type": String("text"),
+                    "value": String("fleet"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("reviewer"),
+                },
+                "flotilla.work.phase": Object {
+                    "type": String("text"),
+                    "value": String("review"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.attention": Object {
+                    "type": String("bool"),
+                    "value": Bool(true),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("attention"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("second opinion on ADR 0018"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/flotilla"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/scoping-regression/worker@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach scoping-regression/worker"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/scoping-regression/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/scoping-regression/worker@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/scoping-regression@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("scoping-regression"),
+                },
+                "flotilla.crew.roles": Object {
+                    "type": String("string-list"),
+                    "value": Array [
+                        String("coder"),
+                    ],
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/scoping-regression/worker@lab"),
+                },
+                "flotilla.vessel.host": Object {
+                    "type": String("text"),
+                    "value": String("lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "flotilla.work.phase": Object {
+                    "type": String("text"),
+                    "value": String("complete"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("complete"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/andamento"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla/session-recording/worker@lab"),
+                "kind": String("vessel"),
+            },
+            "facts": Object {
+                "action.primary.key": Object {
+                    "type": String("text"),
+                    "value": String("materialize"),
+                },
+                "action.primary.label": Object {
+                    "type": String("text"),
+                    "value": String("Open"),
+                },
+                "action.primary.recipe": Object {
+                    "type": String("text"),
+                    "value": String("flotilla attach session-recording/worker"),
+                },
+                "action.primary.target": Object {
+                    "type": String("text"),
+                    "value": String("vessel:flotilla/session-recording/worker@lab"),
+                },
+                "action.primary.vehicle": Object {
+                    "type": String("text"),
+                    "value": String("workspace"),
+                },
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/session-recording/worker@lab"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("vessel"),
+                },
+                "flotilla.convoy": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/session-recording@fleet"),
+                },
+                "flotilla.convoy.name": Object {
+                    "type": String("text"),
+                    "value": String("session-recording"),
+                },
+                "flotilla.crew.roles": Object {
+                    "type": String("string-list"),
+                    "value": Array [
+                        String("coder"),
+                    ],
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/cleat@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("cleat"),
+                },
+                "flotilla.vessel": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/session-recording/worker@lab"),
+                },
+                "flotilla.vessel.host": Object {
+                    "type": String("text"),
+                    "value": String("lab"),
+                },
+                "flotilla.vessel.name": Object {
+                    "type": String("text"),
+                    "value": String("worker"),
+                },
+                "flotilla.work.phase": Object {
+                    "type": String("text"),
+                    "value": String("blocked"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.attention": Object {
+                    "type": String("bool"),
+                    "value": Bool(true),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("attention"),
+                },
+                "summary.text": Object {
+                    "type": String("text"),
+                    "value": String("needs lab forgejo token"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/cleat"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("cleat"),
+                },
+            },
+        },
+    ],
+    Array [
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla-org/andamento"),
+                "kind": String("repo"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("repo"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/andamento"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("repo"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/andamento"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla-org/cleat"),
+                "kind": String("repo"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("repo"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("cleat"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/cleat"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("repo"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/cleat@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("cleat"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/cleat"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("cleat"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("flotilla-org/flotilla"),
+                "kind": String("repo"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("repo"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/flotilla"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("repo"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/flotilla"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+            },
+        },
+    ],
+    Array [
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("https://github.com/flotilla-org/andamento#61"),
+                "kind": String("issue"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("issue"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("Hover does nothing on UI elements"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("https://github.com/flotilla-org/andamento#61"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("issue"),
+                },
+                "flotilla.issue": Object {
+                    "type": String("text"),
+                    "value": String("https://github.com/flotilla-org/andamento#61"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("ready"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/andamento"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("https://github.com/flotilla-org/andamento#62"),
+                "kind": String("issue"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("issue"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("Clicking an attention item opens the config panel"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("https://github.com/flotilla-org/andamento#62"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("issue"),
+                },
+                "flotilla.issue": Object {
+                    "type": String("text"),
+                    "value": String("https://github.com/flotilla-org/andamento#62"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/andamento@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("ready"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/andamento"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("andamento"),
+                },
+            },
+        },
+        Object {
+            "children": Array [],
+            "entity": Object {
+                "id": String("https://github.com/flotilla-org/flotilla#1456"),
+                "kind": String("issue"),
+            },
+            "facts": Object {
+                "andamento.placement.loop-binding": Object {
+                    "type": String("text"),
+                    "value": String("issue"),
+                },
+                "display.label": Object {
+                    "type": String("text"),
+                    "value": String("Publish abbreviated display label tiers"),
+                },
+                "entity.id": Object {
+                    "type": String("text"),
+                    "value": String("https://github.com/flotilla-org/flotilla#1456"),
+                },
+                "entity.kind": Object {
+                    "type": String("text"),
+                    "value": String("issue"),
+                },
+                "flotilla.issue": Object {
+                    "type": String("text"),
+                    "value": String("https://github.com/flotilla-org/flotilla#1456"),
+                },
+                "flotilla.project": Object {
+                    "type": String("text"),
+                    "value": String("flotilla/flotilla@fleet"),
+                },
+                "flotilla.project.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "source": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+                "status.state": Object {
+                    "type": String("text"),
+                    "value": String("ready"),
+                },
+                "var.child-layout": Object {
+                    "type": String("text"),
+                    "value": String("cards"),
+                },
+                "var.convoy.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "var.issue.tier": Object {
+                    "type": String("text"),
+                    "value": String("full"),
+                },
+                "vcs.repo": Object {
+                    "type": String("text"),
+                    "value": String("flotilla-org/flotilla"),
+                },
+                "vcs.repo.name": Object {
+                    "type": String("text"),
+                    "value": String("flotilla"),
+                },
+            },
+        },
+    ],
+]

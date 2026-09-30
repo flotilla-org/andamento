@@ -23,6 +23,7 @@ with tempfile.TemporaryDirectory(prefix="andamento-independent-") as directory:
     for name in names:
         shutil.copytree(root / "crates" / name, isolated / "crates" / name)
     shutil.copytree(root / "templates", isolated / "templates")
+    shutil.copytree(root / "fixtures", isolated / "fixtures")
     shutil.copyfile(root / "Cargo.lock", isolated / "Cargo.lock")
     (isolated / "Cargo.toml").write_text('[workspace]\nresolver = "2"\nmembers = [' +
         ", ".join(json.dumps("crates/" + name) for name in names) + "]\n")
