@@ -58,13 +58,7 @@ fn bundled_defaults_are_placement_templates_without_a_configuration_switch() {
         outline(&section.nodes, 1, &mut text);
     }
     insta::assert_snapshot!("default_placement_tree", text);
-    assert_eq!(
-        model.unmatched_entities,
-        vec![EntityRef {
-            kind: "repo".into(),
-            id: "r".into()
-        }]
-    );
+    assert!(model.unmatched_entities.is_empty());
     let wire = serde_json::to_string(&model).unwrap();
     for retired in [
         "collapsed_groups",

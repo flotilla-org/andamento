@@ -50,8 +50,8 @@ layout {
                         close_on_hidden "false"
                     }
                 }
-                pane command="$ANDAMENTO_ROOT/scripts/andamento-git-watcher.py" cwd="$ANDAMENTO_ROOT" {
-                    args "--interval" "5"
+                pane command="andamento-git-watcher" cwd="$ANDAMENTO_ROOT" {
+                    args "--transport" "zellij" "--interval" "5" "--factory-repo-manager" "--factory-layout" "$ANDAMENTO_ROOT/layouts/repo-manager-tab.kdl"
                 }
             }
         }

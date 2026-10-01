@@ -78,6 +78,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "andamento-git-watcher"
+version = "0.1.0"
+dependencies = [
+ "andamento-core",
+ "andamento-terminal",
+ "serde_json",
+]
+
+[[package]]
 name = "andamento-html"
 version = "0.1.0"
 dependencies = [

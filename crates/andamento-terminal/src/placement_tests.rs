@@ -176,7 +176,10 @@ fn viewport_scroll_preserves_pinned_controls_and_reveals_the_remaining_rows() {
     assert!(first.can_scroll());
     assert_ne!(first.lines, last.lines);
     assert_eq!(first.lines[4], last.lines[4]);
-    assert!(last.lines.iter().any(|line| line.contains("Empty project")));
+    assert!(last
+        .lines
+        .iter()
+        .any(|line| line.contains("Unplaced repository")));
     assert!(last
         .hit_regions
         .iter()

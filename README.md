@@ -280,39 +280,68 @@ The helper uses `$ZELLIJ_BIN` when set, otherwise it prefers
 The pipe is intentionally broadcast by name so it reaches the already-running
 controller instead of launching another controller instance.
 
-## Scripted Tab Factories
+## Host-independent git watcher
 
-The example git watcher can also create managed tabs from the scripting side:
+Install the native Rust producer (requires `git`; Wheelhouse transport also
+requires `curl` with Unix-socket support):
 
 ```sh
-/Users/robert/dev/andamento/scripts/andamento-git-watcher.py \
-  --factory-repo-manager \
-  --factory-layout /Users/robert/dev/andamento/layouts/repo-manager-tab.kdl
+cargo install --path crates/andamento-git-watcher --target x86_64-unknown-linux-gnu --locked
+andamento-git-watcher --roots ~/dev --once
+andamento-git-watcher --roots ~/dev --transport wheelhouse --socket /path/to/ingress.sock
+andamento-git-watcher --transport zellij --factory-repo-manager \
+  --factory-layout "$PWD/layouts/repo-manager-tab.kdl"
 ```
 
-When enabled, the watcher dedupes by tab name, creates one `repo: owner/name`
-tab per observed git repository, captures the tab id printed by
-`zellij action new-tab`, and stamps that tab with canonical entity identity
-and flat facts:
+Use your native Rust target on other platforms. Repeat `--roots DIR` for multiple
+containers or checkouts. Scanning descends real directories until it finds a
+checkout, then includes all its linked worktrees (including those outside the
+root). It does not follow directory symlinks. Observed host directories may be
+combined with configured roots. No session is required for the default stdout
+metadata-patch JSONL transport. Diagnostics go to stderr.
 
-Like the status helper, the watcher uses `$ZELLIJ_BIN` when set and otherwise
-prefers the sibling fork build at `/Users/robert/dev/zellij/target/dev-opt/zellij`
-before falling back to `zellij`.
+The producer publishes `repo` and `worktree` entities joined by `git.repo`, with
+branch, upstream, dirty, ahead/behind, root, open state and a shell recipe. Local
+repositories without an origin use their common Git directory as their parent
+identity. Detached HEADs show their short commit. Missing upstream facts are
+explicitly unset. Labels supply the full/medium/short abbreviation ladder;
+`templates/andamento-git.kdl` and the daily-driver template place these facts in
+the Git section.
 
-```text
-entity.kind = repo
-entity.id = owner/name
-vcs.repo = owner/name
-action.primary.target = repo-manager:owner/name
+Refresh defaults to five seconds with a ten-second fact TTL (`--interval` and
+`--ttl-ms`). HEAD/index/packed-refs changes trigger an earlier refresh; ordinary
+working-file changes are detected by the regular refresh. Removed worktrees
+expire by TTL. Failed host reads let existing facts expire instead of reporting
+an empty inventory. The loop retries transport failures; `--once` exits nonzero.
+
+Wheelhouse discovery uses `GET /v1/observed/workdirs` from wheelhouse#130,
+preferring each terminal view's nonempty `live_cwd` over its saved `cwd`.
+`POST /v1/metadata/patch` is unchanged. `--socket` defaults to `WHEELHOUSE_SOCKET`.
+`git.open` reports checkouts containing observed directories. Wheelhouse's paired
+change binds matching open terminals to the entity and materialises latent
+worktrees through `git.root` and `action.primary.recipe`.
+
+The Zellij adapter uses `andamento-observed-identities` and
+`andamento-apply-metadata-patch`; only this adapter emits pane identity patches.
+`--zellij-bin` defaults to `ZELLIJ_BIN` or `zellij`; `--plugin-url` targets a
+specific controller. The opt-in factory preserves one `repo: owner/name` tab
+per repository, dedupes against the live tab list on every refresh, and applies
+durable repo identity to created or existing tabs. The daily-driver layouts
+invoke the installed binary with the factory enabled. The supplied repeated tab
+layout remains necessary because Zellij does not share tab chrome externally.
+
+To view a configured-root stream through the existing standalone TUI:
+
+```sh
+andamento-tui my-tmux-session templates/andamento-git.kdl andamento-git-watcher --roots ~/dev
 ```
 
-The factory tab layout is deliberately a repeated KDL layout for now because
-Zellij does not expose a slot-style way to reuse the session's tab chrome from
-an external `new-tab --layout` call. The standard `layouts/andamento.kdl` and
-`layouts/andamento-native.kdl` layouts load the controller as a background
-plugin, then embed a normal shell, the config plugin, and the watcher in the
-first tab. The watcher is started with `--factory-repo-manager`, so observed git
-repositories can materialize their repo-manager tabs automatically.
+Record and replay with the existing connector harness (no separate wire format):
+
+```sh
+andamento-git-watcher --roots ~/dev --once | andamento-replay record > git.jsonl
+andamento-replay snapshot git.jsonl templates/andamento-git.kdl 0
+```
 
 ## Standalone TUI
 

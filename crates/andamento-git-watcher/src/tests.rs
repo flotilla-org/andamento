@@ -1,0 +1,376 @@
+use super::*;
+use andamento_core::{
+    replay::{self, Frame, Replay},
+    Sidebar,
+};
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+static SERIAL: AtomicU64 = AtomicU64::new(0);
+struct Temp(PathBuf);
+impl Temp {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "git-watcher-{}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            SERIAL.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+}
+impl Drop for Temp {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+fn init(path: &Path) {
+    fs::create_dir_all(path).unwrap();
+    git(path, &["init", "-b", "main"]).unwrap();
+    git(path, &["config", "user.email", "test@example.test"]).unwrap();
+    git(path, &["config", "user.name", "Test"]).unwrap();
+    git(path, &["commit", "--allow-empty", "-m", "initial"]).unwrap();
+}
+#[test]
+fn discovers_linked_worktrees_and_refreshes_git_state() {
+    let temp = Temp::new();
+    let root = temp.0.join("scan/repo");
+    init(&root);
+    let linked = temp.0.join("outside quote' and space");
+    git(
+        &root,
+        &["remote", "add", "origin", "git@example.test:team/repo.git"],
+    )
+    .unwrap();
+    git(
+        &root,
+        &["worktree", "add", "-b", "feature", linked.to_str().unwrap()],
+    )
+    .unwrap();
+    fs::create_dir(linked.join("subdir")).unwrap();
+    let trees = discover(&[temp.0.join("scan")], &[linked.join("subdir")]);
+    assert_eq!(trees.len(), 2);
+    let tree = trees.iter().find(|t| t.root == linked).unwrap();
+    assert!(tree.open);
+    assert_eq!(tree.repo, "team/repo");
+    assert_eq!(tree.branch, "feature");
+    assert!(!tree.dirty);
+    let root_tree = trees.iter().find(|t| t.root == root).unwrap();
+    assert!(!root_tree.open);
+    fs::write(linked.join("untracked"), "dirty").unwrap();
+    git(&linked, &["checkout", "--detach"]).unwrap();
+    let tree = discover(std::slice::from_ref(&linked), &[])
+        .into_iter()
+        .find(|t| t.root == linked)
+        .unwrap();
+    assert!(tree.branch.starts_with("detached:"));
+    assert!(tree.dirty);
+    assert!(!tree.open);
+    let stream = patches(&[tree], 10_000);
+    let recipe = stream[1]["set"]["action.primary.recipe"]["value"]["value"]
+        .as_str()
+        .unwrap();
+    let cd = recipe.split(" && exec").next().unwrap();
+    let output = Command::new("sh")
+        .args(["-c", &format!("{cd} && pwd")])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        linked.to_str().unwrap()
+    );
+}
+#[test]
+fn remote_less_worktrees_share_parent_and_upstream_is_cleared() {
+    let temp = Temp::new();
+    let root = temp.0.join("repo");
+    init(&root);
+    let linked = temp.0.join("linked");
+    git(
+        &root,
+        &["worktree", "add", "-b", "feature", linked.to_str().unwrap()],
+    )
+    .unwrap();
+    git(&linked, &["branch", "--set-upstream-to=main"]).unwrap();
+    let trees = discover(std::slice::from_ref(&root), &[]);
+    assert_eq!(trees.len(), 2);
+    assert_eq!(trees[0].repo, trees[1].repo);
+    let tree = trees.iter().find(|t| t.root == linked).unwrap();
+    assert_eq!(tree.upstream.as_deref(), Some("main"));
+    assert_eq!(tree.ahead, Some(0));
+    git(&linked, &["commit", "--allow-empty", "-m", "ahead"]).unwrap();
+    assert_eq!(
+        discover(std::slice::from_ref(&root), &[])
+            .iter()
+            .find(|t| t.root == linked)
+            .unwrap()
+            .ahead,
+        Some(1)
+    );
+    git(&linked, &["branch", "--unset-upstream"]).unwrap();
+    let stream = patches(&discover(&[root], &[]), 1000);
+    assert!(stream
+        .iter()
+        .filter(|p| p["target"]["value"]["kind"] == "worktree")
+        .all(|p| p["unset"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("git.upstream"))));
+}
+#[test]
+fn parses_forge_remotes_and_host_inventories() {
+    for remote in [
+        "git@github.com:owner/repo.git",
+        "https://forge.test/owner/repo.git",
+        "ssh://git@forge.test/owner/repo",
+    ] {
+        assert_eq!(repo_name(remote).as_deref(), Some("owner/repo"));
+    }
+    assert_eq!(
+        repo_name("https://forge.test/group/sub/repo.git").as_deref(),
+        Some("group/sub/repo")
+    );
+    assert_eq!(repo_name("/local/repo"), None);
+    let dirs = transport::workdirs(&json!({"workdirs":[{"cwd":"/old","live_cwd":"/new"},{"cwd":"/saved","live_cwd":null},{"cwd":"/saved","live_cwd":""},{"cwd":null}]})).unwrap();
+    assert_eq!(dirs, vec![PathBuf::from("/new"), PathBuf::from("/saved")]);
+    assert!(transport::workdirs(&json!({})).is_err());
+    let response = r#"[{"identity":{"key":"zellij.pane.cwd","value":{"type":"text","value":"/repo"}}}] [{"identity":{"key":"zellij.pane.cwd","value":{"type":"text","value":"/repo"}}}]"#;
+    assert_eq!(
+        transport::observed_identities(response).unwrap(),
+        vec![PathBuf::from("/repo")]
+    );
+}
+#[test]
+fn emitted_patches_replay_under_git_placement_and_expire() {
+    let tree = Worktree {
+        root: "/fixtures/repo".into(),
+        repo: "owner/repo".into(),
+        remote: "https://example.test/owner/repo.git".into(),
+        branch: "main".into(),
+        upstream: None,
+        dirty: true,
+        ahead: None,
+        behind: None,
+        open: false,
+    };
+    let stream = patches(&[tree], 10_000);
+    let frames: Vec<Frame> = stream
+        .into_iter()
+        .map(|p| Frame {
+            offset_ms: 0,
+            patch: serde_json::from_value(p).unwrap(),
+        })
+        .collect();
+    let mut replay = Replay::new(frames).unwrap();
+    for config in [
+        include_str!("../../../templates/andamento-git.kdl"),
+        include_str!("../../../templates/flotilla-default.kdl"),
+    ] {
+        let mut sidebar = Sidebar::new(config).unwrap();
+        // Use the same replay reader as checked-in connector captures.
+        let capture = include_str!("../../../fixtures/git-watcher.jsonl");
+        let mut recorded =
+            Replay::new(replay::read(std::io::Cursor::new(capture)).unwrap()).unwrap();
+        recorded.advance_to(&mut sidebar, 0).unwrap();
+        let snapshot = sidebar.snapshot();
+        let section = snapshot
+            .surface
+            .sections
+            .iter()
+            .find(|s| s.nodes.iter().any(|n| n.entity.kind == "repo"))
+            .unwrap();
+        for width in [24, 80] {
+            let rendered = andamento_terminal::surface::render(&snapshot.surface, width);
+            let lines = rendered.lines.join("\n");
+            assert!(lines.contains("Git"), "{lines}");
+            assert!(lines.contains("alpha"));
+            assert!(lines.contains("feature"));
+            if width == 80 {
+                assert!(lines.contains("true"));
+                assert!(lines.contains("open"));
+            }
+        }
+        assert_eq!(section.nodes.len(), 2);
+        assert_eq!(
+            section
+                .nodes
+                .iter()
+                .map(|n| n.children.len())
+                .sum::<usize>(),
+            4
+        );
+        assert!(section
+            .nodes
+            .iter()
+            .all(|n| n.children.iter().all(|c| c.entity.kind == "worktree")));
+        recorded.advance_to(&mut sidebar, 10_001).unwrap();
+        assert!(sidebar
+            .snapshot()
+            .surface
+            .sections
+            .iter()
+            .all(|s| s.nodes.is_empty()));
+    }
+    let mut sidebar = Sidebar::new(include_str!("../../../templates/andamento-git.kdl")).unwrap();
+    replay.advance_to(&mut sidebar, 0).unwrap();
+    assert_eq!(
+        sidebar.snapshot().surface.sections[0].nodes[0]
+            .children
+            .len(),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn wheelhouse_uses_unix_http_and_prefers_live_cwd() {
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        os::unix::net::UnixListener,
+    };
+    use transport::Transport;
+    let temp = Temp::new();
+    let socket = temp.0.join("ingress.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = std::thread::spawn(move || {
+        for (index, expected) in [
+            "GET /v1/observed/workdirs",
+            "POST /v1/metadata/patch",
+            "GET /v1/observed/workdirs",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut first = String::new();
+            reader.read_line(&mut first).unwrap();
+            assert!(first.starts_with(expected));
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = v.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            if expected.starts_with("POST") {
+                let patch: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(patch["source_id"], SOURCE);
+                stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            } else if index == 2 {
+                stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            } else if first.contains("GET") && length == 0 {
+                let body = r#"{"workdirs":[{"cwd":"/saved","live_cwd":"/live"}]}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        }
+    });
+    let mut host = transport::Wheelhouse { socket };
+    assert_eq!(host.observed().unwrap(), vec![PathBuf::from("/live")]);
+    host.publish(&entity_patch("repo", "test", BTreeMap::new(), vec![], 1000))
+        .unwrap();
+    assert!(host.observed().is_err());
+    server.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn zellij_factory_dedupes_live_tabs_and_scopes_panes() {
+    use std::os::unix::fs::PermissionsExt;
+    use transport::Transport;
+    let temp = Temp::new();
+    let root = temp.0.join("repo");
+    init(&root);
+    git(
+        &root,
+        &["remote", "add", "origin", "git@example.test:owner/repo.git"],
+    )
+    .unwrap();
+    let bin = temp.0.join("zellij");
+    let log = temp.0.join("patches.jsonl");
+    let state = temp.0.join("created");
+    let observed =
+        json!([{"identity":{"key":"zellij.pane.cwd","value":{"type":"text","value":root}}}]);
+    let script = format!(
+        r#"#!/bin/sh
+set -eu
+if [ "$1" = pipe ]; then
+  [ "$4" = --plugin ] && [ "$5" = controller ]
+  if [ "$3" = andamento-observed-identities ]; then
+    printf '%s\n' {}
+  else
+    [ "$3" = andamento-apply-metadata-patch ] && [ "$6" = -- ]
+    printf '%s\n' "$7" >> {}
+  fi
+elif [ "$2" = list-tabs ]; then
+  if [ -f {} ]; then printf '%s\n' '[{{"name":"repo: owner/repo","tab_id":42}}]'; else printf '[]\n'; fi
+elif [ "$2" = new-tab ]; then
+  [ "$3" = --layout ] && [ "$4" = /factory.kdl ] && [ "$5" = --name ] && [ "$6" = 'repo: owner/repo' ] && [ "$7" = --cwd ] && [ "$8" = {} ]
+  printf 'created\n' >> {}
+  printf '42\n'
+else exit 1
+fi
+"#,
+        quote_shell(&observed.to_string()),
+        quote_shell(log.to_str().unwrap()),
+        quote_shell(state.to_str().unwrap()),
+        quote_shell(root.to_str().unwrap()),
+        quote_shell(state.to_str().unwrap())
+    );
+    fs::write(&bin, script).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut host = transport::Zellij {
+        bin: bin.to_str().unwrap().into(),
+        plugin: Some("controller".into()),
+        factory_layout: Some("/factory.kdl".into()),
+    };
+    let observed = host.observed().unwrap();
+    let trees = discover(&[], &observed);
+    for _ in 0..2 {
+        for patch in patches(&trees, 10_000) {
+            host.publish(&patch).unwrap();
+        }
+        host.reconcile(&trees, &observed, 10_000).unwrap();
+    }
+    assert_eq!(fs::read_to_string(&state).unwrap().lines().count(), 1);
+    let patches: Vec<Value> = fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let pane = patches
+        .iter()
+        .find(|p| p["target"]["kind"] == "identity")
+        .unwrap();
+    assert_eq!(pane["set"]["entity.kind"]["value"]["value"], "worktree");
+    let tab = patches
+        .iter()
+        .find(|p| p["target"]["kind"] == "tab")
+        .unwrap();
+    assert_eq!(tab["target"]["value"], 42);
+    assert!(tab["set"]["entity.id"]["ttl_ms"].is_null());
+    fs::remove_file(&state).unwrap();
+    host.reconcile(&trees, &observed, 10_000).unwrap();
+    assert!(state.exists());
+}
