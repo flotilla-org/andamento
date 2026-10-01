@@ -33,19 +33,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: >-
-          cargo fmt --check
-          --package andamento
-          --package andamento-shared
-          --package andamento-controller
-          --package andamento-rail
-          --package andamento-config
-          --package andamento-core
-          --package andamento-terminal
-          --package andamento-html
-          --package andamento-ffi
-          --package andamento-tui
-          --package andamento-git-watcher
+      - run: cargo fmt --all --check
 
   clippy:
     name: Clippy
