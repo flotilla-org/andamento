@@ -324,7 +324,9 @@ failures; `--once` exits nonzero.
 
 Wheelhouse discovery uses `GET /v1/observed/workdirs` from wheelhouse#130,
 preferring each terminal view's nonempty `live_cwd` over its saved `cwd`.
-`POST /v1/metadata/patch` is unchanged. `--socket` defaults to `WHEELHOUSE_SOCKET`.
+`POST /v1/metadata/patch` is unchanged. It accepts one patch per request, so
+Wheelhouse transport currently starts one curl process per repo/worktree patch
+per cycle; large-inventory batching is tracked in wheelhouse#136. `--socket` defaults to `WHEELHOUSE_SOCKET`.
 `git.open` reports checkouts containing observed directories. Wheelhouse's paired
 change binds matching open terminals to the entity and materialises latent
 worktrees through `git.root` and `action.primary.recipe`.

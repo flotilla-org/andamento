@@ -22,7 +22,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut interval = 5.0_f64;
     let mut ttl_ms = 10_000_u64;
     let mut once = false;
-    let mut args = env::args().skip(1);
+    let mut args = env::args_os()
+        .skip(1)
+        .map(|arg| {
+            arg.into_string()
+                .map_err(|_| "arguments must be valid UTF-8")
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--roots" => roots.push(PathBuf::from(

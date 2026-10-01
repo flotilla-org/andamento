@@ -68,9 +68,13 @@ impl Wheelhouse {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        if let Some(body) = body {
-            serde_json::to_writer(child.stdin.take().unwrap(), body)?;
-        }
+        let written = if let Some(body) = body {
+            serde_json::to_writer(child.stdin.take().unwrap(), body)
+        } else {
+            Ok(())
+        };
+        // Always reap curl. If it rejected the request before consuming stdin,
+        // its HTTP/socket diagnostic is more useful than our broken pipe.
         let output = child.wait_with_output()?;
         if !output.status.success() {
             return Err(io::Error::other(format!(
@@ -78,6 +82,11 @@ impl Wheelhouse {
                 String::from_utf8_lossy(&output.stderr),
                 String::from_utf8_lossy(&output.stdout)
             )));
+        }
+        if let Err(error) = written {
+            if error.io_error_kind() != Some(io::ErrorKind::BrokenPipe) {
+                return Err(error.into());
+            }
         }
         String::from_utf8(output.stdout).map_err(io::Error::other)
     }
@@ -185,78 +194,98 @@ impl Transport for Zellij {
         observed: &[PathBuf],
         ttl_ms: u64,
     ) -> io::Result<()> {
+        let mut errors = Vec::new();
         for cwd in observed {
-            // JSON identities cannot represent arbitrary Unix path bytes.
             let Some(cwd_text) = cwd.to_str() else {
                 continue;
             };
             if let Some(root) = super::checkout(cwd) {
                 if let Some(tree) = trees.iter().find(|t| t.root == root) {
-                    self.publish(&patch(json!({"kind":"identity","value":{"key":"zellij.pane.cwd","value":{"type":"text","value":cwd_text}}}),
-                        BTreeMap::from([("entity.kind".into(), json!("worktree")), ("entity.id".into(), json!(root.to_string_lossy())), ("git.root".into(), json!(root.to_string_lossy())), ("git.repo".into(), json!(tree.repo))]), vec![], ttl_ms))?;
+                    let result = self.publish(&patch(json!({"kind":"identity","value":{"key":"zellij.pane.cwd","value":{"type":"text","value":cwd_text}}}),
+                        BTreeMap::from([("entity.kind".into(), json!("worktree")), ("entity.id".into(), json!(root.to_string_lossy())), ("git.root".into(), json!(root.to_string_lossy())), ("git.repo".into(), json!(tree.repo))]), vec![], ttl_ms));
+                    if let Err(error) = result {
+                        errors.push(format!("pane {}: {error}", cwd.display()));
+                    }
                 }
             }
         }
         if let Some(layout) = self.factory_layout.clone() {
-            // Re-list on every refresh: a manually closed factory can be reopened,
-            // and a failed creation is never recorded as successful.
-            let tabs: Value =
-                serde_json::from_str(&self.run(&["action", "list-tabs", "--json"])?)?;
-            let tabs = tabs
-                .as_array()
-                .ok_or_else(|| io::Error::other("expected tab list"))?;
-            let mut repos = std::collections::BTreeSet::new();
-            for tree in trees {
-                if !repos.insert(&tree.repo) {
-                    continue;
-                }
-                let name = format!("repo: {}", tree.repo);
-                let mut ids: Vec<u64> = tabs
-                    .iter()
-                    .filter(|t| t["name"] == name)
-                    .filter_map(|t| t["tab_id"].as_u64())
-                    .collect();
-                if ids.is_empty() {
-                    let output = self.run(&[
-                        "action",
-                        "new-tab",
-                        "--layout",
-                        &layout.to_string_lossy(),
-                        "--name",
-                        &name,
-                        "--cwd",
-                        &tree.root.to_string_lossy(),
-                    ])?;
-                    ids = output
-                        .lines()
-                        .filter_map(|line| line.trim().parse().ok())
-                        .collect();
-                    if ids.is_empty() {
-                        return Err(io::Error::other("new-tab returned no tab ids"));
+            // This snapshot is a global safety prerequisite: never create tabs
+            // blindly after a failed dedupe read. Pane patches above still run.
+            let tabs = self
+                .run(&["action", "list-tabs", "--json"])
+                .and_then(|s| serde_json::from_str::<Vec<Value>>(&s).map_err(io::Error::other));
+            match tabs {
+                Err(error) => errors.push(format!("factory inventory: {error}")),
+                Ok(tabs) => {
+                    let mut repos = std::collections::BTreeSet::new();
+                    for tree in trees {
+                        if tree.root.to_str().is_none() || !repos.insert(&tree.repo) {
+                            continue;
+                        }
+                        let name = format!("repo: {}", tree.repo);
+                        let mut ids: Vec<u64> = tabs
+                            .iter()
+                            .filter(|t| t["name"] == name)
+                            .filter_map(|t| t["tab_id"].as_u64())
+                            .collect();
+                        if ids.is_empty() {
+                            match self.run(&[
+                                "action",
+                                "new-tab",
+                                "--layout",
+                                &layout.to_string_lossy(),
+                                "--name",
+                                &name,
+                                "--cwd",
+                                &tree.root.to_string_lossy(),
+                            ]) {
+                                Err(error) => {
+                                    errors.push(format!("{name}: {error}"));
+                                    continue;
+                                }
+                                Ok(output) => {
+                                    ids = output
+                                        .lines()
+                                        .filter_map(|line| line.trim().parse().ok())
+                                        .collect()
+                                }
+                            }
+                            if ids.is_empty() {
+                                errors.push(format!("{name}: new-tab returned no tab ids"));
+                                continue;
+                            }
+                        }
+                        for id in ids {
+                            let mut p = patch(
+                                json!({"kind":"tab","value":id}),
+                                BTreeMap::from([
+                                    ("entity.kind".into(), json!("repo")),
+                                    ("entity.id".into(), json!(tree.repo)),
+                                    ("git.repo".into(), json!(tree.repo)),
+                                    (
+                                        "action.primary.target".into(),
+                                        json!(format!("repo-manager:{}", tree.repo)),
+                                    ),
+                                ]),
+                                vec![],
+                                ttl_ms,
+                            );
+                            for value in p["set"].as_object_mut().unwrap().values_mut() {
+                                value["ttl_ms"] = Value::Null;
+                            }
+                            if let Err(error) = self.publish(&p) {
+                                errors.push(format!("tab {id}: {error}"));
+                            }
+                        }
                     }
-                }
-                for id in ids {
-                    let mut p = patch(
-                        json!({"kind":"tab","value":id}),
-                        BTreeMap::from([
-                            ("entity.kind".into(), json!("repo")),
-                            ("entity.id".into(), json!(tree.repo)),
-                            ("git.repo".into(), json!(tree.repo)),
-                            (
-                                "action.primary.target".into(),
-                                json!(format!("repo-manager:{}", tree.repo)),
-                            ),
-                        ]),
-                        vec![],
-                        ttl_ms,
-                    );
-                    for value in p["set"].as_object_mut().unwrap().values_mut() {
-                        value["ttl_ms"] = Value::Null;
-                    }
-                    self.publish(&p)?;
                 }
             }
         }
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(io::Error::other(errors.join("; ")))
+        }
     }
 }

@@ -14,7 +14,7 @@ typedef struct { const uint8_t *data; size_t len; } AndamentoText;
 
 /* ABI 2 replaces the experimental JSON request ABI; no compatibility promise
  * with ABI 1. Additive symbols preserve ABI 2; statically linked hosts pin a
- * library revision, while dynamic hosts can probe optional symbols directly.
+ * library revision, while dynamic hosts can use dlsym to probe optional symbols directly.
  * Tags have uint32_t storage; do not use C enum size assumptions.
  *
  * Serialize calls on a sidebar. All input buffers/arrays are borrowed for the

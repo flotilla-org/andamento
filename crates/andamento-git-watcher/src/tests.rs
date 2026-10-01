@@ -377,6 +377,10 @@ fi
 
 #[test]
 fn remotes_redact_credentials_and_handle_ports_and_file_urls() {
+    assert_eq!(
+        redact_remote("https://alice:pass@word@host/org/repo"),
+        "https://host/org/repo"
+    );
     let remote =
         redact_remote("https://alice:secret@forge.test:8443/org/repo.git?token=hidden#fragment");
     assert_eq!(remote, "https://forge.test:8443/org/repo.git");
@@ -560,4 +564,123 @@ fn wheelhouse_times_out_when_server_does_not_respond() {
     assert!(result.is_err());
     assert!(start.elapsed() >= Duration::from_secs(5));
     assert!(start.elapsed() < Duration::from_secs(12));
+}
+
+#[cfg(unix)]
+#[test]
+fn zellij_continues_after_pane_factory_and_tab_patch_failures() {
+    use std::os::unix::fs::PermissionsExt;
+    use transport::Transport;
+    let temp = Temp::new();
+    let roots: Vec<_> = ["a", "b", "c"]
+        .into_iter()
+        .map(|name| {
+            let root = temp.0.join(name);
+            init(&root);
+            git(
+                &root,
+                &[
+                    "remote",
+                    "add",
+                    "origin",
+                    &format!("git@host:owner/{name}.git"),
+                ],
+            )
+            .unwrap();
+            root
+        })
+        .collect();
+    let trees = discover(&roots, &roots);
+    let log = temp.0.join("calls");
+    let first = temp.0.join("first");
+    let fail_inventory = temp.0.join("no-inventory");
+    let bin = temp.0.join("zellij");
+    fs::write(
+        &bin,
+        format!(
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> {}
+if [ "$1" = pipe ]; then
+  if [ ! -f {} ]; then touch {}; echo 'first pane failed' >&2; exit 1; fi
+  case "$5" in *'"kind":"tab","value":42'*) echo 'tab failed' >&2; exit 1;; esac
+elif [ "$2" = list-tabs ]; then
+  if [ -f {} ]; then echo 'inventory unavailable' >&2; exit 1; fi
+  printf '[]\n'
+elif [ "$2" = new-tab ]; then
+  case "$6" in
+    'repo: owner/a') echo 'creation failed' >&2; exit 1;;
+    'repo: owner/b') printf '42\n43\n';;
+    'repo: owner/c') printf '44\n';;
+  esac
+fi
+"#,
+            quote_shell(log.to_str().unwrap()),
+            quote_shell(first.to_str().unwrap()),
+            quote_shell(first.to_str().unwrap()),
+            quote_shell(fail_inventory.to_str().unwrap())
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut host = transport::Zellij {
+        bin: bin.to_str().unwrap().into(),
+        plugin: None,
+        factory_layout: Some("/factory.kdl".into()),
+    };
+    let error = host
+        .reconcile(&trees, &roots, 1000)
+        .unwrap_err()
+        .to_string();
+    for text in ["first pane failed", "creation failed", "tab failed"] {
+        assert!(error.contains(text), "{error}");
+    }
+    let calls = fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|s| s.contains("\"kind\":\"identity\""))
+            .count(),
+        3
+    );
+    assert!(calls.contains("\"kind\":\"tab\",\"value\":43"));
+    assert!(calls.contains("\"kind\":\"tab\",\"value\":44"));
+    // A failed global inventory must not create blindly, but all panes refresh.
+    fs::write(&log, "").unwrap();
+    fs::write(&fail_inventory, "").unwrap();
+    assert!(host.reconcile(&trees, &roots, 1000).is_err());
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(!calls.contains("new-tab"));
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|s| s.contains("\"kind\":\"identity\""))
+            .count(),
+        3
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn early_http_rejection_reports_curl_error_instead_of_broken_pipe() {
+    use std::{io::Write, os::unix::net::UnixListener};
+    use transport::Transport;
+    let temp = Temp::new();
+    let socket = temp.0.join("reject.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .write_all(
+                b"HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+    });
+    let error = transport::Wheelhouse { socket }
+        .publish(&json!({"large":"x".repeat(2_000_000)}))
+        .unwrap_err()
+        .to_string();
+    server.join().unwrap();
+    assert!(error.contains("Wheelhouse ingress:"), "{error}");
+    assert!(error.contains("curl:"), "{error}");
 }
