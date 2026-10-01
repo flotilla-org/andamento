@@ -44,6 +44,7 @@ pub fn git(path: &Path, args: &[&str]) -> io::Result<String> {
 /// Never publish URL userinfo (which may contain a password or access token).
 pub fn redact_remote(remote: &str) -> String {
     let Some((scheme, rest)) = remote.split_once("://") else {
+        // Git's scp-style user@host:path has no password field; preserve it.
         return remote.to_owned();
     };
     let (authority, path) = rest
