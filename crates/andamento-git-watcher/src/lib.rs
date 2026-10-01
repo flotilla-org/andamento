@@ -46,12 +46,28 @@ pub fn redact_remote(remote: &str) -> String {
     let Some((scheme, rest)) = remote.split_once("://") else {
         return remote.to_owned();
     };
-    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let host = authority.rsplit('@').next().unwrap_or(authority);
-    format!(
-        "{scheme}://{host}/{}",
-        path.split(['?', '#']).next().unwrap_or(path)
-    )
+    let (authority, path) = rest
+        .split_once('/')
+        .map_or((rest, None), |(a, p)| (a, Some(p)));
+    // A raw @ after the first slash can be a malformed, unencoded password
+    // (or a legitimate path). Do not guess and risk publishing a secret.
+    if path.is_some_and(|p| p.split(['?', '#']).next().unwrap_or(p).contains('@')) {
+        return String::new();
+    }
+    let host = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or(authority)
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("");
+    match path {
+        Some(path) => format!(
+            "{scheme}://{host}/{}",
+            path.split(['?', '#']).next().unwrap_or(path)
+        ),
+        None => format!("{scheme}://{host}"),
+    }
 }
 
 /// Preserve forge namespaces, while accepting HTTPS, SSH and scp-style remotes.

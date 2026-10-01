@@ -309,6 +309,9 @@ explicitly unset. Labels supply the full/medium/short abbreviation ladder;
 the Git section.
 
 Origin URL userinfo and query/fragment components are removed before publication.
+Ambiguous URLs with a raw `@` in the path are omitted (using local repository
+identity), since that can be part of an unencoded password; percent-encode
+reserved characters in Git URLs.
 Non-UTF-8 paths cannot be represented by the metadata protocol and are skipped.
 Unreadable directories are skipped; a failed Git status drops that checkout until
 the next refresh, letting its old facts expire instead of claiming a clean tree.

@@ -377,6 +377,13 @@ fi
 
 #[test]
 fn remotes_redact_credentials_and_handle_ports_and_file_urls() {
+    assert_eq!(redact_remote("https://host"), "https://host");
+    assert_eq!(redact_remote("https://user:secret@host"), "https://host");
+    assert_eq!(redact_remote("https://user:pass/word@host/org/repo"), "");
+    assert_eq!(
+        redact_remote("https://user:pass%2Fword@host/org/repo"),
+        "https://host/org/repo"
+    );
     assert_eq!(
         redact_remote("https://alice:pass@word@host/org/repo"),
         "https://host/org/repo"
