@@ -374,3 +374,190 @@ fi
     host.reconcile(&trees, &observed, 10_000).unwrap();
     assert!(state.exists());
 }
+
+#[test]
+fn remotes_redact_credentials_and_handle_ports_and_file_urls() {
+    let remote =
+        redact_remote("https://alice:secret@forge.test:8443/org/repo.git?token=hidden#fragment");
+    assert_eq!(remote, "https://forge.test:8443/org/repo.git");
+    assert_eq!(repo_name(&remote).as_deref(), Some("org/repo"));
+    assert_eq!(
+        repo_name("ssh://git@host:22/org/repo").as_deref(),
+        Some("org/repo")
+    );
+    assert_eq!(repo_name("file:///local/org/repo.git"), None);
+    let temp = Temp::new();
+    init(&temp.0);
+    git(
+        &temp.0,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://alice:secret@forge.test:8443/org/repo.git",
+        ],
+    )
+    .unwrap();
+    let stream = serde_json::to_string(&patches(
+        &discover(std::slice::from_ref(&temp.0), &[]),
+        1000,
+    ))
+    .unwrap();
+    assert!(!stream.contains("secret"));
+    assert!(!stream.contains("alice"));
+    assert!(stream.contains("forge.test:8443/org/repo.git"));
+}
+
+#[test]
+fn cycle_continues_after_publish_failure_and_retains_watch_roots() {
+    use transport::Transport;
+    struct Host {
+        root: PathBuf,
+        attempts: usize,
+        reconciled: bool,
+    }
+    impl Transport for Host {
+        fn observed(&mut self) -> io::Result<Vec<PathBuf>> {
+            Ok(vec![self.root.clone()])
+        }
+        fn publish(&mut self, _: &Value) -> io::Result<()> {
+            self.attempts += 1;
+            if self.attempts == 1 {
+                Err(io::Error::other("first rejected"))
+            } else {
+                Ok(())
+            }
+        }
+        fn reconcile(&mut self, _: &[Worktree], _: &[PathBuf], _: u64) -> io::Result<()> {
+            self.reconciled = true;
+            Ok(())
+        }
+    }
+    let temp = Temp::new();
+    init(&temp.0);
+    let mut host = Host {
+        root: temp.0.clone(),
+        attempts: 0,
+        reconciled: false,
+    };
+    let cycle = refresh::run_cycle(&[], &mut host, 1000).unwrap();
+    assert_eq!(cycle.trees.len(), 1);
+    assert_eq!(cycle.errors, ["first rejected"]);
+    assert_eq!(host.attempts, 2);
+    assert!(host.reconciled);
+    let watch = refresh::RefreshWatch::new(&cycle.trees);
+    assert!(!watch.changed());
+    git(&temp.0, &["checkout", "-b", "changed"]).unwrap();
+    assert!(watch.changed());
+    let watch = refresh::RefreshWatch::new(&cycle.trees);
+    assert!(!watch.changed());
+    fs::write(
+        temp.0.join(".git/packed-refs"),
+        "# pack-refs with: peeled fully-peeled sorted\n",
+    )
+    .unwrap();
+    assert!(watch.changed());
+}
+
+#[test]
+fn factory_layout_is_explicit_and_validated_before_host_actions() {
+    assert!(refresh::factory_layout(true, None)
+        .unwrap_err()
+        .to_string()
+        .contains("--factory-layout"));
+    assert!(refresh::factory_layout(true, Some("/missing-layout.kdl".into())).is_err());
+    assert!(refresh::factory_layout(false, None).unwrap().is_none());
+    let temp = Temp::new();
+    let layout = temp.0.join("tab.kdl");
+    fs::write(&layout, "layout {}").unwrap();
+    assert_eq!(
+        refresh::factory_layout(true, Some(layout.clone())).unwrap(),
+        Some(layout)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn discovery_ignores_symlink_cycles_and_unreadable_directories() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let temp = Temp::new();
+    let root = temp.0.join("container");
+    fs::create_dir(&root).unwrap();
+    init(&root.join("good"));
+    symlink(&root, root.join("loop")).unwrap();
+    let blocked = root.join("blocked");
+    init(&blocked);
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o0)).unwrap();
+    let trees = discover(std::slice::from_ref(&root), &[]);
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(trees.iter().any(|t| t.root == root.join("good")));
+    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
+        assert_eq!(trees.len(), 1);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_paths_never_panic_or_create_lossy_recipes() {
+    use std::os::unix::ffi::OsStringExt;
+    use transport::Transport;
+    let temp = Temp::new();
+    init(&temp.0);
+    let invalid = temp.0.join(std::ffi::OsString::from_vec(vec![0xff]));
+    fs::create_dir(&invalid).unwrap();
+    let trees = discover(std::slice::from_ref(&temp.0), &[]);
+    let mut host = transport::Zellij {
+        bin: "/not-invoked".into(),
+        plugin: None,
+        factory_layout: None,
+    };
+    host.reconcile(&trees, std::slice::from_ref(&invalid), 1000)
+        .unwrap();
+    let mut tree = trees[0].clone();
+    tree.root = invalid;
+    assert!(patches(&[tree], 1000).is_empty());
+}
+
+#[test]
+fn labels_remain_nonempty_and_disambiguate_worktree_basenames() {
+    assert_eq!(labels("-")["display.label.short"], "-");
+    let temp = Temp::new();
+    init(&temp.0);
+    let mut trees = discover(std::slice::from_ref(&temp.0), &[]);
+    trees[0].root = "/one/same".into();
+    let mut second = trees[0].clone();
+    second.root = "/two/same".into();
+    second.branch = "other".into();
+    trees.push(second);
+    let stream = patches(&trees, 1000);
+    assert_ne!(
+        stream[1]["set"]["display.label"],
+        stream[2]["set"]["display.label"]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn wheelhouse_times_out_when_server_does_not_respond() {
+    use std::{
+        os::unix::net::UnixListener,
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+    use transport::Transport;
+    let temp = Temp::new();
+    let socket = temp.0.join("hung.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let (done, wait) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (_stream, _) = listener.accept().unwrap();
+        let _ = wait.recv_timeout(Duration::from_secs(12));
+    });
+    let start = Instant::now();
+    let result = transport::Wheelhouse { socket }.observed();
+    done.send(()).unwrap();
+    server.join().unwrap();
+    assert!(result.is_err());
+    assert!(start.elapsed() >= Duration::from_secs(5));
+    assert!(start.elapsed() < Duration::from_secs(12));
+}

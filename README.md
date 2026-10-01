@@ -308,11 +308,19 @@ explicitly unset. Labels supply the full/medium/short abbreviation ladder;
 `templates/andamento-git.kdl` and the daily-driver template place these facts in
 the Git section.
 
+Origin URL userinfo and query/fragment components are removed before publication.
+Non-UTF-8 paths cannot be represented by the metadata protocol and are skipped.
+Unreadable directories are skipped; a failed Git status drops that checkout until
+the next refresh, letting its old facts expire instead of claiming a clean tree.
+
 Refresh defaults to five seconds with a ten-second fact TTL (`--interval` and
 `--ttl-ms`). HEAD/index/packed-refs changes trigger an earlier refresh; ordinary
 working-file changes are detected by the regular refresh. Removed worktrees
 expire by TTL. Failed host reads let existing facts expire instead of reporting
-an empty inventory. The loop retries transport failures; `--once` exits nonzero.
+an empty inventory. Individual publish errors are reported while the remaining entities and adapter
+reconciliation are still attempted. Cycles exceeding the TTL emit a diagnostic;
+large/slow inventories should raise `--ttl-ms`. The loop retries transport
+failures; `--once` exits nonzero.
 
 Wheelhouse discovery uses `GET /v1/observed/workdirs` from wheelhouse#130,
 preferring each terminal view's nonempty `live_cwd` over its saved `cwd`.
@@ -324,7 +332,9 @@ worktrees through `git.root` and `action.primary.recipe`.
 The Zellij adapter uses `andamento-observed-identities` and
 `andamento-apply-metadata-patch`; only this adapter emits pane identity patches.
 `--zellij-bin` defaults to `ZELLIJ_BIN` or `zellij`; `--plugin-url` targets a
-specific controller. The opt-in factory preserves one `repo: owner/name` tab
+specific controller. `--factory-repo-manager` requires an existing
+`--factory-layout PATH`; installed binaries do not retain a build-checkout path.
+The opt-in factory preserves one `repo: owner/name` tab
 per repository, dedupes against the live tab list on every refresh, and applies
 durable repo identity to created or existing tabs. The daily-driver layouts
 invoke the installed binary with the factory enabled. The supplied repeated tab

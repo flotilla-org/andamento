@@ -4,13 +4,13 @@ fn main() {}
 #[cfg(not(target_family = "wasm"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use andamento_git_watcher::{
-        discover, git, patches,
+        refresh::{factory_layout, run_cycle, RefreshWatch},
         transport::{Stdout, Transport, Wheelhouse, Zellij},
     };
     use std::{
-        env, fs,
+        env,
         path::PathBuf,
-        time::{Duration, Instant, SystemTime},
+        time::{Duration, Instant},
     };
     let mut roots = Vec::new();
     let mut mode = "stdout".to_owned();
@@ -18,8 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut bin = env::var("ZELLIJ_BIN").unwrap_or_else(|_| "zellij".into());
     let mut plugin = None;
     let mut factory = false;
-    let mut layout =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../layouts/repo-manager-tab.kdl");
+    let mut layout = None;
     let mut interval = 5.0_f64;
     let mut ttl_ms = 10_000_u64;
     let mut once = false;
@@ -39,7 +38,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--plugin-url" => plugin = Some(args.next().ok_or("--plugin-url needs a URL")?),
             "--factory-repo-manager" => factory = true,
             "--factory-layout" => {
-                layout = PathBuf::from(args.next().ok_or("--factory-layout needs a path")?)
+                layout = Some(PathBuf::from(
+                    args.next().ok_or("--factory-layout needs a path")?,
+                ))
             }
             "--interval" => interval = args.next().ok_or("--interval needs seconds")?.parse()?,
             "--ttl-ms" => ttl_ms = args.next().ok_or("--ttl-ms needs milliseconds")?.parse()?,
@@ -65,6 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("not a directory: {}", root.display()).into());
         }
     }
+    let layout = factory_layout(factory, layout)?;
     let mut transport: Box<dyn Transport> = match mode.as_str() {
         "stdout" => Box::new(Stdout),
         "wheelhouse" => Box::new(Wheelhouse {
@@ -73,63 +75,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "zellij" => Box::new(Zellij {
             bin,
             plugin,
-            factory_layout: factory.then_some(layout),
+            factory_layout: layout,
         }),
         _ => return Err("unknown transport".into()),
     };
     let interval = Duration::from_secs_f64(interval);
     loop {
         let start = Instant::now();
-        let result = (|| -> std::io::Result<_> {
-            // A failed host read is not an empty host: let facts expire instead.
-            let observed = transport.observed()?;
-            let trees = discover(&roots, &observed);
-            for patch in patches(&trees, ttl_ms) {
-                transport.publish(&patch)?;
+        let trees = match run_cycle(&roots, transport.as_mut(), ttl_ms) {
+            Ok(cycle) => {
+                for error in &cycle.errors {
+                    eprintln!("andamento-git-watcher: {error}");
+                }
+                if once && !cycle.errors.is_empty() {
+                    return Err(cycle.errors.join("; ").into());
+                }
+                cycle.trees
             }
-            transport.reconcile(&trees, &observed, ttl_ms)?;
-            Ok(trees)
-        })();
-        let trees = match result {
-            Ok(trees) => trees,
             Err(error) if once => return Err(error.into()),
             Err(error) => {
                 eprintln!("andamento-git-watcher: {error}");
                 Vec::new()
             }
         };
+        if start.elapsed() >= Duration::from_millis(ttl_ms) {
+            eprintln!("andamento-git-watcher: refresh took {:?}, exceeding TTL {ttl_ms}ms; increase --ttl-ms for this inventory", start.elapsed());
+        }
         if once {
             return Ok(());
         }
         // Cheap local invalidation between full TTL refreshes. Working-file
         // edits and host inventory changes are picked up by the regular loop.
-        let paths: Vec<_> = trees
-            .iter()
-            .flat_map(|t| {
-                ["HEAD", "index", "packed-refs"]
-                    .into_iter()
-                    .filter_map(|name| {
-                        git(
-                            &t.root,
-                            &["rev-parse", "--path-format=absolute", "--git-path", name],
-                        )
-                        .ok()
-                        .map(PathBuf::from)
-                    })
-            })
-            .collect();
-        let stamps = || -> Vec<Option<SystemTime>> {
-            paths
-                .iter()
-                .map(|p| fs::metadata(p).and_then(|m| m.modified()).ok())
-                .collect()
-        };
-        let before = stamps();
+        let watch = RefreshWatch::new(&trees);
         while start.elapsed() < interval {
             std::thread::sleep(
                 Duration::from_millis(250).min(interval.saturating_sub(start.elapsed())),
             );
-            if stamps() != before {
+            if watch.changed() {
                 break;
             }
         }

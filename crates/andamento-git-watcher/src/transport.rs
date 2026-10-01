@@ -186,10 +186,14 @@ impl Transport for Zellij {
         ttl_ms: u64,
     ) -> io::Result<()> {
         for cwd in observed {
+            // JSON identities cannot represent arbitrary Unix path bytes.
+            let Some(cwd_text) = cwd.to_str() else {
+                continue;
+            };
             if let Some(root) = super::checkout(cwd) {
                 if let Some(tree) = trees.iter().find(|t| t.root == root) {
-                    self.publish(&patch(json!({"kind":"identity","value":{"key":"zellij.pane.cwd","value":{"type":"text","value":cwd}}}),
-                        BTreeMap::from([("entity.kind".into(), json!("worktree")), ("entity.id".into(), json!(root)), ("git.root".into(), json!(root)), ("git.repo".into(), json!(tree.repo))]), vec![], ttl_ms))?;
+                    self.publish(&patch(json!({"kind":"identity","value":{"key":"zellij.pane.cwd","value":{"type":"text","value":cwd_text}}}),
+                        BTreeMap::from([("entity.kind".into(), json!("worktree")), ("entity.id".into(), json!(root.to_string_lossy())), ("git.root".into(), json!(root.to_string_lossy())), ("git.repo".into(), json!(tree.repo))]), vec![], ttl_ms))?;
                 }
             }
         }

@@ -7,6 +7,7 @@ use std::{
     process::Command,
 };
 
+pub mod refresh;
 pub mod transport;
 pub const SOURCE: &str = "andamento-git-watcher";
 
@@ -40,9 +41,25 @@ pub fn git(path: &Path, args: &[&str]) -> io::Result<String> {
         .map_err(io::Error::other)
 }
 
+/// Never publish URL userinfo (which may contain a password or access token).
+pub fn redact_remote(remote: &str) -> String {
+    let Some((scheme, rest)) = remote.split_once("://") else {
+        return remote.to_owned();
+    };
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    format!(
+        "{scheme}://{host}/{}",
+        path.split(['?', '#']).next().unwrap_or(path)
+    )
+}
+
 /// Preserve forge namespaces, while accepting HTTPS, SSH and scp-style remotes.
 pub fn repo_name(remote: &str) -> Option<String> {
-    let path = if let Some((_, rest)) = remote.split_once("://") {
+    let path = if let Some((scheme, rest)) = remote.split_once("://") {
+        if !matches!(scheme, "http" | "https" | "ssh" | "git") {
+            return None;
+        }
         rest.split_once('/')?.1
     } else if remote.contains('@') {
         remote.split_once(':')?.1
@@ -65,8 +82,10 @@ fn scan(path: &Path, visited: &mut BTreeSet<PathBuf>, found: &mut BTreeSet<PathB
     if !visited.insert(path.clone()) {
         return;
     }
-    if let Some(root) = checkout(&path) {
-        found.insert(root);
+    if path.join(".git").exists() {
+        if let Some(root) = checkout(&path) {
+            found.insert(root);
+        }
         return;
     }
     let Ok(entries) = fs::read_dir(path) else {
@@ -89,7 +108,13 @@ pub fn discover(roots: &[PathBuf], observed: &[PathBuf]) -> Vec<Worktree> {
     let mut found = BTreeSet::new();
     let mut visited = BTreeSet::new();
     for root in roots {
-        scan(root, &mut visited, &mut found);
+        // One initial probe also accepts roots inside a checkout. Recursive
+        // traversal only probes .git markers, not every ordinary directory.
+        if let Some(checkout) = checkout(root) {
+            found.insert(checkout);
+        } else {
+            scan(root, &mut visited, &mut found);
+        }
     }
     let open: BTreeSet<_> = observed.iter().filter_map(|p| checkout(p)).collect();
     found.extend(open.iter().cloned());
@@ -107,7 +132,8 @@ pub fn discover(roots: &[PathBuf], observed: &[PathBuf]) -> Vec<Worktree> {
     found
         .into_iter()
         .filter_map(|root| {
-            let remote = git(&root, &["remote", "get-url", "origin"]).unwrap_or_default();
+            let remote =
+                redact_remote(&git(&root, &["remote", "get-url", "origin"]).unwrap_or_default());
             // The common directory gives remote-less linked worktrees one stable parent.
             let common = git(
                 &root,
@@ -115,27 +141,11 @@ pub fn discover(roots: &[PathBuf], observed: &[PathBuf]) -> Vec<Worktree> {
             )
             .ok()?;
             let repo = repo_name(&remote).unwrap_or_else(|| format!("local:{common}"));
-            let branch = git(&root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
-                .unwrap_or_else(|_| {
-                    git(&root, &["rev-parse", "--short", "HEAD"])
-                        .map(|s| format!("detached:{s}"))
-                        .unwrap_or_else(|_| "unborn".into())
-                });
-            let upstream = git(&root, &["rev-parse", "--abbrev-ref", "@{upstream}"]).ok();
-            let counts = git(
-                &root,
-                &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
-            )
-            .ok();
-            let mut counts = counts
-                .as_deref()
-                .unwrap_or("")
-                .split_whitespace()
-                .map(str::parse::<i64>);
-            let ahead = counts.next().and_then(Result::ok);
-            let behind = counts.next().and_then(Result::ok);
-            // Do not publish a false clean state when status fails.
-            let dirty = !git(&root, &["status", "--porcelain"]).ok()?.is_empty();
+            // One status process supplies branch, upstream, divergence and
+            // dirty state. A failed status drops this tree rather than claiming
+            // it is clean; its previously published facts expire by TTL.
+            let status = git(&root, &["status", "--porcelain=v2", "--branch"]).ok()?;
+            let (branch, upstream, ahead, behind, dirty) = parse_status(&status);
             Some(Worktree {
                 open: open.contains(&root),
                 root,
@@ -149,6 +159,37 @@ pub fn discover(roots: &[PathBuf], observed: &[PathBuf]) -> Vec<Worktree> {
             })
         })
         .collect()
+}
+
+fn parse_status(status: &str) -> (String, Option<String>, Option<i64>, Option<i64>, bool) {
+    let header = |name: &str| status.lines().find_map(|line| line.strip_prefix(name));
+    let head = header("# branch.head ").unwrap_or("unborn");
+    let branch = if head == "(detached)" {
+        format!(
+            "detached:{}",
+            header("# branch.oid ")
+                .unwrap_or("unknown")
+                .chars()
+                .take(12)
+                .collect::<String>()
+        )
+    } else {
+        head.to_owned()
+    };
+    let upstream = header("# branch.upstream ").map(str::to_owned);
+    let mut counts = header("# branch.ab ").unwrap_or("").split_whitespace();
+    let ahead = counts
+        .next()
+        .and_then(|s| s.strip_prefix('+'))
+        .and_then(|s| s.parse().ok());
+    let behind = counts
+        .next()
+        .and_then(|s| s.strip_prefix('-'))
+        .and_then(|s| s.parse().ok());
+    let dirty = status
+        .lines()
+        .any(|line| !line.is_empty() && !line.starts_with("# "));
+    (branch, upstream, ahead, behind, dirty)
 }
 
 pub fn patch(
@@ -188,10 +229,13 @@ pub fn quote_shell(s: &str) -> String {
 
 fn labels(label: &str) -> BTreeMap<String, Value> {
     let medium = label.rsplit('/').next().unwrap_or(label);
-    let short: String = medium
+    let mut short: String = medium
         .split(['-', '_', ' '])
         .filter_map(|s| s.chars().next())
         .collect();
+    if short.is_empty() {
+        short = medium.chars().take(1).collect();
+    }
     BTreeMap::from([
         ("display.label".into(), json!(label)),
         ("display.label.medium".into(), json!(medium)),
@@ -203,19 +247,32 @@ pub fn patches(worktrees: &[Worktree], ttl_ms: u64) -> Vec<Value> {
     let mut output = Vec::new();
     let mut repos = BTreeSet::new();
     for tree in worktrees {
+        // Wire paths are UTF-8. Never invent a lossy recipe for another path.
+        let Some(root) = tree.root.to_str() else {
+            continue;
+        };
         if repos.insert(&tree.repo) {
             let mut facts = labels(&tree.repo);
             facts.insert("git.repo".into(), json!(tree.repo));
             facts.insert("git.remote".into(), json!(tree.remote));
             output.push(entity_patch("repo", &tree.repo, facts, vec![], ttl_ms));
         }
-        let root = tree.root.to_string_lossy();
-        let mut facts = labels(
-            tree.root
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(&root),
-        );
+        let basename = tree
+            .root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(root);
+        let duplicate_name = worktrees
+            .iter()
+            .filter(|t| t.repo == tree.repo && t.root.file_name() == tree.root.file_name())
+            .count()
+            > 1;
+        let label = if duplicate_name {
+            format!("{basename} ({})", tree.branch)
+        } else {
+            basename.to_owned()
+        };
+        let mut facts = labels(&label);
         for (key, value) in [
             ("git.repo", json!(tree.repo)),
             ("git.root", json!(root)),
@@ -233,7 +290,7 @@ pub fn patches(worktrees: &[Worktree], ttl_ms: u64) -> Vec<Value> {
                 "action.primary.recipe",
                 json!(format!(
                     "cd {} && exec \"${{SHELL:-/bin/sh}}\"",
-                    quote_shell(&root)
+                    quote_shell(root)
                 )),
             ),
         ] {
@@ -251,7 +308,7 @@ pub fn patches(worktrees: &[Worktree], ttl_ms: u64) -> Vec<Value> {
                 unset.push(key);
             }
         }
-        output.push(entity_patch("worktree", &root, facts, unset, ttl_ms));
+        output.push(entity_patch("worktree", root, facts, unset, ttl_ms));
     }
     output
 }
