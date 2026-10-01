@@ -13,7 +13,9 @@ typedef struct { const uint8_t *data; size_t len; } AndamentoText;
 #define ANDAMENTO_NONE SIZE_MAX
 
 /* ABI 2 replaces the experimental JSON request ABI; no compatibility promise
- * with ABI 1. Tags have uint32_t storage; do not use C enum size assumptions.
+ * with ABI 1. Additive symbols preserve ABI 2; statically linked hosts pin a
+ * library revision, while dynamic hosts can use dlsym to probe optional symbols directly.
+ * Tags have uint32_t storage; do not use C enum size assumptions.
  *
  * Serialize calls on a sidebar. All input buffers/arrays are borrowed for the
  * call only; text is UTF-8, length-delimited, and may contain NUL. NULL input
@@ -65,6 +67,12 @@ uint32_t andamento_tick(Andamento *, uint64_t now_ms, char **error_out);
 typedef struct { uint64_t id; size_t position; AndamentoText name; uint32_t selected; } AndamentoWorkspace;
 enum { ANDAMENTO_PANE_TERMINAL, ANDAMENTO_PANE_PLUGIN };
 typedef struct { uint64_t workspace_id; uint32_t pane_id, kind, selectable, focused; int64_t ordinal; } AndamentoPane;
+/* Ephemeral directory associations, replaced in full on each call. Supply
+ * topology first. Paths must be normalized by the host; matching is exact.
+ * Empty paths/unknown workspace IDs are ignored. Explicit identity wins.
+ * This never persists an opener identity or opts into managed replacement. */
+typedef struct { uint64_t workspace_id; AndamentoText cwd; } AndamentoWorkdir;
+uint32_t andamento_observe_workdirs(Andamento *, const AndamentoWorkdir *, size_t count, char **error);
 /* Full replacement of topology; workspace IDs are scoped to this client.
  * Pane observations currently retain Zellij's terminal/plugin u32 identity.
  * Native hosts with wider IDs or other view kinds must pass an empty pane list;

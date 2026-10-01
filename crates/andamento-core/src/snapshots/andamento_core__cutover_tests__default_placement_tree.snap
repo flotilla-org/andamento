@@ -13,4 +13,6 @@ section tree pinned=false
     issue:71 [row] #71
     issue:72 [row] #72
   project:empty [lines] Empty project
+section git pinned=false
+  repo:r [lines] Unplaced repository
 section controls pinned=true

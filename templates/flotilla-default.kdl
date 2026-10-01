@@ -13,6 +13,7 @@ variable "issue.tier" default="full" {
 
 region "attention" root-template="flotilla/region/attention" form="compact" placement="attention" pinned=true
 region "tree" root-template="flotilla/region/tree" form="compact" placement="projects"
+region "git" root-template="git/title" form="compact" placement="git"
 region "controls" root-template="flotilla/region/controls" form="compact" pinned=true
 
 placement "attention" {
@@ -95,4 +96,31 @@ template "flotilla/entity/detail" slot="detail" node-kind="entity" {
     value source="metadata-text" key="entity.id"
   }
   field "summary" class="priority" key="summary.text" priority=50
+}
+
+// Host-independent git inventory.
+
+placement "git" {
+  for "repo" kind="repo" layout="lines" tier="medium" {
+    order "display.label"
+    apply-template "repo/git"
+  }
+}
+template "git/title" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Git"
+}
+template "repo/git" {
+  toggle collapsed="▶" expanded="▼"
+  field "label" key="display.label"
+  for "worktree" kind="worktree" layout="lines" tier="full" {
+    match "git.repo" of="repo"
+    order "display.label"
+    apply-template "worktree/git"
+  }
+}
+template "worktree/git" {
+  field "label" key="display.label"
+  field "branch" key="git.branch"
+  field "dirty" key="git.dirty"
+  field "state" key="status.state"
 }

@@ -12,6 +12,7 @@ zellij-tile-utils = { path = "../zellij/zellij-tile-utils" }
 
 [workspace]
 members = [
+    "crates/andamento-git-watcher",
     "crates/andamento-ffi",
     "crates/andamento-html",
     "crates/andamento-terminal",

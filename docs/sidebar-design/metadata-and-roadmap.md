@@ -824,17 +824,34 @@ This unlocks shell integrations, build/test progress, PR state, ports, and workf
 
 Status: started. Producers can send `ExternalMessage::MetadataPatch` through `tabs-apply-metadata-patch`; the controller applies set/unset updates with source ids, precedence, ordinal, and ttl through the shared metadata store, and resolved entries are exposed through the view model. Controller bootstrap snapshots now carry live metadata patches so newly attached clients can recover current external metadata.
 
-Watcher discovery should also be pipe-first. A simple daemon can run in a pane, periodically call `zellij pipe --name andamento-observed-identities`, read the JSON list of observed identities from stdout, enrich the identities it understands, and publish facts back through `tabs-apply-metadata-patch`. For example, [scripts/andamento-git-watcher.py](../../scripts/andamento-git-watcher.py) looks for `zellij.pane.cwd` identities, discovers repository root/branch/remote with local git commands, then patches facts onto `MetadataTarget::Identity(zellij.pane.cwd=<cwd>)`. A later flotilla connector can use the same protocol but maintain richer state and scheduling.
+The host-independent Rust producer in `crates/andamento-git-watcher` discovers
+configured directory roots and their linked worktrees without a host session.
+Its transport trait also supports Zellij observed identities and Wheelhouse's
+`GET /v1/observed/workdirs` inventory (live cwd preferred over saved cwd).
+All shared facts target repo/worktree entities, joined by `git.repo`; worktrees
+carry `git.root`, branch/upstream, dirty/ahead/behind, `git.open` and a shell
+`action.primary.recipe`. Wheelhouse uses the managed-primary-content path for
+latent materialisation and open-terminal deduplication. The additive
+`andamento_observe_workdirs` C ABI replaces directory observations after topology;
+exact `git.root` matches derive focus associations for any entity kind. Explicit
+bindings win. Closing/changing directories removes associations without
+persisting identity or enrolling user terminals in managed replacement. Placement templates,
+including the abbreviation ladder, render the Git section without kind-specific
+renderer logic.
 
-The same script now has an opt-in factory spike. With `--factory-repo-manager`, it dedupes by tab name, calls `zellij action new-tab --layout <repo-manager-layout> --cwd <git-root>`, reads the tab id lines printed by the CLI, and patches each created tab with durable tab metadata:
+The default stdout transport emits the existing metadata-patch JSONL protocol,
+compatible with `andamento-replay record` and the standalone TUI. A five-second
+refresh renews ten-second TTLs; inexpensive Git control-file observation also
+triggers refresh. Missing upstream facts are unset; disappeared entities expire.
+Host discovery failures are retried without falsely reporting every tree closed.
 
-```text
-tab.kind = repo-manager
-tab.scope = GroupPath([{ key = git.repo, value = owner/name, label = name }])
-factory.id = repo-manager:owner/name
-```
-
-This deliberately pushes on the scripting surface rather than controller-owned tab creation. It proves that an external daemon can both materialize a tab from a repeated KDL layout and then target the returned stable tab id with generic metadata. The current example layout embeds the controller and watcher in the initial `andamento` tab, with a short-lived helper command that scopes the control tab itself under an `andamento` path. That helper resolves its own `ZELLIJ_PANE_ID` through `zellij action list-panes --json --all` so it patches the tab containing the helper pane, not whichever tab is currently focused after factory-created tabs appear. The layout also sets `controller_plugin_url ""` on the rail alias so rails broadcast to the embedded controller instead of launching another controller instance by URL. The repeated KDL in [layouts/repo-manager-tab.kdl](../../layouts/repo-manager-tab.kdl) is expected for now because Zellij does not provide a slot-style layout primitive that lets an external tab layout say "use the session tab chrome here".
+Only the Zellij adapter emits identity-target patches, binding pane cwd to the
+worktree identity. Its `--factory-repo-manager` option retains the old tab factory:
+live tab-name deduplication, `new-tab --layout ... --cwd ...`, returned tab IDs,
+and durable repo entity metadata on those tabs. The daily-driver layouts run
+the installed Rust binary. See the [README](../../README.md#host-independent-git-watcher)
+for installation, transport flags, replay and standalone usage. The Python
+watcher is retired; Wheelhouse's paired #130 retires its Python publisher.
 
 ### 11. Aggregation And Profiles
 

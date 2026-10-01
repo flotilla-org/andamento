@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
-names = ["andamento-core", "andamento-terminal", "andamento-html", "andamento-ffi"]
+names = ["andamento-git-watcher", "andamento-core", "andamento-terminal", "andamento-html", "andamento-ffi"]
 host = next(line.split(": ", 1)[1] for line in subprocess.check_output(
     ["rustc", "-vV"], text=True).splitlines() if line.startswith("host: "))
 target = root / "target" / "independent"

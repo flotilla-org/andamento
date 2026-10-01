@@ -220,6 +220,16 @@ impl Sidebar {
         }
     }
 
+    /// Replace terminal directory observations after supplying workspace topology.
+    /// Matching is exact and host-normalized; explicit workspace identity wins.
+    /// Several terminal directories may belong to one workspace. Associations
+    /// only affect focus/presentation and never enroll content for replacement.
+    pub fn observe_workdirs(&mut self, workdirs: Vec<(u64, String)>) {
+        if self.state.observe_workdirs(workdirs) {
+            self.invalidate();
+        }
+    }
+
     /// Conservative revision of presentation and action dependencies. Unchanged
     /// heartbeats and ticks preserve it; recipe changes invalidate it even when
     /// the rendered content is unchanged.

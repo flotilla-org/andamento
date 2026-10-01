@@ -51,8 +51,30 @@ static AndamentoEffects *take(Andamento *h) {
 static void expected_error(uint32_t result) {
     assert(!result && error); andamento_string_free(error); error = NULL;
 }
+static void check_workdirs(void) {
+    const char *config = "region \"tree\" root-template=\"title\" placement=\"tree\"\n"
+        "template \"title\" { field \"label\" source=\"literal\" value=\"Test\"; }\n"
+        "placement \"tree\" { for \"item\" kind=\"item\" { field \"label\" key=\"display.label\"; }; }\n";
+    Andamento *h = andamento_create((const uint8_t *)config, strlen(config), &error);
+    assert(h && !error);
+    ok(andamento_apply_patch_json(h, 0, T("{\"target\":{\"kind\":\"entity\",\"value\":{\"kind\":\"item\",\"id\":\"i\"}},\"source_id\":\"test\",\"set\":{\"git.root\":{\"value\":{\"type\":\"text\",\"value\":\"/repo\"}},\"action.primary.recipe\":{\"value\":{\"type\":\"text\",\"value\":\"exec sh\"}}}}"), &error));
+    AndamentoWorkspace ws = {7, 0, T("terminal"), 1};
+    ok(andamento_observe(h, &ws, 1, NULL, 0, &error));
+    AndamentoWorkdir dir = {7, T("/repo")};
+    ok(andamento_observe_workdirs(h, &dir, 1, &error));
+    AndamentoSnapshot *s = snapshot(h);
+    assert(find_node(s, "item").state == ANDAMENTO_LIVE);
+    andamento_snapshot_release(s);
+    expected_error(andamento_observe_workdirs(h, NULL, 1, &error));
+    ok(andamento_observe_workdirs(h, NULL, 0, &error));
+    s = snapshot(h);
+    assert(find_node(s, "item").state == ANDAMENTO_LATENT);
+    andamento_snapshot_release(s);
+    andamento_destroy(h);
+}
 int main(int argc, char **argv) {
     assert(argc == 3 && andamento_abi_version() == 2);
+    check_workdirs();
     char *config = read_file(argv[1]);
     Andamento *h = andamento_create((const uint8_t *)config, strlen(config), &error);
     Andamento *other = andamento_create((const uint8_t *)config, strlen(config), &error);

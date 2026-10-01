@@ -1,22 +1,27 @@
 version 1
 
-// Optional catalog presentation for producers that publish repository entities.
-region "repositories" root-template="repositories/title" form="compact" placement="repositories"
-placement "repositories" {
-  for "repo" kind="repo" {
+region "git" root-template="git/title" form="compact" placement="git"
+placement "git" {
+  for "repo" kind="repo" layout="lines" tier="medium" {
     order "display.label"
-    apply-template "repo/line"
+    apply-template "repo/git"
   }
 }
-template "repositories/title" {
-  field "label" source="literal" value="Repositories"
+template "git/title" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Git"
 }
-template "repo/line" {
+template "repo/git" {
   toggle collapsed="▶" expanded="▼"
   field "label" key="display.label"
-  for "checkout" kind="checkout" {
-    match "vcs.repo" of="repo"
-    field "label" key="display.label"
-    field "branch" key="git.branch"
+  for "worktree" kind="worktree" layout="lines" tier="full" {
+    match "git.repo" of="repo"
+    order "display.label"
+    apply-template "worktree/git"
   }
+}
+template "worktree/git" {
+  field "label" key="display.label"
+  field "branch" key="git.branch"
+  field "dirty" key="git.dirty"
+  field "state" key="status.state"
 }

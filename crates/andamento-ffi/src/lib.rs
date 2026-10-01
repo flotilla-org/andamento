@@ -292,6 +292,32 @@ pub unsafe extern "C" fn andamento_observe(
     })
     .is_some() as u32
 }
+#[repr(C)]
+pub struct WorkdirInput {
+    pub workspace_id: u64,
+    pub cwd: Text,
+}
+
+/// Full replacement of ephemeral directory observations; does not bind a
+/// managed terminal or persist a workspace opener identity.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_observe_workdirs(
+    h: *mut Andamento,
+    workdirs: *const WorkdirInput,
+    count: usize,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let workdirs = slice(workdirs, count)?
+            .iter()
+            .map(|w| Ok((w.workspace_id, w.cwd.read()?)))
+            .collect::<Result<Vec<_>, String>>()?;
+        h.sidebar.observe_workdirs(workdirs);
+        Ok(())
+    })
+    .is_some() as u32
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn andamento_complete(
     h: *mut Andamento,
