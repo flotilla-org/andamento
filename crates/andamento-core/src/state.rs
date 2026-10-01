@@ -341,6 +341,7 @@ pub struct PluginRegistration {
 #[derive(Debug)]
 pub struct ControllerState {
     tabs: Vec<ControllerTab>,
+    observed_workdirs: BTreeMap<u64, BTreeSet<String>>,
     pane_to_tab: HashMap<PaneTarget, u64>,
     panes: HashMap<PaneTarget, ControllerPane>,
     metadata: MetadataStore,
@@ -363,6 +364,7 @@ impl Default for ControllerState {
     fn default() -> Self {
         Self {
             tabs: Default::default(),
+            observed_workdirs: Default::default(),
             pane_to_tab: Default::default(),
             panes: Default::default(),
             metadata: Default::default(),
@@ -457,6 +459,8 @@ impl ControllerState {
         let live_tab_ids: HashSet<u64> = next_tabs.iter().map(|tab| tab.tab_id).collect();
         pending_materialized_tab_names.retain(|tab_id, _| live_tab_ids.contains(tab_id));
         self.pending_materialized_tab_names = pending_materialized_tab_names;
+        self.observed_workdirs
+            .retain(|id, _| live_tab_ids.contains(id));
         let tabs_changed = self.tabs != next_tabs;
         self.tabs = next_tabs;
 
@@ -1294,6 +1298,19 @@ impl ControllerState {
                 }
             }
         }
+        for (entity, id) in self.directory_bindings(&catalog.entities) {
+            if let Some(candidate) = catalog.entity(&entity) {
+                let action_target = metadata_entry_text(&candidate.values, KEY_ACTION_TARGET)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| entity.action_target());
+                let selected = self.tabs.iter().any(|tab| tab.tab_id == id && tab.active);
+                live.entry(action_target)
+                    .or_insert(PresentationState::Live {
+                        workspace_id: id,
+                        selected,
+                    });
+            }
+        }
         let latents = latent_tabs
             .iter()
             .map(|latent| (&latent.entity, latent))
@@ -1925,11 +1942,60 @@ impl ControllerState {
         entities
     }
 
+    /// Full replacement of ephemeral host directory observations. These are
+    /// presentation associations, never metadata identities or managed bindings.
+    pub fn observe_workdirs(&mut self, workdirs: Vec<(u64, String)>) -> bool {
+        let mut next = BTreeMap::<u64, BTreeSet<String>>::new();
+        for (id, cwd) in workdirs {
+            if !cwd.is_empty() && self.tabs.iter().any(|tab| tab.tab_id == id) {
+                next.entry(id).or_default().insert(cwd);
+            }
+        }
+        if next == self.observed_workdirs {
+            return false;
+        }
+        self.observed_workdirs = next;
+        true
+    }
+
+    fn directory_bindings(&self, entities: &[CatalogEntity]) -> BTreeMap<EntityRef, u64> {
+        if self.observed_workdirs.is_empty() {
+            return BTreeMap::new();
+        }
+        let seeds = self.tab_seed_metadata_entries();
+        let unbound: Vec<_> = self
+            .tabs
+            .iter()
+            .filter(|tab| {
+                let (values, _, _) = self.resolve_target_metadata(
+                    &EntityId::Tab(tab.tab_id),
+                    seeds.get(&tab.tab_id).cloned().unwrap_or_default(),
+                );
+                entity_ref_from_entries(&values).is_none()
+                    && metadata_entry_text(&values, KEY_ACTION_TARGET).is_none()
+            })
+            .collect();
+        entities
+            .iter()
+            .filter_map(|entity| {
+                let cwd = metadata_entry_text(&entity.values, KEY_CHECKOUT_PATH)
+                    .filter(|s| !s.is_empty())?;
+                let tab = unbound.iter().find(|tab| {
+                    self.observed_workdirs
+                        .get(&tab.tab_id)
+                        .is_some_and(|dirs| dirs.contains(cwd))
+                })?;
+                Some((entity.entity.clone(), tab.tab_id))
+            })
+            .collect()
+    }
+
     fn materialized_action_targets(&self, catalog: &CatalogEvaluation) -> BTreeSet<String> {
         let tab_seed_metadata = self.tab_seed_metadata_entries();
         self.tabs
             .iter()
             .filter_map(|tab| self.tab_entity_ref(tab.tab_id, &tab_seed_metadata))
+            .chain(self.directory_bindings(&catalog.entities).into_keys())
             .map(|entity| {
                 catalog
                     .entity(&entity)
@@ -2032,20 +2098,39 @@ impl ControllerState {
 
     fn materialized_tab_position_for_action_target(&self, action_target: &str) -> Option<usize> {
         let tab_seed_metadata = self.tab_seed_metadata_entries();
-        self.tabs.iter().find_map(|tab| {
-            let target = EntityId::Tab(tab.tab_id);
-            let seed_values = tab_seed_metadata
-                .get(&tab.tab_id)
-                .cloned()
-                .unwrap_or_default();
-            let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
-            let entity_target =
-                entity_ref_from_entries(&values).map(|entity| entity.action_target());
-            let resolved_action_target = metadata_entry_text(&values, KEY_ACTION_TARGET)
-                .map(str::to_owned)
-                .or(entity_target);
-            (resolved_action_target.as_deref() == Some(action_target)).then_some(tab.position)
-        })
+        self.tabs
+            .iter()
+            .find_map(|tab| {
+                let target = EntityId::Tab(tab.tab_id);
+                let seed_values = tab_seed_metadata
+                    .get(&tab.tab_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
+                let entity_target =
+                    entity_ref_from_entries(&values).map(|entity| entity.action_target());
+                let resolved_action_target = metadata_entry_text(&values, KEY_ACTION_TARGET)
+                    .map(str::to_owned)
+                    .or(entity_target);
+                (resolved_action_target.as_deref() == Some(action_target)).then_some(tab.position)
+            })
+            .or_else(|| {
+                let entities = self.catalog_entities();
+                let bindings = self.directory_bindings(&entities);
+                entities.iter().find_map(|entity| {
+                    let target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| entity.entity.action_target());
+                    if target != action_target {
+                        return None;
+                    }
+                    let id = bindings.get(&entity.entity)?;
+                    self.tabs
+                        .iter()
+                        .find(|tab| tab.tab_id == *id)
+                        .map(|tab| tab.position)
+                })
+            })
     }
 
     pub(crate) fn managed_content(&self) -> BTreeMap<EntityRef, crate::managed::DesiredContent> {

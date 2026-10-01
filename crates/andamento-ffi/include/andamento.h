@@ -69,6 +69,12 @@ typedef struct { uint64_t workspace_id; uint32_t pane_id, kind, selectable, focu
  * Pane observations currently retain Zellij's terminal/plugin u32 identity.
  * Native hosts with wider IDs or other view kinds must pass an empty pane list;
  * do not truncate IDs or classify arbitrary native views as plugins. */
+/* Ephemeral directory associations, replaced in full on each call. Supply
+ * topology first. Paths must be normalized by the host; matching is exact.
+ * Empty paths/unknown workspace IDs are ignored. Explicit identity wins.
+ * This never persists an opener identity or opts into managed replacement. */
+typedef struct { uint64_t workspace_id; AndamentoText cwd; } AndamentoWorkdir;
+uint32_t andamento_observe_workdirs(Andamento *, const AndamentoWorkdir *, size_t count, char **error);
 uint32_t andamento_observe(Andamento *, const AndamentoWorkspace *, size_t count,
     const AndamentoPane *, size_t pane_count, char **error_out);
 enum { ANDAMENTO_COMPLETE_FOCUS, ANDAMENTO_COMPLETE_MATERIALIZE, ANDAMENTO_COMPLETE_ERROR };

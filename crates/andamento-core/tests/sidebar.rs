@@ -1100,3 +1100,186 @@ fn retracted_and_expired_entities_leave_the_catalog() {
         "expired facts retract the entity"
     );
 }
+
+fn directory_state(
+    sidebar: &Sidebar,
+    subject: &EntityRef,
+) -> andamento_core::presentation::PresentationState {
+    fn find(
+        nodes: &[andamento_core::presentation::PlacementNode],
+        subject: &EntityRef,
+    ) -> Option<andamento_core::presentation::PresentationState> {
+        nodes.iter().find_map(|n| {
+            if &n.entity == subject {
+                Some(n.state.clone())
+            } else {
+                find(&n.children, subject)
+            }
+        })
+    }
+    sidebar
+        .snapshot()
+        .surface
+        .sections
+        .iter()
+        .find_map(|s| find(&s.nodes, subject))
+        .unwrap()
+}
+fn directory_workspace(id: u64) -> Workspace {
+    Workspace {
+        id,
+        position: id as usize,
+        name: "user terminal".into(),
+        selected: true,
+    }
+}
+#[test]
+fn directory_observations_focus_any_entity_kind_without_persisting_identity() {
+    use andamento_core::presentation::PresentationState;
+    let mut sidebar = sidebar();
+    let subject = entity("vessel", "v");
+    sidebar.apply(
+        100,
+        [patch(subject.clone(), &[("git.root", text("/repo"))])],
+    );
+    sidebar.observe(vec![directory_workspace(7)], vec![]);
+    sidebar.observe_workdirs(vec![
+        (7, "/repo".into()),
+        (7, "/other".into()),
+        (99, "/repo".into()),
+    ]);
+    assert!(matches!(
+        directory_state(&sidebar, &subject),
+        PresentationState::Live {
+            workspace_id: 7,
+            ..
+        }
+    ));
+    let revision = sidebar.revision();
+    sidebar.observe_workdirs(vec![(7, "/other".into()), (7, "/repo".into())]);
+    assert_eq!(sidebar.revision(), revision);
+    let effects = sidebar
+        .dispatch(Action::Activate {
+            entity: subject.clone(),
+        })
+        .unwrap();
+    let HostEffect::Focus {
+        request_id,
+        workspace_id: 7,
+    } = effects[0]
+    else {
+        panic!("expected focus")
+    };
+    sidebar.complete(request_id, Ok(None));
+    // Exact matching: a subdirectory is not a host-normalized repository root.
+    sidebar.observe_workdirs(vec![(7, "/repo/subdir".into())]);
+    assert!(matches!(
+        directory_state(&sidebar, &subject),
+        PresentationState::Latent { openable: true }
+    ));
+    sidebar.observe_workdirs(vec![(7, "/repo".into())]);
+    sidebar.observe(vec![], vec![]);
+    sidebar.observe(vec![directory_workspace(7)], vec![]);
+    assert!(matches!(
+        directory_state(&sidebar, &subject),
+        PresentationState::Latent { openable: true }
+    ));
+}
+#[test]
+fn explicit_binding_wins_and_directory_association_tracks_fact_updates() {
+    use andamento_core::presentation::PresentationState;
+    let mut sidebar = sidebar();
+    let subject = entity("vessel", "v");
+    sidebar.apply(
+        100,
+        [patch(subject.clone(), &[("git.root", text("/repo"))])],
+    );
+    sidebar.observe(vec![directory_workspace(7), directory_workspace(8)], vec![]);
+    sidebar.observe_workdirs(vec![(7, "/repo".into())]);
+    let mut binding = patch(
+        subject.clone(),
+        &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
+    );
+    binding.target = MetadataTarget::Tab(8);
+    sidebar.apply(100, [binding]);
+    assert!(matches!(
+        directory_state(&sidebar, &subject),
+        PresentationState::Live {
+            workspace_id: 8,
+            ..
+        }
+    ));
+    sidebar.observe(vec![directory_workspace(7)], vec![]);
+    assert!(matches!(
+        directory_state(&sidebar, &subject),
+        PresentationState::Live {
+            workspace_id: 7,
+            ..
+        }
+    ));
+    sidebar.apply(
+        101,
+        [patch(subject.clone(), &[("git.root", text("/changed"))])],
+    );
+    assert!(matches!(
+        directory_state(&sidebar, &subject),
+        PresentationState::Latent { .. }
+    ));
+    sidebar.observe_workdirs(vec![(7, "/changed".into())]);
+    assert!(matches!(
+        directory_state(&sidebar, &subject),
+        PresentationState::Live { .. }
+    ));
+    sidebar.observe_workdirs(vec![]);
+    assert!(matches!(
+        directory_state(&sidebar, &subject),
+        PresentationState::Latent { .. }
+    ));
+}
+#[test]
+fn multiple_directories_associate_multiple_entities_but_not_explicit_workspace() {
+    use andamento_core::presentation::PresentationState;
+    let mut sidebar = sidebar();
+    let first = entity("vessel", "v");
+    let second = entity("vessel", "second");
+    sidebar.apply(
+        100,
+        [
+            patch(first.clone(), &[("git.root", text("/one"))]),
+            patch(
+                second.clone(),
+                &[
+                    ("git.root", text("/two")),
+                    ("flotilla.project", text("p")),
+                    ("action.primary.recipe", text("exec sh")),
+                ],
+            ),
+        ],
+    );
+    sidebar.observe(vec![directory_workspace(7)], vec![]);
+    sidebar.observe_workdirs(vec![(7, "/one".into()), (7, "/two".into())]);
+    for subject in [&first, &second] {
+        assert!(matches!(
+            directory_state(&sidebar, subject),
+            PresentationState::Live {
+                workspace_id: 7,
+                ..
+            }
+        ));
+    }
+    let mut binding = patch(
+        first.clone(),
+        &[
+            ("entity.kind", text("unrelated")),
+            ("entity.id", text("explicit")),
+        ],
+    );
+    binding.target = MetadataTarget::Tab(7);
+    sidebar.apply(101, [binding]);
+    for subject in [&first, &second] {
+        assert!(matches!(
+            directory_state(&sidebar, subject),
+            PresentationState::Latent { .. }
+        ));
+    }
+}
