@@ -45,6 +45,7 @@ jobs:
           --package andamento-html
           --package andamento-ffi
           --package andamento-tui
+          --package andamento-git-watcher
 
   clippy:
     name: Clippy
