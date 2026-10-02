@@ -21,7 +21,7 @@ fn outline(nodes: &[PlacementNode], depth: usize, out: &mut String) {
             node.entity.kind,
             node.entity.id,
             node.layout.as_deref().unwrap_or("lines"),
-            node.content.text()
+            node.content.text().trim_end()
         ));
         outline(&node.children, depth + 1, out);
     }

@@ -998,6 +998,8 @@ impl AbbreviationTier {
 pub struct PlacementOrder {
     pub key: String,
     #[serde(default)]
+    pub natural: bool,
+    #[serde(default)]
     pub direction: PlacementOrderDirection,
     #[serde(default)]
     pub absent: PlacementOrderAbsent,
@@ -1038,14 +1040,16 @@ pub struct PlacementPredicate {
 /// The text a value is indexed under. Predicates compare against this, so a
 /// config writes `value="true"` for a bool and `value="3"` for an integer.
 ///
-/// Values with no single indexable text — lists, group paths — return `None`
-/// and simply never match, rather than matching something surprising.
+/// Lists and group paths have no scalar posting. EntityRefs are indexed
+/// separately, one typed entity identity per posting, by PlacementIndex.
 pub fn placement_index_text(value: &MetadataValue) -> Option<String> {
     match value {
         MetadataValue::Text(text) => Some(text.clone()),
         MetadataValue::Bool(flag) => Some(flag.to_string()),
         MetadataValue::Integer(number) => Some(number.to_string()),
-        MetadataValue::StringList(_) | MetadataValue::GroupPath(_) => None,
+        MetadataValue::StringList(_)
+        | MetadataValue::GroupPath(_)
+        | MetadataValue::EntityRefs(_) => None,
     }
 }
 
@@ -1917,6 +1921,11 @@ fn format_metadata_value(value: &MetadataValue) -> String {
         MetadataValue::Bool(value) => value.to_string(),
         MetadataValue::Integer(value) => value.to_string(),
         MetadataValue::StringList(values) => values.join(", "),
+        MetadataValue::EntityRefs(values) => values
+            .iter()
+            .map(|value| format!("{}:{}", value.kind, value.id))
+            .collect::<Vec<_>>()
+            .join(", "),
         MetadataValue::GroupPath(segments) => segments
             .iter()
             .map(|segment| {
@@ -2434,6 +2443,15 @@ fn parse_kdl_placement_order(node: &KdlNode) -> Result<PlacementOrder, TemplateC
         }
     };
     Ok(PlacementOrder {
+        natural: node
+            .get("natural")
+            .map(|entry| {
+                entry.value().as_bool().ok_or_else(|| {
+                    TemplateConfigError::Validation("order natural must be boolean".into())
+                })
+            })
+            .transpose()?
+            .unwrap_or(false),
         key,
         direction,
         absent,
@@ -3322,11 +3340,13 @@ placement "attention" {
             config.placements[0].loops[0].order,
             vec![
                 PlacementOrder {
+                    natural: false,
                     key: "status.rank".to_owned(),
                     direction: PlacementOrderDirection::Descending,
                     absent: PlacementOrderAbsent::First,
                 },
                 PlacementOrder {
+                    natural: false,
                     key: "display.label".to_owned(),
                     direction: PlacementOrderDirection::Ascending,
                     absent: PlacementOrderAbsent::Last,
@@ -3340,6 +3360,7 @@ placement "attention" {
         for (property, expected) in [
             (r#"direction="sideways""#, "order direction"),
             (r#"absent="somewhere""#, "absent placement"),
+            (r#"natural="yes""#, "order natural"),
         ] {
             let error = parse_template_config_kdl(&format!(
                 "version 1\nplacement \"p\" {{\n  for \"item\" kind=\"vessel\" {{\n    order \"display.label\" {property}\n  }}\n}}\n"

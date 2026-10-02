@@ -376,6 +376,7 @@ struct Node {
     controls: usize,
     control_count: usize,
     activate: usize,
+    copy_url: usize,
     toggle: usize,
 }
 pub struct AndamentoSnapshot {
@@ -443,10 +444,18 @@ impl AndamentoSnapshot {
             content.controls.len(),
         )
     }
-    fn node(&mut self, n: &PlacementNode, parent: usize) {
+    fn node(&mut self, n: &PlacementNode, parent: usize, sidebar: &Sidebar) {
         let (fields, field_count, controls, control_count) = self.content(&n.content);
         let (details, detail_count, _, _) = self.content(&n.detail);
         let activate = self.action(Action::ActivatePlacement { key: n.key.clone() });
+        let has_url = sidebar.subject_url(&n.entity).is_some();
+        let copy_url = if has_url {
+            self.action(Action::CopySubjectUrl {
+                entity: n.entity.clone(),
+            })
+        } else {
+            NONE
+        };
         let toggle = self.action(Action::TogglePlacement { key: n.key.clone() });
         // Length framing is collision-free even when IDs contain separators.
         // Hosts compare this opaque value; its encoding is not an interface.
@@ -489,7 +498,7 @@ impl AndamentoSnapshot {
             state,
             workspace,
             selected,
-            openable,
+            openable: openable || has_url,
             collapsed: n.collapsed,
             pinned: false,
             fields,
@@ -499,10 +508,11 @@ impl AndamentoSnapshot {
             controls,
             control_count,
             activate,
+            copy_url,
             toggle,
         });
         for child in &n.children {
-            self.node(child, index);
+            self.node(child, index, sidebar);
         }
     }
 }
@@ -569,10 +579,11 @@ pub unsafe extern "C" fn andamento_snapshot_acquire(
                 controls,
                 control_count,
                 activate: NONE,
+                copy_url: NONE,
                 toggle: NONE,
             });
             for n in section.nodes {
-                out.node(&n, index);
+                out.node(&n, index, &h.sidebar);
             }
         }
         for control in &mut out.controls {
@@ -879,6 +890,14 @@ pub unsafe extern "C" fn andamento_effects_get(
             v.has_cwd = cwd.is_some() as u32;
             v.cwd = Text::borrowed(cwd.as_deref().unwrap_or_default());
         }
+        HostEffect::OpenUrl { url } | HostEffect::CopyUrl { url } => {
+            v.kind = if matches!(e, HostEffect::OpenUrl { .. }) {
+                3
+            } else {
+                4
+            };
+            v.recipe = Text::borrowed(url);
+        }
         HostEffect::Inspect { entity } => {
             v.kind = 2;
             v.entity_kind = Text::borrowed(&entity.kind);
@@ -888,6 +907,39 @@ pub unsafe extern "C" fn andamento_effects_get(
     *out = v;
     1
 }
+/// Copy action index for this snapshot's subject row, or NONE when unavailable.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_copy_url_action(
+    snapshot: *const AndamentoSnapshot,
+    index: usize,
+) -> usize {
+    snapshot
+        .as_ref()
+        .and_then(|s| s.nodes.get(index))
+        .map_or(NONE, |n| n.copy_url)
+}
+
+/// Additive to ABI 2: dispatch copying a subject's current forge URL.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_copy_subject_url(
+    h: *mut Andamento,
+    kind: Text,
+    id: Text,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let effects = h.sidebar.dispatch(Action::CopySubjectUrl {
+            entity: EntityRef {
+                kind: kind.read()?,
+                id: id.read()?,
+            },
+        })?;
+        h.effects.extend(effects);
+        Ok(())
+    })
+    .is_some() as u32
+}
+
 /// Managed-content target resolved by a materialize effect. Additive to ABI 2:
 /// returns 0 for other effects and for materializations without managed content.
 #[no_mangle]
@@ -1124,6 +1176,73 @@ mod tests {
             andamento_destroy(h);
             assert_eq!(andamento_snapshot_node_count(s), count);
             andamento_snapshot_release(s);
+        }
+    }
+
+    // The native host receives a usable activation and a snapshot-scoped copy
+    // action for subjects, with resolved URLs owned by their effect batches.
+    #[cfg(feature = "json")]
+    #[test]
+    fn subject_rows_expose_open_and_copy_url_actions() {
+        unsafe {
+            let mut error = ptr::null_mut();
+            let config = include_str!("../../../templates/flotilla-default.kdl");
+            let h = andamento_create(config.as_ptr(), config.len(), &mut error);
+            assert!(!h.is_null());
+            for line in include_str!("../../../fixtures/subject-entities.jsonl").lines() {
+                let frame: serde_json::Value = serde_json::from_str(line).unwrap();
+                if frame["offset_ms"] != 0 {
+                    continue;
+                }
+                let patch = serde_json::to_string(&frame["patch"]).unwrap();
+                assert_eq!(
+                    andamento_apply_patch_json(h, 0, Text::borrowed(&patch), &mut error),
+                    1
+                );
+            }
+            let snapshot = andamento_snapshot_acquire(h, &mut error);
+            let nodes = &(*snapshot).nodes;
+            let index = nodes
+                .iter()
+                .position(|n| n.entity.id == "github/org/b!281")
+                .unwrap();
+            assert!(nodes[index].openable);
+            let activate = nodes[index].activate;
+            let copy = andamento_snapshot_copy_url_action(snapshot, index);
+            assert_ne!(copy, NONE);
+            assert_eq!(
+                andamento_snapshot_copy_url_action(snapshot, usize::MAX),
+                NONE
+            );
+            for (action, kind) in [(activate, 3), (copy, 4)] {
+                assert_eq!(andamento_dispatch(h, snapshot, action, &mut error), 1);
+                let effects = andamento_effects_take(h, &mut error);
+                assert_eq!(andamento_effects_count(effects), 1);
+                let mut effect = std::mem::MaybeUninit::<EffectView>::uninit();
+                assert_eq!(andamento_effects_get(effects, 0, effect.as_mut_ptr()), 1);
+                let effect = effect.assume_init();
+                assert_eq!(effect.kind, kind);
+                assert_eq!(
+                    effect.recipe.read().unwrap(),
+                    "https://github.com/org/b/pull/281"
+                );
+                andamento_effects_release(effects);
+            }
+            assert_eq!(
+                andamento_copy_subject_url(
+                    h,
+                    Text::borrowed("issue"),
+                    Text::borrowed("github/org/a#115"),
+                    &mut error
+                ),
+                1
+            );
+            let effects = andamento_effects_take(h, &mut error);
+            assert_eq!(andamento_effects_count(effects), 1);
+            andamento_effects_release(effects);
+            andamento_snapshot_release(snapshot);
+            andamento_destroy(h);
+            assert!(error.is_null());
         }
     }
 

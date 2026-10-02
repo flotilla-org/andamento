@@ -1561,6 +1561,11 @@ fn format_metadata_value(value: &MetadataValue) -> String {
         MetadataValue::Bool(value) => value.to_string(),
         MetadataValue::Integer(value) => value.to_string(),
         MetadataValue::StringList(values) => values.join(","),
+        MetadataValue::EntityRefs(values) => values
+            .iter()
+            .map(|value| format!("{}:{}", value.kind, value.id))
+            .collect::<Vec<_>>()
+            .join(","),
         MetadataValue::GroupPath(segments) => segments
             .iter()
             .map(|segment| {

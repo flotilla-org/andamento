@@ -40,6 +40,26 @@ The core chooses recipes from its resolved facts, not from frontend-provided
 command text. An entity without an available presentation action returns an
 inspect effect. The host decides how to show that information.
 
+Subject activation returns `HostEffect::OpenUrl`; `Action::CopySubjectUrl`
+returns `HostEffect::CopyUrl`. `Sidebar::subject_url` resolves a subject's
+single `flotilla.forge` reference, reads the forge's change-request or issue
+URL template, and substitutes `{web_url}`, `{scope}`, and `{number}` from the
+current resolved facts. Missing facts, unknown placeholders and non-HTTP(S)
+results produce no URL. Open/copy effects need no completion.
+
+The C ABI retains its existing effect structure: `ANDAMENTO_EFFECT_OPEN_URL`
+and `ANDAMENTO_EFFECT_COPY_URL` carry the URL in `recipe`. A subject row with
+a resolvable URL sets `openable`; dispatch its normal activation to open it.
+`andamento_snapshot_copy_url_action(snapshot, node_index)` returns a
+snapshot-scoped copy action, or `ANDAMENTO_NONE`; dispatch it through the
+usual retained-snapshot validation. `andamento_copy_subject_url` also accepts
+an entity identity directly. Hosts execute browser and clipboard operations.
+
+These facts require a fleet generation carrying the projection from
+[flotilla#2448](https://github.com/flotilla-org/flotilla/pull/2448), merge commit
+`d882cd2d3a5511bbb191863fe004db181cdc986f` or a descendant. The downstream
+Wheelhouse sidebar adoption is tracked in wheelhouse#137.
+
 Complete every focus/materialize effect through `complete(request_id, result)`,
 including timeouts and cancellation. Materialize success supplies the new
 workspace ID; focus success supplies none. Continue supplying observations

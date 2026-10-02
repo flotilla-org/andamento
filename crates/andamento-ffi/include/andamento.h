@@ -147,7 +147,8 @@ void andamento_snapshot_release(AndamentoSnapshot *);
  * release and survives sidebar destruction. Copy fields needed asynchronously
  * or retain the batch. Releasing it does NOT complete its requests. */
 AndamentoEffects *andamento_effects_take(Andamento *, char **error_out);
-enum { ANDAMENTO_EFFECT_FOCUS, ANDAMENTO_EFFECT_MATERIALIZE, ANDAMENTO_EFFECT_INSPECT };
+enum { ANDAMENTO_EFFECT_FOCUS, ANDAMENTO_EFFECT_MATERIALIZE, ANDAMENTO_EFFECT_INSPECT,
+       ANDAMENTO_EFFECT_OPEN_URL, ANDAMENTO_EFFECT_COPY_URL };
 typedef struct {
     uint32_t kind;
     uint64_t request_id, workspace_id;
@@ -157,6 +158,11 @@ typedef struct {
 } AndamentoEffect;
 size_t andamento_effects_count(const AndamentoEffects *);
 uint32_t andamento_effects_get(const AndamentoEffects *, size_t index, AndamentoEffect *out);
+/* URL effects carry the resolved URL in recipe; no completion is required.
+ * Activation opens a subject URL. Copying is an additive ABI 2 action. */
+/* Subject rows also expose a copy action through their retained snapshot. */
+size_t andamento_snapshot_copy_url_action(const AndamentoSnapshot *, size_t node_index);
+uint32_t andamento_copy_subject_url(Andamento *, AndamentoText kind, AndamentoText id, char **error_out);
 /* Managed-content target a MATERIALIZE effect's recipe resolves; additive to
  * ABI 2 (AndamentoEffect is unchanged). Returns 0 when there is none. Record it
  * as the applied target so the first content plan sees the new content as current. */

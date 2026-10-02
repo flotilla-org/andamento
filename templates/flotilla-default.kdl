@@ -33,6 +33,8 @@ template "project/line" {
   for "independent" kind="role" layout="inline" {
     match "flotilla.project" of="project"
     field "label" key="display.label"
+    field "state" key="status.state"
+    field "summary" key="summary.text"
   }
   for "convoy" kind="convoy" layout="lines" {
     match "flotilla.project" of="project"
@@ -47,6 +49,18 @@ template "project/line" {
 template "convoy/line" {
   toggle collapsed="▶" expanded="▼"
   field "label" key="display.label"
+  for "subject" kind="change_request" layout="row" {
+    match "flotilla.subject_of" of="convoy"
+    order "flotilla.subject.number" natural=true
+    field "label" key="display.label"
+    field "readiness" key="flotilla.change_request.readiness"
+  }
+  for "issue" kind="issue" layout="row" {
+    match "flotilla.subject_of" of="convoy"
+    order "flotilla.subject.number" natural=true
+    field "label" key="display.label"
+    field "state" key="flotilla.issue.state"
+  }
   for "vessel" kind="vessel" layout="lines" {
     match "flotilla.convoy" of="convoy"
     apply-template "vessel/line"
