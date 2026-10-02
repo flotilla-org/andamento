@@ -129,6 +129,25 @@ binding; `apply-template` starts a fresh binding environment. Bare
 fallback for unknown kinds. The old `group-header`, `tab-title`, and
 `tab-status` slots are rejected.
 
+`EntityRefs` facts join by membership in the `(key, value)` index. On those
+keys, `of=` compares the bound entity's own kind and ID, rather than a fact
+with the same key. For example, a convoy template can render its subjects:
+
+```kdl
+for "subject" kind="change_request" layout="row" {
+    match "flotilla.subject_of" of="convoy"
+    order "flotilla.subject.number" natural=true
+    field "label" key="display.label"
+    field "readiness" key="flotilla.change_request.readiness"
+}
+```
+
+`natural=true` compares ASCII digit runs numerically, including numbers larger
+than machine integers. Other values retain their default order; direction,
+absent placement, and the final entity-identity tie-break are unchanged.
+Connector patches ignore future metadata value kinds while retaining known
+facts; malformed known values are rejected.
+
 `layout="lines"` renders siblings vertically. `layout="inline"` puts a
 complete loop instance on its parent's line when it fits; otherwise every item
 moves to dedicated rows. `layout="row"` always uses dedicated rows, as the

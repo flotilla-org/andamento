@@ -67,21 +67,28 @@ pub struct ControllerTab {
     pub active: bool,
 }
 
-/// Catalog entities indexed by `(fact key, indexable text)`.
-///
-/// Built once per model. Every placement predicate is answered by a lookup
-/// here; nothing scans the catalog.
+// Keep scalar text distinct from structured entity identities.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum IndexedValue {
+    Scalar(String),
+    Entity(EntityRef),
+}
+
+/// Catalog entities indexed by `(fact key, scalar or entity identity)`.
+/// Built once per model; placement predicates perform posting lookups only.
 #[derive(Debug, Default)]
 struct PlacementIndex {
-    by_fact: BTreeMap<(String, String), Vec<usize>>,
+    by_fact: BTreeMap<(String, IndexedValue), Vec<usize>>,
     visibility: BTreeMap<String, Vec<bool>>,
+    ref_keys: BTreeSet<String>,
 }
 
 impl PlacementIndex {
     fn build(entities: &[CatalogEntity]) -> Self {
-        let mut by_fact = BTreeMap::<(String, String), Vec<usize>>::new();
+        let mut by_fact = BTreeMap::<(String, IndexedValue), Vec<usize>>::new();
+        let mut ref_keys = BTreeSet::new();
         for (position, entity) in entities.iter().enumerate() {
-            let mut insert = |key: String, text: String| {
+            let mut insert = |key: String, text: IndexedValue| {
                 let postings = by_fact.entry((key, text)).or_default();
                 // Positions arrive ascending, so binary_search stays valid; the
                 // guard only stops an entity appearing twice under one fact.
@@ -91,17 +98,31 @@ impl PlacementIndex {
             };
             // An entity's kind and id come from its ref, not from whatever the
             // producer happened to echo into its facts, so `kind=` always works.
-            insert("entity.kind".to_owned(), entity.entity.kind.clone());
-            insert("entity.id".to_owned(), entity.entity.id.clone());
+            insert(
+                "entity.kind".to_owned(),
+                IndexedValue::Scalar(entity.entity.kind.clone()),
+            );
+            insert(
+                "entity.id".to_owned(),
+                IndexedValue::Scalar(entity.entity.id.clone()),
+            );
             for (key, entry) in &entity.values {
+                if let MetadataValue::EntityRefs(refs) = &entry.value {
+                    ref_keys.insert(key.clone());
+                    for reference in refs {
+                        insert(key.clone(), IndexedValue::Entity(reference.clone()));
+                    }
+                    continue;
+                }
                 let Some(text) = crate::template_config::placement_index_text(&entry.value) else {
                     continue;
                 };
-                insert(key.clone(), text);
+                insert(key.clone(), IndexedValue::Scalar(text));
             }
         }
         Self {
             by_fact,
+            ref_keys,
             visibility: BTreeMap::new(),
         }
     }
@@ -148,9 +169,16 @@ impl PlacementIndex {
         warnings.into_iter().collect()
     }
 
+    fn lookup_ref(&self, key: &str, reference: &EntityRef) -> &[usize] {
+        self.by_fact
+            .get(&(key.to_owned(), IndexedValue::Entity(reference.clone())))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
     fn lookup_value(&self, key: &str, value: &str) -> &[usize] {
         self.by_fact
-            .get(&(key.to_owned(), value.to_owned()))
+            .get(&(key.to_owned(), IndexedValue::Scalar(value.to_owned())))
             .map(Vec::as_slice)
             .unwrap_or_default()
     }
@@ -262,6 +290,41 @@ impl CatalogEvaluation {
     }
 }
 
+fn compare_order_values(left: &MetadataValue, right: &MetadataValue, natural: bool) -> Ordering {
+    if natural {
+        if let (MetadataValue::Text(left), MetadataValue::Text(right)) = (left, right) {
+            return natural_text_order(left, right);
+        }
+    }
+    left.cmp(right)
+}
+
+/// Compare arbitrary-length ASCII digit runs without integer overflow.
+fn natural_text_order(mut left: &str, mut right: &str) -> Ordering {
+    while !left.is_empty() && !right.is_empty() {
+        let compared;
+        if left.as_bytes()[0].is_ascii_digit() && right.as_bytes()[0].is_ascii_digit() {
+            let a = left.bytes().take_while(u8::is_ascii_digit).count();
+            let b = right.bytes().take_while(u8::is_ascii_digit).count();
+            let x = left[..a].trim_start_matches('0');
+            let y = right[..b].trim_start_matches('0');
+            compared = x.len().cmp(&y.len()).then_with(|| x.cmp(y));
+            left = &left[a..];
+            right = &right[b..];
+        } else {
+            let x = left.chars().next().unwrap();
+            let y = right.chars().next().unwrap();
+            compared = x.cmp(&y);
+            left = &left[x.len_utf8()..];
+            right = &right[y.len_utf8()..];
+        }
+        if compared != Ordering::Equal {
+            return compared;
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
 fn placement_entity_order(
     left: &CatalogEntity,
     right: &CatalogEntity,
@@ -273,10 +336,10 @@ fn placement_entity_order(
         let compared = match (left_value, right_value) {
             (Some(left), Some(right)) => match key.direction {
                 crate::template_config::PlacementOrderDirection::Ascending => {
-                    left.as_ref().cmp(right.as_ref())
+                    compare_order_values(left.as_ref(), right.as_ref(), key.natural)
                 }
                 crate::template_config::PlacementOrderDirection::Descending => {
-                    right.as_ref().cmp(left.as_ref())
+                    compare_order_values(right.as_ref(), left.as_ref(), key.natural)
                 }
             },
             (None, None) => Ordering::Equal,
@@ -1433,6 +1496,14 @@ impl ControllerState {
             .predicates
             .iter()
             .map(|predicate| {
+                if predicate.value.is_none() && index.ref_keys.contains(&predicate.key) {
+                    return predicate
+                        .of
+                        .as_ref()
+                        .and_then(|name| bindings.get(name))
+                        .map(|bound| index.lookup_ref(&predicate.key, &bound.entity))
+                        .unwrap_or_default();
+                }
                 let value = predicate.value.clone().or_else(|| {
                     let bound = bindings.get(predicate.of.as_deref()?)?;
                     if predicate.key == "entity.kind" {
@@ -2180,6 +2251,51 @@ impl ControllerState {
         }
     }
 
+    /// Resolve the producer's forge relationship at action time, so changed
+    /// identity and forge templates never leave stale row URLs behind.
+    pub fn subject_url(&self, subject: &EntityRef) -> Option<String> {
+        let template_key = match subject.kind.as_str() {
+            "change_request" => "flotilla.forge.change_request_url_template",
+            "issue" => "flotilla.forge.issue_url_template",
+            _ => return None,
+        };
+        let values = self
+            .metadata
+            .resolved_entries_for(&EntityId::Entity(subject.clone()), self.now());
+        let MetadataValue::EntityRefs(refs) = &values.get("flotilla.forge")?.value else {
+            return None;
+        };
+        let [forge] = refs.as_slice() else {
+            return None;
+        };
+        if forge.kind != "forge" {
+            return None;
+        }
+        let forge_values = self
+            .metadata
+            .resolved_entries_for(&EntityId::Entity(forge.clone()), self.now());
+        let template = metadata_entry_text(&forge_values, template_key)?;
+        let web_url = metadata_entry_text(&forge_values, "flotilla.forge.web_url")?;
+        let scope = metadata_entry_text(&values, "flotilla.subject.scope")?;
+        let number = metadata_entry_text(&values, "flotilla.subject.number")?;
+        // Substitute only the original template, never placeholders in values.
+        let mut url = String::new();
+        let mut rest = template;
+        while let Some(start) = rest.find('{') {
+            url.push_str(&rest[..start]);
+            let end = rest[start..].find('}')? + start;
+            url.push_str(match &rest[start..=end] {
+                "{web_url}" => web_url,
+                "{scope}" => scope,
+                "{number}" => number,
+                _ => return None,
+            });
+            rest = &rest[end + 1..];
+        }
+        url.push_str(rest);
+        (url.starts_with("https://") || url.starts_with("http://")).then_some(url)
+    }
+
     pub fn activation_for_entity(&self, subject: &EntityRef) -> Option<EntityActivation> {
         let entities = self.catalog_entities();
         let entity = entities.iter().find(|entity| &entity.entity == subject)?;
@@ -2746,6 +2862,112 @@ mod tests {
             kind: kind.to_owned(),
             id: id.to_owned(),
         }
+    }
+
+    // EntityRefs joins must use only prebuilt postings, including each identity
+    // component. Removing candidate facts after indexing proves matching does
+    // not inspect those facts or scan them for membership.
+    #[test]
+    fn subject_membership_is_index_only() {
+        let mut state = ControllerState::default();
+        let convoy = entity_ref("convoy", "same:id");
+        apply_entity(
+            &mut state,
+            "convoy",
+            &convoy.id,
+            0,
+            &[("display.label", "Convoy")],
+        );
+        for (id, refs) in [
+            ("match", vec![convoy.clone(), convoy.clone()]),
+            ("wrong-kind", vec![entity_ref("vessel", &convoy.id)]),
+            ("empty", vec![]),
+        ] {
+            state.apply_metadata_patch(crate::MetadataPatch {
+                target: crate::MetadataTarget::Entity(entity_ref("change_request", id)),
+                source_id: "test".into(),
+                set: BTreeMap::from([(
+                    "flotilla.subject_of".into(),
+                    crate::MetadataValueUpdate {
+                        value: MetadataValue::EntityRefs(refs),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                )]),
+                unset: vec![],
+            });
+        }
+        let mut entities = state.catalog_entities();
+        let index = PlacementIndex::build(&entities);
+        let config = crate::template_config::parse_template_config_kdl(
+            r#"
+            placement "subjects" {
+                for "convoy" kind="convoy" {
+                    for "subject" kind="change_request" { match "flotilla.subject_of" of="convoy"; }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        let query = &config.placements[0].loops[0].loops[0];
+        for entity in &mut entities {
+            entity.values.clear();
+        }
+        let bound = entities
+            .iter()
+            .find(|entity| entity.entity == convoy)
+            .unwrap();
+        let bindings = BTreeMap::from([("convoy".into(), bound)]);
+        let matched = state.placement_matches(query, &entities, &index, &bindings, &[]);
+        assert_eq!(
+            matched
+                .iter()
+                .map(|e| e.entity.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["match"]
+        );
+    }
+
+    // Explicit generated space spans digit widths, leading zeroes, Unicode,
+    // multiple runs and numbers larger than u64; natural comparison is numeric,
+    // antisymmetric and leaves the default text ordering untouched.
+    #[test]
+    fn natural_order_numeric_runs_property() {
+        for a in [0u64, 1, 9, 10, 99, 100, 281, 999, 1000, u64::MAX] {
+            for b in [0u64, 1, 9, 10, 99, 100, 281, 999, 1000, u64::MAX] {
+                for prefix in ["", "!", "é/repo!"] {
+                    for padding in [0, 1, 4] {
+                        let left = format!("{prefix}{a:0width$}/run2", width = padding);
+                        let right = format!("{prefix}{b}/run2");
+                        assert_eq!(natural_text_order(&left, &right), a.cmp(&b));
+                        assert_eq!(
+                            compare_order_values(
+                                &MetadataValue::Text(left.clone()),
+                                &MetadataValue::Text(right.clone()),
+                                true
+                            ),
+                            a.cmp(&b)
+                        );
+                        assert_eq!(natural_text_order(&right, &left), a.cmp(&b).reverse());
+                    }
+                }
+            }
+        }
+        assert_eq!(natural_text_order("", ""), Ordering::Equal);
+        assert_eq!(natural_text_order("a2b9", "a2b10"), Ordering::Less);
+        assert_eq!(
+            natural_text_order("999999999999999999999999", "1000000000000000000000000"),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_order_values(
+                &MetadataValue::Text("281".into()),
+                &MetadataValue::Text("1000".into()),
+                false
+            ),
+            Ordering::Greater
+        );
     }
 
     #[test]

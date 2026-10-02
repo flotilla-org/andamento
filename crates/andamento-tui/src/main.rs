@@ -83,6 +83,19 @@ mod native {
                         .map_err(|_| io::Error::other("tmux returned an invalid window id"))?;
                     Ok(Some(id))
                 }
+                HostEffect::OpenUrl { url } => {
+                    let opener = if cfg!(target_os = "macos") {
+                        "open"
+                    } else {
+                        "xdg-open"
+                    };
+                    let status = Command::new(opener).arg(url).status()?;
+                    if !status.success() {
+                        return Err(io::Error::other("opening URL failed"));
+                    }
+                    Ok(None)
+                }
+                HostEffect::CopyUrl { .. } => Err(io::Error::other("clipboard is not implemented")),
                 HostEffect::Inspect { .. } => Err(io::Error::other("inspect is not implemented")),
             }
         }
@@ -108,7 +121,9 @@ mod native {
             HostEffect::Focus { request_id, .. } | HostEffect::Materialize { request_id, .. } => {
                 Some(*request_id)
             }
-            HostEffect::Inspect { .. } => None,
+            HostEffect::Inspect { .. }
+            | HostEffect::OpenUrl { .. }
+            | HostEffect::CopyUrl { .. } => None,
         }
     }
 

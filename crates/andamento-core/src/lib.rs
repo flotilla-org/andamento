@@ -363,6 +363,7 @@ pub enum MetadataValue {
     Bool(bool),
     Integer(i64),
     StringList(Vec<String>),
+    EntityRefs(Vec<EntityRef>),
     /// Structured producer metadata, not a UI identity or a grouping rule.
     /// Placement state is keyed exclusively by `PlacementKey`.
     GroupPath(Vec<MetadataPathSegmentValue>),
@@ -522,10 +523,37 @@ pub struct MetadataValueUpdate {
 pub struct MetadataPatch {
     pub target: MetadataTarget,
     pub source_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "decode_metadata_updates")]
     pub set: BTreeMap<String, MetadataValueUpdate>,
     #[serde(default)]
     pub unset: Vec<String>,
+}
+
+// Future value kinds must not discard the known facts in the same connector patch.
+fn decode_metadata_updates<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, MetadataValueUpdate>, D::Error> {
+    let updates = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    updates
+        .into_iter()
+        .filter_map(|(key, update)| {
+            let kind = update
+                .get("value")
+                .and_then(|v| v.get("type"))
+                .and_then(|v| v.as_str());
+            match kind {
+                Some(
+                    "text" | "bool" | "integer" | "string-list" | "group-path" | "entity-refs",
+                )
+                | None => Some(
+                    serde_json::from_value(update)
+                        .map(|update| (key, update))
+                        .map_err(serde::de::Error::custom),
+                ),
+                Some(_) => None,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -22,6 +22,9 @@ pub struct Workspace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
+    CopySubjectUrl {
+        entity: EntityRef,
+    },
     /// Activate this appearance, focusing its exact workspace when already live.
     ActivatePlacement {
         key: PlacementKey,
@@ -78,6 +81,12 @@ pub struct Response {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "effect", rename_all = "kebab-case")]
 pub enum HostEffect {
+    OpenUrl {
+        url: String,
+    },
+    CopyUrl {
+        url: String,
+    },
     Focus {
         request_id: u64,
         workspace_id: u64,
@@ -266,8 +275,19 @@ impl Sidebar {
         })
     }
 
+    pub fn subject_url(&self, entity: &EntityRef) -> Option<String> {
+        self.state.subject_url(entity)
+    }
+
     pub fn dispatch(&mut self, action: Action) -> Result<Vec<HostEffect>, String> {
         match action {
+            Action::CopySubjectUrl { entity } => {
+                let url = self
+                    .state
+                    .subject_url(&entity)
+                    .ok_or("subject URL unavailable")?;
+                Ok(vec![HostEffect::CopyUrl { url }])
+            }
             Action::ActivatePlacement { key } => {
                 let node = self
                     .snapshot_shared()
@@ -275,6 +295,9 @@ impl Sidebar {
                     .node(&key)
                     .ok_or("unknown placement")?;
                 let entity = node.entity.clone();
+                if let Some(url) = self.state.subject_url(&entity) {
+                    return Ok(vec![HostEffect::OpenUrl { url }]);
+                }
                 if self.entity_is_pending(&entity) {
                     return Ok(vec![]);
                 }
@@ -302,6 +325,9 @@ impl Sidebar {
                 }
             }
             Action::Activate { entity } => {
+                if let Some(url) = self.state.subject_url(&entity) {
+                    return Ok(vec![HostEffect::OpenUrl { url }]);
+                }
                 if self.entity_is_pending(&entity) {
                     return Ok(vec![]);
                 }
