@@ -411,13 +411,13 @@ fn check_visibility(
 
 fn validate_forward_source(
     binding: &str,
-    in_key: &Option<String>,
-    of: &Option<String>,
+    in_key: Option<&str>,
+    of: Option<&str>,
     enclosing: &BTreeSet<String>,
 ) -> Result<(), TemplateConfigError> {
     if in_key.is_some() != of.is_some()
-        || in_key.as_ref().is_some_and(|key| key.trim().is_empty())
-        || of.as_ref().is_some_and(|name| !enclosing.contains(name))
+        || in_key.is_some_and(|key| key.trim().is_empty())
+        || of.is_some_and(|name| !enclosing.contains(name))
     {
         return Err(TemplateConfigError::Validation(format!(
             "loop {binding} requires a nonempty in= with of= naming an enclosing binding"
@@ -452,8 +452,8 @@ fn validate_placement_loops(
         }
         validate_forward_source(
             &loop_definition.binding,
-            &loop_definition.in_key,
-            &loop_definition.of,
+            loop_definition.in_key.as_deref(),
+            loop_definition.of.as_deref(),
             enclosing,
         )?;
         for predicate in &loop_definition.predicates {
@@ -997,6 +997,7 @@ pub struct PlacementVisibilityRule {
     pub predicates: Vec<VisibilityPredicate>,
     pub visible_when: String,
     #[serde(default)]
+    /// Optional second boolean gate; deserializes as `and-visible-when`.
     pub and_visible_when: Option<String>,
 }
 
@@ -2382,7 +2383,7 @@ fn parse_kdl_placement_loop(
         .transpose()?;
     let in_key = kdl_prop_string(node, "in");
     let of = kdl_prop_string(node, "of");
-    validate_forward_source(&binding, &in_key, &of, enclosing)?;
+    validate_forward_source(&binding, in_key.as_deref(), of.as_deref(), enclosing)?;
     Ok(PlacementLoop {
         binding,
         in_key,

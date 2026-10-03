@@ -3073,18 +3073,25 @@ mod tests {
                         .collect::<Vec<_>>()
                 );
             }
-            let missing = BTreeMap::new();
-            let config = crate::template_config::parse_template_config_kdl(r#"
-                placement "tree" { for "role" kind="role" { for "attempt" kind="convoy" in="absent" of="role"; }; }
-            "#).unwrap();
-            let query = &config.placements[0].loops[0].loops[0];
-            assert!(state
-                .placement_matches(query, &entities, &index, &bindings, &[])
-                .is_empty());
-            assert!(state
-                .placement_matches(query, &entities, &index, &missing, &[])
-                .is_empty());
         }
+        let entities = state.catalog_entities();
+        let index = PlacementIndex::build(&entities);
+        let role = entities
+            .iter()
+            .find(|e| e.entity == entity_ref("role", "r"))
+            .unwrap();
+        let bindings = BTreeMap::from([("role".into(), role)]);
+        let missing = BTreeMap::new();
+        let config = crate::template_config::parse_template_config_kdl(r#"
+            placement "tree" { for "role" kind="role" { for "attempt" kind="convoy" in="absent" of="role"; }; }
+        "#).unwrap();
+        let query = &config.placements[0].loops[0].loops[0];
+        assert!(state
+            .placement_matches(query, &entities, &index, &bindings, &[])
+            .is_empty());
+        assert!(state
+            .placement_matches(query, &entities, &index, &missing, &[])
+            .is_empty());
     }
 
     // Forward detail fields bind their source by template name, remain fresh,
