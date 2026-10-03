@@ -141,17 +141,22 @@ impl PlacementIndex {
                 .rules
                 .iter()
                 .map(|rule| {
-                    let value = variables.get(&rule.visible_when).or_else(|| {
-                        catalog
-                            .display_variables()
-                            .iter()
-                            .find(|variable| variable.name == rule.visible_when)
-                            .map(|variable| &variable.default)
-                    });
-                    if !matches!(value, Some(crate::DisplayVariableValue::Bool(_))) {
-                        warnings.insert(format!("visibility {} requires boolean display variable {}; matching entities are hidden", policy.name, rule.visible_when));
-                    }
-                    matches!(value, Some(crate::DisplayVariableValue::Bool(true)))
+                    std::iter::once(&rule.visible_when)
+                        .chain(rule.and_visible_when.iter())
+                        .fold(true, |enabled, name| {
+                            let value = variables.get(name).or_else(|| {
+                                catalog.display_variables().iter()
+                                    .find(|variable| &variable.name == name)
+                                    .map(|variable| &variable.default)
+                            });
+                            if !matches!(value, Some(crate::DisplayVariableValue::Bool(_))) {
+                                warnings.insert(format!(
+                                    "visibility {} requires boolean display variable {}; matching entities are hidden",
+                                    policy.name, name
+                                ));
+                            }
+                            enabled & matches!(value, Some(crate::DisplayVariableValue::Bool(true)))
+                        })
                 })
                 .collect();
             let visible = entities
@@ -1548,7 +1553,31 @@ impl ControllerState {
             .filter_map(|position| entities.get(*position))
             .filter(|entity| !ancestors.contains(&entity.entity))
             .collect::<Vec<_>>();
-        matches.sort_by(|left, right| placement_entity_order(left, right, &loop_definition.order));
+        if let Some(key) = &loop_definition.in_key {
+            let Some(MetadataValue::EntityRefs(refs)) = loop_definition
+                .of
+                .as_ref()
+                .and_then(|name| bindings.get(name))
+                .and_then(|entity| entity.values.get(key))
+                .map(|entry| &entry.value)
+            else {
+                return vec![];
+            };
+            let eligible: BTreeMap<_, _> = matches
+                .iter()
+                .map(|entity| (&entity.entity, *entity))
+                .collect();
+            let mut seen = BTreeSet::new();
+            matches = refs
+                .iter()
+                .filter(|reference| seen.insert(*reference))
+                .filter_map(|reference| eligible.get(reference).copied())
+                .collect();
+        }
+        if loop_definition.in_key.is_none() || !loop_definition.order.is_empty() {
+            matches
+                .sort_by(|left, right| placement_entity_order(left, right, &loop_definition.order));
+        }
         matches
     }
 
@@ -2809,6 +2838,8 @@ mod tests {
             name: "section".to_owned(),
             loops: vec![crate::template_config::PlacementLoop {
                 binding: "item".to_owned(),
+                in_key: None,
+                of: None,
                 visibility: None,
                 predicates: predicates
                     .iter()
@@ -2926,6 +2957,263 @@ mod tests {
                 .map(|e| e.entity.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["match"]
+        );
+    }
+
+    fn forward_reference_lists() -> Vec<Vec<EntityRef>> {
+        // Exhaustive generator: lengths 0..=3 over valid, missing, and wrong-kind
+        // refs spans empty input, ordering permutations, and repeated identities.
+        let choices = [
+            entity_ref("convoy", "a"),
+            entity_ref("convoy", "z"),
+            entity_ref("vessel", "a"),
+            entity_ref("convoy", "missing"),
+        ];
+        let mut sequences = vec![vec![]];
+        let mut level = vec![vec![]];
+        for _ in 0..3 {
+            level = level
+                .iter()
+                .flat_map(|prefix| {
+                    choices.iter().map(move |reference| {
+                        let mut next = prefix.clone();
+                        next.push(reference.clone());
+                        next
+                    })
+                })
+                .collect();
+            sequences.extend(level.clone());
+        }
+        sequences
+    }
+
+    // Forward joins follow the producer's ordered list, deduplicate repeated refs,
+    // and reject missing/wrong-kind targets and ancestor cycles. Explicit order wins.
+    #[test]
+    fn forward_edges_preserve_order_and_filter_targets() {
+        let mut state = ControllerState::default();
+        for (kind, id) in [
+            ("role", "r"),
+            ("convoy", "a"),
+            ("convoy", "z"),
+            ("vessel", "a"),
+        ] {
+            apply_entity(&mut state, kind, id, 0, &[("display.label", id)]);
+        }
+        let configs = [false, true].map(|explicit_order| {
+            let order = if explicit_order {
+                r#"order "display.label";"#
+            } else {
+                ""
+            };
+            crate::template_config::parse_template_config_kdl(&format!(
+                r#"
+                placement "tree" {{
+                    for "role" kind="role" {{
+                        for "attempt" kind="convoy" in="attempts" of="role" {{
+                            {order}
+                        }}
+                    }}
+                    for "other" kind="vessel"
+                }}
+            "#
+            ))
+            .unwrap()
+        });
+        for refs in forward_reference_lists() {
+            state.apply_metadata_patch(crate::MetadataPatch {
+                target: crate::MetadataTarget::Entity(entity_ref("role", "r")),
+                source_id: "test".into(),
+                set: BTreeMap::from([(
+                    "attempts".into(),
+                    crate::MetadataValueUpdate {
+                        value: MetadataValue::EntityRefs(refs.clone()),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                )]),
+                unset: vec![],
+            });
+            let entities = state.catalog_entities();
+            let index = PlacementIndex::build(&entities);
+            let role = entities
+                .iter()
+                .find(|e| e.entity == entity_ref("role", "r"))
+                .unwrap();
+            let bindings = BTreeMap::from([("role".into(), role)]);
+            for (explicit_order, config) in [false, true].into_iter().zip(&configs) {
+                assert_eq!(config.placements[0].loops.len(), 2);
+                let query = &config.placements[0].loops[0].loops[0];
+                let ids = |ancestors: &[EntityRef]| {
+                    state
+                        .placement_matches(query, &entities, &index, &bindings, ancestors)
+                        .iter()
+                        .map(|e| e.entity.id.as_str())
+                        .collect::<Vec<_>>()
+                };
+                let mut expected = vec![];
+                for reference in &refs {
+                    if reference.kind == "convoy"
+                        && ["a", "z"].contains(&reference.id.as_str())
+                        && !expected.contains(&reference.id.as_str())
+                    {
+                        expected.push(reference.id.as_str());
+                    }
+                }
+                if explicit_order {
+                    expected.sort();
+                }
+                assert_eq!(ids(&[]), expected, "{refs:?}");
+                assert_eq!(
+                    ids(&[entity_ref("convoy", "z")]),
+                    expected
+                        .into_iter()
+                        .filter(|id| *id != "z")
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+        let entities = state.catalog_entities();
+        let index = PlacementIndex::build(&entities);
+        let role = entities
+            .iter()
+            .find(|e| e.entity == entity_ref("role", "r"))
+            .unwrap();
+        let bindings = BTreeMap::from([("role".into(), role)]);
+        let missing = BTreeMap::new();
+        let config = crate::template_config::parse_template_config_kdl(r#"
+            placement "tree" { for "role" kind="role" { for "attempt" kind="convoy" in="absent" of="role"; }; }
+        "#).unwrap();
+        let query = &config.placements[0].loops[0].loops[0];
+        assert!(state
+            .placement_matches(query, &entities, &index, &bindings, &[])
+            .is_empty());
+        assert!(state
+            .placement_matches(query, &entities, &index, &missing, &[])
+            .is_empty());
+    }
+
+    // Forward detail fields bind their source by template name, remain fresh,
+    // and do not materialize the referenced convoy as an extra tree row.
+    #[test]
+    fn forward_detail_template_uses_current_attempt() {
+        let mut state = ControllerState::default();
+        state.set_template_catalog(Some(
+            crate::template_config::TemplateConfigCatalog::from_config(
+                crate::template_config::parse_template_config_kdl(
+                    r#"
+                region "tree" root-template="heading" placement="tree"
+                template "heading" { field "label" source="literal" value="Roles"; }
+                placement "tree" { for "role" kind="role" { apply-template "role/native"; }; }
+                template "role/native" { field "label" key="display.label"; }
+                template "role/detail" slot="detail" node-kind="entity" {
+                    for "attempt" kind="convoy" in="current" of="role" {
+                        field "label" key="display.label" prefix="Current: "
+                        field "phase" key="phase" prefix="Phase: "
+                    }
+                }
+            "#,
+                )
+                .unwrap(),
+            ),
+        ));
+        apply_entity(&mut state, "role", "r", 0, &[("display.label", "Governor")]);
+        apply_entity(
+            &mut state,
+            "convoy",
+            "a",
+            0,
+            &[("display.label", "Attempt"), ("phase", "active")],
+        );
+        for refs in [vec![entity_ref("convoy", "a")], vec![]] {
+            let present = !refs.is_empty();
+            state.apply_metadata_patch(crate::MetadataPatch {
+                target: crate::MetadataTarget::Entity(entity_ref("role", "r")),
+                source_id: "test".into(),
+                set: BTreeMap::from([(
+                    "current".into(),
+                    crate::MetadataValueUpdate {
+                        value: MetadataValue::EntityRefs(refs),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                )]),
+                unset: vec![],
+            });
+            let model = state.view_model().presentation.unwrap();
+            assert_eq!(model.sections[0].nodes.len(), 1);
+            let detail = &model.sections[0].nodes[0].detail;
+            assert_eq!(
+                detail
+                    .fields
+                    .iter()
+                    .map(|field| field.value.as_str())
+                    .collect::<Vec<_>>(),
+                if present {
+                    vec!["Governor", "Current: Attempt", "Phase: active"]
+                } else {
+                    vec!["Governor"]
+                }
+            );
+        }
+    }
+
+    // A self-reference cannot repeat the bound entity; sibling selectors still
+    // render after a forward loop whose self-edge was filtered by the cycle guard.
+    #[test]
+    fn forward_self_edge_and_sibling_selectors_render_safely() {
+        let mut state = ControllerState::default();
+        state.set_template_catalog(Some(crate::template_config::TemplateConfigCatalog::from_config(
+            crate::template_config::parse_template_config_kdl(r#"
+                region "tree" root-template="heading" placement="tree"
+                template "heading" { field "label" source="literal" value="Items"; }
+                placement "tree" {
+                    for "role" kind="role" {
+                        match "entity.id" value="r"
+                        for "related" kind="role" in="refs" of="role" { field "label" key="display.label"; }
+                    }
+                    for "vessel" kind="vessel"
+                }
+            "#).unwrap()
+        )));
+        for (kind, id) in [("role", "r"), ("role", "s"), ("vessel", "v")] {
+            apply_entity(&mut state, kind, id, 0, &[("display.label", id)]);
+        }
+        state.apply_metadata_patch(crate::MetadataPatch {
+            target: crate::MetadataTarget::Entity(entity_ref("role", "r")),
+            source_id: "test".into(),
+            set: BTreeMap::from([(
+                "refs".into(),
+                crate::MetadataValueUpdate {
+                    value: MetadataValue::EntityRefs(vec![
+                        entity_ref("role", "r"),
+                        entity_ref("role", "s"),
+                    ]),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+        let model = state.view_model().presentation.unwrap();
+        assert_eq!(
+            model.sections[0]
+                .nodes
+                .iter()
+                .map(|node| node.entity.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["r", "v"]
+        );
+        assert_eq!(
+            model.sections[0].nodes[0]
+                .children
+                .iter()
+                .map(|node| node.entity.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["s"]
         );
     }
 

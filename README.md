@@ -142,6 +142,17 @@ for "subject" kind="change_request" layout="row" {
 }
 ```
 
+A placement may contain multiple sibling loops (for example subjects followed
+by ordinary Attention entries). Each loop keeps its own placement identity.
+Forward lists use `for "attempt" kind="convoy" in="flotilla.role.attempts"
+of="role" { … }`: `of` names an enclosing binding, and `in` names an
+`entity-refs` fact on that entity. Missing facts/targets yield no rows; repeated
+references yield one row. Without `order`, producer list order is retained;
+explicit ordering overrides it. Kind, predicates, visibility, and cycle guards
+still apply. This also works in detail templates for `current_attempt`.
+Visibility rules may add `and-visible-when="show-issues"` to combine two boolean
+display variables (e.g. closed issues require both Issues and Show finished).
+
 `natural=true` compares ASCII digit runs numerically, including numbers larger
 than machine integers. Other values retain their default order; direction,
 absent placement, and the final entity-identity tie-break are unchanged.
