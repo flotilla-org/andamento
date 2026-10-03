@@ -81,16 +81,13 @@ struct PlacementIndex {
     by_fact: BTreeMap<(String, IndexedValue), Vec<usize>>,
     visibility: BTreeMap<String, Vec<bool>>,
     ref_keys: BTreeSet<String>,
-    by_entity: BTreeMap<EntityRef, usize>,
 }
 
 impl PlacementIndex {
     fn build(entities: &[CatalogEntity]) -> Self {
         let mut by_fact = BTreeMap::<(String, IndexedValue), Vec<usize>>::new();
         let mut ref_keys = BTreeSet::new();
-        let mut by_entity = BTreeMap::new();
         for (position, entity) in entities.iter().enumerate() {
-            by_entity.insert(entity.entity.clone(), position);
             let mut insert = |key: String, text: IndexedValue| {
                 let postings = by_fact.entry((key, text)).or_default();
                 // Positions arrive ascending, so binary_search stays valid; the
@@ -126,7 +123,6 @@ impl PlacementIndex {
         Self {
             by_fact,
             ref_keys,
-            by_entity,
             visibility: BTreeMap::new(),
         }
     }
@@ -145,19 +141,22 @@ impl PlacementIndex {
                 .rules
                 .iter()
                 .map(|rule| {
-                    std::iter::once(&rule.visible_when).chain(rule.and_visible_when.iter()).all(|name| {
-                    let value = variables.get(name).or_else(|| {
-                        catalog
-                            .display_variables()
-                            .iter()
-                            .find(|variable| &variable.name == name)
-                            .map(|variable| &variable.default)
-                    });
-                    if !matches!(value, Some(crate::DisplayVariableValue::Bool(_))) {
-                        warnings.insert(format!("visibility {} requires boolean display variable {}; matching entities are hidden", policy.name, name));
-                    }
-                    matches!(value, Some(crate::DisplayVariableValue::Bool(true)))
-                    })
+                    std::iter::once(&rule.visible_when)
+                        .chain(rule.and_visible_when.iter())
+                        .fold(true, |enabled, name| {
+                            let value = variables.get(name).or_else(|| {
+                                catalog.display_variables().iter()
+                                    .find(|variable| &variable.name == name)
+                                    .map(|variable| &variable.default)
+                            });
+                            if !matches!(value, Some(crate::DisplayVariableValue::Bool(_))) {
+                                warnings.insert(format!(
+                                    "visibility {} requires boolean display variable {}; matching entities are hidden",
+                                    policy.name, name
+                                ));
+                            }
+                            enabled & matches!(value, Some(crate::DisplayVariableValue::Bool(true)))
+                        })
                 })
                 .collect();
             let visible = entities
@@ -1564,17 +1563,15 @@ impl ControllerState {
             else {
                 return vec![];
             };
-            let eligible: BTreeSet<_> = matches.iter().map(|entity| &entity.entity).collect();
+            let eligible: BTreeMap<_, _> = matches
+                .iter()
+                .map(|entity| (&entity.entity, *entity))
+                .collect();
             let mut seen = BTreeSet::new();
             matches = refs
                 .iter()
-                .filter(|reference| eligible.contains(reference) && seen.insert(*reference))
-                .filter_map(|reference| {
-                    index
-                        .by_entity
-                        .get(reference)
-                        .and_then(|position| entities.get(*position))
-                })
+                .filter(|reference| seen.insert(*reference))
+                .filter_map(|reference| eligible.get(reference).copied())
                 .collect();
         }
         if loop_definition.in_key.is_none() || !loop_definition.order.is_empty() {
@@ -2963,19 +2960,7 @@ mod tests {
         );
     }
 
-    // Forward joins follow the producer's ordered list, deduplicate repeated refs,
-    // and reject missing/wrong-kind targets and ancestor cycles. Explicit order wins.
-    #[test]
-    fn forward_edges_preserve_order_and_filter_targets() {
-        let mut state = ControllerState::default();
-        for (kind, id) in [
-            ("role", "r"),
-            ("convoy", "a"),
-            ("convoy", "z"),
-            ("vessel", "a"),
-        ] {
-            apply_entity(&mut state, kind, id, 0, &[("display.label", id)]);
-        }
+    fn forward_reference_lists() -> Vec<Vec<EntityRef>> {
         // Exhaustive generator: lengths 0..=3 over valid, missing, and wrong-kind
         // refs spans empty input, ordering permutations, and repeated identities.
         let choices = [
@@ -2999,7 +2984,43 @@ mod tests {
                 .collect();
             sequences.extend(level.clone());
         }
-        for refs in sequences {
+        sequences
+    }
+
+    // Forward joins follow the producer's ordered list, deduplicate repeated refs,
+    // and reject missing/wrong-kind targets and ancestor cycles. Explicit order wins.
+    #[test]
+    fn forward_edges_preserve_order_and_filter_targets() {
+        let mut state = ControllerState::default();
+        for (kind, id) in [
+            ("role", "r"),
+            ("convoy", "a"),
+            ("convoy", "z"),
+            ("vessel", "a"),
+        ] {
+            apply_entity(&mut state, kind, id, 0, &[("display.label", id)]);
+        }
+        let configs = [false, true].map(|explicit_order| {
+            let order = if explicit_order {
+                r#"order "display.label";"#
+            } else {
+                ""
+            };
+            crate::template_config::parse_template_config_kdl(&format!(
+                r#"
+                placement "tree" {{
+                    for "role" kind="role" {{
+                        for "attempt" kind="convoy" in="attempts" of="role" {{
+                            {order}
+                        }}
+                    }}
+                    for "other" kind="vessel"
+                }}
+            "#
+            ))
+            .unwrap()
+        });
+        for refs in forward_reference_lists() {
             state.apply_metadata_patch(crate::MetadataPatch {
                 target: crate::MetadataTarget::Entity(entity_ref("role", "r")),
                 source_id: "test".into(),
@@ -3021,25 +3042,7 @@ mod tests {
                 .find(|e| e.entity == entity_ref("role", "r"))
                 .unwrap();
             let bindings = BTreeMap::from([("role".into(), role)]);
-            for explicit_order in [false, true] {
-                let order = if explicit_order {
-                    r#"order "display.label";"#
-                } else {
-                    ""
-                };
-                let config = crate::template_config::parse_template_config_kdl(&format!(
-                    r#"
-                    placement "tree" {{
-                        for "role" kind="role" {{
-                            for "attempt" kind="convoy" in="attempts" of="role" {{
-                                {order}
-                            }}
-                        }}
-                        for "other" kind="vessel"
-                    }}
-                "#
-                ))
-                .unwrap();
+            for (explicit_order, config) in [false, true].into_iter().zip(&configs) {
                 assert_eq!(config.placements[0].loops.len(), 2);
                 let query = &config.placements[0].loops[0].loops[0];
                 let ids = |ancestors: &[EntityRef]| {
@@ -3082,6 +3085,129 @@ mod tests {
                 .placement_matches(query, &entities, &index, &missing, &[])
                 .is_empty());
         }
+    }
+
+    // Forward detail fields bind their source by template name, remain fresh,
+    // and do not materialize the referenced convoy as an extra tree row.
+    #[test]
+    fn forward_detail_template_uses_current_attempt() {
+        let mut state = ControllerState::default();
+        state.set_template_catalog(Some(
+            crate::template_config::TemplateConfigCatalog::from_config(
+                crate::template_config::parse_template_config_kdl(
+                    r#"
+                region "tree" root-template="heading" placement="tree"
+                template "heading" { field "label" source="literal" value="Roles"; }
+                placement "tree" { for "role" kind="role" { apply-template "role/native"; }; }
+                template "role/native" { field "label" key="display.label"; }
+                template "role/detail" slot="detail" node-kind="entity" {
+                    for "attempt" kind="convoy" in="current" of="role" {
+                        field "label" key="display.label" prefix="Current: "
+                        field "phase" key="phase" prefix="Phase: "
+                    }
+                }
+            "#,
+                )
+                .unwrap(),
+            ),
+        ));
+        apply_entity(&mut state, "role", "r", 0, &[("display.label", "Governor")]);
+        apply_entity(
+            &mut state,
+            "convoy",
+            "a",
+            0,
+            &[("display.label", "Attempt"), ("phase", "active")],
+        );
+        for refs in [vec![entity_ref("convoy", "a")], vec![]] {
+            let present = !refs.is_empty();
+            state.apply_metadata_patch(crate::MetadataPatch {
+                target: crate::MetadataTarget::Entity(entity_ref("role", "r")),
+                source_id: "test".into(),
+                set: BTreeMap::from([(
+                    "current".into(),
+                    crate::MetadataValueUpdate {
+                        value: MetadataValue::EntityRefs(refs),
+                        ttl_ms: None,
+                        precedence: None,
+                        ordinal: None,
+                    },
+                )]),
+                unset: vec![],
+            });
+            let model = state.view_model().presentation.unwrap();
+            assert_eq!(model.sections[0].nodes.len(), 1);
+            let detail = &model.sections[0].nodes[0].detail;
+            assert_eq!(
+                detail
+                    .fields
+                    .iter()
+                    .map(|field| field.value.as_str())
+                    .collect::<Vec<_>>(),
+                if present {
+                    vec!["Governor", "Current: Attempt", "Phase: active"]
+                } else {
+                    vec!["Governor"]
+                }
+            );
+        }
+    }
+
+    // A self-reference cannot repeat the bound entity; sibling selectors still
+    // render after a forward loop whose self-edge was filtered by the cycle guard.
+    #[test]
+    fn forward_self_edge_and_sibling_selectors_render_safely() {
+        let mut state = ControllerState::default();
+        state.set_template_catalog(Some(crate::template_config::TemplateConfigCatalog::from_config(
+            crate::template_config::parse_template_config_kdl(r#"
+                region "tree" root-template="heading" placement="tree"
+                template "heading" { field "label" source="literal" value="Items"; }
+                placement "tree" {
+                    for "role" kind="role" {
+                        match "entity.id" value="r"
+                        for "related" kind="role" in="refs" of="role" { field "label" key="display.label"; }
+                    }
+                    for "vessel" kind="vessel"
+                }
+            "#).unwrap()
+        )));
+        for (kind, id) in [("role", "r"), ("role", "s"), ("vessel", "v")] {
+            apply_entity(&mut state, kind, id, 0, &[("display.label", id)]);
+        }
+        state.apply_metadata_patch(crate::MetadataPatch {
+            target: crate::MetadataTarget::Entity(entity_ref("role", "r")),
+            source_id: "test".into(),
+            set: BTreeMap::from([(
+                "refs".into(),
+                crate::MetadataValueUpdate {
+                    value: MetadataValue::EntityRefs(vec![
+                        entity_ref("role", "r"),
+                        entity_ref("role", "s"),
+                    ]),
+                    ttl_ms: None,
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        });
+        let model = state.view_model().presentation.unwrap();
+        assert_eq!(
+            model.sections[0]
+                .nodes
+                .iter()
+                .map(|node| node.entity.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["r", "v"]
+        );
+        assert_eq!(
+            model.sections[0].nodes[0]
+                .children
+                .iter()
+                .map(|node| node.entity.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["s"]
+        );
     }
 
     // Explicit generated space spans digit widths, leading zeroes, Unicode,

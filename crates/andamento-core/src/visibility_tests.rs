@@ -302,3 +302,28 @@ fn conjunctive_visibility_covers_boolean_truth_table() {
     ))
     .is_err());
 }
+
+// Misconfigured layer overrides must report every variable in a conjunction,
+// even when the first variable already hides the matching entities.
+#[test]
+fn conjunction_reports_both_non_boolean_overrides() {
+    let input = CONFIG.replace(
+        "visible-when=\"finished\"",
+        "visible-when=\"finished\" and-visible-when=\"attempts\"",
+    );
+    let user = parse_template_config_kdl(r#"
+        display-variable "finished" type="enum" default="yes" label="Finished" icon="F" { value "yes"; }
+        display-variable "attempts" type="enum" default="yes" label="Attempts" icon="A" { value "yes"; }
+    "#).unwrap();
+    let mut state = ControllerState::default();
+    state.set_template_catalog(Some(TemplateConfigCatalog::from_layers(vec![
+        TemplateConfigLayer::bundled("bundled", parse_template_config_kdl(&input).unwrap()),
+        TemplateConfigLayer::user("user", user),
+    ])));
+    let warnings = state.view_model().template_config.warnings;
+    for name in ["finished", "attempts"] {
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains(&format!("boolean display variable {name}"))));
+    }
+}

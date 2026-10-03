@@ -409,6 +409,23 @@ fn check_visibility(
     Ok(())
 }
 
+fn validate_forward_source(
+    binding: &str,
+    in_key: &Option<String>,
+    of: &Option<String>,
+    enclosing: &BTreeSet<String>,
+) -> Result<(), TemplateConfigError> {
+    if in_key.is_some() != of.is_some()
+        || in_key.as_ref().is_some_and(|key| key.trim().is_empty())
+        || of.as_ref().is_some_and(|name| !enclosing.contains(name))
+    {
+        return Err(TemplateConfigError::Validation(format!(
+            "loop {binding} requires a nonempty in= with of= naming an enclosing binding"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_placement_loops(
     loops: &[PlacementLoop],
     enclosing: &BTreeSet<String>,
@@ -433,17 +450,12 @@ fn validate_placement_loops(
                 loop_definition.binding
             )));
         }
-        if loop_definition.in_key.is_some() != loop_definition.of.is_some()
-            || loop_definition
-                .of
-                .as_ref()
-                .is_some_and(|name| !enclosing.contains(name))
-        {
-            return Err(TemplateConfigError::Validation(format!(
-                "loop {} requires in= with of= naming an enclosing binding",
-                loop_definition.binding
-            )));
-        }
+        validate_forward_source(
+            &loop_definition.binding,
+            &loop_definition.in_key,
+            &loop_definition.of,
+            enclosing,
+        )?;
         for predicate in &loop_definition.predicates {
             if predicate.value.is_some() == predicate.of.is_some() {
                 return Err(TemplateConfigError::Validation(format!(
@@ -942,8 +954,10 @@ pub struct PlacementLoop {
     pub binding: String,
     /// Forward edge list on a bound entity; preserves producer order without `order`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "in")]
     pub in_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Enclosing lexical binding that owns the forward list named by `in`.
     pub of: Option<String>,
     /// Optional shared visibility policy, applied after indexed selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2368,12 +2382,7 @@ fn parse_kdl_placement_loop(
         .transpose()?;
     let in_key = kdl_prop_string(node, "in");
     let of = kdl_prop_string(node, "of");
-    if in_key.is_some() != of.is_some() || of.as_ref().is_some_and(|name| !enclosing.contains(name))
-    {
-        return Err(TemplateConfigError::Validation(format!(
-            "loop {binding} requires in= with of= naming an enclosing binding"
-        )));
-    }
+    validate_forward_source(&binding, &in_key, &of, enclosing)?;
     Ok(PlacementLoop {
         binding,
         in_key,
@@ -3334,6 +3343,24 @@ placement "attention" {
 
     // Forward selection needs both properties and a bound source, and never
     // accepts an unbound/self source that could cross lexical placement scopes.
+    // JSON consumers use the same `in` and `of` names as KDL; round trips retain
+    // the forward selection rather than silently replacing it with a broad loop.
+    #[test]
+    fn forward_loop_json_names_round_trip() {
+        let config = parse_template_config_kdl(r#"
+            placement "tree" { for "role" kind="role" { for "attempt" kind="convoy" in="attempts" of="role"; }; }
+        "#).unwrap();
+        let query = &config.placements[0].loops[0].loops[0];
+        let json = serde_json::to_value(query).unwrap();
+        assert_eq!(json["in"], "attempts");
+        assert_eq!(json["of"], "role");
+        assert!(json.get("in-key").is_none());
+        assert_eq!(
+            &serde_json::from_value::<PlacementLoop>(json).unwrap(),
+            query
+        );
+    }
+
     #[test]
     fn forward_loop_rejects_unpaired_or_unbound_sources() {
         for properties in [
