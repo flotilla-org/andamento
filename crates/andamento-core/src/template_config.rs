@@ -287,14 +287,17 @@ impl ExternalTemplateConfig {
                 ));
             }
             for rule in &policy.rules {
-                if !self.display_variables.iter().any(|variable| {
-                    variable.name == rule.visible_when
-                        && matches!(variable.variable_type, TemplateVariableType::Bool)
-                }) {
-                    return Err(TemplateConfigError::Validation(format!(
-                        "visibility {} requires boolean display variable {} in the same config",
-                        policy.name, rule.visible_when
-                    )));
+                for name in std::iter::once(&rule.visible_when).chain(rule.and_visible_when.iter())
+                {
+                    if !self.display_variables.iter().any(|variable| {
+                        &variable.name == name
+                            && matches!(variable.variable_type, TemplateVariableType::Bool)
+                    }) {
+                        return Err(TemplateConfigError::Validation(format!(
+                            "visibility {} requires boolean display variable {} in the same config",
+                            policy.name, name
+                        )));
+                    }
                 }
                 if rule.predicates.is_empty()
                     || rule.predicates.iter().any(|predicate| {
@@ -427,6 +430,17 @@ fn validate_placement_loops(
         if enclosing.contains(&loop_definition.binding) {
             return Err(TemplateConfigError::Validation(format!(
                 "loop binding {} shadows an enclosing binding",
+                loop_definition.binding
+            )));
+        }
+        if loop_definition.in_key.is_some() != loop_definition.of.is_some()
+            || loop_definition
+                .of
+                .as_ref()
+                .is_some_and(|name| !enclosing.contains(name))
+        {
+            return Err(TemplateConfigError::Validation(format!(
+                "loop {} requires in= with of= naming an enclosing binding",
                 loop_definition.binding
             )));
         }
@@ -926,6 +940,11 @@ pub struct PlacementDefinition {
 pub struct PlacementLoop {
     /// The lexical binding and placement-identity component of this loop.
     pub binding: String,
+    /// Forward edge list on a bound entity; preserves producer order without `order`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub of: Option<String>,
     /// Optional shared visibility policy, applied after indexed selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<String>,
@@ -963,6 +982,8 @@ pub struct PlacementVisibility {
 pub struct PlacementVisibilityRule {
     pub predicates: Vec<VisibilityPredicate>,
     pub visible_when: String,
+    #[serde(default)]
+    pub and_visible_when: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -2272,12 +2293,6 @@ fn parse_kdl_placement(node: &KdlNode) -> Result<PlacementDefinition, TemplateCo
             "placement {name} declares no loops"
         )));
     }
-    if loops.len() > 1 {
-        return Err(TemplateConfigError::Validation(format!(
-            "placement {name} declares {} loops; this build renders one",
-            loops.len()
-        )));
-    }
     Ok(PlacementDefinition { name, loops })
 }
 
@@ -2351,8 +2366,18 @@ fn parse_kdl_placement_loop(
             ))),
         })
         .transpose()?;
+    let in_key = kdl_prop_string(node, "in");
+    let of = kdl_prop_string(node, "of");
+    if in_key.is_some() != of.is_some() || of.as_ref().is_some_and(|name| !enclosing.contains(name))
+    {
+        return Err(TemplateConfigError::Validation(format!(
+            "loop {binding} requires in= with of= naming an enclosing binding"
+        )));
+    }
     Ok(PlacementLoop {
         binding,
+        in_key,
+        of,
         visibility: node
             .get("visibility")
             .map(|_| kdl_required_prop_string(node, "visibility"))
@@ -2416,6 +2441,7 @@ fn parse_kdl_visibility(node: &KdlNode) -> Result<PlacementVisibility, TemplateC
             rules.push(PlacementVisibilityRule {
                 predicates,
                 visible_when,
+                and_visible_when: kdl_prop_string(rule, "and-visible-when"),
             });
         }
     }
@@ -3304,6 +3330,29 @@ placement "attention" {
         );
         assert_eq!(loop_definition.fields.len(), 1);
         assert_eq!(loop_definition.tier, Some(AbbreviationTier::Short));
+    }
+
+    // Forward selection needs both properties and a bound source, and never
+    // accepts an unbound/self source that could cross lexical placement scopes.
+    #[test]
+    fn forward_loop_rejects_unpaired_or_unbound_sources() {
+        for properties in [
+            r#"in="attempts""#,
+            r#"of="role""#,
+            r#"in="attempts" of="missing""#,
+            r#"in="attempts" of="attempt""#,
+        ] {
+            let input = format!(
+                r#"
+                placement "tree" {{
+                    for "role" kind="role" {{
+                        for "attempt" kind="convoy" {properties}
+                    }}
+                }}
+            "#
+            );
+            assert!(parse_template_config_kdl(&input).is_err(), "{properties}");
+        }
     }
 
     #[test]

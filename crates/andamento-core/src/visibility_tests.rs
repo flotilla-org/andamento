@@ -262,3 +262,43 @@ fn unused_policies_are_not_evaluated_and_non_boolean_overrides_are_diagnosed() {
         .contains("visibility activity requires boolean display variable finished")));
     assert!(!warnings.iter().any(|warning| warning.contains("unused")));
 }
+
+// Both boolean display variables must be true; defaults, toggles, and first-match
+// precedence apply to the conjunction just as they do to a single gate.
+#[test]
+fn conjunctive_visibility_covers_boolean_truth_table() {
+    let input = CONFIG.replace(
+        "visible-when=\"finished\"",
+        "visible-when=\"finished\" and-visible-when=\"attempts\"",
+    );
+    let mut state = ControllerState::default();
+    state.set_template_catalog(Some(config(&input)));
+    publish(
+        &mut state,
+        "done",
+        &[("phase", MetadataValue::Text("done".into()))],
+    );
+    for (finished, attempts) in [(false, false), (true, false), (true, true), (false, true)] {
+        assert_eq!(
+            ids(&state, "tree"),
+            if finished && attempts {
+                vec!["done"]
+            } else {
+                vec![]
+            }
+        );
+        toggle(
+            &mut state,
+            if finished == attempts {
+                "finished"
+            } else {
+                "attempts"
+            },
+        );
+    }
+    assert!(parse_template_config_kdl(&input.replace(
+        "and-visible-when=\"attempts\"",
+        "and-visible-when=\"missing\""
+    ))
+    .is_err());
+}
