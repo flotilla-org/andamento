@@ -344,6 +344,10 @@ impl Sidebar {
         })
     }
 
+    pub fn detail_cards(&self) -> (u64, Vec<crate::detail::DetailCard>) {
+        self.state.detail_cards()
+    }
+
     pub fn subject_url(&self, entity: &EntityRef) -> Option<String> {
         self.state.subject_url(entity)
     }

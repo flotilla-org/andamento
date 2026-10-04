@@ -64,6 +64,23 @@ static void check_workdirs(void) {
     ok(andamento_observe_workdirs(h, &dir, 1, &error));
     AndamentoSnapshot *s = snapshot(h);
     assert(find_node(s, "item").state == ANDAMENTO_LIVE);
+    /* Structured cards retain live preview identity outside their field roles,
+     * and dispatch exactly the same workspace control as the flat tree. */
+    size_t detail = andamento_snapshot_detail_find(s, T("item"), T("i"));
+    assert(detail != ANDAMENTO_NONE);
+    AndamentoDetail card;
+    assert(andamento_snapshot_detail(s, detail, &card));
+    assert(card.has_workspace && card.workspace_id == 7);
+    AndamentoDetailAction action;
+    assert(andamento_snapshot_detail_action(s, detail, 0, &action));
+    assert(eq(action.intent, "focus-workspace"));
+    assert(eq(action.entity.kind, "item") && eq(action.entity.id, "i"));
+    assert(action.action == card.activate);
+    AndamentoDetailField field;
+    assert(andamento_snapshot_detail_field(s, detail, 0, &field));
+    assert(field.role == ANDAMENTO_DETAIL_TITLE);
+    assert(field.has_value && eq(field.text, "i"));
+    assert(andamento_snapshot_detail_count(s) == 1);
     andamento_snapshot_release(s);
     expected_error(andamento_observe_workdirs(h, NULL, 1, &error));
     ok(andamento_observe_workdirs(h, NULL, 0, &error));
@@ -72,8 +89,56 @@ static void check_workdirs(void) {
     andamento_snapshot_release(s);
     andamento_destroy(h);
 }
+/* All six kinds, including a related issue absent from the visible tree,
+ * expose typed roles and observation data through the actual C layout. */
+static void check_typed_details(const char *path) {
+    Andamento *h = andamento_create(NULL, 0, &error); assert(h && !error);
+    char *patches = read_file(path);
+    for (char *line = strtok(patches, "\n"); line; line = strtok(NULL, "\n"))
+        ok(andamento_apply_patch_json(h, 42, (AndamentoText){(uint8_t *)line, strlen(line)}, &error));
+    free(patches);
+    AndamentoSnapshot *s = snapshot(h);
+    assert(andamento_snapshot_detail_count(s) == 6);
+    const char *kinds[] = {"change_request", "issue", "convoy", "role", "project", "worktree"};
+    for (size_t k = 0; k < 6; k++) {
+        char id[80]; snprintf(id, sizeof(id), "%s:identity / #", kinds[k]);
+        size_t index = andamento_snapshot_detail_find(s, (AndamentoText){(const uint8_t *)kinds[k], strlen(kinds[k])},
+            (AndamentoText){(const uint8_t *)id, strlen(id)});
+        assert(index != ANDAMENTO_NONE);
+        AndamentoDetail d; assert(andamento_snapshot_detail(s, index, &d));
+        assert(d.now_ms == 42 && d.error.len == 0);
+        unsigned roles = 0;
+        for (size_t i = 0; i < d.field_count; i++) {
+            AndamentoDetailField f; assert(andamento_snapshot_detail_field(s, index, i, &f));
+            roles |= 1u << f.role;
+            if (eq(f.name, "summary")) {
+                assert(f.role == ANDAMENTO_DETAIL_FACT && eq(f.label, "Summary"));
+                assert(f.has_value && !f.text.len && f.has_observation && f.observed_at_ms == 42);
+                assert(f.has_ttl && f.ttl_ms == 100 && !f.stale && eq(f.source_id, "fixture-producer"));
+            }
+            if (k == 5 && eq(f.name, "branch")) assert(!f.has_value && !f.has_observation);
+            if (k == 5 && eq(f.name, "related")) {
+                AndamentoDetailRelation r;
+                assert(andamento_snapshot_detail_relation(s, index, i, 0, NULL, 0, &r));
+                assert(eq(r.entity.kind, "issue") && eq(r.entity.id, "issue:identity / #"));
+                assert(eq(r.display_text, "Display issue") && r.detail != ANDAMENTO_NONE);
+                AndamentoEntity navigation[] = {r.entity};
+                assert(!andamento_snapshot_detail_relation(s, index, i, 0, navigation, 1, &r));
+            }
+        }
+        assert(roles == 31);
+    }
+    /* Navigation reaches the catalog even without an issue placement. */
+    for (size_t i = 0; i < andamento_snapshot_node_count(s); i++) {
+        AndamentoNode n; assert(andamento_snapshot_node(s, i, &n));
+        assert(!eq(n.entity_kind, "issue"));
+    }
+    andamento_snapshot_release(s); andamento_destroy(h);
+}
+
 int main(int argc, char **argv) {
-    assert(argc == 3 && andamento_abi_version() == 2);
+    assert(argc == 4 && andamento_abi_version() == 2);
+    check_typed_details(argv[3]);
     check_workdirs();
     char *config = read_file(argv[1]);
     Andamento *h = andamento_create((const uint8_t *)config, strlen(config), &error);

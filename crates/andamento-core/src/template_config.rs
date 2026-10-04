@@ -1975,10 +1975,42 @@ fn format_metadata_value(value: &MetadataValue) -> String {
     }
 }
 
+/// Semantic intent only; frontends own layout, colors and age formatting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DetailRole {
+    Identity,
+    Title,
+    State,
+    Fact,
+    Relation,
+}
+
+impl DetailRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Identity => "identity",
+            Self::Title => "title",
+            Self::State => "state",
+            Self::Fact => "fact",
+            Self::Relation => "relation",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct TemplateConfigFieldSpec {
     pub name: String,
+    #[serde(default)]
+    pub section: Option<String>,
+    /// Include this declaration only in structured detail, preserving flat clients.
+    #[serde(default)]
+    pub structured_only: bool,
+    #[serde(default)]
+    pub role: Option<DetailRole>,
+    #[serde(default)]
+    pub label: Option<String>,
     pub class: TemplateConfigFieldClass,
     #[serde(default)]
     pub priority: Option<i64>,
@@ -1996,7 +2028,7 @@ impl TemplateConfigFieldSpec {
         &self,
         context: TemplateConfigMatchContext<'_>,
     ) -> Option<TemplateConfigRenderedField> {
-        if !self.condition.matches(context) {
+        if self.structured_only || !self.condition.matches(context) {
             return None;
         }
         let resolved = self
@@ -2022,6 +2054,18 @@ impl TemplateConfigFieldSpec {
     fn to_kdl(&self, indent: usize) -> String {
         let pad = " ".repeat(indent);
         let mut properties = format!("class={}", quote_kdl(self.class.as_str()));
+        for (key, value) in [
+            ("section", self.section.as_deref()),
+            ("role", self.role.map(DetailRole::as_str)),
+            ("label", self.label.as_deref()),
+        ] {
+            if let Some(value) = value {
+                properties.push_str(&format!(" {key}={}", quote_kdl(value)));
+            }
+        }
+        if self.structured_only {
+            properties.push_str(" structured-only=true");
+        }
         if let Some(priority) = self.priority {
             properties.push_str(&format!(" priority={priority}"));
         }
@@ -2078,7 +2122,7 @@ pub enum TemplateConfigFieldCondition {
 }
 
 impl TemplateConfigFieldCondition {
-    fn matches(&self, context: TemplateConfigMatchContext<'_>) -> bool {
+    pub(crate) fn matches(&self, context: TemplateConfigMatchContext<'_>) -> bool {
         match self {
             TemplateConfigFieldCondition::Always => true,
             TemplateConfigFieldCondition::Collapsed => context.collapsed,
@@ -2107,7 +2151,7 @@ pub enum TemplateConfigValueSource {
 }
 
 impl TemplateConfigValueSource {
-    fn resolve(
+    pub(crate) fn resolve(
         &self,
         context: TemplateConfigMatchContext<'_>,
     ) -> Option<TemplateConfigResolvedValue> {
@@ -2222,9 +2266,9 @@ impl TemplateConfigValueSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TemplateConfigResolvedValue {
-    value: String,
-    source: Option<ResolvedTemplateFieldSource>,
+pub(crate) struct TemplateConfigResolvedValue {
+    pub value: String,
+    pub source: Option<ResolvedTemplateFieldSource>,
 }
 
 fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, TemplateConfigError> {
@@ -2810,6 +2854,23 @@ fn parse_kdl_field(node: &KdlNode) -> Result<TemplateConfigFieldSpec, TemplateCo
     };
     Ok(TemplateConfigFieldSpec {
         name: kdl_required_arg_string(node, 0, "field name")?,
+        section: kdl_optional_string(node, "section")?,
+        structured_only: node
+            .get("structured-only")
+            .map(|entry| {
+                entry.value().as_bool().ok_or_else(|| {
+                    TemplateConfigError::Validation("structured-only must be boolean".into())
+                })
+            })
+            .transpose()?
+            .unwrap_or(false),
+        role: kdl_optional_string(node, "role")?
+            .map(|role| {
+                serde_json::from_value(serde_json::Value::String(role))
+                    .map_err(|error| TemplateConfigError::Validation(error.to_string()))
+            })
+            .transpose()?,
+        label: kdl_optional_string(node, "label")?,
         class,
         priority,
         sources,
@@ -2936,6 +2997,18 @@ fn kdl_required_prop_string(node: &KdlNode, key: &str) -> Result<String, Templat
             node.name().value()
         ))
     })
+}
+
+fn kdl_optional_string(node: &KdlNode, key: &str) -> Result<Option<String>, TemplateConfigError> {
+    node.get(key)
+        .map(|entry| {
+            entry
+                .value()
+                .as_string()
+                .map(str::to_owned)
+                .ok_or_else(|| TemplateConfigError::Validation(format!("{key} must be a string")))
+        })
+        .transpose()
 }
 
 fn kdl_prop_string(node: &KdlNode, key: &str) -> Option<String> {

@@ -91,11 +91,6 @@ template "flotilla/issue/compact" slot="compact" node-kind="entity" {
   field "label" class="required" source="metadata-first-token" key="display.label"
 }
 
-template "flotilla/issue/detail" slot="detail" node-kind="entity" {
-  field "label" class="required" key="display.label"
-  field "summary" class="priority" key="summary.text" priority=50
-}
-
 template "flotilla/entity/compact" slot="compact" node-kind="entity" {
   field "label" class="required" {
     value source="metadata-text" key="display.label"
@@ -104,12 +99,50 @@ template "flotilla/entity/compact" slot="compact" node-kind="entity" {
   field "summary" class="priority" key="summary.text" priority=50
 }
 
-template "flotilla/entity/detail" slot="detail" node-kind="entity" {
-  field "label" class="required" {
+// Semantic detail sections do not prescribe frontend layout or styling.
+fragment "detail/common" {
+  field "label" role="title" section="header" class="required" {
     value source="metadata-text" key="display.label"
     value source="metadata-text" key="entity.id"
   }
-  field "summary" class="priority" key="summary.text" priority=50
+  field "identity" structured-only=true role="identity" section="header" key="entity.id"
+  field "state" structured-only=true role="state" section="header" key="status.state"
+  field "summary" role="fact" section="facts" label="Summary" class="priority" key="summary.text" priority=50
+  field "related" structured-only=true role="relation" section="related" label="Related" key="related.entities"
+  field "produces" structured-only=true role="relation" section="related" label="Produces" key="flotilla.subject.produces"
+  field "works-on" structured-only=true role="relation" section="related" label="Works on" key="flotilla.subject.works_on"
+  field "subject-of" structured-only=true role="relation" section="related" label="Subject of" key="flotilla.subject_of"
+  field "attempt" structured-only=true role="relation" section="related" label="Current attempt" key="flotilla.role.current_attempt"
+}
+template "flotilla/entity/detail" slot="detail" node-kind="entity" {
+  use "detail/common"
+}
+template "flotilla/change_request/detail" slot="detail" node-kind="entity" {
+  use "detail/common"
+  field "readiness" structured-only=true role="fact" section="facts" label="Readiness" key="flotilla.change_request.readiness"
+  field "checks" structured-only=true role="fact" section="facts" label="Checks" key="flotilla.change_request.checks"
+}
+template "flotilla/issue/detail" slot="detail" node-kind="entity" {
+  use "detail/common"
+  field "label" role="title" section="header" class="required" key="display.label"
+  field "issue-state" structured-only=true role="fact" section="facts" label="State" key="flotilla.issue.state"
+}
+template "flotilla/convoy/detail" slot="detail" node-kind="entity" {
+  use "detail/common"
+  field "phase" structured-only=true role="fact" section="facts" label="Phase" key="flotilla.convoy.phase"
+}
+template "flotilla/role/detail" slot="detail" node-kind="entity" {
+  use "detail/common"
+  field "phase" structured-only=true role="fact" section="facts" label="Phase" key="flotilla.work.phase"
+}
+template "flotilla/project/detail" slot="detail" node-kind="entity" {
+  use "detail/common"
+  field "repo" structured-only=true role="fact" section="facts" label="Repository" key="vcs.repo"
+}
+template "flotilla/worktree/detail" slot="detail" node-kind="entity" {
+  use "detail/common"
+  field "branch" structured-only=true role="fact" section="facts" label="Branch" key="git.branch"
+  field "dirty" structured-only=true role="fact" section="facts" label="Dirty" key="git.dirty"
 }
 
 // Host-independent git inventory.

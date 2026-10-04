@@ -132,6 +132,72 @@ uint32_t andamento_snapshot_field(const AndamentoSnapshot *, size_t index, Andam
 uint32_t andamento_snapshot_control(const AndamentoSnapshot *, size_t index, AndamentoControl *out);
 size_t andamento_snapshot_diagnostic_count(const AndamentoSnapshot *);
 uint32_t andamento_snapshot_diagnostic(const AndamentoSnapshot *, size_t index, AndamentoText *out);
+/* Optional structured-detail extension (probe symbols with dlsym). ABI remains 2.
+ * Indices, actions and borrowed UTF-8 texts belong to this immutable snapshot.
+ * Enumerate catalog cards or find exact kind/id, independent of tree placement.
+ * Invalid indices/pointers/UTF-8 return 0 (find returns ANDAMENTO_NONE).
+ * Missing field: has_value=0. Known empty: has_value=1, text.len=0.
+ * Observations use host monotonic milliseconds, not Unix time; observed_at_ms
+ * is the winning fact's receipt time. TTL and source_id identify freshness and
+ * producer provenance. Synthetic facts have no observation. Retained expired
+ * facts may be stale; unavailable producer provenance has an empty source_id.
+ * Relation display_text is the target's label, separate from its exact identity.
+ * detail is ANDAMENTO_NONE when no catalog target exists. Pass the exact kind/id
+ * navigation path to relation(); 0 means skip this index. Self links are omitted.
+ * activate/copy_url use the existing andamento_dispatch validation/effect path:
+ * activate means focus/materialize/open/inspect by current workspace controls;
+ * copy_url means copy the subject URL. Both target the stable card entity.
+ * Preview identity remains the existing node workspace_id; no field role
+ * changes attachment policy or chooses a preview workspace.
+ */
+enum { ANDAMENTO_DETAIL_IDENTITY, ANDAMENTO_DETAIL_TITLE, ANDAMENTO_DETAIL_STATE,
+       ANDAMENTO_DETAIL_FACT, ANDAMENTO_DETAIL_RELATION };
+typedef struct { AndamentoText kind, id; } AndamentoEntity;
+typedef struct {
+    AndamentoEntity entity;
+    AndamentoText label;
+    size_t field_count, activate, copy_url;
+    uint64_t now_ms;
+    AndamentoText error;
+    uint32_t has_workspace;
+    uint64_t workspace_id;
+} AndamentoDetail;
+typedef struct {
+    AndamentoText intent, label;
+    AndamentoEntity entity;
+    size_t action;
+} AndamentoDetailAction;
+/* action index 0 = primary, 1 = copy-url (0 return when unavailable).
+ * Primary intent: open-url, focus-workspace, materialize-workspace or inspect.
+ * Presentation labels come from workspace action.primary.label when supplied.
+ * Dispatch remains snapshot validated and resolves current controls.
+ */
+uint32_t andamento_snapshot_detail_action(const AndamentoSnapshot *, size_t detail, size_t index, AndamentoDetailAction *out);
+typedef struct {
+    AndamentoText name, section;
+    uint32_t role;
+    AndamentoText label;
+    uint32_t has_value;
+    AndamentoText text, source_key, source_id;
+    uint32_t has_observation;
+    uint64_t observed_at_ms;
+    uint32_t has_ttl;
+    uint64_t ttl_ms;
+    uint32_t stale;
+    size_t relation_count;
+} AndamentoDetailField;
+typedef struct {
+    AndamentoEntity entity;
+    AndamentoText display_text;
+    size_t detail;
+} AndamentoDetailRelation;
+size_t andamento_snapshot_detail_count(const AndamentoSnapshot *);
+size_t andamento_snapshot_detail_find(const AndamentoSnapshot *, AndamentoText kind, AndamentoText id);
+uint32_t andamento_snapshot_detail(const AndamentoSnapshot *, size_t index, AndamentoDetail *out);
+uint32_t andamento_snapshot_detail_field(const AndamentoSnapshot *, size_t detail, size_t field, AndamentoDetailField *out);
+uint32_t andamento_snapshot_detail_relation(const AndamentoSnapshot *, size_t detail, size_t field,
+    size_t relation, const AndamentoEntity *path, size_t path_count, AndamentoDetailRelation *out);
+
 /* Action references belong to one snapshot. Another client or a snapshot from
  * before a revision-changing mutation is rejected. Dispatch captured clicks against
  * their displayed snapshot BEFORE draining queued facts/ticks/topology. If an

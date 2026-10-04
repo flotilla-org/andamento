@@ -1511,6 +1511,119 @@ impl ControllerState {
         model
     }
 
+    /// Resolve every catalog entity, including identities with no placement.
+    pub fn detail_cards(&self) -> (u64, Vec<crate::detail::DetailCard>) {
+        use crate::template_config::{
+            TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigSlot,
+        };
+        let catalog = CatalogEvaluation::new(self.catalog_entities());
+        let latents = self.latent_tabs_in(&catalog);
+        let seeds = self.tab_seed_metadata_entries();
+        let mut workspaces = BTreeMap::new();
+        for tab in &self.tabs {
+            let (values, _, _) = self.resolve_target_metadata(
+                &EntityId::Tab(tab.tab_id),
+                seeds.get(&tab.tab_id).cloned().unwrap_or_default(),
+            );
+            if let Some(target) = metadata_entry_text(&values, KEY_ACTION_TARGET)
+                .map(str::to_owned)
+                .or_else(|| entity_ref_from_entries(&values).map(|entity| entity.action_target()))
+            {
+                workspaces.entry(target).or_insert(tab.tab_id);
+            }
+        }
+        for (entity, id) in self.directory_bindings(&catalog.entities) {
+            if let Some(candidate) = catalog.entity(&entity) {
+                let target = metadata_entry_text(&candidate.values, KEY_ACTION_TARGET)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| entity.action_target());
+                workspaces.entry(target).or_insert(id);
+            }
+        }
+        let entities = &catalog.entities;
+        let cards = entities
+            .iter()
+            .map(|entity| {
+                let facts = entity_facts(&entity.entity, &entity.values);
+                let slot = self.resolve_template_slot(
+                    TemplateConfigSlot::Detail,
+                    TemplateConfigNodeKind::Entity,
+                    &facts,
+                );
+                let context = TemplateConfigMatchContext {
+                    slot: TemplateConfigSlot::Detail,
+                    node_kind: TemplateConfigNodeKind::Entity,
+                    metadata: &facts,
+                    collapsed: false,
+                    collapsible: false,
+                    active_tab_name: None,
+                };
+                let fields = slot
+                    .as_ref()
+                    .and_then(|slot| slot.render_ready.as_ref())
+                    .map(|ready| {
+                        ready
+                            .fields
+                            .iter()
+                            .filter_map(|spec| {
+                                let mut field =
+                                    crate::detail::resolve_field(spec, context, &entity.values)?;
+                                field.source_id = select_primary_entry(&self.metadata.entries_for(
+                                    &EntityId::Entity(entity.entity.clone()),
+                                    &field.source_key,
+                                    self.now(),
+                                ))
+                                .filter(|candidate| {
+                                    Some(&candidate.entry) == field.observation.as_ref()
+                                })
+                                .map(|candidate| candidate.source_id);
+                                field.relations.retain(|target| target != &entity.entity);
+                                Some(field)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| entity.entity.action_target());
+                let workspace_id = workspaces.get(&action_target).copied();
+                let materializable = latents
+                    .iter()
+                    .find(|latent| latent.entity == entity.entity)
+                    .and_then(|latent| latent.materialize_request())
+                    .is_some();
+                let primary_intent = if self.subject_url(&entity.entity).is_some() {
+                    "open-url"
+                } else if workspace_id.is_some() {
+                    "focus-workspace"
+                } else if materializable {
+                    "materialize-workspace"
+                } else {
+                    "inspect"
+                };
+                crate::detail::DetailCard {
+                    entity: entity.entity.clone(),
+                    label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL)
+                        .unwrap_or(&entity.entity.id)
+                        .to_owned(),
+                    workspace_id,
+                    primary_label: metadata_entry_text(&entity.values, "action.primary.label")
+                        .unwrap_or(match primary_intent {
+                            "open-url" => "Open",
+                            "focus-workspace" => "Focus",
+                            "materialize-workspace" => "Open",
+                            _ => "Inspect",
+                        })
+                        .to_owned(),
+                    primary_intent: primary_intent.to_owned(),
+                    fields,
+                    error: slot.and_then(|slot| slot.resolve_error),
+                }
+            })
+            .collect();
+        (self.now(), cards)
+    }
+
     fn display_entity(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
         let metadata = entity_facts(&entity.entity, &entity.values);
         let templates = ResolvedTemplateSlots {
