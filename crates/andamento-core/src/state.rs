@@ -52,6 +52,8 @@ const KEY_STATUS_STATE: &str = "status.state";
 const KEY_SUMMARY_TEXT: &str = "summary.text";
 const KEY_SOURCE: &str = "source";
 const KEY_DISPLAY_LABEL: &str = "display.label";
+const KEY_CONVOY_PHASE: &str = "flotilla.convoy.phase";
+const KEY_CONVOY_SUPERSEDED: &str = "flotilla.convoy.superseded";
 const FOCUSED_CWD_PRECEDENCE: i64 = 100;
 const NORMAL_CWD_PRECEDENCE: i64 = 0;
 // Opener-owned identity must outrank observational discovery such as cwd-derived associations.
@@ -415,6 +417,7 @@ pub struct ControllerState {
     panes: HashMap<PaneTarget, ControllerPane>,
     metadata: MetadataStore,
     retained_subjects: BTreeMap<EntityRef, CatalogEntity>,
+    // Authoritative ends are terminal for an identity; new attempts use new IDs.
     ended_subjects: BTreeSet<EntityRef>,
     pane_statuses: HashMap<PaneTarget, StoredPaneStatus>,
     pinned_tabs: HashSet<u64>,
@@ -898,8 +901,8 @@ impl ControllerState {
                 ended_changed = self.ended_subjects.insert(entity);
             }
         }
-        self.refresh_retained_subjects();
-        outcome.view_changed || ended_changed
+        let retained_changed = self.refresh_retained_subjects();
+        outcome.view_changed || ended_changed || retained_changed
     }
 
     pub fn bootstrap_snapshot(&self) -> ControllerBootstrapSnapshot {
@@ -1447,11 +1450,10 @@ impl ControllerState {
             &states,
         ));
         if let Some(surface) = &mut model.presentation {
-            let ended = self.ended_workspace_ids();
             let workspaces = self
                 .tabs
                 .iter()
-                .filter(|w| !ended.contains(&w.tab_id))
+                .filter(|w| !ended_workspaces.contains(&w.tab_id))
                 .cloned()
                 .collect::<Vec<_>>();
             surface.cover_workspaces(&workspaces);
@@ -2057,7 +2059,9 @@ impl ControllerState {
 
     /// Keep just the subjects and ancestors needed by open workspace paths.
     /// This is presentation history, never input to producer fact arbitration.
-    pub(crate) fn retain_workspace_paths(&mut self, subjects: BTreeSet<EntityRef>) {
+    pub(crate) fn retain_workspace_paths(&mut self, subjects: BTreeSet<EntityRef>) -> bool {
+        let before = (self.retained_subjects.len(), self.ended_subjects.len());
+        let mut changed = false;
         self.retained_subjects
             .retain(|entity, _| subjects.contains(entity));
         self.ended_subjects
@@ -2067,6 +2071,7 @@ impl ControllerState {
                 let target = EntityId::Entity(subject.clone());
                 let values = self.metadata.resolved_entries_for(&target, self.now());
                 if !values.is_empty() {
+                    changed = true;
                     self.retained_subjects.insert(
                         subject.clone(),
                         CatalogEntity {
@@ -2078,64 +2083,76 @@ impl ControllerState {
                 }
             }
         }
-        self.refresh_retained_subjects();
+        changed |= before != (self.retained_subjects.len(), self.ended_subjects.len());
+        changed | self.refresh_retained_subjects()
     }
 
-    fn refresh_retained_subjects(&mut self) {
+    fn refresh_retained_subjects(&mut self) -> bool {
+        let now = self.now();
+        let mut changed = false;
         for (subject, retained) in &mut self.retained_subjects {
-            let values = self.metadata.resolved_entries_for(
-                &EntityId::Entity(subject.clone()),
-                self.clock_ms.unwrap_or(self.receive_counter),
-            );
+            let values = self
+                .metadata
+                .resolved_entries_for(&EntityId::Entity(subject.clone()), now);
             // Explicit deletion leaves the producer's source fact behind.
             if values.contains_key(KEY_ENTITY_ID) || values.contains_key(KEY_DISPLAY_LABEL) {
-                retained.values.extend(values);
+                for (key, value) in values {
+                    changed |= retained
+                        .values
+                        .get(&key)
+                        .is_none_or(|old| old.value != value.value);
+                    retained.values.insert(key, value);
+                }
             }
             let terminal = matches!(subject.kind.as_str(), "convoy" | "vessel")
                 && (matches!(
-                    metadata_entry_text(&retained.values, "flotilla.convoy.phase"),
+                    metadata_entry_text(&retained.values, KEY_CONVOY_PHASE),
                     Some("landed" | "abandoned" | "cancelled")
                 ) || matches!(
-                    retained
-                        .values
-                        .get("flotilla.convoy.superseded")
-                        .map(|e| &e.value),
+                    retained.values.get(KEY_CONVOY_SUPERSEDED).map(|e| &e.value),
                     Some(MetadataValue::Bool(true))
                 ));
             if terminal {
-                self.ended_subjects.insert(subject.clone());
+                changed |= self.ended_subjects.insert(subject.clone());
             }
         }
+        changed
     }
 
     pub(crate) fn mark_ended_workspace_paths(
         &mut self,
         paths: &BTreeMap<u64, BTreeSet<EntityRef>>,
-    ) {
+    ) -> bool {
+        let subjects = self.workspace_subjects();
+        let mut changed = false;
         for (id, path) in paths {
             if path
                 .iter()
                 .any(|subject| self.ended_subjects.contains(subject))
             {
-                if let Some(subject) = self.workspace_subject(*id) {
-                    self.ended_subjects.insert(subject);
+                if let Some(subject) = subjects.get(id) {
+                    changed |= self.ended_subjects.insert(subject.clone());
                 }
             }
         }
+        changed
     }
 
-    pub(crate) fn workspace_subject(&self, id: u64) -> Option<EntityRef> {
-        self.tab_entity_ref(id, &self.tab_seed_metadata_entries())
-    }
-
-    pub(crate) fn ended_workspace_ids(&self) -> BTreeSet<u64> {
+    pub(crate) fn workspace_subjects(&self) -> BTreeMap<u64, EntityRef> {
         let seeds = self.tab_seed_metadata_entries();
         self.tabs
             .iter()
             .filter_map(|tab| {
-                let subject = self.tab_entity_ref(tab.tab_id, &seeds)?;
-                self.ended_subjects.contains(&subject).then_some(tab.tab_id)
+                self.tab_entity_ref(tab.tab_id, &seeds)
+                    .map(|subject| (tab.tab_id, subject))
             })
+            .collect()
+    }
+
+    pub(crate) fn ended_workspace_ids(&self) -> BTreeSet<u64> {
+        self.workspace_subjects()
+            .into_iter()
+            .filter_map(|(id, subject)| self.ended_subjects.contains(&subject).then_some(id))
             .collect()
     }
 
@@ -2184,9 +2201,15 @@ impl ControllerState {
         }
         for entity in &mut entities {
             if self.ended_subjects.contains(&entity.entity) {
-                if let Some(label) = entity.values.get_mut(KEY_DISPLAY_LABEL) {
-                    if let MetadataValue::Text(text) = &mut label.value {
-                        text.push_str(" (ended)");
+                for key in [
+                    KEY_DISPLAY_LABEL,
+                    "display.label.medium",
+                    "display.label.short",
+                ] {
+                    if let Some(label) = entity.values.get_mut(key) {
+                        if let MetadataValue::Text(text) = &mut label.value {
+                            text.push_str(" (ended)");
+                        }
                     }
                 }
                 entity.values.insert(
@@ -2199,9 +2222,16 @@ impl ControllerState {
                         ordinal: entity.ordinal,
                     },
                 );
-                // Producer abbreviations must not hide the ended marker.
-                entity.values.remove("display.label.medium");
-                entity.values.remove("display.label.short");
+                entity.values.insert(
+                    "presentation.ended".to_owned(),
+                    MetadataEntry {
+                        value: MetadataValue::Bool(true),
+                        updated_at: self.now(),
+                        ttl_ms: None,
+                        precedence: 0,
+                        ordinal: entity.ordinal,
+                    },
+                );
             }
         }
         entities.sort_by(|a, b| {
@@ -2348,11 +2378,14 @@ impl ControllerState {
         if !self.bind_materializing_tab(request, tab_id) {
             return false;
         }
-        self.pending_latent_materializations
+        if let Some(pending) = self
+            .pending_latent_materializations
             .get_mut(&request.action_target)
-            .unwrap()
-            .subject = Some(subject);
-        true
+        {
+            pending.subject = Some(subject);
+            return true;
+        }
+        false
     }
 
     pub fn abort_latent_materialization(

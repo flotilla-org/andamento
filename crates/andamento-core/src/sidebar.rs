@@ -139,6 +139,7 @@ pub struct Sidebar {
     pending: BTreeMap<u64, Pending>,
     errors: BTreeMap<EntityRef, String>,
     retained_paths: BTreeMap<u64, BTreeSet<EntityRef>>,
+    retained_paths_revision: Option<u64>,
     pub managed: crate::managed::ManagedContent,
 }
 
@@ -200,54 +201,62 @@ impl Sidebar {
     /// Apply a drained batch before requesting a snapshot. Time is monotonic
     /// milliseconds in this instance, supplied by the host; an empty batch is a tick.
     pub fn apply(&mut self, now_ms: u64, patches: impl IntoIterator<Item = MetadataPatch>) {
-        self.retain_workspace_paths();
-        let mut changed = self.state.advance_time(now_ms);
+        let mut changed = self.retain_workspace_paths();
+        changed |= self.state.advance_time(now_ms);
         for patch in patches {
             changed |= self.state.apply_metadata_patch(patch);
         }
-        self.state.mark_ended_workspace_paths(&self.retained_paths);
+        changed |= self.state.mark_ended_workspace_paths(&self.retained_paths);
         if changed {
             self.managed.publish(self.state.managed_content());
             self.invalidate();
         }
     }
 
-    fn retain_workspace_paths(&mut self) {
+    fn retain_workspace_paths(&mut self) -> bool {
         fn collect(
             nodes: &[crate::presentation::PlacementNode],
-            ancestors: &BTreeSet<EntityRef>,
+            ancestors: &mut Vec<EntityRef>,
             paths: &mut BTreeMap<u64, BTreeSet<EntityRef>>,
         ) {
             for node in nodes {
-                let mut path = ancestors.clone();
-                if node.entity.kind != "andamento.workspace" {
-                    path.insert(node.entity.clone());
+                let subject = node.entity.kind != "andamento.workspace";
+                if subject {
+                    ancestors.push(node.entity.clone());
                 }
                 if let crate::presentation::PresentationState::Live { workspace_id, .. } =
                     node.state
                 {
-                    paths.entry(workspace_id).or_default().extend(path.clone());
+                    paths
+                        .entry(workspace_id)
+                        .or_default()
+                        .extend(ancestors.iter().cloned());
                 }
-                collect(&node.children, &path, paths);
+                collect(&node.children, ancestors, paths);
+                if subject {
+                    ancestors.pop();
+                }
             }
         }
-        let mut paths = BTreeMap::new();
-        for section in &self.snapshot_shared().surface.sections {
-            collect(&section.nodes, &BTreeSet::new(), &mut paths);
+        let subjects = self.state.workspace_subjects();
+        if self.retained_paths_revision != Some(self.revision) && !subjects.is_empty() {
+            let mut paths = BTreeMap::new();
+            for section in &self.snapshot_shared().surface.sections {
+                collect(&section.nodes, &mut Vec::new(), &mut paths);
+            }
+            self.retained_paths
+                .extend(paths.into_iter().filter(|(id, path)| {
+                    subjects
+                        .get(id)
+                        .is_some_and(|subject| path.contains(subject))
+                }));
         }
-        self.retained_paths
-            .extend(paths.into_iter().filter(|(id, path)| {
-                self.state
-                    .workspace_subject(*id)
-                    .is_some_and(|subject| path.contains(&subject))
-            }));
-        self.retained_paths.retain(|id, subjects| {
-            self.state.workspaces().iter().any(|w| w.tab_id == *id)
-                && !retained_workspace_expired(&self.state, subjects)
+        self.retained_paths_revision = Some(self.revision);
+        self.retained_paths.retain(|id, subjects_on_path| {
+            subjects.contains_key(id) && !retained_workspace_expired(&self.state, subjects_on_path)
         });
         self.state
-            .retain_workspace_paths(self.retained_paths.values().flatten().cloned().collect());
-        self.state.mark_ended_workspace_paths(&self.retained_paths);
+            .retain_workspace_paths(self.retained_paths.values().flatten().cloned().collect())
     }
 
     /// Full host topology, including selected workspace. Closing a workspace
@@ -268,9 +277,12 @@ impl Sidebar {
         );
         changed |= self.state.observe_panes(panes);
         if changed {
-            self.invalidate();
+            // Rebuild paths from the new topology before publishing one revision.
+            self.snapshot.take();
+            self.retained_paths_revision = None;
         }
-        self.retain_workspace_paths();
+        changed |= self.retain_workspace_paths();
+        changed |= self.state.mark_ended_workspace_paths(&self.retained_paths);
         if changed {
             self.managed.publish(self.state.managed_content());
             self.invalidate();
@@ -519,6 +531,7 @@ impl Sidebar {
 
 /// Ended presentation expiry policy is intentionally undecided. Keep the seam
 /// shared by all retained workspace paths; user close is the only expiry today.
+// TODO: apply the policy decided in flotilla-org/wheelhouse#159 here.
 fn retained_workspace_expired(_state: &ControllerState, _subjects: &BTreeSet<EntityRef>) -> bool {
     false
 }

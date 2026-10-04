@@ -1589,3 +1589,121 @@ fn authoritative_ancestor_removal_retains_workspace_path_as_ended() {
         .iter()
         .any(|n| n.entity == entity("vessel", "v") && n.label.contains("ended")));
 }
+
+#[test]
+fn reassertion_after_authoritative_removal_is_stale_for_the_same_identity() {
+    let mut sidebar = retained_sidebar();
+    let publication = patch(
+        entity("vessel", "v"),
+        &[
+            ("entity.kind", text("vessel")),
+            ("entity.id", text("v")),
+            ("display.label", text("Worker")),
+            ("flotilla.project", text("p")),
+            ("action.primary.target", text("vessel:v")),
+            ("action.primary.recipe", text("printf hello")),
+        ],
+    );
+    sidebar.apply(101, [publication.clone()]);
+    let mut removal = patch(entity("vessel", "v"), &[]);
+    removal.unset = vec!["entity.kind".into(), "entity.id".into()];
+    sidebar.apply(102, [removal]);
+    sidebar.apply(103, [publication]);
+    // An authoritative end is terminal for this identity. A new generation
+    // needs a new subject ID; reconnect reassertions do not revive the old one.
+    assert!(workspace_nodes(&sidebar.snapshot().surface).is_empty());
+    sidebar
+        .dispatch(Action::ToggleDisplayVariable {
+            name: "show-finished".into(),
+        })
+        .unwrap();
+    assert!(workspace_nodes(&sidebar.snapshot().surface)
+        .iter()
+        .any(|n| n.label.contains("ended")));
+}
+
+#[test]
+fn lease_expiry_inside_a_patch_batch_preserves_the_original_path() {
+    let mut sidebar = retained_sidebar();
+    let mut publication = patch(
+        entity("project", "p"),
+        &[
+            ("entity.kind", text("project")),
+            ("entity.id", text("p")),
+            ("flotilla.project", text("p")),
+            ("display.label", text("Project P")),
+        ],
+    );
+    for fact in publication.set.values_mut() {
+        fact.ttl_ms = Some(10);
+    }
+    sidebar.apply(101, [publication]);
+    sidebar.apply(
+        500,
+        [patch(
+            entity("unrelated", "heartbeat"),
+            &[("source", text("unrelated"))],
+        )],
+    );
+    // Capture is before the clock advance even when a batch also has patches.
+    let snapshot = sidebar.snapshot();
+    assert!(snapshot.surface.sections[0].nodes[0]
+        .children
+        .iter()
+        .any(|n| n.entity == entity("vessel", "v")));
+    assert!(workspace_nodes(&snapshot.surface)
+        .iter()
+        .all(|n| !n.label.contains("ended")));
+}
+
+#[test]
+fn closing_many_removed_workspaces_releases_retained_catalog_history() {
+    let mut sidebar = retained_sidebar();
+    sidebar.observe(vec![], vec![]);
+    sidebar
+        .dispatch(Action::ToggleDisplayVariable {
+            name: "show-finished".into(),
+        })
+        .unwrap();
+    // Generate many sequential identities on the same client. After each close,
+    // its removed subject must leave the surface rather than grow retained history.
+    for index in 0..24 {
+        let subject = entity("vessel", &format!("history-{index}"));
+        let publication = patch(
+            subject.clone(),
+            &[
+                ("entity.kind", text("vessel")),
+                ("entity.id", text(&subject.id)),
+                ("display.label", text(&subject.id)),
+                ("flotilla.project", text("p")),
+                ("action.primary.recipe", text("exec /bin/sh")),
+            ],
+        );
+        sidebar.apply(200 + index * 2, [publication.clone()]);
+        let effects = sidebar
+            .dispatch(Action::Activate {
+                entity: subject.clone(),
+            })
+            .unwrap();
+        let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
+            panic!("{effects:?}")
+        };
+        sidebar.complete(*request_id, Ok(Some(42)));
+        sidebar.observe(vec![workspace()], vec![]);
+        let mut removal = patch(subject.clone(), &[("source", text("flotilla"))]);
+        removal.unset = publication.set.keys().cloned().collect();
+        sidebar.apply(201 + index * 2, [removal]);
+        assert!(workspace_nodes(&sidebar.snapshot().surface)
+            .iter()
+            .any(|n| n.entity == subject));
+        sidebar.observe(vec![], vec![]);
+        let snapshot = sidebar.snapshot();
+        assert!(
+            !snapshot.surface.sections[0].nodes[0]
+                .children
+                .iter()
+                .any(|n| n.entity.id.starts_with("history-")),
+            "retention grew after close {index}"
+        );
+    }
+}
