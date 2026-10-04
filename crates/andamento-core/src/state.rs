@@ -267,6 +267,7 @@ thread_local! { static CATALOG_BUILDS: std::cell::Cell<usize> = const { std::cel
 #[derive(Debug, Clone)]
 struct CatalogEntity {
     entity: EntityRef,
+    sources: BTreeMap<String, String>,
     values: BTreeMap<String, MetadataEntry>,
     ordinal: i64,
 }
@@ -1425,38 +1426,8 @@ impl ControllerState {
                 }
             })
             .collect::<BTreeMap<_, _>>();
-        let mut live = BTreeMap::new();
+        let live = self.live_presentation_states(&catalog, &tab_metadata);
         let ended_workspaces = self.ended_workspace_ids();
-        let show_finished = self.show_finished();
-        for workspace in &self.tabs {
-            if !show_finished && ended_workspaces.contains(&workspace.tab_id) {
-                continue;
-            }
-            if let Some(values) = tab_metadata.get(&workspace.tab_id) {
-                let target = metadata_entry_text(values, KEY_ACTION_TARGET)
-                    .map(str::to_owned)
-                    .or_else(|| entity_ref_from_entries(values).map(|e| e.action_target()));
-                if let Some(target) = target {
-                    live.entry(target).or_insert(PresentationState::Live {
-                        workspace_id: workspace.tab_id,
-                        selected: workspace.active,
-                    });
-                }
-            }
-        }
-        for (entity, id) in self.directory_bindings(&catalog.entities) {
-            if let Some(candidate) = catalog.entity(&entity) {
-                let action_target = metadata_entry_text(&candidate.values, KEY_ACTION_TARGET)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| entity.action_target());
-                let selected = self.tabs.iter().any(|tab| tab.tab_id == id && tab.active);
-                live.entry(action_target)
-                    .or_insert(PresentationState::Live {
-                        workspace_id: id,
-                        selected,
-                    });
-            }
-        }
         let latents = latent_tabs
             .iter()
             .map(|latent| (&latent.entity, latent))
@@ -1509,6 +1480,154 @@ impl ControllerState {
             model.inspected_node = client.inspected_node.clone();
         }
         model
+    }
+
+    /// Shared workspace binding rules for placement and catalog detail consumers.
+    fn live_presentation_states(
+        &self,
+        catalog: &CatalogEvaluation,
+        tab_metadata: &BTreeMap<u64, &BTreeMap<String, MetadataEntry>>,
+    ) -> BTreeMap<String, crate::presentation::PresentationState> {
+        use crate::presentation::PresentationState;
+        let mut live = BTreeMap::new();
+        let ended_workspaces = self.ended_workspace_ids();
+        let show_finished = self.show_finished();
+        for workspace in &self.tabs {
+            if !show_finished && ended_workspaces.contains(&workspace.tab_id) {
+                continue;
+            }
+            if let Some(values) = tab_metadata.get(&workspace.tab_id) {
+                let target = metadata_entry_text(values, KEY_ACTION_TARGET)
+                    .map(str::to_owned)
+                    .or_else(|| entity_ref_from_entries(values).map(|e| e.action_target()));
+                if let Some(target) = target {
+                    live.entry(target).or_insert(PresentationState::Live {
+                        workspace_id: workspace.tab_id,
+                        selected: workspace.active,
+                    });
+                }
+            }
+        }
+        for (entity, id) in self.directory_bindings(&catalog.entities) {
+            if let Some(candidate) = catalog.entity(&entity) {
+                let action_target = metadata_entry_text(&candidate.values, KEY_ACTION_TARGET)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| entity.action_target());
+                let selected = self.tabs.iter().any(|tab| tab.tab_id == id && tab.active);
+                live.entry(action_target)
+                    .or_insert(PresentationState::Live {
+                        workspace_id: id,
+                        selected,
+                    });
+            }
+        }
+        live
+    }
+
+    /// Resolve every catalog entity, including identities with no placement.
+    /// Builds one catalog and resolves detail templates and observations for it;
+    /// native hosts opt in with snapshot_acquire_details, keeping flat acquire cheap.
+    pub fn detail_cards(&self) -> (u64, Vec<crate::detail::DetailCard>) {
+        use crate::template_config::{
+            TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigSlot,
+        };
+        let catalog = CatalogEvaluation::new(self.catalog_entities());
+        let latents = self.latent_tabs_in(&catalog);
+        let seeds = self.tab_seed_metadata_entries();
+        let tab_values: BTreeMap<_, _> = self
+            .tabs
+            .iter()
+            .map(|tab| {
+                let (values, _, _) = self.resolve_target_metadata(
+                    &EntityId::Tab(tab.tab_id),
+                    seeds.get(&tab.tab_id).cloned().unwrap_or_default(),
+                );
+                (tab.tab_id, values)
+            })
+            .collect();
+        let tab_metadata = tab_values
+            .iter()
+            .map(|(id, values)| (*id, values))
+            .collect();
+        let live = self.live_presentation_states(&catalog, &tab_metadata);
+        let materializable: BTreeMap<_, _> = latents
+            .iter()
+            .map(|latent| (&latent.entity, latent.materialize_request().is_some()))
+            .collect();
+        let entities = &catalog.entities;
+        let cards = entities
+            .iter()
+            .map(|entity| {
+                let facts = entity_facts(&entity.entity, &entity.values);
+                let slot = self.resolve_template_slot(
+                    TemplateConfigSlot::Detail,
+                    TemplateConfigNodeKind::Entity,
+                    &facts,
+                );
+                let context = TemplateConfigMatchContext {
+                    slot: TemplateConfigSlot::Detail,
+                    node_kind: TemplateConfigNodeKind::Entity,
+                    metadata: &facts,
+                    collapsed: false,
+                    collapsible: false,
+                    active_tab_name: None,
+                };
+                let fields = slot
+                    .as_ref()
+                    .and_then(|slot| slot.render_ready.as_ref())
+                    .map(|ready| {
+                        ready
+                            .fields
+                            .iter()
+                            .filter_map(|spec| {
+                                let mut field =
+                                    crate::detail::resolve_field(spec, context, &entity.values)?;
+                                field.source_id = field
+                                    .observation
+                                    .as_ref()
+                                    .and_then(|_| entity.sources.get(&field.source_key))
+                                    .cloned();
+                                field.relations.retain(|target| target != &entity.entity);
+                                Some(field)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| entity.entity.action_target());
+                let workspace_id = match live.get(&action_target) {
+                    Some(crate::presentation::PresentationState::Live { workspace_id, .. }) => {
+                        Some(*workspace_id)
+                    }
+                    _ => None,
+                };
+                use crate::detail::DetailIntent;
+                let primary_intent = if self.subject_url(&entity.entity).is_some() {
+                    DetailIntent::OpenUrl
+                } else if workspace_id.is_some() {
+                    DetailIntent::FocusWorkspace
+                } else if materializable.get(&entity.entity).copied().unwrap_or(false) {
+                    DetailIntent::MaterializeWorkspace
+                } else {
+                    DetailIntent::Inspect
+                };
+                crate::detail::DetailCard {
+                    entity: entity.entity.clone(),
+                    label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL)
+                        .unwrap_or(&entity.entity.id)
+                        .to_owned(),
+                    workspace_id,
+                    primary_label: metadata_entry_text(&entity.values, "action.primary.label")
+                        .unwrap_or(primary_intent.default_label())
+                        .to_owned(),
+                    primary_intent,
+                    fields,
+                    error: slot.and_then(|slot| slot.resolve_error),
+                }
+            })
+            .collect();
+        (self.now(), cards)
     }
 
     fn display_entity(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
@@ -2111,13 +2230,16 @@ impl ControllerState {
         for subject in subjects {
             if !self.retained_subjects.contains_key(&subject) {
                 let target = EntityId::Entity(subject.clone());
-                let values = self.metadata.resolved_entries_for(&target, self.now());
+                let (values, sources) = self
+                    .metadata
+                    .resolved_entries_with_sources_for(&target, self.now());
                 if !values.is_empty() {
                     changed = true;
                     self.retained_subjects.insert(
                         subject.clone(),
                         CatalogEntity {
                             entity: subject,
+                            sources,
                             values,
                             ordinal: self.metadata.target_ordinal(&target).unwrap_or_default(),
                         },
@@ -2140,14 +2262,15 @@ impl ControllerState {
             if target.is_some_and(|target| target != subject) {
                 continue;
             }
-            let values = self
+            let (values, sources) = self
                 .metadata
-                .resolved_entries_for(&EntityId::Entity(subject.clone()), now);
+                .resolved_entries_with_sources_for(&EntityId::Entity(subject.clone()), now);
             // While identity remains observed, individual facts keep their ordinary
             // freshness. Only unobserved identities need the last known record.
             if values.contains_key(KEY_ENTITY_ID) || values.contains_key(KEY_DISPLAY_LABEL) {
-                changed |= retained.values != values;
+                changed |= retained.values != values || retained.sources != sources;
                 retained.values = values;
+                retained.sources = sources;
             }
             // TODO(#122): consume a producer-declared lifecycle-ended fact.
             let terminal = matches!(subject.kind.as_str(), "convoy" | "vessel")
@@ -2228,12 +2351,15 @@ impl ControllerState {
                 let EntityId::Entity(entity) = target else {
                     return None;
                 };
-                let values = self.metadata.resolved_entries_for(target, self.now());
+                let (values, sources) = self
+                    .metadata
+                    .resolved_entries_with_sources_for(target, self.now());
                 if values.is_empty() {
                     return None;
                 }
                 Some(CatalogEntity {
                     entity: entity.clone(),
+                    sources,
                     values,
                     ordinal: self.metadata.target_ordinal(target).unwrap_or_default(),
                 })
@@ -2250,6 +2376,9 @@ impl ControllerState {
                 let mut values = retained.values.clone();
                 values.extend(std::mem::take(&mut current.values));
                 current.values = values;
+                let mut sources = retained.sources.clone();
+                sources.extend(std::mem::take(&mut current.sources));
+                current.sources = sources;
             } else {
                 entities.push(retained.clone());
             }
@@ -2257,6 +2386,8 @@ impl ControllerState {
         let now = self.now();
         for entity in &mut entities {
             if self.ended_subjects.contains(&entity.entity) {
+                entity.sources.remove(KEY_STATUS_STATE);
+                entity.sources.remove("presentation.ended");
                 entity.values.insert(
                     KEY_STATUS_STATE.to_owned(),
                     MetadataEntry {

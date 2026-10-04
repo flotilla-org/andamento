@@ -361,6 +361,7 @@ fn resolve_content(
         ready
             .fields
             .iter()
+            .filter(|spec| !spec.structured_only)
             .filter_map(|spec| {
                 spec.render(context).or_else(|| {
                     reserve_columns.then(|| TemplateConfigRenderedField {

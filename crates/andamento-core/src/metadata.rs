@@ -212,6 +212,27 @@ impl MetadataStore {
             .unwrap_or_default()
     }
 
+    /// Preserve the winning producer alongside each selected entry in one pass.
+    pub fn resolved_entries_with_sources_for(
+        &self,
+        entity_id: &EntityId,
+        now: u64,
+    ) -> (BTreeMap<String, MetadataEntry>, BTreeMap<String, String>) {
+        let mut values = BTreeMap::new();
+        let mut sources = BTreeMap::new();
+        if let Some(entries) = self.entries.get(entity_id) {
+            for key in entries.keys() {
+                if let Some(candidate) =
+                    select_primary_entry(&self.entries_for(entity_id, key, now))
+                {
+                    sources.insert(key.clone(), candidate.source_id);
+                    values.insert(key.clone(), candidate.entry);
+                }
+            }
+        }
+        (values, sources)
+    }
+
     pub fn resolved_entries_for(
         &self,
         entity_id: &EntityId,

@@ -381,7 +381,16 @@ struct Node {
     copy_url: usize,
     toggle: usize,
 }
+/// Immutable catalog card and existing dispatch references, owned by a detail snapshot.
+struct Detail {
+    card: andamento_core::detail::DetailCard,
+    activate: usize,
+    copy_url: usize,
+}
 pub struct AndamentoSnapshot {
+    now_ms: u64,
+    details: Vec<Detail>,
+    detail_index: std::collections::BTreeMap<EntityRef, usize>,
     client: u64,
     generation: u64,
     nodes: Vec<Node>,
@@ -540,9 +549,27 @@ pub unsafe extern "C" fn andamento_snapshot_acquire(
     h: *mut Andamento,
     error: *mut *mut c_char,
 ) -> *mut AndamentoSnapshot {
+    acquire_snapshot(h, error, false)
+}
+/// Opt in to catalog detail resolution; legacy acquisition does no detail work.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_acquire_details(
+    h: *mut Andamento,
+    error: *mut *mut c_char,
+) -> *mut AndamentoSnapshot {
+    acquire_snapshot(h, error, true)
+}
+unsafe fn acquire_snapshot(
+    h: *mut Andamento,
+    error: *mut *mut c_char,
+    include_details: bool,
+) -> *mut AndamentoSnapshot {
     run(h, error, |h| {
         let snapshot = h.sidebar.snapshot();
         let mut out = AndamentoSnapshot {
+            now_ms: 0,
+            details: vec![],
+            detail_index: Default::default(),
             client: h.client,
             generation: h.sidebar.revision(),
             nodes: vec![],
@@ -623,10 +650,237 @@ pub unsafe extern "C" fn andamento_snapshot_acquire(
                 };
             }
         }
+        if include_details {
+            let (now_ms, cards) = h.sidebar.detail_cards();
+            out.now_ms = now_ms;
+            for card in cards {
+                let activate = out.action(Action::Activate {
+                    entity: card.entity.clone(),
+                });
+                let copy_url = if h.sidebar.subject_url(&card.entity).is_some() {
+                    out.action(Action::CopySubjectUrl {
+                        entity: card.entity.clone(),
+                    })
+                } else {
+                    NONE
+                };
+                out.detail_index
+                    .insert(card.entity.clone(), out.details.len());
+                out.details.push(Detail {
+                    card,
+                    activate,
+                    copy_url,
+                });
+            }
+        }
         Ok(Box::into_raw(Box::new(out)))
     })
     .unwrap_or(ptr::null_mut())
 }
+/// Optional structured-detail extension to ABI 2. All output text is snapshot borrowed.
+#[repr(C)]
+pub struct EntityView {
+    pub kind: Text,
+    pub id: Text,
+}
+#[repr(C)]
+pub struct DetailView {
+    pub entity: EntityView,
+    pub label: Text,
+    pub field_count: usize,
+    pub activate: usize,
+    pub copy_url: usize,
+    pub now_ms: u64,
+    pub error: Text,
+    pub has_workspace: u32,
+    pub workspace_id: u64,
+}
+#[repr(C)]
+pub struct DetailActionView {
+    pub intent: Text,
+    pub label: Text,
+    pub entity: EntityView,
+    pub action: usize,
+}
+#[repr(C)]
+pub struct DetailFieldView {
+    pub name: Text,
+    pub section: Text,
+    pub role: u32,
+    pub label: Text,
+    pub has_value: u32,
+    pub text: Text,
+    pub source_key: Text,
+    pub source_id: Text,
+    pub has_observation: u32,
+    pub observed_at_ms: u64,
+    pub has_ttl: u32,
+    pub ttl_ms: u64,
+    pub stale: u32,
+    pub relation_count: usize,
+}
+#[repr(C)]
+pub struct DetailRelationView {
+    pub entity: EntityView,
+    pub display_text: Text,
+    /// Index for detail lookup, or NONE if the referenced entity is unavailable.
+    pub detail: usize,
+}
+fn entity_view(entity: &EntityRef) -> EntityView {
+    EntityView {
+        kind: Text::borrowed(&entity.kind),
+        id: Text::borrowed(&entity.id),
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_detail_count(s: *const AndamentoSnapshot) -> usize {
+    s.as_ref().map_or(0, |s| s.details.len())
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_detail_find(
+    s: *const AndamentoSnapshot,
+    kind: Text,
+    id: Text,
+) -> usize {
+    let (Some(s), Ok(kind), Ok(id)) = (s.as_ref(), kind.read(), id.read()) else {
+        return NONE;
+    };
+    s.detail_index
+        .get(&EntityRef { kind, id })
+        .copied()
+        .unwrap_or(NONE)
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_detail(
+    s: *const AndamentoSnapshot,
+    index: usize,
+    out: *mut DetailView,
+) -> u32 {
+    let (Some(s), Some(out)) = (s.as_ref(), out.as_mut()) else {
+        return 0;
+    };
+    let Some(d) = s.details.get(index) else {
+        return 0;
+    };
+    *out = DetailView {
+        entity: entity_view(&d.card.entity),
+        label: Text::borrowed(&d.card.label),
+        field_count: d.card.fields.len(),
+        activate: d.activate,
+        copy_url: d.copy_url,
+        now_ms: s.now_ms,
+        error: Text::borrowed(d.card.error.as_deref().unwrap_or("")),
+        has_workspace: d.card.workspace_id.is_some() as u32,
+        workspace_id: d.card.workspace_id.unwrap_or(0),
+    };
+    1
+}
+/// Index 0 is the primary workspace/subject control; index 1 is copy URL.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_detail_action(
+    s: *const AndamentoSnapshot,
+    detail: usize,
+    index: usize,
+    out: *mut DetailActionView,
+) -> u32 {
+    let (Some(s), Some(out)) = (s.as_ref(), out.as_mut()) else {
+        return 0;
+    };
+    let Some(d) = s.details.get(detail) else {
+        return 0;
+    };
+    let (intent, label, action) = match index {
+        0 => (
+            d.card.primary_intent.as_str(),
+            d.card.primary_label.as_str(),
+            d.activate,
+        ),
+        1 if d.copy_url != NONE => ("copy-url", "Copy URL", d.copy_url),
+        _ => return 0,
+    };
+    *out = DetailActionView {
+        intent: Text::borrowed(intent),
+        label: Text::borrowed(label),
+        entity: entity_view(&d.card.entity),
+        action,
+    };
+    1
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_detail_field(
+    s: *const AndamentoSnapshot,
+    detail: usize,
+    field: usize,
+    out: *mut DetailFieldView,
+) -> u32 {
+    let (Some(s), Some(out)) = (s.as_ref(), out.as_mut()) else {
+        return 0;
+    };
+    let Some(f) = s.details.get(detail).and_then(|d| d.card.fields.get(field)) else {
+        return 0;
+    };
+    let role = f.role as u32;
+    let ttl = f.observation.as_ref().and_then(|o| o.ttl_ms);
+    let observed = f.observation.as_ref().map_or(0, |o| o.updated_at);
+    *out = DetailFieldView {
+        name: Text::borrowed(&f.name),
+        section: Text::borrowed(&f.section),
+        role,
+        label: Text::borrowed(&f.label),
+        has_value: f.text.is_some() as u32,
+        text: Text::borrowed(f.text.as_deref().unwrap_or("")),
+        source_key: Text::borrowed(&f.source_key),
+        source_id: Text::borrowed(f.source_id.as_deref().unwrap_or("")),
+        has_observation: f.observation.is_some() as u32,
+        observed_at_ms: observed,
+        has_ttl: ttl.is_some() as u32,
+        ttl_ms: ttl.unwrap_or(0),
+        stale: ttl.is_some_and(|ttl| s.now_ms > observed.saturating_add(ttl)) as u32,
+        relation_count: f.relations.len(),
+    };
+    1
+}
+/// Returns zero for relations already on the exact-identity navigation path.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_detail_relation(
+    s: *const AndamentoSnapshot,
+    detail: usize,
+    field: usize,
+    relation: usize,
+    path: *const EntityView,
+    path_count: usize,
+    out: *mut DetailRelationView,
+) -> u32 {
+    let (Some(s), Some(out), Ok(path)) = (s.as_ref(), out.as_mut(), slice(path, path_count)) else {
+        return 0;
+    };
+    let Some(entity) = s
+        .details
+        .get(detail)
+        .and_then(|d| d.card.fields.get(field))
+        .and_then(|f| f.relations.get(relation))
+    else {
+        return 0;
+    };
+    for item in path {
+        let (Ok(kind), Ok(id)) = (item.kind.read(), item.id.read()) else {
+            return 0;
+        };
+        if entity.kind == kind && entity.id == id {
+            return 0;
+        }
+    }
+    let target = s.detail_index.get(entity).copied();
+    *out = DetailRelationView {
+        entity: entity_view(entity),
+        display_text: Text::borrowed(target.map_or(entity.id.as_str(), |index| {
+            s.details[index].card.label.as_str()
+        })),
+        detail: target.unwrap_or(NONE),
+    };
+    1
+}
+
 #[repr(C)]
 pub struct NodeView {
     pub parent: usize,

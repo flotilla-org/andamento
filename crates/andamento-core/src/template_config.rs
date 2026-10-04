@@ -1975,10 +1975,60 @@ fn format_metadata_value(value: &MetadataValue) -> String {
     }
 }
 
+/// Semantic intent only; frontends own layout, colors and age formatting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[repr(u32)]
+pub enum DetailRole {
+    Identity = 0,
+    Title = 1,
+    State = 2,
+    Fact = 3,
+    Relation = 4,
+}
+
+impl DetailRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Identity => "identity",
+            Self::Title => "title",
+            Self::State => "state",
+            Self::Fact => "fact",
+            Self::Relation => "relation",
+        }
+    }
+}
+
+impl std::str::FromStr for DetailRole {
+    type Err = TemplateConfigError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "identity" => Ok(Self::Identity),
+            "title" => Ok(Self::Title),
+            "state" => Ok(Self::State),
+            "fact" => Ok(Self::Fact),
+            "relation" => Ok(Self::Relation),
+            _ => Err(TemplateConfigError::Validation(format!(
+                "unsupported detail role: {value:?}"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct TemplateConfigFieldSpec {
     pub name: String,
+    #[serde(default)]
+    pub section: Option<String>,
+    /// Include this declaration only in structured detail, preserving flat clients.
+    #[serde(default)]
+    pub structured_only: bool,
+    #[serde(default)]
+    /// Fields without a role remain flat-only and are omitted from structured cards.
+    pub role: Option<DetailRole>,
+    #[serde(default)]
+    pub label: Option<String>,
     pub class: TemplateConfigFieldClass,
     #[serde(default)]
     pub priority: Option<i64>,
@@ -1996,7 +2046,7 @@ impl TemplateConfigFieldSpec {
         &self,
         context: TemplateConfigMatchContext<'_>,
     ) -> Option<TemplateConfigRenderedField> {
-        if !self.condition.matches(context) {
+        if self.structured_only || !self.condition.matches(context) {
             return None;
         }
         let resolved = self
@@ -2022,6 +2072,18 @@ impl TemplateConfigFieldSpec {
     fn to_kdl(&self, indent: usize) -> String {
         let pad = " ".repeat(indent);
         let mut properties = format!("class={}", quote_kdl(self.class.as_str()));
+        for (key, value) in [
+            ("section", self.section.as_deref()),
+            ("role", self.role.map(DetailRole::as_str)),
+            ("label", self.label.as_deref()),
+        ] {
+            if let Some(value) = value {
+                properties.push_str(&format!(" {key}={}", quote_kdl(value)));
+            }
+        }
+        if self.structured_only {
+            properties.push_str(" structured-only=true");
+        }
         if let Some(priority) = self.priority {
             properties.push_str(&format!(" priority={priority}"));
         }
@@ -2078,7 +2140,7 @@ pub enum TemplateConfigFieldCondition {
 }
 
 impl TemplateConfigFieldCondition {
-    fn matches(&self, context: TemplateConfigMatchContext<'_>) -> bool {
+    pub(crate) fn matches(&self, context: TemplateConfigMatchContext<'_>) -> bool {
         match self {
             TemplateConfigFieldCondition::Always => true,
             TemplateConfigFieldCondition::Collapsed => context.collapsed,
@@ -2107,7 +2169,7 @@ pub enum TemplateConfigValueSource {
 }
 
 impl TemplateConfigValueSource {
-    fn resolve(
+    pub(crate) fn resolve(
         &self,
         context: TemplateConfigMatchContext<'_>,
     ) -> Option<TemplateConfigResolvedValue> {
@@ -2222,9 +2284,9 @@ impl TemplateConfigValueSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TemplateConfigResolvedValue {
-    value: String,
-    source: Option<ResolvedTemplateFieldSource>,
+pub(crate) struct TemplateConfigResolvedValue {
+    pub value: String,
+    pub source: Option<ResolvedTemplateFieldSource>,
 }
 
 fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, TemplateConfigError> {
@@ -2810,6 +2872,23 @@ fn parse_kdl_field(node: &KdlNode) -> Result<TemplateConfigFieldSpec, TemplateCo
     };
     Ok(TemplateConfigFieldSpec {
         name: kdl_required_arg_string(node, 0, "field name")?,
+        section: kdl_optional_string(node, "section")?,
+        structured_only: node
+            .get("structured-only")
+            .map(|entry| {
+                entry.value().as_bool().ok_or_else(|| {
+                    TemplateConfigError::Validation(format!(
+                        "structured-only must be boolean, got {}",
+                        entry.value()
+                    ))
+                })
+            })
+            .transpose()?
+            .unwrap_or(false),
+        role: kdl_optional_string(node, "role")?
+            .map(|role| role.parse())
+            .transpose()?,
+        label: kdl_optional_string(node, "label")?,
         class,
         priority,
         sources,
@@ -2936,6 +3015,18 @@ fn kdl_required_prop_string(node: &KdlNode, key: &str) -> Result<String, Templat
             node.name().value()
         ))
     })
+}
+
+fn kdl_optional_string(node: &KdlNode, key: &str) -> Result<Option<String>, TemplateConfigError> {
+    node.get(key)
+        .map(|entry| {
+            entry
+                .value()
+                .as_string()
+                .map(str::to_owned)
+                .ok_or_else(|| TemplateConfigError::Validation(format!("{key} must be a string")))
+        })
+        .transpose()
 }
 
 fn kdl_prop_string(node: &KdlNode, key: &str) -> Option<String> {
@@ -3952,5 +4043,55 @@ region "attention" root-template="r" form="full"
         assert!(resolved
             .dump_kdl()
             .contains("control \"display-variable\" variable=\"show-issues\""));
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use crate::{template_config::*, MetadataValue};
+    use std::collections::BTreeMap;
+    // Structured-only fields are additive declarations: every frontend's old
+    // flat output remains identical, including labels and punctuation.
+    #[test]
+    fn structured_only_does_not_change_flat_fields() {
+        let catalog = TemplateConfigCatalog::from_config(parse_template_config_kdl(r#"
+            template "item/detail" slot="detail" node-kind="entity" {
+                field "legacy" role="fact" label="Label" literal="value" prefix="Prefix: " suffix="!"
+                field "identity" structured-only=true role="identity" key="entity.id"
+            }
+        "#).unwrap());
+        let facts = BTreeMap::from([
+            ("entity.kind".into(), MetadataValue::Text("item".into())),
+            ("entity.id".into(), MetadataValue::Text("id".into())),
+        ]);
+        let context = TemplateConfigMatchContext {
+            slot: TemplateConfigSlot::Detail,
+            node_kind: TemplateConfigNodeKind::Entity,
+            metadata: &facts,
+            collapsed: false,
+            collapsible: false,
+            active_tab_name: None,
+        };
+        let resolved = catalog.resolve(context).unwrap().unwrap();
+        let flat = resolved.render_fields(context);
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].value, "Prefix: value!");
+        let decoded = parse_template_config_kdl(&resolved.dump_kdl()).unwrap();
+        let TemplateConfigFieldOperation::Set { field } = &decoded.templates[0].operations[1]
+        else {
+            panic!("field expected")
+        };
+        assert!(field.structured_only);
+        assert_eq!(
+            crate::detail::resolve_field(field, context, &BTreeMap::new())
+                .unwrap()
+                .text
+                .as_deref(),
+            Some("id")
+        );
+        assert!(parse_template_config_kdl(
+            r#"template "item/detail" { field "x" structured-only="true" literal="x"; }"#
+        )
+        .is_err());
     }
 }
