@@ -2241,19 +2241,20 @@ impl ControllerState {
             if let Some(index) = positions.get(subject) {
                 let current = &mut entities[*index];
                 let mut values = retained.values.clone();
-                values.extend(current.values.clone());
+                values.extend(std::mem::take(&mut current.values));
                 current.values = values;
             } else {
                 entities.push(retained.clone());
             }
         }
+        let now = self.now();
         for entity in &mut entities {
             if self.ended_subjects.contains(&entity.entity) {
                 entity.values.insert(
                     KEY_STATUS_STATE.to_owned(),
                     MetadataEntry {
                         value: MetadataValue::Text("ended".to_owned()),
-                        updated_at: self.now(),
+                        updated_at: now,
                         ttl_ms: None,
                         precedence: 0,
                         ordinal: entity.ordinal,
@@ -2263,7 +2264,7 @@ impl ControllerState {
                     "presentation.ended".to_owned(),
                     MetadataEntry {
                         value: MetadataValue::Bool(true),
-                        updated_at: self.now(),
+                        updated_at: now,
                         ttl_ms: None,
                         precedence: 0,
                         ordinal: entity.ordinal,
