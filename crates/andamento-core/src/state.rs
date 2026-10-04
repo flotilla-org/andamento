@@ -52,6 +52,7 @@ const KEY_STATUS_STATE: &str = "status.state";
 const KEY_SUMMARY_TEXT: &str = "summary.text";
 const KEY_SOURCE: &str = "source";
 const KEY_DISPLAY_LABEL: &str = "display.label";
+const DISPLAY_SHOW_FINISHED: &str = "show-finished";
 const KEY_CONVOY_PHASE: &str = "flotilla.convoy.phase";
 const KEY_CONVOY_SUPERSEDED: &str = "flotilla.convoy.superseded";
 const FOCUSED_CWD_PRECEDENCE: i64 = 100;
@@ -888,6 +889,23 @@ impl ControllerState {
             }
             _ => None,
         };
+        let retained_target = match &patch.target {
+            crate::MetadataTarget::Entity(entity) => Some(entity.clone()),
+            _ => None,
+        };
+        let unset_keys: Vec<_> = patch
+            .unset
+            .iter()
+            .filter(|key| {
+                self.metadata.source_contributes(
+                    &EntityId::from(patch.target.clone()),
+                    key,
+                    &patch.source_id,
+                )
+            })
+            .cloned()
+            .collect();
+        let is_removal = removed.is_some();
         let next_receive_counter = self.receive_counter.saturating_add(1);
         let outcome = self
             .metadata
@@ -899,6 +917,22 @@ impl ControllerState {
         if let Some(entity) = removed {
             if self.retained_subjects.contains_key(&entity) {
                 ended_changed = self.ended_subjects.insert(entity);
+            }
+        }
+        // Explicit single-fact unsets on a still-observed subject are not
+        // history. Keep the old record only for authoritative removal/loss.
+        if !is_removal {
+            if let Some(entity) = retained_target {
+                let current = self
+                    .metadata
+                    .resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
+                if current.contains_key(KEY_ENTITY_ID) || current.contains_key(KEY_DISPLAY_LABEL) {
+                    if let Some(retained) = self.retained_subjects.get_mut(&entity) {
+                        for key in unset_keys {
+                            ended_changed |= retained.values.remove(&key).is_some();
+                        }
+                    }
+                }
             }
         }
         let retained_changed = self.refresh_retained_subjects();
@@ -2122,8 +2156,8 @@ impl ControllerState {
     pub(crate) fn mark_ended_workspace_paths(
         &mut self,
         paths: &BTreeMap<u64, BTreeSet<EntityRef>>,
+        subjects: &BTreeMap<u64, EntityRef>,
     ) -> bool {
-        let subjects = self.workspace_subjects();
         let mut changed = false;
         for (id, path) in paths {
             if path
@@ -2158,13 +2192,16 @@ impl ControllerState {
 
     fn show_finished(&self) -> bool {
         matches!(
-            self.rail_ui.variables.get("show-finished").or_else(|| self
-                .template_catalog
-                .as_ref()?
-                .display_variables()
-                .iter()
-                .find(|v| v.name == "show-finished")
-                .map(|v| &v.default)),
+            self.rail_ui
+                .variables
+                .get(DISPLAY_SHOW_FINISHED)
+                .or_else(|| self
+                    .template_catalog
+                    .as_ref()?
+                    .display_variables()
+                    .iter()
+                    .find(|v| v.name == DISPLAY_SHOW_FINISHED)
+                    .map(|v| &v.default)),
             Some(DisplayVariableValue::Bool(true))
         )
     }
@@ -2190,8 +2227,14 @@ impl ControllerState {
                 })
             })
             .collect::<Vec<_>>();
+        let positions: BTreeMap<_, _> = entities
+            .iter()
+            .enumerate()
+            .map(|(index, entity)| (entity.entity.clone(), index))
+            .collect();
         for (subject, retained) in &self.retained_subjects {
-            if let Some(current) = entities.iter_mut().find(|e| &e.entity == subject) {
+            if let Some(index) = positions.get(subject) {
+                let current = &mut entities[*index];
                 let mut values = retained.values.clone();
                 values.extend(current.values.clone());
                 current.values = values;
@@ -2201,17 +2244,6 @@ impl ControllerState {
         }
         for entity in &mut entities {
             if self.ended_subjects.contains(&entity.entity) {
-                for key in [
-                    KEY_DISPLAY_LABEL,
-                    "display.label.medium",
-                    "display.label.short",
-                ] {
-                    if let Some(label) = entity.values.get_mut(key) {
-                        if let MetadataValue::Text(text) = &mut label.value {
-                            text.push_str(" (ended)");
-                        }
-                    }
-                }
                 entity.values.insert(
                     KEY_STATUS_STATE.to_owned(),
                     MetadataEntry {

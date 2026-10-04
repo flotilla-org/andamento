@@ -1371,9 +1371,8 @@ fn ended_workspace_lifecycle_scenarios() {
         let nodes = workspace_nodes(&snapshot.surface);
         assert!(!nodes.is_empty(), "{signal}");
         assert!(
-            nodes
-                .iter()
-                .all(|node| node.entity == entity("vessel", "v") && node.label.contains("ended")),
+            nodes.iter().all(|node| node.entity == entity("vessel", "v")
+                && node.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))),
             "{signal}: {nodes:?}"
         );
         assert!(snapshot.surface.sections[0].nodes[0]
@@ -1439,7 +1438,8 @@ fn disconnect_expiry_and_reconnect_preserve_subject_path_without_ending() {
         );
         assert!(nodes
             .iter()
-            .all(|n| n.entity == entity("vessel", "v") && !n.label.contains("ended")));
+            .all(|n| n.entity == entity("vessel", "v")
+                && !n.facts.contains_key("presentation.ended")));
         assert!(!snapshot
             .surface
             .sections
@@ -1451,7 +1451,7 @@ fn disconnect_expiry_and_reconnect_preserve_subject_path_without_ending() {
     let snapshot = sidebar.snapshot();
     assert!(workspace_nodes(&snapshot.surface)
         .iter()
-        .all(|n| n.entity == entity("vessel", "v") && !n.label.contains("ended")));
+        .all(|n| n.entity == entity("vessel", "v") && !n.facts.contains_key("presentation.ended")));
 }
 
 #[test]
@@ -1553,7 +1553,7 @@ fn standing_role_outlives_terminal_attempt_phase() {
     assert!(!workspace_nodes(&snapshot.surface).is_empty());
     assert!(workspace_nodes(&snapshot.surface)
         .iter()
-        .all(|n| n.entity == entity("role", "r") && !n.label.contains("ended")));
+        .all(|n| n.entity == entity("role", "r") && !n.facts.contains_key("presentation.ended")));
 }
 
 #[test]
@@ -1584,10 +1584,11 @@ fn authoritative_ancestor_removal_retains_workspace_path_as_ended() {
     let snapshot = sidebar.snapshot();
     let project = &snapshot.surface.sections[0].nodes[0];
     assert_eq!(project.entity, entity("project", "p"));
-    assert!(project.label.contains("ended"));
+    assert!(project.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true)));
     assert!(workspace_nodes(&snapshot.surface)
         .iter()
-        .any(|n| n.entity == entity("vessel", "v") && n.label.contains("ended")));
+        .any(|n| n.entity == entity("vessel", "v")
+            && n.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))));
 }
 
 #[test]
@@ -1619,7 +1620,7 @@ fn reassertion_after_authoritative_removal_is_stale_for_the_same_identity() {
         .unwrap();
     assert!(workspace_nodes(&sidebar.snapshot().surface)
         .iter()
-        .any(|n| n.label.contains("ended")));
+        .any(|n| n.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))));
 }
 
 #[test]
@@ -1653,7 +1654,7 @@ fn lease_expiry_inside_a_patch_batch_preserves_the_original_path() {
         .any(|n| n.entity == entity("vessel", "v")));
     assert!(workspace_nodes(&snapshot.surface)
         .iter()
-        .all(|n| !n.label.contains("ended")));
+        .all(|n| !n.facts.contains_key("presentation.ended")));
 }
 
 #[test]
@@ -1706,4 +1707,104 @@ fn closing_many_removed_workspaces_releases_retained_catalog_history() {
             "retention grew after close {index}"
         );
     }
+}
+
+#[test]
+fn individual_fact_unsets_are_not_resurrected_from_retained_history() {
+    let mut sidebar = retained_sidebar();
+    let mut update = patch(entity("vessel", "v"), &[]);
+    update.unset = vec!["status.state".into(), "status.attention".into()];
+    sidebar.apply(101, [update]);
+    // Explicit fact withdrawal on a live subject removes those facts, even
+    // though the workspace still retains its subject and project path.
+    let snapshot = sidebar.snapshot();
+    let nodes = workspace_nodes(&snapshot.surface);
+    assert!(!nodes.is_empty());
+    assert!(nodes.iter().all(
+        |n| !n.facts.contains_key("status.state") && !n.facts.contains_key("status.attention")
+    ));
+    assert!(snapshot.surface.sections[1].nodes.is_empty());
+}
+
+#[test]
+fn shared_ancestor_survives_one_child_end_and_close() {
+    let mut sidebar = retained_sidebar();
+    sidebar.apply(
+        101,
+        [
+            patch(
+                entity("vessel", "sibling"),
+                &[
+                    ("entity.kind", text("vessel")),
+                    ("entity.id", text("sibling")),
+                    ("display.label", text("Sibling")),
+                    ("flotilla.project", text("p")),
+                    ("action.primary.recipe", text("exec /bin/sh")),
+                ],
+            ),
+            patch(
+                entity("vessel", "v"),
+                &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
+            ),
+        ],
+    );
+    let effects = sidebar
+        .dispatch(Action::Activate {
+            entity: entity("vessel", "sibling"),
+        })
+        .unwrap();
+    let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
+        panic!("{effects:?}")
+    };
+    sidebar.complete(*request_id, Ok(Some(80)));
+    let sibling = Workspace {
+        id: 80,
+        position: 1,
+        name: "Sibling".into(),
+        selected: false,
+    };
+    sidebar.observe(vec![workspace(), sibling.clone()], vec![]);
+    let mut removal = patch(entity("vessel", "v"), &[("source", text("flotilla"))]);
+    removal.unset = vec![
+        "entity.kind",
+        "entity.id",
+        "display.label",
+        "flotilla.project",
+        "flotilla.vessel",
+        "status.state",
+        "status.attention",
+        "action.primary.target",
+        "action.primary.recipe",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    sidebar.apply(102, [removal]);
+    // Ending one child must not end its shared parent or sibling workspace.
+    let snapshot = sidebar.snapshot();
+    let project = &snapshot.surface.sections[0].nodes[0];
+    assert!(!project.facts.contains_key("presentation.ended"));
+    assert!(workspace_nodes(&snapshot.surface).is_empty());
+    assert!(project.children.iter().any(|n| n.entity.id == "sibling"
+        && matches!(
+            n.state,
+            andamento_core::presentation::PresentationState::Live {
+                workspace_id: 80,
+                ..
+            }
+        )
+        && !n.facts.contains_key("presentation.ended")));
+    sidebar
+        .dispatch(Action::ToggleDisplayVariable {
+            name: "show-finished".into(),
+        })
+        .unwrap();
+    assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
+    sidebar.observe(vec![sibling], vec![]);
+    // Closing just the ended workspace releases its history while the shared
+    // ancestor remains present for the other open workspace.
+    let snapshot = sidebar.snapshot();
+    let project = &snapshot.surface.sections[0].nodes[0];
+    assert!(project.children.iter().all(|n| n.entity.id != "v"));
+    assert!(project.children.iter().any(|n| n.entity.id == "sibling"));
 }

@@ -201,19 +201,22 @@ impl Sidebar {
     /// Apply a drained batch before requesting a snapshot. Time is monotonic
     /// milliseconds in this instance, supplied by the host; an empty batch is a tick.
     pub fn apply(&mut self, now_ms: u64, patches: impl IntoIterator<Item = MetadataPatch>) {
-        let mut changed = self.retain_workspace_paths();
+        let subjects = self.state.workspace_subjects();
+        let mut changed = self.retain_workspace_paths(&subjects);
         changed |= self.state.advance_time(now_ms);
         for patch in patches {
             changed |= self.state.apply_metadata_patch(patch);
         }
-        changed |= self.state.mark_ended_workspace_paths(&self.retained_paths);
+        changed |= self
+            .state
+            .mark_ended_workspace_paths(&self.retained_paths, &subjects);
         if changed {
             self.managed.publish(self.state.managed_content());
             self.invalidate();
         }
     }
 
-    fn retain_workspace_paths(&mut self) -> bool {
+    fn retain_workspace_paths(&mut self, subjects: &BTreeMap<u64, EntityRef>) -> bool {
         fn collect(
             nodes: &[crate::presentation::PlacementNode],
             ancestors: &mut Vec<EntityRef>,
@@ -238,20 +241,21 @@ impl Sidebar {
                 }
             }
         }
-        let subjects = self.state.workspace_subjects();
         if self.retained_paths_revision != Some(self.revision) && !subjects.is_empty() {
-            let mut paths = BTreeMap::new();
-            for section in &self.snapshot_shared().surface.sections {
-                collect(&section.nodes, &mut Vec::new(), &mut paths);
+            if let Some(snapshot) = self.snapshot.get() {
+                let mut paths = BTreeMap::new();
+                for section in &snapshot.surface.sections {
+                    collect(&section.nodes, &mut Vec::new(), &mut paths);
+                }
+                self.retained_paths
+                    .extend(paths.into_iter().filter(|(id, path)| {
+                        subjects
+                            .get(id)
+                            .is_some_and(|subject| path.contains(subject))
+                    }));
+                self.retained_paths_revision = Some(self.revision);
             }
-            self.retained_paths
-                .extend(paths.into_iter().filter(|(id, path)| {
-                    subjects
-                        .get(id)
-                        .is_some_and(|subject| path.contains(subject))
-                }));
         }
-        self.retained_paths_revision = Some(self.revision);
         self.retained_paths.retain(|id, subjects_on_path| {
             subjects.contains_key(id) && !retained_workspace_expired(&self.state, subjects_on_path)
         });
@@ -276,13 +280,19 @@ impl Sidebar {
                 .collect(),
         );
         changed |= self.state.observe_panes(panes);
+        let subjects = self.state.workspace_subjects();
         if changed {
             // Rebuild paths from the new topology before publishing one revision.
             self.snapshot.take();
             self.retained_paths_revision = None;
+            if !subjects.is_empty() {
+                self.snapshot_shared();
+            }
         }
-        changed |= self.retain_workspace_paths();
-        changed |= self.state.mark_ended_workspace_paths(&self.retained_paths);
+        changed |= self.retain_workspace_paths(&subjects);
+        changed |= self
+            .state
+            .mark_ended_workspace_paths(&self.retained_paths, &subjects);
         if changed {
             self.managed.publish(self.state.managed_content());
             self.invalidate();
