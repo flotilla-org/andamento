@@ -131,7 +131,8 @@ uint32_t andamento_snapshot_node_loop_key(const AndamentoSnapshot *, size_t inde
 uint32_t andamento_snapshot_field(const AndamentoSnapshot *, size_t index, AndamentoField *out);
 uint32_t andamento_snapshot_control(const AndamentoSnapshot *, size_t index, AndamentoControl *out);
 /* Display-variable declaration identity and persist policy, independent of
- * the human-facing label. Name is snapshot-owned. Returns 0 for other control
+ * the human-facing label. Undeclared variables report persist=0.
+ * Name is snapshot-owned. Returns 0 for other control
  * kinds or invalid/null outputs, leaving outputs untouched. Additive ABI 2. */
 uint32_t andamento_snapshot_control_variable(const AndamentoSnapshot *, size_t index,
     AndamentoText *name, uint32_t *persist);

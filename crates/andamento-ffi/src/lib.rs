@@ -594,7 +594,7 @@ pub unsafe extern "C" fn andamento_snapshot_acquire(
             if control.kind != 1 {
                 continue;
             }
-            if let Some(value) = snapshot.surface.display_values.get(&control.label) {
+            if let Some(value) = snapshot.surface.display_values.get(&control.variable) {
                 match value {
                     andamento_core::DisplayVariableValue::Bool(value) => {
                         control.value_kind = 1;
@@ -610,7 +610,7 @@ pub unsafe extern "C" fn andamento_snapshot_acquire(
                 .surface
                 .display_variables
                 .iter()
-                .find(|d| d.name == control.label)
+                .find(|d| d.name == control.variable)
             {
                 control.persist = definition.persist;
                 if control.glyph.is_empty() {
@@ -1193,6 +1193,8 @@ mod tests {
                 template "test" slot="compact" node-kind="entity" {
                     control "display-variable" variable="history"
                     control "display-variable" variable="temporary"
+                    control "display-variable" variable="undeclared"
+                    control "open-config" label="Configure"
                 }
             "#;
             let mut error = ptr::null_mut();
@@ -1254,8 +1256,47 @@ mod tests {
                 andamento_snapshot_control_variable(snapshot, index, ptr::null_mut(), &mut persist),
                 0
             );
+            let undeclared = (*snapshot)
+                .controls
+                .iter()
+                .position(|c| c.variable == "undeclared")
+                .unwrap();
+            assert_eq!(
+                andamento_snapshot_control_variable(snapshot, undeclared, &mut name, &mut persist),
+                1
+            );
+            assert_eq!(name.read().unwrap(), "undeclared");
+            assert_eq!(persist, 0);
+            let host_control = (*snapshot)
+                .controls
+                .iter()
+                .position(|c| c.kind == 0)
+                .unwrap();
+            persist = 99;
+            assert_eq!(
+                andamento_snapshot_control_variable(
+                    snapshot,
+                    host_control,
+                    &mut name,
+                    &mut persist
+                ),
+                0
+            );
+            assert_eq!(name.read().unwrap(), "undeclared");
+            assert_eq!(persist, 99);
+            assert_eq!(
+                andamento_snapshot_control_variable(ptr::null(), index, &mut name, &mut persist),
+                0
+            );
+            assert_eq!(
+                andamento_snapshot_control_variable(snapshot, index, &mut name, ptr::null_mut()),
+                0
+            );
+            assert_eq!(name.read().unwrap(), "undeclared");
+            assert_eq!(persist, 99);
             andamento_destroy(h);
-            assert_eq!(name.read().unwrap(), "temporary");
+            // Declaration identity borrows from the snapshot, not the live core.
+            assert_eq!(name.read().unwrap(), "undeclared");
             andamento_snapshot_release(snapshot);
             andamento_snapshot_release(next);
             assert!(error.is_null());
