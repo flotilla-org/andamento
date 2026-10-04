@@ -915,7 +915,11 @@ impl ControllerState {
         }
         let mut ended_changed = false;
         if let Some(entity) = removed {
-            if self.retained_subjects.contains_key(&entity) {
+            if self.retained_subjects.contains_key(&entity)
+                && !self
+                    .metadata
+                    .has_contributors(&EntityId::Entity(entity.clone()), KEY_ENTITY_ID)
+            {
                 ended_changed = self.ended_subjects.insert(entity);
             }
         }
@@ -2138,6 +2142,7 @@ impl ControllerState {
                     retained.values.insert(key, value);
                 }
             }
+            // TODO(#122): consume a producer-declared lifecycle-ended fact.
             let terminal = matches!(subject.kind.as_str(), "convoy" | "vessel")
                 && (matches!(
                     metadata_entry_text(&retained.values, KEY_CONVOY_PHASE),

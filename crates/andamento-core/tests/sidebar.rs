@@ -640,6 +640,17 @@ fn removed_provider_facts_do_not_remove_open_workspaces() {
     assert!(nodes
         .iter()
         .all(|node| node.entity == entity("vessel", "v")));
+    let key = nodes[0].key.clone();
+    assert!(matches!(
+        sidebar
+            .dispatch(Action::ActivatePlacement { key })
+            .unwrap()
+            .as_slice(),
+        [HostEffect::Focus {
+            workspace_id: 42,
+            ..
+        }]
+    ));
 }
 
 #[test]
@@ -1807,4 +1818,32 @@ fn shared_ancestor_survives_one_child_end_and_close() {
     let project = &snapshot.surface.sections[0].nodes[0];
     assert!(project.children.iter().all(|n| n.entity.id != "v"));
     assert!(project.children.iter().any(|n| n.entity.id == "sibling"));
+}
+
+#[test]
+fn one_producer_retraction_preserves_other_identity_owner() {
+    let mut sidebar = retained_sidebar();
+    let identity = patch(
+        entity("vessel", "v"),
+        &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
+    );
+    let mut other = identity.clone();
+    other.source_id = "other".into();
+    sidebar.apply(101, [identity, other]);
+    let mut remove = patch(entity("vessel", "v"), &[]);
+    remove.unset = vec!["entity.kind".into(), "entity.id".into()];
+    sidebar.apply(102, [remove.clone()]);
+    assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
+    assert!(workspace_nodes(&sidebar.snapshot().surface)
+        .iter()
+        .all(|n| !n.facts.contains_key("presentation.ended")));
+    remove.source_id = "other".into();
+    sidebar.apply(103, [remove]);
+    assert!(workspace_nodes(&sidebar.snapshot().surface).is_empty());
+    sidebar
+        .dispatch(Action::ToggleDisplayVariable {
+            name: "show-finished".into(),
+        })
+        .unwrap();
+    assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
 }
