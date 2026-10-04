@@ -1287,6 +1287,7 @@ mod tests {
                 andamento_snapshot_control_variable(snapshot, usize::MAX, &mut name, &mut persist),
                 0
             );
+            assert_eq!(name.read().unwrap(), "sentinel");
             assert_eq!(persist, 99);
             assert_eq!(
                 andamento_snapshot_control_variable(snapshot, index, ptr::null_mut(), &mut persist),
