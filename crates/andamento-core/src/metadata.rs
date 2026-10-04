@@ -108,6 +108,21 @@ impl MetadataStore {
         self.target_ordinals.get(entity_id).copied()
     }
 
+    pub(crate) fn source_contributes(&self, entity: &EntityId, key: &str, source: &str) -> bool {
+        self.entries
+            .get(entity)
+            .and_then(|keys| keys.get(key))
+            .is_some_and(|sources| sources.contains_key(source))
+    }
+
+    // Raw ownership survives lease expiry: silence is not authoritative removal.
+    pub(crate) fn has_contributors(&self, entity: &EntityId, key: &str) -> bool {
+        self.entries
+            .get(entity)
+            .and_then(|keys| keys.get(key))
+            .is_some_and(|sources| !sources.is_empty())
+    }
+
     pub fn source_entry(
         &self,
         entity_id: &EntityId,

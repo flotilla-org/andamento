@@ -161,7 +161,7 @@ int main(int argc, char **argv) {
     ok(andamento_complete(h, focus.request_id, ANDAMENTO_COMPLETE_FOCUS, 0, T(""), &error));
     andamento_effects_release(empty);
 
-    /* Typed ingress preserves byte strings and expiry without a JSON decoder. */
+    /* Typed ingress preserves bytes; open workspace paths retain expired ancestor labels. */
     AndamentoFact f = {.key=T("display.label"), .kind=ANDAMENTO_FACT_TEXT,
                       .text=T("new\0label"), .has_ttl=1, .ttl_ms=10};
     ok(andamento_apply_entity(h, 100, T("project"), T("p"), T("fixture"), &f, 1, &error));
@@ -174,7 +174,8 @@ int main(int argc, char **argv) {
     ok(andamento_tick(h, 111, &error));
     AndamentoSnapshot *expired = snapshot(h);
     AndamentoText expired_label = find_node(expired, "project").label;
-    assert(expired_label.len != 9 || memcmp(expired_label.data, "new\0label", 9) != 0);
+    assert(expired_label.len == 9 && memcmp(expired_label.data, "new\0label", 9) == 0);
+    assert(find_node(expired, "vessel").workspace_id == 42);
     assert(!andamento_snapshot_node(expired, ANDAMENTO_NONE, &parent));
     assert(!andamento_snapshot_node(expired, 0, NULL));
     expected_error(andamento_observe(h, NULL, 1, NULL, 0, &error));

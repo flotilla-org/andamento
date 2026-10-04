@@ -632,13 +632,18 @@ fn removed_provider_facts_do_not_remove_open_workspaces() {
     .map(str::to_owned)
     .collect();
     sidebar.apply(101, [remove]);
-    let nodes = fallback(&sidebar);
-    assert_eq!(nodes.len(), 1);
+    // Losing facts without a producer identity retraction is unobserved.
+    let snapshot = sidebar.snapshot();
+    let nodes = workspace_nodes(&snapshot.surface);
+    assert!(!nodes.is_empty());
+    assert!(fallback(&sidebar).is_empty());
+    assert!(nodes
+        .iter()
+        .all(|node| node.entity == entity("vessel", "v")));
+    let key = nodes[0].key.clone();
     assert!(matches!(
         sidebar
-            .dispatch(Action::ActivatePlacement {
-                key: nodes[0].key.clone()
-            })
+            .dispatch(Action::ActivatePlacement { key })
             .unwrap()
             .as_slice(),
         [HostEffect::Focus {
@@ -1282,4 +1287,615 @@ fn multiple_directories_associate_multiple_entities_but_not_explicit_workspace()
             PresentationState::Latent { .. }
         ));
     }
+}
+
+fn retained_sidebar() -> Sidebar {
+    let mut sidebar = sidebar();
+    sidebar.configure(&format!("{CONFIG}\ndisplay-variable \"show-finished\" type=\"bool\" default=false label=\"Show finished\" icon=\"F\"\n")).unwrap();
+    let request = open(&mut sidebar);
+    sidebar.complete(request, Ok(Some(42)));
+    sidebar.observe(vec![workspace()], vec![]);
+    sidebar
+}
+
+fn workspace_nodes(
+    surface: &andamento_core::presentation::SurfaceSnapshot,
+) -> Vec<&andamento_core::presentation::PlacementNode> {
+    fn collect<'a>(
+        nodes: &'a [andamento_core::presentation::PlacementNode],
+        result: &mut Vec<&'a andamento_core::presentation::PlacementNode>,
+    ) {
+        for node in nodes {
+            if matches!(
+                node.state,
+                andamento_core::presentation::PresentationState::Live {
+                    workspace_id: 42,
+                    ..
+                }
+            ) {
+                result.push(node);
+            }
+            collect(&node.children, result);
+        }
+    }
+    let mut result = vec![];
+    for section in &surface.sections {
+        collect(&section.nodes, &mut result);
+    }
+    result
+}
+
+#[test]
+fn ended_workspace_lifecycle_scenarios() {
+    // Generate every authoritative end signal, repeated publication, toggles,
+    // a long empty tick, and user close. Retention has no timeout yet (#123).
+    for signal in ["landed", "abandoned", "cancelled", "superseded", "removed"] {
+        let mut sidebar = retained_sidebar();
+        sidebar.apply(
+            101,
+            [patch(
+                entity("vessel", "v"),
+                &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
+            )],
+        );
+        let end = if signal == "superseded" {
+            patch(
+                entity("vessel", "v"),
+                &[("flotilla.convoy.superseded", MetadataValue::Bool(true))],
+            )
+        } else if signal == "removed" {
+            let mut removal = patch(entity("vessel", "v"), &[("source", text("flotilla"))]);
+            removal.unset = vec![
+                "entity.kind".into(),
+                "entity.id".into(),
+                "display.label".into(),
+                "flotilla.project".into(),
+                "flotilla.vessel".into(),
+                "status.state".into(),
+                "status.attention".into(),
+                "action.primary.target".into(),
+                "action.primary.recipe".into(),
+            ];
+            removal
+        } else {
+            patch(
+                entity("vessel", "v"),
+                &[("flotilla.convoy.phase", text(signal))],
+            )
+        };
+        for time in [102, 103] {
+            sidebar.apply(time, [end.clone()]);
+            // Ended workspaces are hidden by default, including Other workspaces.
+            assert!(
+                workspace_nodes(&sidebar.snapshot().surface).is_empty(),
+                "{signal} at {time}"
+            );
+        }
+        sidebar
+            .dispatch(Action::ToggleDisplayVariable {
+                name: "show-finished".into(),
+            })
+            .unwrap();
+        sidebar.apply(u64::MAX - 1, []);
+        let snapshot = sidebar.snapshot();
+        // Show finished exposes the original subject and its project path, marked ended.
+        let nodes = workspace_nodes(&snapshot.surface);
+        assert!(!nodes.is_empty(), "{signal}");
+        assert!(
+            nodes.iter().all(|node| node.entity == entity("vessel", "v")
+                && node.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))),
+            "{signal}: {nodes:?}"
+        );
+        assert!(snapshot.surface.sections[0].nodes[0]
+            .children
+            .iter()
+            .any(|n| n.entity == entity("vessel", "v")));
+        assert!(!snapshot
+            .surface
+            .sections
+            .iter()
+            .any(|s| s.name == "andamento.unplaced-workspaces"));
+        // Reopening a hidden ended row focuses the same workspace, preserving host panels.
+        let effects = sidebar
+            .dispatch(Action::ActivatePlacement {
+                key: nodes[0].key.clone(),
+            })
+            .unwrap();
+        assert!(matches!(
+            effects.as_slice(),
+            [HostEffect::Focus {
+                workspace_id: 42,
+                ..
+            }]
+        ));
+        sidebar.observe(vec![], vec![]);
+        // Closing is the only retention expiry; there is no phantom live workspace.
+        assert!(workspace_nodes(&sidebar.snapshot().surface).is_empty());
+    }
+}
+
+#[test]
+fn disconnect_expiry_and_reconnect_preserve_subject_path_without_ending() {
+    let mut sidebar = retained_sidebar();
+    let mut publication = patch(
+        entity("vessel", "v"),
+        &[
+            ("entity.kind", text("vessel")),
+            ("entity.id", text("v")),
+            ("flotilla.project", text("p")),
+            ("display.label", text("Worker")),
+            ("action.primary.target", text("vessel:v")),
+            ("action.primary.recipe", text("printf hello")),
+        ],
+    );
+    for update in publication.set.values_mut() {
+        update.ttl_ms = Some(10);
+    }
+    sidebar.apply(101, [publication.clone()]);
+    // A disconnect is an empty drain. Even beyond the fact lease, the bound
+    // workspace remains under its subject and does not require Show finished.
+    for time in [111, 112, 1000] {
+        sidebar.apply(time, []);
+        let snapshot = sidebar.snapshot();
+        let nodes = workspace_nodes(&snapshot.surface);
+        assert!(!nodes.is_empty());
+        // The original project path must survive, even if Attention remains.
+        assert!(
+            snapshot.surface.sections[0].nodes[0]
+                .children
+                .iter()
+                .any(|n| n.entity == entity("vessel", "v")),
+            "lost project path at {time}"
+        );
+        assert!(nodes
+            .iter()
+            .all(|n| n.entity == entity("vessel", "v")
+                && !n.facts.contains_key("presentation.ended")));
+        assert!(!snapshot
+            .surface
+            .sections
+            .iter()
+            .any(|s| s.name == "andamento.unplaced-workspaces"));
+    }
+    sidebar.apply(1001, [publication]);
+    // Reasserting after reconnect updates the same subject, without moving it.
+    let snapshot = sidebar.snapshot();
+    assert!(workspace_nodes(&snapshot.surface)
+        .iter()
+        .all(|n| n.entity == entity("vessel", "v") && !n.facts.contains_key("presentation.ended")));
+}
+
+#[test]
+fn unrelated_source_removal_and_subjectless_workspaces_are_unaffected() {
+    let mut sidebar = retained_sidebar();
+    let mut removal = patch(entity("vessel", "v"), &[]);
+    removal.source_id = "unrelated".into();
+    removal.unset = vec!["entity.kind".into(), "entity.id".into()];
+    sidebar.apply(101, [removal]);
+    // Only the producer owning identity can remove the subject.
+    assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
+    sidebar.observe(
+        vec![
+            workspace(),
+            Workspace {
+                id: 99,
+                position: 1,
+                name: "Unsaved notes".into(),
+                selected: false,
+            },
+        ],
+        vec![],
+    );
+    // Workspaces with no subject retain normal fallback coverage.
+    assert!(sidebar
+        .snapshot()
+        .surface
+        .sections
+        .iter()
+        .any(|s| s.name == "andamento.unplaced-workspaces"
+            && s.nodes.iter().any(|n| n.label == "Unsaved notes")));
+}
+
+#[test]
+fn nonterminal_convoy_phases_do_not_end_workspace() {
+    // Failed/interrupted convoys can resume, and a standing role outlives its
+    // terminal attempt. Generate all non-ending convoy phases explicitly.
+    for phase in [
+        "pending",
+        "active",
+        "interrupted",
+        "failed",
+        "anchored",
+        "landing",
+    ] {
+        let mut sidebar = retained_sidebar();
+        sidebar.apply(
+            101,
+            [patch(
+                entity("vessel", "v"),
+                &[("flotilla.convoy.phase", text(phase))],
+            )],
+        );
+        assert!(
+            !workspace_nodes(&sidebar.snapshot().surface).is_empty(),
+            "{phase}"
+        );
+    }
+}
+
+#[test]
+fn standing_role_outlives_terminal_attempt_phase() {
+    // Lifted attempt facts are not a terminal phase of the standing role.
+    let mut sidebar = Sidebar::new(&format!("{}\ndisplay-variable \"show-finished\" type=\"bool\" default=false label=\"Show finished\" icon=\"F\"\n",
+        CONFIG.replace("vessel", "role"))).unwrap();
+    sidebar.apply(
+        100,
+        [
+            patch(
+                entity("project", "p"),
+                &[
+                    ("flotilla.project", text("p")),
+                    ("display.label", text("Project")),
+                ],
+            ),
+            patch(
+                entity("role", "r"),
+                &[
+                    ("flotilla.project", text("p")),
+                    ("display.label", text("Governor")),
+                    ("action.primary.recipe", text("exec /bin/sh")),
+                    ("flotilla.convoy.phase", text("landed")),
+                ],
+            ),
+        ],
+    );
+    let effects = sidebar
+        .dispatch(Action::Activate {
+            entity: entity("role", "r"),
+        })
+        .unwrap();
+    let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
+        panic!("{effects:?}")
+    };
+    sidebar.complete(*request_id, Ok(Some(42)));
+    sidebar.observe(vec![workspace()], vec![]);
+    sidebar.apply(101, []);
+    let snapshot = sidebar.snapshot();
+    assert!(!workspace_nodes(&snapshot.surface).is_empty());
+    assert!(workspace_nodes(&snapshot.surface)
+        .iter()
+        .all(|n| n.entity == entity("role", "r") && !n.facts.contains_key("presentation.ended")));
+}
+
+#[test]
+fn authoritative_ancestor_removal_retains_workspace_path_as_ended() {
+    let mut sidebar = retained_sidebar();
+    sidebar.apply(
+        101,
+        [patch(
+            entity("project", "p"),
+            &[("entity.kind", text("project")), ("entity.id", text("p"))],
+        )],
+    );
+    let mut removal = patch(entity("project", "p"), &[("source", text("flotilla"))]);
+    removal.unset = vec![
+        "entity.kind".into(),
+        "entity.id".into(),
+        "flotilla.project".into(),
+        "display.label".into(),
+    ];
+    sidebar.apply(102, [removal]);
+    // A removed ancestor is authoritative, unlike a lease-expired ancestor.
+    assert!(workspace_nodes(&sidebar.snapshot().surface).is_empty());
+    sidebar
+        .dispatch(Action::ToggleDisplayVariable {
+            name: "show-finished".into(),
+        })
+        .unwrap();
+    let snapshot = sidebar.snapshot();
+    let project = &snapshot.surface.sections[0].nodes[0];
+    assert_eq!(project.entity, entity("project", "p"));
+    assert!(project.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true)));
+    assert!(workspace_nodes(&snapshot.surface)
+        .iter()
+        .any(|n| n.entity == entity("vessel", "v")
+            && n.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))));
+}
+
+#[test]
+fn reassertion_after_authoritative_removal_is_stale_for_the_same_identity() {
+    let mut sidebar = retained_sidebar();
+    let publication = patch(
+        entity("vessel", "v"),
+        &[
+            ("entity.kind", text("vessel")),
+            ("entity.id", text("v")),
+            ("display.label", text("Worker")),
+            ("flotilla.project", text("p")),
+            ("action.primary.target", text("vessel:v")),
+            ("action.primary.recipe", text("printf hello")),
+        ],
+    );
+    sidebar.apply(101, [publication.clone()]);
+    let mut removal = patch(entity("vessel", "v"), &[]);
+    removal.unset = vec!["entity.kind".into(), "entity.id".into()];
+    sidebar.apply(102, [removal]);
+    sidebar.apply(103, [publication]);
+    // An authoritative end is terminal for this identity. A new generation
+    // needs a new subject ID; reconnect reassertions do not revive the old one.
+    assert!(workspace_nodes(&sidebar.snapshot().surface).is_empty());
+    sidebar
+        .dispatch(Action::ToggleDisplayVariable {
+            name: "show-finished".into(),
+        })
+        .unwrap();
+    assert!(workspace_nodes(&sidebar.snapshot().surface)
+        .iter()
+        .any(|n| n.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))));
+}
+
+#[test]
+fn lease_expiry_inside_a_patch_batch_preserves_the_original_path() {
+    let mut sidebar = retained_sidebar();
+    let mut publication = patch(
+        entity("project", "p"),
+        &[
+            ("entity.kind", text("project")),
+            ("entity.id", text("p")),
+            ("flotilla.project", text("p")),
+            ("display.label", text("Project P")),
+        ],
+    );
+    for fact in publication.set.values_mut() {
+        fact.ttl_ms = Some(10);
+    }
+    sidebar.apply(101, [publication]);
+    sidebar.apply(
+        500,
+        [patch(
+            entity("unrelated", "heartbeat"),
+            &[("source", text("unrelated"))],
+        )],
+    );
+    // Capture is before the clock advance even when a batch also has patches.
+    let snapshot = sidebar.snapshot();
+    assert!(snapshot.surface.sections[0].nodes[0]
+        .children
+        .iter()
+        .any(|n| n.entity == entity("vessel", "v")));
+    assert!(workspace_nodes(&snapshot.surface)
+        .iter()
+        .all(|n| !n.facts.contains_key("presentation.ended")));
+}
+
+#[test]
+fn closing_many_removed_workspaces_releases_retained_catalog_history() {
+    let mut sidebar = retained_sidebar();
+    sidebar.observe(vec![], vec![]);
+    sidebar
+        .dispatch(Action::ToggleDisplayVariable {
+            name: "show-finished".into(),
+        })
+        .unwrap();
+    // Generate many sequential identities on the same client. After each close,
+    // its removed subject must leave the surface rather than grow retained history.
+    for index in 0..24 {
+        let subject = entity("vessel", &format!("history-{index}"));
+        let publication = patch(
+            subject.clone(),
+            &[
+                ("entity.kind", text("vessel")),
+                ("entity.id", text(&subject.id)),
+                ("display.label", text(&subject.id)),
+                ("flotilla.project", text("p")),
+                ("action.primary.recipe", text("exec /bin/sh")),
+            ],
+        );
+        sidebar.apply(200 + index * 2, [publication.clone()]);
+        let effects = sidebar
+            .dispatch(Action::Activate {
+                entity: subject.clone(),
+            })
+            .unwrap();
+        let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
+            panic!("{effects:?}")
+        };
+        sidebar.complete(*request_id, Ok(Some(42)));
+        sidebar.observe(vec![workspace()], vec![]);
+        let mut removal = patch(subject.clone(), &[("source", text("flotilla"))]);
+        removal.unset = publication.set.keys().cloned().collect();
+        sidebar.apply(201 + index * 2, [removal]);
+        assert!(workspace_nodes(&sidebar.snapshot().surface)
+            .iter()
+            .any(|n| n.entity == subject));
+        sidebar.observe(vec![], vec![]);
+        let snapshot = sidebar.snapshot();
+        assert!(
+            !snapshot.surface.sections[0].nodes[0]
+                .children
+                .iter()
+                .any(|n| n.entity.id.starts_with("history-")),
+            "retention grew after close {index}"
+        );
+    }
+}
+
+#[test]
+fn individual_fact_unsets_are_not_resurrected_from_retained_history() {
+    let mut sidebar = retained_sidebar();
+    let mut update = patch(entity("vessel", "v"), &[]);
+    update.unset = vec!["status.state".into(), "status.attention".into()];
+    sidebar.apply(101, [update]);
+    // Explicit fact withdrawal on a live subject removes those facts, even
+    // though the workspace still retains its subject and project path.
+    let snapshot = sidebar.snapshot();
+    let nodes = workspace_nodes(&snapshot.surface);
+    assert!(!nodes.is_empty());
+    assert!(nodes.iter().all(
+        |n| !n.facts.contains_key("status.state") && !n.facts.contains_key("status.attention")
+    ));
+    assert!(snapshot.surface.sections[1].nodes.is_empty());
+}
+
+#[test]
+fn shared_ancestor_survives_one_child_end_and_close() {
+    let mut sidebar = retained_sidebar();
+    sidebar.apply(
+        101,
+        [
+            patch(
+                entity("vessel", "sibling"),
+                &[
+                    ("entity.kind", text("vessel")),
+                    ("entity.id", text("sibling")),
+                    ("display.label", text("Sibling")),
+                    ("flotilla.project", text("p")),
+                    ("action.primary.recipe", text("exec /bin/sh")),
+                ],
+            ),
+            patch(
+                entity("vessel", "v"),
+                &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
+            ),
+        ],
+    );
+    let effects = sidebar
+        .dispatch(Action::Activate {
+            entity: entity("vessel", "sibling"),
+        })
+        .unwrap();
+    let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
+        panic!("{effects:?}")
+    };
+    sidebar.complete(*request_id, Ok(Some(80)));
+    let sibling = Workspace {
+        id: 80,
+        position: 1,
+        name: "Sibling".into(),
+        selected: false,
+    };
+    sidebar.observe(vec![workspace(), sibling.clone()], vec![]);
+    let mut removal = patch(entity("vessel", "v"), &[("source", text("flotilla"))]);
+    removal.unset = vec![
+        "entity.kind",
+        "entity.id",
+        "display.label",
+        "flotilla.project",
+        "flotilla.vessel",
+        "status.state",
+        "status.attention",
+        "action.primary.target",
+        "action.primary.recipe",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    sidebar.apply(102, [removal]);
+    // Ending one child must not end its shared parent or sibling workspace.
+    let snapshot = sidebar.snapshot();
+    let project = &snapshot.surface.sections[0].nodes[0];
+    assert!(!project.facts.contains_key("presentation.ended"));
+    assert!(workspace_nodes(&snapshot.surface).is_empty());
+    assert!(project.children.iter().any(|n| n.entity.id == "sibling"
+        && matches!(
+            n.state,
+            andamento_core::presentation::PresentationState::Live {
+                workspace_id: 80,
+                ..
+            }
+        )
+        && !n.facts.contains_key("presentation.ended")));
+    sidebar
+        .dispatch(Action::ToggleDisplayVariable {
+            name: "show-finished".into(),
+        })
+        .unwrap();
+    assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
+    sidebar.observe(vec![sibling], vec![]);
+    // Closing just the ended workspace releases its history while the shared
+    // ancestor remains present for the other open workspace.
+    let snapshot = sidebar.snapshot();
+    let project = &snapshot.surface.sections[0].nodes[0];
+    assert!(project.children.iter().all(|n| n.entity.id != "v"));
+    assert!(project.children.iter().any(|n| n.entity.id == "sibling"));
+}
+
+#[test]
+fn one_producer_retraction_preserves_other_identity_owner() {
+    let mut sidebar = retained_sidebar();
+    let identity = patch(
+        entity("vessel", "v"),
+        &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
+    );
+    let mut other = identity.clone();
+    other.source_id = "other".into();
+    sidebar.apply(101, [identity, other]);
+    let mut remove = patch(entity("vessel", "v"), &[]);
+    remove.unset = vec!["entity.kind".into(), "entity.id".into()];
+    sidebar.apply(102, [remove.clone()]);
+    assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
+    assert!(workspace_nodes(&sidebar.snapshot().surface)
+        .iter()
+        .all(|n| !n.facts.contains_key("presentation.ended")));
+    remove.source_id = "other".into();
+    sidebar.apply(103, [remove]);
+    assert!(workspace_nodes(&sidebar.snapshot().surface).is_empty());
+    sidebar
+        .dispatch(Action::ToggleDisplayVariable {
+            name: "show-finished".into(),
+        })
+        .unwrap();
+    assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
+}
+
+#[test]
+fn individual_fact_expiry_is_not_resurrected_on_live_subject() {
+    let mut sidebar = retained_sidebar();
+    let mut update = patch(
+        entity("vessel", "v"),
+        &[("status.attention", MetadataValue::Bool(true))],
+    );
+    update.set.get_mut("status.attention").unwrap().ttl_ms = Some(10);
+    sidebar.apply(101, [update]);
+    assert!(workspace_nodes(&sidebar.snapshot().surface)
+        .iter()
+        .any(|n| n.facts.contains_key("status.attention")));
+    sidebar.apply(112, []);
+    let snapshot = sidebar.snapshot();
+    assert!(!workspace_nodes(&snapshot.surface).is_empty());
+    assert!(workspace_nodes(&snapshot.surface)
+        .iter()
+        .all(|n| !n.facts.contains_key("status.attention")
+            && !n.facts.contains_key("presentation.ended")));
+    assert!(snapshot.surface.sections[1].nodes.is_empty());
+}
+
+#[test]
+fn removal_after_first_topology_needs_no_intervening_snapshot() {
+    let mut sidebar = sidebar();
+    sidebar.configure(&format!("{CONFIG}\ndisplay-variable \"show-finished\" type=\"bool\" default=false label=\"Show finished\" icon=\"F\"\n")).unwrap();
+    sidebar.apply(
+        101,
+        [patch(
+            entity("vessel", "v"),
+            &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
+        )],
+    );
+    let request = open(&mut sidebar);
+    sidebar.complete(request, Ok(Some(42)));
+    sidebar.observe(vec![workspace()], vec![]);
+    let mut removal = patch(entity("vessel", "v"), &[]);
+    removal.unset = vec![
+        "entity.kind".into(),
+        "entity.id".into(),
+        "display.label".into(),
+    ];
+    sidebar.apply(102, [removal]);
+    assert!(workspace_nodes(&sidebar.snapshot().surface).is_empty());
+    sidebar
+        .dispatch(Action::ToggleDisplayVariable {
+            name: "show-finished".into(),
+        })
+        .unwrap();
+    assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
 }
