@@ -11,9 +11,35 @@ pub struct DetailField {
     pub text: Option<String>,
     pub source_key: String,
     pub observation: Option<MetadataEntry>,
-    /// None for synthetic or retained facts whose producer is unavailable.
+    /// Winning producer identity, preserved along with retained observations.
     pub source_id: Option<String>,
     pub relations: Vec<EntityRef>,
+}
+
+/// Primary control intent, shared by native text and default labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailIntent {
+    OpenUrl,
+    FocusWorkspace,
+    MaterializeWorkspace,
+    Inspect,
+}
+impl DetailIntent {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenUrl => "open-url",
+            Self::FocusWorkspace => "focus-workspace",
+            Self::MaterializeWorkspace => "materialize-workspace",
+            Self::Inspect => "inspect",
+        }
+    }
+    pub fn default_label(self) -> &'static str {
+        match self {
+            Self::OpenUrl | Self::MaterializeWorkspace => "Open",
+            Self::FocusWorkspace => "Focus",
+            Self::Inspect => "Inspect",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +50,7 @@ pub struct DetailCard {
     /// Preview identity is independent of the semantic fields.
     pub workspace_id: Option<u64>,
     pub primary_label: String,
-    pub primary_intent: String,
+    pub primary_intent: DetailIntent,
     pub error: Option<String>,
 }
 
@@ -52,25 +78,18 @@ pub(crate) fn resolve_field(
         _ => source.resolve(context),
     });
     let source = resolved.as_ref().and_then(|value| value.source.as_ref());
-    let source_key = source.map(|source| source.key.clone()).unwrap_or_else(|| {
-        if resolved.is_some() {
-            return String::new();
-        }
-        spec.sources
-            .iter()
-            .find_map(|source| match source {
-                Source::MetadataText { key }
-                | Source::MetadataDisplay { key }
-                | Source::MetadataFirstToken { key }
-                | Source::MetadataTextBasename { key } => Some(key.clone()),
-                _ => None,
-            })
-            .unwrap_or_default()
-    });
+    // A missing field has no winning source; do not guess one from fallback order.
+    let source_key = source.map(|source| source.key.clone()).unwrap_or_default();
     let observation = source.and_then(|source| entries.get(&source.key)).cloned();
     let relations = if role == DetailRole::Relation {
         match source.map(|source| &source.value) {
-            Some(crate::MetadataValue::EntityRefs(refs)) => refs.clone(),
+            Some(crate::MetadataValue::EntityRefs(refs)) => {
+                let mut seen = std::collections::BTreeSet::new();
+                refs.iter()
+                    .filter(|entity| seen.insert((*entity).clone()))
+                    .cloned()
+                    .collect()
+            }
             _ => vec![],
         }
     } else {
@@ -174,7 +193,7 @@ mod tests {
                 let f = &cards[0].fields[0];
                 assert_eq!(f.role.as_str(), role);
                 assert_eq!(f.text.as_deref(), value);
-                assert_eq!(f.source_key, "fact");
+                assert_eq!(f.source_key, if value.is_some() { "fact" } else { "" });
                 assert_eq!(f.observation.is_some(), value.is_some());
                 assert_eq!(cards[0].fields[1].text.as_deref(), Some(""));
             }
@@ -201,51 +220,92 @@ mod tests {
 }
 
 #[cfg(test)]
-mod compatibility_tests {
+mod edge_tests {
+    use super::*;
     use crate::{template_config::*, MetadataValue};
     use std::collections::BTreeMap;
-    // Structured-only fields are additive declarations: every frontend's old
-    // flat output remains identical, including labels and punctuation.
+    // Structured-only declarations still obey conditions, missing fallbacks have
+    // no winner, and duplicate relations retain the first occurrence order.
     #[test]
-    fn structured_only_does_not_change_flat_fields() {
-        let catalog = TemplateConfigCatalog::from_config(parse_template_config_kdl(r#"
-            template "item/detail" slot="detail" node-kind="entity" {
-                field "legacy" role="fact" label="Label" literal="value" prefix="Prefix: " suffix="!"
-                field "identity" structured-only=true role="identity" key="entity.id"
+    fn conditional_fields_fallbacks_and_duplicate_relations() {
+        let parsed = parse_template_config_kdl(r#"
+            template "item/detail" {
+                field "hidden" role="fact" structured-only=true condition="collapsed" literal="value"
+                field "fallback" role="fact" { value key="missing-first"; value key="missing-second"; }
+                field "relations" role="relation" key="refs"
             }
-        "#).unwrap());
-        let facts = BTreeMap::from([
-            ("entity.kind".into(), MetadataValue::Text("item".into())),
-            ("entity.id".into(), MetadataValue::Text("id".into())),
-        ]);
+        "#).unwrap();
+        let targets = [
+            EntityRef {
+                kind: "item".into(),
+                id: "a".into(),
+            },
+            EntityRef {
+                kind: "item".into(),
+                id: "b".into(),
+            },
+        ];
+        let metadata = BTreeMap::from([(
+            "refs".into(),
+            MetadataValue::EntityRefs(vec![
+                targets[0].clone(),
+                targets[0].clone(),
+                targets[1].clone(),
+                targets[0].clone(),
+            ]),
+        )]);
         let context = TemplateConfigMatchContext {
             slot: TemplateConfigSlot::Detail,
             node_kind: TemplateConfigNodeKind::Entity,
-            metadata: &facts,
+            metadata: &metadata,
             collapsed: false,
-            collapsible: false,
+            collapsible: true,
             active_tab_name: None,
         };
-        let resolved = catalog.resolve(context).unwrap().unwrap();
-        let flat = resolved.render_fields(context);
-        assert_eq!(flat.len(), 1);
-        assert_eq!(flat[0].value, "Prefix: value!");
-        let decoded = parse_template_config_kdl(&resolved.dump_kdl()).unwrap();
-        let TemplateConfigFieldOperation::Set { field } = &decoded.templates[0].operations[1]
-        else {
-            panic!("field expected")
-        };
-        assert!(field.structured_only);
+        let fields: Vec<_> = parsed.templates[0]
+            .operations
+            .iter()
+            .map(|op| {
+                let TemplateConfigFieldOperation::Set { field } = op else {
+                    panic!("field expected")
+                };
+                field
+            })
+            .collect();
+        assert!(resolve_field(fields[0], context, &BTreeMap::new()).is_none());
         assert_eq!(
-            super::resolve_field(field, context, &BTreeMap::new())
-                .unwrap()
-                .text
-                .as_deref(),
-            Some("id")
+            resolve_field(
+                fields[0],
+                TemplateConfigMatchContext {
+                    collapsed: true,
+                    ..context
+                },
+                &BTreeMap::new()
+            )
+            .unwrap()
+            .text
+            .as_deref(),
+            Some("value")
         );
-        assert!(parse_template_config_kdl(
-            r#"template "item/detail" { field "x" structured-only="true" literal="x"; }"#
-        )
-        .is_err());
+        let missing = resolve_field(fields[1], context, &BTreeMap::new()).unwrap();
+        assert_eq!(missing.text, None);
+        assert_eq!(missing.source_key, "");
+        assert_eq!(
+            resolve_field(fields[2], context, &BTreeMap::new())
+                .unwrap()
+                .relations,
+            targets
+        );
+        assert_eq!(
+            [
+                DetailRole::Identity,
+                DetailRole::Title,
+                DetailRole::State,
+                DetailRole::Fact,
+                DetailRole::Relation
+            ]
+            .map(|role| role as u32),
+            [0, 1, 2, 3, 4]
+        );
     }
 }

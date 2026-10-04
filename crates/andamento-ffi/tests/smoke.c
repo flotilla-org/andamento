@@ -62,7 +62,8 @@ static void check_workdirs(void) {
     ok(andamento_observe(h, &ws, 1, NULL, 0, &error));
     AndamentoWorkdir dir = {7, T("/repo")};
     ok(andamento_observe_workdirs(h, &dir, 1, &error));
-    AndamentoSnapshot *s = snapshot(h);
+    AndamentoSnapshot *s = andamento_snapshot_acquire_details(h, &error);
+    assert(s && !error);
     assert(find_node(s, "item").state == ANDAMENTO_LIVE);
     /* Structured cards retain live preview identity outside their field roles,
      * and dispatch exactly the same workspace control as the flat tree. */
@@ -97,7 +98,8 @@ static void check_typed_details(const char *path) {
     for (char *line = strtok(patches, "\n"); line; line = strtok(NULL, "\n"))
         ok(andamento_apply_patch_json(h, 42, (AndamentoText){(uint8_t *)line, strlen(line)}, &error));
     free(patches);
-    AndamentoSnapshot *s = snapshot(h);
+    AndamentoSnapshot *s = andamento_snapshot_acquire_details(h, &error);
+    assert(s && !error);
     assert(andamento_snapshot_detail_count(s) == 6);
     const char *kinds[] = {"change_request", "issue", "convoy", "role", "project", "worktree"};
     for (size_t k = 0; k < 6; k++) {
@@ -106,17 +108,21 @@ static void check_typed_details(const char *path) {
             (AndamentoText){(const uint8_t *)id, strlen(id)});
         assert(index != ANDAMENTO_NONE);
         AndamentoDetail d; assert(andamento_snapshot_detail(s, index, &d));
-        assert(d.now_ms == 42 && d.error.len == 0);
+        assert(d.now_ms == 42 && d.error.len == 0 && d.error.data != NULL);
         unsigned roles = 0;
         for (size_t i = 0; i < d.field_count; i++) {
             AndamentoDetailField f; assert(andamento_snapshot_detail_field(s, index, i, &f));
             roles |= 1u << f.role;
+            if (eq(f.name, "identity")) assert(f.role == ANDAMENTO_DETAIL_IDENTITY);
+            if (eq(f.name, "label")) assert(f.role == ANDAMENTO_DETAIL_TITLE);
+            if (eq(f.name, "state")) assert(f.role == ANDAMENTO_DETAIL_STATE);
+            if (eq(f.name, "related")) assert(f.role == ANDAMENTO_DETAIL_RELATION);
             if (eq(f.name, "summary")) {
                 assert(f.role == ANDAMENTO_DETAIL_FACT && eq(f.label, "Summary"));
                 assert(f.has_value && !f.text.len && f.has_observation && f.observed_at_ms == 42);
                 assert(f.has_ttl && f.ttl_ms == 100 && !f.stale && eq(f.source_id, "fixture-producer"));
             }
-            if (k == 5 && eq(f.name, "branch")) assert(!f.has_value && !f.has_observation);
+            if (k == 5 && eq(f.name, "branch")) assert(!f.has_value && !f.has_observation && f.text.data != NULL && f.source_id.data != NULL);
             if (k == 5 && eq(f.name, "related")) {
                 AndamentoDetailRelation r;
                 assert(andamento_snapshot_detail_relation(s, index, i, 0, NULL, 0, &r));

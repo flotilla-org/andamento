@@ -133,6 +133,7 @@ uint32_t andamento_snapshot_control(const AndamentoSnapshot *, size_t index, And
 size_t andamento_snapshot_diagnostic_count(const AndamentoSnapshot *);
 uint32_t andamento_snapshot_diagnostic(const AndamentoSnapshot *, size_t index, AndamentoText *out);
 /* Optional structured-detail extension (probe symbols with dlsym). ABI remains 2.
+ * Opt in via andamento_snapshot_acquire_details; legacy acquire resolves no cards.
  * Indices, actions and borrowed UTF-8 texts belong to this immutable snapshot.
  * Enumerate catalog cards or find exact kind/id, independent of tree placement.
  * Invalid indices/pointers/UTF-8 return 0 (find returns ANDAMENTO_NONE).
@@ -140,8 +141,10 @@ uint32_t andamento_snapshot_diagnostic(const AndamentoSnapshot *, size_t index, 
  * Observations use host monotonic milliseconds, not Unix time; observed_at_ms
  * is the winning fact's receipt time. TTL and source_id identify freshness and
  * producer provenance. Synthetic facts have no observation. Retained expired
- * facts may be stale; unavailable producer provenance has an empty source_id.
+ * facts may be stale; their original winning producer identity is retained.
+ * Identical TTL heartbeats refresh receipt time (age is not time since change).
  * Relation display_text is the target's label, separate from its exact identity.
+ * Duplicate references keep their first occurrence. A missing field has no source_key.
  * detail is ANDAMENTO_NONE when no catalog target exists. Pass the exact kind/id
  * navigation path to relation(); 0 means skip this index. Self links are omitted.
  * activate/copy_url use the existing andamento_dispatch validation/effect path:
@@ -150,6 +153,7 @@ uint32_t andamento_snapshot_diagnostic(const AndamentoSnapshot *, size_t index, 
  * Preview identity remains the existing node workspace_id; no field role
  * changes attachment policy or chooses a preview workspace.
  */
+AndamentoSnapshot *andamento_snapshot_acquire_details(Andamento *, char **error_out);
 enum { ANDAMENTO_DETAIL_IDENTITY, ANDAMENTO_DETAIL_TITLE, ANDAMENTO_DETAIL_STATE,
        ANDAMENTO_DETAIL_FACT, ANDAMENTO_DETAIL_RELATION };
 typedef struct { AndamentoText kind, id; } AndamentoEntity;

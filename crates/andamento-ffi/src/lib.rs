@@ -379,6 +379,7 @@ struct Node {
     copy_url: usize,
     toggle: usize,
 }
+/// Immutable catalog card and existing dispatch references, owned by a detail snapshot.
 struct Detail {
     card: andamento_core::detail::DetailCard,
     activate: usize,
@@ -387,6 +388,7 @@ struct Detail {
 pub struct AndamentoSnapshot {
     now_ms: u64,
     details: Vec<Detail>,
+    detail_index: std::collections::BTreeMap<EntityRef, usize>,
     client: u64,
     generation: u64,
     nodes: Vec<Node>,
@@ -543,11 +545,27 @@ pub unsafe extern "C" fn andamento_snapshot_acquire(
     h: *mut Andamento,
     error: *mut *mut c_char,
 ) -> *mut AndamentoSnapshot {
+    acquire_snapshot(h, error, false)
+}
+/// Opt in to catalog detail resolution; legacy acquisition does no detail work.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_acquire_details(
+    h: *mut Andamento,
+    error: *mut *mut c_char,
+) -> *mut AndamentoSnapshot {
+    acquire_snapshot(h, error, true)
+}
+unsafe fn acquire_snapshot(
+    h: *mut Andamento,
+    error: *mut *mut c_char,
+    include_details: bool,
+) -> *mut AndamentoSnapshot {
     run(h, error, |h| {
         let snapshot = h.sidebar.snapshot();
         let mut out = AndamentoSnapshot {
             now_ms: 0,
             details: vec![],
+            detail_index: Default::default(),
             client: h.client,
             generation: h.sidebar.revision(),
             nodes: vec![],
@@ -627,24 +645,28 @@ pub unsafe extern "C" fn andamento_snapshot_acquire(
                 };
             }
         }
-        let (now_ms, cards) = h.sidebar.detail_cards();
-        out.now_ms = now_ms;
-        for card in cards {
-            let activate = out.action(Action::Activate {
-                entity: card.entity.clone(),
-            });
-            let copy_url = if h.sidebar.subject_url(&card.entity).is_some() {
-                out.action(Action::CopySubjectUrl {
+        if include_details {
+            let (now_ms, cards) = h.sidebar.detail_cards();
+            out.now_ms = now_ms;
+            for card in cards {
+                let activate = out.action(Action::Activate {
                     entity: card.entity.clone(),
-                })
-            } else {
-                NONE
-            };
-            out.details.push(Detail {
-                card,
-                activate,
-                copy_url,
-            });
+                });
+                let copy_url = if h.sidebar.subject_url(&card.entity).is_some() {
+                    out.action(Action::CopySubjectUrl {
+                        entity: card.entity.clone(),
+                    })
+                } else {
+                    NONE
+                };
+                out.detail_index
+                    .insert(card.entity.clone(), out.details.len());
+                out.details.push(Detail {
+                    card,
+                    activate,
+                    copy_url,
+                });
+            }
         }
         Ok(Box::into_raw(Box::new(out)))
     })
@@ -718,9 +740,9 @@ pub unsafe extern "C" fn andamento_snapshot_detail_find(
     let (Some(s), Ok(kind), Ok(id)) = (s.as_ref(), kind.read(), id.read()) else {
         return NONE;
     };
-    s.details
-        .iter()
-        .position(|d| d.card.entity.kind == kind && d.card.entity.id == id)
+    s.detail_index
+        .get(&EntityRef { kind, id })
+        .copied()
         .unwrap_or(NONE)
 }
 #[no_mangle]
@@ -792,13 +814,7 @@ pub unsafe extern "C" fn andamento_snapshot_detail_field(
     let Some(f) = s.details.get(detail).and_then(|d| d.card.fields.get(field)) else {
         return 0;
     };
-    let role = match f.role {
-        andamento_core::template_config::DetailRole::Identity => 0,
-        andamento_core::template_config::DetailRole::Title => 1,
-        andamento_core::template_config::DetailRole::State => 2,
-        andamento_core::template_config::DetailRole::Fact => 3,
-        andamento_core::template_config::DetailRole::Relation => 4,
-    };
+    let role = f.role as u32;
     let ttl = f.observation.as_ref().and_then(|o| o.ttl_ms);
     let observed = f.observation.as_ref().map_or(0, |o| o.updated_at);
     *out = DetailFieldView {
@@ -849,7 +865,7 @@ pub unsafe extern "C" fn andamento_snapshot_detail_relation(
             return 0;
         }
     }
-    let target = s.details.iter().position(|d| &d.card.entity == entity);
+    let target = s.detail_index.get(entity).copied();
     *out = DetailRelationView {
         entity: entity_view(entity),
         display_text: Text::borrowed(target.map_or(entity.id.as_str(), |index| {

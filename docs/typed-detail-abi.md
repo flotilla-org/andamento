@@ -49,6 +49,10 @@ such as `flotilla.project`, are not inferred as links.
 
 ## Snapshot lookup and ownership
 
+Opt in by acquiring with `andamento_snapshot_acquire_details`; ordinary
+`andamento_snapshot_acquire` retains the flat-client cost and produces no cards.
+Detail identity lookup and relation target lookup use a snapshot-owned index.
+
 All output buffers are borrowed from an acquired immutable `AndamentoSnapshot`;
 release it only after finishing all reads. Indices are snapshot-local. Reacquire
 and find by exact kind/id after draining facts, time, configuration, topology or
@@ -57,6 +61,7 @@ existing snapshot generation/client validation, including for these new actions.
 
 | Export | Result |
 | --- | --- |
+| `andamento_snapshot_acquire_details` | Opt-in enriched snapshot acquisition |
 | `andamento_snapshot_detail_count` | Number of catalog cards |
 | `andamento_snapshot_detail_find` | Exact kind/id lookup; `ANDAMENTO_NONE` when unavailable |
 | `andamento_snapshot_detail` | Card identity, label, field count, action IDs, clock, error, optional workspace ID |
@@ -71,20 +76,24 @@ is reported in the card's `error`; no field contents are guessed.
 `has_value=0` denotes a missing fact; `has_value=1` with zero-length text denotes
 known empty. Empty literals and empty typed lists are also known values. Missing
 fields remain declared so consumers can choose their presentation. `source_key`
-identifies the chosen metadata source, or the first declared metadata key when
-all sources are missing; literal/synthetic values have no source key.
+identifies the winning metadata source. When no fallback source resolves, it is
+empty; no declared key is guessed as the cause of a missing fact.
+Literal/synthetic values also have no source key.
 
 `has_observation` distinguishes an observation from a synthetic value.
 `observed_at_ms` is the winning fact's controller receipt/refresh time, in the
 same **host monotonic millisecond domain** as the card's `now_ms`, not a Unix
 or producer event timestamp. `source_id` identifies that winning producer.
-Retained observations whose producer contribution is no longer available have
-an empty source ID. `has_ttl` distinguishes no expiry from a zero TTL; deadlines
+Producer identity is carried from the same arbitration pass that selected the
+fact, and is preserved with retained observations even after lease expiry.
+Identical assertions with a TTL refresh receipt time and the lease; age denotes
+last observation rather than last value change. Identical assertions without a
+TTL preserve the existing observation time, matching the fact store contract. `has_ttl` distinguishes no expiry from a zero TTL; deadlines
 use saturating addition. A fact is stale strictly after `observed_at_ms + ttl_ms`.
 Ordinary expired facts become missing; retained workspace facts can remain stale.
 Frontends own relative-age formatting and stale colors.
 
-Relations come directly from typed entity references. Self references are omitted.
+Relations come directly from typed entity references. Self references are omitted; duplicate references retain only their first occurrence.
 Iterate `relation_count`, passing the exact kind/id navigation path to each
 relation lookup; return 0 means skip that index. Path filtering does not renumber
 indices. The display text is the target's current label (its ID if unavailable).
