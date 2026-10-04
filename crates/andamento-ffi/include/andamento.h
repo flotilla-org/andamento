@@ -130,6 +130,8 @@ uint32_t andamento_snapshot_node(const AndamentoSnapshot *, size_t index, Andame
 uint32_t andamento_snapshot_node_loop_key(const AndamentoSnapshot *, size_t index, AndamentoText *out);
 uint32_t andamento_snapshot_field(const AndamentoSnapshot *, size_t index, AndamentoField *out);
 uint32_t andamento_snapshot_control(const AndamentoSnapshot *, size_t index, AndamentoControl *out);
+uint32_t andamento_snapshot_control_variable(const AndamentoSnapshot *, size_t index,
+    AndamentoText *name, uint32_t *persist);
 size_t andamento_snapshot_diagnostic_count(const AndamentoSnapshot *);
 uint32_t andamento_snapshot_diagnostic(const AndamentoSnapshot *, size_t index, AndamentoText *out);
 /* Action references belong to one snapshot. Another client or a snapshot from

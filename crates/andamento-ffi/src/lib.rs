@@ -353,6 +353,8 @@ struct Control {
     value: String,
     value_kind: u32,
     checked: bool,
+    variable: String,
+    persist: bool,
 }
 struct Node {
     parent: usize,
@@ -432,6 +434,8 @@ impl AndamentoSnapshot {
                 value: String::new(),
                 value_kind: 0,
                 checked: false,
+                variable: c.variable.clone().unwrap_or_default(),
+                persist: false,
             });
         }
         if let Some(error) = &content.error {
@@ -590,7 +594,7 @@ pub unsafe extern "C" fn andamento_snapshot_acquire(
             if control.kind != 1 {
                 continue;
             }
-            if let Some(value) = snapshot.surface.display_values.get(&control.label) {
+            if let Some(value) = snapshot.surface.display_values.get(&control.variable) {
                 match value {
                     andamento_core::DisplayVariableValue::Bool(value) => {
                         control.value_kind = 1;
@@ -606,8 +610,9 @@ pub unsafe extern "C" fn andamento_snapshot_acquire(
                 .surface
                 .display_variables
                 .iter()
-                .find(|d| d.name == control.label)
+                .find(|d| d.name == control.variable)
             {
+                control.persist = definition.persist;
                 if control.glyph.is_empty() {
                     control.glyph = definition.icon.clone();
                 }
@@ -766,6 +771,28 @@ pub unsafe extern "C" fn andamento_snapshot_control(
     };
     1
 }
+/// Additive ABI 2 accessor: declarations own persistence policy, while hosts
+/// own storage. The variable name is snapshot-owned, independent of its label.
+/// Undeclared variables report persist=0. Invalid inputs and non-display controls
+/// return 0 without changing either output.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_control_variable(
+    s: *const AndamentoSnapshot,
+    index: usize,
+    name: *mut Text,
+    persist: *mut u32,
+) -> u32 {
+    let Some(c) = s.as_ref().and_then(|s| s.controls.get(index)) else {
+        return 0;
+    };
+    if c.kind != 1 || c.variable.is_empty() || name.is_null() || persist.is_null() {
+        return 0;
+    }
+    *name = Text::borrowed(&c.variable);
+    *persist = c.persist as u32;
+    1
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn andamento_snapshot_diagnostic_count(s: *const AndamentoSnapshot) -> usize {
     s.as_ref().map_or(0, |s| s.diagnostics.len())
@@ -1154,6 +1181,168 @@ mod tests {
             }
             andamento_destroy(h);
             assert!(error.is_null());
+        }
+    }
+
+    unsafe fn display_control_fixture() -> (*mut Andamento, *mut AndamentoSnapshot) {
+        let config = r#"version 1
+        display-variable "history" type="bool" default=false label="Show finished" icon="F" persist=true
+        display-variable "temporary" type="bool" default=true label="Temporary" icon="T" persist=false
+        region "tree" root-template="test" form="compact" placement="tree"
+        placement "tree" { for "item" kind="test"; }
+        template "test" slot="compact" node-kind="entity" {
+            control "display-variable" variable="history"
+            control "display-variable" variable="temporary"
+            control "display-variable" variable="undeclared"
+            control "open-config" label="Configure"
+        }
+    "#;
+        let mut error = ptr::null_mut();
+        let h = andamento_create(config.as_ptr(), config.len(), &mut error);
+        assert!(
+            !h.is_null(),
+            "{}",
+            if error.is_null() {
+                "no error".into()
+            } else {
+                CStr::from_ptr(error).to_string_lossy()
+            }
+        );
+        let snapshot = andamento_snapshot_acquire(h, &mut error);
+        assert!(!snapshot.is_null());
+        assert!(error.is_null());
+        (h, snapshot)
+    }
+
+    #[test]
+    fn display_control_identity_and_persistence_are_snapshot_owned() {
+        unsafe {
+            let (h, snapshot) = display_control_fixture();
+            let mut error = ptr::null_mut();
+            let index = (*snapshot)
+                .controls
+                .iter()
+                .position(|c| c.variable == "history")
+                .unwrap();
+            let mut name = Text::borrowed("sentinel");
+            let mut persist = 99;
+            assert_eq!(
+                andamento_snapshot_control_variable(snapshot, index, &mut name, &mut persist),
+                1
+            );
+            assert_eq!(name.read().unwrap(), "history");
+            assert_eq!((&(*snapshot).controls)[index].label, "Show finished");
+            assert_eq!(persist, 1);
+            assert_eq!(
+                andamento_dispatch(
+                    h,
+                    snapshot,
+                    (&(*snapshot).controls)[index].action,
+                    &mut error
+                ),
+                1
+            );
+            let next = andamento_snapshot_acquire(h, &mut error);
+            assert!((&(*next).controls)[index].checked);
+            assert!(!(&(*snapshot).controls)[index].checked);
+            let ephemeral = (*snapshot)
+                .controls
+                .iter()
+                .position(|c| c.variable == "temporary")
+                .unwrap();
+            assert_eq!(
+                andamento_snapshot_control_variable(snapshot, ephemeral, &mut name, &mut persist),
+                1
+            );
+            assert_eq!(persist, 0);
+            let undeclared = (*snapshot)
+                .controls
+                .iter()
+                .position(|c| c.variable == "undeclared")
+                .unwrap();
+            assert_eq!(
+                andamento_snapshot_control_variable(snapshot, undeclared, &mut name, &mut persist),
+                1
+            );
+            assert_eq!(name.read().unwrap(), "undeclared");
+            assert_eq!(persist, 0);
+            andamento_destroy(h);
+            // Declaration identity borrows from the snapshot, not the live core.
+            assert_eq!(name.read().unwrap(), "undeclared");
+            andamento_snapshot_release(snapshot);
+            andamento_snapshot_release(next);
+            assert!(error.is_null());
+        }
+    }
+
+    #[test]
+    fn display_control_invalid_inputs_preserve_outputs() {
+        unsafe {
+            let (h, snapshot) = display_control_fixture();
+            let index = 0;
+            let mut name = Text::borrowed("sentinel");
+            let mut persist = 99;
+
+            assert_eq!(
+                andamento_snapshot_control_variable(snapshot, usize::MAX, &mut name, &mut persist),
+                0
+            );
+            assert_eq!(name.read().unwrap(), "sentinel");
+            assert_eq!(persist, 99);
+            assert_eq!(
+                andamento_snapshot_control_variable(snapshot, index, ptr::null_mut(), &mut persist),
+                0
+            );
+            let host_control = (*snapshot)
+                .controls
+                .iter()
+                .position(|c| c.kind == 0)
+                .unwrap();
+            persist = 99;
+            assert_eq!(
+                andamento_snapshot_control_variable(
+                    snapshot,
+                    host_control,
+                    &mut name,
+                    &mut persist
+                ),
+                0
+            );
+            assert_eq!(name.read().unwrap(), "sentinel");
+            assert_eq!(persist, 99);
+            assert_eq!(
+                andamento_snapshot_control_variable(ptr::null(), index, &mut name, &mut persist),
+                0
+            );
+            assert_eq!(
+                andamento_snapshot_control_variable(snapshot, index, &mut name, ptr::null_mut()),
+                0
+            );
+            assert_eq!(name.read().unwrap(), "sentinel");
+            assert_eq!(persist, 99);
+            andamento_destroy(h);
+            andamento_snapshot_release(snapshot);
+        }
+    }
+
+    #[test]
+    fn display_control_empty_identity_preserves_outputs() {
+        unsafe {
+            let (h, snapshot) = display_control_fixture();
+            let index = 0;
+            let mut name = Text::borrowed("sentinel");
+            let mut persist = 99;
+            // KDL rejects missing variable attributes. Exercise the defensive
+            // empty-name boundary with an intentionally invalid snapshot record.
+            (&mut (*snapshot).controls)[index].variable.clear();
+            assert_eq!(
+                andamento_snapshot_control_variable(snapshot, index, &mut name, &mut persist),
+                0
+            );
+            assert_eq!(name.read().unwrap(), "sentinel");
+            assert_eq!(persist, 99);
+            andamento_destroy(h);
+            andamento_snapshot_release(snapshot);
         }
     }
 
