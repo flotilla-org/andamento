@@ -50,7 +50,9 @@ such as `flotilla.project`, are not inferred as links.
 ## Snapshot lookup and ownership
 
 Opt in by acquiring with `andamento_snapshot_acquire_details`; ordinary
-`andamento_snapshot_acquire` retains the flat-client cost and produces no cards.
+`andamento_snapshot_acquire` retains the flat-client cost and produces no cards:
+`detail_count` returns 0 and `detail_find` returns `ANDAMENTO_NONE`, even for an
+entity present in the flat tree. Zero-length output text has a non-null pointer.
 Detail identity lookup and relation target lookup use a snapshot-owned index.
 
 All output buffers are borrowed from an acquired immutable `AndamentoSnapshot`;

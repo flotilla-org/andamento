@@ -134,6 +134,8 @@ size_t andamento_snapshot_diagnostic_count(const AndamentoSnapshot *);
 uint32_t andamento_snapshot_diagnostic(const AndamentoSnapshot *, size_t index, AndamentoText *out);
 /* Optional structured-detail extension (probe symbols with dlsym). ABI remains 2.
  * Opt in via andamento_snapshot_acquire_details; legacy acquire resolves no cards.
+ * On a legacy snapshot detail_count is 0 and detail_find is ANDAMENTO_NONE.
+ * All zero-length output Text values have non-NULL data pointers.
  * Indices, actions and borrowed UTF-8 texts belong to this immutable snapshot.
  * Enumerate catalog cards or find exact kind/id, independent of tree placement.
  * Invalid indices/pointers/UTF-8 return 0 (find returns ANDAMENTO_NONE).
