@@ -255,6 +255,7 @@ struct ControllerPane {
 struct PendingLatentMaterialization {
     request: crate::MaterializeLatentRequest,
     tab_id: Option<u64>,
+    subject: Option<EntityRef>,
 }
 
 #[cfg(test)]
@@ -413,6 +414,8 @@ pub struct ControllerState {
     pane_to_tab: HashMap<PaneTarget, u64>,
     panes: HashMap<PaneTarget, ControllerPane>,
     metadata: MetadataStore,
+    retained_subjects: BTreeMap<EntityRef, CatalogEntity>,
+    ended_subjects: BTreeSet<EntityRef>,
     pane_statuses: HashMap<PaneTarget, StoredPaneStatus>,
     pinned_tabs: HashSet<u64>,
     clients: BTreeMap<u16, ControllerClientState>,
@@ -436,6 +439,8 @@ impl Default for ControllerState {
             pane_to_tab: Default::default(),
             panes: Default::default(),
             metadata: Default::default(),
+            retained_subjects: Default::default(),
+            ended_subjects: Default::default(),
             pane_statuses: Default::default(),
             pinned_tabs: Default::default(),
             clients: Default::default(),
@@ -862,6 +867,24 @@ impl ControllerState {
     }
 
     pub fn apply_metadata_patch(&mut self, patch: crate::MetadataPatch) -> bool {
+        // A producer removes an entity by unsetting both identity facts. TTL
+        // expiry and reassertion after a connection loss never take this path.
+        let removed = match &patch.target {
+            crate::MetadataTarget::Entity(entity)
+                if patch.unset.iter().any(|key| key == KEY_ENTITY_ID)
+                    && patch.unset.iter().any(|key| key == KEY_ENTITY_KIND)
+                    && !patch.set.contains_key(KEY_ENTITY_ID)
+                    && !patch.set.contains_key(KEY_ENTITY_KIND)
+                    && self.metadata.source_contributes(
+                        &EntityId::Entity(entity.clone()),
+                        KEY_ENTITY_ID,
+                        &patch.source_id,
+                    ) =>
+            {
+                Some(entity.clone())
+            }
+            _ => None,
+        };
         let next_receive_counter = self.receive_counter.saturating_add(1);
         let outcome = self
             .metadata
@@ -869,7 +892,14 @@ impl ControllerState {
         if outcome.touched {
             self.receive_counter = next_receive_counter;
         }
-        outcome.view_changed
+        let mut ended_changed = false;
+        if let Some(entity) = removed {
+            if self.retained_subjects.contains_key(&entity) {
+                ended_changed = self.ended_subjects.insert(entity);
+            }
+        }
+        self.refresh_retained_subjects();
+        outcome.view_changed || ended_changed
     }
 
     pub fn bootstrap_snapshot(&self) -> ControllerBootstrapSnapshot {
@@ -1353,7 +1383,11 @@ impl ControllerState {
             })
             .collect::<BTreeMap<_, _>>();
         let mut live = BTreeMap::new();
+        let ended_workspaces = self.ended_workspace_ids();
         for workspace in &self.tabs {
+            if !self.show_finished() && ended_workspaces.contains(&workspace.tab_id) {
+                continue;
+            }
             if let Some(values) = tab_metadata.get(&workspace.tab_id) {
                 let target = metadata_entry_text(values, KEY_ACTION_TARGET)
                     .map(str::to_owned)
@@ -1413,7 +1447,14 @@ impl ControllerState {
             &states,
         ));
         if let Some(surface) = &mut model.presentation {
-            surface.cover_workspaces(&self.tabs);
+            let ended = self.ended_workspace_ids();
+            let workspaces = self
+                .tabs
+                .iter()
+                .filter(|w| !ended.contains(&w.tab_id))
+                .cloned()
+                .collect::<Vec<_>>();
+            surface.cover_workspaces(&workspaces);
         }
         model
     }
@@ -1552,6 +1593,7 @@ impl ControllerState {
             })
             .filter_map(|position| entities.get(*position))
             .filter(|entity| !ancestors.contains(&entity.entity))
+            .filter(|entity| self.show_finished() || !self.ended_subjects.contains(&entity.entity))
             .collect::<Vec<_>>();
         if let Some(key) = &loop_definition.in_key {
             let Some(MetadataValue::EntityRefs(refs)) = loop_definition
@@ -2013,6 +2055,103 @@ impl ControllerState {
             .collect()
     }
 
+    /// Keep just the subjects and ancestors needed by open workspace paths.
+    /// This is presentation history, never input to producer fact arbitration.
+    pub(crate) fn retain_workspace_paths(&mut self, subjects: BTreeSet<EntityRef>) {
+        self.retained_subjects
+            .retain(|entity, _| subjects.contains(entity));
+        self.ended_subjects
+            .retain(|entity| subjects.contains(entity));
+        for subject in subjects {
+            if !self.retained_subjects.contains_key(&subject) {
+                let target = EntityId::Entity(subject.clone());
+                let values = self.metadata.resolved_entries_for(&target, self.now());
+                if !values.is_empty() {
+                    self.retained_subjects.insert(
+                        subject.clone(),
+                        CatalogEntity {
+                            entity: subject,
+                            values,
+                            ordinal: self.metadata.target_ordinal(&target).unwrap_or_default(),
+                        },
+                    );
+                }
+            }
+        }
+        self.refresh_retained_subjects();
+    }
+
+    fn refresh_retained_subjects(&mut self) {
+        for (subject, retained) in &mut self.retained_subjects {
+            let values = self.metadata.resolved_entries_for(
+                &EntityId::Entity(subject.clone()),
+                self.clock_ms.unwrap_or(self.receive_counter),
+            );
+            // Explicit deletion leaves the producer's source fact behind.
+            if values.contains_key(KEY_ENTITY_ID) || values.contains_key(KEY_DISPLAY_LABEL) {
+                retained.values.extend(values);
+            }
+            let terminal = matches!(subject.kind.as_str(), "convoy" | "vessel")
+                && (matches!(
+                    metadata_entry_text(&retained.values, "flotilla.convoy.phase"),
+                    Some("landed" | "abandoned" | "cancelled")
+                ) || matches!(
+                    retained
+                        .values
+                        .get("flotilla.convoy.superseded")
+                        .map(|e| &e.value),
+                    Some(MetadataValue::Bool(true))
+                ));
+            if terminal {
+                self.ended_subjects.insert(subject.clone());
+            }
+        }
+    }
+
+    pub(crate) fn mark_ended_workspace_paths(
+        &mut self,
+        paths: &BTreeMap<u64, BTreeSet<EntityRef>>,
+    ) {
+        for (id, path) in paths {
+            if path
+                .iter()
+                .any(|subject| self.ended_subjects.contains(subject))
+            {
+                if let Some(subject) = self.workspace_subject(*id) {
+                    self.ended_subjects.insert(subject);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn workspace_subject(&self, id: u64) -> Option<EntityRef> {
+        self.tab_entity_ref(id, &self.tab_seed_metadata_entries())
+    }
+
+    pub(crate) fn ended_workspace_ids(&self) -> BTreeSet<u64> {
+        let seeds = self.tab_seed_metadata_entries();
+        self.tabs
+            .iter()
+            .filter_map(|tab| {
+                let subject = self.tab_entity_ref(tab.tab_id, &seeds)?;
+                self.ended_subjects.contains(&subject).then_some(tab.tab_id)
+            })
+            .collect()
+    }
+
+    fn show_finished(&self) -> bool {
+        matches!(
+            self.rail_ui.variables.get("show-finished").or_else(|| self
+                .template_catalog
+                .as_ref()?
+                .display_variables()
+                .iter()
+                .find(|v| v.name == "show-finished")
+                .map(|v| &v.default)),
+            Some(DisplayVariableValue::Bool(true))
+        )
+    }
+
     fn catalog_entities(&self) -> Vec<CatalogEntity> {
         #[cfg(test)]
         CATALOG_BUILDS.with(|count| count.set(count.get() + 1));
@@ -2034,6 +2173,37 @@ impl ControllerState {
                 })
             })
             .collect::<Vec<_>>();
+        for (subject, retained) in &self.retained_subjects {
+            if let Some(current) = entities.iter_mut().find(|e| &e.entity == subject) {
+                let mut values = retained.values.clone();
+                values.extend(current.values.clone());
+                current.values = values;
+            } else {
+                entities.push(retained.clone());
+            }
+        }
+        for entity in &mut entities {
+            if self.ended_subjects.contains(&entity.entity) {
+                if let Some(label) = entity.values.get_mut(KEY_DISPLAY_LABEL) {
+                    if let MetadataValue::Text(text) = &mut label.value {
+                        text.push_str(" (ended)");
+                    }
+                }
+                entity.values.insert(
+                    KEY_STATUS_STATE.to_owned(),
+                    MetadataEntry {
+                        value: MetadataValue::Text("ended".to_owned()),
+                        updated_at: self.now(),
+                        ttl_ms: None,
+                        precedence: 0,
+                        ordinal: entity.ordinal,
+                    },
+                );
+                // Producer abbreviations must not hide the ended marker.
+                entity.values.remove("display.label.medium");
+                entity.values.remove("display.label.short");
+            }
+        }
         entities.sort_by(|a, b| {
             a.ordinal
                 .cmp(&b.ordinal)
@@ -2143,6 +2313,7 @@ impl ControllerState {
             PendingLatentMaterialization {
                 request: request.clone(),
                 tab_id: None,
+                subject: None,
             },
         );
         true
@@ -2165,6 +2336,22 @@ impl ControllerState {
         pending.tab_id = Some(tab_id);
         self.pending_materialized_tab_names
             .insert(tab_id, request.name.clone());
+        true
+    }
+
+    pub(crate) fn bind_materializing_subject(
+        &mut self,
+        request: &crate::MaterializeLatentRequest,
+        tab_id: u64,
+        subject: EntityRef,
+    ) -> bool {
+        if !self.bind_materializing_tab(request, tab_id) {
+            return false;
+        }
+        self.pending_latent_materializations
+            .get_mut(&request.action_target)
+            .unwrap()
+            .subject = Some(subject);
         true
     }
 
@@ -2356,14 +2543,15 @@ impl ControllerState {
                     action_target.clone(),
                     tab_id,
                     pending.request.clone(),
+                    pending.subject.clone(),
                 ))
             })
             .collect::<Vec<_>>();
-        for (action_target, tab_id, request) in &claims {
+        for (action_target, tab_id, request, subject) in &claims {
             if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.tab_id == *tab_id) {
                 tab.name = request.name.clone();
             }
-            self.apply_materialized_identity(*tab_id, request);
+            self.apply_materialized_identity(*tab_id, request, subject.clone());
             self.pending_latent_materializations.remove(action_target);
         }
         !claims.is_empty()
@@ -2373,18 +2561,19 @@ impl ControllerState {
         &mut self,
         tab_id: u64,
         request: &crate::MaterializeLatentRequest,
+        subject: Option<EntityRef>,
     ) -> bool {
-        let Some(entity) = self
-            .catalog_entities()
-            .into_iter()
-            .find(|entity| {
-                metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| entity.entity.action_target())
-                    == request.action_target
-            })
-            .map(|entity| entity.entity)
-        else {
+        let Some(entity) = subject.or_else(|| {
+            self.catalog_entities()
+                .into_iter()
+                .find(|entity| {
+                    metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| entity.entity.action_target())
+                        == request.action_target
+                })
+                .map(|entity| entity.entity)
+        }) else {
             return false;
         };
         self.apply_metadata_patch(crate::MetadataPatch {

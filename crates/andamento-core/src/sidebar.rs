@@ -1,6 +1,9 @@
 //! One presentation client's runtime. Hosts supply time and observations and
 //! execute returned effects. Transport and rendering do not run inside it.
-use std::{cell::OnceCell, collections::BTreeMap};
+use std::{
+    cell::OnceCell,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -135,6 +138,7 @@ pub struct Sidebar {
     next_request: u64,
     pending: BTreeMap<u64, Pending>,
     errors: BTreeMap<EntityRef, String>,
+    retained_paths: BTreeMap<u64, BTreeSet<EntityRef>>,
     pub managed: crate::managed::ManagedContent,
 }
 
@@ -196,14 +200,54 @@ impl Sidebar {
     /// Apply a drained batch before requesting a snapshot. Time is monotonic
     /// milliseconds in this instance, supplied by the host; an empty batch is a tick.
     pub fn apply(&mut self, now_ms: u64, patches: impl IntoIterator<Item = MetadataPatch>) {
+        self.retain_workspace_paths();
         let mut changed = self.state.advance_time(now_ms);
         for patch in patches {
             changed |= self.state.apply_metadata_patch(patch);
         }
+        self.state.mark_ended_workspace_paths(&self.retained_paths);
         if changed {
             self.managed.publish(self.state.managed_content());
             self.invalidate();
         }
+    }
+
+    fn retain_workspace_paths(&mut self) {
+        fn collect(
+            nodes: &[crate::presentation::PlacementNode],
+            ancestors: &BTreeSet<EntityRef>,
+            paths: &mut BTreeMap<u64, BTreeSet<EntityRef>>,
+        ) {
+            for node in nodes {
+                let mut path = ancestors.clone();
+                if node.entity.kind != "andamento.workspace" {
+                    path.insert(node.entity.clone());
+                }
+                if let crate::presentation::PresentationState::Live { workspace_id, .. } =
+                    node.state
+                {
+                    paths.entry(workspace_id).or_default().extend(path.clone());
+                }
+                collect(&node.children, &path, paths);
+            }
+        }
+        let mut paths = BTreeMap::new();
+        for section in &self.snapshot_shared().surface.sections {
+            collect(&section.nodes, &BTreeSet::new(), &mut paths);
+        }
+        self.retained_paths
+            .extend(paths.into_iter().filter(|(id, path)| {
+                self.state
+                    .workspace_subject(*id)
+                    .is_some_and(|subject| path.contains(&subject))
+            }));
+        self.retained_paths.retain(|id, subjects| {
+            self.state.workspaces().iter().any(|w| w.tab_id == *id)
+                && !retained_workspace_expired(&self.state, subjects)
+        });
+        self.state
+            .retain_workspace_paths(self.retained_paths.values().flatten().cloned().collect());
+        self.state.mark_ended_workspace_paths(&self.retained_paths);
     }
 
     /// Full host topology, including selected workspace. Closing a workspace
@@ -223,6 +267,10 @@ impl Sidebar {
                 .collect(),
         );
         changed |= self.state.observe_panes(panes);
+        if changed {
+            self.invalidate();
+        }
+        self.retain_workspace_paths();
         if changed {
             self.managed.publish(self.state.managed_content());
             self.invalidate();
@@ -259,11 +307,7 @@ impl Sidebar {
     pub fn snapshot_shared(&self) -> &Snapshot {
         self.snapshot.get_or_init(|| Snapshot {
             revision: self.revision,
-            surface: {
-                let mut surface = self.state.view_model().presentation.unwrap_or_default();
-                surface.cover_workspaces(self.state.workspaces());
-                surface
-            },
+            surface: self.state.view_model().presentation.unwrap_or_default(),
             errors: self
                 .errors
                 .iter()
@@ -440,7 +484,8 @@ impl Sidebar {
             }
             Pending::Materialize(entity, request) => match result {
                 Ok(Some(id)) => {
-                    self.state.bind_materializing_tab(&request, id);
+                    self.state
+                        .bind_materializing_subject(&request, id, entity.clone());
                     // If observation arrived before acknowledgement, claim now.
                     let current = self.state.workspaces().to_vec();
                     self.state.observe_workspaces(current);
@@ -470,4 +515,10 @@ impl Sidebar {
         self.next_request += 1;
         self.next_request
     }
+}
+
+/// Ended presentation expiry policy is intentionally undecided. Keep the seam
+/// shared by all retained workspace paths; user close is the only expiry today.
+fn retained_workspace_expired(_state: &ControllerState, _subjects: &BTreeSet<EntityRef>) -> bool {
+    false
 }
