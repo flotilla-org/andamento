@@ -1294,6 +1294,15 @@ mod tests {
             );
             assert_eq!(name.read().unwrap(), "undeclared");
             assert_eq!(persist, 99);
+            // KDL rejects missing variable attributes. Exercise the defensive
+            // empty-name boundary with an intentionally invalid snapshot record.
+            (&mut (*snapshot).controls)[index].variable.clear();
+            assert_eq!(
+                andamento_snapshot_control_variable(snapshot, index, &mut name, &mut persist),
+                0
+            );
+            assert_eq!(name.read().unwrap(), "undeclared");
+            assert_eq!(persist, 99);
             andamento_destroy(h);
             // Declaration identity borrows from the snapshot, not the live core.
             assert_eq!(name.read().unwrap(), "undeclared");
