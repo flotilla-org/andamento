@@ -207,6 +207,7 @@ impl Sidebar {
         for patch in patches {
             changed |= self.state.apply_metadata_patch(patch);
         }
+        changed |= self.state.refresh_retained_subjects();
         changed |= self
             .state
             .mark_ended_workspace_paths(&self.retained_paths, &subjects);
@@ -282,6 +283,8 @@ impl Sidebar {
         changed |= self.state.observe_panes(panes);
         let subjects = self.state.workspace_subjects();
         if changed {
+            // The first host topology observation establishes an open workspace
+            // and captures its subject before any later producer-removal drain.
             // Rebuild paths from the new topology before publishing one revision.
             self.snapshot.take();
             self.retained_paths_revision = None;

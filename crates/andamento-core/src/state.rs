@@ -926,12 +926,12 @@ impl ControllerState {
         // Explicit single-fact unsets on a still-observed subject are not
         // history. Keep the old record only for authoritative removal/loss.
         if !is_removal {
-            if let Some(entity) = retained_target {
+            if let Some(entity) = retained_target.as_ref() {
                 let current = self
                     .metadata
                     .resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
                 if current.contains_key(KEY_ENTITY_ID) || current.contains_key(KEY_DISPLAY_LABEL) {
-                    if let Some(retained) = self.retained_subjects.get_mut(&entity) {
+                    if let Some(retained) = self.retained_subjects.get_mut(entity) {
                         for key in unset_keys {
                             ended_changed |= retained.values.remove(&key).is_some();
                         }
@@ -939,7 +939,9 @@ impl ControllerState {
                 }
             }
         }
-        let retained_changed = self.refresh_retained_subjects();
+        let retained_changed = retained_target
+            .as_ref()
+            .is_some_and(|entity| self.refresh_retained_subjects_for(Some(entity)));
         outcome.view_changed || ended_changed || retained_changed
     }
 
@@ -1425,8 +1427,9 @@ impl ControllerState {
             .collect::<BTreeMap<_, _>>();
         let mut live = BTreeMap::new();
         let ended_workspaces = self.ended_workspace_ids();
+        let show_finished = self.show_finished();
         for workspace in &self.tabs {
-            if !self.show_finished() && ended_workspaces.contains(&workspace.tab_id) {
+            if !show_finished && ended_workspaces.contains(&workspace.tab_id) {
                 continue;
             }
             if let Some(values) = tab_metadata.get(&workspace.tab_id) {
@@ -1607,6 +1610,7 @@ impl ControllerState {
                     .unwrap_or_default()
             })
             .collect::<Vec<_>>();
+        let show_finished = self.show_finished();
         postings.sort_by_key(|matches| matches.len());
         let Some((seed, rest)) = postings.split_first() else {
             return vec![];
@@ -1633,7 +1637,7 @@ impl ControllerState {
             })
             .filter_map(|position| entities.get(*position))
             .filter(|entity| !ancestors.contains(&entity.entity))
-            .filter(|entity| self.show_finished() || !self.ended_subjects.contains(&entity.entity))
+            .filter(|entity| show_finished || !self.ended_subjects.contains(&entity.entity))
             .collect::<Vec<_>>();
         if let Some(key) = &loop_definition.in_key {
             let Some(MetadataValue::EntityRefs(refs)) = loop_definition
@@ -2125,22 +2129,25 @@ impl ControllerState {
         changed | self.refresh_retained_subjects()
     }
 
-    fn refresh_retained_subjects(&mut self) -> bool {
+    pub(crate) fn refresh_retained_subjects(&mut self) -> bool {
+        self.refresh_retained_subjects_for(None)
+    }
+
+    fn refresh_retained_subjects_for(&mut self, target: Option<&EntityRef>) -> bool {
         let now = self.now();
         let mut changed = false;
         for (subject, retained) in &mut self.retained_subjects {
+            if target.is_some_and(|target| target != subject) {
+                continue;
+            }
             let values = self
                 .metadata
                 .resolved_entries_for(&EntityId::Entity(subject.clone()), now);
-            // Explicit deletion leaves the producer's source fact behind.
+            // While identity remains observed, individual facts keep their ordinary
+            // freshness. Only unobserved identities need the last known record.
             if values.contains_key(KEY_ENTITY_ID) || values.contains_key(KEY_DISPLAY_LABEL) {
-                for (key, value) in values {
-                    changed |= retained
-                        .values
-                        .get(&key)
-                        .is_none_or(|old| old.value != value.value);
-                    retained.values.insert(key, value);
-                }
+                changed |= retained.values != values;
+                retained.values = values;
             }
             // TODO(#122): consume a producer-declared lifecycle-ended fact.
             let terminal = matches!(subject.kind.as_str(), "convoy" | "vessel")

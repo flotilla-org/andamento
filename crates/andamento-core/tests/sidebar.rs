@@ -1847,3 +1847,55 @@ fn one_producer_retraction_preserves_other_identity_owner() {
         .unwrap();
     assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
 }
+
+#[test]
+fn individual_fact_expiry_is_not_resurrected_on_live_subject() {
+    let mut sidebar = retained_sidebar();
+    let mut update = patch(
+        entity("vessel", "v"),
+        &[("status.attention", MetadataValue::Bool(true))],
+    );
+    update.set.get_mut("status.attention").unwrap().ttl_ms = Some(10);
+    sidebar.apply(101, [update]);
+    assert!(workspace_nodes(&sidebar.snapshot().surface)
+        .iter()
+        .any(|n| n.facts.contains_key("status.attention")));
+    sidebar.apply(112, []);
+    let snapshot = sidebar.snapshot();
+    assert!(!workspace_nodes(&snapshot.surface).is_empty());
+    assert!(workspace_nodes(&snapshot.surface)
+        .iter()
+        .all(|n| !n.facts.contains_key("status.attention")
+            && !n.facts.contains_key("presentation.ended")));
+    assert!(snapshot.surface.sections[1].nodes.is_empty());
+}
+
+#[test]
+fn removal_after_first_topology_needs_no_intervening_snapshot() {
+    let mut sidebar = sidebar();
+    sidebar.configure(&format!("{CONFIG}\ndisplay-variable \"show-finished\" type=\"bool\" default=false label=\"Show finished\" icon=\"F\"\n")).unwrap();
+    sidebar.apply(
+        101,
+        [patch(
+            entity("vessel", "v"),
+            &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
+        )],
+    );
+    let request = open(&mut sidebar);
+    sidebar.complete(request, Ok(Some(42)));
+    sidebar.observe(vec![workspace()], vec![]);
+    let mut removal = patch(entity("vessel", "v"), &[]);
+    removal.unset = vec![
+        "entity.kind".into(),
+        "entity.id".into(),
+        "display.label".into(),
+    ];
+    sidebar.apply(102, [removal]);
+    assert!(workspace_nodes(&sidebar.snapshot().surface).is_empty());
+    sidebar
+        .dispatch(Action::ToggleDisplayVariable {
+            name: "show-finished".into(),
+        })
+        .unwrap();
+    assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
+}
