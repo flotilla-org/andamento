@@ -773,6 +773,8 @@ pub unsafe extern "C" fn andamento_snapshot_control(
 }
 /// Additive ABI 2 accessor: declarations own persistence policy, while hosts
 /// own storage. The variable name is snapshot-owned, independent of its label.
+/// Undeclared variables report persist=0. Invalid inputs and non-display controls
+/// return 0 without changing either output.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_snapshot_control_variable(
     s: *const AndamentoSnapshot,
