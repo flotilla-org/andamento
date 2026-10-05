@@ -1429,21 +1429,20 @@ impl ControllerState {
         let live = self.live_presentation_states(&catalog, &tab_metadata);
         // Selection belongs to the workspace subject, not shared action targets.
         let subjects = self.workspace_subjects();
-        let exact: BTreeMap<_, _> = self
-            .tabs
-            .iter()
-            .filter_map(|workspace| {
-                subjects.get(&workspace.tab_id).map(|subject| {
-                    (
-                        subject.clone(),
-                        PresentationState::Live {
-                            workspace_id: workspace.tab_id,
-                            selected: workspace.active,
-                        },
-                    )
-                })
-            })
-            .collect();
+        let mut exact = BTreeMap::new();
+        for workspace in &self.tabs {
+            if let Some(subject) = subjects.get(&workspace.tab_id) {
+                // Prefer the selected workspace; otherwise preserve inventory order.
+                let state = PresentationState::Live {
+                    workspace_id: workspace.tab_id,
+                    selected: workspace.active,
+                };
+                let existing = exact.entry(subject.clone()).or_insert(state.clone());
+                if workspace.active {
+                    *existing = state;
+                }
+            }
+        }
         let latents = latent_tabs
             .iter()
             .map(|latent| (&latent.entity, latent))
@@ -1458,20 +1457,8 @@ impl ControllerState {
                     .get(&entity.entity)
                     .cloned()
                     .or_else(|| {
-                        live.get(&action_target).cloned().map(|mut state| {
-                            if let PresentationState::Live {
-                                workspace_id,
-                                selected,
-                            } = &mut state
-                            {
-                                if subjects
-                                    .get(workspace_id)
-                                    .is_some_and(|subject| subject != &entity.entity)
-                                {
-                                    *selected = false;
-                                }
-                            }
-                            state
+                        live.get(&action_target).map(|state| {
+                            Self::alias_presentation_state(state, &subjects, &entity.entity)
                         })
                     })
                     .unwrap_or_else(|| {
@@ -1510,6 +1497,28 @@ impl ControllerState {
             model.inspected_node = client.inspected_node.clone();
         }
         model
+    }
+
+    fn alias_presentation_state(
+        state: &crate::presentation::PresentationState,
+        subjects: &BTreeMap<u64, EntityRef>,
+        entity: &EntityRef,
+    ) -> crate::presentation::PresentationState {
+        use crate::presentation::PresentationState;
+        let mut state = state.clone();
+        if let PresentationState::Live {
+            workspace_id,
+            selected,
+        } = &mut state
+        {
+            if subjects
+                .get(workspace_id)
+                .is_some_and(|subject| subject != entity)
+            {
+                *selected = false;
+            }
+        }
+        state
     }
 
     /// Shared workspace binding rules for placement and catalog detail consumers.
@@ -1768,6 +1777,8 @@ impl ControllerState {
             .filter(|position| {
                 // An open ended workspace keeps its retained subject path reachable
                 // even while Show finished is off (wheelhouse#188 owner ruling).
+                // This deliberately overrides all visibility policies: open ended
+                // subjects must remain reachable on their retained path.
                 entities.get(**position).is_some_and(|entity| {
                     self.ended_subjects.contains(&entity.entity)
                         && self.retained_subjects.contains_key(&entity.entity)
@@ -2282,7 +2293,14 @@ impl ControllerState {
             }
         }
         changed |= before != (self.retained_subjects.len(), self.ended_subjects.len());
-        changed | self.refresh_retained_subjects()
+        let refreshed = self.refresh_retained_subjects();
+        // Retained subjects are exactly the union of open workspace paths;
+        // ended ancestors need not own a workspace themselves.
+        debug_assert!(self
+            .ended_subjects
+            .iter()
+            .all(|subject| self.retained_subjects.contains_key(subject)));
+        changed | refreshed
     }
 
     pub(crate) fn refresh_retained_subjects(&mut self) -> bool {

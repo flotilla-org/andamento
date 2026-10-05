@@ -1979,3 +1979,92 @@ fn shared_action_targets_do_not_steal_subject_workspace_or_selection() {
         }
     }
 }
+
+#[test]
+fn duplicate_subject_bindings_prefer_selection_then_inventory_order() {
+    // Duplicated subject identities prefer the selected workspace irrespective
+    // of inventory order; without selection, the first inventory ID wins.
+    use andamento_core::presentation::PresentationState;
+    let mut sidebar = retained_sidebar();
+    let mut binding = patch(
+        entity("vessel", "v"),
+        &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
+    );
+    binding.target = MetadataTarget::Tab(43);
+    sidebar.apply(101, [binding]);
+    for order in [[42, 43], [43, 42]] {
+        for selected in [None, Some(42), Some(43)] {
+            sidebar.observe(
+                order
+                    .iter()
+                    .enumerate()
+                    .map(|(position, id)| Workspace {
+                        id: *id,
+                        position,
+                        name: "Duplicate".into(),
+                        selected: selected == Some(*id),
+                    })
+                    .collect(),
+                vec![],
+            );
+            let snapshot = sidebar.snapshot();
+            let node = &snapshot.surface.sections[0].nodes[0].children[0];
+            assert_eq!(
+                node.state,
+                PresentationState::Live {
+                    workspace_id: selected.unwrap_or(order[0]),
+                    selected: selected.is_some()
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn unbound_action_target_keeps_selection_on_its_alias() {
+    // Action-only host metadata has no subject identity; the matching entity
+    // remains selected so a workspace with an unbound subject is reachable.
+    use andamento_core::presentation::PresentationState;
+    let mut sidebar = sidebar();
+    let mut binding = patch(
+        entity("vessel", "v"),
+        &[("action.primary.target", text("vessel:v"))],
+    );
+    binding.target = MetadataTarget::Tab(42);
+    sidebar.apply(101, [binding]);
+    sidebar.observe(vec![workspace()], vec![]);
+    assert_eq!(
+        sidebar.snapshot().surface.sections[0].nodes[0].children[0].state,
+        PresentationState::Live {
+            workspace_id: 42,
+            selected: true
+        }
+    );
+}
+
+#[test]
+fn open_ended_path_overrides_non_finished_visibility_policy_until_close() {
+    // Reachability of an open ended subject takes precedence over arbitrary
+    // display filters, not only Show finished. Close restores normal filtering.
+    let mut sidebar = retained_sidebar();
+    let config = CONFIG.replace("for \"vessel\" kind=\"vessel\"", "for \"vessel\" kind=\"vessel\" visibility=\"private\"")
+        + "\ndisplay-variable \"private\" type=\"bool\" default=false label=\"Private\" icon=\"P\"\nvisibility \"private\" { when kind=\"vessel\" visible-when=\"private\"; }\n";
+    sidebar.configure(&config).unwrap();
+    sidebar.apply(
+        102,
+        [patch(
+            entity("vessel", "v"),
+            &[("flotilla.convoy.phase", text("landed"))],
+        )],
+    );
+    let snapshot = sidebar.snapshot();
+    assert!(snapshot.surface.sections[0].nodes[0]
+        .children
+        .iter()
+        .any(|node| node.entity == entity("vessel", "v")
+            && node.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))));
+    sidebar.observe(vec![], vec![]);
+    assert!(sidebar.snapshot().surface.sections[0].nodes[0]
+        .children
+        .is_empty());
+}
