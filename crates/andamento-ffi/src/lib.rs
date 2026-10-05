@@ -359,6 +359,8 @@ struct Control {
 struct Node {
     parent: usize,
     section: bool,
+    default_host: String,
+    order: Option<i64>,
     key: String,
     entity: EntityRef,
     label: String,
@@ -492,6 +494,8 @@ impl AndamentoSnapshot {
         self.nodes.push(Node {
             parent,
             section: false,
+            default_host: String::new(),
+            order: None,
             key,
             entity: n.entity.clone(),
             label: n.label.clone(),
@@ -588,6 +592,8 @@ unsafe fn acquire_snapshot(
             out.nodes.push(Node {
                 parent: NONE,
                 section: true,
+                default_host: section.default_host.unwrap_or_default(),
+                order: section.order,
                 key: section.name.clone(),
                 entity: EntityRef {
                     kind: String::new(),
@@ -965,6 +971,38 @@ pub unsafe extern "C" fn andamento_snapshot_node(
     };
     1
 }
+/// Placement defaults for a section; strings borrow the immutable snapshot.
+/// Additive ABI 2 extension, leaving NodeView unchanged.
+#[repr(C)]
+pub struct RegionHints {
+    pub default_host: Text,
+    pub has_order: u32,
+    pub order: i64,
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_region_hints(
+    s: *const AndamentoSnapshot,
+    index: usize,
+    out: *mut RegionHints,
+) -> u32 {
+    let Some(node) = s
+        .as_ref()
+        .and_then(|s| s.nodes.get(index))
+        .filter(|n| n.section)
+    else {
+        return 0;
+    };
+    if out.is_null() {
+        return 0;
+    }
+    *out = RegionHints {
+        default_host: Text::borrowed(&node.default_host),
+        has_order: node.order.is_some() as u32,
+        order: node.order.unwrap_or_default(),
+    };
+    1
+}
+
 /// Additive ABI 2 accessor: no change to the layout of AndamentoNode.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_snapshot_node_loop_key(
@@ -1387,6 +1425,95 @@ pub unsafe extern "C" fn andamento_content_release(plan: *mut AndamentoContentPl
 mod tests {
     use super::*;
     use std::ffi::CStr;
+
+    // Real native snapshots expose defaults without changing the node ABI.
+    // Generator spans missing hints and both signed integer boundaries.
+    #[test]
+    fn region_hints_native_contract() {
+        unsafe {
+            // kdl 4 rejects i64::MIN when parsing its unsigned magnitude;
+            // core JSON/sort tests cover MIN, and this KDL boundary is MIN+1.
+            for order in [None, Some(i64::MIN + 1), Some(0), Some(i64::MAX)] {
+                let config = format!("region \"test\" root-template=\"flotilla/region/tree\" default-host=\"sidebar\"{}",
+                    order.map(|o| format!(" order={o}")).unwrap_or_default());
+                let h = andamento_create(config.as_ptr(), config.len(), ptr::null_mut());
+                assert!(!h.is_null());
+                let s = andamento_snapshot_acquire(h, ptr::null_mut());
+                let mut hints = std::mem::MaybeUninit::uninit();
+                assert_eq!(andamento_snapshot_region_hints(s, 0, hints.as_mut_ptr()), 1);
+                let hints = hints.assume_init();
+                assert_eq!(hints.default_host.read().unwrap(), "sidebar");
+                assert_eq!(hints.has_order, order.is_some() as u32);
+                assert_eq!(hints.order, order.unwrap_or_default());
+                assert_eq!(
+                    andamento_snapshot_region_hints(s, usize::MAX, ptr::null_mut()),
+                    0
+                );
+                assert_eq!(andamento_snapshot_region_hints(s, 0, ptr::null_mut()), 0);
+                andamento_snapshot_release(s);
+                andamento_destroy(h);
+            }
+            let config = "region \"test\" root-template=\"flotilla/region/tree\"";
+            let h = andamento_create(config.as_ptr(), config.len(), ptr::null_mut());
+            let s = andamento_snapshot_acquire(h, ptr::null_mut());
+            let mut hints = std::mem::MaybeUninit::uninit();
+            assert_eq!(andamento_snapshot_region_hints(s, 0, hints.as_mut_ptr()), 1);
+            let hints = hints.assume_init();
+            assert_eq!(hints.default_host.len, 0);
+            assert_eq!(hints.has_order, 0);
+            andamento_snapshot_release(s);
+            andamento_destroy(h);
+        }
+    }
+
+    // Host-inventory coverage synthesizes an unhinted section. Entity nodes
+    // never expose region hints, even when their parent is a synthetic section.
+    #[test]
+    fn synthetic_section_and_nonsection_hints() {
+        unsafe {
+            let config = "region \"test\" root-template=\"flotilla/region/tree\"";
+            let h = andamento_create(config.as_ptr(), config.len(), ptr::null_mut());
+            assert!(!h.is_null());
+            let workspace = WorkspaceInput {
+                id: 42,
+                position: 0,
+                name: Text::borrowed("unplaced"),
+                selected: 1,
+            };
+            assert_eq!(
+                andamento_observe(h, &workspace, 1, ptr::null(), 0, ptr::null_mut()),
+                1
+            );
+            let snapshot = andamento_snapshot_acquire(h, ptr::null_mut());
+            let mut found_section = false;
+            let mut found_entity = false;
+            for i in 0..andamento_snapshot_node_count(snapshot) {
+                let mut node = std::mem::MaybeUninit::uninit();
+                assert_eq!(andamento_snapshot_node(snapshot, i, node.as_mut_ptr()), 1);
+                let node = node.assume_init();
+                let mut hints = std::mem::MaybeUninit::uninit();
+                if node.is_section == 0 {
+                    assert_eq!(
+                        andamento_snapshot_region_hints(snapshot, i, hints.as_mut_ptr()),
+                        0
+                    );
+                    found_entity = true;
+                } else if node.key.read().unwrap() == "andamento.unplaced-workspaces" {
+                    assert_eq!(
+                        andamento_snapshot_region_hints(snapshot, i, hints.as_mut_ptr()),
+                        1
+                    );
+                    let hints = hints.assume_init();
+                    assert_eq!(hints.default_host.len, 0);
+                    assert_eq!(hints.has_order, 0);
+                    found_section = true;
+                }
+            }
+            assert!(found_section && found_entity);
+            andamento_snapshot_release(snapshot);
+            andamento_destroy(h);
+        }
+    }
 
     #[test]
     fn declared_abbreviation_reaches_c_fields_but_keeps_full_details() {

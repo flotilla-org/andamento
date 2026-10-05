@@ -240,3 +240,32 @@ native facts without encoding. Implementing another wire encoding, snapshot
 diffs, and a complete C mirror of the Rust model are deferred. The compiled C
 fixture consumer verifies the first native slice; Wheelhouse call sites will
 guide further projection fields. See the embedding guide for ABI 2 details.
+
+## Region placement hints
+
+`region` accepts optional `default-host="sidebar"` and `order=10` attributes.
+The frontend interprets `default-host` as a preferred host name. Andamento
+treats it as opaque and requires at least one non-whitespace character. It
+preserves the supplied string verbatim, including surrounding whitespace;
+hosts match the names they recognise exactly. This hint is independent of
+`placement`, which names an entity query.
+
+`order` is a signed integer hint, lower first. Hosts preserve declaration
+order when no hints are provided and use declaration order to break ties.
+Mixed orders use the zero-based declaration index for an omitted hint. Rust
+hosts can share this policy through
+`template_config::region_placement_sort_key`. For example, regions declared
+as `a order=10`, `b` (no order), and `c order=0` have keys `(10, 0)`,
+`(1, 1)`, and `(0, 2)`, so the default order is `c, b, a`. A saved user
+arrangement takes precedence over all three hints. Andamento keeps the
+declared region sequence; Zellij may ignore these hints.
+
+An unhinted region at index 2 sorts before a region with `order=10`. Authors
+can specify order on all regions, or omit it on all regions, to avoid mixing
+these scales.
+
+Rust consumers read `SurfaceRegionDefinition` or the resolved `Section`.
+Native consumers call `andamento_snapshot_region_hints` with a section node
+index. This additive ABI 2 extension leaves `AndamentoNode` unchanged. Its text
+borrows the immutable snapshot; `has_order` distinguishes absent order from zero.
+User moves belong to the frontend's saved layout and never update shared KDL.

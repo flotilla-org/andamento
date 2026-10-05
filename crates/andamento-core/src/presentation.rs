@@ -25,6 +25,10 @@ pub struct SurfaceSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Section {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<i64>,
     pub pinned: bool,
     pub content: Content,
     pub nodes: Vec<PlacementNode>,
@@ -168,6 +172,8 @@ impl SurfaceSnapshot {
         if !nodes.is_empty() {
             self.sections.push(Section {
                 name: "andamento.unplaced-workspaces".into(),
+                default_host: None,
+                order: None,
                 pinned: false,
                 content: Content {
                     fields: vec![TemplateConfigRenderedField {
@@ -201,6 +207,8 @@ impl SurfaceSnapshot {
             let content = resolve_content(region.root.as_ref(), &metadata, false, false, false);
             snapshot.sections.push(Section {
                 name: definition.name.clone(),
+                default_host: definition.default_host.clone(),
+                order: definition.order,
                 pinned: definition.pinned,
                 content,
                 nodes: region

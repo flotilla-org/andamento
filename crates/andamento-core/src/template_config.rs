@@ -335,6 +335,16 @@ impl ExternalTemplateConfig {
                     "region name cannot be empty".to_owned(),
                 ));
             }
+            if region
+                .default_host
+                .as_ref()
+                .is_some_and(|host| host.trim().is_empty())
+            {
+                return Err(TemplateConfigError::Validation(format!(
+                    "region {} default-host cannot be empty",
+                    region.name
+                )));
+            }
             if !region_names.insert(region.name.clone()) {
                 return Err(TemplateConfigError::Validation(format!(
                     "duplicate region name: {}",
@@ -920,6 +930,12 @@ impl TemplateConfigCatalog {
 pub struct SurfaceRegionDefinition {
     pub name: String,
     pub root_template: String,
+    /// Opaque host preference; user layout remains host-owned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_host: Option<String>,
+    /// Lower first; absent values preserve declaration order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<i64>,
     pub form: String,
     /// Optional entity query for this section; sections may contain only fields or controls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -928,6 +944,17 @@ pub struct SurfaceRegionDefinition {
     pub pinned: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub promotions: Vec<SurfaceFormPromotion>,
+}
+
+/// Host-side default ordering: omitted hints use declaration index; ties retain
+/// declaration order. Saved user positions must not be sorted with this key.
+pub fn region_placement_sort_key(order: Option<i64>, declaration_index: usize) -> (i64, usize) {
+    // Inventories cannot realistically exceed i64::MAX regions, but keep this
+    // public helper total for any usize index a host supplies.
+    (
+        order.unwrap_or_else(|| i64::try_from(declaration_index).unwrap_or(i64::MAX)),
+        declaration_index,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2603,6 +2630,22 @@ fn parse_kdl_region(node: &KdlNode) -> Result<SurfaceRegionDefinition, TemplateC
     Ok(SurfaceRegionDefinition {
         name: kdl_required_arg_string(node, 0, "region name")?,
         root_template: kdl_required_prop_string(node, "root-template")?,
+        default_host: node
+            .get("default-host")
+            .map(|entry| {
+                entry.value().as_string().map(str::to_owned).ok_or_else(|| {
+                    TemplateConfigError::Validation("region default-host must be a string".into())
+                })
+            })
+            .transpose()?,
+        order: node
+            .get("order")
+            .map(|entry| {
+                entry.value().as_i64().ok_or_else(|| {
+                    TemplateConfigError::Validation("region order must be an integer".into())
+                })
+            })
+            .transpose()?,
         form: kdl_prop_string(node, "form").unwrap_or_else(|| "full".to_owned()),
         placement: kdl_prop_string(node, "placement"),
         pinned: node
@@ -3839,6 +3882,95 @@ region "attention" root-template="r" form="full"
         assert!(error
             .to_string()
             .contains("template issue/compact has duplicate field name: label"));
+    }
+
+    // Hints round-trip independently of content and preserve legacy absence.
+    // Explicit generator covers absent hints, opaque hosts, signed boundaries and ties.
+    #[test]
+    fn region_hints_round_trip_and_validation() {
+        for host in [
+            None,
+            Some("sidebar"),
+            Some("future-host"),
+            Some(" sidebar "),
+            Some("host\"\\name"),
+        ] {
+            for order in [
+                None,
+                // kdl 4 parses the magnitude before the sign, so i64::MIN
+                // overflows its parser. JSON and the sort helper cover MIN below.
+                Some(i64::MIN + 1),
+                Some(-1),
+                Some(0),
+                Some(10),
+                Some(i64::MAX),
+            ] {
+                let attributes = format!(
+                    "{}{}",
+                    host.map(|h| format!(" default-host={}", KdlValue::String(h.to_owned())))
+                        .unwrap_or_default(),
+                    order.map(|o| format!(" order={o}")).unwrap_or_default()
+                );
+                let config = parse_template_config_kdl(&format!(
+                    "region \"a\" root-template=\"a\"{attributes}\nregion \"b\" root-template=\"b\"{attributes}"
+                )).unwrap();
+                assert_eq!(config.regions[0].default_host.as_deref(), host);
+                assert_eq!(config.regions[0].order, order);
+                assert_eq!(config.regions[1].name, "b");
+                let encoded = serde_json::to_string(&config.regions).unwrap();
+                let decoded: Vec<SurfaceRegionDefinition> = serde_json::from_str(&encoded).unwrap();
+                assert_eq!(decoded, config.regions);
+            }
+        }
+        // JSON has no KDL signed-magnitude limitation and supports i64::MIN.
+        let min = parse_template_config_json(&format!(
+            r#"{{"regions":[{{"name":"min","root-template":"a","form":"full","order":{}}}]}}"#,
+            i64::MIN
+        ))
+        .unwrap();
+        assert_eq!(min.regions[0].order, Some(i64::MIN));
+        assert!(parse_template_config_json(
+            r#"{"regions":[{"name":"named","root-template":"a","form":"full","default-host":" "}]}"#
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("region named default-host"));
+        for (orders, expected) in [
+            (vec![None, None, None], vec![0, 1, 2]),
+            (vec![Some(20), None, Some(10)], vec![1, 2, 0]),
+            (vec![Some(0), Some(0), None], vec![0, 1, 2]),
+            (vec![Some(1), None, Some(0)], vec![2, 0, 1]),
+            (vec![Some(i64::MAX), Some(i64::MIN), None], vec![1, 2, 0]),
+        ] {
+            // Lower hinted/default order comes first, with declaration-order ties.
+            let mut indices: Vec<_> = (0..orders.len()).collect();
+            indices.sort_by_key(|&i| region_placement_sort_key(orders[i], i));
+            assert_eq!(indices, expected);
+        }
+        // Identity errors precede hint errors when both declarations are invalid.
+        assert!(
+            parse_template_config_kdl(r#"region "" root-template="a" default-host="""#)
+                .unwrap_err()
+                .to_string()
+                .contains("region name cannot be empty")
+        );
+        for attributes in [
+            "order=1.5",
+            "order=\"10\"",
+            "order=true",
+            "default-host=\"\"",
+            "default-host=\"  \"",
+            "default-host=10",
+        ] {
+            assert!(parse_template_config_kdl(&format!(
+                "region \"a\" root-template=\"a\" {attributes}"
+            ))
+            .is_err());
+        }
+        assert!(serde_json::from_str::<SurfaceRegionDefinition>(
+            r#"{"name":"a","root-template":"a","form":"full","unexpected":true}"#
+        )
+        .is_err());
     }
 
     #[test]
