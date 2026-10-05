@@ -1427,7 +1427,22 @@ impl ControllerState {
             })
             .collect::<BTreeMap<_, _>>();
         let live = self.live_presentation_states(&catalog, &tab_metadata);
-        let ended_workspaces = self.ended_workspace_ids();
+        // Selection belongs to the workspace subject, not shared action targets.
+        let subjects = self.workspace_subjects();
+        let mut exact = BTreeMap::new();
+        for workspace in &self.tabs {
+            if let Some(subject) = subjects.get(&workspace.tab_id) {
+                // Prefer the selected workspace; otherwise preserve inventory order.
+                let state = PresentationState::Live {
+                    workspace_id: workspace.tab_id,
+                    selected: workspace.active,
+                };
+                let existing = exact.entry(subject.clone()).or_insert(state.clone());
+                if workspace.active {
+                    *existing = state;
+                }
+            }
+        }
         let latents = latent_tabs
             .iter()
             .map(|latent| (&latent.entity, latent))
@@ -1438,20 +1453,28 @@ impl ControllerState {
                 let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity.entity.action_target());
-                let state = live.get(&action_target).cloned().unwrap_or_else(|| {
-                    latents
-                        .get(&entity.entity)
-                        .map(|latent| {
-                            if latent.materialization == LatentMaterializationState::Opening {
-                                PresentationState::Opening
-                            } else {
-                                PresentationState::Latent {
-                                    openable: latent.materialize_request().is_some(),
-                                }
-                            }
+                let state = exact
+                    .get(&entity.entity)
+                    .cloned()
+                    .or_else(|| {
+                        live.get(&action_target).map(|state| {
+                            Self::alias_presentation_state(state, &subjects, &entity.entity)
                         })
-                        .unwrap_or_default()
-                });
+                    })
+                    .unwrap_or_else(|| {
+                        latents
+                            .get(&entity.entity)
+                            .map(|latent| {
+                                if latent.materialization == LatentMaterializationState::Opening {
+                                    PresentationState::Opening
+                                } else {
+                                    PresentationState::Latent {
+                                        openable: latent.materialize_request().is_some(),
+                                    }
+                                }
+                            })
+                            .unwrap_or_default()
+                    });
                 (entity.entity.clone(), state)
             })
             .collect();
@@ -1462,13 +1485,7 @@ impl ControllerState {
             &states,
         ));
         if let Some(surface) = &mut model.presentation {
-            let workspaces = self
-                .tabs
-                .iter()
-                .filter(|w| !ended_workspaces.contains(&w.tab_id))
-                .cloned()
-                .collect::<Vec<_>>();
-            surface.cover_workspaces(&workspaces);
+            surface.cover_workspaces(&self.tabs);
         }
         model
     }
@@ -1482,6 +1499,28 @@ impl ControllerState {
         model
     }
 
+    fn alias_presentation_state(
+        state: &crate::presentation::PresentationState,
+        subjects: &BTreeMap<u64, EntityRef>,
+        entity: &EntityRef,
+    ) -> crate::presentation::PresentationState {
+        use crate::presentation::PresentationState;
+        let mut state = state.clone();
+        if let PresentationState::Live {
+            workspace_id,
+            selected,
+        } = &mut state
+        {
+            if subjects
+                .get(workspace_id)
+                .is_some_and(|subject| subject != entity)
+            {
+                *selected = false;
+            }
+        }
+        state
+    }
+
     /// Shared workspace binding rules for placement and catalog detail consumers.
     fn live_presentation_states(
         &self,
@@ -1490,12 +1529,7 @@ impl ControllerState {
     ) -> BTreeMap<String, crate::presentation::PresentationState> {
         use crate::presentation::PresentationState;
         let mut live = BTreeMap::new();
-        let ended_workspaces = self.ended_workspace_ids();
-        let show_finished = self.show_finished();
         for workspace in &self.tabs {
-            if !show_finished && ended_workspaces.contains(&workspace.tab_id) {
-                continue;
-            }
             if let Some(values) = tab_metadata.get(&workspace.tab_id) {
                 let target = metadata_entry_text(values, KEY_ACTION_TARGET)
                     .map(str::to_owned)
@@ -1741,7 +1775,14 @@ impl ControllerState {
                     .all(|matches| matches.binary_search(position).is_ok())
             })
             .filter(|position| {
-                loop_definition.visibility.as_ref().is_none_or(|name| {
+                // An open ended workspace keeps its retained subject path reachable
+                // even while Show finished is off (wheelhouse#188 owner ruling).
+                // This deliberately overrides all visibility policies: open ended
+                // subjects must remain reachable on their retained path.
+                entities.get(**position).is_some_and(|entity| {
+                    self.ended_subjects.contains(&entity.entity)
+                        && self.retained_subjects.contains_key(&entity.entity)
+                }) || loop_definition.visibility.as_ref().is_none_or(|name| {
                     debug_assert!(
                         index.visibility.contains_key(name),
                         "validated visibility policy {name} was not evaluated"
@@ -1756,7 +1797,11 @@ impl ControllerState {
             })
             .filter_map(|position| entities.get(*position))
             .filter(|entity| !ancestors.contains(&entity.entity))
-            .filter(|entity| show_finished || !self.ended_subjects.contains(&entity.entity))
+            .filter(|entity| {
+                show_finished
+                    || !self.ended_subjects.contains(&entity.entity)
+                    || self.retained_subjects.contains_key(&entity.entity)
+            })
             .collect::<Vec<_>>();
         if let Some(key) = &loop_definition.in_key {
             let Some(MetadataValue::EntityRefs(refs)) = loop_definition
@@ -2248,7 +2293,13 @@ impl ControllerState {
             }
         }
         changed |= before != (self.retained_subjects.len(), self.ended_subjects.len());
-        changed | self.refresh_retained_subjects()
+        let refreshed = self.refresh_retained_subjects();
+        // Every ended subject must belong to the retained workspace-path union.
+        debug_assert!(self
+            .ended_subjects
+            .iter()
+            .all(|subject| self.retained_subjects.contains_key(subject)));
+        changed | refreshed
     }
 
     pub(crate) fn refresh_retained_subjects(&mut self) -> bool {
@@ -2315,13 +2366,6 @@ impl ControllerState {
                 self.tab_entity_ref(tab.tab_id, &seeds)
                     .map(|subject| (tab.tab_id, subject))
             })
-            .collect()
-    }
-
-    pub(crate) fn ended_workspace_ids(&self) -> BTreeSet<u64> {
-        self.workspace_subjects()
-            .into_iter()
-            .filter_map(|(id, subject)| self.ended_subjects.contains(&subject).then_some(id))
             .collect()
     }
 
