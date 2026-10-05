@@ -2047,7 +2047,15 @@ fn open_ended_path_overrides_non_finished_visibility_policy_until_close() {
     // Reachability of an open ended subject takes precedence over arbitrary
     // display filters, not only Show finished. Close restores normal filtering.
     let mut sidebar = retained_sidebar();
-    let config = CONFIG.replace("for \"vessel\" kind=\"vessel\"", "for \"vessel\" kind=\"vessel\" visibility=\"private\"")
+    let filtered_config = CONFIG.replace(
+        "for \"vessel\" kind=\"vessel\"",
+        "for \"vessel\" kind=\"vessel\" visibility=\"private\"",
+    );
+    assert_ne!(
+        filtered_config, CONFIG,
+        "visibility fixture replacement must match"
+    );
+    let config = filtered_config
         + "\ndisplay-variable \"private\" type=\"bool\" default=false label=\"Private\" icon=\"P\"\nvisibility \"private\" { when kind=\"vessel\" visible-when=\"private\"; }\n";
     sidebar.configure(&config).unwrap();
     sidebar.apply(

@@ -2294,8 +2294,7 @@ impl ControllerState {
         }
         changed |= before != (self.retained_subjects.len(), self.ended_subjects.len());
         let refreshed = self.refresh_retained_subjects();
-        // Retained subjects are exactly the union of open workspace paths;
-        // ended ancestors need not own a workspace themselves.
+        // Every ended subject must belong to the retained workspace-path union.
         debug_assert!(self
             .ended_subjects
             .iter()
