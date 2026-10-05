@@ -240,3 +240,18 @@ native facts without encoding. Implementing another wire encoding, snapshot
 diffs, and a complete C mirror of the Rust model are deferred. The compiled C
 fixture consumer verifies the first native slice; Wheelhouse call sites will
 guide further projection fields. See the embedding guide for ABI 2 details.
+
+## Region placement hints
+
+`region` accepts optional `default-host="sidebar"` and `order=10` attributes.
+`default-host` is a nonempty opaque string interpreted by the frontend; it is
+independent of `placement`, which names an entity query. `order` is a signed
+integer hint, lower first. Hosts preserve declaration order when no hints are
+provided and use declaration order to break ties. Andamento keeps the declared
+region sequence; Zellij may ignore these hints.
+
+Rust consumers read `SurfaceRegionDefinition` or the resolved `Section`.
+Native consumers call `andamento_snapshot_region_hints` with a section node
+index. This additive ABI 2 extension leaves `AndamentoNode` unchanged. Its text
+borrows the immutable snapshot; `has_order` distinguishes absent order from zero.
+User moves belong to the frontend's saved layout and never update shared KDL.

@@ -11,10 +11,10 @@ variable "issue.tier" default="full" {
   value "short"
 }
 
-region "attention" root-template="flotilla/region/attention" form="compact" placement="attention" pinned=true
-region "tree" root-template="flotilla/region/tree" form="compact" placement="projects"
-region "git" root-template="git/title" form="compact" placement="git"
-region "controls" root-template="flotilla/region/controls" form="compact" pinned=true
+region "attention" root-template="flotilla/region/attention" form="compact" placement="attention" pinned=true default-host="sidebar" order=10
+region "tree" root-template="flotilla/region/tree" form="compact" placement="projects" default-host="sidebar" order=20
+region "git" root-template="git/title" form="compact" placement="git" default-host="sidebar" order=30
+region "controls" root-template="flotilla/region/controls" form="compact" pinned=true default-host="sidebar" order=40
 
 placement "attention" {
   for "attention" {

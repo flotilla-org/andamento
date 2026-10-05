@@ -330,6 +330,15 @@ impl ExternalTemplateConfig {
         }
         let mut region_names = BTreeSet::new();
         for region in &self.regions {
+            if region
+                .default_host
+                .as_ref()
+                .is_some_and(|host| host.trim().is_empty())
+            {
+                return Err(TemplateConfigError::Validation(
+                    "region default-host cannot be empty".into(),
+                ));
+            }
             if region.name.trim().is_empty() {
                 return Err(TemplateConfigError::Validation(
                     "region name cannot be empty".to_owned(),
@@ -920,6 +929,12 @@ impl TemplateConfigCatalog {
 pub struct SurfaceRegionDefinition {
     pub name: String,
     pub root_template: String,
+    /// Opaque host preference; user layout remains host-owned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_host: Option<String>,
+    /// Lower first; absent values preserve declaration order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<i64>,
     pub form: String,
     /// Optional entity query for this section; sections may contain only fields or controls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2603,6 +2618,22 @@ fn parse_kdl_region(node: &KdlNode) -> Result<SurfaceRegionDefinition, TemplateC
     Ok(SurfaceRegionDefinition {
         name: kdl_required_arg_string(node, 0, "region name")?,
         root_template: kdl_required_prop_string(node, "root-template")?,
+        default_host: node
+            .get("default-host")
+            .map(|entry| {
+                entry.value().as_string().map(str::to_owned).ok_or_else(|| {
+                    TemplateConfigError::Validation("region default-host must be a string".into())
+                })
+            })
+            .transpose()?,
+        order: node
+            .get("order")
+            .map(|entry| {
+                entry.value().as_i64().ok_or_else(|| {
+                    TemplateConfigError::Validation("region order must be an integer".into())
+                })
+            })
+            .transpose()?,
         form: kdl_prop_string(node, "form").unwrap_or_else(|| "full".to_owned()),
         placement: kdl_prop_string(node, "placement"),
         pinned: node
@@ -3839,6 +3870,55 @@ region "attention" root-template="r" form="full"
         assert!(error
             .to_string()
             .contains("template issue/compact has duplicate field name: label"));
+    }
+
+    // Hints round-trip independently of content and preserve legacy absence.
+    // Explicit generator covers absent hints, opaque hosts, signed boundaries and ties.
+    #[test]
+    fn region_hints_round_trip_and_validation() {
+        for host in [None, Some("sidebar"), Some("future-host")] {
+            for order in [
+                None,
+                Some(i64::MIN + 1),
+                Some(-1),
+                Some(0),
+                Some(10),
+                Some(i64::MAX),
+            ] {
+                let attributes = format!(
+                    "{}{}",
+                    host.map(|h| format!(" default-host={h:?}"))
+                        .unwrap_or_default(),
+                    order.map(|o| format!(" order={o}")).unwrap_or_default()
+                );
+                let config = parse_template_config_kdl(&format!(
+                    "region \"a\" root-template=\"a\"{attributes}\nregion \"b\" root-template=\"b\"{attributes}"
+                )).unwrap();
+                assert_eq!(config.regions[0].default_host.as_deref(), host);
+                assert_eq!(config.regions[0].order, order);
+                assert_eq!(config.regions[1].name, "b");
+                let encoded = serde_json::to_string(&config.regions).unwrap();
+                let decoded: Vec<SurfaceRegionDefinition> = serde_json::from_str(&encoded).unwrap();
+                assert_eq!(decoded, config.regions);
+            }
+        }
+        for attributes in [
+            "order=1.5",
+            "order=\"10\"",
+            "order=true",
+            "default-host=\"\"",
+            "default-host=\"  \"",
+            "default-host=10",
+        ] {
+            assert!(parse_template_config_kdl(&format!(
+                "region \"a\" root-template=\"a\" {attributes}"
+            ))
+            .is_err());
+        }
+        assert!(serde_json::from_str::<SurfaceRegionDefinition>(
+            r#"{"name":"a","root-template":"a","form":"full","unexpected":true}"#
+        )
+        .is_err());
     }
 
     #[test]

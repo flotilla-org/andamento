@@ -142,10 +142,28 @@ static void check_typed_details(const char *path) {
     andamento_snapshot_release(s); andamento_destroy(h);
 }
 
+/* Defaults cross the C ABI without changing AndamentoNode's layout. */
+static void check_region_hints(void) {
+    const char *config = "region \"hinted\" root-template=\"flotilla/region/tree\" default-host=\"sidebar\" order=-10\n"
+                         "region \"legacy\" root-template=\"flotilla/region/tree\"\n";
+    Andamento *h = andamento_create((const uint8_t *)config, strlen(config), &error);
+    assert(h);
+    AndamentoSnapshot *s = andamento_snapshot_acquire(h, &error);
+    AndamentoRegionHints hints;
+    assert(andamento_snapshot_region_hints(s, 0, &hints));
+    assert(eq(hints.default_host, "sidebar") && hints.has_order && hints.order == -10);
+    assert(andamento_snapshot_region_hints(s, 1, &hints));
+    assert(hints.default_host.len == 0 && hints.has_order == 0);
+    assert(!andamento_snapshot_region_hints(s, ANDAMENTO_NONE, &hints));
+    assert(!andamento_snapshot_region_hints(s, 0, NULL));
+    andamento_snapshot_release(s); andamento_destroy(h);
+}
+
 int main(int argc, char **argv) {
     assert(argc == 4 && andamento_abi_version() == 2);
     check_typed_details(argv[3]);
     check_workdirs();
+    check_region_hints();
     char *config = read_file(argv[1]);
     Andamento *h = andamento_create((const uint8_t *)config, strlen(config), &error);
     Andamento *other = andamento_create((const uint8_t *)config, strlen(config), &error);

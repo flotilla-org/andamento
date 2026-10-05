@@ -128,6 +128,11 @@ uint32_t andamento_snapshot_node(const AndamentoSnapshot *, size_t index, Andame
 /* Snapshot-owned opaque loop invocation key. Compare for equality; do not parse.
  * Empty for section nodes. Additive ABI 2 API; AndamentoNode is unchanged. */
 uint32_t andamento_snapshot_node_loop_key(const AndamentoSnapshot *, size_t index, AndamentoText *out);
+/* Additive ABI 2 extension. Section defaults only; user layout is host-owned.
+ * default_host is snapshot-owned and empty when absent; order is meaningful
+ * only when has_order is nonzero. Returns 0 for nonsections/invalid arguments. */
+typedef struct { AndamentoText default_host; uint32_t has_order; int64_t order; } AndamentoRegionHints;
+uint32_t andamento_snapshot_region_hints(const AndamentoSnapshot *, size_t index, AndamentoRegionHints *out);
 uint32_t andamento_snapshot_field(const AndamentoSnapshot *, size_t index, AndamentoField *out);
 uint32_t andamento_snapshot_control(const AndamentoSnapshot *, size_t index, AndamentoControl *out);
 uint32_t andamento_snapshot_control_variable(const AndamentoSnapshot *, size_t index,
