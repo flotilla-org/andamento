@@ -1,0 +1,16 @@
+region "tree" root-template="heading" form="compact" placement="tree"
+template "heading" {
+  field "label" source="literal" value="Projects"
+}
+placement "tree" {
+  for "project" kind="project" {
+    apply-template "project"
+  }
+}
+template "project" {
+  field "label" key="display.label"
+  for "role" kind="role" {
+    match "flotilla.project" of="project"
+    field "label" key="display.label"
+  }
+}

@@ -3,7 +3,12 @@
 #[test]
 fn checked_in_scenarios_match_the_real_projection() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for name in ["rail-scene", "scripted-roll"] {
+    for name in [
+        "rail-scene",
+        "scripted-roll",
+        "scripted-gap",
+        "scripted-restart",
+    ] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_andamento-scenario"))
             .arg(root.join(format!("fixtures/scenarios/{name}.json")))
             .output()
