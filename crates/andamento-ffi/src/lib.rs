@@ -1431,6 +1431,8 @@ mod tests {
     #[test]
     fn region_hints_native_contract() {
         unsafe {
+            // kdl 4 rejects i64::MIN when parsing its unsigned magnitude;
+            // core JSON/sort tests cover MIN, and this KDL boundary is MIN+1.
             for order in [None, Some(i64::MIN + 1), Some(0), Some(i64::MAX)] {
                 let config = format!("region \"test\" root-template=\"flotilla/region/tree\" default-host=\"sidebar\"{}",
                     order.map(|o| format!(" order={o}")).unwrap_or_default());
@@ -1460,6 +1462,55 @@ mod tests {
             assert_eq!(hints.default_host.len, 0);
             assert_eq!(hints.has_order, 0);
             andamento_snapshot_release(s);
+            andamento_destroy(h);
+        }
+    }
+
+    // Host-inventory coverage synthesizes an unhinted section. Entity nodes
+    // never expose region hints, even when their parent is a synthetic section.
+    #[test]
+    fn synthetic_section_and_nonsection_hints() {
+        unsafe {
+            let config = "region \"test\" root-template=\"flotilla/region/tree\"";
+            let h = andamento_create(config.as_ptr(), config.len(), ptr::null_mut());
+            assert!(!h.is_null());
+            let workspace = WorkspaceInput {
+                id: 42,
+                position: 0,
+                name: Text::borrowed("unplaced"),
+                selected: 1,
+            };
+            assert_eq!(
+                andamento_observe(h, &workspace, 1, ptr::null(), 0, ptr::null_mut()),
+                1
+            );
+            let snapshot = andamento_snapshot_acquire(h, ptr::null_mut());
+            let mut found_section = false;
+            let mut found_entity = false;
+            for i in 0..andamento_snapshot_node_count(snapshot) {
+                let mut node = std::mem::MaybeUninit::uninit();
+                assert_eq!(andamento_snapshot_node(snapshot, i, node.as_mut_ptr()), 1);
+                let node = node.assume_init();
+                let mut hints = std::mem::MaybeUninit::uninit();
+                if node.is_section == 0 {
+                    assert_eq!(
+                        andamento_snapshot_region_hints(snapshot, i, hints.as_mut_ptr()),
+                        0
+                    );
+                    found_entity = true;
+                } else if node.key.read().unwrap() == "andamento.unplaced-workspaces" {
+                    assert_eq!(
+                        andamento_snapshot_region_hints(snapshot, i, hints.as_mut_ptr()),
+                        1
+                    );
+                    let hints = hints.assume_init();
+                    assert_eq!(hints.default_host.len, 0);
+                    assert_eq!(hints.has_order, 0);
+                    found_section = true;
+                }
+            }
+            assert!(found_section && found_entity);
+            andamento_snapshot_release(snapshot);
             andamento_destroy(h);
         }
     }

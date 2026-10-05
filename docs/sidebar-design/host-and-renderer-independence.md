@@ -245,9 +245,13 @@ guide further projection fields. See the embedding guide for ABI 2 details.
 
 `region` accepts optional `default-host="sidebar"` and `order=10` attributes.
 `default-host` is a nonempty opaque string interpreted by the frontend; it is
-independent of `placement`, which names an entity query. `order` is a signed
+independent of `placement`, which names an entity query. Nonempty host strings
+are preserved verbatim, including surrounding whitespace; hosts match the
+names they recognise exactly. `order` is a signed
 integer hint, lower first. Hosts preserve declaration order when no hints are
-provided and use declaration order to break ties. Andamento keeps the declared
+provided and use declaration order to break ties. Mixed orders use the
+zero-based declaration index for an omitted hint. Rust hosts can share this
+policy through `template_config::region_placement_sort_key`. Andamento keeps the declared
 region sequence; Zellij may ignore these hints.
 
 Rust consumers read `SurfaceRegionDefinition` or the resolved `Section`.

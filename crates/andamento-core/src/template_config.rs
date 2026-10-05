@@ -335,9 +335,10 @@ impl ExternalTemplateConfig {
                 .as_ref()
                 .is_some_and(|host| host.trim().is_empty())
             {
-                return Err(TemplateConfigError::Validation(
-                    "region default-host cannot be empty".into(),
-                ));
+                return Err(TemplateConfigError::Validation(format!(
+                    "region {} default-host cannot be empty",
+                    region.name
+                )));
             }
             if region.name.trim().is_empty() {
                 return Err(TemplateConfigError::Validation(
@@ -943,6 +944,15 @@ pub struct SurfaceRegionDefinition {
     pub pinned: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub promotions: Vec<SurfaceFormPromotion>,
+}
+
+/// Host-side default ordering: omitted hints use declaration index; ties retain
+/// declaration order. Saved user positions must not be sorted with this key.
+pub fn region_placement_sort_key(order: Option<i64>, declaration_index: usize) -> (i64, usize) {
+    (
+        order.unwrap_or_else(|| i64::try_from(declaration_index).unwrap_or(i64::MAX)),
+        declaration_index,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3876,9 +3886,17 @@ region "attention" root-template="r" form="full"
     // Explicit generator covers absent hints, opaque hosts, signed boundaries and ties.
     #[test]
     fn region_hints_round_trip_and_validation() {
-        for host in [None, Some("sidebar"), Some("future-host")] {
+        for host in [
+            None,
+            Some("sidebar"),
+            Some("future-host"),
+            Some(" sidebar "),
+            Some("host\"\\name"),
+        ] {
             for order in [
                 None,
+                // kdl 4 parses the magnitude before the sign, so i64::MIN
+                // overflows its parser. JSON and the sort helper cover MIN below.
                 Some(i64::MIN + 1),
                 Some(-1),
                 Some(0),
@@ -3887,7 +3905,7 @@ region "attention" root-template="r" form="full"
             ] {
                 let attributes = format!(
                     "{}{}",
-                    host.map(|h| format!(" default-host={h:?}"))
+                    host.map(|h| format!(" default-host={}", KdlValue::String(h.to_owned())))
                         .unwrap_or_default(),
                     order.map(|o| format!(" order={o}")).unwrap_or_default()
                 );
@@ -3901,6 +3919,31 @@ region "attention" root-template="r" form="full"
                 let decoded: Vec<SurfaceRegionDefinition> = serde_json::from_str(&encoded).unwrap();
                 assert_eq!(decoded, config.regions);
             }
+        }
+        // JSON has no KDL signed-magnitude limitation and supports i64::MIN.
+        let min = parse_template_config_json(&format!(
+            r#"{{"regions":[{{"name":"min","root-template":"a","form":"full","order":{}}}]}}"#,
+            i64::MIN
+        ))
+        .unwrap();
+        assert_eq!(min.regions[0].order, Some(i64::MIN));
+        assert!(parse_template_config_json(
+            r#"{"regions":[{"name":"named","root-template":"a","form":"full","default-host":" "}]}"#
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("region named default-host"));
+        for (orders, expected) in [
+            (vec![None, None, None], vec![0, 1, 2]),
+            (vec![Some(20), None, Some(10)], vec![1, 2, 0]),
+            (vec![Some(0), Some(0), None], vec![0, 1, 2]),
+            (vec![Some(1), None, Some(0)], vec![2, 0, 1]),
+            (vec![Some(i64::MAX), Some(i64::MIN), None], vec![1, 2, 0]),
+        ] {
+            // Lower hinted/default order comes first, with declaration-order ties.
+            let mut indices: Vec<_> = (0..orders.len()).collect();
+            indices.sort_by_key(|&i| region_placement_sort_key(orders[i], i));
+            assert_eq!(indices, expected);
         }
         for attributes in [
             "order=1.5",

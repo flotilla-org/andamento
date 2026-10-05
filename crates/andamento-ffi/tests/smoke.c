@@ -156,6 +156,24 @@ static void check_region_hints(void) {
     assert(hints.default_host.len == 0 && hints.has_order == 0);
     assert(!andamento_snapshot_region_hints(s, ANDAMENTO_NONE, &hints));
     assert(!andamento_snapshot_region_hints(s, 0, NULL));
+    andamento_snapshot_release(s);
+    /* Uncovered inventory becomes a synthetic unhinted section plus a node. */
+    AndamentoWorkspace ws = {42, 0, T("unplaced"), 1};
+    ok(andamento_observe(h, &ws, 1, NULL, 0, &error));
+    s = andamento_snapshot_acquire(h, &error);
+    unsigned synthetic = 0, entity = 0;
+    for (size_t i = 0; i < andamento_snapshot_node_count(s); i++) {
+        AndamentoNode n; assert(andamento_snapshot_node(s, i, &n));
+        if (!n.is_section) {
+            assert(!andamento_snapshot_region_hints(s, i, &hints));
+            entity++;
+        } else if (eq(n.key, "andamento.unplaced-workspaces")) {
+            assert(andamento_snapshot_region_hints(s, i, &hints));
+            assert(hints.default_host.len == 0 && hints.has_order == 0);
+            synthetic++;
+        }
+    }
+    assert(synthetic && entity);
     andamento_snapshot_release(s); andamento_destroy(h);
 }
 
