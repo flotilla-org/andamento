@@ -244,8 +244,8 @@ guide further projection fields. See the embedding guide for ABI 2 details.
 ## Region placement hints
 
 `region` accepts optional `default-host="sidebar"` and `order=10` attributes.
-`default-host` is a nonempty opaque string interpreted by the frontend; it is
-independent of `placement`, which names an entity query. Nonempty host strings
+`default-host` is an opaque string that is not blank interpreted by the frontend; it is
+independent of `placement`, which names an entity query. Host strings that are not blank
 are preserved verbatim, including surrounding whitespace; hosts match the
 names they recognise exactly. `order` is a signed
 integer hint, lower first. Hosts preserve declaration order when no hints are
