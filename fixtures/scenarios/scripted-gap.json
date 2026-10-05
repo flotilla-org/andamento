@@ -1,0 +1,191 @@
+[
+  {
+    "offset_ms": 0,
+    "convoys": [
+      {
+        "resource": {
+          "api_version": "flotilla.work/v1",
+          "kind": "Convoy",
+          "namespace": "flotilla",
+          "name": "coder-1"
+        },
+        "name": "coder-1",
+        "workflow_ref": "standing",
+        "phase": "active",
+        "initializing": false,
+        "surface_state": {
+          "state": "working"
+        },
+        "vessels": [
+          {
+            "resource": {
+              "api_version": "flotilla.work/v1",
+              "kind": "Convoy",
+              "namespace": "flotilla",
+              "name": "coder-1",
+              "subresource": "vessels/worker"
+            },
+            "name": "worker",
+            "host": "lab",
+            "phase": "running",
+            "complete_work": false,
+            "surface_state": {
+              "state": "working"
+            },
+            "materialize": "coder-1/worker",
+            "crew": [
+              {
+                "role": "coder",
+                "command_preview": ""
+              }
+            ]
+          }
+        ],
+        "project_ref": "flotilla/andamento",
+        "repo": "flotilla-org/andamento",
+        "generation": 1,
+        "address_role": "coder",
+        "ensured_from": "andamento-coder"
+      }
+    ],
+    "standing_roles": [
+      {
+        "resource": {
+          "api_version": "flotilla.work/v1",
+          "kind": "ConvoyEnsure",
+          "namespace": "flotilla",
+          "name": "andamento-coder"
+        },
+        "project_ref": "flotilla/andamento",
+        "role": "coder",
+        "presents_as": "workspace"
+      }
+    ]
+  },
+  {
+    "offset_ms": 1000,
+    "convoys": [],
+    "standing_roles": [
+      {
+        "resource": {
+          "api_version": "flotilla.work/v1",
+          "kind": "ConvoyEnsure",
+          "namespace": "flotilla",
+          "name": "andamento-coder"
+        },
+        "project_ref": "flotilla/andamento",
+        "role": "coder",
+        "presents_as": "workspace",
+        "hold": "backing_unverified"
+      }
+    ]
+  },
+  {
+    "offset_ms": 2000,
+    "convoys": [
+      {
+        "resource": {
+          "api_version": "flotilla.work/v1",
+          "kind": "Convoy",
+          "namespace": "flotilla",
+          "name": "coder-1"
+        },
+        "name": "coder-1",
+        "workflow_ref": "standing",
+        "phase": "failed",
+        "initializing": false,
+        "surface_state": {
+          "state": "working"
+        },
+        "vessels": [
+          {
+            "resource": {
+              "api_version": "flotilla.work/v1",
+              "kind": "Convoy",
+              "namespace": "flotilla",
+              "name": "coder-1",
+              "subresource": "vessels/worker"
+            },
+            "name": "worker",
+            "host": "lab",
+            "phase": "running",
+            "complete_work": false,
+            "surface_state": {
+              "state": "working"
+            },
+            "materialize": "coder-1/worker",
+            "crew": [
+              {
+                "role": "coder",
+                "command_preview": ""
+              }
+            ]
+          }
+        ],
+        "project_ref": "flotilla/andamento",
+        "repo": "flotilla-org/andamento",
+        "generation": 1,
+        "address_role": "coder",
+        "ensured_from": "andamento-coder"
+      },
+      {
+        "resource": {
+          "api_version": "flotilla.work/v1",
+          "kind": "Convoy",
+          "namespace": "flotilla",
+          "name": "coder-2"
+        },
+        "name": "coder-2",
+        "workflow_ref": "standing",
+        "phase": "active",
+        "initializing": false,
+        "surface_state": {
+          "state": "working"
+        },
+        "vessels": [
+          {
+            "resource": {
+              "api_version": "flotilla.work/v1",
+              "kind": "Convoy",
+              "namespace": "flotilla",
+              "name": "coder-2",
+              "subresource": "vessels/worker"
+            },
+            "name": "worker",
+            "host": "lab",
+            "phase": "running",
+            "complete_work": false,
+            "surface_state": {
+              "state": "working"
+            },
+            "materialize": "coder-2/worker",
+            "crew": [
+              {
+                "role": "coder",
+                "command_preview": ""
+              }
+            ]
+          }
+        ],
+        "project_ref": "flotilla/andamento",
+        "repo": "flotilla-org/andamento",
+        "generation": 2,
+        "address_role": "coder",
+        "ensured_from": "andamento-coder"
+      }
+    ],
+    "standing_roles": [
+      {
+        "resource": {
+          "api_version": "flotilla.work/v1",
+          "kind": "ConvoyEnsure",
+          "namespace": "flotilla",
+          "name": "andamento-coder"
+        },
+        "project_ref": "flotilla/andamento",
+        "role": "coder",
+        "presents_as": "workspace"
+      }
+    ]
+  }
+]

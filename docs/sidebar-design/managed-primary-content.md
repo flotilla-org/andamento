@@ -84,6 +84,21 @@ declaration. Its identity survives every convoy attempt that backs it.
 | action.primary.recipe | Attach command for the live vessel; only when ready |
 | status.state, status.attention, summary.text | Role status, never a superseded attempt's; attention includes the live attempt's vessels (flotilla#1960) |
 
+A declared role must publish its owning project independently of backing
+attempts. Both the project and role retain `flotilla.project` as the placement
+join, including the held gap when no attempt is observed. A temporary empty
+observation during a roll or reconnect is not declaration deletion; it must not
+withdraw the declared role or its project join. Transport silence and fact
+expiry are unobserved periods, not evidence that the declaration ended.
+
+The scripted gap and empty-publication restart fixtures currently demonstrate
+a connector projection violation of this contract (andamento#105). Their core
+contract tests are ignored until the pinned projection is fixed and the streams
+are regenerated. The parent-retained control passes without a placement
+workaround. See [the scenario instructions](../../fixtures/scenarios/README.md)
+for replay commands and the distinction between an empty publication and a
+transport disconnect.
+
 The role carries no `flotilla.convoy` or `flotilla.vessel` keys and adds no
 grouping segments. Held covers suspended admission, the gap between
 generations, and live attempts without exactly one attachable vessel.

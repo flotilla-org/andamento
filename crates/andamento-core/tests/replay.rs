@@ -267,3 +267,77 @@ fn cli_emit_snapshot_and_usage() {
     assert!(!invalid.status.success());
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("usage:"));
 }
+
+// A declared standing role must appear exactly once on its owning project row
+// after every observation, independently of attempts (andamento#105).
+fn assert_standing_role_placement(input: Vec<Frame>) {
+    let offsets: std::collections::BTreeSet<_> = input.iter().map(|f| f.offset_ms).collect();
+    assert!(
+        !offsets.is_empty(),
+        "regression stream must contain observations"
+    );
+    let mut replay = Replay::new(input).unwrap();
+    let mut sidebar = Sidebar::new(include_str!("../../../fixtures/standing-role.kdl")).unwrap();
+    let mut role_key = None;
+    for at in offsets {
+        assert_eq!(replay.step(&mut sidebar).unwrap(), Some(at));
+        let snapshot = sidebar.snapshot();
+        let projects = &snapshot.surface.sections[0].nodes;
+        let roles: Vec<_> = projects
+            .iter()
+            .flat_map(|project| project.children.iter().map(move |role| (project, role)))
+            .filter(|(_, role)| role.entity.kind == "role")
+            .collect();
+        assert_eq!(roles.len(), 1, "role dissociated or duplicated at {at} ms");
+        let (project, role) = roles[0];
+        assert_eq!(project.entity.id, "flotilla/andamento@fleet", "{at} ms");
+        assert_eq!(role.entity.id, "flotilla/andamento/coder@fleet", "{at} ms");
+        if let Some(key) = &role_key {
+            assert_eq!(&role.key, key, "role placement identity changed at {at} ms");
+        } else {
+            role_key = Some(role.key.clone());
+        }
+    }
+    assert_eq!(replay.step(&mut sidebar).unwrap(), None);
+}
+
+#[test]
+#[ignore = "andamento#105: connector projection withdraws the declared role's project join during a held gap"]
+fn declared_role_stays_on_project_through_scripted_gap() {
+    // Keep the desired contract even while the pinned connector violates it.
+    // Regenerate after the connector fix, then remove this ignore when green.
+    assert_standing_role_placement(frames("scripted-gap.jsonl"));
+}
+
+#[test]
+#[ignore = "andamento#105: connector empty publication withdraws role and project joins before restart reassertion"]
+fn declared_role_stays_on_project_through_scripted_restart() {
+    // This models an empty query publication, not transport silence or TTL expiry.
+    // Temporary empty observations must not mean declaration deletion.
+    assert_standing_role_placement(frames("scripted-restart.jsonl"));
+}
+
+#[test]
+fn declared_role_parent_retained_control_stays_on_project() {
+    // Single-variable control: preserve only the parent publication while the
+    // connector removes the attempt. The role's held/ready facts are untouched.
+    // Once upstream stops withdrawing the join, keep that observation intact.
+    let mut input = frames("scripted-gap.jsonl");
+    let before = input.len();
+    input.retain(|frame| {
+        !(frame.offset_ms == 1000
+            && matches!(&frame.patch.target,
+                andamento_core::MetadataTarget::Entity(entity) if entity.kind == "project")
+            && frame
+                .patch
+                .unset
+                .iter()
+                .any(|key| key == "flotilla.project")
+            && !frame.patch.set.contains_key("flotilla.project"))
+    });
+    assert!(
+        before - input.len() <= 1,
+        "control may remove only the parent withdrawal"
+    );
+    assert_standing_role_placement(input);
+}
