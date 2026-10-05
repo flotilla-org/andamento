@@ -41,7 +41,6 @@ placement under its project, changed primary target, and subsequent TTL expiry.
 This is synthetic, not a real fleet recording. Flotilla #2281 owns the live tap;
 Andamento #105 must add a real roll capture when one is available.
 
-
 ## Standing role gap and restart regressions (andamento#105)
 
 `scripted-gap` uses the roll's initial and re-admitted states, but its held
@@ -62,9 +61,10 @@ interpreted as declaration deletion.
 Regenerate with the same real projection tool (native target):
 
 ```sh
-cargo run --locked --manifest-path tools/scenario/Cargo.toml --target x86_64-unknown-linux-gnu -- fixtures/scenarios/scripted-gap.json > fixtures/scripted-gap.jsonl
-cargo run --locked --manifest-path tools/scenario/Cargo.toml --target x86_64-unknown-linux-gnu -- fixtures/scenarios/scripted-restart.json > fixtures/scripted-restart.jsonl
-cargo test --locked --manifest-path tools/scenario/Cargo.toml --target x86_64-unknown-linux-gnu
+host=$(rustc -vV | sed -n 's/^host: //p')
+cargo run --locked --manifest-path tools/scenario/Cargo.toml --target "$host" -- fixtures/scenarios/scripted-gap.json > fixtures/scripted-gap.jsonl
+cargo run --locked --manifest-path tools/scenario/Cargo.toml --target "$host" -- fixtures/scenarios/scripted-restart.json > fixtures/scripted-restart.jsonl
+cargo test --locked --manifest-path tools/scenario/Cargo.toml --target "$host"
 ```
 
 The core `replay` integration tests check one role on the correct project row
@@ -73,21 +73,29 @@ tests are ignored while the connector defect remains; run them explicitly to
 see the 1000 ms failure. After fixing the upstream projection, update its pin,
 regenerate the fixtures and remove the ignores when both tests pass. The passing
 `declared_role_parent_retained_control_stays_on_project` removes only the
-single project-withdrawal patch from the gap stream when present, proving that retaining the
-parent join alone preserves placement. After the upstream fix it leaves the intact publication alone. It is a test
-control, not runtime code.
+single project-withdrawal patch from the gap stream, proving that retaining the
+parent join alone preserves placement. While pin `87f03e9` is known broken, the
+control requires exactly one removal so fixture or filter drift fails loudly.
+Update that expectation alongside the corrected connector pin and regenerated
+fixtures. This is a test control, not runtime code.
 
 With a native `andamento-replay` binary, the standalone exact-symptom check is:
 
 ```sh
-python3 scripts/check-standing-role.py fixtures/scripted-gap.jsonl --binary target/independent/x86_64-unknown-linux-gnu/debug/andamento-replay
-python3 scripts/check-standing-role.py fixtures/scripted-restart.jsonl --binary target/independent/x86_64-unknown-linux-gnu/debug/andamento-replay
+host=$(rustc -vV | sed -n 's/^host: //p')
+python3 scripts/check-standing-role.py fixtures/scripted-gap.jsonl --binary "target/independent/$host/debug/andamento-replay"
+python3 scripts/check-standing-role.py fixtures/scripted-restart.jsonl --binary "target/independent/$host/debug/andamento-replay"
 ```
 
 Both currently exit nonzero with `role dissociated or duplicated at 1000 ms`.
 `fixtures/standing-role.kdl` is shared by that checker and the core tests. Build
 the binary with `cargo build -p andamento-core --bin andamento-replay --target
-x86_64-unknown-linux-gnu`, or use a standalone core workspace when the sibling
+"$host"`, or use a standalone core workspace when the sibling
 Zellij SDK is unavailable. `scripts/check-independent-core.py` runs the core
 integration tests without Zellij; the projection generator is a separate test
 workspace so core does not gain a Flotilla dependency.
+
+Keep the standalone checker and Rust `assert_standing_role_placement` assertions
+in sync: both require one role on the correct project row and a stable entity
+and placement key at every observation. Rust additionally checks that replay is
+exhausted. The script is a manual diagnostic; the Rust tests are the CI contract.

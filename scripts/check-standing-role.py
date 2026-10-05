@@ -10,6 +10,8 @@ from pathlib import Path
 import subprocess
 
 
+# Keep the placement invariant in sync with assert_standing_role_placement in
+# crates/andamento-core/tests/replay.rs. Rust additionally checks replay exhaustion.
 def main():
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
@@ -22,8 +24,15 @@ def main():
         raise SystemExit("capture has no observations")
     key = None
     for at in offsets:
-        raw = subprocess.check_output([str(args.binary.resolve()), "snapshot",
-                                       str(args.capture), str(root / "fixtures/standing-role.kdl"), str(at)])
+        try:
+            raw = subprocess.check_output(
+                [str(args.binary.resolve()), "snapshot", str(args.capture),
+                 str(root / "fixtures/standing-role.kdl"), str(at)], stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError as error:
+            detail = error.stderr.decode(errors="replace").strip()
+            raise SystemExit(f"replay failed at {at} ms (exit {error.returncode}): {detail}") from None
+        except OSError as error:
+            raise SystemExit(f"could not run replay binary: {error}") from None
         projects = json.loads(raw)["surface"]["sections"][0]["nodes"]
         roles = [(project, role) for project in projects for role in project["children"]
                  if role["entity"]["kind"] == "role"]

@@ -270,6 +270,7 @@ fn cli_emit_snapshot_and_usage() {
 
 // A declared standing role must appear exactly once on its owning project row
 // after every observation, independently of attempts (andamento#105).
+// Keep scripts/check-standing-role.py in sync with these placement assertions.
 fn assert_standing_role_placement(input: Vec<Frame>) {
     let offsets: std::collections::BTreeSet<_> = input.iter().map(|f| f.offset_ms).collect();
     assert!(
@@ -306,6 +307,7 @@ fn assert_standing_role_placement(input: Vec<Frame>) {
 fn declared_role_stays_on_project_through_scripted_gap() {
     // Keep the desired contract even while the pinned connector violates it.
     // Regenerate after the connector fix, then remove this ignore when green.
+    // Scripted, with no awareness/project-repository rows: not full #105 acceptance.
     assert_standing_role_placement(frames("scripted-gap.jsonl"));
 }
 
@@ -314,6 +316,7 @@ fn declared_role_stays_on_project_through_scripted_gap() {
 fn declared_role_stays_on_project_through_scripted_restart() {
     // This models an empty query publication, not transport silence or TTL expiry.
     // Temporary empty observations must not mean declaration deletion.
+    // Scripted, with no awareness/project-repository rows: not full #105 acceptance.
     assert_standing_role_placement(frames("scripted-restart.jsonl"));
 }
 
@@ -321,7 +324,8 @@ fn declared_role_stays_on_project_through_scripted_restart() {
 fn declared_role_parent_retained_control_stays_on_project() {
     // Single-variable control: preserve only the parent publication while the
     // connector removes the attempt. The role's held/ready facts are untouched.
-    // Once upstream stops withdrawing the join, keep that observation intact.
+    // Pin 87f03e9 is known broken: require one withdrawal so fixture/filter drift
+    // cannot silently erase the control. Update this expectation with the pin fix.
     let mut input = frames("scripted-gap.jsonl");
     let before = input.len();
     input.retain(|frame| {
@@ -335,9 +339,10 @@ fn declared_role_parent_retained_control_stays_on_project() {
                 .any(|key| key == "flotilla.project")
             && !frame.patch.set.contains_key("flotilla.project"))
     });
-    assert!(
-        before - input.len() <= 1,
-        "control may remove only the parent withdrawal"
+    assert_eq!(
+        before - input.len(),
+        1,
+        "known-broken connector pin must withdraw exactly one parent join"
     );
     assert_standing_role_placement(input);
 }
