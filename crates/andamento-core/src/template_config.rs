@@ -949,6 +949,8 @@ pub struct SurfaceRegionDefinition {
 /// Host-side default ordering: omitted hints use declaration index; ties retain
 /// declaration order. Saved user positions must not be sorted with this key.
 pub fn region_placement_sort_key(order: Option<i64>, declaration_index: usize) -> (i64, usize) {
+    // Inventories cannot realistically exceed i64::MAX regions, but keep this
+    // public helper total for any usize index a host supplies.
     (
         order.unwrap_or_else(|| i64::try_from(declaration_index).unwrap_or(i64::MAX)),
         declaration_index,

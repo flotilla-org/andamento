@@ -260,6 +260,10 @@ as `a order=10`, `b` (no order), and `c order=0` have keys `(10, 0)`,
 arrangement takes precedence over all three hints. Andamento keeps the
 declared region sequence; Zellij may ignore these hints.
 
+An unhinted region at index 2 sorts before a region with `order=10`. Authors
+can specify order on all regions, or omit it on all regions, to avoid mixing
+these scales.
+
 Rust consumers read `SurfaceRegionDefinition` or the resolved `Section`.
 Native consumers call `andamento_snapshot_region_hints` with a section node
 index. This additive ABI 2 extension leaves `AndamentoNode` unchanged. Its text
