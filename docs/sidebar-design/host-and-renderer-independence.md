@@ -251,7 +251,10 @@ names they recognise exactly. `order` is a signed
 integer hint, lower first. Hosts preserve declaration order when no hints are
 provided and use declaration order to break ties. Mixed orders use the
 zero-based declaration index for an omitted hint. Rust hosts can share this
-policy through `template_config::region_placement_sort_key`. Andamento keeps the declared
+policy through `template_config::region_placement_sort_key`. For example,
+regions declared as `a order=10`, `b` (no order), and `c order=0` have keys
+`(10, 0)`, `(1, 1)`, and `(0, 2)`, so the default order is `c, b, a`.
+A saved user arrangement takes precedence over all three hints. Andamento keeps the declared
 region sequence; Zellij may ignore these hints.
 
 Rust consumers read `SurfaceRegionDefinition` or the resolved `Section`.

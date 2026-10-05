@@ -330,6 +330,11 @@ impl ExternalTemplateConfig {
         }
         let mut region_names = BTreeSet::new();
         for region in &self.regions {
+            if region.name.trim().is_empty() {
+                return Err(TemplateConfigError::Validation(
+                    "region name cannot be empty".to_owned(),
+                ));
+            }
             if region
                 .default_host
                 .as_ref()
@@ -339,11 +344,6 @@ impl ExternalTemplateConfig {
                     "region {} default-host cannot be empty",
                     region.name
                 )));
-            }
-            if region.name.trim().is_empty() {
-                return Err(TemplateConfigError::Validation(
-                    "region name cannot be empty".to_owned(),
-                ));
             }
             if !region_names.insert(region.name.clone()) {
                 return Err(TemplateConfigError::Validation(format!(
@@ -3945,6 +3945,13 @@ region "attention" root-template="r" form="full"
             indices.sort_by_key(|&i| region_placement_sort_key(orders[i], i));
             assert_eq!(indices, expected);
         }
+        // Identity errors precede hint errors when both declarations are invalid.
+        assert!(
+            parse_template_config_kdl(r#"region "" root-template="a" default-host="""#)
+                .unwrap_err()
+                .to_string()
+                .contains("region name cannot be empty")
+        );
         for attributes in [
             "order=1.5",
             "order=\"10\"",
