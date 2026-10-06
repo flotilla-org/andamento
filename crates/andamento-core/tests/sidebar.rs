@@ -1,3 +1,4 @@
+use andamento_core::presentation::UNPLACED_WORKSPACES_SECTION;
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::{
     EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
@@ -526,7 +527,7 @@ fn fallback(sidebar: &Sidebar) -> Vec<andamento_core::presentation::PlacementNod
         .surface
         .sections
         .into_iter()
-        .find(|s| s.name == "andamento.unplaced-workspaces")
+        .find(|s| s.name == UNPLACED_WORKSPACES_SECTION)
         .map(|s| s.nodes)
         .unwrap_or_default()
 }
@@ -581,7 +582,7 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
         .surface
         .sections
         .iter()
-        .find(|s| s.name == "andamento.unplaced-workspaces")
+        .find(|s| s.name == UNPLACED_WORKSPACES_SECTION)
         .expect("fallback section stays present when empty");
     assert!(section.nodes.is_empty() && section.is_empty_workspace_fallback());
 }
@@ -1498,7 +1499,7 @@ fn unrelated_source_removal_and_subjectless_workspaces_are_unaffected() {
         .surface
         .sections
         .iter()
-        .any(|s| s.name == "andamento.unplaced-workspaces"
+        .any(|s| s.name == UNPLACED_WORKSPACES_SECTION
             && s.nodes.iter().any(|n| n.label == "Unsaved notes")));
 }
 

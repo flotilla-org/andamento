@@ -828,7 +828,9 @@ fn render_snapshot(
         0
     };
     // An empty workspace fallback renders nothing here: this frontend has no
-    // workspace-creation affordance to anchor to its header.
+    // workspace-creation affordance to anchor to its header. It keeps an empty
+    // entry rather than using `visible_sections`, because the layout below
+    // indexes `sections` and `surface.sections` together.
     let mut sections = surface
         .sections
         .iter()

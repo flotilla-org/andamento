@@ -69,10 +69,7 @@ pub fn render(snapshot: &SurfaceSnapshot, columns: usize) -> Frame {
         lines: vec![],
         hits: vec![],
     };
-    for section in &snapshot.sections {
-        if section.is_empty_workspace_fallback() {
-            continue;
-        }
+    for section in snapshot.visible_sections() {
         let text = section.content.text();
         line(
             &mut frame,

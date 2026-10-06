@@ -116,6 +116,14 @@ fn visit_nodes<'a, B>(
 }
 
 impl SurfaceSnapshot {
+    /// Sections a frontend without a workspace-creation affordance renders:
+    /// everything except the empty workspace fallback.
+    pub fn visible_sections(&self) -> impl Iterator<Item = &Section> {
+        self.sections
+            .iter()
+            .filter(|section| !section.is_empty_workspace_fallback())
+    }
+
     pub fn node(&self, key: &PlacementKey) -> Option<&PlacementNode> {
         self.sections.iter().find_map(|section| {
             visit_nodes(&section.nodes, &mut |node| {
