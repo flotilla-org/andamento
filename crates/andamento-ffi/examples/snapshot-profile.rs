@@ -9,6 +9,10 @@ fn text(s: &str) -> Text {
 }
 fn main() {
     let args: Vec<_> = std::env::args().collect();
+    if args.len() != 3 {
+        eprintln!("usage: snapshot-profile CONFIG.kdl PATCHES.jsonl");
+        std::process::exit(2);
+    }
     let config = std::fs::read_to_string(&args[1]).unwrap();
     let fixture = std::fs::read_to_string(&args[2]).unwrap();
     for n in [100, 300, 1000] {

@@ -322,6 +322,10 @@ fn demand_details_equal_eager_and_keep_snapshot_owned_lifetimes() {
             andamento_snapshot_node_count(plain),
             andamento_snapshot_node_count(eager)
         );
+        // An unexpired tick leaves this revision current. Later demand still
+        // renders all cards against the acquisition clock, not the new core clock.
+        assert_eq!(andamento_tick(h, 43, ptr::null_mut()), 1);
+        assert_eq!(andamento_snapshot_is_current(h, plain, ptr::null_mut()), 1);
         let mut held = None;
         for kind in [
             "worktree",
@@ -349,6 +353,8 @@ fn demand_details_equal_eager_and_keep_snapshot_owned_lifetimes() {
             );
             let a = a.assume_init();
             let b = b.assume_init();
+            assert_eq!(a.now_ms, 42);
+            assert_eq!(a.now_ms, b.now_ms);
             assert_eq!(
                 (read(a.label), a.field_count, a.has_workspace),
                 (read(b.label), b.field_count, b.has_workspace)
@@ -473,6 +479,70 @@ fn nonplacement_region_reports_template_diagnostic() {
             assert!(andamento_snapshot_diagnostic_count(snapshot) > 0);
             andamento_snapshot_release(snapshot);
         }
+        andamento_destroy(h);
+    }
+}
+
+// Invalid text at the C boundary is rejected without appending output. Empty
+// null text remains valid by the shared Text contract; foreign snapshots fail.
+#[test]
+fn demand_rejects_invalid_text_and_foreign_snapshots() {
+    unsafe {
+        let h = andamento_create(ptr::null(), 0, ptr::null_mut());
+        let snapshot = andamento_snapshot_acquire(h, ptr::null_mut());
+        let invalid_utf8 = [0xff];
+        let bad_texts = [
+            Text {
+                data: ptr::null(),
+                len: 1,
+            },
+            Text {
+                data: invalid_utf8.as_ptr(),
+                len: 1,
+            },
+        ];
+        for bad in bad_texts {
+            for (kind, id) in [(bad, text("id")), (text("kind"), bad)] {
+                let mut error = ptr::null_mut();
+                assert_eq!(
+                    andamento_snapshot_detail_request(h, snapshot, kind, id, &mut error),
+                    usize::MAX
+                );
+                assert!(!error.is_null());
+                andamento_string_free(error);
+                assert_eq!(andamento_snapshot_detail_count(snapshot), 0);
+            }
+        }
+        let mut error = ptr::null_mut();
+        assert_eq!(
+            andamento_snapshot_detail_request(
+                h,
+                snapshot,
+                Text {
+                    data: ptr::null(),
+                    len: 0
+                },
+                text(""),
+                &mut error
+            ),
+            usize::MAX
+        );
+        assert!(error.is_null());
+        let other = andamento_create(ptr::null(), 0, ptr::null_mut());
+        assert_eq!(
+            andamento_snapshot_detail_request(
+                other,
+                snapshot,
+                text("kind"),
+                text("id"),
+                &mut error
+            ),
+            usize::MAX
+        );
+        assert!(!error.is_null());
+        andamento_string_free(error);
+        andamento_destroy(other);
+        andamento_snapshot_release(snapshot);
         andamento_destroy(h);
     }
 }

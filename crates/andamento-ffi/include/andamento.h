@@ -207,7 +207,10 @@ typedef struct {
 /* Add exact-identity details on demand to a current plain snapshot. Text and
  * action indices remain snapshot-owned and stable across later requests.
  * ANDAMENTO_NONE without error means missing. New requests on stale snapshots
- * fail; existing details remain readable. Each identity is appended once. */
+ * fail; existing details remain readable. Each identity is appended once.
+ * Missing results are not cached per snapshot (the core bounds revision misses).
+ * The snapshot clock is fixed at acquisition, including for later appended cards.
+ * Not thread-safe with concurrent reads/requests/release of this snapshot. */
 size_t andamento_snapshot_detail_request(Andamento *, AndamentoSnapshot *, AndamentoText kind, AndamentoText id, char **error);
 size_t andamento_snapshot_detail_count(const AndamentoSnapshot *);
 size_t andamento_snapshot_detail_find(const AndamentoSnapshot *, AndamentoText kind, AndamentoText id);

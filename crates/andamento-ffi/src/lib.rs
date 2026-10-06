@@ -402,6 +402,9 @@ pub struct AndamentoSnapshot {
     diagnostics: Vec<String>,
 }
 impl AndamentoSnapshot {
+    // Exported text borrows String/Vec heap buffers, never inline Detail/Action
+    // storage. Appending may move structs but must not move those buffers or
+    // renumber existing actions; small inline-string representations would break it.
     fn add_detail(&mut self, card: andamento_core::detail::DetailCard, sidebar: &Sidebar) -> usize {
         let activate = self.action(Action::Activate {
             entity: card.entity.clone(),
@@ -749,6 +752,8 @@ fn entity_view(entity: &EntityRef) -> EntityView {
 /// appended at most once; missing identities consume no snapshot storage.
 /// Existing details in an old snapshot remain readable; no new stale evaluation
 /// is permitted. NONE with no error means the exact identity is absent.
+/// Misses are cached only in the bounded revision cache, not in this snapshot.
+/// The caller must exclude concurrent reads, requests and release of this snapshot.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_snapshot_detail_request(
     h: *mut Andamento,
