@@ -402,6 +402,26 @@ pub struct AndamentoSnapshot {
     diagnostics: Vec<String>,
 }
 impl AndamentoSnapshot {
+    fn add_detail(&mut self, card: andamento_core::detail::DetailCard, sidebar: &Sidebar) -> usize {
+        let activate = self.action(Action::Activate {
+            entity: card.entity.clone(),
+        });
+        let copy_url = if sidebar.subject_url(&card.entity).is_some() {
+            self.action(Action::CopySubjectUrl {
+                entity: card.entity.clone(),
+            })
+        } else {
+            NONE
+        };
+        let index = self.details.len();
+        self.detail_index.insert(card.entity.clone(), index);
+        self.details.push(Detail {
+            card,
+            activate,
+            copy_url,
+        });
+        index
+    }
     fn action(&mut self, a: Action) -> usize {
         let id = self.actions.len();
         self.actions.push(a);
@@ -569,9 +589,11 @@ unsafe fn acquire_snapshot(
     include_details: bool,
 ) -> *mut AndamentoSnapshot {
     run(h, error, |h| {
+        let _phase = andamento_core::profile::span("abi-acquire");
         let snapshot = h.sidebar.snapshot();
+        let _flatten = andamento_core::profile::span("abi-flatten");
         let mut out = AndamentoSnapshot {
-            now_ms: 0,
+            now_ms: h.sidebar.now_ms(),
             details: vec![],
             detail_index: Default::default(),
             client: h.client,
@@ -660,23 +682,7 @@ unsafe fn acquire_snapshot(
             let (now_ms, cards) = h.sidebar.detail_cards();
             out.now_ms = now_ms;
             for card in cards {
-                let activate = out.action(Action::Activate {
-                    entity: card.entity.clone(),
-                });
-                let copy_url = if h.sidebar.subject_url(&card.entity).is_some() {
-                    out.action(Action::CopySubjectUrl {
-                        entity: card.entity.clone(),
-                    })
-                } else {
-                    NONE
-                };
-                out.detail_index
-                    .insert(card.entity.clone(), out.details.len());
-                out.details.push(Detail {
-                    card,
-                    activate,
-                    copy_url,
-                });
+                out.add_detail(card, &h.sidebar);
             }
         }
         Ok(Box::into_raw(Box::new(out)))
@@ -738,6 +744,42 @@ fn entity_view(entity: &EntityRef) -> EntityView {
         id: Text::borrowed(&entity.id),
     }
 }
+/// Append a requested detail to a current snapshot. Previously returned text and
+/// action indices remain valid until snapshot release. Each catalog identity is
+/// appended at most once; missing identities consume no snapshot storage.
+/// Existing details in an old snapshot remain readable; no new stale evaluation
+/// is permitted. NONE with no error means the exact identity is absent.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_detail_request(
+    h: *mut Andamento,
+    s: *mut AndamentoSnapshot,
+    kind: Text,
+    id: Text,
+    error: *mut *mut c_char,
+) -> usize {
+    run(h, error, |h| {
+        let s = s.as_mut().ok_or("null snapshot")?;
+        let entity = EntityRef {
+            kind: kind.read()?,
+            id: id.read()?,
+        };
+        if s.client != h.client {
+            return Err("snapshot belongs to another client".into());
+        }
+        if let Some(index) = s.detail_index.get(&entity) {
+            return Ok(*index);
+        }
+        if s.generation != h.sidebar.revision() {
+            return Err("stale snapshot".into());
+        }
+        Ok(match h.sidebar.detail_card(&entity) {
+            Some(card) => s.add_detail(card, &h.sidebar),
+            None => NONE,
+        })
+    })
+    .unwrap_or(NONE)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn andamento_snapshot_detail_count(s: *const AndamentoSnapshot) -> usize {
     s.as_ref().map_or(0, |s| s.details.len())

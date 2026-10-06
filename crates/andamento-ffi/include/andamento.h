@@ -204,6 +204,11 @@ typedef struct {
     AndamentoText display_text;
     size_t detail;
 } AndamentoDetailRelation;
+/* Add exact-identity details on demand to a current plain snapshot. Text and
+ * action indices remain snapshot-owned and stable across later requests.
+ * ANDAMENTO_NONE without error means missing. New requests on stale snapshots
+ * fail; existing details remain readable. Each identity is appended once. */
+size_t andamento_snapshot_detail_request(Andamento *, AndamentoSnapshot *, AndamentoText kind, AndamentoText id, char **error);
 size_t andamento_snapshot_detail_count(const AndamentoSnapshot *);
 size_t andamento_snapshot_detail_find(const AndamentoSnapshot *, AndamentoText kind, AndamentoText id);
 uint32_t andamento_snapshot_detail(const AndamentoSnapshot *, size_t index, AndamentoDetail *out);

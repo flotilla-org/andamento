@@ -205,6 +205,11 @@ impl SurfaceSnapshot {
             let mut metadata = BTreeMap::new();
             effective_metadata(model, &NodeKey::Root, &mut metadata);
             let content = resolve_content(region.root.as_ref(), &metadata, false, false, false);
+            if let Some(error) = &content.error {
+                snapshot
+                    .diagnostics
+                    .push(format!("region {}: {error}", definition.name));
+            }
             snapshot.sections.push(Section {
                 name: definition.name.clone(),
                 default_host: definition.default_host.clone(),
