@@ -98,6 +98,9 @@ body{font:16px system-ui;margin:2rem;max-width:72rem;color:#20242b;background:#f
 </style><h1>Andamento</h1><p>Semantic snapshot with native HTML geometry. Controls emit actions; a host owns dispatch and supplies the next snapshot.</p><main>"#,
     );
     for section in &snapshot.surface.sections {
+        if section.is_empty_workspace_fallback() {
+            continue;
+        }
         html.push_str(&format!(
             "<section><h2>{}</h2>",
             content(&section.content, &section.name)

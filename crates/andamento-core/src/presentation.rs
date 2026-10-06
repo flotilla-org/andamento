@@ -34,6 +34,18 @@ pub struct Section {
     pub nodes: Vec<PlacementNode>,
 }
 
+/// The synthetic section covering workspaces with no normal placement.
+pub const UNPLACED_WORKSPACES_SECTION: &str = "andamento.unplaced-workspaces";
+
+impl Section {
+    /// The workspace fallback is emitted even when empty so hosts can anchor
+    /// workspace creation to its header. Frontends without that affordance
+    /// should not render it while it has no rows.
+    pub fn is_empty_workspace_fallback(&self) -> bool {
+        self.name == UNPLACED_WORKSPACES_SECTION && self.nodes.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlacementNode {
     pub key: PlacementKey,
@@ -141,11 +153,11 @@ impl SurfaceSnapshot {
                 id: workspace.tab_id.to_string(),
             };
             let key = PlacementKey(vec![crate::PlacementSegment {
-                loop_name: "andamento.unplaced-workspaces".into(),
+                loop_name: UNPLACED_WORKSPACES_SECTION.into(),
                 entity: entity.clone(),
             }]);
             nodes.push(PlacementNode {
-                loop_key: key.loop_key("andamento.unplaced-workspaces").unwrap(),
+                loop_key: key.loop_key(UNPLACED_WORKSPACES_SECTION).unwrap(),
                 key,
                 entity,
                 label: workspace.name.clone(),
@@ -172,7 +184,7 @@ impl SurfaceSnapshot {
             });
         }
         self.sections.push(Section {
-            name: "andamento.unplaced-workspaces".into(),
+            name: UNPLACED_WORKSPACES_SECTION.into(),
             default_host: None,
             order: None,
             pinned: false,

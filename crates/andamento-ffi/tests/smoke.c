@@ -156,6 +156,20 @@ static void check_region_hints(void) {
     assert(hints.default_host.len == 0 && hints.has_order == 0);
     assert(!andamento_snapshot_region_hints(s, ANDAMENTO_NONE, &hints));
     assert(!andamento_snapshot_region_hints(s, 0, NULL));
+    /* With no unplaced workspaces the fallback section is still exposed, empty:
+       hosts anchor workspace creation to its header. */
+    unsigned empty_fallback = 0;
+    for (size_t i = 0; i < andamento_snapshot_node_count(s); i++) {
+        AndamentoNode n; assert(andamento_snapshot_node(s, i, &n));
+        if (n.is_section && eq(n.key, "andamento.unplaced-workspaces")) {
+            empty_fallback++;
+            for (size_t j = i+1; j < andamento_snapshot_node_count(s); j++) {
+                AndamentoNode child; assert(andamento_snapshot_node(s, j, &child));
+                assert(child.parent != i);
+            }
+        }
+    }
+    assert(empty_fallback == 1);
     andamento_snapshot_release(s);
     /* Uncovered inventory becomes a synthetic unhinted section plus a node. */
     AndamentoWorkspace ws = {42, 0, T("unplaced"), 1};

@@ -827,10 +827,18 @@ fn render_snapshot(
     } else {
         0
     };
+    // An empty workspace fallback renders nothing here: this frontend has no
+    // workspace-creation affordance to anchor to its header.
     let mut sections = surface
         .sections
         .iter()
-        .map(|section| buffer_section(model, section, cols))
+        .map(|section| {
+            if section.is_empty_workspace_fallback() {
+                Vec::new()
+            } else {
+                buffer_section(model, section, cols)
+            }
+        })
         .collect::<Vec<_>>();
     let height = |index: usize, lines: &[BufferedLine]| {
         lines.len() + usize::from(!surface.sections[index].content.controls.is_empty())
@@ -887,7 +895,7 @@ fn render_snapshot(
     let suffix_start = surface
         .sections
         .iter()
-        .rposition(|section| !section.pinned)
+        .rposition(|section| !section.pinned && !section.is_empty_workspace_fallback())
         .map(|i| i + 1)
         .unwrap_or(surface.sections.len());
     let suffix_rows = sections[suffix_start..]

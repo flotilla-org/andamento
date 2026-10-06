@@ -576,12 +576,14 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
     sidebar.observe(vec![], vec![]);
     assert!(fallback(&sidebar).is_empty());
     // Hosts anchor workspace creation to this header, so it outlives its rows.
-    assert!(sidebar
-        .snapshot()
+    let snapshot = sidebar.snapshot();
+    let section = snapshot
         .surface
         .sections
         .iter()
-        .any(|s| s.name == "andamento.unplaced-workspaces" && s.nodes.is_empty()));
+        .find(|s| s.name == "andamento.unplaced-workspaces")
+        .expect("fallback section stays present when empty");
+    assert!(section.nodes.is_empty() && section.is_empty_workspace_fallback());
 }
 
 #[test]
