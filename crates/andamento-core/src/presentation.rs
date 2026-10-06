@@ -119,6 +119,8 @@ impl SurfaceSnapshot {
 
     /// Cover host inventory even when catalog filtering or provider loss removes
     /// its normal placement. Collapsed descendants still have a reachable path.
+    /// The section is emitted even when empty: hosts anchor workspace creation
+    /// to its header, which must stay reachable with no unplaced workspaces.
     pub(crate) fn cover_workspaces(&mut self, workspaces: &[crate::state::ControllerTab]) {
         let mut covered = std::collections::BTreeSet::new();
         for section in &self.sections {
@@ -169,24 +171,22 @@ impl SurfaceSnapshot {
                 children: Vec::new(),
             });
         }
-        if !nodes.is_empty() {
-            self.sections.push(Section {
-                name: "andamento.unplaced-workspaces".into(),
-                default_host: None,
-                order: None,
-                pinned: false,
-                content: Content {
-                    fields: vec![TemplateConfigRenderedField {
-                        class: TemplateConfigFieldClass::Required,
-                        priority: None,
-                        value: "Other workspaces".into(),
-                        source: None,
-                    }],
-                    ..Content::default()
-                },
-                nodes,
-            });
-        }
+        self.sections.push(Section {
+            name: "andamento.unplaced-workspaces".into(),
+            default_host: None,
+            order: None,
+            pinned: false,
+            content: Content {
+                fields: vec![TemplateConfigRenderedField {
+                    class: TemplateConfigFieldClass::Required,
+                    priority: None,
+                    value: "Other workspaces".into(),
+                    source: None,
+                }],
+                ..Content::default()
+            },
+            nodes,
+        });
     }
 
     pub(crate) fn resolve(

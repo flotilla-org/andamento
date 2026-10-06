@@ -1940,4 +1940,5 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             },
         },
     ],
+    Array [],
 ]

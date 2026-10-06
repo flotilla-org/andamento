@@ -575,6 +575,13 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
     assert!(sidebar.dispatch(Action::ActivatePlacement { key }).is_err());
     sidebar.observe(vec![], vec![]);
     assert!(fallback(&sidebar).is_empty());
+    // Hosts anchor workspace creation to this header, so it outlives its rows.
+    assert!(sidebar
+        .snapshot()
+        .surface
+        .sections
+        .iter()
+        .any(|s| s.name == "andamento.unplaced-workspaces" && s.nodes.is_empty()));
 }
 
 #[test]
@@ -1395,11 +1402,7 @@ fn ended_workspace_lifecycle_scenarios() {
             .children
             .iter()
             .any(|n| n.entity == entity("vessel", "v")));
-        assert!(!snapshot
-            .surface
-            .sections
-            .iter()
-            .any(|s| s.name == "andamento.unplaced-workspaces"));
+        assert!(fallback(&sidebar).is_empty());
         // Reopening a hidden ended row focuses the same workspace, preserving host panels.
         let effects = sidebar
             .dispatch(Action::ActivatePlacement {
@@ -1456,11 +1459,7 @@ fn disconnect_expiry_and_reconnect_preserve_subject_path_without_ending() {
             .iter()
             .all(|n| n.entity == entity("vessel", "v")
                 && !n.facts.contains_key("presentation.ended")));
-        assert!(!snapshot
-            .surface
-            .sections
-            .iter()
-            .any(|s| s.name == "andamento.unplaced-workspaces"));
+        assert!(fallback(&sidebar).is_empty());
     }
     sidebar.apply(1001, [publication]);
     // Reasserting after reconnect updates the same subject, without moving it.
