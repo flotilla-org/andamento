@@ -300,6 +300,13 @@ impl CatalogEvaluation {
     }
 }
 
+/// Which controller outputs the caller consumes; semantic presentation is
+/// always resolved for both modes, including non-placement regions.
+enum ModelOutputs {
+    Controller,
+    Presentation,
+}
+
 /// Immutable catalog and activation inputs owned by a Sidebar revision.
 pub(crate) struct RevisionEvaluation {
     catalog: CatalogEvaluation,
@@ -1253,7 +1260,7 @@ impl ControllerState {
     pub fn view_model(&self) -> ControllerViewModel {
         let _phase = crate::profile::span("presentation");
         let evaluation = self.evaluate_revision();
-        self.view_model_in(&evaluation, false)
+        self.view_model_in(&evaluation, ModelOutputs::Controller)
     }
 
     pub(crate) fn evaluate_revision(&self) -> RevisionEvaluation {
@@ -1307,7 +1314,7 @@ impl ControllerState {
         evaluation: &RevisionEvaluation,
     ) -> crate::presentation::SurfaceSnapshot {
         let _phase = crate::profile::span("presentation");
-        self.view_model_in(evaluation, true)
+        self.view_model_in(evaluation, ModelOutputs::Presentation)
             .presentation
             .unwrap_or_default()
     }
@@ -1315,8 +1322,9 @@ impl ControllerState {
     fn view_model_in(
         &self,
         evaluation: &RevisionEvaluation,
-        presentation_only: bool,
+        outputs: ModelOutputs,
     ) -> ControllerViewModel {
+        let presentation_only = matches!(outputs, ModelOutputs::Presentation);
         let catalog = &evaluation.catalog;
         let mut tabs: Vec<TabCard> = if presentation_only {
             vec![]

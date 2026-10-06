@@ -55,7 +55,7 @@ Opt in by acquiring with `andamento_snapshot_acquire_details`; ordinary
 entity present in the flat tree. Zero-length output text has a non-null pointer.
 Detail identity lookup and relation target lookup use a snapshot-owned index.
 
-All output buffers are borrowed from an acquired immutable `AndamentoSnapshot`;
+All output buffers are borrowed from an acquired `AndamentoSnapshot`;
 release it only after finishing all reads. Indices are snapshot-local. Reacquire
 and find by exact kind/id after draining facts, time, configuration, topology or
 completion changes. Old snapshots remain readable. Action dispatch uses the
@@ -81,6 +81,11 @@ remain readable on old snapshots. Previously returned text and action indices
 remain valid when more details are appended, until snapshot release. A given
 identity is appended only once. The core's revision cache retains at most 64
 cards or misses; snapshot output retains each requested card for its full lifetime.
+
+Plain acquisition now also captures the sidebar's host-monotonic `now_ms`,
+where it previously stored zero internally. All details appended to that snapshot
+report its acquisition clock, even if the core later advances time without
+changing the revision. Eager snapshots retain the same clock semantics.
 
 Relation lookup returns the target identity even before its detail is requested;
 the label falls back to its ID and the detail index is `ANDAMENTO_NONE`. Request

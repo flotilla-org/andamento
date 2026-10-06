@@ -380,6 +380,9 @@ impl Sidebar {
             .detail_cards_in(self.evaluation(), Some(entity))
             .pop();
         let mut cache = self.details.borrow_mut();
+        // Whole-cache eviction is intentional: snapshot-owned cards survive it,
+        // and a miss reuses the shared evaluation. Keep policy simple until a
+        // measured working set warrants LRU bookkeeping.
         if cache.len() == 64 {
             cache.clear();
         }
@@ -779,6 +782,52 @@ mod evaluation_tests {
             assert_eq!(
                 held.surface.sections[0].nodes[0].children[0].label,
                 "original"
+            );
+        }
+    }
+
+    // Semantic output must not depend on whether tab metadata was resolved in
+    // inventory or controller sort order, including a pin-driven reorder.
+    #[test]
+    fn presentation_matches_controller_for_every_sort_mode() {
+        for mode in [
+            crate::SortMode::Controller,
+            crate::SortMode::Position,
+            crate::SortMode::PinnedFirst,
+            crate::SortMode::LatestStatus,
+        ] {
+            let mut sidebar = Sidebar::new(CONFIG).unwrap();
+            sidebar.apply(100, [patch("base", "original", None, 0)]);
+            add_project(&mut sidebar);
+            sidebar.observe(
+                vec![
+                    Workspace {
+                        id: 1,
+                        position: 1,
+                        name: "vessel:v".into(),
+                        selected: true,
+                    },
+                    Workspace {
+                        id: 2,
+                        position: 0,
+                        name: "Other".into(),
+                        selected: false,
+                    },
+                ],
+                vec![],
+            );
+            sidebar.state.set_sort_mode(mode);
+            sidebar.state.toggle_pin(1);
+            sidebar.invalidate();
+            check(&sidebar);
+            let tabs = sidebar.state.view_model().tabs;
+            assert_eq!(
+                tabs[0].tab_id,
+                if mode == crate::SortMode::PinnedFirst {
+                    1
+                } else {
+                    2
+                }
             );
         }
     }
