@@ -9,6 +9,8 @@ pub mod host;
 pub mod managed;
 mod metadata;
 pub mod presentation;
+#[doc(hidden)]
+pub mod profile;
 pub mod replay;
 pub mod sidebar;
 pub mod state;

@@ -55,7 +55,7 @@ Opt in by acquiring with `andamento_snapshot_acquire_details`; ordinary
 entity present in the flat tree. Zero-length output text has a non-null pointer.
 Detail identity lookup and relation target lookup use a snapshot-owned index.
 
-All output buffers are borrowed from an acquired immutable `AndamentoSnapshot`;
+All output buffers are borrowed from an acquired `AndamentoSnapshot`;
 release it only after finishing all reads. Indices are snapshot-local. Reacquire
 and find by exact kind/id after draining facts, time, configuration, topology or
 completion changes. Old snapshots remain readable. Action dispatch uses the
@@ -63,6 +63,7 @@ existing snapshot generation/client validation, including for these new actions.
 
 | Export | Result |
 | --- | --- |
+| `andamento_snapshot_detail_request` | Append one exact kind/id card to a current snapshot; returns its index or `ANDAMENTO_NONE` |
 | `andamento_snapshot_acquire_details` | Opt-in enriched snapshot acquisition |
 | `andamento_snapshot_detail_count` | Number of catalog cards |
 | `andamento_snapshot_detail_find` | Exact kind/id lookup; `ANDAMENTO_NONE` when unavailable |
@@ -70,6 +71,27 @@ existing snapshot generation/client validation, including for these new actions.
 | `andamento_snapshot_detail_field` | Name, section, role, label, unadorned text, presence, source and observation metadata, relation count |
 | `andamento_snapshot_detail_relation` | Exact target identity, display label and detail index, filtered by navigation path |
 | `andamento_snapshot_detail_action` | Semantic intent, label, stable target identity and dispatch action ID |
+
+For interactive hosts, acquire a plain snapshot and call
+`andamento_snapshot_detail_request(core, snapshot, kind, id, &error)` only for
+identities needed by cards. This includes hidden relation targets and retained
+ended subjects. A miss returns `ANDAMENTO_NONE` without an error. A request for
+new details on a stale or foreign snapshot fails; already materialized details
+remain readable on old snapshots. Previously returned text and action indices
+remain valid when more details are appended, until snapshot release. A given
+identity is appended only once. The core's revision cache retains at most 64
+cards or misses; snapshot output retains each requested card for its full lifetime.
+
+Plain acquisition now also captures the sidebar's host-monotonic `now_ms`,
+where it previously stored zero internally. All details appended to that snapshot
+report its acquisition clock, even if the core later advances time without
+changing the revision. Eager snapshots retain the same clock semantics.
+
+Relation lookup returns the target identity even before its detail is requested;
+the label falls back to its ID and the detail index is `ANDAMENTO_NONE`. Request
+the target, then read the relation again to obtain its label/index. Navigation
+paths still filter cycles before demand, and absent entities remain unavailable.
+The additive export leaves the eager detail interface and ABI version unchanged.
 
 Lookup is over the complete resolved catalog, including entities absent from all
 placements or hidden by presentation filters. A configuration resolution failure

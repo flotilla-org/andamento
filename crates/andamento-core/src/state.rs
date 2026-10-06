@@ -300,6 +300,22 @@ impl CatalogEvaluation {
     }
 }
 
+/// Which controller outputs the caller consumes; semantic presentation is
+/// always resolved for both modes, including non-placement regions.
+enum ModelOutputs {
+    Controller,
+    Presentation,
+}
+
+/// Immutable catalog and activation inputs owned by a Sidebar revision.
+pub(crate) struct RevisionEvaluation {
+    catalog: CatalogEvaluation,
+    latents: Vec<LatentTab>,
+    resolved_workspaces: Vec<ResolvedMetadata>,
+    live: BTreeMap<String, crate::presentation::PresentationState>,
+    materializable: BTreeMap<EntityRef, bool>,
+}
+
 fn compare_order_values(left: &MetadataValue, right: &MetadataValue, natural: bool) -> Ordering {
     if natural {
         if let (MetadataValue::Text(left), MetadataValue::Text(right)) = (left, right) {
@@ -1242,25 +1258,95 @@ impl ControllerState {
     }
 
     pub fn view_model(&self) -> ControllerViewModel {
+        let _phase = crate::profile::span("presentation");
+        let evaluation = self.evaluate_revision();
+        self.view_model_in(&evaluation, ModelOutputs::Controller)
+    }
+
+    pub(crate) fn evaluate_revision(&self) -> RevisionEvaluation {
+        let _phase = crate::profile::span("revision-evaluation");
         let catalog = CatalogEvaluation::new(self.catalog_entities());
-        let mut tabs: Vec<TabCard> = self
-            .tabs
-            .iter()
-            .map(|tab| TabCard {
-                tab_id: tab.tab_id,
-                position: tab.position,
-                name: tab.name.clone(),
-                active: tab.active,
-                pinned: self.pinned_tabs.contains(&tab.tab_id),
-                status: self.status_for_tab(tab.tab_id),
-                templates: ResolvedTemplateSlots::default(),
-                active_pane: self
-                    .panes
-                    .values()
-                    .find(|pane| pane.tab_id == tab.tab_id && pane.is_focused)
-                    .map(|pane| pane.pane_id),
+        let latents = self.latent_tabs_in(&catalog);
+        let seeds = self.tab_seed_metadata_entries();
+        let resolved_workspaces: Vec<ResolvedMetadata> = std::iter::once(EntityId::Root)
+            .chain(self.tabs.iter().map(|tab| EntityId::Tab(tab.tab_id)))
+            .map(|target| {
+                let seed = match target {
+                    EntityId::Tab(id) => seeds.get(&id).cloned().unwrap_or_default(),
+                    _ => BTreeMap::new(),
+                };
+                let (values, source_entries, reachable_identities) =
+                    self.resolve_target_metadata(&target, seed);
+                ResolvedMetadata {
+                    target,
+                    values,
+                    source_entries,
+                    reachable_identities,
+                }
             })
             .collect();
+        let tab_metadata = resolved_workspaces
+            .iter()
+            .filter_map(|m| {
+                if let EntityId::Tab(id) = m.target {
+                    Some((id, &m.values))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let live = self.live_presentation_states(&catalog, &tab_metadata);
+        let materializable = latents
+            .iter()
+            .map(|l| (l.entity.clone(), l.materialize_request().is_some()))
+            .collect();
+        RevisionEvaluation {
+            catalog,
+            latents,
+            resolved_workspaces,
+            live,
+            materializable,
+        }
+    }
+
+    pub(crate) fn presentation_in(
+        &self,
+        evaluation: &RevisionEvaluation,
+    ) -> crate::presentation::SurfaceSnapshot {
+        let _phase = crate::profile::span("presentation");
+        self.view_model_in(evaluation, ModelOutputs::Presentation)
+            .presentation
+            .unwrap_or_default()
+    }
+
+    fn view_model_in(
+        &self,
+        evaluation: &RevisionEvaluation,
+        outputs: ModelOutputs,
+    ) -> ControllerViewModel {
+        let presentation_only = matches!(outputs, ModelOutputs::Presentation);
+        let catalog = &evaluation.catalog;
+        let mut tabs: Vec<TabCard> = if presentation_only {
+            vec![]
+        } else {
+            self.tabs
+                .iter()
+                .map(|tab| TabCard {
+                    tab_id: tab.tab_id,
+                    position: tab.position,
+                    name: tab.name.clone(),
+                    active: tab.active,
+                    pinned: self.pinned_tabs.contains(&tab.tab_id),
+                    status: self.status_for_tab(tab.tab_id),
+                    templates: ResolvedTemplateSlots::default(),
+                    active_pane: self
+                        .panes
+                        .values()
+                        .find(|pane| pane.tab_id == tab.tab_id && pane.is_focused)
+                        .map(|pane| pane.pane_id),
+                })
+                .collect()
+        };
 
         match self.sort_mode {
             SortMode::Controller | SortMode::Position => {
@@ -1278,9 +1364,17 @@ impl ControllerState {
             }
         }
 
-        let latent_tabs = self.latent_tabs_in(&catalog);
-        let resolved_metadata = self.resolved_metadata_for_tabs(&tabs, &catalog);
-        let observed_identities = observed_metadata_identities(&resolved_metadata);
+        let latent_tabs = &evaluation.latents;
+        let resolved_metadata = if presentation_only {
+            evaluation.resolved_workspaces.clone()
+        } else {
+            self.resolved_metadata_for_tabs(&tabs, catalog)
+        };
+        let observed_identities = if presentation_only {
+            vec![]
+        } else {
+            observed_metadata_identities(&resolved_metadata)
+        };
         let region_catalog_entities = &catalog.entities;
         let (effective_variables, variable_warnings) =
             self.resolve_effective_variables(&resolved_metadata);
@@ -1380,13 +1474,13 @@ impl ControllerState {
             }
         }
         let mut matched = BTreeSet::new();
-        for section in &surface_regions {
+        for section in surface_regions.iter().filter(|_| !presentation_only) {
             collect_matched(&section.entities, &mut matched);
         }
         let unmatched_entities = catalog
             .entities
             .iter()
-            .filter(|entity| !matched.contains(&entity.entity))
+            .filter(|entity| !presentation_only && !matched.contains(&entity.entity))
             .map(|entity| entity.entity.clone())
             .collect();
         let mut model = ControllerViewModel {
@@ -1415,18 +1509,7 @@ impl ControllerState {
         // Reuse this build's resolved facts. Re-running activation resolution for
         // every displayed entity would rebuild the catalog once per node.
         use crate::presentation::PresentationState;
-        let tab_metadata = model
-            .resolved_metadata
-            .iter()
-            .filter_map(|metadata| {
-                if let EntityId::Tab(id) = metadata.target {
-                    Some((id, &metadata.values))
-                } else {
-                    None
-                }
-            })
-            .collect::<BTreeMap<_, _>>();
-        let live = self.live_presentation_states(&catalog, &tab_metadata);
+        let live = &evaluation.live;
         // Selection belongs to the workspace subject, not shared action targets.
         let subjects = self.workspace_subjects();
         let mut exact = BTreeMap::new();
@@ -1486,6 +1569,9 @@ impl ControllerState {
         ));
         if let Some(surface) = &mut model.presentation {
             surface.cover_workspaces(&self.tabs);
+            surface
+                .diagnostics
+                .extend(model.template_config.warnings.iter().cloned());
         }
         model
     }
@@ -1562,35 +1648,29 @@ impl ControllerState {
     /// Builds one catalog and resolves detail templates and observations for it;
     /// native hosts opt in with snapshot_acquire_details, keeping flat acquire cheap.
     pub fn detail_cards(&self) -> (u64, Vec<crate::detail::DetailCard>) {
+        let _phase = crate::profile::span("details");
+        let evaluation = self.evaluate_revision();
+        (self.now(), self.detail_cards_in(&evaluation, None))
+    }
+
+    pub(crate) fn detail_cards_in(
+        &self,
+        evaluation: &RevisionEvaluation,
+        target: Option<&EntityRef>,
+    ) -> Vec<crate::detail::DetailCard> {
+        let _phase = crate::profile::span("detail-generation");
         use crate::template_config::{
             TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigSlot,
         };
-        let catalog = CatalogEvaluation::new(self.catalog_entities());
-        let latents = self.latent_tabs_in(&catalog);
-        let seeds = self.tab_seed_metadata_entries();
-        let tab_values: BTreeMap<_, _> = self
-            .tabs
-            .iter()
-            .map(|tab| {
-                let (values, _, _) = self.resolve_target_metadata(
-                    &EntityId::Tab(tab.tab_id),
-                    seeds.get(&tab.tab_id).cloned().unwrap_or_default(),
-                );
-                (tab.tab_id, values)
-            })
-            .collect();
-        let tab_metadata = tab_values
-            .iter()
-            .map(|(id, values)| (*id, values))
-            .collect();
-        let live = self.live_presentation_states(&catalog, &tab_metadata);
-        let materializable: BTreeMap<_, _> = latents
-            .iter()
-            .map(|latent| (&latent.entity, latent.materialize_request().is_some()))
-            .collect();
-        let entities = &catalog.entities;
+        let catalog = &evaluation.catalog;
+        let live = &evaluation.live;
+        let materializable = &evaluation.materializable;
+        let entities: Vec<_> = match target {
+            Some(target) => catalog.entity(target).into_iter().collect(),
+            None => catalog.entities.iter().collect(),
+        };
         let cards = entities
-            .iter()
+            .into_iter()
             .map(|entity| {
                 let facts = entity_facts(&entity.entity, &entity.values);
                 let slot = self.resolve_template_slot(
@@ -1661,7 +1741,11 @@ impl ControllerState {
                 }
             })
             .collect();
-        (self.now(), cards)
+        cards
+    }
+
+    pub(crate) fn evaluation_time(&self) -> u64 {
+        self.now()
     }
 
     fn display_entity(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
@@ -2221,6 +2305,7 @@ impl ControllerState {
     }
 
     fn latent_tabs_in(&self, catalog: &CatalogEvaluation) -> Vec<LatentTab> {
+        let _phase = crate::profile::span("latents");
         let entities = &catalog.entities;
         let live_targets = self.materialized_action_targets(catalog);
         entities
@@ -2359,6 +2444,7 @@ impl ControllerState {
     }
 
     pub(crate) fn workspace_subjects(&self) -> BTreeMap<u64, EntityRef> {
+        let _phase = crate::profile::span("workspace-subjects");
         let seeds = self.tab_seed_metadata_entries();
         self.tabs
             .iter()
@@ -2386,6 +2472,7 @@ impl ControllerState {
     }
 
     fn catalog_entities(&self) -> Vec<CatalogEntity> {
+        let _phase = crate::profile::span("catalog");
         #[cfg(test)]
         CATALOG_BUILDS.with(|count| count.set(count.get() + 1));
         let mut entities = self
@@ -2950,6 +3037,7 @@ impl ControllerState {
         BTreeMap<String, Vec<MetadataSourceEntry>>,
         Vec<ReachableMetadataIdentity>,
     ) {
+        let _phase = crate::profile::span("metadata-resolution");
         let mut values = BTreeMap::new();
         let mut source_entries = BTreeMap::<String, Vec<MetadataSourceEntry>>::new();
         let mut reachable_identities = vec![];
