@@ -895,6 +895,7 @@ fn render_snapshot(
     let suffix_start = surface
         .sections
         .iter()
+        // The empty fallback has no lines, so it may trail the pinned suffix.
         .rposition(|section| !section.pinned && !section.is_empty_workspace_fallback())
         .map(|i| i + 1)
         .unwrap_or(surface.sections.len());

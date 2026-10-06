@@ -159,11 +159,12 @@ static void check_region_hints(void) {
     /* With no unplaced workspaces the fallback section is still exposed, empty:
        hosts anchor workspace creation to its header. */
     unsigned empty_fallback = 0;
-    for (size_t i = 0; i < andamento_snapshot_node_count(s); i++) {
+    size_t count = andamento_snapshot_node_count(s);
+    for (size_t i = 0; i < count; i++) {
         AndamentoNode n; assert(andamento_snapshot_node(s, i, &n));
         if (n.is_section && eq(n.key, "andamento.unplaced-workspaces")) {
             empty_fallback++;
-            for (size_t j = i+1; j < andamento_snapshot_node_count(s); j++) {
+            for (size_t j = i+1; j < count; j++) {
                 AndamentoNode child; assert(andamento_snapshot_node(s, j, &child));
                 assert(child.parent != i);
             }
