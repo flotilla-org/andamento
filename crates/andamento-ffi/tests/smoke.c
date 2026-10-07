@@ -114,13 +114,9 @@ static void check_sibling_order(void) {
     }
     AndamentoSnapshot *s = snapshot(h);
     char order[16]; item_ids(s, order); assert(strcmp(order, "abc") == 0);
-    AndamentoNode first = find_node(s, "item");
     AndamentoText loop; size_t index = 0;
-    for (; index < andamento_snapshot_node_count(s); ++index) {
-        AndamentoNode n; assert(andamento_snapshot_node(s, index, &n));
-        if (!n.is_section && eq(n.entity_kind, "item")) break;
-    }
-    assert(andamento_snapshot_node_loop_key(s, index, &loop) && eq(first.entity_id, "a"));
+    for (AndamentoNode n; andamento_snapshot_node(s, index, &n) && n.is_section; ++index) {}
+    assert(andamento_snapshot_node_loop_key(s, index, &loop) && loop.len);
     char *key = malloc(loop.len); assert(key); memcpy(key, loop.data, loop.len);
     AndamentoText owned = {(const uint8_t *)key, loop.len};
     andamento_snapshot_release(s); /* the key text outlives its snapshot */

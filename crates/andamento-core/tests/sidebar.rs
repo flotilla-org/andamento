@@ -2156,10 +2156,18 @@ fn host_sibling_order_reorders_a_run_and_merges_changes_by_data_order() {
 
     // Other runs are untouched, and an empty order returns to data order.
     assert_eq!(ordered.snapshot().surface.sections[1].nodes.len(), 1);
-    ordered.set_sibling_order(loop_key, vec![]);
+    ordered.set_sibling_order(loop_key.clone(), vec![]);
     let mut data_without_c = vessel_ids(&data);
     data_without_c.retain(|id| id != "c");
     assert_eq!(vessel_ids(&ordered), data_without_c);
+
+    // A repeated name places its row once, at its first mention.
+    let last = data_without_c.last().unwrap().clone();
+    let repeated = [&last, &data_without_c[0], &last].map(|id| entity("vessel", id));
+    ordered.set_sibling_order(loop_key, repeated.to_vec());
+    let shown = vessel_ids(&ordered);
+    assert_eq!(shown.len(), data_without_c.len());
+    assert_eq!(shown[..2], [last, data_without_c[0].clone()]);
 }
 
 #[test]
@@ -2180,6 +2188,7 @@ fn placement_loop_keys_round_trip_through_their_host_text() {
         "x:tree",
         "9:tree5:vessel",
         "4:tree1:a1:b5:vessel",
+        "99999999999999999999:tree5:vessel",
     ] {
         assert_eq!(andamento_core::PlacementLoopKey::decode(bad), None, "{bad}");
     }

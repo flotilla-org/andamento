@@ -185,6 +185,8 @@ pub struct RailUiState {
     pub scroll_offset: isize,
     #[serde(default)]
     pub variables: BTreeMap<String, DisplayVariableValue>,
+    /// Host-owned sibling orders. A list of pairs because JSON map keys must be
+    /// strings; on restore, empty orders are dropped and a later key wins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sibling_orders: Vec<(PlacementLoopKey, Vec<EntityRef>)>,
 }
@@ -490,7 +492,8 @@ impl PlacementKey {
 impl PlacementLoopKey {
     /// Stable text for hosts: each part is length-prefixed (`len:text`), in
     /// the order region, then each parent segment's loop name, entity kind and
-    /// id, then the loop binding. Compare it for equality; don't parse it.
+    /// id, then the loop binding. Hosts treat it as opaque and compare it for
+    /// equality; only Andamento decodes it.
     pub fn encode(&self) -> String {
         std::iter::once(&self.region)
             .chain(

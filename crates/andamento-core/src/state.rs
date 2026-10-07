@@ -869,7 +869,11 @@ impl ControllerState {
             collapsed_placements: state.collapsed_placements.into_iter().collect(),
             scroll_offset: state.scroll_offset,
             variables: state.variables,
-            sibling_orders: state.sibling_orders.into_iter().collect(),
+            sibling_orders: state
+                .sibling_orders
+                .into_iter()
+                .filter(|(_, order)| !order.is_empty())
+                .collect(),
         };
         true
     }
@@ -4799,6 +4803,34 @@ placement "identity-descending" {
                 variables: BTreeMap::new(),
                 sibling_orders: vec![],
             }
+        );
+    }
+
+    #[test]
+    fn sibling_orders_round_trip_through_rail_ui_state_json() {
+        let key = |binding: &str| crate::PlacementLoopKey {
+            region: "tree".to_owned(),
+            parent: PlacementKey(vec![]),
+            binding: binding.to_owned(),
+        };
+        let vessel = |id: &str| crate::EntityRef {
+            kind: "vessel".to_owned(),
+            id: id.to_owned(),
+        };
+        let mut source = ControllerState::default();
+        source.apply_rail_ui_action(RailUiAction::SetSiblingOrder {
+            loop_key: key("vessel"),
+            order: vec![vessel("b"), vessel("a")],
+        });
+        let mut saved = source.rail_ui_state();
+        // An empty order means data order, so restoring one stores nothing.
+        saved.sibling_orders.push((key("other"), vec![]));
+        let json = serde_json::to_string(&saved).unwrap();
+        let mut target = ControllerState::default();
+        assert!(target.apply_rail_ui_state(serde_json::from_str(&json).unwrap()));
+        assert_eq!(
+            target.rail_ui_state().sibling_orders,
+            vec![(key("vessel"), vec![vessel("b"), vessel("a")])]
         );
     }
 

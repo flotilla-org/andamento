@@ -337,36 +337,29 @@ fn apply_sibling_orders(
 }
 
 fn order_run(data: Vec<PlacementNode>, order: &[EntityRef]) -> Vec<PlacementNode> {
-    let entities: Vec<EntityRef> = data.iter().map(|n| n.entity.clone()).collect();
-    let mut placed: Vec<EntityRef> =
-        order
-            .iter()
-            .filter(|e| entities.contains(e))
-            .fold(Vec::new(), |mut acc, e| {
-                if !acc.contains(e) {
-                    acc.push(e.clone());
-                }
-                acc
-            });
-    for (index, entity) in entities.iter().enumerate() {
-        if placed.contains(entity) {
+    // Data indices in display order: saved names first, once each, then each
+    // unnamed index after its nearest data-order predecessor already placed.
+    let index_of = |entity: &EntityRef| data.iter().position(|n| &n.entity == entity);
+    let mut placed: Vec<usize> = Vec::with_capacity(data.len());
+    for index in order.iter().filter_map(index_of) {
+        if !placed.contains(&index) {
+            placed.push(index);
+        }
+    }
+    for index in 0..data.len() {
+        if placed.contains(&index) {
             continue;
         }
-        let at = entities[..index]
-            .iter()
+        let at = (0..index)
             .rev()
-            .find_map(|before| placed.iter().position(|p| p == before))
+            .find_map(|before| placed.iter().position(|&p| p == before))
             .map_or(0, |position| position + 1);
-        placed.insert(at, entity.clone());
+        placed.insert(at, index);
     }
     let mut data: Vec<Option<PlacementNode>> = data.into_iter().map(Some).collect();
     placed
-        .iter()
-        .filter_map(|e| {
-            data.iter_mut()
-                .find(|n| n.as_ref().is_some_and(|n| &n.entity == e))
-                .and_then(Option::take)
-        })
+        .into_iter()
+        .filter_map(|index| data[index].take())
         .collect()
 }
 
