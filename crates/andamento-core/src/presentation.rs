@@ -220,6 +220,7 @@ impl SurfaceSnapshot {
             display_values: model.display_variable_values.clone(),
             ..Self::default()
         };
+        let orders: BTreeMap<_, _> = model.sibling_orders.iter().cloned().collect();
         for region in sections {
             let definition = &region.definition;
             let mut metadata = BTreeMap::new();
@@ -236,11 +237,16 @@ impl SurfaceSnapshot {
                 order: definition.order,
                 pinned: definition.pinned,
                 content,
-                nodes: region
-                    .entities
-                    .iter()
-                    .filter_map(|entity| resolve_node(model, entity, definition, layouts, states))
-                    .collect(),
+                nodes: apply_sibling_orders(
+                    region
+                        .entities
+                        .iter()
+                        .filter_map(|entity| {
+                            resolve_node(model, entity, definition, layouts, states, &orders)
+                        })
+                        .collect(),
+                    &orders,
+                ),
             });
         }
         snapshot
@@ -304,12 +310,73 @@ fn effective_metadata(
     Some(variables.clone())
 }
 
+/// Apply host-owned sibling orders to each run of siblings sharing a loop
+/// invocation. Named entities come first in the saved order; an entity the
+/// order doesn't name goes after its nearest data-order predecessor already
+/// placed, or first; names that no longer match are skipped.
+fn apply_sibling_orders(
+    nodes: Vec<PlacementNode>,
+    orders: &BTreeMap<crate::PlacementLoopKey, Vec<EntityRef>>,
+) -> Vec<PlacementNode> {
+    if orders.is_empty() {
+        return nodes;
+    }
+    let mut out = Vec::with_capacity(nodes.len());
+    let mut nodes = nodes.into_iter().peekable();
+    while let Some(first) = nodes.next() {
+        let mut run = vec![first];
+        while nodes.peek().is_some_and(|n| n.loop_key == run[0].loop_key) {
+            run.push(nodes.next().unwrap());
+        }
+        match orders.get(&run[0].loop_key) {
+            Some(order) => out.extend(order_run(run, order)),
+            None => out.extend(run),
+        }
+    }
+    out
+}
+
+fn order_run(data: Vec<PlacementNode>, order: &[EntityRef]) -> Vec<PlacementNode> {
+    let entities: Vec<EntityRef> = data.iter().map(|n| n.entity.clone()).collect();
+    let mut placed: Vec<EntityRef> =
+        order
+            .iter()
+            .filter(|e| entities.contains(e))
+            .fold(Vec::new(), |mut acc, e| {
+                if !acc.contains(e) {
+                    acc.push(e.clone());
+                }
+                acc
+            });
+    for (index, entity) in entities.iter().enumerate() {
+        if placed.contains(entity) {
+            continue;
+        }
+        let at = entities[..index]
+            .iter()
+            .rev()
+            .find_map(|before| placed.iter().position(|p| p == before))
+            .map_or(0, |position| position + 1);
+        placed.insert(at, entity.clone());
+    }
+    let mut data: Vec<Option<PlacementNode>> = data.into_iter().map(Some).collect();
+    placed
+        .iter()
+        .filter_map(|e| {
+            data.iter_mut()
+                .find(|n| n.as_ref().is_some_and(|n| &n.entity == e))
+                .and_then(Option::take)
+        })
+        .collect()
+}
+
 fn resolve_node(
     model: &ControllerViewModel,
     entity: &crate::state::EvaluatedPlacement,
     region: &crate::template_config::SurfaceRegionDefinition,
     layouts: &BTreeMap<PlacementKey, crate::state::PlacementAnnotation>,
     states: &BTreeMap<EntityRef, PresentationState>,
+    orders: &BTreeMap<crate::PlacementLoopKey, Vec<EntityRef>>,
 ) -> Option<PlacementNode> {
     let key = entity.placement.clone()?;
     let mut facts = entity.metadata.clone();
@@ -364,11 +431,14 @@ fn resolve_node(
         facts,
         variables,
         collapsed,
-        children: entity
-            .children
-            .iter()
-            .filter_map(|child| resolve_node(model, child, region, layouts, states))
-            .collect(),
+        children: apply_sibling_orders(
+            entity
+                .children
+                .iter()
+                .filter_map(|child| resolve_node(model, child, region, layouts, states, orders))
+                .collect(),
+            orders,
+        ),
     })
 }
 

@@ -400,6 +400,7 @@ fn placement_sort_fact<'a>(entity: &'a CatalogEntity, key: &str) -> Option<Cow<'
 struct ControllerRailUiState {
     revision: RailUiRevision,
     collapsed_placements: BTreeSet<PlacementKey>,
+    sibling_orders: BTreeMap<crate::PlacementLoopKey, Vec<crate::EntityRef>>,
     scroll_offset: isize,
     variables: BTreeMap<String, DisplayVariableValue>,
 }
@@ -838,6 +839,13 @@ impl ControllerState {
             RailUiAction::ResetScroll => {
                 self.rail_ui.scroll_offset = 0;
             }
+            RailUiAction::SetSiblingOrder { loop_key, order } => {
+                if order.is_empty() {
+                    self.rail_ui.sibling_orders.remove(&loop_key);
+                } else {
+                    self.rail_ui.sibling_orders.insert(loop_key, order);
+                }
+            }
         }
         true
     }
@@ -848,6 +856,7 @@ impl ControllerState {
             collapsed_placements: self.rail_ui.collapsed_placements.iter().cloned().collect(),
             scroll_offset: self.rail_ui.scroll_offset,
             variables: self.rail_ui.variables.clone(),
+            sibling_orders: self.rail_ui.sibling_orders.clone().into_iter().collect(),
         }
     }
 
@@ -860,6 +869,7 @@ impl ControllerState {
             collapsed_placements: state.collapsed_placements.into_iter().collect(),
             scroll_offset: state.scroll_offset,
             variables: state.variables,
+            sibling_orders: state.sibling_orders.into_iter().collect(),
         };
         true
     }
@@ -1498,6 +1508,7 @@ impl ControllerState {
                 .unwrap_or_default(),
             inspected_node: None,
             collapsed_placements: self.rail_ui.collapsed_placements.iter().cloned().collect(),
+            sibling_orders: self.rail_ui.sibling_orders.clone().into_iter().collect(),
             display_variables: self
                 .template_catalog
                 .as_ref()
@@ -4727,6 +4738,7 @@ placement "identity-descending" {
                 collapsed_placements: vec![],
                 scroll_offset: 8,
                 variables: BTreeMap::new(),
+                sibling_orders: vec![],
             }
         );
     }
@@ -4773,6 +4785,7 @@ placement "identity-descending" {
             collapsed_placements: vec![],
             scroll_offset: 99,
             variables: BTreeMap::new(),
+            sibling_orders: vec![],
         }));
         assert_eq!(
             state.rail_ui_state(),
@@ -4784,6 +4797,7 @@ placement "identity-descending" {
                 collapsed_placements: vec![],
                 scroll_offset: 10,
                 variables: BTreeMap::new(),
+                sibling_orders: vec![],
             }
         );
     }

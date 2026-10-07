@@ -148,11 +148,25 @@ pub struct NodeVariableSetRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum RailUiAction {
-    TogglePlacement { key: PlacementKey },
-    ToggleVariable { name: String },
-    ScrollBy { delta: isize },
-    SetScrollOffset { offset: isize },
+    TogglePlacement {
+        key: PlacementKey,
+    },
+    ToggleVariable {
+        name: String,
+    },
+    ScrollBy {
+        delta: isize,
+    },
+    SetScrollOffset {
+        offset: isize,
+    },
     ResetScroll,
+    /// Host-owned sibling order for one loop invocation. An empty order clears
+    /// it. Entities the order doesn't name keep data order relative to it.
+    SetSiblingOrder {
+        loop_key: PlacementLoopKey,
+        order: Vec<EntityRef>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -171,6 +185,8 @@ pub struct RailUiState {
     pub scroll_offset: isize,
     #[serde(default)]
     pub variables: BTreeMap<String, DisplayVariableValue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sibling_orders: Vec<(PlacementLoopKey, Vec<EntityRef>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -471,6 +487,59 @@ impl PlacementKey {
     }
 }
 
+impl PlacementLoopKey {
+    /// Stable text for hosts: each part is length-prefixed (`len:text`), in
+    /// the order region, then each parent segment's loop name, entity kind and
+    /// id, then the loop binding. Compare it for equality; don't parse it.
+    pub fn encode(&self) -> String {
+        std::iter::once(&self.region)
+            .chain(
+                self.parent
+                    .0
+                    .iter()
+                    .flat_map(|s| [&s.loop_name, &s.entity.kind, &s.entity.id]),
+            )
+            .chain(std::iter::once(&self.binding))
+            .map(|s| format!("{}:{}", s.len(), s))
+            .collect()
+    }
+
+    /// Inverse of [`encode`](Self::encode), for keys a host hands back.
+    pub fn decode(text: &str) -> Option<Self> {
+        let mut parts = Vec::new();
+        let mut rest = text;
+        while !rest.is_empty() {
+            let (len, tail) = rest.split_once(':')?;
+            let len: usize = len.parse().ok()?;
+            if !tail.is_char_boundary(len.min(tail.len())) || tail.len() < len {
+                return None;
+            }
+            parts.push(tail[..len].to_owned());
+            rest = &tail[len..];
+        }
+        if parts.len() < 2 || (parts.len() - 2) % 3 != 0 {
+            return None;
+        }
+        let binding = parts.pop()?;
+        let region = parts.remove(0);
+        let parent = parts
+            .chunks(3)
+            .map(|c| PlacementSegment {
+                loop_name: c[0].clone(),
+                entity: EntityRef {
+                    kind: c[1].clone(),
+                    id: c[2].clone(),
+                },
+            })
+            .collect();
+        Some(Self {
+            region,
+            parent: PlacementKey(parent),
+            binding,
+        })
+    }
+}
+
 impl EntityRef {
     pub fn action_target(&self) -> String {
         format!("{}:{}", self.kind, self.id)
@@ -720,6 +789,8 @@ pub struct ControllerViewModel {
     pub inspected_node: Option<NodeKey>,
     #[serde(default)]
     pub collapsed_placements: Vec<PlacementKey>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sibling_orders: Vec<(PlacementLoopKey, Vec<EntityRef>)>,
     #[serde(default)]
     pub display_variables: Vec<template_config::TemplateVariableDefinition>,
     #[serde(default)]

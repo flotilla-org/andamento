@@ -2078,3 +2078,109 @@ fn open_ended_path_overrides_non_finished_visibility_policy_until_close() {
         .children
         .is_empty());
 }
+
+fn vessel_patch(id: &str, label: &str) -> MetadataPatch {
+    patch(
+        entity("vessel", id),
+        &[
+            ("flotilla.project", text("p")),
+            ("flotilla.vessel", text(id)),
+            ("display.label", text(label)),
+        ],
+    )
+}
+
+fn vessel_ids(sidebar: &Sidebar) -> Vec<String> {
+    sidebar.snapshot().surface.sections[0].nodes[0]
+        .children
+        .iter()
+        .map(|n| n.entity.id.clone())
+        .collect()
+}
+
+#[test]
+fn host_sibling_order_reorders_a_run_and_merges_changes_by_data_order() {
+    // Two sidebars with the same data: `data` never has a host order, so it
+    // shows Andamento's own order for comparison.
+    let mut ordered = sidebar();
+    let mut data = sidebar();
+    for s in [&mut ordered, &mut data] {
+        s.apply(
+            101,
+            ["a", "b", "c"].map(|id| vessel_patch(id, &id.to_uppercase())),
+        );
+    }
+    let base = vessel_ids(&data);
+    assert_eq!(base.len(), 4);
+    let first = ordered.snapshot().surface.sections[0].nodes[0].children[0].clone();
+    let loop_key = first.loop_key.clone();
+    // Every sibling in the run shares the loop key the host uses.
+    assert!(ordered.snapshot().surface.sections[0].nodes[0]
+        .children
+        .iter()
+        .all(|n| n.loop_key == loop_key));
+
+    // A full order replaces data order.
+    let reversed: Vec<String> = base.iter().rev().cloned().collect();
+    ordered.set_sibling_order(
+        loop_key.clone(),
+        reversed.iter().map(|id| entity("vessel", id)).collect(),
+    );
+    assert_eq!(vessel_ids(&ordered), reversed);
+
+    // A sibling the order doesn't name goes right after its nearest data-order
+    // predecessor that the order places.
+    for s in [&mut ordered, &mut data] {
+        s.apply(102, [vessel_patch("bb", "BB")]);
+    }
+    let data_now = vessel_ids(&data);
+    let at = data_now.iter().position(|id| id == "bb").unwrap();
+    let mut expected = reversed.clone();
+    match at.checked_sub(1).map(|i| &data_now[i]) {
+        Some(before) => {
+            let p = expected.iter().position(|id| id == before).unwrap();
+            expected.insert(p + 1, "bb".into());
+        }
+        None => expected.insert(0, "bb".into()),
+    }
+    assert_eq!(vessel_ids(&ordered), expected);
+
+    // A sibling that leaves the run drops out; the rest keep the saved order.
+    let leave = MetadataPatch {
+        unset: vec!["flotilla.project".into()],
+        ..patch(entity("vessel", "c"), &[])
+    };
+    ordered.apply(103, [leave]);
+    expected.retain(|id| id != "c");
+    assert_eq!(vessel_ids(&ordered), expected);
+
+    // Other runs are untouched, and an empty order returns to data order.
+    assert_eq!(ordered.snapshot().surface.sections[1].nodes.len(), 1);
+    ordered.set_sibling_order(loop_key, vec![]);
+    let mut data_without_c = vessel_ids(&data);
+    data_without_c.retain(|id| id != "c");
+    assert_eq!(vessel_ids(&ordered), data_without_c);
+}
+
+#[test]
+fn placement_loop_keys_round_trip_through_their_host_text() {
+    let key = andamento_core::PlacementLoopKey {
+        region: "tree".into(),
+        parent: andamento_core::PlacementKey(vec![andamento_core::PlacementSegment {
+            loop_name: "project".into(),
+            entity: entity("project", "a:b 3:x é"),
+        }]),
+        binding: "vessel".into(),
+    };
+    let text = key.encode();
+    assert_eq!(andamento_core::PlacementLoopKey::decode(&text), Some(key));
+    for bad in [
+        "",
+        "4:tree",
+        "x:tree",
+        "9:tree5:vessel",
+        "4:tree1:a1:b5:vessel",
+    ] {
+        assert_eq!(andamento_core::PlacementLoopKey::decode(bad), None, "{bad}");
+    }
+}
