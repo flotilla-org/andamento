@@ -166,6 +166,12 @@ AndamentoSnapshot *andamento_snapshot_acquire_details(Andamento *, char **error_
 enum { ANDAMENTO_DETAIL_IDENTITY, ANDAMENTO_DETAIL_TITLE, ANDAMENTO_DETAIL_STATE,
        ANDAMENTO_DETAIL_FACT, ANDAMENTO_DETAIL_RELATION };
 typedef struct { AndamentoText kind, id; } AndamentoEntity;
+/* Additive ABI 2: host-owned order of one sibling run, keyed by the text from
+ * andamento_snapshot_node_loop_key. Entities omitted from the list keep data
+ * order relative to it (each after its nearest named data-order predecessor,
+ * else first); entities that no longer match are ignored. Empty list clears. */
+uint32_t andamento_set_sibling_order(Andamento *, AndamentoText loop_key,
+    const AndamentoEntity *entities, size_t count, char **error);
 typedef struct {
     AndamentoEntity entity;
     AndamentoText label;

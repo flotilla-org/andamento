@@ -323,6 +323,14 @@ impl Sidebar {
         }
     }
 
+    /// Set the host-owned order of one sibling run, identified by the loop key
+    /// every node in it carries. An empty order returns the run to data order.
+    pub fn set_sibling_order(&mut self, loop_key: crate::PlacementLoopKey, order: Vec<EntityRef>) {
+        self.state
+            .apply_rail_ui_action(RailUiAction::SetSiblingOrder { loop_key, order });
+        self.invalidate();
+    }
+
     /// Conservative revision of presentation and action dependencies. Unchanged
     /// heartbeats and ticks preserve it; recipe changes invalidate it even when
     /// the rendered content is unchanged.

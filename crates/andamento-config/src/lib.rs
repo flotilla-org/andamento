@@ -1689,6 +1689,7 @@ mod tests {
             inspected_node: None,
 
             collapsed_placements: vec![],
+            sibling_orders: vec![],
             display_variables: vec![],
             display_variable_values: BTreeMap::new(),
 

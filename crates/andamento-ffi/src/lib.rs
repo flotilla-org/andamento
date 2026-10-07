@@ -318,6 +318,36 @@ pub unsafe extern "C" fn andamento_observe_workdirs(
     .is_some() as u32
 }
 
+/// Additive ABI 2: set the host-owned order of the sibling run identified by
+/// `loop_key` (text from andamento_snapshot_node_loop_key). An empty list
+/// returns the run to data order. Unknown entities are kept and ignored until
+/// they match; entities the list omits keep data order relative to it.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_set_sibling_order(
+    h: *mut Andamento,
+    loop_key: Text,
+    entities: *const EntityView,
+    count: usize,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let key = loop_key.read()?;
+        let key = andamento_core::PlacementLoopKey::decode(&key).ok_or("invalid loop key")?;
+        let order = slice(entities, count)?
+            .iter()
+            .map(|e| {
+                Ok(andamento_core::EntityRef {
+                    kind: e.kind.read()?,
+                    id: e.id.read()?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        h.sidebar.set_sibling_order(key, order);
+        Ok(())
+    })
+    .is_some() as u32
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn andamento_complete(
     h: *mut Andamento,
@@ -523,17 +553,7 @@ impl AndamentoSnapshot {
             entity: n.entity.clone(),
             label: n.label.clone(),
             layout: n.layout.clone().unwrap_or_default(),
-            loop_key: std::iter::once(&n.loop_key.region)
-                .chain(
-                    n.loop_key
-                        .parent
-                        .0
-                        .iter()
-                        .flat_map(|s| [&s.loop_name, &s.entity.kind, &s.entity.id]),
-                )
-                .chain(std::iter::once(&n.loop_key.binding))
-                .map(|s| format!("{}:{}", s.len(), s))
-                .collect(),
+            loop_key: n.loop_key.encode(),
             form: n.form.clone(),
             state,
             workspace,

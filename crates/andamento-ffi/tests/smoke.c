@@ -90,6 +90,49 @@ static void check_workdirs(void) {
     andamento_snapshot_release(s);
     andamento_destroy(h);
 }
+/* A host-owned sibling order reorders one loop run by its opaque loop key,
+ * leaving unnamed items in data order; an empty list restores data order. */
+static void item_ids(AndamentoSnapshot *s, char *out) {
+    AndamentoNode n; *out = 0;
+    for (size_t i = 0; i < andamento_snapshot_node_count(s); ++i) {
+        assert(andamento_snapshot_node(s, i, &n));
+        if (!n.is_section && eq(n.entity_kind, "item")) strncat(out, (const char *)n.entity_id.data, n.entity_id.len);
+    }
+}
+static void check_sibling_order(void) {
+    const char *config = "region \"tree\" root-template=\"title\" placement=\"tree\"\n"
+        "template \"title\" { field \"label\" source=\"literal\" value=\"Test\"; }\n"
+        "placement \"tree\" { for \"item\" kind=\"item\" { field \"label\" key=\"display.label\"; }; }\n";
+    Andamento *h = andamento_create((const uint8_t *)config, strlen(config), &error);
+    assert(h && !error);
+    const char *ids[] = {"a", "b", "c"};
+    for (int i = 0; i < 3; ++i) {
+        char patch[256];
+        snprintf(patch, sizeof(patch), "{\"target\":{\"kind\":\"entity\",\"value\":{\"kind\":\"item\",\"id\":\"%s\"}},"
+            "\"source_id\":\"test\",\"set\":{\"display.label\":{\"value\":{\"type\":\"text\",\"value\":\"%s\"}}}}", ids[i], ids[i]);
+        ok(andamento_apply_patch_json(h, 0, (AndamentoText){(const uint8_t *)patch, strlen(patch)}, &error));
+    }
+    AndamentoSnapshot *s = snapshot(h);
+    char order[16]; item_ids(s, order); assert(strcmp(order, "abc") == 0);
+    AndamentoText loop; size_t index = 0;
+    for (AndamentoNode n; andamento_snapshot_node(s, index, &n) && n.is_section; ++index) {}
+    assert(andamento_snapshot_node_loop_key(s, index, &loop) && loop.len);
+    char *key = malloc(loop.len); assert(key); memcpy(key, loop.data, loop.len);
+    AndamentoText owned = {(const uint8_t *)key, loop.len};
+    andamento_snapshot_release(s); /* the key text outlives its snapshot */
+    /* b is unnamed, so it follows its data-order predecessor a. */
+    AndamentoEntity c_first[] = {{T("item"), T("c")}, {T("item"), T("a")}, {T("item"), T("gone")}};
+    ok(andamento_set_sibling_order(h, owned, c_first, 3, &error));
+    s = snapshot(h); item_ids(s, order); assert(strcmp(order, "cab") == 0);
+    andamento_snapshot_release(s);
+    expected_error(andamento_set_sibling_order(h, T("not a loop key"), c_first, 1, &error));
+    expected_error(andamento_set_sibling_order(h, owned, NULL, 1, &error));
+    ok(andamento_set_sibling_order(h, owned, NULL, 0, &error));
+    s = snapshot(h); item_ids(s, order); assert(strcmp(order, "abc") == 0);
+    andamento_snapshot_release(s);
+    free(key);
+    andamento_destroy(h);
+}
 /* All six kinds, including a related issue absent from the visible tree,
  * expose typed roles and observation data through the actual C layout. */
 static void check_typed_details(const char *path) {
@@ -196,6 +239,7 @@ int main(int argc, char **argv) {
     assert(argc == 4 && andamento_abi_version() == 2);
     check_typed_details(argv[3]);
     check_workdirs();
+    check_sibling_order();
     check_region_hints();
     char *config = read_file(argv[1]);
     Andamento *h = andamento_create((const uint8_t *)config, strlen(config), &error);
