@@ -16,3 +16,4 @@ section tree pinned=false
 section git pinned=false
   repo:r [lines] Unplaced repository
 section controls pinned=true
+section andamento.unplaced-workspaces pinned=false

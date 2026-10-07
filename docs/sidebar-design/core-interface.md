@@ -283,11 +283,14 @@ means the definition is unavailable.
 
 ### Workspace coverage
 
-`Sidebar` snapshots include an `andamento.unplaced-workspaces` section labelled
-“Other workspaces” when observed workspaces have no live placement in the
-resolved catalog presentation. This section is an inventory safety net, independent
-of template visibility filters. It disappears when empty. Collapsed descendants
-still count as placements; frontends must preserve their expansion path.
+`Sidebar` snapshots always include an `andamento.unplaced-workspaces` section
+labelled “Other workspaces”. It holds observed workspaces that have no live
+placement in the resolved catalog presentation. This section is an inventory
+safety net, independent of template visibility filters. It is emitted even when
+empty, because hosts anchor workspace creation to its header (Wheelhouse puts its
+new-workspace button there). Frontends without such an affordance skip it while
+empty (`Section::is_empty_workspace_fallback`). Collapsed descendants still count
+as placements; frontends must preserve their expansion path.
 
 Fallback keys use workspace IDs, never display names, and use the reserved
 `andamento.unplaced-workspaces` loop and `andamento.workspace` entity kind.

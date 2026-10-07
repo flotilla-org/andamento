@@ -34,6 +34,18 @@ pub struct Section {
     pub nodes: Vec<PlacementNode>,
 }
 
+/// The synthetic section covering workspaces with no normal placement.
+pub const UNPLACED_WORKSPACES_SECTION: &str = "andamento.unplaced-workspaces";
+
+impl Section {
+    /// The workspace fallback is emitted even when empty so hosts can anchor
+    /// workspace creation to its header. Frontends without that affordance
+    /// should not render it while it has no rows.
+    pub fn is_empty_workspace_fallback(&self) -> bool {
+        self.name == UNPLACED_WORKSPACES_SECTION && self.nodes.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlacementNode {
     pub key: PlacementKey,
@@ -104,6 +116,14 @@ fn visit_nodes<'a, B>(
 }
 
 impl SurfaceSnapshot {
+    /// Sections a frontend without a workspace-creation affordance renders:
+    /// everything except the empty workspace fallback.
+    pub fn visible_sections(&self) -> impl Iterator<Item = &Section> {
+        self.sections
+            .iter()
+            .filter(|section| !section.is_empty_workspace_fallback())
+    }
+
     pub fn node(&self, key: &PlacementKey) -> Option<&PlacementNode> {
         self.sections.iter().find_map(|section| {
             visit_nodes(&section.nodes, &mut |node| {
@@ -119,6 +139,8 @@ impl SurfaceSnapshot {
 
     /// Cover host inventory even when catalog filtering or provider loss removes
     /// its normal placement. Collapsed descendants still have a reachable path.
+    /// The section is emitted even when empty: hosts anchor workspace creation
+    /// to its header, which must stay reachable with no unplaced workspaces.
     pub(crate) fn cover_workspaces(&mut self, workspaces: &[crate::state::ControllerTab]) {
         let mut covered = std::collections::BTreeSet::new();
         for section in &self.sections {
@@ -139,11 +161,11 @@ impl SurfaceSnapshot {
                 id: workspace.tab_id.to_string(),
             };
             let key = PlacementKey(vec![crate::PlacementSegment {
-                loop_name: "andamento.unplaced-workspaces".into(),
+                loop_name: UNPLACED_WORKSPACES_SECTION.into(),
                 entity: entity.clone(),
             }]);
             nodes.push(PlacementNode {
-                loop_key: key.loop_key("andamento.unplaced-workspaces").unwrap(),
+                loop_key: key.loop_key(UNPLACED_WORKSPACES_SECTION).unwrap(),
                 key,
                 entity,
                 label: workspace.name.clone(),
@@ -169,24 +191,22 @@ impl SurfaceSnapshot {
                 children: Vec::new(),
             });
         }
-        if !nodes.is_empty() {
-            self.sections.push(Section {
-                name: "andamento.unplaced-workspaces".into(),
-                default_host: None,
-                order: None,
-                pinned: false,
-                content: Content {
-                    fields: vec![TemplateConfigRenderedField {
-                        class: TemplateConfigFieldClass::Required,
-                        priority: None,
-                        value: "Other workspaces".into(),
-                        source: None,
-                    }],
-                    ..Content::default()
-                },
-                nodes,
-            });
-        }
+        self.sections.push(Section {
+            name: UNPLACED_WORKSPACES_SECTION.into(),
+            default_host: None,
+            order: None,
+            pinned: false,
+            content: Content {
+                fields: vec![TemplateConfigRenderedField {
+                    class: TemplateConfigFieldClass::Required,
+                    priority: None,
+                    value: "Other workspaces".into(),
+                    source: None,
+                }],
+                ..Content::default()
+            },
+            nodes,
+        });
     }
 
     pub(crate) fn resolve(

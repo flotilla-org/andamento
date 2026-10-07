@@ -69,7 +69,7 @@ pub fn render(snapshot: &SurfaceSnapshot, columns: usize) -> Frame {
         lines: vec![],
         hits: vec![],
     };
-    for section in &snapshot.sections {
+    for section in snapshot.visible_sections() {
         let text = section.content.text();
         line(
             &mut frame,

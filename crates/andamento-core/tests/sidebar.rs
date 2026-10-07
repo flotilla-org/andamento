@@ -1,3 +1,4 @@
+use andamento_core::presentation::UNPLACED_WORKSPACES_SECTION;
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::{
     EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
@@ -526,7 +527,7 @@ fn fallback(sidebar: &Sidebar) -> Vec<andamento_core::presentation::PlacementNod
         .surface
         .sections
         .into_iter()
-        .find(|s| s.name == "andamento.unplaced-workspaces")
+        .find(|s| s.name == UNPLACED_WORKSPACES_SECTION)
         .map(|s| s.nodes)
         .unwrap_or_default()
 }
@@ -575,6 +576,15 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
     assert!(sidebar.dispatch(Action::ActivatePlacement { key }).is_err());
     sidebar.observe(vec![], vec![]);
     assert!(fallback(&sidebar).is_empty());
+    // Hosts anchor workspace creation to this header, so it outlives its rows.
+    let snapshot = sidebar.snapshot();
+    let section = snapshot
+        .surface
+        .sections
+        .iter()
+        .find(|s| s.name == UNPLACED_WORKSPACES_SECTION)
+        .expect("fallback section stays present when empty");
+    assert!(section.nodes.is_empty() && section.is_empty_workspace_fallback());
 }
 
 #[test]
@@ -1395,11 +1405,7 @@ fn ended_workspace_lifecycle_scenarios() {
             .children
             .iter()
             .any(|n| n.entity == entity("vessel", "v")));
-        assert!(!snapshot
-            .surface
-            .sections
-            .iter()
-            .any(|s| s.name == "andamento.unplaced-workspaces"));
+        assert!(fallback(&sidebar).is_empty());
         // Reopening a hidden ended row focuses the same workspace, preserving host panels.
         let effects = sidebar
             .dispatch(Action::ActivatePlacement {
@@ -1456,11 +1462,7 @@ fn disconnect_expiry_and_reconnect_preserve_subject_path_without_ending() {
             .iter()
             .all(|n| n.entity == entity("vessel", "v")
                 && !n.facts.contains_key("presentation.ended")));
-        assert!(!snapshot
-            .surface
-            .sections
-            .iter()
-            .any(|s| s.name == "andamento.unplaced-workspaces"));
+        assert!(fallback(&sidebar).is_empty());
     }
     sidebar.apply(1001, [publication]);
     // Reasserting after reconnect updates the same subject, without moving it.
@@ -1497,7 +1499,7 @@ fn unrelated_source_removal_and_subjectless_workspaces_are_unaffected() {
         .surface
         .sections
         .iter()
-        .any(|s| s.name == "andamento.unplaced-workspaces"
+        .any(|s| s.name == UNPLACED_WORKSPACES_SECTION
             && s.nodes.iter().any(|n| n.label == "Unsaved notes")));
 }
 

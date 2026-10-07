@@ -18,6 +18,18 @@ fn native_and_terminal_geometry_share_actions_and_placement_state() {
     assert!(html.contains("Worker &lt;one&gt;"));
     assert!(!html.contains("Worker <one>"));
     assert!(!html.contains('\u{1b}'));
+    // The workspace fallback is emitted while empty, but these frontends have
+    // no affordance on its header, so neither shows it.
+    assert!(before
+        .surface
+        .sections
+        .iter()
+        .any(|s| s.is_empty_workspace_fallback()));
+    assert!(!html.contains("Other workspaces"));
+    assert!(!terminal
+        .lines
+        .iter()
+        .any(|l| l.contains("Other workspaces")));
     let action = terminal
         .hits
         .iter()
