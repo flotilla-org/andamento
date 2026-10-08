@@ -2764,3 +2764,83 @@ fn a_ref_without_a_usable_target_keeps_its_own_facts() {
         assert_ne!(node.label, "Worker", "{id} presents no target");
     }
 }
+
+/// A ref the host retracts (unsets its facts) leaves its group, even after
+/// it opened its target, whose open workspace makes its row live.
+#[test]
+fn a_retracted_ref_leaves_its_group() {
+    let mut sidebar = Sidebar::new(LOCAL_SECTIONS_CONFIG).unwrap();
+    let section = entity(".section", "s1");
+    let group = entity(".group", "g1");
+    let vessel = entity("vessel", "v");
+    let r = entity(".ref", "r1");
+    sidebar.apply(
+        100,
+        [
+            patch(section.clone(), &[("display.label", text("Pinned"))]),
+            patch(group.clone(), &[(".section", refs(section.clone()))]),
+            patch(
+                vessel.clone(),
+                &[
+                    ("display.label", text("Worker")),
+                    ("action.primary.recipe", text("printf hello")),
+                ],
+            ),
+            patch(
+                r.clone(),
+                &[
+                    (".group", refs(group.clone())),
+                    (".target", refs(vessel.clone())),
+                    (".position", text("1")),
+                ],
+            ),
+        ],
+    );
+    let ref_key = |sidebar: &Sidebar| {
+        let snapshot = sidebar.snapshot();
+        let local = snapshot
+            .surface
+            .sections
+            .iter()
+            .find(|s| s.name == "local")
+            .cloned()
+            .unwrap();
+        local.nodes[0].children[0]
+            .children
+            .iter()
+            .find(|n| n.entity == r)
+            .map(|n| n.key.clone())
+    };
+    // Open the target through the ghost, as a click on its row does.
+    let key = ref_key(&sidebar).expect("placed");
+    let effects = sidebar.dispatch(Action::ActivatePlacement { key }).unwrap();
+    let request_id = match &effects[..] {
+        [HostEffect::Materialize {
+            request_id,
+            entity: subject,
+            ..
+        }] if subject == &vessel => *request_id,
+        other => panic!("expected the target to open, got {other:?}"),
+    };
+    sidebar.complete(request_id, Ok(Some(42)));
+    // The host names the opened workspace's subject, as Wheelhouse does.
+    sidebar.apply(
+        150,
+        [tab_patch(
+            42,
+            &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
+        )],
+    );
+    sidebar.observe(vec![workspace()], vec![]);
+    assert!(ref_key(&sidebar).is_some());
+    // Hosts observe every frame; retained paths are recorded from a snapshot.
+    sidebar.observe(vec![workspace()], vec![]);
+    let mut retract = patch(r.clone(), &[]);
+    retract.unset = vec![".group".into(), ".target".into(), ".position".into()];
+    sidebar.apply(200, [retract]);
+    sidebar.observe(vec![workspace()], vec![]);
+    assert!(
+        ref_key(&sidebar).is_none(),
+        "a retracted ref is no longer placed"
+    );
+}

@@ -233,7 +233,11 @@ impl Sidebar {
             paths: &mut BTreeMap<u64, BTreeSet<EntityRef>>,
         ) {
             for node in nodes {
-                let subject = node.entity.kind != crate::presentation::system::WORKSPACE;
+                // Andamento's own kinds (`.`-prefixed: workspaces, sections,
+                // groups, refs) are never retained: the host retracts them, and
+                // a ghost must not outlive its removal because its target is
+                // open.
+                let subject = !node.entity.kind.starts_with('.');
                 if subject {
                     ancestors.push(node.entity.clone());
                 }
