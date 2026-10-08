@@ -205,7 +205,7 @@ static void check_region_hints(void) {
     size_t count = andamento_snapshot_node_count(s);
     for (size_t i = 0; i < count; i++) {
         AndamentoNode n; assert(andamento_snapshot_node(s, i, &n));
-        if (n.is_section && eq(n.key, "andamento.unplaced-workspaces")) {
+        if (n.is_section && eq(n.key, ".unplaced")) {
             empty_fallback++;
             for (size_t j = i+1; j < count; j++) {
                 AndamentoNode child; assert(andamento_snapshot_node(s, j, &child));
@@ -225,7 +225,7 @@ static void check_region_hints(void) {
         if (!n.is_section) {
             assert(!andamento_snapshot_region_hints(s, i, &hints));
             entity++;
-        } else if (eq(n.key, "andamento.unplaced-workspaces")) {
+        } else if (eq(n.key, ".unplaced")) {
             assert(andamento_snapshot_region_hints(s, i, &hints));
             assert(hints.default_host.len == 0 && hints.has_order == 0);
             synthetic++;

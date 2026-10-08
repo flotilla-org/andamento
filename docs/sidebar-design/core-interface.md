@@ -283,9 +283,10 @@ means the definition is unavailable.
 
 ### Workspace coverage
 
-`Sidebar` snapshots always include an `andamento.unplaced-workspaces` section
+`Sidebar` snapshots always include a `.unplaced` section
 labelled “Other workspaces”. It holds observed workspaces that have no live
-placement in the resolved catalog presentation. This section is an inventory
+placement in the resolved catalog presentation, unless a default group covers
+them (see Sections, groups and references below). This section is an inventory
 safety net, independent of template visibility filters. It is emitted even when
 empty, because hosts anchor workspace creation to its header (Wheelhouse puts its
 new-workspace button there). Frontends without such an affordance skip it while
@@ -293,7 +294,7 @@ empty (`Section::is_empty_workspace_fallback`). Collapsed descendants still coun
 as placements; frontends must preserve their expansion path.
 
 Fallback keys use workspace IDs, never display names, and use the reserved
-`andamento.unplaced-workspaces` loop and `andamento.workspace` entity kind.
+`.unplaced` loop and `.workspace` entity kind.
 Renaming or selecting a workspace preserves its key. Provider removal, filtering,
 and multiple workspaces sharing one entity must not hide inventory entries.
 
@@ -307,22 +308,82 @@ never materializes a workspace.
 ### Host entities
 
 A host can give one of its workspaces an entity of its own: it publishes the
-entity's facts like any producer, and tags the tab with `host.entity.kind` and
-`host.entity.id` metadata (a patch targeting the tab). Wheelhouse does this for
-local workspaces, as `wheelhouse.workspace` entities.
+entity's facts like any producer, and tags the tab with `.host.kind` and
+`.host.id` metadata (a patch targeting the tab). Wheelhouse does this for
+local workspaces, as `.workspace` entities.
 
 - Placements place a host entity like any other entity, so a template can home
   it, for example with `match "flotilla.project" of="project"`.
 - Its rows are live for its tab, as a subject's rows are, so a placed host
   entity covers its workspace.
 - An unplaced workspace with a host entity is covered under that entity rather
-  than a synthetic `andamento.workspace`, so its details resolve.
+  than a synthetic `.workspace`, so its details resolve.
 - It is not the tab's subject: closing the tab retains no path and marks nothing
   ended. The host retracts the entity's facts when the workspace goes away.
 - A tab needs both keys; with only one it keeps the synthetic entity. When
   several tabs name one host entity, the first is covered under it and the
   rest under synthetic entities, so every tab keeps a distinct key.
 - A tab may have both a subject and a host entity; each is live for it.
+
+### System names
+
+Names that start with `.` are Andamento's own system kinds and facts
+(`presentation::system`). Conventions that producers share, such as
+`display.label` and `flotilla.project`, keep their names.
+
+**Renamed in this version.** These names replaced earlier ones, and the old
+names are no longer read, so a host still sending them silently loses host
+entity coverage:
+
+| Old | New |
+|---|---|
+| `host.entity.kind`, `host.entity.id` (tab metadata) | `.host.kind`, `.host.id` |
+| `wheelhouse.workspace` (host entity kind) | `.workspace` |
+| `andamento.workspace` (synthetic workspace kind) | `.workspace` |
+| `andamento.unplaced-workspaces` (leftover section and loop) | `.unplaced` |
+
+### Sections, groups and references
+
+People can make their own sections and groups, holding workspaces and references
+to other entities. A host publishes them as entities, from wherever it keeps
+them. Wheelhouse publishes them from its window layout.
+
+- **`.section`**: a section someone made. A placement loop marked
+  `layout="section"` makes each iteration its own section. Docking frontends
+  give each its own View; others show it as a headed section. Andamento passes
+  `layout` through to frontends, so this needs no special support.
+- **`.group`**: a group, naming its section with an entity-reference fact,
+  `.section`. A template matches it with `match ".section" of="section"`,
+  where `section` is the template's own binding (its name's prefix).
+- **Items**: workspaces and references name their group with `.group`, in the
+  same way.
+- **`.ref`**: a reference (a ghost), with `.group` and `.target`, where
+  `.target` is a single entity reference. A ref presents its target:
+  - it takes the target's facts, so templates, status, live state and details
+    follow the target;
+  - activating it activates the target;
+  - it keeps its own identity, so one entity can have any number of refs, even
+    in one group, and each keeps its own key and place;
+  - a ref's place is its own: it keeps its own `.`-prefixed facts (`.group`,
+    `.target`, `.position`) and takes none of its target's, so a ref without
+    its own `.group` isn't placed in its target's, and it sorts by its own
+    `.position`;
+  - rules reach a ref only through its own `.group` and `.target`, never
+    through its target's facts, so a query such as "needs attention" doesn't
+    place the ghost as well;
+  - a ref whose target is missing keeps only its own facts;
+  - refs don't chain: a ref to a ref presents that ref as it is;
+  - activating a placed ref (`ActivatePlacement`) activates its target;
+    `Activate` with the ref's own entity activates the ref itself.
+- **`.default`**: a group with `.default` set to the boolean `true` (text
+  "true" doesn't count) covers workspaces that
+  nothing places. They become its children in a `.unplaced` loop after its own
+  items, instead of filling the `.unplaced` section, which is then emitted
+  empty. With several default groups, the first placed one (in catalog order)
+  covers them, under its first placement.
+
+How a reference is shown, for example compact or expanded, is the frontend's
+own state and is not published.
 
 ## Managed primary content
 

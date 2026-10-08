@@ -1565,7 +1565,9 @@ mod tests {
                         0
                     );
                     found_entity = true;
-                } else if node.key.read().unwrap() == "andamento.unplaced-workspaces" {
+                } else if node.key.read().unwrap()
+                    == andamento_core::presentation::UNPLACED_WORKSPACES_SECTION
+                {
                     assert_eq!(
                         andamento_snapshot_region_hints(snapshot, i, hints.as_mut_ptr()),
                         1

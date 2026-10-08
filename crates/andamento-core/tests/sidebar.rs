@@ -2206,12 +2206,12 @@ placement "tree" {
 }
 template "project/line" {
   field "label" key="display.label"
-  for "workspace" kind="wheelhouse.workspace" {
+  for "workspace" kind=".workspace" {
     match "flotilla.project" of="project"
     apply-template
   }
 }
-template "wheelhouse.workspace/line" {
+template ".workspace/line" {
   field "label" key="display.label"
 }
 "#;
@@ -2234,13 +2234,13 @@ fn project_children(sidebar: &Sidebar) -> Vec<andamento_core::presentation::Plac
         .unwrap_or_default()
 }
 
-/// A host entity (`host.entity.*` tab metadata) is an entity the host owns
+/// A host entity (`.host.kind`/`.host.id` tab metadata) is an entity the host owns
 /// for one workspace: placed like any entity and live for its tab, covering
 /// it, but not its subject, so closing the tab retains nothing.
 #[test]
 fn host_entities_place_and_cover_their_workspace_without_subject_lifecycle() {
     let mut sidebar = Sidebar::new(HOST_ENTITY_CONFIG).unwrap();
-    let local = entity("wheelhouse.workspace", "w1");
+    let local = entity(".workspace", "w1");
     sidebar.apply(
         100,
         [
@@ -2260,10 +2260,7 @@ fn host_entities_place_and_cover_their_workspace_without_subject_lifecycle() {
             ),
             tab_patch(
                 42,
-                &[
-                    ("host.entity.kind", text("wheelhouse.workspace")),
-                    ("host.entity.id", text("w1")),
-                ],
+                &[(".host.kind", text(".workspace")), (".host.id", text("w1"))],
             ),
         ],
     );
@@ -2309,18 +2306,15 @@ fn host_entities_place_and_cover_their_workspace_without_subject_lifecycle() {
 #[test]
 fn shared_or_incomplete_host_entities_keep_every_workspace_covered() {
     let mut sidebar = Sidebar::new(HOST_ENTITY_CONFIG).unwrap();
-    let local = entity("wheelhouse.workspace", "w1");
-    let host = [
-        ("host.entity.kind", text("wheelhouse.workspace")),
-        ("host.entity.id", text("w1")),
-    ];
+    let local = entity(".workspace", "w1");
+    let host = [(".host.kind", text(".workspace")), (".host.id", text("w1"))];
     sidebar.apply(
         100,
         [
             patch(local.clone(), &[("display.label", text("Local"))]),
             tab_patch(42, &host),
             tab_patch(43, &host),
-            tab_patch(44, &[("host.entity.kind", text("wheelhouse.workspace"))]),
+            tab_patch(44, &[(".host.kind", text(".workspace"))]),
         ],
     );
     let mut second = workspace();
@@ -2339,17 +2333,15 @@ fn shared_or_incomplete_host_entities_keep_every_workspace_covered() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(keys.len(), 3, "each covered tab keeps a distinct key");
     assert_eq!(nodes.iter().filter(|n| n.entity == local).count(), 1);
-    assert!(nodes
-        .iter()
-        .any(|n| n.entity == entity("andamento.workspace", "44")));
+    assert!(nodes.iter().any(|n| n.entity == entity(".workspace", "44")));
 }
 
 /// A tab may have both a subject and a host entity: each is live for it.
 #[test]
 fn a_tab_with_a_subject_and_a_host_entity_makes_both_live() {
     let mut sidebar = Sidebar::new(HOST_ENTITY_CONFIG).unwrap();
-    let subject = entity("wheelhouse.workspace", "subject");
-    let local = entity("wheelhouse.workspace", "w1");
+    let subject = entity(".workspace", "subject");
+    let local = entity(".workspace", "w1");
     let homed = |label: &str| {
         [
             ("display.label", text(label)),
@@ -2371,10 +2363,10 @@ fn a_tab_with_a_subject_and_a_host_entity_makes_both_live() {
             tab_patch(
                 42,
                 &[
-                    ("entity.kind", text("wheelhouse.workspace")),
+                    ("entity.kind", text(".workspace")),
                     ("entity.id", text("subject")),
-                    ("host.entity.kind", text("wheelhouse.workspace")),
-                    ("host.entity.id", text("w1")),
+                    (".host.kind", text(".workspace")),
+                    (".host.id", text("w1")),
                 ],
             ),
         ],
@@ -2392,4 +2384,590 @@ fn a_tab_with_a_subject_and_a_host_entity_makes_both_live() {
             .expect("placed");
         assert_eq!(node.state, live, "{wanted:?} is live for the tab");
     }
+    // Either one focuses the tab, rather than falling back to Inspect.
+    for wanted in [subject, local] {
+        let effects = sidebar
+            .dispatch(Action::Activate {
+                entity: wanted.clone(),
+            })
+            .unwrap();
+        assert!(
+            matches!(
+                effects[..],
+                [HostEffect::Focus {
+                    workspace_id: 42,
+                    ..
+                }]
+            ),
+            "{wanted:?} focuses its tab: {effects:?}"
+        );
+    }
+}
+
+const LOCAL_SECTIONS_CONFIG: &str = r#"
+region "local" root-template="local/title" form="compact" placement="local"
+region "attention" root-template="attention/title" form="compact" placement="attention"
+template "local/title" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Local"
+}
+template "attention/title" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Attention"
+}
+placement "local" {
+  for "section" kind=".section" layout="section" {
+    apply-template "section/local"
+  }
+}
+template "section/local" {
+  field "label" key="display.label"
+  for "group" kind=".group" {
+    match ".section" of="section"
+    apply-template "group/local"
+  }
+}
+template "group/local" {
+  field "label" key="display.label"
+  for "workspace" kind=".workspace" {
+    match ".group" of="group"
+    apply-template
+  }
+  for "ref" kind=".ref" {
+    match ".group" of="group"
+    apply-template
+  }
+}
+template ".workspace/line" {
+  field "label" key="display.label"
+}
+template ".ref/line" {
+  field "label" key="display.label"
+  field "status" key="status.state"
+}
+template "vessel/line" {
+  field "label" key="display.label"
+}
+placement "attention" {
+  for "attention" {
+    match "status.attention" value="true"
+    apply-template "vessel/line"
+  }
+}
+"#;
+
+fn refs(entity: EntityRef) -> MetadataValue {
+    MetadataValue::EntityRefs(vec![entity])
+}
+
+/// Sections and groups people make (drag-model.md, "Sections and groups as
+/// data"): a `layout="section"` loop makes each `.section` its own section;
+/// groups, workspaces and `.ref` ghosts nest by entity-reference facts; a ref
+/// presents its target without being placed by the target's facts; the
+/// `.default` group covers tabs nothing places.
+#[test]
+fn local_sections_groups_and_refs_nest_and_present_their_targets() {
+    let mut sidebar = Sidebar::new(LOCAL_SECTIONS_CONFIG).unwrap();
+    let section = entity(".section", "s1");
+    let group = entity(".group", "g1");
+    let local = entity(".workspace", "w1");
+    let vessel = entity("vessel", "v");
+    sidebar.apply(
+        100,
+        [
+            patch(section.clone(), &[("display.label", text("Pinned"))]),
+            patch(
+                group.clone(),
+                &[
+                    ("display.label", text("Workspaces")),
+                    (".section", refs(section.clone())),
+                    (".default", MetadataValue::Bool(true)),
+                ],
+            ),
+            patch(
+                vessel.clone(),
+                &[
+                    ("display.label", text("Worker")),
+                    ("status.attention", MetadataValue::Bool(true)),
+                    ("status.state", text("waiting")),
+                    ("action.primary.recipe", text("printf hello")),
+                ],
+            ),
+            patch(
+                entity(".ref", "r1"),
+                &[
+                    (".group", refs(group.clone())),
+                    (".target", refs(vessel.clone())),
+                ],
+            ),
+            patch(
+                entity(".ref", "r2"),
+                &[
+                    (".group", refs(group.clone())),
+                    (".target", refs(vessel.clone())),
+                ],
+            ),
+            patch(
+                local.clone(),
+                &[
+                    ("display.label", text("Scratch")),
+                    (".group", refs(group.clone())),
+                ],
+            ),
+            tab_patch(
+                42,
+                &[(".host.kind", text(".workspace")), (".host.id", text("w1"))],
+            ),
+        ],
+    );
+    let mut leftover = workspace();
+    leftover.id = 43;
+    leftover.position = 1;
+    leftover.selected = false;
+    sidebar.observe(vec![workspace(), leftover], vec![]);
+    let snapshot = sidebar.snapshot();
+    let local_section = snapshot
+        .surface
+        .sections
+        .iter()
+        .find(|s| s.name == "local")
+        .unwrap();
+    assert_eq!(local_section.nodes.len(), 1);
+    let made = &local_section.nodes[0];
+    assert_eq!(
+        (made.entity.clone(), made.layout.as_deref()),
+        (section, Some("section"))
+    );
+    assert_eq!(made.children.len(), 1);
+    let items = &made.children[0].children;
+    let entities = items.iter().map(|n| n.entity.clone()).collect::<Vec<_>>();
+    // Homed workspace, both ghosts (one entity, two refs), then the leftover tab.
+    assert_eq!(
+        entities,
+        vec![
+            local.clone(),
+            entity(".ref", "r1"),
+            entity(".ref", "r2"),
+            entity(".workspace", "43")
+        ]
+    );
+    assert_eq!(
+        items[1].label, "Worker",
+        "a ref presents its target's label"
+    );
+    assert_eq!(
+        items[1].state,
+        andamento_core::presentation::PresentationState::Latent { openable: true },
+        "a ref of an openable target is openable"
+    );
+    assert_ne!(items[1].key, items[2].key, "each ghost keeps its own key");
+    assert_eq!(
+        items[0].state,
+        andamento_core::presentation::PresentationState::Live {
+            workspace_id: 42,
+            selected: true
+        }
+    );
+    assert!(
+        fallback(&sidebar).is_empty(),
+        "the default group covers leftover tabs"
+    );
+    // Attention places the vessel once; its ghosts aren't placed by its facts.
+    let attention = snapshot
+        .surface
+        .sections
+        .iter()
+        .find(|s| s.name == "attention")
+        .unwrap();
+    assert_eq!(
+        attention
+            .nodes
+            .iter()
+            .map(|n| n.entity.clone())
+            .collect::<Vec<_>>(),
+        vec![vessel.clone()]
+    );
+    // Details and activation follow the target.
+    assert_eq!(
+        sidebar.detail_card(&entity(".ref", "r1")).unwrap().label,
+        "Worker"
+    );
+    let effects = sidebar
+        .dispatch(Action::ActivatePlacement {
+            key: items[1].key.clone(),
+        })
+        .unwrap();
+    assert!(
+        matches!(&effects[..], [HostEffect::Materialize { entity: subject, .. }] if subject == &vessel),
+        "activating a ghost opens its target: {effects:?}"
+    );
+    // A ghost of an open target is live for the target's workspace.
+    sidebar.apply(
+        200,
+        [tab_patch(
+            44,
+            &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
+        )],
+    );
+    let mut opened = workspace();
+    opened.id = 44;
+    opened.position = 2;
+    opened.selected = false;
+    let mut first = workspace();
+    first.selected = true;
+    let mut second = first.clone();
+    second.id = 43;
+    second.position = 1;
+    second.selected = false;
+    sidebar.observe(vec![first, second, opened], vec![]);
+    let snapshot = sidebar.snapshot();
+    let local_section = snapshot
+        .surface
+        .sections
+        .iter()
+        .find(|s| s.name == "local")
+        .unwrap();
+    let ghost = local_section.nodes[0].children[0]
+        .children
+        .iter()
+        .find(|n| n.entity == entity(".ref", "r1"))
+        .unwrap();
+    assert_eq!(
+        ghost.state,
+        andamento_core::presentation::PresentationState::Live {
+            workspace_id: 44,
+            selected: false
+        }
+    );
+}
+
+/// With several default groups, the first placed one covers leftover tabs;
+/// one that isn't placed (its section is missing) doesn't hide it.
+#[test]
+fn the_first_placed_default_group_covers_leftover_tabs() {
+    let mut sidebar = Sidebar::new(LOCAL_SECTIONS_CONFIG).unwrap();
+    let section = entity(".section", "s1");
+    let stray = entity(".group", "a-stray");
+    let placed = entity(".group", "b-placed");
+    let default = |of: &EntityRef| {
+        [
+            (".section", refs(of.clone())),
+            (".default", MetadataValue::Bool(true)),
+        ]
+    };
+    sidebar.apply(
+        100,
+        [
+            patch(section.clone(), &[("display.label", text("Workspaces"))]),
+            patch(stray.clone(), &default(&entity(".section", "missing"))),
+            patch(placed.clone(), &default(&section)),
+        ],
+    );
+    sidebar.observe(vec![workspace()], vec![]);
+    let snapshot = sidebar.snapshot();
+    let local = snapshot
+        .surface
+        .sections
+        .iter()
+        .find(|s| s.name == "local")
+        .unwrap();
+    let group = &local.nodes[0].children[0];
+    assert_eq!(group.entity, placed);
+    assert_eq!(
+        group
+            .children
+            .iter()
+            .map(|n| n.entity.clone())
+            .collect::<Vec<_>>(),
+        vec![entity(".workspace", "42")]
+    );
+    assert!(fallback(&sidebar).is_empty());
+}
+
+/// Only the boolean `true` marks a default group; text that says "true"
+/// doesn't, and leftover tabs stay in the `.unplaced` section.
+#[test]
+fn only_a_boolean_default_marks_the_default_group() {
+    let mut sidebar = Sidebar::new(LOCAL_SECTIONS_CONFIG).unwrap();
+    let section = entity(".section", "s1");
+    sidebar.apply(
+        100,
+        [
+            patch(section.clone(), &[("display.label", text("Workspaces"))]),
+            patch(
+                entity(".group", "g1"),
+                &[
+                    (".section", refs(section.clone())),
+                    (".default", text("true")),
+                ],
+            ),
+        ],
+    );
+    sidebar.observe(vec![workspace()], vec![]);
+    assert_eq!(fallback(&sidebar).len(), 1, "the tab stays left over");
+}
+
+/// Refs don't chain: a ref to a ref keeps its own facts.
+#[test]
+fn a_ref_to_a_ref_presents_nothing_further() {
+    let mut sidebar = Sidebar::new(LOCAL_SECTIONS_CONFIG).unwrap();
+    let section = entity(".section", "s1");
+    let group = entity(".group", "g1");
+    let vessel = entity("vessel", "v");
+    sidebar.apply(
+        100,
+        [
+            patch(section.clone(), &[("display.label", text("Pinned"))]),
+            patch(group.clone(), &[(".section", refs(section.clone()))]),
+            patch(vessel.clone(), &[("display.label", text("Worker"))]),
+            patch(
+                entity(".ref", "inner"),
+                &[(".group", refs(group.clone())), (".target", refs(vessel))],
+            ),
+            patch(
+                entity(".ref", "outer"),
+                &[
+                    (".group", refs(group.clone())),
+                    (".target", refs(entity(".ref", "inner"))),
+                ],
+            ),
+        ],
+    );
+    let snapshot = sidebar.snapshot();
+    let local = snapshot
+        .surface
+        .sections
+        .iter()
+        .find(|s| s.name == "local")
+        .unwrap();
+    let items = &local.nodes[0].children[0].children;
+    let inner = items
+        .iter()
+        .find(|n| n.entity == entity(".ref", "inner"))
+        .unwrap();
+    let outer = items
+        .iter()
+        .find(|n| n.entity == entity(".ref", "outer"))
+        .unwrap();
+    assert_eq!(inner.label, "Worker");
+    assert_ne!(
+        outer.label, "Worker",
+        "a ref to a ref doesn't present the inner ref's target"
+    );
+}
+
+/// A ref whose target is missing, or whose `.target` isn't a single
+/// reference, keeps only its own facts and stays in its group.
+#[test]
+fn a_ref_without_a_usable_target_keeps_its_own_facts() {
+    let mut sidebar = Sidebar::new(LOCAL_SECTIONS_CONFIG).unwrap();
+    let section = entity(".section", "s1");
+    let group = entity(".group", "g1");
+    sidebar.apply(
+        100,
+        [
+            patch(section.clone(), &[("display.label", text("Pinned"))]),
+            patch(group.clone(), &[(".section", refs(section.clone()))]),
+            patch(entity("vessel", "v"), &[("display.label", text("Worker"))]),
+            patch(
+                entity(".ref", "missing"),
+                &[
+                    (".group", refs(group.clone())),
+                    (".target", refs(entity("vessel", "gone"))),
+                ],
+            ),
+            patch(
+                entity(".ref", "malformed"),
+                &[
+                    (".group", refs(group.clone())),
+                    (
+                        ".target",
+                        MetadataValue::EntityRefs(vec![
+                            entity("vessel", "v"),
+                            entity("vessel", "v"),
+                        ]),
+                    ),
+                ],
+            ),
+        ],
+    );
+    let snapshot = sidebar.snapshot();
+    let local = snapshot
+        .surface
+        .sections
+        .iter()
+        .find(|s| s.name == "local")
+        .unwrap();
+    let items = &local.nodes[0].children[0].children;
+    for id in ["missing", "malformed"] {
+        let node = items
+            .iter()
+            .find(|n| n.entity == entity(".ref", id))
+            .expect("still placed");
+        assert_ne!(node.label, "Worker", "{id} presents no target");
+    }
+}
+
+/// A ref's place is its own: it keeps its own `.`-prefixed facts and takes
+/// none of its target's. One without its own `.group` isn't placed in its
+/// target's, and one ordered by `.position` sorts by its own.
+#[test]
+fn a_ref_takes_its_place_from_its_own_facts_not_its_targets() {
+    const ORDERED: &str = r#"
+region "local" root-template="local/title" form="compact" placement="local"
+template "local/title" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Local"
+}
+placement "local" {
+  for "section" kind=".section" layout="section" {
+    apply-template "section/local"
+  }
+}
+template "section/local" {
+  field "label" key="display.label"
+  for "group" kind=".group" {
+    match ".section" of="section"
+    apply-template "group/local"
+  }
+}
+template "group/local" {
+  field "label" key="display.label"
+  for "item" {
+    match ".group" of="group"
+    order ".position" natural=true
+    apply-template "local/item"
+  }
+}
+template "local/item" {
+  field "label" key="display.label"
+}
+"#;
+    let mut sidebar = Sidebar::new(ORDERED).unwrap();
+    let section = entity(".section", "s1");
+    let group = entity(".group", "g1");
+    let home = entity(".workspace", "w1");
+    let item = |label: &str, position: &str| {
+        vec![
+            ("display.label", text(label)),
+            (".group", refs(group.clone())),
+            (".position", text(position)),
+        ]
+    };
+    sidebar.apply(
+        100,
+        [
+            patch(section.clone(), &[("display.label", text("Pinned"))]),
+            patch(group.clone(), &[(".section", refs(section.clone()))]),
+            patch(home.clone(), &item("Home", "0")),
+            patch(entity(".workspace", "w2"), &item("Other", "3")),
+            patch(
+                entity(".ref", "placed"),
+                &[
+                    (".group", refs(group.clone())),
+                    (".target", refs(home.clone())),
+                    (".position", text("5")),
+                ],
+            ),
+            patch(
+                entity(".ref", "unplaced"),
+                &[(".target", refs(home.clone()))],
+            ),
+        ],
+    );
+    let snapshot = sidebar.snapshot();
+    let local = snapshot
+        .surface
+        .sections
+        .iter()
+        .find(|s| s.name == "local")
+        .unwrap();
+    let items = &local.nodes[0].children[0].children;
+    let order = items
+        .iter()
+        .map(|n| n.entity.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        ["w1", "w2", "placed"],
+        "the ref sorts by its own position and only it is placed"
+    );
+    assert_eq!(items[2].label, "Home", "it still presents its target");
+}
+
+/// A ref the host retracts (unsets its facts) leaves its group, even after
+/// it opened its target, whose open workspace makes its row live.
+#[test]
+fn a_retracted_ref_leaves_its_group() {
+    let mut sidebar = Sidebar::new(LOCAL_SECTIONS_CONFIG).unwrap();
+    let section = entity(".section", "s1");
+    let group = entity(".group", "g1");
+    let vessel = entity("vessel", "v");
+    let r = entity(".ref", "r1");
+    sidebar.apply(
+        100,
+        [
+            patch(section.clone(), &[("display.label", text("Pinned"))]),
+            patch(group.clone(), &[(".section", refs(section.clone()))]),
+            patch(
+                vessel.clone(),
+                &[
+                    ("display.label", text("Worker")),
+                    ("action.primary.recipe", text("printf hello")),
+                ],
+            ),
+            patch(
+                r.clone(),
+                &[
+                    (".group", refs(group.clone())),
+                    (".target", refs(vessel.clone())),
+                    (".position", text("1")),
+                ],
+            ),
+        ],
+    );
+    let ref_key = |sidebar: &Sidebar| {
+        let snapshot = sidebar.snapshot();
+        let local = snapshot
+            .surface
+            .sections
+            .iter()
+            .find(|s| s.name == "local")
+            .cloned()
+            .unwrap();
+        local.nodes[0].children[0]
+            .children
+            .iter()
+            .find(|n| n.entity == r)
+            .map(|n| n.key.clone())
+    };
+    // Open the target through the ghost, as a click on its row does.
+    let key = ref_key(&sidebar).expect("placed");
+    let effects = sidebar.dispatch(Action::ActivatePlacement { key }).unwrap();
+    let request_id = match &effects[..] {
+        [HostEffect::Materialize {
+            request_id,
+            entity: subject,
+            ..
+        }] if subject == &vessel => *request_id,
+        other => panic!("expected the target to open, got {other:?}"),
+    };
+    sidebar.complete(request_id, Ok(Some(42)));
+    // The host names the opened workspace's subject, as Wheelhouse does.
+    sidebar.apply(
+        150,
+        [tab_patch(
+            42,
+            &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
+        )],
+    );
+    sidebar.observe(vec![workspace()], vec![]);
+    assert!(ref_key(&sidebar).is_some());
+    // Hosts observe every frame; retained paths are recorded from a snapshot.
+    sidebar.observe(vec![workspace()], vec![]);
+    let mut retract = patch(r.clone(), &[]);
+    retract.unset = vec![".group".into(), ".target".into(), ".position".into()];
+    sidebar.apply(200, [retract]);
+    sidebar.observe(vec![workspace()], vec![]);
+    assert!(
+        ref_key(&sidebar).is_none(),
+        "a retracted ref is no longer placed"
+    );
 }

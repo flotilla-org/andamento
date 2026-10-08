@@ -49,8 +49,8 @@ const KEY_ENTITY_ID: &str = "entity.id";
 /// the host gives its own identity. Its rows are live for the tab, as a
 /// subject's are, but it is not the tab's subject: closing the tab retains no
 /// path, and the host retracts the entity.
-const KEY_HOST_ENTITY_KIND: &str = "host.entity.kind";
-const KEY_HOST_ENTITY_ID: &str = "host.entity.id";
+const KEY_HOST_ENTITY_KIND: &str = crate::presentation::system::HOST_KIND;
+const KEY_HOST_ENTITY_ID: &str = crate::presentation::system::HOST_ID;
 const KEY_ACTION_TARGET: &str = "action.primary.target";
 const KEY_MATERIALIZE_RECIPE: &str = "action.primary.recipe";
 const KEY_CHECKOUT_PATH: &str = "git.root";
@@ -122,7 +122,17 @@ impl PlacementIndex {
                 "entity.id".to_owned(),
                 IndexedValue::Scalar(entity.entity.id.clone()),
             );
+            // A `.ref` carries its target's facts for presentation, but rules
+            // reach it only through its own placement facts, so a query on the
+            // target's facts (say, needs attention) never places the ghost too.
+            let is_ref = entity.entity.kind == crate::presentation::system::REF;
             for (key, entry) in &entity.values {
+                if is_ref
+                    && key != crate::presentation::system::GROUP
+                    && key != crate::presentation::system::TARGET
+                {
+                    continue;
+                }
                 if let MetadataValue::EntityRefs(refs) = &entry.value {
                     ref_keys.insert(key.clone());
                     for reference in refs {
@@ -1607,7 +1617,21 @@ impl ControllerState {
             &states,
         ));
         if let Some(surface) = &mut model.presentation {
-            surface.cover_workspaces(&self.tabs, &host_entities);
+            // Default groups (`.default`) cover tabs nothing else places.
+            let default_groups = region_catalog_entities
+                .iter()
+                .filter(|e| {
+                    e.entity.kind == crate::presentation::system::GROUP
+                        && matches!(
+                            e.values
+                                .get(crate::presentation::system::DEFAULT)
+                                .map(|v| &v.value),
+                            Some(MetadataValue::Bool(true))
+                        )
+                })
+                .map(|e| e.entity.clone())
+                .collect::<Vec<_>>();
+            surface.cover_workspaces(&self.tabs, &host_entities, &default_groups);
             surface
                 .diagnostics
                 .extend(model.template_config.warnings.iter().cloned());
@@ -2485,7 +2509,7 @@ impl ControllerState {
     }
 
     /// Each tab's subject (`entity.kind`/`id`) and host entity
-    /// (`host.entity.kind`/`id`), from one metadata resolution per tab.
+    /// (`.host.kind`/`.host.id`), from one metadata resolution per tab.
     pub(crate) fn workspace_identities(&self) -> WorkspaceIdentities {
         let _phase = crate::profile::span("workspace-subjects");
         let seeds = self.tab_seed_metadata_entries();
@@ -2595,12 +2619,89 @@ impl ControllerState {
                 );
             }
         }
+        Self::present_refs(&mut entities);
         entities.sort_by(|a, b| {
             a.ordinal
                 .cmp(&b.ordinal)
                 .then_with(|| a.entity.cmp(&b.entity))
         });
         entities
+    }
+
+    /// A `.ref` (a ghost) presents its `.target`: it takes the target's facts
+    /// and sources, so templates, status, live state, details and activation
+    /// all follow the target. Its place is its own: it keeps its own
+    /// `.`-prefixed facts (`.group`, `.target`, `.position`) and takes none of
+    /// the target's, so it is a separate object in its own place. A ref whose
+    /// target is not in the catalog keeps only its own facts.
+    ///
+    /// Refs don't chain: a ref whose target is itself a ref presents that ref
+    /// as it is, not what it refers to.
+    fn present_refs(entities: &mut [CatalogEntity]) {
+        use crate::presentation::system;
+        let targets = entities
+            .iter()
+            .filter(|e| e.entity.kind == system::REF)
+            .filter_map(|e| Some((e.entity.clone(), ref_target(&e.values)?)))
+            .collect::<BTreeMap<_, _>>();
+        if targets.is_empty() {
+            return;
+        }
+        let wanted = targets.values().cloned().collect::<BTreeSet<_>>();
+        let resolved = entities
+            .iter()
+            .filter(|e| e.entity.kind != system::REF && wanted.contains(&e.entity))
+            .map(|e| (e.entity.clone(), (e.values.clone(), e.sources.clone())))
+            .collect::<BTreeMap<_, _>>();
+        for entity in entities.iter_mut().filter(|e| e.entity.kind == system::REF) {
+            let Some(target) = targets.get(&entity.entity) else {
+                continue;
+            };
+            let Some((values, sources)) = resolved.get(target) else {
+                continue;
+            };
+            let own = std::mem::replace(&mut entity.values, values.clone());
+            let own_sources = std::mem::replace(&mut entity.sources, sources.clone());
+            entity.values.retain(|key, _| !system::is_system(key));
+            entity.sources.retain(|key, _| !system::is_system(key));
+            for (key, value) in own.iter().filter(|(key, _)| system::is_system(key)) {
+                entity.values.insert(key.clone(), value.clone());
+            }
+            for (key, source) in own_sources.iter().filter(|(key, _)| system::is_system(key)) {
+                entity.sources.insert(key.clone(), source.clone());
+            }
+            // Live state and activation key on the action target: the
+            // target's own, else one made from its identity. The made entry
+            // dates from the ref's `.target`, so it is as fresh as the
+            // reference; it never expires and loses to any real one.
+            if !entity.values.contains_key(KEY_ACTION_TARGET) {
+                let ordinal = entity.ordinal;
+                entity.values.insert(
+                    KEY_ACTION_TARGET.to_owned(),
+                    MetadataEntry {
+                        value: MetadataValue::Text(target.action_target()),
+                        updated_at: own
+                            .get(system::TARGET)
+                            .map(|e| e.updated_at)
+                            .unwrap_or_default(),
+                        ttl_ms: None,
+                        precedence: 0,
+                        ordinal,
+                    },
+                );
+            }
+        }
+    }
+
+    /// The entity a placement presents: a `.ref`'s target, otherwise itself.
+    pub(crate) fn presented_entity(&self, entity: &EntityRef) -> EntityRef {
+        if entity.kind != crate::presentation::system::REF {
+            return entity.clone();
+        }
+        let (values, _) = self
+            .metadata
+            .resolved_entries_with_sources_for(&EntityId::Entity(entity.clone()), self.now());
+        ref_target(&values).unwrap_or_else(|| entity.clone())
     }
 
     /// Full replacement of ephemeral host directory observations. These are
@@ -2793,7 +2894,13 @@ impl ControllerState {
                 let resolved_action_target = metadata_entry_text(&values, KEY_ACTION_TARGET)
                     .map(str::to_owned)
                     .or(entity_target);
-                (resolved_action_target.as_deref() == Some(action_target)).then_some(tab.position)
+                // A tab's host entity is live there too (live_presentation_states),
+                // so activating it focuses the tab.
+                let host_target =
+                    host_entity_ref_from_entries(&values).map(|entity| entity.action_target());
+                (resolved_action_target.as_deref() == Some(action_target)
+                    || host_target.as_deref() == Some(action_target))
+                .then_some(tab.position)
             })
             .or_else(|| {
                 let entities = self.catalog_entities();
@@ -3344,6 +3451,14 @@ fn entity_facts(
         MetadataValue::Text(entity.id.clone()),
     );
     facts
+}
+
+/// A `.ref`'s `.target`: a single entity reference.
+fn ref_target(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
+    match &entries.get(crate::presentation::system::TARGET)?.value {
+        MetadataValue::EntityRefs(refs) if refs.len() == 1 => refs.first().cloned(),
+        _ => None,
+    }
 }
 
 fn host_entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {

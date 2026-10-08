@@ -34,8 +34,37 @@ pub struct Section {
     pub nodes: Vec<PlacementNode>,
 }
 
-/// The synthetic section covering workspaces with no normal placement.
-pub const UNPLACED_WORKSPACES_SECTION: &str = "andamento.unplaced-workspaces";
+/// Andamento's own system kinds and facts start with `.`; conventions that
+/// producers share (`display.label`, `flotilla.project`) keep their names.
+pub mod system {
+    /// Whether a kind or fact name is one of Andamento's own.
+    pub fn is_system(name: &str) -> bool {
+        name.starts_with('.')
+    }
+
+    /// A host's workspace: a host entity, or the synthetic entity covering a
+    /// tab nothing places.
+    pub const WORKSPACE: &str = ".workspace";
+    /// A section someone made; placed by a `layout="section"` loop.
+    pub const SECTION: &str = ".section";
+    /// A group inside a section (fact `.section`), holding workspaces and
+    /// references (fact `.group`).
+    pub const GROUP: &str = ".group";
+    /// A reference (ghost): presents its `.target` entity.
+    pub const REF: &str = ".ref";
+    pub const TARGET: &str = ".target";
+    /// Marks the group that covers tabs nothing else places.
+    pub const DEFAULT: &str = ".default";
+    /// Tab metadata naming the host entity published for that workspace.
+    pub const HOST_KIND: &str = ".host.kind";
+    pub const HOST_ID: &str = ".host.id";
+    /// The section covering tabs nothing places, when no default group does.
+    pub const UNPLACED: &str = ".unplaced";
+}
+
+/// The synthetic section covering workspaces with no normal placement. It is
+/// also the loop name under a default group that covers them instead.
+pub const UNPLACED_WORKSPACES_SECTION: &str = system::UNPLACED;
 
 impl Section {
     /// The workspace fallback is emitted even when empty so hosts can anchor
@@ -102,6 +131,23 @@ impl Content {
     }
 }
 
+/// The first placement of `entity`, depth first. A default group placed more
+/// than once covers leftover tabs under its first placement only.
+fn find_node_mut<'a>(
+    nodes: &'a mut [PlacementNode],
+    entity: &EntityRef,
+) -> Option<&'a mut PlacementNode> {
+    for node in nodes {
+        if &node.entity == entity {
+            return Some(node);
+        }
+        if let Some(found) = find_node_mut(&mut node.children, entity) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 // Inspection and coverage both traverse collapsed descendants. The callback can
 // stop early for lookup, without allocating an intermediate list of nodes.
 fn visit_nodes<'a, B>(
@@ -145,10 +191,16 @@ impl SurfaceSnapshot {
     /// details and placements resolve; others use a synthetic workspace entity,
     /// as does every tab after the first sharing one host entity, keeping each
     /// covered tab's key distinct.
+    ///
+    /// When a default group (`.default`) is placed, uncovered tabs become its
+    /// children instead, in a `.unplaced` loop after its own items, and the
+    /// fallback section is emitted empty. With several default groups, the
+    /// first placed one (in catalog order) covers them.
     pub(crate) fn cover_workspaces(
         &mut self,
         workspaces: &[crate::state::ControllerTab],
         host_entities: &BTreeMap<u64, EntityRef>,
+        default_groups: &[EntityRef],
     ) {
         let mut covered = std::collections::BTreeSet::new();
         for section in &self.sections {
@@ -170,7 +222,7 @@ impl SurfaceSnapshot {
                 .filter(|host| hosts_used.insert((*host).clone()))
                 .cloned()
                 .unwrap_or_else(|| EntityRef {
-                    kind: "andamento.workspace".into(),
+                    kind: system::WORKSPACE.into(),
                     id: workspace.tab_id.to_string(),
                 });
             let key = PlacementKey(vec![crate::PlacementSegment {
@@ -178,7 +230,9 @@ impl SurfaceSnapshot {
                 entity: entity.clone(),
             }]);
             nodes.push(PlacementNode {
-                loop_key: key.loop_key(UNPLACED_WORKSPACES_SECTION).unwrap(),
+                loop_key: key
+                    .loop_key(UNPLACED_WORKSPACES_SECTION)
+                    .expect("a cover key has its one segment"),
                 key,
                 entity,
                 label: workspace.name.clone(),
@@ -203,6 +257,28 @@ impl SurfaceSnapshot {
                 collapsed: false,
                 children: Vec::new(),
             });
+        }
+        // The first default group (in catalog order) that is placed covers
+        // them; an unplaced default doesn't hide a placed one.
+        'groups: for group in default_groups {
+            for section in &mut self.sections {
+                if let Some(parent) = find_node_mut(&mut section.nodes, group) {
+                    for mut node in std::mem::take(&mut nodes) {
+                        let mut segments = parent.key.0.clone();
+                        segments.push(crate::PlacementSegment {
+                            loop_name: UNPLACED_WORKSPACES_SECTION.into(),
+                            entity: node.entity.clone(),
+                        });
+                        node.key = PlacementKey(segments);
+                        node.loop_key = node
+                            .key
+                            .loop_key(&section.name)
+                            .expect("a cover key has the default group's segment and its own");
+                        parent.children.push(node);
+                    }
+                    break 'groups;
+                }
+            }
         }
         self.sections.push(Section {
             name: UNPLACED_WORKSPACES_SECTION.into(),

@@ -233,7 +233,11 @@ impl Sidebar {
             paths: &mut BTreeMap<u64, BTreeSet<EntityRef>>,
         ) {
             for node in nodes {
-                let subject = node.entity.kind != "andamento.workspace";
+                // Andamento's own kinds (`.`-prefixed: workspaces, sections,
+                // groups, refs) are never retained: the host retracts them, and
+                // a ghost must not outlive its removal because its target is
+                // open.
+                let subject = !crate::presentation::system::is_system(&node.entity.kind);
                 if subject {
                     ancestors.push(node.entity.clone());
                 }
@@ -421,7 +425,8 @@ impl Sidebar {
                     .surface
                     .node(&key)
                     .ok_or("unknown placement")?;
-                let entity = node.entity.clone();
+                // A reference activates what it presents.
+                let entity = self.state.presented_entity(&node.entity);
                 if let Some(url) = self.state.subject_url(&entity) {
                     return Ok(vec![HostEffect::OpenUrl { url }]);
                 }
