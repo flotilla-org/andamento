@@ -34,7 +34,6 @@ pub struct Section {
     pub nodes: Vec<PlacementNode>,
 }
 
-/// The synthetic section covering workspaces with no normal placement.
 /// Andamento's own system kinds and facts start with `.`; conventions that
 /// producers share (`display.label`, `flotilla.project`) keep their names.
 pub mod system {
@@ -58,6 +57,7 @@ pub mod system {
     pub const UNPLACED: &str = ".unplaced";
 }
 
+/// The synthetic section covering workspaces with no normal placement.
 pub const UNPLACED_WORKSPACES_SECTION: &str = system::UNPLACED;
 
 impl Section {
@@ -125,9 +125,8 @@ impl Content {
     }
 }
 
-// Inspection and coverage both traverse collapsed descendants. The callback can
-// stop early for lookup, without allocating an intermediate list of nodes.
-/// The first placement of `entity`, depth first.
+/// The first placement of `entity`, depth first. A default group placed more
+/// than once covers leftover tabs under its first placement only.
 fn find_node_mut<'a>(
     nodes: &'a mut [PlacementNode],
     entity: &EntityRef,
@@ -143,6 +142,8 @@ fn find_node_mut<'a>(
     None
 }
 
+// Inspection and coverage both traverse collapsed descendants. The callback can
+// stop early for lookup, without allocating an intermediate list of nodes.
 fn visit_nodes<'a, B>(
     nodes: &'a [PlacementNode],
     visit: &mut impl FnMut(&'a PlacementNode) -> ControlFlow<B>,
@@ -187,12 +188,13 @@ impl SurfaceSnapshot {
     ///
     /// When a default group (`.default`) is placed, uncovered tabs become its
     /// children instead, in a `.unplaced` loop after its own items, and the
-    /// fallback section is emitted empty.
+    /// fallback section is emitted empty. With several default groups, the
+    /// first placed one (in catalog order) covers them.
     pub(crate) fn cover_workspaces(
         &mut self,
         workspaces: &[crate::state::ControllerTab],
         host_entities: &BTreeMap<u64, EntityRef>,
-        default_group: Option<&EntityRef>,
+        default_groups: &[EntityRef],
     ) {
         let mut covered = std::collections::BTreeSet::new();
         for section in &self.sections {
@@ -248,7 +250,9 @@ impl SurfaceSnapshot {
                 children: Vec::new(),
             });
         }
-        if let Some(group) = default_group {
+        // The first default group (in catalog order) that is placed covers
+        // them; an unplaced default doesn't hide a placed one.
+        'groups: for group in default_groups {
             for section in &mut self.sections {
                 if let Some(parent) = find_node_mut(&mut section.nodes, group) {
                     for mut node in std::mem::take(&mut nodes) {
@@ -258,10 +262,13 @@ impl SurfaceSnapshot {
                             entity: node.entity.clone(),
                         });
                         node.key = PlacementKey(segments);
-                        node.loop_key = node.key.loop_key(&section.name).unwrap();
+                        node.loop_key = node
+                            .key
+                            .loop_key(&section.name)
+                            .expect("a cover key has the default group's segment and its own");
                         parent.children.push(node);
                     }
-                    break;
+                    break 'groups;
                 }
             }
         }

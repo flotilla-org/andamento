@@ -1617,17 +1617,21 @@ impl ControllerState {
             &states,
         ));
         if let Some(surface) = &mut model.presentation {
-            // The default group (`.default`) covers tabs nothing else places.
-            let default_group = region_catalog_entities.iter().find(|e| {
-                e.entity.kind == crate::presentation::system::GROUP
-                    && matches!(
-                        e.values
-                            .get(crate::presentation::system::DEFAULT)
-                            .map(|v| &v.value),
-                        Some(MetadataValue::Bool(true))
-                    )
-            });
-            surface.cover_workspaces(&self.tabs, &host_entities, default_group.map(|e| &e.entity));
+            // Default groups (`.default`) cover tabs nothing else places.
+            let default_groups = region_catalog_entities
+                .iter()
+                .filter(|e| {
+                    e.entity.kind == crate::presentation::system::GROUP
+                        && matches!(
+                            e.values
+                                .get(crate::presentation::system::DEFAULT)
+                                .map(|v| &v.value),
+                            Some(MetadataValue::Bool(true))
+                        )
+                })
+                .map(|e| e.entity.clone())
+                .collect::<Vec<_>>();
+            surface.cover_workspaces(&self.tabs, &host_entities, &default_groups);
             surface
                 .diagnostics
                 .extend(model.template_config.warnings.iter().cloned());
@@ -2624,6 +2628,8 @@ impl ControllerState {
         entities
     }
 
+    /// Refs don't chain: a ref whose target is itself a ref presents that ref
+    /// as it is, not what it refers to.
     /// A `.ref` (a ghost) presents its `.target`: it takes the target's facts
     /// and sources, so templates, status, live state, details and activation
     /// all follow the target, while its own identity, `.group` and `.target`

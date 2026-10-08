@@ -356,11 +356,13 @@ them. Wheelhouse publishes them from its window layout.
   - rules reach a ref only through its own `.group` and `.target`, never
     through its target's facts, so a query such as "needs attention" doesn't
     place the ghost as well;
-  - a ref whose target is missing keeps only its own facts.
+  - a ref whose target is missing keeps only its own facts;
+  - refs don't chain: a ref to a ref presents that ref as it is.
 - **`.default`**: a group with `.default` set to true covers workspaces that
   nothing places. They become its children in a `.unplaced` loop after its own
   items, instead of filling the `.unplaced` section, which is then emitted
-  empty.
+  empty. With several default groups, the first placed one (in catalog order)
+  covers them, under its first placement.
 
 How a reference is shown, for example compact or expanded, is the frontend's
 own state and is not published.

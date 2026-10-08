@@ -2620,3 +2620,95 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
         }
     );
 }
+
+/// With several default groups, the first placed one covers leftover tabs;
+/// one that isn't placed (its section is missing) doesn't hide it.
+#[test]
+fn the_first_placed_default_group_covers_leftover_tabs() {
+    let mut sidebar = Sidebar::new(LOCAL_SECTIONS_CONFIG).unwrap();
+    let section = entity(".section", "s1");
+    let stray = entity(".group", "a-stray");
+    let placed = entity(".group", "b-placed");
+    let default = |of: &EntityRef| {
+        [
+            (".section", refs(of.clone())),
+            (".default", MetadataValue::Bool(true)),
+        ]
+    };
+    sidebar.apply(
+        100,
+        [
+            patch(section.clone(), &[("display.label", text("Workspaces"))]),
+            patch(stray.clone(), &default(&entity(".section", "missing"))),
+            patch(placed.clone(), &default(&section)),
+        ],
+    );
+    sidebar.observe(vec![workspace()], vec![]);
+    let snapshot = sidebar.snapshot();
+    let local = snapshot
+        .surface
+        .sections
+        .iter()
+        .find(|s| s.name == "local")
+        .unwrap();
+    let group = &local.nodes[0].children[0];
+    assert_eq!(group.entity, placed);
+    assert_eq!(
+        group
+            .children
+            .iter()
+            .map(|n| n.entity.clone())
+            .collect::<Vec<_>>(),
+        vec![entity(".workspace", "42")]
+    );
+    assert!(fallback(&sidebar).is_empty());
+}
+
+/// Refs don't chain: a ref to a ref keeps its own facts.
+#[test]
+fn a_ref_to_a_ref_presents_nothing_further() {
+    let mut sidebar = Sidebar::new(LOCAL_SECTIONS_CONFIG).unwrap();
+    let section = entity(".section", "s1");
+    let group = entity(".group", "g1");
+    let vessel = entity("vessel", "v");
+    sidebar.apply(
+        100,
+        [
+            patch(section.clone(), &[("display.label", text("Pinned"))]),
+            patch(group.clone(), &[(".section", refs(section.clone()))]),
+            patch(vessel.clone(), &[("display.label", text("Worker"))]),
+            patch(
+                entity(".ref", "inner"),
+                &[(".group", refs(group.clone())), (".target", refs(vessel))],
+            ),
+            patch(
+                entity(".ref", "outer"),
+                &[
+                    (".group", refs(group.clone())),
+                    (".target", refs(entity(".ref", "inner"))),
+                ],
+            ),
+        ],
+    );
+    let snapshot = sidebar.snapshot();
+    let local = snapshot
+        .surface
+        .sections
+        .iter()
+        .find(|s| s.name == "local")
+        .unwrap();
+    let items = &local.nodes[0].children[0].children;
+    let inner = items
+        .iter()
+        .find(|n| n.entity == entity(".ref", "inner"))
+        .unwrap();
+    let outer = items
+        .iter()
+        .find(|n| n.entity == entity(".ref", "outer"))
+        .unwrap();
+    assert_eq!(inner.label, "Worker");
+    assert_ne!(
+        outer.label, "Worker",
+        "a ref to a ref doesn't present the inner ref's target"
+    );
+}
