@@ -2535,6 +2535,11 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
         items[1].label, "Worker",
         "a ref presents its target's label"
     );
+    assert_eq!(
+        items[1].state,
+        andamento_core::presentation::PresentationState::Latent { openable: true },
+        "a ref of an openable target is openable"
+    );
     assert_ne!(items[1].key, items[2].key, "each ghost keeps its own key");
     assert_eq!(
         items[0].state,
