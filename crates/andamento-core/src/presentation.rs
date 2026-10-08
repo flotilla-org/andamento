@@ -224,7 +224,9 @@ impl SurfaceSnapshot {
                 entity: entity.clone(),
             }]);
             nodes.push(PlacementNode {
-                loop_key: key.loop_key(UNPLACED_WORKSPACES_SECTION).unwrap(),
+                loop_key: key
+                    .loop_key(UNPLACED_WORKSPACES_SECTION)
+                    .expect("a cover key has its one segment"),
                 key,
                 entity,
                 label: workspace.name.clone(),

@@ -2712,3 +2712,55 @@ fn a_ref_to_a_ref_presents_nothing_further() {
         "a ref to a ref doesn't present the inner ref's target"
     );
 }
+
+/// A ref whose target is missing, or whose `.target` isn't a single
+/// reference, keeps only its own facts and stays in its group.
+#[test]
+fn a_ref_without_a_usable_target_keeps_its_own_facts() {
+    let mut sidebar = Sidebar::new(LOCAL_SECTIONS_CONFIG).unwrap();
+    let section = entity(".section", "s1");
+    let group = entity(".group", "g1");
+    sidebar.apply(
+        100,
+        [
+            patch(section.clone(), &[("display.label", text("Pinned"))]),
+            patch(group.clone(), &[(".section", refs(section.clone()))]),
+            patch(entity("vessel", "v"), &[("display.label", text("Worker"))]),
+            patch(
+                entity(".ref", "missing"),
+                &[
+                    (".group", refs(group.clone())),
+                    (".target", refs(entity("vessel", "gone"))),
+                ],
+            ),
+            patch(
+                entity(".ref", "malformed"),
+                &[
+                    (".group", refs(group.clone())),
+                    (
+                        ".target",
+                        MetadataValue::EntityRefs(vec![
+                            entity("vessel", "v"),
+                            entity("vessel", "v"),
+                        ]),
+                    ),
+                ],
+            ),
+        ],
+    );
+    let snapshot = sidebar.snapshot();
+    let local = snapshot
+        .surface
+        .sections
+        .iter()
+        .find(|s| s.name == "local")
+        .unwrap();
+    let items = &local.nodes[0].children[0].children;
+    for id in ["missing", "malformed"] {
+        let node = items
+            .iter()
+            .find(|n| n.entity == entity(".ref", id))
+            .expect("still placed");
+        assert_ne!(node.label, "Worker", "{id} presents no target");
+    }
+}
