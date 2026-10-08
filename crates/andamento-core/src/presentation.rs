@@ -62,7 +62,8 @@ pub mod system {
     pub const UNPLACED: &str = ".unplaced";
 }
 
-/// The synthetic section covering workspaces with no normal placement.
+/// The synthetic section covering workspaces with no normal placement. It is
+/// also the loop name under a default group that covers them instead.
 pub const UNPLACED_WORKSPACES_SECTION: &str = system::UNPLACED;
 
 impl Section {
