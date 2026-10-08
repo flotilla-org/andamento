@@ -297,6 +297,22 @@ Fallback keys use workspace IDs, never display names, and use the reserved
 Renaming or selecting a workspace preserves its key. Provider removal, filtering,
 and multiple workspaces sharing one entity must not hide inventory entries.
 
+### Host entities
+
+A host can give one of its workspaces an entity of its own: it publishes the
+entity's facts like any producer, and tags the tab with `host.entity.kind` and
+`host.entity.id` metadata (a patch targeting the tab). Wheelhouse does this for
+local workspaces, as `wheelhouse.workspace` entities.
+
+- Placements place a host entity like any other entity, so a template can home
+  it, for example with `match "flotilla.project" of="project"`.
+- Its rows are live for its tab, as a subject's rows are, so a placed host
+  entity covers its workspace.
+- An unplaced workspace with a host entity is covered under that entity rather
+  than a synthetic `andamento.workspace`, so its details resolve.
+- It is not the tab's subject: closing the tab retains no path and marks nothing
+  ended. The host retracts the entity's facts when the workspace goes away.
+
 Native, HTML and terminal snapshot consumers activate rows with
 `Action::ActivatePlacement`. Live placements focus their exact observed workspace;
 other placements use the normal entity activation path. The C ABI exposes this

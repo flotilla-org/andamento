@@ -45,6 +45,12 @@ const KEY_PANE_CWD: &str = "zellij.pane.cwd";
 const KEY_PANE_CWD_LABEL: &str = "zellij.pane.cwd.label";
 const KEY_ENTITY_KIND: &str = "entity.kind";
 const KEY_ENTITY_ID: &str = "entity.id";
+/// A host-owned entity published for one workspace, such as a local workspace
+/// the host gives its own identity. Its rows are live for the tab, as a
+/// subject's are, but it is not the tab's subject: closing the tab retains no
+/// path, and the host retracts the entity.
+const KEY_HOST_ENTITY_KIND: &str = "host.entity.kind";
+const KEY_HOST_ENTITY_ID: &str = "host.entity.id";
 const KEY_ACTION_TARGET: &str = "action.primary.target";
 const KEY_MATERIALIZE_RECIPE: &str = "action.primary.recipe";
 const KEY_CHECKOUT_PATH: &str = "git.root";
@@ -1527,9 +1533,18 @@ impl ControllerState {
         let live = &evaluation.live;
         // Selection belongs to the workspace subject, not shared action targets.
         let subjects = self.workspace_subjects();
+        let host_entities = self.workspace_host_entities();
         let mut exact = BTreeMap::new();
         for workspace in &self.tabs {
-            if let Some(subject) = subjects.get(&workspace.tab_id) {
+            // A host entity's rows are live for its tab, as a subject's are.
+            for owner in [
+                subjects.get(&workspace.tab_id),
+                host_entities.get(&workspace.tab_id),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let subject = owner;
                 // Prefer the selected workspace; otherwise preserve inventory order.
                 let state = PresentationState::Live {
                     workspace_id: workspace.tab_id,
@@ -1583,7 +1598,7 @@ impl ControllerState {
             &states,
         ));
         if let Some(surface) = &mut model.presentation {
-            surface.cover_workspaces(&self.tabs);
+            surface.cover_workspaces(&self.tabs, &host_entities);
             surface
                 .diagnostics
                 .extend(model.template_config.warnings.iter().cloned());
@@ -1635,7 +1650,9 @@ impl ControllerState {
                 let target = metadata_entry_text(values, KEY_ACTION_TARGET)
                     .map(str::to_owned)
                     .or_else(|| entity_ref_from_entries(values).map(|e| e.action_target()));
-                if let Some(target) = target {
+                // A tab's host entity is live there too, alongside any subject.
+                let host = host_entity_ref_from_entries(values).map(|e| e.action_target());
+                for target in [target, host].into_iter().flatten() {
                     live.entry(target).or_insert(PresentationState::Live {
                         workspace_id: workspace.tab_id,
                         selected: workspace.active,
@@ -2456,6 +2473,21 @@ impl ControllerState {
             }
         }
         changed
+    }
+
+    /// Each tab's host entity (`host.entity.kind`/`id` tab metadata), if any.
+    pub(crate) fn workspace_host_entities(&self) -> BTreeMap<u64, EntityRef> {
+        let seeds = self.tab_seed_metadata_entries();
+        self.tabs
+            .iter()
+            .filter_map(|tab| {
+                let (values, _, _) = self.resolve_target_metadata(
+                    &EntityId::Tab(tab.tab_id),
+                    seeds.get(&tab.tab_id).cloned().unwrap_or_default(),
+                );
+                host_entity_ref_from_entries(&values).map(|entity| (tab.tab_id, entity))
+            })
+            .collect()
     }
 
     pub(crate) fn workspace_subjects(&self) -> BTreeMap<u64, EntityRef> {
@@ -3305,6 +3337,13 @@ fn entity_facts(
         MetadataValue::Text(entity.id.clone()),
     );
     facts
+}
+
+fn host_entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
+    Some(EntityRef {
+        kind: metadata_entry_text(entries, KEY_HOST_ENTITY_KIND)?.to_owned(),
+        id: metadata_entry_text(entries, KEY_HOST_ENTITY_ID)?.to_owned(),
+    })
 }
 
 fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
