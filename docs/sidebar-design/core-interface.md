@@ -372,7 +372,9 @@ them. Wheelhouse publishes them from its window layout.
     through its target's facts, so a query such as "needs attention" doesn't
     place the ghost as well;
   - a ref whose target is missing keeps only its own facts;
-  - refs don't chain: a ref to a ref presents that ref as it is.
+  - refs don't chain: a ref to a ref presents that ref as it is;
+  - activating a placed ref (`ActivatePlacement`) activates its target;
+    `Activate` with the ref's own entity activates the ref itself.
 - **`.default`**: a group with `.default` set to the boolean `true` (text
   "true" doesn't count) covers workspaces that
   nothing places. They become its children in a `.unplaced` loop after its own
