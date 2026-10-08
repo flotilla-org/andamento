@@ -237,7 +237,7 @@ impl Sidebar {
                 // groups, refs) are never retained: the host retracts them, and
                 // a ghost must not outlive its removal because its target is
                 // open.
-                let subject = !node.entity.kind.starts_with('.');
+                let subject = !crate::presentation::system::is_system(&node.entity.kind);
                 if subject {
                     ancestors.push(node.entity.clone());
                 }

@@ -2628,13 +2628,15 @@ impl ControllerState {
         entities
     }
 
-    /// Refs don't chain: a ref whose target is itself a ref presents that ref
-    /// as it is, not what it refers to.
     /// A `.ref` (a ghost) presents its `.target`: it takes the target's facts
     /// and sources, so templates, status, live state, details and activation
-    /// all follow the target, while its own identity, `.group` and `.target`
-    /// keep it a separate object in its own place. A ref whose target is not
-    /// in the catalog keeps only its own facts.
+    /// all follow the target. Its place is its own: it keeps its own
+    /// `.`-prefixed facts (`.group`, `.target`, `.position`) and takes none of
+    /// the target's, so it is a separate object in its own place. A ref whose
+    /// target is not in the catalog keeps only its own facts.
+    ///
+    /// Refs don't chain: a ref whose target is itself a ref presents that ref
+    /// as it is, not what it refers to.
     fn present_refs(entities: &mut [CatalogEntity]) {
         use crate::presentation::system;
         let targets = entities
@@ -2660,15 +2662,18 @@ impl ControllerState {
             };
             let own = std::mem::replace(&mut entity.values, values.clone());
             let own_sources = std::mem::replace(&mut entity.sources, sources.clone());
-            for key in [system::GROUP, system::TARGET] {
-                if let Some(value) = own.get(key) {
-                    entity.values.insert(key.to_owned(), value.clone());
-                }
-                if let Some(source) = own_sources.get(key) {
-                    entity.sources.insert(key.to_owned(), source.clone());
-                }
+            entity.values.retain(|key, _| !system::is_system(key));
+            entity.sources.retain(|key, _| !system::is_system(key));
+            for (key, value) in own.iter().filter(|(key, _)| system::is_system(key)) {
+                entity.values.insert(key.clone(), value.clone());
             }
-            // Live state and activation key on the action target: the target's.
+            for (key, source) in own_sources.iter().filter(|(key, _)| system::is_system(key)) {
+                entity.sources.insert(key.clone(), source.clone());
+            }
+            // Live state and activation key on the action target: the
+            // target's own, else one made from its identity. The made entry
+            // dates from the ref's `.target`, so it is as fresh as the
+            // reference; it never expires and loses to any real one.
             if !entity.values.contains_key(KEY_ACTION_TARGET) {
                 let ordinal = entity.ordinal;
                 entity.values.insert(

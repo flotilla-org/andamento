@@ -37,6 +37,11 @@ pub struct Section {
 /// Andamento's own system kinds and facts start with `.`; conventions that
 /// producers share (`display.label`, `flotilla.project`) keep their names.
 pub mod system {
+    /// Whether a kind or fact name is one of Andamento's own.
+    pub fn is_system(name: &str) -> bool {
+        name.starts_with('.')
+    }
+
     /// A host's workspace: a host entity, or the synthetic entity covering a
     /// tab nothing places.
     pub const WORKSPACE: &str = ".workspace";

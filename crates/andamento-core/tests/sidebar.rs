@@ -2682,6 +2682,29 @@ fn the_first_placed_default_group_covers_leftover_tabs() {
     assert!(fallback(&sidebar).is_empty());
 }
 
+/// Only the boolean `true` marks a default group; text that says "true"
+/// doesn't, and leftover tabs stay in the `.unplaced` section.
+#[test]
+fn only_a_boolean_default_marks_the_default_group() {
+    let mut sidebar = Sidebar::new(LOCAL_SECTIONS_CONFIG).unwrap();
+    let section = entity(".section", "s1");
+    sidebar.apply(
+        100,
+        [
+            patch(section.clone(), &[("display.label", text("Workspaces"))]),
+            patch(
+                entity(".group", "g1"),
+                &[
+                    (".section", refs(section.clone())),
+                    (".default", text("true")),
+                ],
+            ),
+        ],
+    );
+    sidebar.observe(vec![workspace()], vec![]);
+    assert_eq!(fallback(&sidebar).len(), 1, "the tab stays left over");
+}
+
 /// Refs don't chain: a ref to a ref keeps its own facts.
 #[test]
 fn a_ref_to_a_ref_presents_nothing_further() {
@@ -2781,6 +2804,92 @@ fn a_ref_without_a_usable_target_keeps_its_own_facts() {
             .expect("still placed");
         assert_ne!(node.label, "Worker", "{id} presents no target");
     }
+}
+
+/// A ref's place is its own: it keeps its own `.`-prefixed facts and takes
+/// none of its target's. One without its own `.group` isn't placed in its
+/// target's, and one ordered by `.position` sorts by its own.
+#[test]
+fn a_ref_takes_its_place_from_its_own_facts_not_its_targets() {
+    const ORDERED: &str = r#"
+region "local" root-template="local/title" form="compact" placement="local"
+template "local/title" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Local"
+}
+placement "local" {
+  for "section" kind=".section" layout="section" {
+    apply-template "section/local"
+  }
+}
+template "section/local" {
+  field "label" key="display.label"
+  for "group" kind=".group" {
+    match ".section" of="section"
+    apply-template "group/local"
+  }
+}
+template "group/local" {
+  field "label" key="display.label"
+  for "item" {
+    match ".group" of="group"
+    order ".position" natural=true
+    apply-template "local/item"
+  }
+}
+template "local/item" {
+  field "label" key="display.label"
+}
+"#;
+    let mut sidebar = Sidebar::new(ORDERED).unwrap();
+    let section = entity(".section", "s1");
+    let group = entity(".group", "g1");
+    let home = entity(".workspace", "w1");
+    let item = |label: &str, position: &str| {
+        vec![
+            ("display.label", text(label)),
+            (".group", refs(group.clone())),
+            (".position", text(position)),
+        ]
+    };
+    sidebar.apply(
+        100,
+        [
+            patch(section.clone(), &[("display.label", text("Pinned"))]),
+            patch(group.clone(), &[(".section", refs(section.clone()))]),
+            patch(home.clone(), &item("Home", "0")),
+            patch(entity(".workspace", "w2"), &item("Other", "3")),
+            patch(
+                entity(".ref", "placed"),
+                &[
+                    (".group", refs(group.clone())),
+                    (".target", refs(home.clone())),
+                    (".position", text("5")),
+                ],
+            ),
+            patch(
+                entity(".ref", "unplaced"),
+                &[(".target", refs(home.clone()))],
+            ),
+        ],
+    );
+    let snapshot = sidebar.snapshot();
+    let local = snapshot
+        .surface
+        .sections
+        .iter()
+        .find(|s| s.name == "local")
+        .unwrap();
+    let items = &local.nodes[0].children[0].children;
+    let order = items
+        .iter()
+        .map(|n| n.entity.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        ["w1", "w2", "placed"],
+        "the ref sorts by its own position and only it is placed"
+    );
+    assert_eq!(items[2].label, "Home", "it still presents its target");
 }
 
 /// A ref the host retracts (unsets its facts) leaves its group, even after

@@ -331,6 +331,17 @@ Names that start with `.` are Andamento's own system kinds and facts
 (`presentation::system`). Conventions that producers share, such as
 `display.label` and `flotilla.project`, keep their names.
 
+**Renamed in this version.** These names replaced earlier ones, and the old
+names are no longer read, so a host still sending them silently loses host
+entity coverage:
+
+| Old | New |
+|---|---|
+| `host.entity.kind`, `host.entity.id` (tab metadata) | `.host.kind`, `.host.id` |
+| `wheelhouse.workspace` (host entity kind) | `.workspace` |
+| `andamento.workspace` (synthetic workspace kind) | `.workspace` |
+| `andamento.unplaced-workspaces` (leftover section and loop) | `.unplaced` |
+
 ### Sections, groups and references
 
 People can make their own sections and groups, holding workspaces and references
@@ -353,12 +364,17 @@ them. Wheelhouse publishes them from its window layout.
   - activating it activates the target;
   - it keeps its own identity, so one entity can have any number of refs, even
     in one group, and each keeps its own key and place;
+  - a ref's place is its own: it keeps its own `.`-prefixed facts (`.group`,
+    `.target`, `.position`) and takes none of its target's, so a ref without
+    its own `.group` isn't placed in its target's, and it sorts by its own
+    `.position`;
   - rules reach a ref only through its own `.group` and `.target`, never
     through its target's facts, so a query such as "needs attention" doesn't
     place the ghost as well;
   - a ref whose target is missing keeps only its own facts;
   - refs don't chain: a ref to a ref presents that ref as it is.
-- **`.default`**: a group with `.default` set to true covers workspaces that
+- **`.default`**: a group with `.default` set to the boolean `true` (text
+  "true" doesn't count) covers workspaces that
   nothing places. They become its children in a `.unplaced` loop after its own
   items, instead of filling the `.unplaced` section, which is then emitted
   empty. With several default groups, the first placed one (in catalog order)
