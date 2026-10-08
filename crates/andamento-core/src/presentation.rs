@@ -35,7 +35,30 @@ pub struct Section {
 }
 
 /// The synthetic section covering workspaces with no normal placement.
-pub const UNPLACED_WORKSPACES_SECTION: &str = "andamento.unplaced-workspaces";
+/// Andamento's own system kinds and facts start with `.`; conventions that
+/// producers share (`display.label`, `flotilla.project`) keep their names.
+pub mod system {
+    /// A host's workspace: a host entity, or the synthetic entity covering a
+    /// tab nothing places.
+    pub const WORKSPACE: &str = ".workspace";
+    /// A section someone made; placed by a `layout="section"` loop.
+    pub const SECTION: &str = ".section";
+    /// A group inside a section (fact `.section`), holding workspaces and
+    /// references (fact `.group`).
+    pub const GROUP: &str = ".group";
+    /// A reference (ghost): presents its `.target` entity.
+    pub const REF: &str = ".ref";
+    pub const TARGET: &str = ".target";
+    /// Marks the group that covers tabs nothing else places.
+    pub const DEFAULT: &str = ".default";
+    /// Tab metadata naming the host entity published for that workspace.
+    pub const HOST_KIND: &str = ".host.kind";
+    pub const HOST_ID: &str = ".host.id";
+    /// The section covering tabs nothing places, when no default group does.
+    pub const UNPLACED: &str = ".unplaced";
+}
+
+pub const UNPLACED_WORKSPACES_SECTION: &str = system::UNPLACED;
 
 impl Section {
     /// The workspace fallback is emitted even when empty so hosts can anchor
@@ -104,6 +127,22 @@ impl Content {
 
 // Inspection and coverage both traverse collapsed descendants. The callback can
 // stop early for lookup, without allocating an intermediate list of nodes.
+/// The first placement of `entity`, depth first.
+fn find_node_mut<'a>(
+    nodes: &'a mut [PlacementNode],
+    entity: &EntityRef,
+) -> Option<&'a mut PlacementNode> {
+    for node in nodes {
+        if &node.entity == entity {
+            return Some(node);
+        }
+        if let Some(found) = find_node_mut(&mut node.children, entity) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 fn visit_nodes<'a, B>(
     nodes: &'a [PlacementNode],
     visit: &mut impl FnMut(&'a PlacementNode) -> ControlFlow<B>,
@@ -145,10 +184,15 @@ impl SurfaceSnapshot {
     /// details and placements resolve; others use a synthetic workspace entity,
     /// as does every tab after the first sharing one host entity, keeping each
     /// covered tab's key distinct.
+    ///
+    /// When a default group (`.default`) is placed, uncovered tabs become its
+    /// children instead, in a `.unplaced` loop after its own items, and the
+    /// fallback section is emitted empty.
     pub(crate) fn cover_workspaces(
         &mut self,
         workspaces: &[crate::state::ControllerTab],
         host_entities: &BTreeMap<u64, EntityRef>,
+        default_group: Option<&EntityRef>,
     ) {
         let mut covered = std::collections::BTreeSet::new();
         for section in &self.sections {
@@ -170,7 +214,7 @@ impl SurfaceSnapshot {
                 .filter(|host| hosts_used.insert((*host).clone()))
                 .cloned()
                 .unwrap_or_else(|| EntityRef {
-                    kind: "andamento.workspace".into(),
+                    kind: system::WORKSPACE.into(),
                     id: workspace.tab_id.to_string(),
                 });
             let key = PlacementKey(vec![crate::PlacementSegment {
@@ -203,6 +247,23 @@ impl SurfaceSnapshot {
                 collapsed: false,
                 children: Vec::new(),
             });
+        }
+        if let Some(group) = default_group {
+            for section in &mut self.sections {
+                if let Some(parent) = find_node_mut(&mut section.nodes, group) {
+                    for mut node in std::mem::take(&mut nodes) {
+                        let mut segments = parent.key.0.clone();
+                        segments.push(crate::PlacementSegment {
+                            loop_name: UNPLACED_WORKSPACES_SECTION.into(),
+                            entity: node.entity.clone(),
+                        });
+                        node.key = PlacementKey(segments);
+                        node.loop_key = node.key.loop_key(&section.name).unwrap();
+                        parent.children.push(node);
+                    }
+                    break;
+                }
+            }
         }
         self.sections.push(Section {
             name: UNPLACED_WORKSPACES_SECTION.into(),

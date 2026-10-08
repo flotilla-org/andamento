@@ -233,7 +233,7 @@ impl Sidebar {
             paths: &mut BTreeMap<u64, BTreeSet<EntityRef>>,
         ) {
             for node in nodes {
-                let subject = node.entity.kind != "andamento.workspace";
+                let subject = node.entity.kind != crate::presentation::system::WORKSPACE;
                 if subject {
                     ancestors.push(node.entity.clone());
                 }
@@ -421,7 +421,8 @@ impl Sidebar {
                     .surface
                     .node(&key)
                     .ok_or("unknown placement")?;
-                let entity = node.entity.clone();
+                // A reference activates what it presents.
+                let entity = self.state.presented_entity(&node.entity);
                 if let Some(url) = self.state.subject_url(&entity) {
                     return Ok(vec![HostEffect::OpenUrl { url }]);
                 }
