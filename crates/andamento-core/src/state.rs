@@ -2889,7 +2889,13 @@ impl ControllerState {
                 let resolved_action_target = metadata_entry_text(&values, KEY_ACTION_TARGET)
                     .map(str::to_owned)
                     .or(entity_target);
-                (resolved_action_target.as_deref() == Some(action_target)).then_some(tab.position)
+                // A tab's host entity is live there too (live_presentation_states),
+                // so activating it focuses the tab.
+                let host_target =
+                    host_entity_ref_from_entries(&values).map(|entity| entity.action_target());
+                (resolved_action_target.as_deref() == Some(action_target)
+                    || host_target.as_deref() == Some(action_target))
+                .then_some(tab.position)
             })
             .or_else(|| {
                 let entities = self.catalog_entities();

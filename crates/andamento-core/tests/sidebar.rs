@@ -2384,6 +2384,24 @@ fn a_tab_with_a_subject_and_a_host_entity_makes_both_live() {
             .expect("placed");
         assert_eq!(node.state, live, "{wanted:?} is live for the tab");
     }
+    // Either one focuses the tab, rather than falling back to Inspect.
+    for wanted in [subject, local] {
+        let effects = sidebar
+            .dispatch(Action::Activate {
+                entity: wanted.clone(),
+            })
+            .unwrap();
+        assert!(
+            matches!(
+                effects[..],
+                [HostEffect::Focus {
+                    workspace_id: 42,
+                    ..
+                }]
+            ),
+            "{wanted:?} focuses its tab: {effects:?}"
+        );
+    }
 }
 
 const LOCAL_SECTIONS_CONFIG: &str = r#"
