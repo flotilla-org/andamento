@@ -68,6 +68,13 @@ const LATENT_MATERIALIZER_PRECEDENCE: i64 = 1_000;
 
 type TabSeedMetadata = HashMap<u64, BTreeMap<String, MetadataEntry>>;
 
+/// Per tab: its subject, and the host entity the host published for it.
+#[derive(Debug, Default)]
+pub(crate) struct WorkspaceIdentities {
+    pub subjects: BTreeMap<u64, EntityRef>,
+    pub hosts: BTreeMap<u64, EntityRef>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControllerTab {
     pub tab_id: u64,
@@ -1532,25 +1539,27 @@ impl ControllerState {
         use crate::presentation::PresentationState;
         let live = &evaluation.live;
         // Selection belongs to the workspace subject, not shared action targets.
-        let subjects = self.workspace_subjects();
-        let host_entities = self.workspace_host_entities();
+        let WorkspaceIdentities {
+            subjects,
+            hosts: host_entities,
+        } = self.workspace_identities();
         let mut exact = BTreeMap::new();
         for workspace in &self.tabs {
-            // A host entity's rows are live for its tab, as a subject's are.
-            for owner in [
+            // A tab's subject and its host entity (distinct entities) are each
+            // live for it; selection follows the tab.
+            for entity in [
                 subjects.get(&workspace.tab_id),
                 host_entities.get(&workspace.tab_id),
             ]
             .into_iter()
             .flatten()
             {
-                let subject = owner;
                 // Prefer the selected workspace; otherwise preserve inventory order.
                 let state = PresentationState::Live {
                     workspace_id: workspace.tab_id,
                     selected: workspace.active,
                 };
-                let existing = exact.entry(subject.clone()).or_insert(state.clone());
+                let existing = exact.entry(entity.clone()).or_insert(state.clone());
                 if workspace.active {
                     *existing = state;
                 }
@@ -2475,31 +2484,29 @@ impl ControllerState {
         changed
     }
 
-    /// Each tab's host entity (`host.entity.kind`/`id` tab metadata), if any.
-    pub(crate) fn workspace_host_entities(&self) -> BTreeMap<u64, EntityRef> {
+    /// Each tab's subject (`entity.kind`/`id`) and host entity
+    /// (`host.entity.kind`/`id`), from one metadata resolution per tab.
+    pub(crate) fn workspace_identities(&self) -> WorkspaceIdentities {
+        let _phase = crate::profile::span("workspace-subjects");
         let seeds = self.tab_seed_metadata_entries();
-        self.tabs
-            .iter()
-            .filter_map(|tab| {
-                let (values, _, _) = self.resolve_target_metadata(
-                    &EntityId::Tab(tab.tab_id),
-                    seeds.get(&tab.tab_id).cloned().unwrap_or_default(),
-                );
-                host_entity_ref_from_entries(&values).map(|entity| (tab.tab_id, entity))
-            })
-            .collect()
+        let mut identities = WorkspaceIdentities::default();
+        for tab in &self.tabs {
+            let (values, _, _) = self.resolve_target_metadata(
+                &EntityId::Tab(tab.tab_id),
+                seeds.get(&tab.tab_id).cloned().unwrap_or_default(),
+            );
+            if let Some(subject) = entity_ref_from_entries(&values) {
+                identities.subjects.insert(tab.tab_id, subject);
+            }
+            if let Some(host) = host_entity_ref_from_entries(&values) {
+                identities.hosts.insert(tab.tab_id, host);
+            }
+        }
+        identities
     }
 
     pub(crate) fn workspace_subjects(&self) -> BTreeMap<u64, EntityRef> {
-        let _phase = crate::profile::span("workspace-subjects");
-        let seeds = self.tab_seed_metadata_entries();
-        self.tabs
-            .iter()
-            .filter_map(|tab| {
-                self.tab_entity_ref(tab.tab_id, &seeds)
-                    .map(|subject| (tab.tab_id, subject))
-            })
-            .collect()
+        self.workspace_identities().subjects
     }
 
     fn show_finished(&self) -> bool {

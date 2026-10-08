@@ -142,7 +142,9 @@ impl SurfaceSnapshot {
     /// The section is emitted even when empty: hosts anchor workspace creation
     /// to its header, which must stay reachable with no unplaced workspaces.
     /// A workspace with a host entity is covered under that entity, so its
-    /// details and placements resolve; others use a synthetic workspace entity.
+    /// details and placements resolve; others use a synthetic workspace entity,
+    /// as does every tab after the first sharing one host entity, keeping each
+    /// covered tab's key distinct.
     pub(crate) fn cover_workspaces(
         &mut self,
         workspaces: &[crate::state::ControllerTab],
@@ -158,12 +160,14 @@ impl SurfaceSnapshot {
             });
         }
         let mut nodes = Vec::new();
+        let mut hosts_used = std::collections::BTreeSet::new();
         for workspace in workspaces {
             if !covered.insert(workspace.tab_id) {
                 continue;
             }
             let entity = host_entities
                 .get(&workspace.tab_id)
+                .filter(|host| hosts_used.insert((*host).clone()))
                 .cloned()
                 .unwrap_or_else(|| EntityRef {
                     kind: "andamento.workspace".into(),

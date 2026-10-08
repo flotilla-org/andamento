@@ -297,6 +297,13 @@ Fallback keys use workspace IDs, never display names, and use the reserved
 Renaming or selecting a workspace preserves its key. Provider removal, filtering,
 and multiple workspaces sharing one entity must not hide inventory entries.
 
+Native, HTML and terminal snapshot consumers activate rows with
+`Action::ActivatePlacement`. Live placements focus their exact observed workspace;
+other placements use the normal entity activation path. The C ABI exposes this
+through the existing snapshot-owned activate action, with no ABI layout change.
+Direct `Action::Activate` remains entity-oriented. Hovering or taking a snapshot
+never materializes a workspace.
+
 ### Host entities
 
 A host can give one of its workspaces an entity of its own: it publishes the
@@ -312,13 +319,10 @@ local workspaces, as `wheelhouse.workspace` entities.
   than a synthetic `andamento.workspace`, so its details resolve.
 - It is not the tab's subject: closing the tab retains no path and marks nothing
   ended. The host retracts the entity's facts when the workspace goes away.
-
-Native, HTML and terminal snapshot consumers activate rows with
-`Action::ActivatePlacement`. Live placements focus their exact observed workspace;
-other placements use the normal entity activation path. The C ABI exposes this
-through the existing snapshot-owned activate action, with no ABI layout change.
-Direct `Action::Activate` remains entity-oriented. Hovering or taking a snapshot
-never materializes a workspace.
+- A tab needs both keys; with only one it keeps the synthetic entity. When
+  several tabs name one host entity, the first is covered under it and the
+  rest under synthetic entities, so every tab keeps a distinct key.
+- A tab may have both a subject and a host entity; each is live for it.
 
 ## Managed primary content
 
