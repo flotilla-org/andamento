@@ -141,7 +141,15 @@ impl SurfaceSnapshot {
     /// its normal placement. Collapsed descendants still have a reachable path.
     /// The section is emitted even when empty: hosts anchor workspace creation
     /// to its header, which must stay reachable with no unplaced workspaces.
-    pub(crate) fn cover_workspaces(&mut self, workspaces: &[crate::state::ControllerTab]) {
+    /// A workspace with a host entity is covered under that entity, so its
+    /// details and placements resolve; others use a synthetic workspace entity,
+    /// as does every tab after the first sharing one host entity, keeping each
+    /// covered tab's key distinct.
+    pub(crate) fn cover_workspaces(
+        &mut self,
+        workspaces: &[crate::state::ControllerTab],
+        host_entities: &BTreeMap<u64, EntityRef>,
+    ) {
         let mut covered = std::collections::BTreeSet::new();
         for section in &self.sections {
             let _: ControlFlow<()> = visit_nodes(&section.nodes, &mut |node| {
@@ -152,14 +160,19 @@ impl SurfaceSnapshot {
             });
         }
         let mut nodes = Vec::new();
+        let mut hosts_used = std::collections::BTreeSet::new();
         for workspace in workspaces {
             if !covered.insert(workspace.tab_id) {
                 continue;
             }
-            let entity = EntityRef {
-                kind: "andamento.workspace".into(),
-                id: workspace.tab_id.to_string(),
-            };
+            let entity = host_entities
+                .get(&workspace.tab_id)
+                .filter(|host| hosts_used.insert((*host).clone()))
+                .cloned()
+                .unwrap_or_else(|| EntityRef {
+                    kind: "andamento.workspace".into(),
+                    id: workspace.tab_id.to_string(),
+                });
             let key = PlacementKey(vec![crate::PlacementSegment {
                 loop_name: UNPLACED_WORKSPACES_SECTION.into(),
                 entity: entity.clone(),

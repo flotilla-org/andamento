@@ -2193,3 +2193,203 @@ fn placement_loop_keys_round_trip_through_their_host_text() {
         assert_eq!(andamento_core::PlacementLoopKey::decode(bad), None, "{bad}");
     }
 }
+
+const HOST_ENTITY_CONFIG: &str = r#"
+region "tree" root-template="tree/title" form="compact" placement="tree"
+template "tree/title" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Projects"
+}
+placement "tree" {
+  for "project" kind="project" {
+    apply-template
+  }
+}
+template "project/line" {
+  field "label" key="display.label"
+  for "workspace" kind="wheelhouse.workspace" {
+    match "flotilla.project" of="project"
+    apply-template
+  }
+}
+template "wheelhouse.workspace/line" {
+  field "label" key="display.label"
+}
+"#;
+
+fn tab_patch(tab: u64, facts: &[(&str, MetadataValue)]) -> MetadataPatch {
+    let mut patch = patch(entity("unused", "unused"), facts);
+    patch.target = MetadataTarget::Tab(tab);
+    patch
+}
+
+fn project_children(sidebar: &Sidebar) -> Vec<andamento_core::presentation::PlacementNode> {
+    sidebar
+        .snapshot()
+        .surface
+        .sections
+        .into_iter()
+        .find(|s| s.name == "tree")
+        .and_then(|s| s.nodes.into_iter().next())
+        .map(|project| project.children)
+        .unwrap_or_default()
+}
+
+/// A host entity (`host.entity.*` tab metadata) is an entity the host owns
+/// for one workspace: placed like any entity and live for its tab, covering
+/// it, but not its subject, so closing the tab retains nothing.
+#[test]
+fn host_entities_place_and_cover_their_workspace_without_subject_lifecycle() {
+    let mut sidebar = Sidebar::new(HOST_ENTITY_CONFIG).unwrap();
+    let local = entity("wheelhouse.workspace", "w1");
+    sidebar.apply(
+        100,
+        [
+            patch(
+                entity("project", "p"),
+                &[
+                    ("flotilla.project", text("p")),
+                    ("display.label", text("Project P")),
+                ],
+            ),
+            patch(
+                local.clone(),
+                &[
+                    ("display.label", text("Local")),
+                    ("flotilla.project", text("p")),
+                ],
+            ),
+            tab_patch(
+                42,
+                &[
+                    ("host.entity.kind", text("wheelhouse.workspace")),
+                    ("host.entity.id", text("w1")),
+                ],
+            ),
+        ],
+    );
+    sidebar.observe(vec![workspace()], vec![]);
+    let live = andamento_core::presentation::PresentationState::Live {
+        workspace_id: 42,
+        selected: true,
+    };
+    // Homed with its project: placed there, live, and so not left over.
+    let children = project_children(&sidebar);
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].entity, local);
+    assert_eq!(children[0].state, live);
+    assert!(fallback(&sidebar).is_empty());
+    let card = sidebar
+        .detail_card(&local)
+        .expect("a host entity has details");
+    assert_eq!(card.workspace_id, Some(42));
+
+    // Unhomed: left over, under its own identity rather than a synthetic one.
+    let mut unhome = patch(local.clone(), &[]);
+    unhome.unset = vec!["flotilla.project".into()];
+    sidebar.apply(200, [unhome]);
+    assert!(project_children(&sidebar).is_empty());
+    let nodes = fallback(&sidebar);
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].entity, local);
+    assert_eq!(nodes[0].state, live);
+
+    // Closed: nothing is retained for it, as it was never the tab's subject.
+    sidebar.observe(vec![], vec![]);
+    assert!(fallback(&sidebar).is_empty());
+    let snapshot = sidebar.snapshot();
+    assert!(snapshot
+        .surface
+        .sections
+        .iter()
+        .all(|s| s.nodes.iter().all(|n| n.entity != local)));
+}
+
+/// Two tabs naming one host entity both stay covered, under distinct keys;
+/// a tab with only half of the host entity metadata keeps the synthetic one.
+#[test]
+fn shared_or_incomplete_host_entities_keep_every_workspace_covered() {
+    let mut sidebar = Sidebar::new(HOST_ENTITY_CONFIG).unwrap();
+    let local = entity("wheelhouse.workspace", "w1");
+    let host = [
+        ("host.entity.kind", text("wheelhouse.workspace")),
+        ("host.entity.id", text("w1")),
+    ];
+    sidebar.apply(
+        100,
+        [
+            patch(local.clone(), &[("display.label", text("Local"))]),
+            tab_patch(42, &host),
+            tab_patch(43, &host),
+            tab_patch(44, &[("host.entity.kind", text("wheelhouse.workspace"))]),
+        ],
+    );
+    let mut second = workspace();
+    second.id = 43;
+    second.position = 1;
+    second.selected = false;
+    let mut third = second.clone();
+    third.id = 44;
+    third.position = 2;
+    sidebar.observe(vec![workspace(), second, third], vec![]);
+    let nodes = fallback(&sidebar);
+    assert_eq!(nodes.len(), 3);
+    let keys = nodes
+        .iter()
+        .map(|n| n.key.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(keys.len(), 3, "each covered tab keeps a distinct key");
+    assert_eq!(nodes.iter().filter(|n| n.entity == local).count(), 1);
+    assert!(nodes
+        .iter()
+        .any(|n| n.entity == entity("andamento.workspace", "44")));
+}
+
+/// A tab may have both a subject and a host entity: each is live for it.
+#[test]
+fn a_tab_with_a_subject_and_a_host_entity_makes_both_live() {
+    let mut sidebar = Sidebar::new(HOST_ENTITY_CONFIG).unwrap();
+    let subject = entity("wheelhouse.workspace", "subject");
+    let local = entity("wheelhouse.workspace", "w1");
+    let homed = |label: &str| {
+        [
+            ("display.label", text(label)),
+            ("flotilla.project", text("p")),
+        ]
+    };
+    sidebar.apply(
+        100,
+        [
+            patch(
+                entity("project", "p"),
+                &[
+                    ("flotilla.project", text("p")),
+                    ("display.label", text("Project P")),
+                ],
+            ),
+            patch(subject.clone(), &homed("Subject")),
+            patch(local.clone(), &homed("Local")),
+            tab_patch(
+                42,
+                &[
+                    ("entity.kind", text("wheelhouse.workspace")),
+                    ("entity.id", text("subject")),
+                    ("host.entity.kind", text("wheelhouse.workspace")),
+                    ("host.entity.id", text("w1")),
+                ],
+            ),
+        ],
+    );
+    sidebar.observe(vec![workspace()], vec![]);
+    let live = andamento_core::presentation::PresentationState::Live {
+        workspace_id: 42,
+        selected: true,
+    };
+    let children = project_children(&sidebar);
+    for wanted in [&subject, &local] {
+        let node = children
+            .iter()
+            .find(|n| &n.entity == wanted)
+            .expect("placed");
+        assert_eq!(node.state, live, "{wanted:?} is live for the tab");
+    }
+}
