@@ -145,6 +145,8 @@ ABI 3 host can have supplied and which it reads through the ABI 3 getters.
 | JSON `{"kind":"tab","value":7}` | JSON `{"kind":"tab","value":"<uuid>"}` |
 | none | `andamento_apply_workspace` (scalar facts on a workspace) |
 | none | `andamento_workspace_register`/`forget`/`registered` |
+| none | `andamento_record_names`/`generation`/`export`/`import`, `andamento_bytes_free` |
+| none | `andamento_set_display_variable`, `andamento_local_set`/`remove` |
 
 JSON tab targets accept a number, a hyphenated UUID or 32 hex digits, in either
 case; embedded IDs serialize as numbers, as before. The replay `Request`s carry
@@ -154,10 +156,71 @@ Users create workspaces that never go through MATERIALIZE. The host declares
 them with `andamento_workspace_register` (`Sidebar::register_workspace`); a
 successful MATERIALIZE completion registers its workspace too. Registration is
 independent of topology: either may come first, and closing a workspace does
-not forget it. Forget a workspace the host deleted rather than kept. In this
-step registration changes neither the snapshot nor its revision; saved
-workspace records ([#142](https://github.com/flotilla-org/andamento/issues/142))
-build on it.
+not forget it. Forget a workspace the host deleted rather than kept.
+Registration changes neither the snapshot nor its revision; it gives the
+workspace a record (see Named records below).
+
+### Named records (ABI 3)
+
+Andamento owns the sidebar's logical state (wheelhouse ADR 0012) and exports it
+as **named records**: KDL text inside a versioned envelope. The host maps each
+record to a file and decides when to write it; Andamento never touches the
+filesystem, so this works in Zellij's sandbox and under WASM too.
+
+| Record | Holds |
+|---|---|
+| `dashboard` | display variables that persist, row (placement) collapse, sibling orders, placement variables set on rows, and local sections, groups and refs |
+| `workspace/<id>` | for each registered workspace: its subject, and the subject and the entities on its path as last seen |
+
+Scroll offset, display variables declared `persist=false`, and section collapse
+are presentation state and are not recorded.
+
+```kdl
+andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=1 {
+    subject "vessel" "v"
+    retained "project" "p" label="Project P" status="retained" last-seen=100 {
+        fact "flotilla.project" "p"
+    }
+    retained "vessel" "v" label="Vee" status="ended" last-seen=150 {
+        fact "flotilla.project" "p"
+    }
+}
+```
+
+A dashboard record lists `display "<name>" <value>`, `collapsed { at … }`,
+`order "<region>" "<binding>" { parent { at … }; entity "<kind>" "<id>" … }`,
+`variable "<name>" "<value>" { at … }` and `local "<kind>" "<id>" { fact … }`
+nodes; a placement key is its `at "<loop>" "<kind>" "<id>"` segments, outermost
+first. `records.rs` has a full sample.
+
+- **Retained and ended subjects** are recorded with the least needed to draw
+  their rows with no facts: identity, label, whether they ended, when they were
+  last seen (the host's `now_ms` when their facts last appeared, changed or went
+  away), and the facts placement reads (loop matches, `in` lists, order keys and
+  visibility rules), so a row is drawn on its path, not in the fallback section.
+  The full fact set is not saved: producers republish it. The provider part of
+  an entity's identity is added with subscriptions (state model step 5).
+- A workspace's record follows it while it is open; a closed workspace keeps
+  the record it had, and forgetting the workspace drops it.
+- **Generations.** `record_generation` (`andamento_record_generation`) is
+  nonzero and changes when, and only when, the record's content changes;
+  generations are never reused. Write a record when its generation differs from
+  the one last written, and read the generation again after importing.
+- **Import** (`import_record`, `andamento_record_import`) may come before the
+  first observation and needs no facts. Importing a workspace record registers
+  the workspace and binds it to its subject, as a materialize completion does;
+  when the workspace is observed, its recorded path is drawn until a producer
+  publishes the subject again. A record that doesn't parse, has another
+  version, or names another record is rejected without changing anything.
+- **Unknown nodes** directly inside the envelope are kept and exported again,
+  after the known ones. Unknown properties or children of known nodes are not
+  kept, so a later version adds nodes, or raises the version.
+
+Display variables are set directly with `set_display_variable`
+(`andamento_set_display_variable`): no snapshot action, so restoring one needs
+no retry. Local sections, groups and refs are set and removed with
+`set_local`/`remove_local` (`andamento_local_set`/`remove`), which replace an
+entity's facts in full; see Sections, groups and references.
 
 ### Update and ownership rules
 
@@ -390,8 +453,13 @@ entity coverage:
 ### Sections, groups and references
 
 People can make their own sections and groups, holding workspaces and references
-to other entities. A host publishes them as entities, from wherever it keeps
-them. Wheelhouse publishes them from its window layout.
+to other entities. They are Dashboard state, so Andamento owns them: the host
+sets and removes them with `set_local`/`remove_local`
+(`andamento_local_set`/`andamento_local_remove`), and they are kept in the
+`dashboard` record. A host may still publish them as facts, as Wheelhouse does
+from its window layout until it moves; both are placed the same way. Local
+workspaces' `.workspace` host entities stay host-published: they follow the
+host's open workspaces.
 
 - **`.section`**: a section someone made. A placement loop marked
   `layout="section"` makes each iteration its own section. Docking frontends

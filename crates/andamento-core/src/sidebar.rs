@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     host::PaneObservation,
     presentation::SurfaceSnapshot,
+    records::{DashboardRecord, RecordName, SubjectRecord, WorkspaceRecord},
     state::{ControllerState, ControllerTab, EntityActivation},
     EntityRef, MaterializeLatentRequest, MetadataPatch, NodeKey, PlacementKey, RailUiAction,
     WorkspaceId,
@@ -78,6 +79,21 @@ pub enum Request {
     },
     ForgetWorkspace {
         workspace_id: WorkspaceId,
+    },
+    SetDisplayVariable {
+        name: String,
+        value: Option<crate::DisplayVariableValue>,
+    },
+    SetLocal {
+        entity: EntityRef,
+        facts: BTreeMap<String, crate::MetadataValue>,
+    },
+    RemoveLocal {
+        entity: EntityRef,
+    },
+    ImportRecord {
+        name: String,
+        kdl: String,
     },
     Snapshot,
 }
@@ -150,8 +166,35 @@ pub struct Sidebar {
     retained_paths: BTreeMap<WorkspaceId, BTreeSet<EntityRef>>,
     retained_paths_revision: Option<u64>,
     registered: BTreeSet<WorkspaceId>,
+    /// Each registered workspace's record (`workspace/<id>`).
+    workspaces: BTreeMap<WorkspaceId, WorkspaceEntry>,
+    /// Local sections, groups and refs, with their facts.
+    local: BTreeMap<EntityRef, BTreeMap<String, crate::MetadataValue>>,
+    /// Nodes of the imported dashboard record this version doesn't know.
+    dashboard_unknown: Vec<String>,
+    /// Each record's generation and the text it was assigned for.
+    generations: BTreeMap<RecordName, (u64, String)>,
+    last_generation: u64,
+    /// Fact keys the configured placement reads, kept in subject records.
+    placement_keys: BTreeSet<String>,
     pub managed: crate::managed::ManagedContent,
 }
+
+#[derive(Default)]
+struct WorkspaceEntry {
+    record: WorkspaceRecord,
+    /// Retained subjects a producer published at the last refresh.
+    observed: BTreeSet<EntityRef>,
+}
+
+/// The kinds of local entities: sections, groups and refs people make, which
+/// Andamento owns and keeps in the dashboard record.
+pub const LOCAL_KINDS: [&str; 3] = [
+    crate::presentation::system::SECTION,
+    crate::presentation::system::GROUP,
+    crate::presentation::system::REF,
+];
+const SOURCE_LOCAL: &str = "andamento-local";
 
 impl Sidebar {
     pub fn handle(&mut self, request: Request) -> Result<Response, String> {
@@ -191,6 +234,22 @@ impl Sidebar {
                 self.forget_workspace(workspace_id);
                 vec![]
             }
+            Request::SetDisplayVariable { name, value } => {
+                self.set_display_variable(&name, value)?;
+                vec![]
+            }
+            Request::SetLocal { entity, facts } => {
+                self.set_local(entity, facts)?;
+                vec![]
+            }
+            Request::RemoveLocal { entity } => {
+                self.remove_local(&entity);
+                vec![]
+            }
+            Request::ImportRecord { name, kdl } => {
+                self.import_record(&name, &kdl)?;
+                vec![]
+            }
             Request::Snapshot => vec![],
         };
         Ok(Response {
@@ -212,6 +271,7 @@ impl Sidebar {
         self.state.set_template_catalog(Some(
             crate::template_config::TemplateConfigCatalog::with_bundled_defaults(templates),
         ));
+        self.placement_keys = self.state.placement_fact_keys();
         self.invalidate();
         Ok(())
     }
@@ -240,6 +300,7 @@ impl Sidebar {
             self.managed.publish(self.state.managed_content());
             self.invalidate();
         }
+        self.refresh_workspace_records();
     }
 
     fn retain_workspace_paths(&mut self, subjects: &BTreeMap<WorkspaceId, EntityRef>) -> bool {
@@ -286,11 +347,46 @@ impl Sidebar {
                 self.retained_paths_revision = Some(self.revision);
             }
         }
+        // A workspace with no path yet, still open for the subject its record
+        // names, takes its recorded path: so a restored row is drawn where it
+        // was before any producer publishes it. A path from a snapshot
+        // replaces it.
+        for (id, entry) in &self.workspaces {
+            let record = &entry.record;
+            if record.subject.is_some()
+                && subjects.get(id) == record.subject.as_ref()
+                && !record.retained.is_empty()
+                && !self.retained_paths.contains_key(id)
+            {
+                self.retained_paths
+                    .insert(*id, record.retained.keys().cloned().collect());
+            }
+        }
         self.retained_paths.retain(|id, subjects_on_path| {
             subjects.contains_key(id) && !retained_workspace_expired(&self.state, subjects_on_path)
         });
-        self.state
-            .retain_workspace_paths(self.retained_paths.values().flatten().cloned().collect())
+        let saved = self.saved_subjects();
+        self.state.retain_workspace_paths(
+            self.retained_paths.values().flatten().cloned().collect(),
+            &saved,
+        )
+    }
+
+    /// Subjects recorded by every workspace record. Where records disagree, an
+    /// end wins, then the latest sighting.
+    fn saved_subjects(&self) -> BTreeMap<EntityRef, SubjectRecord> {
+        let mut saved = BTreeMap::<EntityRef, SubjectRecord>::new();
+        for entry in self.workspaces.values() {
+            for (entity, record) in &entry.record.retained {
+                let newer = saved.get(entity).is_none_or(|current| {
+                    (record.ended, record.last_seen_ms) > (current.ended, current.last_seen_ms)
+                });
+                if newer {
+                    saved.insert(entity.clone(), record.clone());
+                }
+            }
+        }
+        saved
     }
 
     /// Full host topology, including selected workspace. Closing a workspace
@@ -331,6 +427,7 @@ impl Sidebar {
             self.managed.publish(self.state.managed_content());
             self.invalidate();
         }
+        self.refresh_workspace_records();
     }
 
     /// Replace terminal directory observations after supplying workspace topology.
@@ -348,15 +445,20 @@ impl Sidebar {
     /// completion registers its workspace too. The host supplies the ID;
     /// Andamento never generates one. Registration is independent of topology:
     /// either may come first, and closing a workspace does not forget it.
-    /// It does not change the snapshot or its revision. Returns whether the ID
-    /// was new.
+    /// It does not change the snapshot or its revision. The workspace gets a
+    /// record, `workspace/<id>`. Returns whether the ID was new.
     pub fn register_workspace(&mut self, id: WorkspaceId) -> bool {
-        self.registered.insert(id)
+        self.workspaces.entry(id).or_default();
+        let new = self.registered.insert(id);
+        self.refresh_workspace_records();
+        new
     }
 
     /// The host deleted the workspace rather than keeping it. Returns whether
     /// it was registered.
     pub fn forget_workspace(&mut self, id: WorkspaceId) -> bool {
+        self.workspaces.remove(&id);
+        self.generations.remove(&RecordName::Workspace(id));
         self.registered.remove(&id)
     }
 
@@ -371,6 +473,298 @@ impl Sidebar {
         self.state
             .apply_rail_ui_action(RailUiAction::SetSiblingOrder { loop_key, order });
         self.invalidate();
+    }
+
+    /// Set a declared display variable, or return it to its default with
+    /// None, without a snapshot action. Unknown variables and values the
+    /// declaration doesn't allow are rejected.
+    pub fn set_display_variable(
+        &mut self,
+        name: &str,
+        value: Option<crate::DisplayVariableValue>,
+    ) -> Result<(), String> {
+        if self.state.set_display_variable(name, value)? {
+            self.invalidate();
+        }
+        Ok(())
+    }
+
+    /// Set a local section, group or ref (see [`LOCAL_KINDS`]), replacing all
+    /// its facts. Andamento owns local entities and keeps them in the
+    /// dashboard record. Lists of text and group paths are not allowed.
+    pub fn set_local(
+        &mut self,
+        entity: EntityRef,
+        facts: BTreeMap<String, crate::MetadataValue>,
+    ) -> Result<(), String> {
+        if !LOCAL_KINDS.contains(&entity.kind.as_str()) {
+            return Err(format!(
+                "local entities are {}, not {:?}",
+                LOCAL_KINDS.join(", "),
+                entity.kind
+            ));
+        }
+        if entity.id.is_empty() {
+            return Err("a local entity needs an ID".into());
+        }
+        if facts.keys().any(String::is_empty) {
+            return Err("a fact needs a key".into());
+        }
+        if !facts.values().all(crate::records::recordable) {
+            return Err("local facts are text, booleans, integers or entity references".into());
+        }
+        let patch = self.local_patch(&entity, Some(&facts));
+        self.local.insert(entity, facts);
+        self.apply_local([patch]);
+        Ok(())
+    }
+
+    /// Remove a local entity. Returns whether there was one.
+    pub fn remove_local(&mut self, entity: &EntityRef) -> bool {
+        if !self.local.contains_key(entity) {
+            return false;
+        }
+        let patch = self.local_patch(entity, None);
+        self.local.remove(entity);
+        self.apply_local([patch]);
+        true
+    }
+
+    /// Local entities, with their facts.
+    pub fn local_entities(&self) -> &BTreeMap<EntityRef, BTreeMap<String, crate::MetadataValue>> {
+        &self.local
+    }
+
+    /// The patch that makes the catalog hold `facts` for a local entity,
+    /// unsetting the keys it held before.
+    fn local_patch(
+        &self,
+        entity: &EntityRef,
+        facts: Option<&BTreeMap<String, crate::MetadataValue>>,
+    ) -> MetadataPatch {
+        let empty = BTreeMap::new();
+        let facts = facts.unwrap_or(&empty);
+        MetadataPatch {
+            target: crate::MetadataTarget::Entity(entity.clone()),
+            source_id: SOURCE_LOCAL.into(),
+            set: facts
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        crate::MetadataValueUpdate {
+                            value: value.clone(),
+                            ttl_ms: None,
+                            precedence: None,
+                            ordinal: None,
+                        },
+                    )
+                })
+                .collect(),
+            unset: self
+                .local
+                .get(entity)
+                .into_iter()
+                .flat_map(BTreeMap::keys)
+                .filter(|key| !facts.contains_key(*key))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Apply local patches at the current time, without advancing it.
+    fn apply_local(&mut self, patches: impl IntoIterator<Item = MetadataPatch>) {
+        let mut changed = false;
+        for patch in patches {
+            changed |= self.state.apply_metadata_patch(patch);
+        }
+        self.maintain(changed);
+    }
+
+    /// The upkeep `apply` does after its patches, for changes that come from
+    /// elsewhere (local entities, imported records). It never advances time.
+    fn maintain(&mut self, mut changed: bool) {
+        let subjects = self.state.workspace_subjects();
+        changed |= self.retain_workspace_paths(&subjects);
+        changed |= self.state.refresh_retained_subjects();
+        changed |= self
+            .state
+            .mark_ended_workspace_paths(&self.retained_paths, &subjects);
+        if changed {
+            self.managed.publish(self.state.managed_content());
+            self.invalidate();
+        }
+        self.refresh_workspace_records();
+    }
+
+    /// Bring the records of open, registered workspaces up to date: their
+    /// subject and its path, as retained now. A closed workspace keeps the
+    /// record it had when it closed.
+    fn refresh_workspace_records(&mut self) {
+        let open = self
+            .state
+            .workspaces()
+            .iter()
+            .map(|tab| tab.tab_id)
+            .filter(|id| self.workspaces.contains_key(id))
+            .collect::<Vec<_>>();
+        if open.is_empty() {
+            return;
+        }
+        let subjects = self.state.workspace_subjects();
+        let keys = &self.placement_keys;
+        let now = self.state.evaluation_time();
+        for id in open {
+            let path = self.retained_paths.get(&id).cloned().unwrap_or_default();
+            let entry = self
+                .workspaces
+                .get_mut(&id)
+                .expect("open IDs are registered");
+            let mut retained = BTreeMap::new();
+            let mut observed = BTreeSet::new();
+            for entity in path {
+                let Some((mut record, seen)) = self.state.retained_subject_record(&entity, keys)
+                else {
+                    if let Some(old) = entry.record.retained.get(&entity) {
+                        retained.insert(entity, old.clone());
+                    }
+                    continue;
+                };
+                let old = entry.record.retained.get(&entity);
+                // Last seen moves when the subject appears, changes or goes
+                // away, not on every heartbeat.
+                record.last_seen_ms = match old {
+                    Some(old)
+                        if (&old.label, old.ended, &old.facts)
+                            == (&record.label, record.ended, &record.facts)
+                            && entry.observed.contains(&entity) == seen =>
+                    {
+                        old.last_seen_ms
+                    }
+                    _ => Some(now),
+                };
+                if seen {
+                    observed.insert(entity.clone());
+                }
+                retained.insert(entity, record);
+            }
+            entry.record.subject = subjects.get(&id).cloned();
+            entry.record.retained = retained;
+            entry.observed = observed;
+        }
+    }
+
+    /// Names of the records Andamento holds: `dashboard`, and
+    /// `workspace/<id>` for each registered workspace.
+    pub fn record_names(&self) -> Vec<String> {
+        std::iter::once(RecordName::Dashboard)
+            .chain(self.registered.iter().copied().map(RecordName::Workspace))
+            .map(|name| name.to_string())
+            .collect()
+    }
+
+    fn record_text(&self, name: RecordName) -> Result<String, String> {
+        match name {
+            RecordName::Dashboard => Ok(DashboardRecord {
+                display: self.state.recorded_display_variables(),
+                collapsed: self.state.collapsed_placements().clone(),
+                orders: self.state.sibling_orders().clone(),
+                variables: self.state.placement_variables(),
+                local: self.local.clone(),
+                unknown: self.dashboard_unknown.clone(),
+            }
+            .encode()),
+            RecordName::Workspace(id) => self
+                .workspaces
+                .get(&id)
+                .map(|entry| entry.record.encode(id))
+                .ok_or_else(|| format!("no record {name}: the workspace is not registered")),
+        }
+    }
+
+    /// Export a record as KDL in a versioned envelope.
+    pub fn export_record(&mut self, name: &str) -> Result<String, String> {
+        let name = RecordName::parse(name)?;
+        let text = self.record_text(name)?;
+        self.note_generation(name, &text);
+        Ok(text)
+    }
+
+    /// A record's generation, nonzero. It changes when, and only when, the
+    /// record's content changes; generations are never reused, even by a
+    /// workspace forgotten and registered again. Write the record when it
+    /// differs from the one last written.
+    pub fn record_generation(&mut self, name: &str) -> Result<u64, String> {
+        let name = RecordName::parse(name)?;
+        let text = self.record_text(name)?;
+        Ok(self.note_generation(name, &text))
+    }
+
+    fn note_generation(&mut self, name: RecordName, text: &str) -> u64 {
+        if let Some((generation, known)) = self.generations.get(&name) {
+            if known == text {
+                return *generation;
+            }
+        }
+        self.last_generation += 1;
+        self.generations
+            .insert(name, (self.last_generation, text.to_owned()));
+        self.last_generation
+    }
+
+    /// Import a record exported by this or an earlier Andamento. It may come
+    /// before the first observation and needs no facts. A record that doesn't
+    /// parse, has another version, or names another record is rejected
+    /// without changing anything. Importing `workspace/<id>` registers the
+    /// workspace and binds it to its recorded subject.
+    pub fn import_record(&mut self, name: &str, kdl: &str) -> Result<(), String> {
+        match RecordName::parse(name)? {
+            RecordName::Dashboard => {
+                let record = DashboardRecord::decode(kdl)?;
+                if let Some(entity) = record
+                    .local
+                    .keys()
+                    .find(|entity| !LOCAL_KINDS.contains(&entity.kind.as_str()))
+                {
+                    return Err(format!("{:?} is not a local entity kind", entity.kind));
+                }
+                self.state.restore_dashboard(&record);
+                let mut patches = Vec::new();
+                for entity in self.local.keys() {
+                    if !record.local.contains_key(entity) {
+                        patches.push(self.local_patch(entity, None));
+                    }
+                }
+                for (entity, facts) in &record.local {
+                    if self.local.get(entity) != Some(facts) {
+                        patches.push(self.local_patch(entity, Some(facts)));
+                    }
+                }
+                self.local = record.local;
+                self.dashboard_unknown = record.unknown;
+                for patch in patches {
+                    self.state.apply_metadata_patch(patch);
+                }
+                self.maintain(true);
+            }
+            RecordName::Workspace(id) => {
+                let record = WorkspaceRecord::decode(kdl, id)?;
+                self.state
+                    .bind_workspace_subject(id, record.subject.as_ref());
+                self.registered.insert(id);
+                // A path from this session is no longer the recorded one.
+                self.retained_paths.remove(&id);
+                self.workspaces.insert(
+                    id,
+                    WorkspaceEntry {
+                        record,
+                        observed: BTreeSet::new(),
+                    },
+                );
+                self.maintain(true);
+            }
+        }
+        Ok(())
     }
 
     /// Conservative revision of presentation and action dependencies. Unchanged
@@ -615,6 +1009,7 @@ impl Sidebar {
             Pending::Materialize(entity, request) => match result {
                 Ok(Some(id)) => {
                     self.registered.insert(id);
+                    self.workspaces.entry(id).or_default();
                     self.state
                         .bind_materializing_subject(&request, id, entity.clone());
                     // If observation arrived before acknowledgement, claim now.
@@ -633,6 +1028,7 @@ impl Sidebar {
             },
         }
         self.invalidate();
+        self.refresh_workspace_records();
         true
     }
 

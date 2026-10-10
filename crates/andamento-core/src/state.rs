@@ -2418,7 +2418,14 @@ impl ControllerState {
 
     /// Keep just the subjects and ancestors needed by open workspace paths.
     /// This is presentation history, never input to producer fact arbitration.
-    pub(crate) fn retain_workspace_paths(&mut self, subjects: BTreeSet<EntityRef>) -> bool {
+    ///
+    /// `saved` are subjects recorded in workspace records: one with no facts
+    /// is retained from its record, and one recorded as ended stays ended.
+    pub(crate) fn retain_workspace_paths(
+        &mut self,
+        subjects: BTreeSet<EntityRef>,
+        saved: &BTreeMap<EntityRef, crate::records::SubjectRecord>,
+    ) -> bool {
         let before = (self.retained_subjects.len(), self.ended_subjects.len());
         let mut changed = false;
         self.retained_subjects
@@ -2431,7 +2438,13 @@ impl ControllerState {
                 let (values, sources) = self
                     .metadata
                     .resolved_entries_with_sources_for(&target, self.now());
-                if !values.is_empty() {
+                if values.is_empty() {
+                    if let Some(record) = saved.get(&subject) {
+                        changed = true;
+                        self.retained_subjects
+                            .insert(subject.clone(), saved_catalog_entity(subject, record));
+                    }
+                } else {
                     changed = true;
                     self.retained_subjects.insert(
                         subject.clone(),
@@ -2443,6 +2456,11 @@ impl ControllerState {
                         },
                     );
                 }
+            }
+        }
+        for (subject, record) in saved {
+            if record.ended && self.retained_subjects.contains_key(subject) {
+                changed |= self.ended_subjects.insert(subject.clone());
             }
         }
         changed |= before != (self.retained_subjects.len(), self.ended_subjects.len());
@@ -2509,6 +2527,213 @@ impl ControllerState {
             }
         }
         changed
+    }
+
+    /// The record of a retained subject: its label, whether it ended, the
+    /// recordable facts among `keys`, and whether a producer publishes it now.
+    pub(crate) fn retained_subject_record(
+        &self,
+        subject: &EntityRef,
+        keys: &BTreeSet<String>,
+    ) -> Option<(crate::records::SubjectRecord, bool)> {
+        let retained = self.retained_subjects.get(subject)?;
+        let observed = !self
+            .metadata
+            .resolved_entries_for(&EntityId::Entity(subject.clone()), self.now())
+            .is_empty();
+        let record = crate::records::SubjectRecord {
+            label: metadata_entry_text(&retained.values, KEY_DISPLAY_LABEL).map(str::to_owned),
+            ended: self.ended_subjects.contains(subject),
+            last_seen_ms: None,
+            facts: retained
+                .values
+                .iter()
+                .filter(|(key, entry)| {
+                    keys.contains(*key)
+                        && *key != KEY_DISPLAY_LABEL
+                        && crate::records::recordable(&entry.value)
+                })
+                .map(|(key, entry)| (key.clone(), entry.value.clone()))
+                .collect(),
+        };
+        Some((record, observed))
+    }
+
+    /// Bind a workspace to its subject, as a materialize completion does, or
+    /// remove that binding.
+    pub(crate) fn bind_workspace_subject(
+        &mut self,
+        tab_id: WorkspaceId,
+        subject: Option<&EntityRef>,
+    ) -> bool {
+        let keys = [KEY_ENTITY_KIND.to_owned(), KEY_ENTITY_ID.to_owned()];
+        let patch = match subject {
+            Some(subject) => crate::MetadataPatch {
+                target: crate::MetadataTarget::Tab(tab_id),
+                source_id: SOURCE_LATENT_MATERIALIZER.to_owned(),
+                set: keys
+                    .into_iter()
+                    .zip([subject.kind.clone(), subject.id.clone()])
+                    .map(|(key, value)| {
+                        (
+                            key,
+                            crate::MetadataValueUpdate {
+                                value: MetadataValue::Text(value),
+                                ttl_ms: None,
+                                precedence: Some(LATENT_MATERIALIZER_PRECEDENCE),
+                                ordinal: None,
+                            },
+                        )
+                    })
+                    .collect(),
+                unset: vec![],
+            },
+            None => crate::MetadataPatch {
+                target: crate::MetadataTarget::Tab(tab_id),
+                source_id: SOURCE_LATENT_MATERIALIZER.to_owned(),
+                set: BTreeMap::new(),
+                unset: keys.to_vec(),
+            },
+        };
+        self.apply_metadata_patch(patch)
+    }
+
+    /// Fact keys placement reads, for subject records.
+    pub(crate) fn placement_fact_keys(&self) -> BTreeSet<String> {
+        self.template_catalog
+            .as_ref()
+            .map(|catalog| catalog.placement_fact_keys())
+            .unwrap_or_default()
+    }
+
+    /// Display variables a record keeps: declared ones that persist, and any
+    /// that no configuration declares (restored before their declaration).
+    pub(crate) fn recorded_display_variables(&self) -> BTreeMap<String, DisplayVariableValue> {
+        let declared = self
+            .template_catalog
+            .as_ref()
+            .map(|catalog| catalog.display_variables())
+            .unwrap_or_default();
+        self.rail_ui
+            .variables
+            .iter()
+            .filter(|(name, _)| {
+                declared
+                    .iter()
+                    .find(|variable| &variable.name == *name)
+                    .is_none_or(|variable| variable.persist)
+            })
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect()
+    }
+
+    pub(crate) fn collapsed_placements(&self) -> &BTreeSet<PlacementKey> {
+        &self.rail_ui.collapsed_placements
+    }
+
+    pub(crate) fn sibling_orders(&self) -> &BTreeMap<crate::PlacementLoopKey, Vec<EntityRef>> {
+        &self.rail_ui.sibling_orders
+    }
+
+    pub(crate) fn placement_variables(&self) -> BTreeMap<PlacementKey, BTreeMap<String, String>> {
+        self.node_variable_overrides
+            .iter()
+            .filter_map(|(node, values)| match node {
+                NodeKey::Placement(key) => Some((key.clone(), values.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Replace the Dashboard's display variables, collapse, sibling orders and
+    /// placement variables with a record's. Variables that persist and the
+    /// record leaves out return to their defaults; others keep their values.
+    pub(crate) fn restore_dashboard(&mut self, record: &crate::records::DashboardRecord) {
+        let declared = self
+            .template_catalog
+            .as_ref()
+            .map(|catalog| catalog.display_variables().to_vec())
+            .unwrap_or_default();
+        self.rail_ui.variables.retain(|name, _| {
+            declared
+                .iter()
+                .any(|variable| &variable.name == name && !variable.persist)
+        });
+        for variable in &declared {
+            self.rail_ui
+                .variables
+                .entry(variable.name.clone())
+                .or_insert_with(|| variable.default.clone());
+        }
+        self.rail_ui.variables.extend(
+            record
+                .display
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone())),
+        );
+        self.rail_ui.collapsed_placements = record.collapsed.clone();
+        self.rail_ui.sibling_orders = record.orders.clone();
+        self.node_variable_overrides
+            .retain(|node, _| !matches!(node, NodeKey::Placement(_)));
+        for (key, values) in &record.variables {
+            if !values.is_empty() {
+                self.node_variable_overrides
+                    .insert(NodeKey::Placement(key.clone()), values.clone());
+            }
+        }
+        self.bump_rail_ui_revision();
+    }
+
+    /// Set a declared display variable directly, or return it to its default
+    /// with None. Returns whether the value changed.
+    pub fn set_display_variable(
+        &mut self,
+        name: &str,
+        value: Option<DisplayVariableValue>,
+    ) -> Result<bool, String> {
+        let definition = self
+            .template_catalog
+            .as_ref()
+            .and_then(|catalog| {
+                catalog
+                    .display_variables()
+                    .iter()
+                    .find(|variable| variable.name == name)
+            })
+            .ok_or("unknown display variable")?;
+        let value = match value {
+            None => definition.default.clone(),
+            Some(value) => {
+                let valid = match (&definition.variable_type, &value) {
+                    (
+                        crate::template_config::TemplateVariableType::Bool,
+                        DisplayVariableValue::Bool(_),
+                    ) => true,
+                    (
+                        crate::template_config::TemplateVariableType::Enum { values },
+                        DisplayVariableValue::Enum(value),
+                    ) => values.contains(value),
+                    _ => false,
+                };
+                if !valid {
+                    return Err("value is not allowed by the display variable".into());
+                }
+                value
+            }
+        };
+        if self.rail_ui.variables.get(name) == Some(&value) {
+            return Ok(false);
+        }
+        self.rail_ui.variables.insert(name.to_owned(), value);
+        self.bump_rail_ui_revision();
+        Ok(true)
+    }
+
+    fn bump_rail_ui_revision(&mut self) {
+        self.rail_ui.revision = RailUiRevision {
+            sequence: self.rail_ui.revision.sequence.saturating_add(1),
+            writer_client_id: self.rail_ui_writer_client_id,
+        };
     }
 
     /// Each tab's subject (`entity.kind`/`id`) and host entity
@@ -3472,6 +3697,43 @@ fn host_entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Op
         kind: metadata_entry_text(entries, KEY_HOST_ENTITY_KIND)?.to_owned(),
         id: metadata_entry_text(entries, KEY_HOST_ENTITY_ID)?.to_owned(),
     })
+}
+
+/// A retained subject drawn from its record alone: its label and the facts
+/// placement reads, dated when it was last seen.
+fn saved_catalog_entity(
+    entity: EntityRef,
+    record: &crate::records::SubjectRecord,
+) -> CatalogEntity {
+    const SOURCE_RECORD: &str = "andamento-record";
+    let updated_at = record.last_seen_ms.unwrap_or_default();
+    let entry = |value| MetadataEntry {
+        value,
+        updated_at,
+        ttl_ms: None,
+        precedence: 0,
+        ordinal: 0,
+    };
+    let mut values: BTreeMap<_, _> = record
+        .facts
+        .iter()
+        .map(|(key, value)| (key.clone(), entry(value.clone())))
+        .collect();
+    if let Some(label) = &record.label {
+        values.insert(
+            KEY_DISPLAY_LABEL.to_owned(),
+            entry(MetadataValue::Text(label.clone())),
+        );
+    }
+    CatalogEntity {
+        entity,
+        sources: values
+            .keys()
+            .map(|key| (key.clone(), SOURCE_RECORD.to_owned()))
+            .collect(),
+        values,
+        ordinal: 0,
+    }
 }
 
 fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {

@@ -214,6 +214,60 @@ typedef struct { AndamentoText kind, id; } AndamentoEntity;
  * else first); entities that no longer match are ignored. Empty list clears. */
 uint32_t andamento_set_sibling_order(Andamento *, AndamentoText loop_key,
     const AndamentoEntity *entities, size_t count, char **error);
+
+/* ABI 3: named records. Andamento owns the sidebar's logical state and exports
+ * it as records, KDL text in a versioned envelope; the host decides where each
+ * is stored and when it is written. Andamento never touches the filesystem.
+ *   "dashboard": persisted display variables, row collapse, sibling orders,
+ *     placement variables, and local sections, groups and refs.
+ *   "workspace/<id>": one per registered workspace (<id> as Andamento prints
+ *     it: decimal for an embedded ID, else a hyphenated UUID): its subject, and
+ *     the subject and its path as last seen (label, ended or retained, when
+ *     last seen, and the facts placement reads), so its row is drawn where it
+ *     was with no facts. A closed workspace keeps its record; forgetting the
+ *     workspace drops it.
+ * names: the record names, one per line (no trailing newline).
+ * generation: nonzero; it changes when, and only when, the record's content
+ *   changes, and is never reused. Write a record when its generation differs
+ *   from the one last written; read it again after an import. Returns 0 with an
+ *   error for an unknown record.
+ * export: the record's KDL text (UTF-8).
+ * import: may come before the first observe and needs no facts. Importing
+ *   "workspace/<id>" registers the workspace and binds it to its subject. A
+ *   record that doesn't parse, has another version or names another record is
+ *   rejected without change. Nodes this version doesn't know, directly inside
+ *   the envelope, are kept and exported again.
+ * Bytes out-parameters are written only on success; free them with
+ * andamento_bytes_free (a zeroed AndamentoBytes is harmless). */
+typedef struct { uint8_t *data; size_t len; } AndamentoBytes;
+uint32_t andamento_record_names(Andamento *, AndamentoBytes *out, char **error_out);
+uint64_t andamento_record_generation(Andamento *, AndamentoText name, char **error_out);
+uint32_t andamento_record_export(Andamento *, AndamentoText name, AndamentoBytes *out, char **error_out);
+uint32_t andamento_record_import(Andamento *, AndamentoText name, AndamentoText kdl, char **error_out);
+void andamento_bytes_free(AndamentoBytes);
+/* ABI 3: set a declared display variable without a snapshot action, so a host
+ * can restore one before the first snapshot. value is "true"/"false" for a
+ * boolean, or one of an enum's values; empty returns it to its default.
+ * Unknown variables and values the declaration doesn't allow are rejected. */
+uint32_t andamento_set_display_variable(Andamento *, AndamentoText name, AndamentoText value, char **error_out);
+/* ABI 3: local entities: the sections (".section"), groups (".group") and refs
+ * (".ref", pins) people make. Andamento owns them and keeps them in the
+ * dashboard record; set replaces all of an entity's facts, and remove deletes
+ * it (removing an unknown one is harmless). They are placed exactly as the
+ * same entities published as facts. A fact's kind is TEXT, BOOL (integer 0/1)
+ * or INTEGER as for AndamentoFact, or ENTITY, one entity reference (such as
+ * .section, .group or .target). Keys must be unique. */
+enum { ANDAMENTO_FACT_ENTITY = 4 };
+typedef struct {
+    AndamentoText key;
+    uint32_t kind;
+    AndamentoText text;
+    int64_t integer;
+    AndamentoEntity entity;
+} AndamentoLocalFact;
+uint32_t andamento_local_set(Andamento *, AndamentoText kind, AndamentoText id,
+    const AndamentoLocalFact *facts, size_t count, char **error_out);
+uint32_t andamento_local_remove(Andamento *, AndamentoText kind, AndamentoText id, char **error_out);
 typedef struct {
     AndamentoEntity entity;
     AndamentoText label;
