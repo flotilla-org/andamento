@@ -235,8 +235,100 @@ static void check_region_hints(void) {
     andamento_snapshot_release(s); andamento_destroy(h);
 }
 
+/* ABI 3: host-supplied 128-bit Workspace IDs through every call that takes or
+ * returns one. ABI 2 fields read 0 for wide IDs and the embedded n otherwise. */
+static AndamentoWorkspaceId uuid(uint8_t tail) {
+    AndamentoWorkspaceId id = {{0x01, 0x92, 0x0a, 0x6b, 0x7c, 0x3d, 0x7e, 0x4f,
+                                0x8a, 0x1b, 0x2c, 0x3d, 0x4e, 0x5f, 0x6a, tail}};
+    return id;
+}
+static int same(AndamentoWorkspaceId a, AndamentoWorkspaceId b) {
+    return memcmp(a.bytes, b.bytes, sizeof a.bytes) == 0;
+}
+static size_t node_index(AndamentoSnapshot *s, const char *kind) {
+    AndamentoNode n;
+    for (size_t i = 0; i < andamento_snapshot_node_count(s); ++i) {
+        assert(andamento_snapshot_node(s, i, &n));
+        if (!n.is_section && eq(n.entity_kind, kind)) return i;
+    }
+    assert(!"missing node"); return ANDAMENTO_NONE;
+}
+static void check_abi3(const char *config_path, const char *patches_path) {
+    char *config = read_file(config_path);
+    Andamento *h = andamento_create((const uint8_t *)config, strlen(config), &error);
+    assert(h && !error); free(config);
+    char *patches = read_file(patches_path);
+    for (char *line = strtok(patches, "\n"); line; line = strtok(NULL, "\n"))
+        ok(andamento_apply_patch_json(h, 100, (AndamentoText){(uint8_t *)line, strlen(line)}, &error));
+    free(patches);
+    AndamentoWorkspaceId notes = uuid(0x7b), worker = uuid(0x7c), out;
+    AndamentoWorkspaceId legacy = {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 42}};
+    /* A workspace the user made: registered by the host, named by both patch forms. */
+    ok(andamento_workspace_register(h, notes, &error));
+    assert(andamento_workspace_registered(h, notes, &error) && !error);
+    AndamentoWorkspace3 ws[] = {{notes, 0, T("Notes"), 1}, {legacy, 1, T("Legacy"), 0}};
+    ok(andamento_observe3(h, ws, 2, NULL, 0, &error));
+    ok(andamento_apply_patch_json(h, 100, T("{\"target\":{\"kind\":\"tab\",\"value\":\"01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b\"},"
+        "\"source_id\":\"host\",\"set\":{\".host.kind\":{\"value\":{\"type\":\"text\",\"value\":\".workspace\"}}}}"), &error));
+    AndamentoFact host_id = {.key=T(".host.id"), .kind=ANDAMENTO_FACT_TEXT, .text=T("notes")};
+    ok(andamento_apply_workspace(h, 100, notes, T("host"), &host_id, 1, &error));
+    AndamentoSnapshot *s = snapshot(h);
+    size_t i = node_index(s, ".workspace");
+    AndamentoNode n; assert(andamento_snapshot_node(s, i, &n));
+    assert(eq(n.entity_id, "notes") && n.state == ANDAMENTO_LIVE && n.workspace_id == 0);
+    assert(andamento_snapshot_node_workspace(s, i, &out) && same(out, notes));
+    assert(!andamento_snapshot_node_workspace(s, 0, &out)); /* a section */
+    /* The embedded ID is ABI 2's 42. */
+    assert(andamento_snapshot_node(s, i + 1, &n) && eq(n.entity_id, "42") && n.workspace_id == 42);
+    /* Materialize, completing with the ID the host generated. */
+    ok(andamento_dispatch(h, s, find_node(s, "vessel").activate, &error));
+    andamento_snapshot_release(s);
+    AndamentoEffects *effects = take(h);
+    AndamentoEffect e; assert(andamento_effects_get(effects, 0, &e) && e.kind == ANDAMENTO_EFFECT_MATERIALIZE);
+    assert(!andamento_effects_workspace(effects, 0, &out));
+    ok(andamento_complete3(h, e.request_id, ANDAMENTO_COMPLETE_MATERIALIZE, worker, T(""), &error));
+    andamento_effects_release(effects);
+    assert(andamento_workspace_registered(h, worker, &error));
+    AndamentoWorkspace3 all[] = {{notes, 0, T("Notes"), 0}, {worker, 1, T("Worker"), 1}};
+    AndamentoPane3 pane = {worker, 7, ANDAMENTO_PANE_TERMINAL, 1, 1, 0};
+    ok(andamento_observe3(h, all, 2, &pane, 1, &error));
+    AndamentoWorkdir3 dir = {worker, T("/repo")};
+    ok(andamento_observe_workdirs3(h, &dir, 1, &error));
+    s = andamento_snapshot_acquire_details(h, &error); assert(s && !error);
+    i = node_index(s, "vessel");
+    assert(andamento_snapshot_node(s, i, &n) && n.state == ANDAMENTO_LIVE && n.workspace_id == 0);
+    assert(andamento_snapshot_node_workspace(s, i, &out) && same(out, worker));
+    size_t detail = andamento_snapshot_detail_find(s, T("vessel"), T("v"));
+    AndamentoDetail card; assert(andamento_snapshot_detail(s, detail, &card));
+    assert(card.has_workspace && card.workspace_id == 0);
+    assert(andamento_snapshot_detail_workspace(s, detail, &out) && same(out, worker));
+    ok(andamento_dispatch(h, s, n.activate, &error));
+    andamento_snapshot_release(s);
+    effects = take(h);
+    assert(andamento_effects_get(effects, 0, &e) && e.kind == ANDAMENTO_EFFECT_FOCUS && e.workspace_id == 0);
+    assert(andamento_effects_workspace(effects, 0, &out) && same(out, worker));
+    ok(andamento_complete3(h, e.request_id, ANDAMENTO_COMPLETE_FOCUS, out, T(""), &error));
+    andamento_effects_release(effects);
+    /* Content reconciliation is keyed by the same IDs. */
+    AndamentoContentPlan *plan = andamento_content_plan3(h, worker, T("vessel"), T("v"),
+        T("target"), T("printf hello"), 0, T(""), &error);
+    assert(plan && !error);
+    AndamentoContent content; assert(andamento_content_get(plan, &content));
+    assert(!andamento_content_valid3(h, worker, content.token + 1, &error) && !error);
+    assert(!andamento_content_complete3(h, worker, content.token + 1, 1, &error) && !error);
+    ok(andamento_content_retry3(h, worker, &error));
+    andamento_content_release(plan);
+    /* Deleting a workspace forgets it; forgetting twice is harmless. */
+    ok(andamento_workspace_forget(h, notes, &error));
+    ok(andamento_workspace_forget(h, notes, &error));
+    assert(!andamento_workspace_registered(h, notes, &error) && !error);
+    andamento_destroy(h);
+}
+
 int main(int argc, char **argv) {
-    assert(argc == 4 && andamento_abi_version() == 2);
+    /* Everything but check_abi3 is an ABI 2 host, which ABI 3 keeps working. */
+    assert(argc == 4 && andamento_abi_version() == 3);
+    check_abi3(argv[1], argv[2]);
     check_typed_details(argv[3]);
     check_workdirs();
     check_sibling_order();

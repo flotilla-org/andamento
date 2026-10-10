@@ -27,6 +27,7 @@ use std::path::Path;
 
 use crate::host::PaneObservation;
 use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataStore};
+use crate::WorkspaceId;
 use crate::{
     ControllerBootstrapSnapshot, ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables,
     EffectiveVariableValue, EntityRef, LatentMaterializationState, LatentTab, MetadataControls,
@@ -66,18 +67,18 @@ const NORMAL_CWD_PRECEDENCE: i64 = 0;
 // Opener-owned identity must outrank observational discovery such as cwd-derived associations.
 const LATENT_MATERIALIZER_PRECEDENCE: i64 = 1_000;
 
-type TabSeedMetadata = HashMap<u64, BTreeMap<String, MetadataEntry>>;
+type TabSeedMetadata = HashMap<WorkspaceId, BTreeMap<String, MetadataEntry>>;
 
 /// Per tab: its subject, and the host entity the host published for it.
 #[derive(Debug, Default)]
 pub(crate) struct WorkspaceIdentities {
-    pub subjects: BTreeMap<u64, EntityRef>,
-    pub hosts: BTreeMap<u64, EntityRef>,
+    pub subjects: BTreeMap<WorkspaceId, EntityRef>,
+    pub hosts: BTreeMap<WorkspaceId, EntityRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControllerTab {
-    pub tab_id: u64,
+    pub tab_id: WorkspaceId,
     pub position: usize,
     pub name: String,
     pub active: bool,
@@ -267,7 +268,7 @@ struct StoredPaneStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ControllerPane {
     pane_id: PaneTarget,
-    tab_id: u64,
+    tab_id: WorkspaceId,
     is_selectable: bool,
     is_focused: bool,
     ordinal: i64,
@@ -280,7 +281,7 @@ struct ControllerPane {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingLatentMaterialization {
     request: crate::MaterializeLatentRequest,
-    tab_id: Option<u64>,
+    tab_id: Option<WorkspaceId>,
     subject: Option<EntityRef>,
 }
 
@@ -433,14 +434,14 @@ pub struct ControllerClientState {
     pub client_id: u16,
     pub inspected_node: Option<NodeKey>,
     pub metadata_controls: MetadataControls,
-    pub tabs: BTreeMap<u64, ControllerClientTabState>,
+    pub tabs: BTreeMap<WorkspaceId, ControllerClientTabState>,
     pub background_rails: BTreeMap<u32, PluginRegistration>,
     pub background_config_editors: BTreeMap<u32, PluginRegistration>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControllerClientTabState {
-    pub tab_id: u64,
+    pub tab_id: WorkspaceId,
     pub rails: BTreeMap<u32, PluginRegistration>,
     pub config_editors: BTreeMap<u32, PluginRegistration>,
 }
@@ -454,15 +455,15 @@ pub struct PluginRegistration {
 #[derive(Debug)]
 pub struct ControllerState {
     tabs: Vec<ControllerTab>,
-    observed_workdirs: BTreeMap<u64, BTreeSet<String>>,
-    pane_to_tab: HashMap<PaneTarget, u64>,
+    observed_workdirs: BTreeMap<WorkspaceId, BTreeSet<String>>,
+    pane_to_tab: HashMap<PaneTarget, WorkspaceId>,
     panes: HashMap<PaneTarget, ControllerPane>,
     metadata: MetadataStore,
     retained_subjects: BTreeMap<EntityRef, CatalogEntity>,
     // Authoritative ends are terminal for an identity; new attempts use new IDs.
     ended_subjects: BTreeSet<EntityRef>,
     pane_statuses: HashMap<PaneTarget, StoredPaneStatus>,
-    pinned_tabs: HashSet<u64>,
+    pinned_tabs: HashSet<WorkspaceId>,
     clients: BTreeMap<u16, ControllerClientState>,
     sort_mode: SortMode,
     rail_config: RailConfig,
@@ -470,7 +471,7 @@ pub struct ControllerState {
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
     clock_ms: Option<u64>,
-    pending_materialized_tab_names: HashMap<u64, String>,
+    pending_materialized_tab_names: HashMap<WorkspaceId, String>,
     pending_latent_materializations: BTreeMap<String, PendingLatentMaterialization>,
     rail_ui: ControllerRailUiState,
     rail_ui_writer_client_id: u16,
@@ -574,7 +575,7 @@ impl ControllerState {
             });
         }
         next_tabs.sort_by_key(|tab| tab.position);
-        let live_tab_ids: HashSet<u64> = next_tabs.iter().map(|tab| tab.tab_id).collect();
+        let live_tab_ids: HashSet<WorkspaceId> = next_tabs.iter().map(|tab| tab.tab_id).collect();
         pending_materialized_tab_names.retain(|tab_id, _| live_tab_ids.contains(tab_id));
         self.pending_materialized_tab_names = pending_materialized_tab_names;
         self.observed_workdirs
@@ -645,7 +646,7 @@ impl ControllerState {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn set_pane_tab(&mut self, pane_id: PaneTarget, tab_id: u64) {
+    pub fn set_pane_tab(&mut self, pane_id: PaneTarget, tab_id: WorkspaceId) {
         self.pane_to_tab.insert(pane_id, tab_id);
     }
 
@@ -653,7 +654,7 @@ impl ControllerState {
     pub fn set_test_pane(
         &mut self,
         pane_id: PaneTarget,
-        tab_id: u64,
+        tab_id: WorkspaceId,
         is_selectable: bool,
         is_focused: bool,
         ordinal: i64,
@@ -731,7 +732,7 @@ impl ControllerState {
     }
 
     #[allow(dead_code)]
-    pub fn toggle_pin(&mut self, tab_id: u64) {
+    pub fn toggle_pin(&mut self, tab_id: WorkspaceId) {
         if self.pinned_tabs.contains(&tab_id) {
             self.pinned_tabs.remove(&tab_id);
         } else {
@@ -1000,7 +1001,7 @@ impl ControllerState {
     }
 
     pub fn bootstrap_snapshot(&self) -> ControllerBootstrapSnapshot {
-        let mut pinned_tabs: Vec<u64> = self.pinned_tabs.iter().copied().collect();
+        let mut pinned_tabs: Vec<WorkspaceId> = self.pinned_tabs.iter().copied().collect();
         pinned_tabs.sort_unstable();
         let mut pane_statuses: Vec<SetPaneStatus> = self
             .pane_statuses
@@ -1104,7 +1105,8 @@ impl ControllerState {
                     .entry(tab_id)
                     .or_insert_with(|| ControllerClientTabState {
                         tab_id,
-                        ..Default::default()
+                        rails: BTreeMap::new(),
+                        config_editors: BTreeMap::new(),
                     });
                 tab.rails
                     .insert(registration.identity.plugin_id, registration);
@@ -1240,7 +1242,7 @@ impl ControllerState {
     pub fn config_editor_target_for_client_tab(
         &self,
         client_id: u16,
-        tab_id: u64,
+        tab_id: WorkspaceId,
     ) -> Option<RendererHello> {
         let client = self.clients.get(&client_id)?;
         if let Some(target) = client
@@ -1280,7 +1282,8 @@ impl ControllerState {
                     .entry(tab_id)
                     .or_insert_with(|| ControllerClientTabState {
                         tab_id,
-                        ..Default::default()
+                        rails: BTreeMap::new(),
+                        config_editors: BTreeMap::new(),
                     });
                 tab.config_editors
                     .insert(registration.identity.plugin_id, registration);
@@ -1650,7 +1653,7 @@ impl ControllerState {
 
     fn alias_presentation_state(
         state: &crate::presentation::PresentationState,
-        subjects: &BTreeMap<u64, EntityRef>,
+        subjects: &BTreeMap<WorkspaceId, EntityRef>,
         entity: &EntityRef,
     ) -> crate::presentation::PresentationState {
         use crate::presentation::PresentationState;
@@ -1674,7 +1677,7 @@ impl ControllerState {
     fn live_presentation_states(
         &self,
         catalog: &CatalogEvaluation,
-        tab_metadata: &BTreeMap<u64, &BTreeMap<String, MetadataEntry>>,
+        tab_metadata: &BTreeMap<WorkspaceId, &BTreeMap<String, MetadataEntry>>,
     ) -> BTreeMap<String, crate::presentation::PresentationState> {
         use crate::presentation::PresentationState;
         let mut live = BTreeMap::new();
@@ -2491,8 +2494,8 @@ impl ControllerState {
 
     pub(crate) fn mark_ended_workspace_paths(
         &mut self,
-        paths: &BTreeMap<u64, BTreeSet<EntityRef>>,
-        subjects: &BTreeMap<u64, EntityRef>,
+        paths: &BTreeMap<WorkspaceId, BTreeSet<EntityRef>>,
+        subjects: &BTreeMap<WorkspaceId, EntityRef>,
     ) -> bool {
         let mut changed = false;
         for (id, path) in paths {
@@ -2529,7 +2532,7 @@ impl ControllerState {
         identities
     }
 
-    pub(crate) fn workspace_subjects(&self) -> BTreeMap<u64, EntityRef> {
+    pub(crate) fn workspace_subjects(&self) -> BTreeMap<WorkspaceId, EntityRef> {
         self.workspace_identities().subjects
     }
 
@@ -2706,8 +2709,8 @@ impl ControllerState {
 
     /// Full replacement of ephemeral host directory observations. These are
     /// presentation associations, never metadata identities or managed bindings.
-    pub fn observe_workdirs(&mut self, workdirs: Vec<(u64, String)>) -> bool {
-        let mut next = BTreeMap::<u64, BTreeSet<String>>::new();
+    pub fn observe_workdirs(&mut self, workdirs: Vec<(WorkspaceId, String)>) -> bool {
+        let mut next = BTreeMap::<WorkspaceId, BTreeSet<String>>::new();
         for (id, cwd) in workdirs {
             if !cwd.is_empty() && self.tabs.iter().any(|tab| tab.tab_id == id) {
                 next.entry(id).or_default().insert(cwd);
@@ -2720,7 +2723,7 @@ impl ControllerState {
         true
     }
 
-    fn directory_bindings(&self, entities: &[CatalogEntity]) -> BTreeMap<EntityRef, u64> {
+    fn directory_bindings(&self, entities: &[CatalogEntity]) -> BTreeMap<EntityRef, WorkspaceId> {
         if self.observed_workdirs.is_empty() {
             return BTreeMap::new();
         }
@@ -2770,7 +2773,7 @@ impl ControllerState {
 
     fn tab_entity_ref(
         &self,
-        tab_id: u64,
+        tab_id: WorkspaceId,
         tab_seed_metadata: &TabSeedMetadata,
     ) -> Option<EntityRef> {
         let target = EntityId::Tab(tab_id);
@@ -2814,7 +2817,7 @@ impl ControllerState {
     pub fn bind_materializing_tab(
         &mut self,
         request: &crate::MaterializeLatentRequest,
-        tab_id: u64,
+        tab_id: WorkspaceId,
     ) -> bool {
         let Some(pending) = self
             .pending_latent_materializations
@@ -2834,7 +2837,7 @@ impl ControllerState {
     pub(crate) fn bind_materializing_subject(
         &mut self,
         request: &crate::MaterializeLatentRequest,
-        tab_id: u64,
+        tab_id: WorkspaceId,
         subject: EntityRef,
     ) -> bool {
         if !self.bind_materializing_tab(request, tab_id) {
@@ -3060,7 +3063,7 @@ impl ControllerState {
 
     fn apply_materialized_identity(
         &mut self,
-        tab_id: u64,
+        tab_id: WorkspaceId,
         request: &crate::MaterializeLatentRequest,
         subject: Option<EntityRef>,
     ) -> bool {
@@ -3143,7 +3146,7 @@ impl ControllerState {
         })
     }
 
-    fn tab_primary_metadata_entry(&self, tab_id: u64, key: &str) -> Option<MetadataEntry> {
+    fn tab_primary_metadata_entry(&self, tab_id: WorkspaceId, key: &str) -> Option<MetadataEntry> {
         let entries: Vec<CandidateEntry> = self
             .panes
             .values()
@@ -3253,7 +3256,10 @@ impl ControllerState {
         self.tab_seed_metadata_entries_for(&HashSet::new())
     }
 
-    fn tab_seed_metadata_entries_for(&self, directory_tab_ids: &HashSet<u64>) -> TabSeedMetadata {
+    fn tab_seed_metadata_entries_for(
+        &self,
+        directory_tab_ids: &HashSet<WorkspaceId>,
+    ) -> TabSeedMetadata {
         let cwd_entries = self
             .tabs
             .iter()
@@ -3348,7 +3354,7 @@ impl ControllerState {
         true
     }
 
-    fn status_for_tab(&self, tab_id: u64) -> Option<TabStatusSummary> {
+    fn status_for_tab(&self, tab_id: WorkspaceId) -> Option<TabStatusSummary> {
         self.pane_statuses
             .iter()
             .filter(|(pane_id, _)| self.pane_to_tab.get(pane_id) == Some(&tab_id))
@@ -3587,7 +3593,7 @@ mod tests {
 
     fn tab_info(tab_id: usize, position: usize, name: &str, active: bool) -> ControllerTab {
         ControllerTab {
-            tab_id: tab_id as u64,
+            tab_id: WorkspaceId::from(tab_id as u64),
             position,
             name: name.into(),
             active,
@@ -4442,12 +4448,18 @@ placement "identity-descending" {
     fn setting_same_pane_cwd_is_not_a_metadata_change() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             position: 0,
             name: "work".into(),
             active: true,
         }]);
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
+        state.set_test_pane(
+            PaneTarget::Terminal(10),
+            WorkspaceId::from(1),
+            true,
+            false,
+            0,
+        );
 
         assert!(state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into()));
         let receive_counter = state.receive_counter;
@@ -4460,7 +4472,7 @@ placement "identity-descending" {
     fn duplicate_metadata_patch_is_not_a_model_change() {
         let mut state = ControllerState::default();
         let patch = crate::MetadataPatch {
-            target: crate::MetadataTarget::Tab(1),
+            target: crate::MetadataTarget::Tab(WorkspaceId::from(1)),
             source_id: "watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
@@ -4484,7 +4496,7 @@ placement "identity-descending" {
     fn duplicate_ttl_metadata_patch_refreshes_without_model_change() {
         let mut state = ControllerState::default();
         let patch = crate::MetadataPatch {
-            target: crate::MetadataTarget::Tab(1),
+            target: crate::MetadataTarget::Tab(WorkspaceId::from(1)),
             source_id: "watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
@@ -4508,13 +4520,13 @@ placement "identity-descending" {
     fn unchanged_pane_manifest_is_not_a_controller_change() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             position: 0,
             name: "work".into(),
             active: true,
         }]);
         let manifest = vec![PaneObservation {
-            workspace_id: 1,
+            workspace_id: WorkspaceId::from(1),
             pane_id: PaneTarget::Terminal(10),
             is_selectable: true,
             is_focused: false,
@@ -4532,10 +4544,28 @@ placement "identity-descending" {
     #[test]
     fn cwd_refresh_only_requests_selectable_terminals_with_unknown_cwd() {
         let mut state = ControllerState::default();
-        state.set_test_pane(PaneTarget::Terminal(10), 1, true, false, 0);
-        state.set_test_pane(PaneTarget::Terminal(11), 1, true, false, 1);
-        state.set_test_pane(PaneTarget::Terminal(12), 1, false, false, 2);
-        state.set_test_pane(PaneTarget::Plugin(20), 1, true, false, 3);
+        state.set_test_pane(
+            PaneTarget::Terminal(10),
+            WorkspaceId::from(1),
+            true,
+            false,
+            0,
+        );
+        state.set_test_pane(
+            PaneTarget::Terminal(11),
+            WorkspaceId::from(1),
+            true,
+            false,
+            1,
+        );
+        state.set_test_pane(
+            PaneTarget::Terminal(12),
+            WorkspaceId::from(1),
+            false,
+            false,
+            2,
+        );
+        state.set_test_pane(PaneTarget::Plugin(20), WorkspaceId::from(1), true, false, 3);
         state.set_pane_cwd(PaneTarget::Terminal(11), "/repo/known".into());
 
         assert_eq!(state.terminal_panes_for_cwd_refresh(), vec![10]);
@@ -4545,13 +4575,13 @@ placement "identity-descending" {
     fn cwd_refresh_requests_each_pane_at_most_once() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             position: 0,
             name: "work".into(),
             active: true,
         }]);
         let manifest = vec![PaneObservation {
-            workspace_id: 1,
+            workspace_id: WorkspaceId::from(1),
             pane_id: PaneTarget::Terminal(10),
             is_selectable: true,
             is_focused: false,
@@ -4576,13 +4606,13 @@ placement "identity-descending" {
     fn resolved_tab_metadata_follows_transitive_identity_facts() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             position: 0,
             name: "repo".into(),
             active: true,
         }]);
         state.apply_metadata_patch(crate::MetadataPatch {
-            target: EntityId::Tab(1),
+            target: EntityId::Tab(WorkspaceId::from(1)),
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
@@ -4634,7 +4664,9 @@ placement "identity-descending" {
         let tab_metadata = model
             .resolved_metadata
             .iter()
-            .find(|metadata| metadata.target == crate::ResolvedMetadataTarget::Tab(1))
+            .find(|metadata| {
+                metadata.target == crate::ResolvedMetadataTarget::Tab(WorkspaceId::from(1))
+            })
             .expect("tab metadata");
 
         assert_eq!(
@@ -4687,12 +4719,12 @@ placement "identity-descending" {
     fn resolved_tab_metadata_follows_selected_cwd_identity_facts() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             position: 0,
             name: "repo".into(),
             active: true,
         }]);
-        state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
+        state.set_test_pane(PaneTarget::Terminal(1), WorkspaceId::from(1), true, true, 0);
         state.set_pane_cwd(
             PaneTarget::Terminal(1),
             "/Users/robert/dev/katzensteg".to_owned(),
@@ -4719,7 +4751,9 @@ placement "identity-descending" {
         let tab_metadata = model
             .resolved_metadata
             .iter()
-            .find(|metadata| metadata.target == crate::ResolvedMetadataTarget::Tab(1))
+            .find(|metadata| {
+                metadata.target == crate::ResolvedMetadataTarget::Tab(WorkspaceId::from(1))
+            })
             .expect("tab metadata");
 
         assert_eq!(
@@ -4745,12 +4779,12 @@ placement "identity-descending" {
         let mut state = ControllerState::default();
         state.set_rail_config(RailConfig::default());
         state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             position: 0,
             name: "repo".into(),
             active: true,
         }]);
-        state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
+        state.set_test_pane(PaneTarget::Terminal(1), WorkspaceId::from(1), true, true, 0);
         let cwd = "/Users/robert/dev/katzensteg".to_owned();
         state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
         state.apply_metadata_patch(crate::MetadataPatch {
@@ -4797,13 +4831,13 @@ placement "identity-descending" {
     fn highest_priority_status_wins_for_tab() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             position: 0,
             name: "main".into(),
             active: true,
         }]);
-        state.set_pane_tab(PaneTarget::Terminal(10), 1);
-        state.set_pane_tab(PaneTarget::Terminal(11), 1);
+        state.set_pane_tab(PaneTarget::Terminal(10), WorkspaceId::from(1));
+        state.set_pane_tab(PaneTarget::Terminal(11), WorkspaceId::from(1));
         state.set_status(SetPaneStatus {
             pane_id: PaneTarget::Terminal(10),
             priority: Priority::Info,
@@ -4831,12 +4865,12 @@ placement "identity-descending" {
     fn status_icon_is_carried_to_tab_summary() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             position: 0,
             name: "main".into(),
             active: true,
         }]);
-        state.set_pane_tab(PaneTarget::Terminal(10), 1);
+        state.set_pane_tab(PaneTarget::Terminal(10), WorkspaceId::from(1));
         let mut status = status(PaneTarget::Terminal(10), Priority::Waiting, "waiting", 10);
         status.icon = Some(StatusIcon::Builtin("waiting".to_owned()));
         state.set_status(status);
@@ -4860,7 +4894,7 @@ placement "identity-descending" {
             structure: RailStructure::BoxPerTab,
             segment_between_color: None,
         });
-        source.toggle_pin(7);
+        source.toggle_pin(WorkspaceId::from(7));
         source.set_status(status(
             PaneTarget::Terminal(10),
             Priority::Waiting,
@@ -4881,7 +4915,7 @@ placement "identity-descending" {
         let target_snapshot = target.bootstrap_snapshot();
         assert_eq!(target_snapshot.sort_mode, SortMode::PinnedFirst);
         assert_eq!(target_snapshot.config.structure, RailStructure::BoxPerTab);
-        assert_eq!(target_snapshot.pinned_tabs, vec![7]);
+        assert_eq!(target_snapshot.pinned_tabs, vec![WorkspaceId::from(7)]);
         assert_eq!(target_snapshot.pane_statuses.len(), 1);
         assert_eq!(target_snapshot.pane_statuses[0].title, "waiting");
         assert_eq!(
@@ -5000,7 +5034,7 @@ placement "identity-descending" {
         const KEY: &str = "tab.subject";
         let mut source = ControllerState::default();
         source.apply_metadata_patch(crate::MetadataPatch {
-            target: EntityId::Tab(7),
+            target: EntityId::Tab(WorkspaceId::from(7)),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 KEY.to_owned(),
@@ -5018,7 +5052,7 @@ placement "identity-descending" {
         let mut target = ControllerState::default();
         target.apply_bootstrap_snapshot(snapshot);
         target.update_tabs(vec![ControllerTab {
-            tab_id: 7,
+            tab_id: WorkspaceId::from(7),
             position: 0,
             name: "overview".into(),
             active: true,
@@ -5028,7 +5062,9 @@ placement "identity-descending" {
         let metadata = model
             .resolved_metadata
             .iter()
-            .find(|metadata| metadata.target == crate::ResolvedMetadataTarget::Tab(7))
+            .find(|metadata| {
+                metadata.target == crate::ResolvedMetadataTarget::Tab(WorkspaceId::from(7))
+            })
             .expect("tab metadata");
 
         assert_eq!(
@@ -5053,7 +5089,7 @@ placement "identity-descending" {
         let mut target = ControllerState::default();
         target.apply_bootstrap_snapshot(source.bootstrap_snapshot());
         target.observe_workspaces(vec![tab_info(1, 0, "main", true)]);
-        target.set_pane_tab(PaneTarget::Terminal(10), 1);
+        target.set_pane_tab(PaneTarget::Terminal(10), WorkspaceId::from(1));
 
         let model = target.view_model();
         assert_eq!(model.tabs[0].status.as_ref().unwrap().title, "waiting");
@@ -5063,13 +5099,13 @@ placement "identity-descending" {
     fn recency_breaks_priority_ties() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             position: 0,
             name: "main".into(),
             active: true,
         }]);
-        state.set_pane_tab(PaneTarget::Terminal(10), 1);
-        state.set_pane_tab(PaneTarget::Terminal(11), 1);
+        state.set_pane_tab(PaneTarget::Terminal(10), WorkspaceId::from(1));
+        state.set_pane_tab(PaneTarget::Terminal(11), WorkspaceId::from(1));
         state.set_status(status(
             PaneTarget::Terminal(10),
             Priority::Waiting,
@@ -5090,7 +5126,7 @@ placement "identity-descending" {
     #[test]
     fn cleanup_removes_status_for_missing_panes() {
         let mut state = ControllerState::default();
-        state.set_pane_tab(PaneTarget::Terminal(10), 1);
+        state.set_pane_tab(PaneTarget::Terminal(10), WorkspaceId::from(1));
         state.set_status(status(
             PaneTarget::Terminal(10),
             Priority::Error,
@@ -5112,7 +5148,7 @@ placement "identity-descending" {
                 client_id: 1,
             },
             placement: PluginPlacement::Tab {
-                tab_id: 1,
+                tab_id: WorkspaceId::from(1),
                 pane_kind: PluginPaneKind::Tiled,
             },
         });
@@ -5122,7 +5158,7 @@ placement "identity-descending" {
                 client_id: 1,
             },
             placement: PluginPlacement::Tab {
-                tab_id: 1,
+                tab_id: WorkspaceId::from(1),
                 pane_kind: PluginPaneKind::Tiled,
             },
         });
@@ -5143,7 +5179,7 @@ placement "identity-descending" {
                 client_id: 1,
             },
             placement: PluginPlacement::Tab {
-                tab_id: 1,
+                tab_id: WorkspaceId::from(1),
                 pane_kind: PluginPaneKind::Floating,
             },
         });
@@ -5153,7 +5189,7 @@ placement "identity-descending" {
                 client_id: 2,
             },
             placement: PluginPlacement::Tab {
-                tab_id: 2,
+                tab_id: WorkspaceId::from(2),
                 pane_kind: PluginPaneKind::Floating,
             },
         });
@@ -5163,26 +5199,29 @@ placement "identity-descending" {
                 client_id: 2,
             },
             placement: PluginPlacement::Tab {
-                tab_id: 1,
+                tab_id: WorkspaceId::from(1),
                 pane_kind: PluginPaneKind::Floating,
             },
         });
 
         assert_eq!(
-            state.config_editor_target_for_client_tab(2, 1),
+            state.config_editor_target_for_client_tab(2, WorkspaceId::from(1)),
             Some(RendererHello {
                 plugin_id: 32,
                 client_id: 2
             })
         );
         assert_eq!(
-            state.config_editor_target_for_client_tab(2, 2),
+            state.config_editor_target_for_client_tab(2, WorkspaceId::from(2)),
             Some(RendererHello {
                 plugin_id: 31,
                 client_id: 2
             })
         );
-        assert_eq!(state.config_editor_target_for_client_tab(2, 3), None);
+        assert_eq!(
+            state.config_editor_target_for_client_tab(2, WorkspaceId::from(3)),
+            None
+        );
     }
 
     #[test]
@@ -5194,7 +5233,7 @@ placement "identity-descending" {
                 client_id: 1,
             },
             placement: PluginPlacement::Tab {
-                tab_id: 1,
+                tab_id: WorkspaceId::from(1),
                 pane_kind: PluginPaneKind::Floating,
             },
         });
@@ -5204,12 +5243,15 @@ placement "identity-descending" {
                 client_id: 2,
             },
             placement: PluginPlacement::Tab {
-                tab_id: 9,
+                tab_id: WorkspaceId::from(9),
                 pane_kind: PluginPaneKind::Floating,
             },
         });
 
-        assert_eq!(state.config_editor_target_for_client_tab(2, 3), None);
+        assert_eq!(
+            state.config_editor_target_for_client_tab(2, WorkspaceId::from(3)),
+            None
+        );
     }
 
     #[test]
@@ -5221,12 +5263,15 @@ placement "identity-descending" {
                 client_id: 2,
             },
             placement: PluginPlacement::Tab {
-                tab_id: 9,
+                tab_id: WorkspaceId::from(9),
                 pane_kind: PluginPaneKind::Tiled,
             },
         });
 
-        assert_eq!(state.config_editor_target_for_client_tab(2, 3), None);
+        assert_eq!(
+            state.config_editor_target_for_client_tab(2, WorkspaceId::from(3)),
+            None
+        );
     }
 
     #[test]
@@ -5247,18 +5292,21 @@ placement "identity-descending" {
             placement: PluginPlacement::Unknown,
         });
 
-        assert_eq!(state.config_editor_target_for_client_tab(2, 3), None);
+        assert_eq!(
+            state.config_editor_target_for_client_tab(2, WorkspaceId::from(3)),
+            None
+        );
     }
 
     #[test]
     fn view_model_for_client_uses_that_clients_inspected_node() {
         let mut state = ControllerState::default();
-        state.set_inspected_node(4, NodeKey::Tab(7));
+        state.set_inspected_node(4, NodeKey::Tab(WorkspaceId::from(7)));
         state.set_inspected_node(5, NodeKey::Root);
 
         assert_eq!(
             state.view_model_for_client(4).inspected_node,
-            Some(NodeKey::Tab(7))
+            Some(NodeKey::Tab(WorkspaceId::from(7)))
         );
         assert_eq!(
             state.view_model_for_client(5).inspected_node,
@@ -5275,7 +5323,7 @@ placement "identity-descending" {
                 client_id: 4,
             },
             placement: PluginPlacement::Tab {
-                tab_id: 7,
+                tab_id: WorkspaceId::from(7),
                 pane_kind: PluginPaneKind::Tiled,
             },
         };
@@ -5284,7 +5332,7 @@ placement "identity-descending" {
         assert_eq!(
             state
                 .client(4)
-                .and_then(|client| client.tabs.get(&7))
+                .and_then(|client| client.tabs.get(&WorkspaceId::from(7)))
                 .map(|tab| tab.rails.contains_key(&10)),
             Some(true)
         );
@@ -5299,7 +5347,7 @@ placement "identity-descending" {
                 client_id: 4,
             },
             placement: PluginPlacement::Tab {
-                tab_id: 7,
+                tab_id: WorkspaceId::from(7),
                 pane_kind: PluginPaneKind::Floating,
             },
         };
@@ -5308,7 +5356,7 @@ placement "identity-descending" {
         assert_eq!(
             state
                 .client(4)
-                .and_then(|client| client.tabs.get(&7))
+                .and_then(|client| client.tabs.get(&WorkspaceId::from(7)))
                 .map(|tab| tab.config_editors.contains_key(&11)),
             Some(true)
         );
@@ -5323,7 +5371,7 @@ placement "identity-descending" {
                 client_id: 4,
             },
             placement: PluginPlacement::Tab {
-                tab_id: 7,
+                tab_id: WorkspaceId::from(7),
                 pane_kind: PluginPaneKind::Tiled,
             },
         });
@@ -5333,7 +5381,7 @@ placement "identity-descending" {
                 client_id: 4,
             },
             placement: PluginPlacement::Tab {
-                tab_id: 7,
+                tab_id: WorkspaceId::from(7),
                 pane_kind: PluginPaneKind::Floating,
             },
         });

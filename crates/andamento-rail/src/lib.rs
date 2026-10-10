@@ -46,7 +46,7 @@ fn graphics_signature_needs_sync(
 fn local_tabs_from_zellij(tabs: &[TabInfo]) -> Vec<LocalTab> {
     tabs.iter()
         .map(|tab| LocalTab {
-            tab_id: tab.tab_id as u64,
+            tab_id: WorkspaceId::from(tab.tab_id as u64),
             position: tab.position,
             name: if tab.name.is_empty() {
                 format!("Tab {}", tab.position + 1)
@@ -240,7 +240,6 @@ fn renderer_hello_payload(
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
-use andamento_shared::StatusIcon;
 use andamento_shared::{
     ConfigInspectRequest, ControllerViewModel, NodeKey, PluginPaneKind, PluginPlacement,
     PluginRegistrationHello, PluginStatsRecorder, RailSizeObserved, RailUiAction, RailUiState,
@@ -250,6 +249,7 @@ use andamento_shared::{
     MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
 };
 use andamento_shared::{RailSize, RailSizeTarget};
+use andamento_shared::{StatusIcon, WorkspaceId};
 use render::{hit_at, HitAction, HitRegion};
 use render::{status_icon_is_renderable, LocalTab, VisibleCard, VisibleIconRect};
 use zellij_tile::output::print;
@@ -265,7 +265,7 @@ fn build_config_inspect_message(
     controller_plugin_url: &str,
     config_plugin_url: &str,
     client_id: u16,
-    origin_tab_id: u64,
+    origin_tab_id: WorkspaceId,
     node_key: NodeKey,
 ) -> Option<MessageToPlugin> {
     let request = ConfigInspectRequest {
@@ -304,7 +304,7 @@ fn build_activate_entity_message(
     controller_plugin_url: &str,
     config_plugin_url: &str,
     client_id: u16,
-    origin_tab_id: u64,
+    origin_tab_id: WorkspaceId,
     entity: &andamento_shared::EntityRef,
 ) -> Option<MessageToPlugin> {
     let request = andamento_shared::EntityActivationRequest {
@@ -654,7 +654,7 @@ mod tests {
     #[test]
     fn unchanged_graphics_signature_does_not_need_sync() {
         let visible_cards = vec![VisibleCard {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             tab_position: 0,
             row_start: 0,
             status_row: Some(1),
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn unchanged_local_tab_projection_does_not_need_render() {
         let current = vec![LocalTab {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             position: 0,
             name: "work".to_owned(),
             active: true,
@@ -721,7 +721,7 @@ mod tests {
                 row_end: 2,
                 col_start: 0,
                 col_end: 19,
-                tab_id: 2,
+                tab_id: WorkspaceId::from(2),
                 tab_position: 1,
                 inspect_target: None,
                 materialize_request: None,
@@ -753,7 +753,7 @@ mod tests {
                 row_end: 1,
                 col_start: 2,
                 col_end: 8,
-                tab_id: 0,
+                tab_id: WorkspaceId::from(0),
                 tab_position: 0,
                 inspect_target: Some(target.clone()),
                 materialize_request: None,
@@ -788,7 +788,7 @@ mod tests {
                 row_end: 1,
                 col_start: 2,
                 col_end: 8,
-                tab_id: 0,
+                tab_id: WorkspaceId::from(0),
                 tab_position: 0,
                 inspect_target: Some(target.clone()),
                 materialize_request: None,
@@ -816,7 +816,7 @@ mod tests {
             row_end: 1,
             col_start,
             col_end,
-            tab_id: 0,
+            tab_id: WorkspaceId::from(0),
             tab_position: 0,
             inspect_target: Some(target),
             materialize_request: None,
@@ -854,7 +854,7 @@ mod tests {
                     row_end: 1,
                     col_start: 2,
                     col_end: 6,
-                    tab_id: 0,
+                    tab_id: WorkspaceId::from(0),
                     tab_position: 0,
                     inspect_target: Some(first.clone()),
                     materialize_request: None,
@@ -865,7 +865,7 @@ mod tests {
                     row_end: 2,
                     col_start: 8,
                     col_end: 15,
-                    tab_id: 0,
+                    tab_id: WorkspaceId::from(0),
                     tab_position: 0,
                     inspect_target: Some(second_row_target),
                     materialize_request: None,
@@ -884,13 +884,13 @@ mod tests {
     fn ensure_visible_latch_survives_until_controller_render_can_resolve_target() {
         let mut state = PluginState {
             local_tabs: vec![LocalTab {
-                tab_id: 1,
+                tab_id: WorkspaceId::from(1),
                 position: 0,
                 name: "work".to_owned(),
                 active: true,
             }],
             own_plugin_placement: Some(PluginPlacement::Tab {
-                tab_id: 1,
+                tab_id: WorkspaceId::from(1),
                 pane_kind: PluginPaneKind::Tiled,
             }),
             ensure_active_visible: true,
@@ -932,13 +932,13 @@ mod tests {
         let mut state = PluginState {
             local_tabs: vec![
                 LocalTab {
-                    tab_id: 1,
+                    tab_id: WorkspaceId::from(1),
                     position: 0,
                     name: "one".to_owned(),
                     active: true,
                 },
                 LocalTab {
-                    tab_id: 2,
+                    tab_id: WorkspaceId::from(2),
                     position: 1,
                     name: "two".to_owned(),
                     active: false,
@@ -1095,8 +1095,8 @@ mod tests {
             "andamento-controller",
             "andamento-config",
             4,
-            7,
-            NodeKey::Tab(7),
+            WorkspaceId::from(7),
+            NodeKey::Tab(WorkspaceId::from(7)),
         )
         .unwrap();
 
@@ -1109,8 +1109,8 @@ mod tests {
         let payload: ConfigInspectRequest =
             serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
         assert_eq!(payload.client_id, 4);
-        assert_eq!(payload.origin_tab_id, 7);
-        assert_eq!(payload.node_key, NodeKey::Tab(7));
+        assert_eq!(payload.origin_tab_id, WorkspaceId::from(7));
+        assert_eq!(payload.node_key, NodeKey::Tab(WorkspaceId::from(7)));
         assert_eq!(payload.config_plugin_url, "andamento-config");
         assert_eq!(payload.controller_plugin_url, "andamento-controller");
     }
@@ -1126,7 +1126,7 @@ mod tests {
             "andamento-controller",
             "andamento-config",
             4,
-            7,
+            WorkspaceId::from(7),
             &entity,
         )
         .unwrap();
@@ -1142,7 +1142,7 @@ mod tests {
             NodeKey::Entity(entity.clone()),
             "a row that cannot be activated must still reach its inspector"
         );
-        assert_eq!(payload.inspect_fallback.origin_tab_id, 7);
+        assert_eq!(payload.inspect_fallback.origin_tab_id, WorkspaceId::from(7));
     }
 
     #[test]
@@ -1160,28 +1160,31 @@ mod tests {
         let state = PluginState {
             local_tabs: vec![
                 LocalTab {
-                    tab_id: 1,
+                    tab_id: WorkspaceId::from(1),
                     position: 0,
                     name: "main".to_owned(),
                     active: true,
                 },
                 LocalTab {
-                    tab_id: 7,
+                    tab_id: WorkspaceId::from(7),
                     position: 1,
                     name: "work".to_owned(),
                     active: false,
                 },
             ],
             own_plugin_placement: Some(PluginPlacement::Tab {
-                tab_id: 7,
+                tab_id: WorkspaceId::from(7),
                 pane_kind: PluginPaneKind::Tiled,
             }),
             ..Default::default()
         };
 
-        assert_eq!(state.active_tab_id(), Some(1));
-        assert_eq!(state.own_tab_id(), Some(7));
-        assert_eq!(state.active_inspect_node(), Some(NodeKey::Tab(7)));
+        assert_eq!(state.active_tab_id(), Some(WorkspaceId::from(1)));
+        assert_eq!(state.own_tab_id(), Some(WorkspaceId::from(7)));
+        assert_eq!(
+            state.active_inspect_node(),
+            Some(NodeKey::Tab(WorkspaceId::from(7)))
+        );
     }
 
     #[test]
@@ -1191,14 +1194,14 @@ mod tests {
             row_end: 0,
             col_start: 0,
             col_end: 0,
-            tab_id: 0,
+            tab_id: WorkspaceId::from(0),
             tab_position: 0,
-            inspect_target: Some(NodeKey::Tab(0)),
+            inspect_target: Some(NodeKey::Tab(WorkspaceId::from(0))),
             materialize_request: None,
             action: HitAction::InspectNode,
         };
 
-        assert_eq!(hit.inspect_target, Some(NodeKey::Tab(0)));
+        assert_eq!(hit.inspect_target, Some(NodeKey::Tab(WorkspaceId::from(0))));
     }
 
     #[test]
@@ -1215,7 +1218,7 @@ mod tests {
             )]),
         };
         let local_tabs = vec![LocalTab {
-            tab_id: 70,
+            tab_id: WorkspaceId::from(70),
             position: 2,
             name: "work".to_owned(),
             active: true,
@@ -1224,7 +1227,7 @@ mod tests {
         assert_eq!(
             own_plugin_tab_placement(&pane_manifest, &local_tabs, 42),
             Some(PluginPlacement::Tab {
-                tab_id: 70,
+                tab_id: WorkspaceId::from(70),
                 pane_kind: PluginPaneKind::Tiled,
             })
         );
@@ -1244,7 +1247,7 @@ mod tests {
             )]),
         };
         let local_tabs = vec![LocalTab {
-            tab_id: 15,
+            tab_id: WorkspaceId::from(15),
             position: 1,
             name: "settings".to_owned(),
             active: false,
@@ -1253,7 +1256,7 @@ mod tests {
         assert_eq!(
             own_plugin_tab_placement(&pane_manifest, &local_tabs, 9),
             Some(PluginPlacement::Tab {
-                tab_id: 15,
+                tab_id: WorkspaceId::from(15),
                 pane_kind: PluginPaneKind::Floating,
             })
         );
@@ -1265,7 +1268,7 @@ mod tests {
             42,
             3,
             PluginPlacement::Tab {
-                tab_id: 70,
+                tab_id: WorkspaceId::from(70),
                 pane_kind: PluginPaneKind::Tiled,
             },
         )
@@ -1280,7 +1283,7 @@ mod tests {
                     client_id: 3,
                 },
                 placement: PluginPlacement::Tab {
-                    tab_id: 70,
+                    tab_id: WorkspaceId::from(70),
                     pane_kind: PluginPaneKind::Tiled,
                 },
             }
@@ -1539,7 +1542,7 @@ impl PluginState {
                                 client_id,
                                 self.own_tab_id()
                                     .or_else(|| self.active_tab_id())
-                                    .unwrap_or(0),
+                                    .unwrap_or(WorkspaceId::from(0)),
                                 entity,
                             ) {
                                 pipe_message_to_plugin(message);
@@ -1693,7 +1696,7 @@ impl PluginState {
             .map(|idx| idx + 1)
     }
 
-    fn toggle_pin(&self, tab_id: u64) {
+    fn toggle_pin(&self, tab_id: WorkspaceId) {
         let Some(client_id) = self.own_client_id else {
             return;
         };
@@ -1731,7 +1734,7 @@ impl PluginState {
             client_id,
             self.own_tab_id()
                 .or_else(|| self.active_tab_id())
-                .unwrap_or(0),
+                .unwrap_or(WorkspaceId::from(0)),
             node_key,
         ) else {
             return;
@@ -1739,14 +1742,14 @@ impl PluginState {
         pipe_message_to_plugin(message);
     }
 
-    fn active_tab_id(&self) -> Option<u64> {
+    fn active_tab_id(&self) -> Option<WorkspaceId> {
         self.local_tabs
             .iter()
             .find(|tab| tab.active)
             .map(|tab| tab.tab_id)
     }
 
-    fn own_tab_id(&self) -> Option<u64> {
+    fn own_tab_id(&self) -> Option<WorkspaceId> {
         match self.own_plugin_placement {
             Some(PluginPlacement::Tab { tab_id, .. }) => Some(tab_id),
             _ => None,

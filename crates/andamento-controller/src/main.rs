@@ -9,7 +9,6 @@ use std::time::Instant;
 /// emits at debug level, which the server's default INFO filter drops).
 const RECENT_PIPE_LOG_CAPACITY: usize = 20;
 
-use andamento_shared::PaneTarget;
 use andamento_shared::PluginStatsRecorder;
 use andamento_shared::MSG_RAIL_SIZE_TARGET;
 use andamento_shared::MSG_VIEW_MODEL;
@@ -25,6 +24,7 @@ use andamento_shared::{
     MSG_SET_NODE_VARIABLE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE,
     MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
+use andamento_shared::{PaneTarget, WorkspaceId};
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
 use state::{ControllerState, EntityActivation, ZellijObservations};
@@ -748,7 +748,10 @@ impl PluginState {
             self.stats.increment("latent.materialize.open-failed");
             return self.state.abort_latent_materialization(&request);
         };
-        if !self.state.bind_materializing_tab(&request, tab_id as u64) {
+        if !self
+            .state
+            .bind_materializing_tab(&request, WorkspaceId::from(tab_id as u64))
+        {
             self.stats.increment("latent.materialize.bind-failed");
             return self.state.abort_latent_materialization(&request);
         }
@@ -1034,7 +1037,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             }
         }
         Ok(Some(ControllerMessage::TogglePin(tab_id))) => {
-            state.toggle_pin(tab_id);
+            state.toggle_pin(WorkspaceId::from(tab_id));
             HandlePipeResult {
                 state_changed: true,
                 view_model_push_reason: Some(ViewModelPushReason::PipeTogglePin),
@@ -1664,8 +1667,8 @@ mod tests {
     fn parses_config_inspect_request() {
         let request = ConfigInspectRequest {
             client_id: 4,
-            origin_tab_id: 7,
-            node_key: NodeKey::Tab(7),
+            origin_tab_id: WorkspaceId::from(7),
+            node_key: NodeKey::Tab(WorkspaceId::from(7)),
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
@@ -1688,7 +1691,7 @@ mod tests {
             entity: entity.clone(),
             inspect_fallback: ConfigInspectRequest {
                 client_id: 1,
-                origin_tab_id: 2,
+                origin_tab_id: WorkspaceId::from(2),
                 node_key: NodeKey::Entity(entity),
                 config_plugin_url: "andamento-config".to_owned(),
                 controller_plugin_url: "andamento-controller".to_owned(),
@@ -1745,8 +1748,8 @@ mod tests {
     fn config_inspect_message_targets_existing_editor_by_plugin_id() {
         let request = ConfigInspectRequest {
             client_id: 4,
-            origin_tab_id: 7,
-            node_key: NodeKey::Tab(7),
+            origin_tab_id: WorkspaceId::from(7),
+            node_key: NodeKey::Tab(WorkspaceId::from(7)),
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
@@ -1771,8 +1774,8 @@ mod tests {
     fn config_inspect_message_launches_floating_editor_when_needed() {
         let request = ConfigInspectRequest {
             client_id: 4,
-            origin_tab_id: 7,
-            node_key: NodeKey::Tab(7),
+            origin_tab_id: WorkspaceId::from(7),
+            node_key: NodeKey::Tab(WorkspaceId::from(7)),
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
@@ -1910,7 +1913,7 @@ mod tests {
                 structure: RailStructure::BoxPerTab,
                 segment_between_color: None,
             },
-            pinned_tabs: vec![7],
+            pinned_tabs: vec![WorkspaceId::from(7)],
             pane_statuses: vec![SetPaneStatus {
                 pane_id: PaneTarget::Terminal(1),
                 priority: Priority::Waiting,
@@ -1991,7 +1994,7 @@ mod tests {
     fn parses_metadata_visibility_set_request() {
         let request = andamento_shared::MetadataVisibilitySetRequest {
             client_id: 4,
-            node_key: NodeKey::Tab(7),
+            node_key: NodeKey::Tab(WorkspaceId::from(7)),
             state: Some(andamento_shared::MetadataTriState::MetaChildren),
         };
         let payload = serde_json::to_string(&request).unwrap();
@@ -2140,13 +2143,13 @@ mod tests {
     fn metadata_patch_message_updates_resolved_tab_metadata() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![state::ControllerTab {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             position: 0,
             name: "main".to_owned(),
             active: true,
         }]);
         let patch = andamento_shared::MetadataPatch {
-            target: andamento_shared::MetadataTarget::Tab(1),
+            target: andamento_shared::MetadataTarget::Tab(WorkspaceId::from(1)),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 "tab.subject".to_owned(),
@@ -2170,7 +2173,10 @@ mod tests {
         let tab_metadata = model
             .resolved_metadata
             .iter()
-            .find(|metadata| metadata.target == andamento_shared::ResolvedMetadataTarget::Tab(1))
+            .find(|metadata| {
+                metadata.target
+                    == andamento_shared::ResolvedMetadataTarget::Tab(WorkspaceId::from(1))
+            })
             .expect("tab metadata");
         assert!(result.state_changed);
         assert_eq!(
@@ -2200,13 +2206,13 @@ mod tests {
     fn metadata_patch_cli_pipe_is_unblocked_without_output() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![state::ControllerTab {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             position: 0,
             name: "main".to_owned(),
             active: true,
         }]);
         let patch = andamento_shared::MetadataPatch {
-            target: andamento_shared::MetadataTarget::Tab(1),
+            target: andamento_shared::MetadataTarget::Tab(WorkspaceId::from(1)),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 "tab.subject".to_owned(),
@@ -2235,7 +2241,7 @@ mod tests {
     fn duplicate_metadata_patch_message_does_not_request_state_broadcast() {
         let mut state = ControllerState::default();
         let patch = andamento_shared::MetadataPatch {
-            target: andamento_shared::MetadataTarget::Tab(1),
+            target: andamento_shared::MetadataTarget::Tab(WorkspaceId::from(1)),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
@@ -2272,12 +2278,12 @@ mod tests {
         let mut state = ControllerState::default();
         state.set_rail_config(RailConfig::default());
         state.update_tabs(vec![state::ControllerTab {
-            tab_id: 1,
+            tab_id: WorkspaceId::from(1),
             position: 0,
             name: "repo".to_owned(),
             active: true,
         }]);
-        state.set_test_pane(PaneTarget::Terminal(1), 1, true, true, 0);
+        state.set_test_pane(PaneTarget::Terminal(1), WorkspaceId::from(1), true, true, 0);
         let cwd = "/Users/robert/dev/katzensteg".to_owned();
         state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
 
@@ -2355,8 +2361,8 @@ mod tests {
         let mut state = ControllerState::default();
         let request = ConfigInspectRequest {
             client_id: 4,
-            origin_tab_id: 7,
-            node_key: NodeKey::Tab(7),
+            origin_tab_id: WorkspaceId::from(7),
+            node_key: NodeKey::Tab(WorkspaceId::from(7)),
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
@@ -2374,7 +2380,7 @@ mod tests {
         );
         assert_eq!(
             state.view_model_for_client(4).inspected_node,
-            Some(NodeKey::Tab(7))
+            Some(NodeKey::Tab(WorkspaceId::from(7)))
         );
     }
 

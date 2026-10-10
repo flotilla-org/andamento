@@ -12,11 +12,12 @@ use crate::{
     presentation::SurfaceSnapshot,
     state::{ControllerState, ControllerTab, EntityActivation},
     EntityRef, MaterializeLatentRequest, MetadataPatch, NodeKey, PlacementKey, RailUiAction,
+    WorkspaceId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workspace {
-    pub id: u64,
+    pub id: WorkspaceId,
     pub position: usize,
     pub name: String,
     pub selected: bool,
@@ -69,8 +70,14 @@ pub enum Request {
     },
     Complete {
         request_id: u64,
-        workspace_id: Option<u64>,
+        workspace_id: Option<WorkspaceId>,
         error: Option<String>,
+    },
+    RegisterWorkspace {
+        workspace_id: WorkspaceId,
+    },
+    ForgetWorkspace {
+        workspace_id: WorkspaceId,
     },
     Snapshot,
 }
@@ -92,7 +99,7 @@ pub enum HostEffect {
     },
     Focus {
         request_id: u64,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     },
     Materialize {
         request_id: u64,
@@ -140,8 +147,9 @@ pub struct Sidebar {
     next_request: u64,
     pending: BTreeMap<u64, Pending>,
     errors: BTreeMap<EntityRef, String>,
-    retained_paths: BTreeMap<u64, BTreeSet<EntityRef>>,
+    retained_paths: BTreeMap<WorkspaceId, BTreeSet<EntityRef>>,
     retained_paths_revision: Option<u64>,
+    registered: BTreeSet<WorkspaceId>,
     pub managed: crate::managed::ManagedContent,
 }
 
@@ -173,6 +181,14 @@ impl Sidebar {
                         None => Ok(workspace_id),
                     },
                 );
+                vec![]
+            }
+            Request::RegisterWorkspace { workspace_id } => {
+                self.register_workspace(workspace_id);
+                vec![]
+            }
+            Request::ForgetWorkspace { workspace_id } => {
+                self.forget_workspace(workspace_id);
                 vec![]
             }
             Request::Snapshot => vec![],
@@ -226,11 +242,11 @@ impl Sidebar {
         }
     }
 
-    fn retain_workspace_paths(&mut self, subjects: &BTreeMap<u64, EntityRef>) -> bool {
+    fn retain_workspace_paths(&mut self, subjects: &BTreeMap<WorkspaceId, EntityRef>) -> bool {
         fn collect(
             nodes: &[crate::presentation::PlacementNode],
             ancestors: &mut Vec<EntityRef>,
-            paths: &mut BTreeMap<u64, BTreeSet<EntityRef>>,
+            paths: &mut BTreeMap<WorkspaceId, BTreeSet<EntityRef>>,
         ) {
             for node in nodes {
                 // Andamento's own kinds (`.`-prefixed: workspaces, sections,
@@ -321,10 +337,32 @@ impl Sidebar {
     /// Matching is exact and host-normalized; explicit workspace identity wins.
     /// Several terminal directories may belong to one workspace. Associations
     /// only affect focus/presentation and never enroll content for replacement.
-    pub fn observe_workdirs(&mut self, workdirs: Vec<(u64, String)>) {
+    pub fn observe_workdirs(&mut self, workdirs: Vec<(WorkspaceId, String)>) {
         if self.state.observe_workdirs(workdirs) {
             self.invalidate();
         }
+    }
+
+    /// Declare a workspace the host created itself, such as one the user made,
+    /// that never went through a materialize effect. A successful materialize
+    /// completion registers its workspace too. The host supplies the ID;
+    /// Andamento never generates one. Registration is independent of topology:
+    /// either may come first, and closing a workspace does not forget it.
+    /// It does not change the snapshot or its revision. Returns whether the ID
+    /// was new.
+    pub fn register_workspace(&mut self, id: WorkspaceId) -> bool {
+        self.registered.insert(id)
+    }
+
+    /// The host deleted the workspace rather than keeping it. Returns whether
+    /// it was registered.
+    pub fn forget_workspace(&mut self, id: WorkspaceId) -> bool {
+        self.registered.remove(&id)
+    }
+
+    /// Workspaces the host registered or materialized and has not forgotten.
+    pub fn registered_workspaces(&self) -> &BTreeSet<WorkspaceId> {
+        &self.registered
     }
 
     /// Set the host-owned order of one sibling run, identified by the loop key
@@ -560,7 +598,11 @@ impl Sidebar {
     /// Materialize success supplies the newly created workspace ID. Focus
     /// success supplies None. Duplicate/stale results are ignored. The host
     /// must eventually complete each effect, including timeout or cancellation.
-    pub fn complete(&mut self, request_id: u64, result: Result<Option<u64>, String>) -> bool {
+    pub fn complete(
+        &mut self,
+        request_id: u64,
+        result: Result<Option<WorkspaceId>, String>,
+    ) -> bool {
         let Some(pending) = self.pending.remove(&request_id) else {
             return false;
         };
@@ -572,6 +614,7 @@ impl Sidebar {
             }
             Pending::Materialize(entity, request) => match result {
                 Ok(Some(id)) => {
+                    self.registered.insert(id);
                     self.state
                         .bind_materializing_subject(&request, id, entity.clone());
                     // If observation arrived before acknowledgement, claim now.
@@ -746,7 +789,7 @@ mod evaluation_tests {
                         .unwrap(),
                     5 => sidebar.observe(
                         vec![Workspace {
-                            id: 1,
+                            id: WorkspaceId::from(1),
                             position: 0,
                             name: "vessel:v".into(),
                             selected: step % 2 == 0,
@@ -815,13 +858,13 @@ mod evaluation_tests {
             sidebar.observe(
                 vec![
                     Workspace {
-                        id: 1,
+                        id: WorkspaceId::from(1),
                         position: 1,
                         name: "vessel:v".into(),
                         selected: true,
                     },
                     Workspace {
-                        id: 2,
+                        id: WorkspaceId::from(2),
                         position: 0,
                         name: "Other".into(),
                         selected: false,
@@ -830,17 +873,17 @@ mod evaluation_tests {
                 vec![],
             );
             sidebar.state.set_sort_mode(mode);
-            sidebar.state.toggle_pin(1);
+            sidebar.state.toggle_pin(WorkspaceId::from(1));
             sidebar.invalidate();
             check(&sidebar);
             let tabs = sidebar.state.view_model().tabs;
             assert_eq!(
                 tabs[0].tab_id,
-                if mode == crate::SortMode::PinnedFirst {
+                WorkspaceId::from(if mode == crate::SortMode::PinnedFirst {
                     1
                 } else {
                     2
-                }
+                })
             );
         }
     }

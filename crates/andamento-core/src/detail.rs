@@ -48,7 +48,7 @@ pub struct DetailCard {
     pub label: String,
     pub fields: Vec<DetailField>,
     /// Preview identity is independent of the semantic fields.
-    pub workspace_id: Option<u64>,
+    pub workspace_id: Option<crate::WorkspaceId>,
     pub primary_label: String,
     pub primary_intent: DetailIntent,
     pub error: Option<String>,
