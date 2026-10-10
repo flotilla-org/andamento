@@ -236,14 +236,14 @@ filesystem, so this works in Zellij's sandbox and under WASM too.
 
 | Record | Holds |
 |---|---|
-| `dashboard` | display variables that persist, row (placement) collapse, sibling orders, placement variables set on rows, local sections, groups and refs, and the sidebar arrangement ([The sidebar arrangement](sidebar-arrangement.md)) |
-| `workspace/<id>` | for each registered workspace: its subject, the subject and the entities on its path as last seen, its slots (the cached Suggested Layout baseline, the user's overrides and own slots) and its arrangement document ([Slots and arrangements](slots-and-arrangements.md)) |
+| `dashboard` | display variables that persist, row (placement) collapse, sibling orders, placement variables set on rows, local sections, groups and refs, the sidebar arrangement ([The sidebar arrangement](sidebar-arrangement.md)), and the template version they were made against ([Workspace Overlay](workspace-overlay.md#the-dashboard-over-its-template)) |
+| `workspace/<id>` | for each registered workspace: its subject, the subject and the entities on its path as last seen, its slots (the cached Suggested Layout baseline and the Workspace Overlay's edit set) and its arrangement document ([Slots and arrangements](slots-and-arrangements.md), [Workspace Overlay](workspace-overlay.md)) |
 
 Scroll offset, display variables declared `persist=false`, and section collapse
 are presentation state and are not recorded.
 
 ```kdl
-andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=4 {
+andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=5 {
     subject "vessel" "v" provider="sub-1"
     retained "project" "p" provider="sub-1" label="Project P" status="retained" last-seen=100 {
         fact "flotilla.project" "p"
@@ -257,8 +257,8 @@ andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=4 {
 A dashboard record lists `display "<name>" <value>`, `collapsed { at … }`,
 `order "<region>" "<binding>" { parent { at … }; entity "<kind>" "<id>" provider="<provider>" … }`,
 `variable "<name>" "<value>" { at … }`, `local "<kind>" "<id>" provider="local" { fact … }`
-and `sidebar generation=… owned=… { dock { … }; floating { … }; closed "<key>"; placed "<key>" }`
-nodes; a placement key is its `at "<loop>" "<kind>" "<id>" provider="<provider>"`
+`sidebar generation=… owned=… { dock { … }; floating { … }; closed "<key>"; placed "<key>" }`
+and `template version="<digest>"` nodes; a placement key is its `at "<loop>" "<kind>" "<id>" provider="<provider>"`
 segments, outermost first. Every entity names its provider. `records.rs` has a
 full sample.
 
@@ -280,17 +280,19 @@ full sample.
   when the workspace is observed, its recorded path is drawn until a producer
   publishes the subject again. A record that doesn't parse, has another
   version, or names another record is rejected without changing anything.
-- **Versions.** Andamento writes version 4, where every entity names its
-  provider, a workspace record holds its slots and arrangement, and the
-  dashboard record holds the sidebar arrangement. Version 3 dashboard records
-  import with no sidebar arrangement, which the template's hints then place;
-  workspace records are the same in versions 3 and 4. Version 2 records
+- **Versions.** Andamento writes version 5, where every entity names its
+  provider, a workspace record holds its baseline, its overlay edit set and
+  its arrangement, and the dashboard record holds the sidebar arrangement and
+  the template version. Version 3 and 4 workspace records import with their
+  overrides and user slots migrated into the edit set; version 3 dashboard
+  records import with no sidebar arrangement, which the template's hints
+  then place. Version 2 records
   import with no slots and no arrangement. Version 1 records, from before providers, still import: their
   sections, groups and refs (`.section`, `.group`, `.ref`) get `local`, and
   every other entity gets the default provider at import, which is the
   provider ABI 2 calls stamp, so migrated keys match the facts a host still
   publishes the old way. A host that sets a default provider sets it before
-  importing. Export always writes version 4.
+  importing. Export always writes version 5.
 - **Unknown nodes** directly inside the envelope are kept and exported again,
   after the known ones. Unknown properties or children of known nodes are not
   kept, so a later version adds nodes, or raises the version.

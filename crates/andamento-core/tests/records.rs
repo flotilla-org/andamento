@@ -410,9 +410,9 @@ fn other_versions_and_bad_records_are_rejected_without_change() {
         .collect::<Vec<_>>();
     let revision = sidebar.revision();
     for (name, text) in &records {
-        let future = text.replacen("version=4", "version=5", 1);
+        let future = text.replacen("version=5", "version=6", 1);
         let error = sidebar.import_record(name, &future).unwrap_err();
-        assert!(error.contains("version 5"), "{error}");
+        assert!(error.contains("version 6"), "{error}");
         // A record for another name, broken KDL and a malformed known node.
         assert!(sidebar
             .import_record(name, "andamento-record \"workspace/9\" version=1")
@@ -433,7 +433,7 @@ fn other_versions_and_bad_records_are_rejected_without_change() {
         )
         .is_err());
     assert!(sidebar
-        .import_record("workspace/9", "andamento-record \"workspace/9\" version=5")
+        .import_record("workspace/9", "andamento-record \"workspace/9\" version=6")
         .is_err());
     assert!(!sidebar
         .registered_workspaces()

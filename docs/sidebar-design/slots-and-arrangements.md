@@ -35,13 +35,16 @@ A workspace's slots come from two places:
   `:`, so the two never collide. The host chooses the ID; Andamento never
   generates one.
 
-Setting a baseline slot's key **overrides** it: the slot shows the override's
-spec and policy and is **detached**, so it no longer follows the provider.
-The override records the baseline spec it was made against. Setting the
-baseline's own spec and policy, or reattaching, drops the override. A
-detached slot the baseline later drops is kept as the user's own (reported
-with `in_baseline` false) until the host removes it. A baseline slot can't be
-removed by the host: the provider removes it.
+Setting a baseline slot's key with other content **overrides** it: the slot
+shows the override's spec and is **detached**, so it no longer follows the
+provider. The override records the baseline spec it was made against. A
+different policy alone is a rebind edit, which doesn't detach the slot.
+Setting the baseline's own spec and policy, or reattaching, drops the
+override. A detached slot the baseline later drops is kept as the user's own
+(reported with `in_baseline` false) until the host removes it. Removing a
+baseline slot gives it a tombstone, which hides it. These are edits in the
+[Workspace Overlay](workspace-overlay.md), which describes the rules and the
+flags that report them.
 
 Slots are listed, and placed by default, in this order: the baseline's, then
 detached slots the baseline dropped, then the user's in the order they were
@@ -117,8 +120,11 @@ sizes need pixels. When a gesture ends it commits the whole document with
    panel in preorder, and selected there if that panel selects nothing. With
    no panels, a tab panel is made for them. A tab whose slot has gone is kept
    and reported gone; nothing is dropped silently.
-4. **Storage.** The document becomes the stored one and the host owns it.
-   Its generation changes unless the stored document is unchanged.
+4. **Storage.** The document becomes the stored one. Its generation changes
+   unless the stored document is unchanged. A commit that changes only
+   weights and selected tabs is recorded as soft overrides and leaves the
+   document following the provider; any structural change makes the overlay
+   own it ([Workspace Overlay](workspace-overlay.md)).
 
 Reading the arrangement returns the document, its generation, whether the
 host owns it, and two tab flags: **placed** (Andamento placed it since the
@@ -127,10 +133,12 @@ host last committed) and **gone** (its slot has gone).
 Andamento changes the document itself only when the slot set changes from the
 provider's side:
 
-- Until the host first commits, the document is the baseline's arrangement
-  hint (or empty), reconciled. A new hint replaces it.
-- Once the host owns it, a baseline change only reconciles it: new baseline
-  slots are placed, and dropped ones are reported gone.
+- Until the overlay owns it, the document is the baseline's arrangement hint
+  (or empty), less removed slots, reconciled, with soft overrides reapplied.
+  A new hint replaces it.
+- Once the overlay owns it, a baseline change only reconciles it: new
+  baseline slots are placed, and dropped ones are reported gone. A changed
+  hint is flagged, not applied.
 
 Either changes the generation, so a commit the host prepared against the old
 one is stale. A slot the host adds with `set_slot` does not change the
@@ -172,7 +180,10 @@ and `smoke.c` (`check_slots`) assert the snapshot stays current.
 
 ## Records
 
-The `workspace/<id>` record (version 3, unchanged in version 4) holds the slots and the arrangement:
+The `workspace/<id>` record holds the slots and the arrangement. This is
+version 4; version 5 moves the overrides and user slots into an `overlay`
+edit set, described in [Workspace Overlay](workspace-overlay.md), and
+imports version 3 and 4 records by migrating them:
 
 ```kdl
 andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=4 {
@@ -225,11 +236,7 @@ kept as such.
 
 ## Limits and next steps
 
-- **Overlay rules not yet built** (ADR 0013): tombstones for removed baseline
-  slots, flagging a key the provider reuses for different content, soft
-  overrides (split weights and the selected tab that don't take ownership),
-  ownership only on a *structural* edit, and flagging a provider change to an
-  owned arrangement. Today any host commit takes ownership.
+- **Overlay rules** (ADR 0013) are in [Workspace Overlay](workspace-overlay.md).
 - **Target Resolutions** (`session`, `daemon_name`, `attach_token`) are not
   stored; Wheelhouse moves them in its step 7b.
 - **The Dashboard's sidebar arrangement** uses the same document shape, with

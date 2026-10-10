@@ -200,6 +200,10 @@ pub struct Sidebar {
     /// reconciliation did.
     sidebar_arrangement: crate::sidebar_arrangement::SidebarArrangement,
     sidebar_report: crate::sidebar_arrangement::Report,
+    /// The configured template's version, and the one the last imported
+    /// dashboard record was made against.
+    template_version: String,
+    template_recorded: Option<String>,
 }
 
 #[derive(Default)]
@@ -313,6 +317,7 @@ impl Sidebar {
             crate::template_config::TemplateConfigCatalog::with_bundled_defaults(templates),
         ));
         self.placement_keys = self.state.placement_fact_keys();
+        self.template_version = crate::dashboard_overlay::template_version(config_kdl);
         self.invalidate();
         self.follow_sidebar_declarations();
         Ok(())
@@ -684,6 +689,20 @@ impl Sidebar {
         if !facts.values().all(crate::records::recordable) {
             return Err("local facts are text, booleans, integers or entity references".into());
         }
+        if let Some(view) = facts.get(crate::dashboard_overlay::VIEW) {
+            if entity.kind != crate::presentation::system::REF {
+                return Err(format!(
+                    "only a ref pins a view ({})",
+                    crate::dashboard_overlay::VIEW
+                ));
+            }
+            match view {
+                crate::MetadataValue::Text(text) => {
+                    crate::dashboard_overlay::parse_view(text)?;
+                }
+                _ => return Err(format!("{} is text", crate::dashboard_overlay::VIEW)),
+            }
+        }
         let patch = self.local_patch(&entity, Some(&facts));
         let section = entity.kind != crate::presentation::system::REF;
         self.local.insert(entity, facts);
@@ -856,6 +875,7 @@ impl Sidebar {
                 local: self.local.clone(),
                 sidebar: Some(self.sidebar_arrangement.clone())
                     .filter(|arrangement| arrangement.generation != 0),
+                template: Some(self.template_version.clone()),
                 unknown: self.dashboard_unknown.clone(),
             }
             .encode()),
@@ -937,6 +957,7 @@ impl Sidebar {
                 }
                 self.local = record.local;
                 self.dashboard_unknown = record.unknown;
+                self.template_recorded = record.template;
                 for patch in patches {
                     self.state.apply_metadata_patch(patch);
                 }
@@ -985,9 +1006,18 @@ impl Sidebar {
             let mut slots_changed = false;
             if let Some(subject) = &record.subject {
                 if let Ok(Some(layout)) = state.suggested_layout(subject) {
-                    slots_changed = record
+                    let baseline = crate::slots::Baseline::from_layout(&layout);
+                    let hint_changed = record
                         .slots
-                        .set_baseline(crate::slots::Baseline::from_layout(&layout));
+                        .baseline
+                        .as_ref()
+                        .is_some_and(|old| old.hint != baseline.hint);
+                    slots_changed = record.slots.set_baseline(baseline);
+                    if hint_changed {
+                        if let Some(arrangement) = &mut record.arrangement {
+                            changed |= arrangement.note_hint_change();
+                        }
+                    }
                 }
             }
             if slots_changed || (record.arrangement.is_none() && !record.slots.is_empty()) {
@@ -1026,10 +1056,13 @@ impl Sidebar {
         Ok(self.workspace_record(workspace)?.slots.slots())
     }
 
-    /// Add the user's own slot (`u:<id>`), or override a baseline slot,
-    /// detaching it. The arrangement is unchanged: the host gives the slot
-    /// a tab in its next commit, which otherwise places it. Entity
-    /// references that name no provider get the default provider.
+    /// Add the user's own slot (`u:<id>`), or edit a baseline slot: other
+    /// content overrides it, detaching it, and another policy is a rebind
+    /// edit (see [`WorkspaceSlots::set`](crate::slots::WorkspaceSlots::set)).
+    /// The arrangement is unchanged, except that an unowned one shows a
+    /// tombstoned slot this restores: the host gives a new slot a tab in its
+    /// next commit, which otherwise places it. Entity references that name
+    /// no provider get the default provider.
     pub fn set_slot(
         &mut self,
         workspace: WorkspaceId,
@@ -1040,34 +1073,116 @@ impl Sidebar {
         if let crate::suggested_layout::Content::ProviderFacet { entity, .. } = &mut spec.content {
             entity.fill_provider(self.state.default_provider());
         }
-        let changed = self
-            .workspace_record_mut(workspace)?
-            .slots
-            .set(key, spec, rebind)?;
+        let record = self.workspace_record_mut(workspace)?;
+        let hidden = record.slots.hidden();
+        let changed = record.slots.set(key, spec, rebind)?;
+        // Setting a tombstoned slot shows it again.
+        if record.slots.hidden() != hidden {
+            follow_unowned(record);
+        }
         if changed {
             self.content_revision += 1;
         }
         Ok(changed)
     }
 
-    /// Remove the user's own slot, or a detached slot its baseline dropped.
-    /// Its tab, if any, is reported gone until the host removes it.
+    /// Remove a slot: the user's own slot or a detached slot its baseline
+    /// dropped goes; a baseline slot gets a tombstone (see
+    /// [`WorkspaceSlots::remove`](crate::slots::WorkspaceSlots::remove)). In
+    /// an arrangement the user owns, its tab is reported gone until the host
+    /// removes it; one derived from the provider's hint loses the tab.
     pub fn remove_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
-        let removed = self.workspace_record_mut(workspace)?.slots.remove(key)?;
+        let record = self.workspace_record_mut(workspace)?;
+        let removed = record.slots.remove(key)?;
         if removed {
+            follow_unowned(record);
             self.managed.forget_slot(workspace, key);
             self.content_revision += 1;
         }
         Ok(removed)
     }
 
-    /// Drop a baseline slot's override, so it follows the provider again.
+    /// Drop a baseline slot's override or tombstone, so it follows the
+    /// provider again.
     pub fn reattach_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
-        let reattached = self.workspace_record_mut(workspace)?.slots.reattach(key);
+        let record = self.workspace_record_mut(workspace)?;
+        let reattached = record.slots.reattach(key);
         if reattached {
+            follow_unowned(record);
             self.content_revision += 1;
         }
         Ok(reattached)
+    }
+
+    /// Set the user's name for a workspace over the provider's, or drop it
+    /// with `None`. Returns whether it changed.
+    pub fn set_workspace_name(
+        &mut self,
+        workspace: WorkspaceId,
+        name: Option<String>,
+    ) -> Result<bool, String> {
+        let slots = &mut self.workspace_record_mut(workspace)?.slots;
+        let changed = slots.name != name;
+        slots.name = name;
+        if changed {
+            self.content_revision += 1;
+        }
+        Ok(changed)
+    }
+
+    /// Set the user's mood for a workspace over the provider's, or drop it
+    /// with `None`. Returns whether it changed.
+    pub fn set_workspace_mood(
+        &mut self,
+        workspace: WorkspaceId,
+        mood: Option<String>,
+    ) -> Result<bool, String> {
+        let slots = &mut self.workspace_record_mut(workspace)?.slots;
+        let changed = slots.mood != mood;
+        slots.mood = mood;
+        if changed {
+            self.content_revision += 1;
+        }
+        Ok(changed)
+    }
+
+    /// The host has dealt with the live instance a rebind replaced: a
+    /// `keep-previous` slot's previous instance, or the instance of a slot
+    /// the provider removed. Returns whether there was one.
+    pub fn release_slot_previous(
+        &mut self,
+        workspace: WorkspaceId,
+        key: &str,
+    ) -> Result<bool, String> {
+        let released = self
+            .workspace_record_mut(workspace)?
+            .slots
+            .release_departed(key);
+        if released {
+            self.content_revision += 1;
+        }
+        Ok(self.managed.release_previous(workspace, key) || released)
+    }
+
+    /// A workspace's overlay: its edit set, baseline version and what the
+    /// host should know about it (removed slots, departed instances).
+    pub fn overlay(&self, workspace: WorkspaceId) -> Result<crate::slots::OverlayView, String> {
+        let record = self.workspace_record(workspace)?;
+        Ok(crate::slots::OverlayView::new(
+            &record.slots,
+            record.arrangement.as_ref(),
+        ))
+    }
+
+    /// The workspace's edit set as an Overlay Sync proposal: the edits and
+    /// the baseline version they apply to, as KDL. Read-only.
+    pub fn export_overlay(&self, workspace: WorkspaceId) -> Result<String, String> {
+        let record = self.workspace_record(workspace)?;
+        Ok(crate::records::encode_proposal(
+            workspace,
+            record.subject.as_ref(),
+            &crate::slots::EditSet::new(&record.slots, record.arrangement.as_ref()),
+        ))
     }
 
     /// Plan one slot, given the identity of the resolution the host applied
@@ -1108,7 +1223,13 @@ impl Sidebar {
         let stored = record.arrangement.get_or_insert_with(Default::default);
         let before = stored.generation;
         let mut next = || before + 1;
-        let result = stored.commit(doc, expected, &slots, &mut next);
+        let result = stored.commit(
+            doc,
+            expected,
+            record.slots.baseline.as_ref(),
+            &slots,
+            &mut next,
+        );
         if stored.generation == 0 {
             record.arrangement = None;
         }
@@ -1116,6 +1237,38 @@ impl Sidebar {
             .as_ref()
             .is_ok_and(|commit| commit.generation != before)
         {
+            self.content_revision += 1;
+        }
+        result
+    }
+
+    /// Settle a provider change to an arrangement the user owns: keep the
+    /// user's, or follow the provider's again (which also drops soft
+    /// overrides). Returns the generation after the call.
+    pub fn resolve_arrangement(
+        &mut self,
+        workspace: WorkspaceId,
+        choice: crate::slots::Resolve,
+        expected: u64,
+    ) -> Result<u64, crate::slots::ArrangementError> {
+        let record = self
+            .workspace_record_mut(workspace)
+            .map_err(crate::slots::ArrangementError::Invalid)?;
+        let slots = record.slots.slots();
+        let stored = record.arrangement.get_or_insert_with(Default::default);
+        let before = stored.clone();
+        let mut next = || before.generation + 1;
+        let result = stored.resolve(
+            choice,
+            expected,
+            record.slots.baseline.as_ref(),
+            &slots,
+            &mut next,
+        );
+        if stored.generation == 0 {
+            record.arrangement = None;
+        }
+        if record.arrangement.as_ref() != Some(&before) && before.generation != 0 {
             self.content_revision += 1;
         }
         result
@@ -1219,6 +1372,66 @@ impl Sidebar {
             self.sidebar_arrangement.view(&self.sidebar_declared()),
             &self.sidebar_report,
         )
+    }
+
+    /// The Dashboard's relation to its template: the template version, the
+    /// one the imported record was made against, and every saved key that no
+    /// longer resolves (kept, never dropped), including pinned Views that
+    /// have gone.
+    pub fn dashboard_overlay(&self) -> crate::dashboard_overlay::DashboardOverlay {
+        use crate::dashboard_overlay::{self as overlay, KeyKind};
+        let (loops, display) = self.state.template_names();
+        let declared = self.sidebar_declared();
+        let loop_resolves = |name: &str| {
+            loops.contains(name) || name == crate::presentation::UNPLACED_WORKSPACES_SECTION
+        };
+        let key_resolves =
+            |key: &crate::PlacementKey| key.0.iter().all(|s| loop_resolves(&s.loop_name));
+        let mut unresolved = Vec::new();
+        for name in self.state.recorded_display_variables().keys() {
+            if !display.contains(name) {
+                unresolved.push((KeyKind::Display, name.clone()));
+            }
+        }
+        for key in self.state.collapsed_placements() {
+            if !key_resolves(key) {
+                unresolved.push((KeyKind::Collapse, overlay::placement_key_text(key)));
+            }
+        }
+        for key in self.state.sibling_orders().keys() {
+            if !(declared.resolves(&key.region)
+                && loop_resolves(&key.binding)
+                && key_resolves(&key.parent))
+            {
+                unresolved.push((KeyKind::Order, overlay::loop_key_text(key)));
+            }
+        }
+        for key in self.state.placement_variables().keys() {
+            if !key_resolves(key) {
+                unresolved.push((KeyKind::Variable, overlay::placement_key_text(key)));
+            }
+        }
+        for key in crate::sidebar_arrangement::unresolved(&declared, &self.sidebar_arrangement) {
+            unresolved.push((KeyKind::Section, key));
+        }
+        for (entity, facts) in &self.local {
+            let Some(crate::MetadataValue::Text(view)) = facts.get(overlay::VIEW) else {
+                continue;
+            };
+            let resolves = overlay::parse_view(view).is_ok_and(|(workspace, key)| {
+                self.workspaces
+                    .get(&workspace)
+                    .is_some_and(|entry| entry.record.slots.keys().contains(&key))
+            });
+            if !resolves {
+                unresolved.push((KeyKind::Pin, entity.id.clone()));
+            }
+        }
+        overlay::DashboardOverlay {
+            template: self.template_version.clone(),
+            recorded: self.template_recorded.clone(),
+            unresolved,
+        }
     }
 
     /// The sidebar arrangement's generation: 0 before anything is stored,
@@ -1594,6 +1807,15 @@ fn slot_source(
         },
         (_, _, Content::Local(recipe)) => SlotSource::Local(recipe.clone()),
     }
+}
+
+/// Re-derive an arrangement the user doesn't own after a slot edit that
+/// hides or shows a baseline slot. An owned one is left to the host.
+fn follow_unowned(record: &mut WorkspaceRecord) -> bool {
+    if record.arrangement.as_ref().is_some_and(|a| !a.owned) {
+        return follow_slots(record);
+    }
+    false
 }
 
 /// Bring a record's arrangement up to date with its slots. Returns whether

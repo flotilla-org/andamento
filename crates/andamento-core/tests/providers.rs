@@ -592,7 +592,7 @@ fn version_1_records_import_under_the_default_provider() {
         assert_eq!(live, one);
     }
     let dashboard = sidebar.export_record("dashboard").unwrap();
-    assert!(dashboard.starts_with(r#"andamento-record "dashboard" version=4"#));
+    assert!(dashboard.starts_with(r#"andamento-record "dashboard" version=5"#));
     assert!(
         dashboard.contains(r#"at "project" "project" "p" provider="sub-1""#),
         "{dashboard}"

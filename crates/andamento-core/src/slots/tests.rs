@@ -92,7 +92,10 @@ fn user_slots_overrides_and_reattachment() {
     assert_eq!(keys, ["a", "b", "u:1"]);
     assert!(all[1].detached && all[1].in_baseline);
     assert_eq!(all[1].spec, shell("y"));
-    assert_eq!(slots.overrides["b"].against, facet("b"));
+    assert_eq!(
+        slots.edits["b"].content.as_ref().unwrap().against,
+        facet("b")
+    );
     assert!(!all[2].detached && !all[2].in_baseline);
     // Setting the baseline's own spec reattaches it.
     assert!(slots.set("b", facet("b"), RebindPolicy::Replace).unwrap());
@@ -100,8 +103,13 @@ fn user_slots_overrides_and_reattachment() {
     assert!(slots.set("b", shell("y"), RebindPolicy::Replace).unwrap());
     assert!(slots.reattach("b"));
     assert!(!slots.reattach("b"));
-    // A baseline slot is the provider's to remove.
-    assert!(slots.remove("a").is_err());
+    // Removing a baseline slot tombstones it; reattaching shows it again.
+    assert!(slots.remove("a").unwrap());
+    assert!(!slots.remove("a").unwrap());
+    assert!(!slots.keys().contains("a"));
+    assert_eq!(slots.hidden(), BTreeSet::from(["a".to_owned()]));
+    assert!(slots.reattach("a"));
+    assert!(slots.keys().contains("a"));
     assert!(slots.remove("u:1").unwrap());
     assert!(!slots.remove("u:1").unwrap());
 }
@@ -161,14 +169,16 @@ fn stale_or_invalid_commits_change_nothing() {
     let mut next = counter();
     let mut stored = StoredArrangement::default();
     let first = doc(tabs("1", &["a", "b"], Some("a")));
-    let commit = stored.commit(first.clone(), 0, &infos, &mut next).unwrap();
+    let commit = stored
+        .commit(first.clone(), 0, slots.baseline.as_ref(), &infos, &mut next)
+        .unwrap();
     assert_eq!(commit.generation, 1);
     assert!(commit.placed.is_empty() && commit.gone.is_empty());
     let before = stored.clone();
     // A commit made against generation 0 is now stale.
     let other = doc(tabs("1", &["b", "a"], Some("b")));
     assert_eq!(
-        stored.commit(other.clone(), 0, &infos, &mut next),
+        stored.commit(other.clone(), 0, slots.baseline.as_ref(), &infos, &mut next),
         Err(ArrangementError::Stale { current: 1 })
     );
     assert_eq!(stored, before);
@@ -178,7 +188,7 @@ fn stale_or_invalid_commits_change_nothing() {
         doc(tabs("1", &["a", "a"], None)),
     ] {
         assert!(matches!(
-            stored.commit(invalid, 1, &infos, &mut next),
+            stored.commit(invalid, 1, slots.baseline.as_ref(), &infos, &mut next),
             Err(ArrangementError::Invalid(_))
         ));
         assert_eq!(stored, before);
@@ -186,14 +196,14 @@ fn stale_or_invalid_commits_change_nothing() {
     // Committing the same document again keeps its generation.
     assert_eq!(
         stored
-            .commit(first, 1, &infos, &mut next)
+            .commit(first, 1, slots.baseline.as_ref(), &infos, &mut next)
             .unwrap()
             .generation,
         1
     );
     assert_eq!(
         stored
-            .commit(other, 1, &infos, &mut next)
+            .commit(other, 1, slots.baseline.as_ref(), &infos, &mut next)
             .unwrap()
             .generation,
         2
@@ -216,7 +226,9 @@ fn reconciling_places_new_slots_and_reports_gone_ones() {
             tabs("4", &["a"], Some("a")),
         ],
     ));
-    let commit = stored.commit(host, 0, &slots.slots(), &mut next).unwrap();
+    let commit = stored
+        .commit(host, 0, slots.baseline.as_ref(), &slots.slots(), &mut next)
+        .unwrap();
     assert_eq!(commit.placed, ["b"]);
     assert_eq!(stored.doc.tabs(), ["b", "a"]);
     assert_eq!(stored.placed, BTreeSet::from(["b".to_owned()]));
@@ -242,7 +254,9 @@ fn reconciling_places_new_slots_and_reports_gone_ones() {
     assert!(!stored.follow(slots.baseline.as_ref(), &infos, &mut next));
     // The host may keep the gone tab in its commit; it may not add one.
     let host = doc(tabs("1", &["c", "b", "a"], Some("c")));
-    let commit = stored.commit(host, 2, &infos, &mut next).unwrap();
+    let commit = stored
+        .commit(host, 2, slots.baseline.as_ref(), &infos, &mut next)
+        .unwrap();
     assert_eq!(commit.gone, ["a"]);
     assert!(commit.placed.is_empty());
     assert!(stored.placed.is_empty(), "the host has seen every tab");
@@ -275,6 +289,7 @@ fn an_uncommitted_arrangement_follows_the_hint() {
         .commit(
             doc(tabs("1", &["a", "b"], None)),
             generation,
+            slots.baseline.as_ref(),
             &slots.slots(),
             &mut next,
         )

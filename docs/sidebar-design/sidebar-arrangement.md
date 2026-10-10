@@ -179,9 +179,14 @@ The Sections menu lists the CLOSED notes.
 Poll `andamento_sidebar_arrangement_generation` to learn when to read it
 again; it is cheap and builds no snapshot.
 
+The unresolved keys are also the `Section` entries of the Dashboard's
+template drift report (`dashboard_overlay`, see [Workspace
+Overlay](workspace-overlay.md#the-dashboard-over-its-template)), beside its
+display, collapse, order, variable and pin keys.
+
 ## The record
 
-The `dashboard` record, version 4, holds the arrangement once anything is
+The `dashboard` record (version 4 and later) holds the arrangement once anything is
 stored:
 
 ```kdl
