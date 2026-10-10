@@ -48,10 +48,7 @@ fn config() -> String {
 }
 
 fn entity(kind: &str, id: &str) -> EntityRef {
-    EntityRef {
-        kind: kind.into(),
-        id: id.into(),
-    }
+    EntityRef::local(kind, id)
 }
 fn text(s: &str) -> MetadataValue {
     MetadataValue::Text(s.into())
@@ -256,17 +253,17 @@ fn records_are_named_for_the_dashboard_and_registered_workspaces() {
         .export_record(&format!("workspace/{WORKER}"))
         .unwrap();
     assert!(
-        workspace.contains("subject \"vessel\" \"v\""),
+        workspace.contains("subject \"vessel\" \"v\" provider=\"local\""),
         "{workspace}"
     );
     assert!(
         workspace
-            .contains("retained \"vessel\" \"v\" label=\"Vee\" status=\"ended\" last-seen=150"),
+            .contains("retained \"vessel\" \"v\" provider=\"local\" label=\"Vee\" status=\"ended\" last-seen=150"),
         "{workspace}"
     );
-    assert!(
-        workspace.contains("retained \"project\" \"p\" label=\"Project P\" status=\"retained\"")
-    );
+    assert!(workspace.contains(
+        "retained \"project\" \"p\" provider=\"local\" label=\"Project P\" status=\"retained\""
+    ));
     assert!(workspace.contains("fact \"flotilla.project\" \"p\""));
     // Only facts placement reads are kept, not the full fact set.
     assert!(!workspace.contains("action.primary.recipe"), "{workspace}");
@@ -413,9 +410,9 @@ fn other_versions_and_bad_records_are_rejected_without_change() {
         .collect::<Vec<_>>();
     let revision = sidebar.revision();
     for (name, text) in &records {
-        let future = text.replacen("version=1", "version=2", 1);
+        let future = text.replacen("version=2", "version=3", 1);
         let error = sidebar.import_record(name, &future).unwrap_err();
-        assert!(error.contains("version 2"), "{error}");
+        assert!(error.contains("version 3"), "{error}");
         // A record for another name, broken KDL and a malformed known node.
         assert!(sidebar
             .import_record(name, "andamento-record \"workspace/9\" version=1")
@@ -436,7 +433,7 @@ fn other_versions_and_bad_records_are_rejected_without_change() {
         )
         .is_err());
     assert!(sidebar
-        .import_record("workspace/9", "andamento-record \"workspace/9\" version=2")
+        .import_record("workspace/9", "andamento-record \"workspace/9\" version=3")
         .is_err());
     assert!(!sidebar
         .registered_workspaces()

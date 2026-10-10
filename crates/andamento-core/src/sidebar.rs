@@ -58,9 +58,23 @@ pub enum Request {
     Configure {
         kdl: String,
     },
+    /// Apply patches from `provider` (a subscription ID), or from the
+    /// default provider when it is absent.
     Apply {
         now_ms: u64,
         patches: Vec<MetadataPatch>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+    },
+    SetDefaultProvider {
+        provider: String,
+    },
+    RetractProvider {
+        provider: String,
+    },
+    SetProviderStale {
+        provider: String,
+        stale: bool,
     },
     Observe {
         workspaces: Vec<Workspace>,
@@ -203,8 +217,27 @@ impl Sidebar {
                 self.configure(&kdl)?;
                 vec![]
             }
-            Request::Apply { now_ms, patches } => {
-                self.apply(now_ms, patches);
+            Request::Apply {
+                now_ms,
+                patches,
+                provider,
+            } => {
+                match provider {
+                    Some(provider) => self.apply_from(now_ms, &provider, patches)?,
+                    None => self.apply(now_ms, patches),
+                }
+                vec![]
+            }
+            Request::SetDefaultProvider { provider } => {
+                self.set_default_provider(&provider)?;
+                vec![]
+            }
+            Request::RetractProvider { provider } => {
+                self.retract_provider(&provider);
+                vec![]
+            }
+            Request::SetProviderStale { provider, stale } => {
+                self.set_provider_stale(&provider, stale);
                 vec![]
             }
             Request::Observe { workspaces, panes } => {
@@ -276,9 +309,94 @@ impl Sidebar {
         Ok(())
     }
 
+    /// The provider of entities that name none: the one [`apply`](Self::apply)
+    /// stamps, and the one entities named by kind and ID alone belong to.
+    /// It is [`LOCAL_PROVIDER`](crate::LOCAL_PROVIDER) until the host sets it.
+    pub fn default_provider(&self) -> &str {
+        self.state.default_provider()
+    }
+
+    /// Set the default provider, so a host can move to providers gradually.
+    /// Set it before applying facts or importing records.
+    pub fn set_default_provider(&mut self, provider: &str) -> Result<(), String> {
+        self.state.set_default_provider(provider)?;
+        self.invalidate();
+        Ok(())
+    }
+
     /// Apply a drained batch before requesting a snapshot. Time is monotonic
     /// milliseconds in this instance, supplied by the host; an empty batch is a tick.
+    /// The patches come from the default provider.
     pub fn apply(&mut self, now_ms: u64, patches: impl IntoIterator<Item = MetadataPatch>) {
+        let provider = self.state.default_provider().to_owned();
+        self.apply_patches(now_ms, &provider, patches);
+    }
+
+    /// Apply a drained batch from `provider`, the subscription ID the host
+    /// received it on. The provider is stamped over every entity the patches
+    /// name; a patch never names its own.
+    pub fn apply_from(
+        &mut self,
+        now_ms: u64,
+        provider: &str,
+        patches: impl IntoIterator<Item = MetadataPatch>,
+    ) -> Result<(), String> {
+        if provider.is_empty() {
+            return Err("a provider needs a name".into());
+        }
+        self.apply_patches(now_ms, provider, patches);
+        Ok(())
+    }
+
+    /// Remove all of a provider's facts at once, as when its subscription is
+    /// removed. What open workspaces and refs showed of its entities is
+    /// retained, as when facts expire: a workspace keeps its subject and its
+    /// row stays where it was, and a ref keeps presenting its target.
+    /// Returns whether anything changed.
+    pub fn retract_provider(&mut self, provider: &str) -> bool {
+        let subjects = self.state.workspace_subjects();
+        if !subjects.is_empty() {
+            // Paths come from the current snapshot; make sure there is one.
+            self.snapshot_shared();
+        }
+        let mut changed = self.retain_workspace_paths(&subjects);
+        // A workspace bound to its subject by the provider's own facts keeps
+        // the binding.
+        for (id, subject) in &subjects {
+            if subject.provider == provider {
+                changed |= self.state.bind_workspace_subject(*id, Some(subject));
+            }
+        }
+        changed |= self.state.retract_provider(provider);
+        self.maintain(changed);
+        changed
+    }
+
+    /// Mark a provider stale, when its connection drops, or fresh again when
+    /// it returns. A stale provider's facts are kept as they were and none
+    /// expires while it stays stale; snapshot nodes presenting its entities
+    /// are flagged stale. Fresh again, each TTL fact that was live then
+    /// renews its lease from now, as though the provider had reasserted it,
+    /// so one it doesn't reassert expires a TTL later. Returns whether the
+    /// provider's state changed.
+    pub fn set_provider_stale(&mut self, provider: &str, stale: bool) -> bool {
+        let changed = self.state.set_provider_stale(provider, stale);
+        if changed {
+            self.invalidate();
+        }
+        changed
+    }
+
+    pub fn provider_is_stale(&self, provider: &str) -> bool {
+        self.state.provider_is_stale(provider)
+    }
+
+    fn apply_patches(
+        &mut self,
+        now_ms: u64,
+        provider: &str,
+        patches: impl IntoIterator<Item = MetadataPatch>,
+    ) {
         let _phase = crate::profile::span("apply");
         let maintenance = crate::profile::span("workspace-maintenance");
         let subjects = self.state.workspace_subjects();
@@ -287,7 +405,7 @@ impl Sidebar {
         changed |= self.state.advance_time(now_ms);
         let patch_phase = crate::profile::span("patch-application");
         for patch in patches {
-            changed |= self.state.apply_metadata_patch(patch);
+            changed |= self.state.apply_provider_patch(provider, patch);
         }
         drop(patch_phase);
         let maintenance = crate::profile::span("workspace-maintenance");
@@ -366,10 +484,27 @@ impl Sidebar {
             subjects.contains_key(id) && !retained_workspace_expired(&self.state, subjects_on_path)
         });
         let saved = self.saved_subjects();
-        self.state.retain_workspace_paths(
-            self.retained_paths.values().flatten().cloned().collect(),
-            &saved,
-        )
+        let mut retained: BTreeSet<EntityRef> =
+            self.retained_paths.values().flatten().cloned().collect();
+        retained.extend(self.ref_targets());
+        self.state.retain_workspace_paths(retained, &saved)
+    }
+
+    /// The entities local refs (pins) present. They are retained like the
+    /// subjects on open workspace paths, so a ref keeps presenting its target
+    /// when the target's facts go away.
+    fn ref_targets(&self) -> impl Iterator<Item = EntityRef> + '_ {
+        use crate::presentation::system;
+        self.local
+            .iter()
+            .filter(|(entity, _)| entity.kind == system::REF)
+            .filter_map(|(_, facts)| match facts.get(system::TARGET) {
+                Some(crate::MetadataValue::EntityRefs(refs)) if refs.len() == 1 => {
+                    Some(refs[0].clone())
+                }
+                _ => None,
+            })
+            .filter(|target| !system::is_system(&target.kind))
     }
 
     /// Subjects recorded by every workspace record. Where records disagree, an
@@ -469,7 +604,16 @@ impl Sidebar {
 
     /// Set the host-owned order of one sibling run, identified by the loop key
     /// every node in it carries. An empty order returns the run to data order.
-    pub fn set_sibling_order(&mut self, loop_key: crate::PlacementLoopKey, order: Vec<EntityRef>) {
+    pub fn set_sibling_order(
+        &mut self,
+        mut loop_key: crate::PlacementLoopKey,
+        mut order: Vec<EntityRef>,
+    ) {
+        let provider = self.state.default_provider().to_owned();
+        loop_key.fill_provider(&provider);
+        for entity in &mut order {
+            entity.fill_provider(&provider);
+        }
         self.state
             .apply_rail_ui_action(RailUiAction::SetSiblingOrder { loop_key, order });
         self.invalidate();
@@ -491,12 +635,25 @@ impl Sidebar {
 
     /// Set a local section, group or ref (see [`LOCAL_KINDS`]), replacing all
     /// its facts. Andamento owns local entities and keeps them in the
-    /// dashboard record. Lists of text and group paths are not allowed.
+    /// dashboard record; their provider is [`LOCAL_PROVIDER`](crate::LOCAL_PROVIDER).
+    /// Lists of text and group paths are not allowed. Entity references that
+    /// name no provider get the default provider.
     pub fn set_local(
         &mut self,
-        entity: EntityRef,
-        facts: BTreeMap<String, crate::MetadataValue>,
+        mut entity: EntityRef,
+        mut facts: BTreeMap<String, crate::MetadataValue>,
     ) -> Result<(), String> {
+        entity.fill_provider(crate::LOCAL_PROVIDER);
+        if entity.provider != crate::LOCAL_PROVIDER {
+            return Err(format!(
+                "local entities have the {:?} provider, not {:?}",
+                crate::LOCAL_PROVIDER,
+                entity.provider
+            ));
+        }
+        for value in facts.values_mut() {
+            value.fill_provider(self.state.default_provider());
+        }
         if !LOCAL_KINDS.contains(&entity.kind.as_str()) {
             return Err(format!(
                 "local entities are {}, not {:?}",
@@ -521,6 +678,9 @@ impl Sidebar {
 
     /// Remove a local entity. Returns whether there was one.
     pub fn remove_local(&mut self, entity: &EntityRef) -> bool {
+        let mut entity = entity.clone();
+        entity.fill_provider(crate::LOCAL_PROVIDER);
+        let entity = &entity;
         if !self.local.contains_key(entity) {
             return false;
         }
@@ -720,13 +880,23 @@ impl Sidebar {
     pub fn import_record(&mut self, name: &str, kdl: &str) -> Result<(), String> {
         match RecordName::parse(name)? {
             RecordName::Dashboard => {
-                let record = DashboardRecord::decode(kdl)?;
+                let record = DashboardRecord::decode(kdl, self.state.default_provider())?;
                 if let Some(entity) = record
                     .local
                     .keys()
                     .find(|entity| !LOCAL_KINDS.contains(&entity.kind.as_str()))
                 {
                     return Err(format!("{:?} is not a local entity kind", entity.kind));
+                }
+                if let Some(entity) = record
+                    .local
+                    .keys()
+                    .find(|entity| entity.provider != crate::LOCAL_PROVIDER)
+                {
+                    return Err(format!(
+                        "local entity {:?} has provider {:?}",
+                        entity.id, entity.provider
+                    ));
                 }
                 self.state.restore_dashboard(&record);
                 let mut patches = Vec::new();
@@ -748,7 +918,7 @@ impl Sidebar {
                 self.maintain(true);
             }
             RecordName::Workspace(id) => {
-                let record = WorkspaceRecord::decode(kdl, id)?;
+                let record = WorkspaceRecord::decode(kdl, id, self.state.default_provider())?;
                 self.state
                     .bind_workspace_subject(id, record.subject.as_ref());
                 self.registered.insert(id);
@@ -816,6 +986,7 @@ impl Sidebar {
     /// Exact catalog identity, including hidden and retained ended subjects.
     /// Cache at most 64 cards (including misses), and discard on revision change.
     pub fn detail_card(&self, entity: &EntityRef) -> Option<crate::detail::DetailCard> {
+        let entity = &self.with_provider(entity);
         if let Some(card) = self.details.borrow().get(entity) {
             return card.clone();
         }
@@ -839,10 +1010,27 @@ impl Sidebar {
     }
 
     pub fn subject_url(&self, entity: &EntityRef) -> Option<String> {
-        self.state.subject_url(entity)
+        self.state.subject_url(&self.with_provider(entity))
     }
 
-    pub fn dispatch(&mut self, action: Action) -> Result<Vec<HostEffect>, String> {
+    /// `entity`, with the default provider if it names none.
+    fn with_provider(&self, entity: &EntityRef) -> EntityRef {
+        let mut entity = entity.clone();
+        entity.fill_provider(self.state.default_provider());
+        entity
+    }
+
+    pub fn dispatch(&mut self, mut action: Action) -> Result<Vec<HostEffect>, String> {
+        let provider = self.state.default_provider().to_owned();
+        match &mut action {
+            Action::CopySubjectUrl { entity } | Action::Activate { entity } => {
+                entity.fill_provider(&provider)
+            }
+            Action::ActivatePlacement { key }
+            | Action::TogglePlacement { key }
+            | Action::SetVariable { key, .. } => key.fill_provider(&provider),
+            Action::ToggleDisplayVariable { .. } => {}
+        }
         match action {
             Action::CopySubjectUrl { entity } => {
                 let url = self
@@ -1058,10 +1246,7 @@ mod evaluation_tests {
 
     const CONFIG: &str = include_str!("../tests/fixtures/sidebar.kdl");
     fn entity() -> EntityRef {
-        EntityRef {
-            kind: "vessel".into(),
-            id: "v".into(),
-        }
+        EntityRef::local("vessel", "v")
     }
     fn patch(source: &str, label: &str, ttl: Option<u64>, precedence: i64) -> MetadataPatch {
         MetadataPatch {
@@ -1094,10 +1279,7 @@ mod evaluation_tests {
         sidebar.apply(
             100,
             [MetadataPatch {
-                target: MetadataTarget::Entity(EntityRef {
-                    kind: "project".into(),
-                    id: "p".into(),
-                }),
+                target: MetadataTarget::Entity(EntityRef::local("project", "p")),
                 source_id: "base".into(),
                 unset: vec![],
                 set: [(
@@ -1290,10 +1472,7 @@ mod evaluation_tests {
         // Missing, empty and invalid identities are cached without growing forever.
         for i in 0..200 {
             assert!(sidebar
-                .detail_card(&EntityRef {
-                    kind: "missing".into(),
-                    id: i.to_string()
-                })
+                .detail_card(&EntityRef::local("missing", i.to_string()))
                 .is_none());
             assert!(sidebar.details.borrow().len() <= 64);
         }

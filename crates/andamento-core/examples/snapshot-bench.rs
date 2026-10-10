@@ -12,10 +12,7 @@ fn main() {
         let mut sidebar = Sidebar::new(&config).unwrap();
         let patches = (0..n)
             .map(|i| MetadataPatch {
-                target: MetadataTarget::Entity(EntityRef {
-                    kind: "vessel".into(),
-                    id: format!("v{i}"),
-                }),
+                target: MetadataTarget::Entity(EntityRef::local("vessel", format!("v{i}"))),
                 source_id: "bench".into(),
                 unset: vec![],
                 set: [
@@ -47,10 +44,7 @@ fn main() {
             sidebar.apply(
                 100,
                 [MetadataPatch {
-                    target: MetadataTarget::Entity(EntityRef {
-                        kind: "vessel".into(),
-                        id: "v0".into(),
-                    }),
+                    target: MetadataTarget::Entity(EntityRef::local("vessel", "v0")),
                     source_id: "bench".into(),
                     unset: vec![],
                     set: BTreeMap::from([(

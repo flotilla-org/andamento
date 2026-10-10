@@ -1704,10 +1704,7 @@ mod tests {
         let mut model = model_with_tab(WorkspaceId::from(1), "fixture");
         let key = andamento_shared::PlacementKey(vec![andamento_shared::PlacementSegment {
             loop_name: "project".into(),
-            entity: andamento_shared::EntityRef {
-                kind: "project".into(),
-                id: "p".into(),
-            },
+            entity: andamento_shared::EntityRef::local("project", "p"),
         }]);
         model.inspected_node = Some(NodeKey::Placement(key.clone()));
         model.template_config.effective_variables =
@@ -1725,14 +1722,8 @@ mod tests {
     fn inspect_lists_unmatched_catalog_count_and_ids() {
         let mut model = model_with_tab(WorkspaceId::from(7), "workspace");
         model.unmatched_entities = vec![
-            andamento_shared::EntityRef {
-                kind: "novel".into(),
-                id: "unmatched-one".into(),
-            },
-            andamento_shared::EntityRef {
-                kind: "repo".into(),
-                id: "unmatched-two".into(),
-            },
+            andamento_shared::EntityRef::local("novel", "unmatched-one"),
+            andamento_shared::EntityRef::local("repo", "unmatched-two"),
         ];
         let mut frame = ConfigUiFrame::new(100, 100);
         push_inspect_page(&mut frame, Some(&model), None);

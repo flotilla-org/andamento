@@ -394,9 +394,9 @@ static void check_records(const char *config_path, const char *patches_path) {
     AndamentoBytes dashboard = {0}, workspace = {0}, again = {0};
     ok(andamento_record_export(h, T("dashboard"), &dashboard, &error));
     ok(andamento_record_export(h, workspace_name, &workspace, &error));
-    assert(has(dashboard, "andamento-record \"dashboard\" version=1"));
+    assert(has(dashboard, "andamento-record \"dashboard\" version=2"));
     assert(has(dashboard, "display \"show-issues\" false"));
-    assert(has(dashboard, "local \".group\" \"g1\""));
+    assert(has(dashboard, "local \".group\" \"g1\" provider=\"local\""));
     assert(!has(dashboard, "\"gone\""));
     expected_error(andamento_record_export(h, T("nonsense"), &again, &error));
     expected_error(andamento_record_export(h, T("dashboard"), NULL, &error));
@@ -415,12 +415,99 @@ static void check_records(const char *config_path, const char *patches_path) {
     /* Another version, or another record's name, changes nothing. */
     uint64_t imported = andamento_record_generation(fresh, T("dashboard"), &error);
     expected_error(andamento_record_import(fresh, T("dashboard"),
-        T("andamento-record \"dashboard\" version=2"), &error));
+        T("andamento-record \"dashboard\" version=3"), &error));
     expected_error(andamento_record_import(fresh, T("dashboard"), (AndamentoText){workspace.data, workspace.len}, &error));
     assert(andamento_record_generation(fresh, T("dashboard"), &error) == imported);
     andamento_bytes_free(dashboard); andamento_bytes_free(workspace);
     andamento_bytes_free((AndamentoBytes){0});
     andamento_destroy(fresh); andamento_destroy(h);
+}
+
+/* The project node from provider, or a zeroed node. */
+static AndamentoNode project_from(AndamentoSnapshot *s, const char *provider, uint32_t *stale) {
+    AndamentoNode n; AndamentoText p;
+    for (size_t i = 0; i < andamento_snapshot_node_count(s); ++i) {
+        assert(andamento_snapshot_node(s, i, &n));
+        if (n.is_section || !eq(n.entity_kind, "project")) continue;
+        assert(andamento_snapshot_node_provider(s, i, &p, stale));
+        if (eq(p, provider)) return n;
+    }
+    return (AndamentoNode){0};
+}
+static size_t count_kind(AndamentoSnapshot *s, const char *kind) {
+    size_t count = 0; AndamentoNode n;
+    for (size_t i = 0; i < andamento_snapshot_node_count(s); ++i) {
+        assert(andamento_snapshot_node(s, i, &n));
+        count += !n.is_section && eq(n.entity_kind, kind);
+    }
+    return count;
+}
+static void check_providers(const char *config_path) {
+    Andamento *h = fixture(config_path, NULL);
+    /* The same kind and ID from two subscriptions are two entities. */
+    AndamentoFact project[] = {
+        {.key=T("flotilla.project"), .kind=ANDAMENTO_FACT_TEXT, .text=T("p"),
+         .has_ttl=1, .ttl_ms=50},
+        {.key=T("display.label"), .kind=ANDAMENTO_FACT_TEXT, .text=T("One"),
+         .has_ttl=1, .ttl_ms=50},
+    };
+    ok(andamento_apply_entity_from(h, 100, T("sub-1"), T("project"), T("p"), T("fixture"), project, 2, &error));
+    project[1].text = T("Two");
+    ok(andamento_apply_entity_from(h, 100, T("sub-2"), T("project"), T("p"), T("fixture"), project, 2, &error));
+    expected_error(andamento_apply_entity_from(h, 100, T(""), T("project"), T("p"), T("fixture"), project, 2, &error));
+    /* An ABI 2 call keeps working, under the default provider. */
+    project[1].text = T("Local"); project[0].has_ttl = project[1].has_ttl = 0;
+    ok(andamento_apply_entity(h, 100, T("project"), T("p"), T("fixture"), project, 2, &error));
+    AndamentoSnapshot *s = snapshot(h);
+    assert(count_kind(s, "project") == 3);
+    uint32_t stale = 7;
+    assert(eq(project_from(s, "sub-1", &stale).label, "One") && stale == 0);
+    assert(eq(project_from(s, "sub-2", NULL).label, "Two"));
+    assert(eq(project_from(s, "local", NULL).label, "Local"));
+    AndamentoText key_one = project_from(s, "sub-1", NULL).key, key_two = project_from(s, "sub-2", NULL).key;
+    assert(key_one.len != key_two.len || memcmp(key_one.data, key_two.data, key_one.len));
+    AndamentoText provider;
+    assert(!andamento_snapshot_node_provider(s, 0, &provider, NULL)); /* a section */
+    andamento_snapshot_release(s);
+    /* A stale provider's facts outlive their TTL and are flagged. */
+    ok(andamento_provider_set_stale(h, T("sub-1"), 1, &error));
+    ok(andamento_tick(h, 1000, &error));
+    s = snapshot(h);
+    assert(eq(project_from(s, "sub-1", &stale).label, "One") && stale == 1);
+    assert(project_from(s, "sub-2", NULL).label.data == NULL); /* expired */
+    andamento_snapshot_release(s);
+    /* Fresh again, the lease restarts now. */
+    ok(andamento_provider_set_stale(h, T("sub-1"), 0, &error));
+    ok(andamento_tick(h, 1040, &error));
+    s = snapshot(h);
+    assert(eq(project_from(s, "sub-1", &stale).label, "One") && stale == 0);
+    andamento_snapshot_release(s);
+    /* Retraction removes a provider's facts in one call. */
+    ok(andamento_provider_retract(h, T("sub-1"), &error));
+    s = snapshot(h);
+    assert(project_from(s, "sub-1", NULL).label.data == NULL);
+    assert(eq(project_from(s, "local", NULL).label, "Local"));
+    andamento_snapshot_release(s);
+    /* A patch never names its own provider: the host's is stamped over it. */
+    ok(andamento_apply_patch_json_from(h, 1040, T("sub-3"), T("{\"target\":{\"kind\":\"entity\",\"value\":{\"provider\":\"forged\",\"kind\":\"project\",\"id\":\"q\"}},\"source_id\":\"test\",\"set\":{\"display.label\":{\"value\":{\"type\":\"text\",\"value\":\"Q\"}}}}"), &error));
+    /* The default provider is the host's to set. */
+    expected_error(andamento_set_default_provider(h, T(""), &error));
+    ok(andamento_set_default_provider(h, T("sub-4"), &error));
+    project[1].text = T("Four");
+    ok(andamento_apply_entity(h, 1040, T("project"), T("p"), T("fixture"), project, 2, &error));
+    s = andamento_snapshot_acquire_details(h, &error); assert(s && !error);
+    assert(eq(project_from(s, "sub-3", NULL).label, "Q"));
+    assert(project_from(s, "forged", NULL).label.data == NULL);
+    assert(eq(project_from(s, "sub-4", NULL).label, "Four"));
+    /* Details: ABI 2 finds by the default provider, ABI 3 by any. */
+    size_t four = andamento_snapshot_detail_find(s, T("project"), T("p"));
+    assert(four != ANDAMENTO_NONE);
+    assert(andamento_snapshot_detail_provider(s, four, &provider) && eq(provider, "sub-4"));
+    size_t local = andamento_snapshot_detail_find3(s, (AndamentoEntity3){T("local"), T("project"), T("p")});
+    assert(local != ANDAMENTO_NONE && local != four);
+    assert(andamento_snapshot_detail_find3(s, (AndamentoEntity3){T("sub-1"), T("project"), T("p")}) == ANDAMENTO_NONE);
+    andamento_snapshot_release(s);
+    andamento_destroy(h);
 }
 
 int main(int argc, char **argv) {
@@ -432,6 +519,7 @@ int main(int argc, char **argv) {
     check_workdirs();
     check_sibling_order();
     check_region_hints();
+    check_providers(argv[1]);
     char *config = read_file(argv[1]);
     Andamento *h = andamento_create((const uint8_t *)config, strlen(config), &error);
     Andamento *other = andamento_create((const uint8_t *)config, strlen(config), &error);

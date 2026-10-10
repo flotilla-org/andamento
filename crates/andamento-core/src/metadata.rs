@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::{
     MetadataEntry, MetadataPatch, MetadataSourceEntry, MetadataTarget, MetadataValue,
@@ -22,11 +22,31 @@ impl CandidateEntry {
     }
 }
 
+/// An interned provider (subscription) name.
+type ProviderIx = u32;
+
+/// Who contributed a fact: the provider whose patch set it, and the
+/// producer's source ID. Facts with no provider are the core's or the host's
+/// own; neither retraction nor staleness touches them. The same source ID
+/// under two providers is two contributors.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct Contributor {
+    provider: Option<ProviderIx>,
+    source: String,
+}
+
 #[derive(Debug, Default)]
 pub struct MetadataStore {
-    entries: HashMap<EntityId, HashMap<String, BTreeMap<String, MetadataEntry>>>,
+    entries: HashMap<EntityId, HashMap<String, BTreeMap<Contributor, MetadataEntry>>>,
     target_ordinals: HashMap<EntityId, i64>,
+    /// Deadlines of the TTL facts that can expire: every one whose provider
+    /// is not stale.
     expiry_counts: BTreeMap<u64, usize>,
+    providers: Vec<String>,
+    provider_ixs: HashMap<String, ProviderIx>,
+    /// Stale providers, with the time each became stale. Their facts are
+    /// judged live as of that time, so none expires while it stays stale.
+    stale: BTreeMap<ProviderIx, u64>,
 }
 
 impl MetadataStore {
@@ -34,6 +54,55 @@ impl MetadataStore {
         self.entries.keys()
     }
 
+    fn intern(&mut self, provider: &str) -> ProviderIx {
+        if let Some(ix) = self.provider_ixs.get(provider) {
+            return *ix;
+        }
+        let ix = ProviderIx::try_from(self.providers.len()).expect("fewer than 2^32 providers");
+        self.providers.push(provider.to_owned());
+        self.provider_ixs.insert(provider.to_owned(), ix);
+        ix
+    }
+
+    fn contributor(&mut self, provider: Option<&str>, source: impl Into<String>) -> Contributor {
+        Contributor {
+            provider: provider.map(|p| self.intern(p)),
+            source: source.into(),
+        }
+    }
+
+    /// The contributor if its provider is known; an unknown provider has
+    /// contributed nothing.
+    fn existing_contributor(&self, provider: Option<&str>, source: &str) -> Option<Contributor> {
+        Some(Contributor {
+            provider: match provider {
+                Some(p) => Some(*self.provider_ixs.get(p)?),
+                None => None,
+            },
+            source: source.to_owned(),
+        })
+    }
+
+    /// The time `contributor`'s facts are judged live at: now, or when its
+    /// provider became stale.
+    fn liveness_time(&self, contributor: &Contributor, now: u64) -> u64 {
+        contributor
+            .provider
+            .and_then(|p| self.stale.get(&p))
+            .map_or(now, |since| (*since).min(now))
+    }
+
+    fn is_live(&self, contributor: &Contributor, entry: &MetadataEntry, now: u64) -> bool {
+        entry_is_live(entry, self.liveness_time(contributor, now))
+    }
+
+    fn indexed(&self, contributor: &Contributor) -> bool {
+        contributor
+            .provider
+            .is_none_or(|p| !self.stale.contains_key(&p))
+    }
+
+    /// Set a fact the core or host owns (no provider).
     pub fn set(
         &mut self,
         entity_id: EntityId,
@@ -41,38 +110,59 @@ impl MetadataStore {
         source_id: impl Into<String>,
         entry: MetadataEntry,
     ) {
+        let contributor = self.contributor(None, source_id);
+        self.set_contribution(entity_id, key.into(), contributor, entry);
+    }
+
+    fn set_contribution(
+        &mut self,
+        entity_id: EntityId,
+        key: String,
+        contributor: Contributor,
+        entry: MetadataEntry,
+    ) {
         self.target_ordinals
             .entry(entity_id.clone())
             .or_insert(entry.ordinal);
+        let indexed = self.indexed(&contributor);
         let deadline = entry.ttl_ms.map(|ttl| entry.updated_at.saturating_add(ttl));
         let previous = self
             .entries
             .entry(entity_id)
             .or_default()
-            .entry(key.into())
+            .entry(key)
             .or_default()
-            .insert(source_id.into(), entry);
-        if let Some(previous) = previous {
-            self.remove_expiry(&previous);
-        }
-        if let Some(deadline) = deadline {
-            *self.expiry_counts.entry(deadline).or_default() += 1;
+            .insert(contributor, entry);
+        if indexed {
+            if let Some(previous) = previous {
+                self.remove_expiry(&previous);
+            }
+            if let Some(deadline) = deadline {
+                *self.expiry_counts.entry(deadline).or_default() += 1;
+            }
         }
     }
 
+    /// Unset a fact the core or host owns (no provider).
     pub fn unset(
         &mut self,
         entity_id: &EntityId,
         key: &str,
         source_id: &str,
     ) -> Option<MetadataEntry> {
-        let Some(entity_entries) = self.entries.get_mut(entity_id) else {
-            return None;
-        };
-        let Some(key_entries) = entity_entries.get_mut(key) else {
-            return None;
-        };
-        let removed = key_entries.remove(source_id);
+        let contributor = self.existing_contributor(None, source_id)?;
+        self.unset_contribution(entity_id, key, &contributor)
+    }
+
+    fn unset_contribution(
+        &mut self,
+        entity_id: &EntityId,
+        key: &str,
+        contributor: &Contributor,
+    ) -> Option<MetadataEntry> {
+        let entity_entries = self.entries.get_mut(entity_id)?;
+        let key_entries = entity_entries.get_mut(key)?;
+        let removed = key_entries.remove(contributor);
         if key_entries.is_empty() {
             entity_entries.remove(key);
         }
@@ -81,7 +171,9 @@ impl MetadataStore {
             self.target_ordinals.remove(entity_id);
         }
         if let Some(entry) = &removed {
-            self.remove_expiry(entry);
+            if self.indexed(contributor) {
+                self.remove_expiry(entry);
+            }
         }
         removed
     }
@@ -98,6 +190,15 @@ impl MetadataStore {
         }
     }
 
+    fn add_expiry(&mut self, entry: &MetadataEntry) {
+        if let Some(ttl) = entry.ttl_ms {
+            *self
+                .expiry_counts
+                .entry(entry.updated_at.saturating_add(ttl))
+                .or_default() += 1;
+        }
+    }
+
     /// Entries are live through their deadline. Storage is bounded by the
     /// number of retained contributions; renewing a lease replaces its deadline.
     pub fn expires_between(&self, before: u64, now: u64) -> bool {
@@ -108,11 +209,20 @@ impl MetadataStore {
         self.target_ordinals.get(entity_id).copied()
     }
 
-    pub(crate) fn source_contributes(&self, entity: &EntityId, key: &str, source: &str) -> bool {
+    pub(crate) fn source_contributes(
+        &self,
+        entity: &EntityId,
+        key: &str,
+        provider: Option<&str>,
+        source: &str,
+    ) -> bool {
+        let Some(contributor) = self.existing_contributor(provider, source) else {
+            return false;
+        };
         self.entries
             .get(entity)
             .and_then(|keys| keys.get(key))
-            .is_some_and(|sources| sources.contains_key(source))
+            .is_some_and(|sources| sources.contains_key(&contributor))
     }
 
     // Raw ownership survives lease expiry: silence is not authoritative removal.
@@ -123,6 +233,98 @@ impl MetadataStore {
             .is_some_and(|sources| !sources.is_empty())
     }
 
+    /// Whether any provider is stale.
+    pub fn has_stale(&self) -> bool {
+        !self.stale.is_empty()
+    }
+
+    /// Whether `provider` is stale.
+    pub fn is_stale(&self, provider: &str) -> bool {
+        self.provider_ixs
+            .get(provider)
+            .is_some_and(|p| self.stale.contains_key(p))
+    }
+
+    /// Mark a provider stale, or fresh again. A stale provider's facts are
+    /// kept as they were when it became stale: those live then stay live and
+    /// none expires. Fresh again, each TTL fact that was live renews its lease
+    /// from `now`, as though the provider had just reasserted it, so a fact
+    /// the provider doesn't reassert expires one TTL later. Returns whether
+    /// anything changed.
+    pub fn set_stale(&mut self, provider: &str, stale: bool, now: u64) -> bool {
+        let ix = self.intern(provider);
+        if stale == self.stale.contains_key(&ix) {
+            return false;
+        }
+        let since = if stale {
+            self.stale.insert(ix, now);
+            None
+        } else {
+            self.stale.remove(&ix)
+        };
+        let mut entries = std::mem::take(&mut self.entries);
+        for keys in entries.values_mut() {
+            for contributions in keys.values_mut() {
+                for (contributor, entry) in contributions.iter_mut() {
+                    if contributor.provider != Some(ix) || entry.ttl_ms.is_none() {
+                        continue;
+                    }
+                    match since {
+                        None => self.remove_expiry(entry),
+                        Some(since) => {
+                            if entry_is_live(entry, since) {
+                                entry.updated_at = now;
+                            }
+                            self.add_expiry(entry);
+                        }
+                    }
+                }
+            }
+        }
+        self.entries = entries;
+        true
+    }
+
+    /// Remove every fact `provider` contributed. Returns whether any was
+    /// removed, and the entities that lost facts.
+    pub fn retract(&mut self, provider: &str) -> (bool, BTreeSet<crate::EntityRef>) {
+        let Some(ix) = self.provider_ixs.get(provider).copied() else {
+            return (false, BTreeSet::new());
+        };
+        let mut removed = false;
+        let mut affected = BTreeSet::new();
+        let mut entries = std::mem::take(&mut self.entries);
+        entries.retain(|target, keys| {
+            let mut lost = false;
+            keys.retain(|_, contributions| {
+                contributions.retain(|contributor, entry| {
+                    if contributor.provider != Some(ix) {
+                        return true;
+                    }
+                    if self.indexed(contributor) {
+                        self.remove_expiry(entry);
+                    }
+                    lost = true;
+                    false
+                });
+                !contributions.is_empty()
+            });
+            removed |= lost;
+            if let (true, EntityId::Entity(entity)) = (lost, target) {
+                affected.insert(entity.clone());
+            }
+            if keys.is_empty() {
+                self.target_ordinals.remove(target);
+                false
+            } else {
+                true
+            }
+        });
+        self.entries = entries;
+        self.stale.remove(&ix);
+        (removed, affected)
+    }
+
     pub fn source_entry(
         &self,
         entity_id: &EntityId,
@@ -130,19 +332,37 @@ impl MetadataStore {
         source_id: &str,
         now: u64,
     ) -> Option<&MetadataEntry> {
-        let entry = self.entries.get(entity_id)?.get(key)?.get(source_id)?;
-        entry_is_live(entry, now).then_some(entry)
+        self.entries
+            .get(entity_id)?
+            .get(key)?
+            .iter()
+            .find(|(contributor, entry)| {
+                contributor.source == source_id && self.is_live(contributor, entry, now)
+            })
+            .map(|(_, entry)| entry)
     }
 
+    /// Apply a patch the core or host owns (no provider).
     #[allow(dead_code)]
     pub fn apply_patch(&mut self, patch: MetadataPatch, now: u64) -> MetadataPatchOutcome {
+        self.apply_patch_from(None, patch, now)
+    }
+
+    /// Apply a patch, contributed by `provider` when it has one.
+    pub fn apply_patch_from(
+        &mut self,
+        provider: Option<&str>,
+        patch: MetadataPatch,
+        now: u64,
+    ) -> MetadataPatchOutcome {
         let mut outcome = MetadataPatchOutcome::default();
         let target = EntityId::from(patch.target);
         let target_existed = self.entries.contains_key(&target);
+        let contributor = self.contributor(provider, patch.source_id);
         for key in patch.unset {
-            if let Some(entry) = self.unset(&target, &key, &patch.source_id) {
+            if let Some(entry) = self.unset_contribution(&target, &key, &contributor) {
                 outcome.touched = true;
-                outcome.view_changed |= entry_is_live(&entry, now);
+                outcome.view_changed |= self.is_live(&contributor, &entry, now);
             }
         }
         if !self.entries.contains_key(&target) {
@@ -167,26 +387,21 @@ impl MetadataStore {
                 .entries
                 .get(&target)
                 .and_then(|entity_entries| entity_entries.get(&key))
-                .and_then(|source_entries| source_entries.get(&patch.source_id))
+                .and_then(|source_entries| source_entries.get(&contributor))
                 .cloned();
 
             match existing_entry {
                 Some(existing)
                     if metadata_entry_payload_matches(&existing, &next_entry)
-                        && entry_is_live(&existing, now) =>
+                        && self.is_live(&contributor, &existing, now) =>
                 {
                     if existing.ttl_ms.is_some() {
-                        self.set(target.clone(), key, patch.source_id.clone(), next_entry);
+                        self.set_contribution(target.clone(), key, contributor.clone(), next_entry);
                         outcome.touched = true;
                     }
                 }
-                Some(existing) if metadata_entry_payload_matches(&existing, &next_entry) => {
-                    self.set(target.clone(), key, patch.source_id.clone(), next_entry);
-                    outcome.touched = true;
-                    outcome.view_changed = true;
-                }
                 _ => {
-                    self.set(target.clone(), key, patch.source_id.clone(), next_entry);
+                    self.set_contribution(target.clone(), key, contributor.clone(), next_entry);
                     outcome.touched = true;
                     outcome.view_changed = true;
                 }
@@ -205,8 +420,10 @@ impl MetadataStore {
             .map(|source_entries| {
                 source_entries
                     .iter()
-                    .filter(|(_, entry)| entry_is_live(entry, now))
-                    .map(|(source_id, entry)| CandidateEntry::new(source_id, entry.clone()))
+                    .filter(|(contributor, entry)| self.is_live(contributor, entry, now))
+                    .map(|(contributor, entry)| {
+                        CandidateEntry::new(contributor.source.clone(), entry.clone())
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -283,12 +500,12 @@ impl MetadataStore {
             BTreeMap::new();
         for (target, target_entries) in &self.entries {
             for (key, source_entries) in target_entries {
-                for (source_id, entry) in source_entries {
-                    if !entry_is_live(entry, now) {
+                for (contributor, entry) in source_entries {
+                    if !self.is_live(contributor, entry, now) {
                         continue;
                     }
                     patches
-                        .entry((target.clone(), source_id.clone()))
+                        .entry((target.clone(), contributor.source.clone()))
                         .or_default()
                         .insert(
                             key.clone(),
@@ -434,6 +651,45 @@ mod tests {
     }
 
     #[test]
+    fn stale_providers_leave_the_expiry_index_and_rejoin_it_renewed() {
+        let mut store = MetadataStore::default();
+        let target = EntityId::Entity(crate::EntityRef::new("p", "vessel", "v"));
+        let patch = MetadataPatch {
+            target: MetadataTarget::Entity(crate::EntityRef::new("p", "vessel", "v")),
+            source_id: "flotilla".into(),
+            set: BTreeMap::from([(
+                "status".to_owned(),
+                MetadataValueUpdate {
+                    value: MetadataValue::Text("running".into()),
+                    ttl_ms: Some(10),
+                    precedence: None,
+                    ordinal: None,
+                },
+            )]),
+            unset: vec![],
+        };
+        store.apply_patch_from(Some("p"), patch.clone(), 0);
+        // The same source under another provider is another contribution.
+        store.apply_patch_from(Some("q"), patch, 0);
+        assert_eq!(store.entries_for(&target, "status", 5).len(), 2);
+        assert!(store.expires_between(0, 11));
+        assert!(store.set_stale("p", true, 5));
+        assert_eq!(store.expiry_counts.values().sum::<usize>(), 1);
+        assert_eq!(store.entries_for(&target, "status", 1_000).len(), 1);
+        assert!(store.set_stale("p", false, 1_000));
+        assert!(store.expires_between(1_010, 1_011));
+        assert_eq!(store.entries_for(&target, "status", 1_010).len(), 1);
+        assert!(store.entries_for(&target, "status", 1_011).is_empty());
+        let (removed, affected) = store.retract("p");
+        assert!(removed);
+        assert_eq!(affected.len(), 1);
+        assert!(!store.has_stale());
+        // q's deadline (10) is the only one left.
+        assert_eq!(store.expiry_counts, BTreeMap::from([(10, 1)]));
+        assert_eq!(store.retract("p"), (false, Default::default()));
+    }
+
+    #[test]
     fn unset_removes_only_that_source_key() {
         let mut store = MetadataStore::default();
         store.set(
@@ -529,10 +785,7 @@ mod tests {
     #[test]
     fn metadata_patch_sets_values_with_controller_timestamp() {
         let mut store = MetadataStore::default();
-        let entity = crate::EntityRef {
-            kind: "project".to_owned(),
-            id: "zellij".to_owned(),
-        };
+        let entity = crate::EntityRef::local("project".to_owned(), "zellij".to_owned());
         let target = EntityId::Entity(entity.clone());
         store.apply_patch(
             MetadataPatch {
@@ -565,10 +818,10 @@ mod tests {
     #[test]
     fn target_ordinal_comes_from_the_patch_without_an_identity_value() {
         let mut store = MetadataStore::default();
-        let entity = crate::EntityRef {
-            kind: "issue".to_owned(),
-            id: "github/flotilla-org/andamento#37".to_owned(),
-        };
+        let entity = crate::EntityRef::local(
+            "issue".to_owned(),
+            "github/flotilla-org/andamento#37".to_owned(),
+        );
         let target = EntityId::Entity(entity.clone());
 
         store.apply_patch(

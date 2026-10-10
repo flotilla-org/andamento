@@ -32,6 +32,17 @@ typedef struct { uint8_t bytes[16]; } AndamentoWorkspaceId;
  * {"kind":"tab","value":7} or {"kind":"tab","value":"<uuid>"} (hyphenated
  * or 32 hex digits).
  *
+ * Providers (ABI 3). An entity is {provider, kind, id}: the provider is the
+ * Dashboard's subscription ID, which the host supplies per patch source, and
+ * the same kind and ID under two providers are two entities. A patch never
+ * names its own provider: the _from calls stamp theirs over every entity a
+ * patch names (its target, entity references among its values, and the
+ * entity a workspace's entity.kind/entity.id or .host.kind/.host.id facts
+ * name). ABI 2 calls, and JSON entities without a "provider", use the
+ * default provider: "local" until andamento_set_default_provider changes it,
+ * so a host can move to providers gradually. Local sections, groups and refs
+ * are always "local". Provider names are nonempty UTF-8.
+ *
  * Serialize calls on a sidebar. All input buffers/arrays are borrowed for the
  * call only; text is UTF-8, length-delimited, and may contain NUL. NULL input
  * pointers require zero length. Non-NULL pointers must be valid/aligned for
@@ -52,6 +63,27 @@ uint32_t andamento_configure(Andamento *, AndamentoText kdl, char **error_out);
  * envelope. Encoding and transport are adapter choices. Future CBOR ingress
  * can feed the same typed Rust core without changing rendering or actions. */
 uint32_t andamento_apply_patch_json(Andamento *, uint64_t now_ms, AndamentoText json, char **error_out);
+/* ABI 3: one JSON patch from provider (a subscription ID), stamped over every
+ * entity it names. Requires the "json" feature. */
+uint32_t andamento_apply_patch_json_from(Andamento *, uint64_t now_ms, AndamentoText provider,
+    AndamentoText json, char **error_out);
+/* ABI 3: the default provider ABI 2 calls stamp and entities named by kind
+ * and ID alone belong to. Set it before applying facts or importing records. */
+uint32_t andamento_set_default_provider(Andamento *, AndamentoText provider, char **error_out);
+/* ABI 3: remove all of a provider's facts in one call, as when its
+ * subscription is removed. What open workspaces and refs showed of its
+ * entities is retained, as when facts expire: a workspace keeps its subject
+ * and its row stays on its path; a ref keeps presenting its target. */
+uint32_t andamento_provider_retract(Andamento *, AndamentoText provider, char **error_out);
+/* ABI 3: mark a provider stale (stale nonzero), when its connection drops, or
+ * fresh again (zero). A stale provider's facts are kept as they were when it
+ * became stale: TTLs don't expire them, and nodes presenting its entities
+ * report stale (andamento_snapshot_node_provider). Facts already expired
+ * then stay expired. Fresh again, each TTL fact that was live renews its
+ * lease from the current time, as though the provider had reasserted it: one
+ * it doesn't reassert within its TTL then expires. Facts without a TTL are
+ * unaffected either way. Retracting a provider clears its staleness. */
+uint32_t andamento_provider_set_stale(Andamento *, AndamentoText provider, uint32_t stale, char **error_out);
 
 /* A native scalar entity-fact convenience interface, not a C copy of the full
  * producer schema. Other targets, lists, and path values are currently handled
@@ -79,6 +111,13 @@ uint32_t andamento_apply_entity(Andamento *, uint64_t now_ms, AndamentoText kind
  * .host.kind/.host.id naming its host entity. */
 uint32_t andamento_apply_workspace(Andamento *, uint64_t now_ms, AndamentoWorkspaceId workspace,
     AndamentoText source, const AndamentoFact *, size_t count, char **error_out);
+/* ABI 3: the same calls from provider (a subscription ID). */
+uint32_t andamento_apply_entity_from(Andamento *, uint64_t now_ms, AndamentoText provider,
+    AndamentoText kind, AndamentoText id, AndamentoText source, const AndamentoFact *, size_t count,
+    char **error_out);
+uint32_t andamento_apply_workspace_from(Andamento *, uint64_t now_ms, AndamentoText provider,
+    AndamentoWorkspaceId workspace, AndamentoText source, const AndamentoFact *, size_t count,
+    char **error_out);
 /* Monotonic milliseconds scoped to this client. Tick advances expiry without
  * facts. Drain facts/topology/completions before acquiring a render snapshot. */
 uint32_t andamento_tick(Andamento *, uint64_t now_ms, char **error_out);
@@ -168,6 +207,11 @@ size_t andamento_snapshot_node_count(const AndamentoSnapshot *);
 uint32_t andamento_snapshot_node(const AndamentoSnapshot *, size_t index, AndamentoNode *out);
 /* ABI 3: a LIVE node's Workspace ID; returns 0 for other nodes. */
 uint32_t andamento_snapshot_node_workspace(const AndamentoSnapshot *, size_t index, AndamentoWorkspaceId *out);
+/* ABI 3: a node's entity provider, and stale (optional, may be NULL): 1 when
+ * the provider of the entity the node presents (a ref's target) is stale.
+ * Returns 0 for section nodes. */
+uint32_t andamento_snapshot_node_provider(const AndamentoSnapshot *, size_t index,
+    AndamentoText *provider, uint32_t *stale);
 /* Snapshot-owned opaque loop invocation key. Compare for equality; do not parse.
  * Empty for section nodes. Additive ABI 2 API; AndamentoNode is unchanged. */
 uint32_t andamento_snapshot_node_loop_key(const AndamentoSnapshot *, size_t index, AndamentoText *out);
@@ -214,6 +258,10 @@ typedef struct { AndamentoText kind, id; } AndamentoEntity;
  * else first); entities that no longer match are ignored. Empty list clears. */
 uint32_t andamento_set_sibling_order(Andamento *, AndamentoText loop_key,
     const AndamentoEntity *entities, size_t count, char **error);
+/* ABI 3: an entity with its provider; the ABI 3 variants below name it. */
+typedef struct { AndamentoText provider, kind, id; } AndamentoEntity3;
+uint32_t andamento_set_sibling_order3(Andamento *, AndamentoText loop_key,
+    const AndamentoEntity3 *entities, size_t count, char **error);
 
 /* ABI 3: named records. Andamento owns the sidebar's logical state and exports
  * it as records, KDL text in a versioned envelope; the host decides where each
@@ -231,12 +279,15 @@ uint32_t andamento_set_sibling_order(Andamento *, AndamentoText loop_key,
  *   changes, and is never reused. Write a record when its generation differs
  *   from the one last written; read it again after an import. Returns 0 with an
  *   error for an unknown record.
- * export: the record's KDL text (UTF-8).
+ * export: the record's KDL text (UTF-8), version 2: every entity names its
+ *   provider.
  * import: may come before the first observe and needs no facts. Importing
  *   "workspace/<id>" registers the workspace and binds it to its subject. A
  *   record that doesn't parse, has another version or names another record is
  *   rejected without change. Nodes this version doesn't know, directly inside
- *   the envelope, are kept and exported again.
+ *   the envelope, are kept and exported again. Version 1 records (before
+ *   providers) still import: local sections, groups and refs get "local" and
+ *   every other entity the default provider, so set the default first.
  * Bytes out-parameters are written only on success; free them with
  * andamento_bytes_free (a zeroed AndamentoBytes is harmless). */
 typedef struct { uint8_t *data; size_t len; } AndamentoBytes;
@@ -267,6 +318,17 @@ typedef struct {
 } AndamentoLocalFact;
 uint32_t andamento_local_set(Andamento *, AndamentoText kind, AndamentoText id,
     const AndamentoLocalFact *facts, size_t count, char **error_out);
+/* ABI 3: as above, where an ENTITY fact names its provider (andamento_local_set
+ * gives it the default provider), so a ref can pin any subscription's entity. */
+typedef struct {
+    AndamentoText key;
+    uint32_t kind;
+    AndamentoText text;
+    int64_t integer;
+    AndamentoEntity3 entity;
+} AndamentoLocalFact3;
+uint32_t andamento_local_set3(Andamento *, AndamentoText kind, AndamentoText id,
+    const AndamentoLocalFact3 *facts, size_t count, char **error_out);
 uint32_t andamento_local_remove(Andamento *, AndamentoText kind, AndamentoText id, char **error_out);
 typedef struct {
     AndamentoEntity entity;
@@ -322,6 +384,11 @@ uint32_t andamento_snapshot_detail_workspace(const AndamentoSnapshot *, size_t i
 uint32_t andamento_snapshot_detail_field(const AndamentoSnapshot *, size_t detail, size_t field, AndamentoDetailField *out);
 uint32_t andamento_snapshot_detail_relation(const AndamentoSnapshot *, size_t detail, size_t field,
     size_t relation, const AndamentoEntity *path, size_t path_count, AndamentoDetailRelation *out);
+/* ABI 3: request and find name the entity's provider (the ABI 2 calls use the
+ * default provider); detail_provider reads a card's entity provider. */
+size_t andamento_snapshot_detail_request3(Andamento *, AndamentoSnapshot *, AndamentoEntity3 entity, char **error);
+size_t andamento_snapshot_detail_find3(const AndamentoSnapshot *, AndamentoEntity3 entity);
+uint32_t andamento_snapshot_detail_provider(const AndamentoSnapshot *, size_t index, AndamentoText *out);
 
 /* Action references belong to one snapshot. Another client or a snapshot from
  * before a revision-changing mutation is rejected. Dispatch captured clicks against
@@ -351,11 +418,14 @@ size_t andamento_effects_count(const AndamentoEffects *);
 uint32_t andamento_effects_get(const AndamentoEffects *, size_t index, AndamentoEffect *out);
 /* ABI 3: a FOCUS effect's Workspace ID; returns 0 for other effects. */
 uint32_t andamento_effects_workspace(const AndamentoEffects *, size_t index, AndamentoWorkspaceId *out);
+/* ABI 3: a MATERIALIZE or INSPECT effect's entity provider; 0 for others. */
+uint32_t andamento_effects_provider(const AndamentoEffects *, size_t index, AndamentoText *out);
 /* URL effects carry the resolved URL in recipe; no completion is required.
  * Activation opens a subject URL. Copying is an additive ABI 2 action. */
 /* Subject rows also expose a copy action through their retained snapshot. */
 size_t andamento_snapshot_copy_url_action(const AndamentoSnapshot *, size_t node_index);
 uint32_t andamento_copy_subject_url(Andamento *, AndamentoText kind, AndamentoText id, char **error_out);
+uint32_t andamento_copy_subject_url3(Andamento *, AndamentoEntity3 entity, char **error_out); /* ABI 3 */
 /* Managed-content target a MATERIALIZE effect's recipe resolves; additive to
  * ABI 2 (AndamentoEffect is unchanged). Returns 0 when there is none. Record it
  * as the applied target so the first content plan sees the new content as current. */
@@ -395,6 +465,10 @@ AndamentoContentPlan *andamento_content_plan3(Andamento *, AndamentoWorkspaceId 
 uint32_t andamento_content_valid3(Andamento *, AndamentoWorkspaceId workspace_id, uint64_t token, char **error_out);
 uint32_t andamento_content_complete3(Andamento *, AndamentoWorkspaceId workspace_id, uint64_t token, uint32_t success, char **error_out);
 uint32_t andamento_content_retry3(Andamento *, AndamentoWorkspaceId workspace_id, char **error_out);
+/* ABI 3: as andamento_content_plan3, naming the entity's provider. */
+AndamentoContentPlan *andamento_content_plan_entity(Andamento *, AndamentoWorkspaceId workspace_id,
+    AndamentoEntity3 entity, AndamentoText applied_target, AndamentoText applied_command,
+    uint32_t has_cwd, AndamentoText applied_cwd, char **error_out);
 void andamento_content_release(AndamentoContentPlan *);
 
 #ifdef __cplusplus
