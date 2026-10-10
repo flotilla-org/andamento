@@ -51,10 +51,7 @@ fn keys(layout: &SuggestedLayout) -> Vec<&str> {
 }
 
 fn entity(kind: &str, id: &str) -> EntityRef {
-    EntityRef {
-        kind: kind.into(),
-        id: id.into(),
-    }
+    EntityRef::local(kind, id)
 }
 
 // fixtures/suggested-layout-review.jsonl: an in-crew review convoy. At 0 ms

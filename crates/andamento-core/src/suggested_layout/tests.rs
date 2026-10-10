@@ -1,10 +1,7 @@
 use super::*;
 
 fn entity(kind: &str, id: &str) -> EntityRef {
-    EntityRef {
-        kind: kind.into(),
-        id: id.into(),
-    }
+    EntityRef::local(kind, id)
 }
 fn text(value: &str) -> MetadataValue {
     MetadataValue::Text(value.into())
