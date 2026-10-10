@@ -7,7 +7,7 @@ use andamento_core::{
     sidebar::{Action, HostEffect, Workspace},
     template_config::{TemplateConfigFieldClass, TemplateControlKind},
     EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, PaneTarget,
-    Sidebar,
+    Sidebar, WorkspaceId,
 };
 use std::{
     ffi::{c_char, CString},
@@ -91,9 +91,42 @@ unsafe fn run<T>(
         }
     }
 }
+/// A host-supplied 128-bit Workspace ID (ABI 3): 16 opaque bytes.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WorkspaceIdView {
+    pub bytes: [u8; 16],
+}
+impl From<WorkspaceIdView> for WorkspaceId {
+    fn from(id: WorkspaceIdView) -> Self {
+        WorkspaceId::from_bytes(id.bytes)
+    }
+}
+impl From<WorkspaceId> for WorkspaceIdView {
+    fn from(id: WorkspaceId) -> Self {
+        Self {
+            bytes: id.to_bytes(),
+        }
+    }
+}
+/// ABI 2's u64 field for an ID: the u64 it embeds, or 0 for a wider ID, which
+/// only a host using ABI 3 can have supplied and reads through ABI 3 getters.
+fn narrow(id: WorkspaceId) -> u64 {
+    id.as_u64().unwrap_or(0)
+}
+unsafe fn write_workspace(out: *mut WorkspaceIdView, id: Option<WorkspaceId>) -> u32 {
+    match (out.as_mut(), id) {
+        (Some(out), Some(id)) => {
+            *out = id.into();
+            1
+        }
+        _ => 0,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn andamento_abi_version() -> u32 {
-    2
+    3
 }
 #[no_mangle]
 pub unsafe extern "C" fn andamento_create(
@@ -182,45 +215,75 @@ pub unsafe extern "C" fn andamento_apply_entity(
     error: *mut *mut c_char,
 ) -> u32 {
     run(h, error, |h| {
-        let mut patch = MetadataPatch {
-            target: MetadataTarget::Entity(EntityRef {
-                kind: kind.read()?,
-                id: id.read()?,
-            }),
-            source_id: source.read()?,
-            set: Default::default(),
-            unset: vec![],
-        };
-        let mut keys = std::collections::BTreeSet::new();
-        for f in slice(facts, count)? {
-            let key = f.key.read()?;
-            if !keys.insert(key.clone()) {
-                return Err("duplicate fact key".into());
-            }
-            let value = match f.kind {
-                0 => {
-                    patch.unset.push(key);
-                    continue;
-                }
-                1 => MetadataValue::Text(f.text.read()?),
-                2 if f.integer == 0 || f.integer == 1 => MetadataValue::Bool(f.integer != 0),
-                3 => MetadataValue::Integer(f.integer),
-                _ => return Err("invalid scalar fact kind or boolean".into()),
-            };
-            patch.set.insert(
-                key,
-                MetadataValueUpdate {
-                    value,
-                    ttl_ms: (f.has_ttl != 0).then_some(f.ttl_ms),
-                    precedence: (f.has_precedence != 0).then_some(f.precedence),
-                    ordinal: (f.has_ordinal != 0).then_some(f.ordinal),
-                },
-            );
-        }
-        h.sidebar.apply(now_ms, [patch]);
+        let target = MetadataTarget::Entity(EntityRef {
+            kind: kind.read()?,
+            id: id.read()?,
+        });
+        h.sidebar
+            .apply(now_ms, [scalar_patch(target, source, facts, count)?]);
         Ok(())
     })
     .is_some() as u32
+}
+/// ABI 3: the same scalar facts, set on a workspace (a `tab` target), such as
+/// the `.host.kind`/`.host.id` naming its host entity.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_apply_workspace(
+    h: *mut Andamento,
+    now_ms: u64,
+    workspace: WorkspaceIdView,
+    source: Text,
+    facts: *const Fact,
+    count: usize,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let target = MetadataTarget::Tab(workspace.into());
+        h.sidebar
+            .apply(now_ms, [scalar_patch(target, source, facts, count)?]);
+        Ok(())
+    })
+    .is_some() as u32
+}
+unsafe fn scalar_patch(
+    target: MetadataTarget,
+    source: Text,
+    facts: *const Fact,
+    count: usize,
+) -> Result<MetadataPatch, String> {
+    let mut patch = MetadataPatch {
+        target,
+        source_id: source.read()?,
+        set: Default::default(),
+        unset: vec![],
+    };
+    let mut keys = std::collections::BTreeSet::new();
+    for f in slice(facts, count)? {
+        let key = f.key.read()?;
+        if !keys.insert(key.clone()) {
+            return Err("duplicate fact key".into());
+        }
+        let value = match f.kind {
+            0 => {
+                patch.unset.push(key);
+                continue;
+            }
+            1 => MetadataValue::Text(f.text.read()?),
+            2 if f.integer == 0 || f.integer == 1 => MetadataValue::Bool(f.integer != 0),
+            3 => MetadataValue::Integer(f.integer),
+            _ => return Err("invalid scalar fact kind or boolean".into()),
+        };
+        patch.set.insert(
+            key,
+            MetadataValueUpdate {
+                value,
+                ttl_ms: (f.has_ttl != 0).then_some(f.ttl_ms),
+                precedence: (f.has_precedence != 0).then_some(f.precedence),
+                ordinal: (f.has_ordinal != 0).then_some(f.ordinal),
+            },
+        );
+    }
+    Ok(patch)
 }
 #[no_mangle]
 pub unsafe extern "C" fn andamento_tick(
@@ -250,6 +313,56 @@ pub struct PaneInput {
     pub focused: u32,
     pub ordinal: i64,
 }
+/// ABI 3 topology: as WorkspaceInput/PaneInput, with 128-bit IDs.
+#[repr(C)]
+pub struct WorkspaceInput3 {
+    pub id: WorkspaceIdView,
+    pub position: usize,
+    pub name: Text,
+    pub selected: u32,
+}
+#[repr(C)]
+pub struct PaneInput3 {
+    pub workspace_id: WorkspaceIdView,
+    pub pane_id: u32,
+    pub kind: u32,
+    pub selectable: u32,
+    pub focused: u32,
+    pub ordinal: i64,
+}
+unsafe fn workspace(
+    id: WorkspaceId,
+    position: usize,
+    name: Text,
+    selected: u32,
+) -> Result<Workspace, String> {
+    Ok(Workspace {
+        id,
+        position,
+        name: name.read()?,
+        selected: selected != 0,
+    })
+}
+fn pane(
+    workspace_id: WorkspaceId,
+    pane_id: u32,
+    kind: u32,
+    selectable: u32,
+    focused: u32,
+    ordinal: i64,
+) -> Result<PaneObservation, String> {
+    Ok(PaneObservation {
+        workspace_id,
+        pane_id: match kind {
+            0 => PaneTarget::Terminal(pane_id),
+            1 => PaneTarget::Plugin(pane_id),
+            _ => return Err("invalid pane kind".into()),
+        },
+        is_selectable: selectable != 0,
+        is_focused: focused != 0,
+        ordinal,
+    })
+}
 #[no_mangle]
 pub unsafe extern "C" fn andamento_observe(
     h: *mut Andamento,
@@ -262,29 +375,39 @@ pub unsafe extern "C" fn andamento_observe(
     run(h, error, |h| {
         let workspaces = slice(workspaces, count)?
             .iter()
-            .map(|w| {
-                Ok(Workspace {
-                    id: w.id,
-                    position: w.position,
-                    name: w.name.read()?,
-                    selected: w.selected != 0,
-                })
-            })
+            .map(|w| workspace(w.id.into(), w.position, w.name, w.selected))
             .collect::<Result<Vec<_>, String>>()?;
         let panes = slice(panes, pane_count)?
             .iter()
             .map(|p| {
-                Ok(PaneObservation {
-                    workspace_id: p.workspace_id,
-                    pane_id: match p.kind {
-                        0 => PaneTarget::Terminal(p.pane_id),
-                        1 => PaneTarget::Plugin(p.pane_id),
-                        _ => return Err("invalid pane kind".into()),
-                    },
-                    is_selectable: p.selectable != 0,
-                    is_focused: p.focused != 0,
-                    ordinal: p.ordinal,
-                })
+                let id = p.workspace_id.into();
+                pane(id, p.pane_id, p.kind, p.selectable, p.focused, p.ordinal)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        h.sidebar.observe(workspaces, panes);
+        Ok(())
+    })
+    .is_some() as u32
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_observe3(
+    h: *mut Andamento,
+    workspaces: *const WorkspaceInput3,
+    count: usize,
+    panes: *const PaneInput3,
+    pane_count: usize,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let workspaces = slice(workspaces, count)?
+            .iter()
+            .map(|w| workspace(w.id.into(), w.position, w.name, w.selected))
+            .collect::<Result<Vec<_>, String>>()?;
+        let panes = slice(panes, pane_count)?
+            .iter()
+            .map(|p| {
+                let id = p.workspace_id.into();
+                pane(id, p.pane_id, p.kind, p.selectable, p.focused, p.ordinal)
             })
             .collect::<Result<Vec<_>, String>>()?;
         h.sidebar.observe(workspaces, panes);
@@ -296,6 +419,29 @@ pub unsafe extern "C" fn andamento_observe(
 pub struct WorkdirInput {
     pub workspace_id: u64,
     pub cwd: Text,
+}
+#[repr(C)]
+pub struct WorkdirInput3 {
+    pub workspace_id: WorkspaceIdView,
+    pub cwd: Text,
+}
+/// ABI 3: as andamento_observe_workdirs, with 128-bit IDs.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_observe_workdirs3(
+    h: *mut Andamento,
+    workdirs: *const WorkdirInput3,
+    count: usize,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let workdirs = slice(workdirs, count)?
+            .iter()
+            .map(|w| Ok((w.workspace_id.into(), w.cwd.read()?)))
+            .collect::<Result<Vec<_>, String>>()?;
+        h.sidebar.observe_workdirs(workdirs);
+        Ok(())
+    })
+    .is_some() as u32
 }
 
 /// Full replacement of ephemeral directory observations; does not bind a
@@ -310,7 +456,7 @@ pub unsafe extern "C" fn andamento_observe_workdirs(
     run(h, error, |h| {
         let workdirs = slice(workdirs, count)?
             .iter()
-            .map(|w| Ok((w.workspace_id, w.cwd.read()?)))
+            .map(|w| Ok((w.workspace_id.into(), w.cwd.read()?)))
             .collect::<Result<Vec<_>, String>>()?;
         h.sidebar.observe_workdirs(workdirs);
         Ok(())
@@ -357,6 +503,28 @@ pub unsafe extern "C" fn andamento_complete(
     message: Text,
     error: *mut *mut c_char,
 ) -> u32 {
+    complete(h, request_id, outcome, workspace_id.into(), message, error)
+}
+/// ABI 3: as andamento_complete; MATERIALIZE supplies the 128-bit ID.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_complete3(
+    h: *mut Andamento,
+    request_id: u64,
+    outcome: u32,
+    workspace_id: WorkspaceIdView,
+    message: Text,
+    error: *mut *mut c_char,
+) -> u32 {
+    complete(h, request_id, outcome, workspace_id.into(), message, error)
+}
+unsafe fn complete(
+    h: *mut Andamento,
+    request_id: u64,
+    outcome: u32,
+    workspace_id: WorkspaceId,
+    message: Text,
+    error: *mut *mut c_char,
+) -> u32 {
     run(h, error, |h| {
         let result = match outcome {
             0 => Ok(None),
@@ -368,6 +536,48 @@ pub unsafe extern "C" fn andamento_complete(
         Ok(())
     })
     .is_some() as u32
+}
+
+/// ABI 3: declare a workspace the host created itself (one that never went
+/// through MATERIALIZE). See Sidebar::register_workspace.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_workspace_register(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        h.sidebar.register_workspace(workspace.into());
+        Ok(())
+    })
+    .is_some() as u32
+}
+/// ABI 3: the host deleted the workspace rather than keeping it.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_workspace_forget(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        h.sidebar.forget_workspace(workspace.into());
+        Ok(())
+    })
+    .is_some() as u32
+}
+/// ABI 3: 1 if registered (or materialized) and not forgotten.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_workspace_registered(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        Ok(h.sidebar
+            .registered_workspaces()
+            .contains(&workspace.into()))
+    })
+    .unwrap_or(false) as u32
 }
 
 struct Field {
@@ -398,7 +608,7 @@ struct Node {
     loop_key: String,
     form: String,
     state: u32,
-    workspace: u64,
+    workspace: Option<WorkspaceId>,
     selected: bool,
     openable: bool,
     collapsed: bool,
@@ -535,13 +745,13 @@ impl AndamentoSnapshot {
             .map(|s| format!("{}:{}", s.len(), s))
             .collect();
         let (state, workspace, selected, openable) = match n.state {
-            PresentationState::Catalog => (0, 0, false, false),
-            PresentationState::Latent { openable } => (1, 0, false, openable),
-            PresentationState::Opening => (2, 0, false, false),
+            PresentationState::Catalog => (0, None, false, false),
+            PresentationState::Latent { openable } => (1, None, false, openable),
+            PresentationState::Opening => (2, None, false, false),
             PresentationState::Live {
                 workspace_id,
                 selected,
-            } => (3, workspace_id, selected, false),
+            } => (3, Some(workspace_id), selected, false),
         };
         let index = self.nodes.len();
         self.nodes.push(Node {
@@ -649,7 +859,7 @@ unsafe fn acquire_snapshot(
                 loop_key: String::new(),
                 form: String::new(),
                 state: 0,
-                workspace: 0,
+                workspace: None,
                 selected: false,
                 openable: false,
                 collapsed: false,
@@ -844,9 +1054,22 @@ pub unsafe extern "C" fn andamento_snapshot_detail(
         now_ms: s.now_ms,
         error: Text::borrowed(d.card.error.as_deref().unwrap_or("")),
         has_workspace: d.card.workspace_id.is_some() as u32,
-        workspace_id: d.card.workspace_id.unwrap_or(0),
+        workspace_id: d.card.workspace_id.map_or(0, narrow),
     };
     1
+}
+/// ABI 3: the detail's 128-bit workspace ID. Returns 0 when it has none.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_detail_workspace(
+    s: *const AndamentoSnapshot,
+    index: usize,
+    out: *mut WorkspaceIdView,
+) -> u32 {
+    write_workspace(
+        out,
+        s.as_ref()
+            .and_then(|s| s.details.get(index)?.card.workspace_id),
+    )
 }
 /// Index 0 is the primary workspace/subject control; index 1 is copy URL.
 #[no_mangle]
@@ -1022,7 +1245,7 @@ pub unsafe extern "C" fn andamento_snapshot_node(
         layout: Text::borrowed(&n.layout),
         form: Text::borrowed(&n.form),
         state: n.state,
-        workspace_id: n.workspace,
+        workspace_id: n.workspace.map_or(0, narrow),
         selected: n.selected as u32,
         openable: n.openable as u32,
         collapsed: n.collapsed as u32,
@@ -1037,6 +1260,15 @@ pub unsafe extern "C" fn andamento_snapshot_node(
         toggle: n.toggle,
     };
     1
+}
+/// ABI 3: a live node's 128-bit workspace ID. Returns 0 for other nodes.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_node_workspace(
+    s: *const AndamentoSnapshot,
+    index: usize,
+    out: *mut WorkspaceIdView,
+) -> u32 {
+    write_workspace(out, s.as_ref().and_then(|s| s.nodes.get(index)?.workspace))
 }
 /// Placement defaults for a section; strings borrow the immutable snapshot.
 /// Additive ABI 2 extension, leaving NodeView unchanged.
@@ -1257,7 +1489,7 @@ pub unsafe extern "C" fn andamento_effects_get(
             workspace_id,
         } => {
             v.request_id = *request_id;
-            v.workspace_id = *workspace_id;
+            v.workspace_id = narrow(*workspace_id);
         }
         HostEffect::Materialize {
             request_id,
@@ -1292,6 +1524,19 @@ pub unsafe extern "C" fn andamento_effects_get(
     }
     *out = v;
     1
+}
+/// ABI 3: a FOCUS effect's 128-bit workspace ID. Returns 0 for other effects.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_effects_workspace(
+    e: *const AndamentoEffects,
+    index: usize,
+    out: *mut WorkspaceIdView,
+) -> u32 {
+    let id = match e.as_ref().and_then(|e| e.effects.get(index)) {
+        Some(HostEffect::Focus { workspace_id, .. }) => Some(*workspace_id),
+        _ => None,
+    };
+    write_workspace(out, id)
 }
 /// Copy action index for this snapshot's subject row, or NONE when unavailable.
 #[no_mangle]
@@ -1395,6 +1640,37 @@ pub unsafe extern "C" fn andamento_content_plan(
     cwd: Text,
     error: *mut *mut c_char,
 ) -> *mut AndamentoContentPlan {
+    let workspace = workspace.into();
+    content_plan(h, workspace, kind, id, target, command, has_cwd, cwd, error)
+}
+/// ABI 3: the andamento_content_* calls with 128-bit IDs.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_content_plan3(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    kind: Text,
+    id: Text,
+    target: Text,
+    command: Text,
+    has_cwd: u32,
+    cwd: Text,
+    error: *mut *mut c_char,
+) -> *mut AndamentoContentPlan {
+    let workspace = workspace.into();
+    content_plan(h, workspace, kind, id, target, command, has_cwd, cwd, error)
+}
+#[allow(clippy::too_many_arguments)]
+unsafe fn content_plan(
+    h: *mut Andamento,
+    workspace: WorkspaceId,
+    kind: Text,
+    id: Text,
+    target: Text,
+    command: Text,
+    has_cwd: u32,
+    cwd: Text,
+    error: *mut *mut c_char,
+) -> *mut AndamentoContentPlan {
     run(h, error, |h| {
         let entity = EntityRef {
             kind: kind.read()?,
@@ -1454,12 +1730,48 @@ pub unsafe extern "C" fn andamento_content_valid(
     token: u64,
     error: *mut *mut c_char,
 ) -> u32 {
+    content_valid(h, workspace.into(), token, error)
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_content_valid3(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    token: u64,
+    error: *mut *mut c_char,
+) -> u32 {
+    content_valid(h, workspace.into(), token, error)
+}
+unsafe fn content_valid(
+    h: *mut Andamento,
+    workspace: WorkspaceId,
+    token: u64,
+    error: *mut *mut c_char,
+) -> u32 {
     run(h, error, |h| Ok(h.sidebar.managed.valid(workspace, token))).unwrap_or(false) as u32
 }
 #[no_mangle]
 pub unsafe extern "C" fn andamento_content_complete(
     h: *mut Andamento,
     workspace: u64,
+    token: u64,
+    success: u32,
+    error: *mut *mut c_char,
+) -> u32 {
+    content_complete(h, workspace.into(), token, success, error)
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_content_complete3(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    token: u64,
+    success: u32,
+    error: *mut *mut c_char,
+) -> u32 {
+    content_complete(h, workspace.into(), token, success, error)
+}
+unsafe fn content_complete(
+    h: *mut Andamento,
+    workspace: WorkspaceId,
     token: u64,
     success: u32,
     error: *mut *mut c_char,
@@ -1475,6 +1787,17 @@ pub unsafe extern "C" fn andamento_content_retry(
     workspace: u64,
     error: *mut *mut c_char,
 ) -> u32 {
+    content_retry(h, workspace.into(), error)
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_content_retry3(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    error: *mut *mut c_char,
+) -> u32 {
+    content_retry(h, workspace.into(), error)
+}
+unsafe fn content_retry(h: *mut Andamento, workspace: WorkspaceId, error: *mut *mut c_char) -> u32 {
     run(h, error, |h| {
         h.sidebar.managed.retry(workspace);
         Ok(())

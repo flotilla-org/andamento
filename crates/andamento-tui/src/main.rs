@@ -12,6 +12,7 @@ mod native {
 
     use andamento_core::sidebar::{HostEffect, Request, Sidebar, Workspace};
     use andamento_core::MetadataPatch;
+    use andamento_core::WorkspaceId;
     use andamento_terminal::surface;
     use crossterm::{cursor, event, execute, terminal};
 
@@ -38,7 +39,7 @@ mod native {
             Ok(self.workspaces.clone())
         }
 
-        fn execute(&mut self, effect: HostEffect) -> io::Result<Option<u64>> {
+        fn execute(&mut self, effect: HostEffect) -> io::Result<Option<WorkspaceId>> {
             match effect {
                 HostEffect::Focus { workspace_id, .. } => {
                     let position = self
@@ -76,12 +77,13 @@ mod native {
                     if !output.status.success() {
                         return Err(io::Error::other("tmux new-window failed"));
                     }
-                    let id = String::from_utf8_lossy(&output.stdout)
+                    // tmux window IDs are numeric: the ABI 2-style embedding.
+                    let id: u64 = String::from_utf8_lossy(&output.stdout)
                         .trim()
                         .trim_start_matches('@')
                         .parse()
                         .map_err(|_| io::Error::other("tmux returned an invalid window id"))?;
-                    Ok(Some(id))
+                    Ok(Some(id.into()))
                 }
                 HostEffect::OpenUrl { url } => {
                     let opener = if cfg!(target_os = "macos") {
@@ -107,7 +109,12 @@ mod native {
             .filter_map(|line| {
                 let mut fields = line.split('\t');
                 Some(Workspace {
-                    id: fields.next()?.trim_start_matches('@').parse().ok()?,
+                    id: fields
+                        .next()?
+                        .trim_start_matches('@')
+                        .parse::<u64>()
+                        .ok()?
+                        .into(),
                     position: fields.next()?.parse().ok()?,
                     name: fields.next()?.to_owned(),
                     selected: fields.next()? == "1",
@@ -311,7 +318,7 @@ mod native {
                     workspaces[0].position,
                     workspaces[0].selected
                 ),
-                (7, 2, true)
+                (WorkspaceId::from(7), 2, true)
             );
             assert_eq!(workspaces[1].name, "docs");
         }

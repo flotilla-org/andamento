@@ -16,6 +16,8 @@ pub mod sidebar;
 pub mod state;
 pub use sidebar::Sidebar;
 pub mod template_config;
+mod workspace_id;
+pub use workspace_id::WorkspaceId;
 
 pub const MSG_RENDERER_HELLO: &str = "andamento-renderer-hello";
 pub const MSG_CONFIG_EDITOR_HELLO: &str = "andamento-config-editor-hello";
@@ -97,7 +99,7 @@ pub struct PluginRegistrationHello {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum PluginPlacement {
     Tab {
-        tab_id: u64,
+        tab_id: WorkspaceId,
         pane_kind: PluginPaneKind,
     },
     Background,
@@ -114,7 +116,7 @@ pub enum PluginPaneKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigInspectRequest {
     pub client_id: u16,
-    pub origin_tab_id: u64,
+    pub origin_tab_id: WorkspaceId,
     pub node_key: NodeKey,
     pub config_plugin_url: String,
     pub controller_plugin_url: String,
@@ -250,7 +252,7 @@ mod rail_size_tests {
 pub struct ControllerBootstrapSnapshot {
     pub sort_mode: SortMode,
     pub config: RailConfig,
-    pub pinned_tabs: Vec<u64>,
+    pub pinned_tabs: Vec<WorkspaceId>,
     pub pane_statuses: Vec<SetPaneStatus>,
     #[serde(default)]
     pub node_variable_overrides: Vec<NodeVariableOverrides>,
@@ -278,7 +280,7 @@ pub enum StatusIcon {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabCard {
-    pub tab_id: u64,
+    pub tab_id: WorkspaceId,
     pub position: usize,
     pub name: String,
     pub active: bool,
@@ -554,7 +556,7 @@ impl EntityRef {
 pub enum MetadataTarget {
     Root,
     Pane(PaneTarget),
-    Tab(u64),
+    Tab(WorkspaceId),
     Entity(EntityRef),
     Identity(MetadataIdentity),
 }
@@ -569,7 +571,7 @@ pub enum MetadataTarget {
 pub enum ResolvedMetadataTarget {
     Root,
     Pane(PaneTarget),
-    Tab(u64),
+    Tab(WorkspaceId),
     Entity(EntityRef),
     Identity(MetadataIdentity),
 }
@@ -814,7 +816,7 @@ pub enum MetadataTriState {
 #[serde(rename_all = "kebab-case", tag = "kind", content = "value")]
 pub enum NodeKey {
     Root,
-    Tab(u64),
+    Tab(WorkspaceId),
     Entity(EntityRef),
     Placement(PlacementKey),
 }
@@ -934,7 +936,7 @@ impl MetadataControls {
 }
 
 impl ControllerViewModel {
-    pub fn tab_by_id(&self, tab_id: u64) -> Option<&TabCard> {
+    pub fn tab_by_id(&self, tab_id: WorkspaceId) -> Option<&TabCard> {
         self.tabs.iter().find(|tab| tab.tab_id == tab_id)
     }
 }
@@ -1090,8 +1092,8 @@ mod tests {
     fn config_inspect_request_round_trips_json() {
         let request = ConfigInspectRequest {
             client_id: 4,
-            origin_tab_id: 7,
-            node_key: NodeKey::Tab(7),
+            origin_tab_id: WorkspaceId::from(7),
+            node_key: NodeKey::Tab(WorkspaceId::from(7)),
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
@@ -1110,7 +1112,7 @@ mod tests {
                 client_id: 4,
             },
             placement: PluginPlacement::Tab {
-                tab_id: 7,
+                tab_id: WorkspaceId::from(7),
                 pane_kind: PluginPaneKind::Floating,
             },
         };
@@ -1278,7 +1280,7 @@ mod tests {
     #[test]
     fn external_metadata_patch_message_round_trips_json() {
         let patch = MetadataPatch {
-            target: MetadataTarget::Tab(7),
+            target: MetadataTarget::Tab(WorkspaceId::from(7)),
             source_id: "flotilla".to_owned(),
             set: std::collections::BTreeMap::from([(
                 "tab.subject".to_owned(),

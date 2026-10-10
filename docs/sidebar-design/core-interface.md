@@ -25,8 +25,9 @@ The legacy Zellij adapter retains its existing receipt-clock behavior during
 this extraction; adopting a wall-clock expiry scheduler there is separate work.
 
 `observe(workspaces, panes)` supplies a full local topology snapshot, including
-the selected workspace. Workspace IDs are stable for their host lifetime,
-scoped to this client; positions retain the existing navigation order. A host
+the selected workspace. Workspace IDs are `WorkspaceId`s: 128-bit IDs the host
+supplies (see [Workspace IDs](#workspace-ids-abi-3)); positions retain the
+existing navigation order. A host
 without pane observations can start with an empty pane list. Pane observations
 currently retain Zellij's terminal/plugin `u32` identity through the core's
 `PaneTarget`, not just the C header. Wheelhouse's 64-bit `CFG_ID`s and general
@@ -111,8 +112,52 @@ cargo build -p andamento-ffi --target aarch64-apple-darwin
 ```
 
 It produces `libandamento_ffi.a` and a dynamic library in the native target's
-debug directory. ABI version **2** replaces the experimental JSON request
-interface from version 1. It is not yet a frozen embedding contract.
+debug directory. ABI version **2** replaced the experimental JSON request
+interface from version 1. ABI version **3** adds 128-bit Workspace IDs beside
+ABI 2's calls, which are unchanged; a host may accept either version. It is not
+yet a frozen embedding contract.
+
+### Workspace IDs (ABI 3)
+
+A Workspace ID is 16 opaque bytes (`AndamentoWorkspaceId`, `WorkspaceId` in
+Rust). The host generates it, a UUIDv7 in practice, when it first saves a
+workspace. Andamento only compares, orders and prints IDs and never generates
+one, so the core stays deterministic for replay.
+
+ABI 2's `uint64_t` ID `n` is the Workspace ID whose first eight bytes are zero
+and whose last eight are `n`, big-endian. A UUIDv7 never has that form (its
+version nibble is in byte 6), so the two kinds never collide and a host can use
+both while it moves: a workspace observed through ABI 2 as 7 is the embedded ID
+in ABI 3 calls. Embedded IDs print as their decimal `n`, so fallback keys and
+`.workspace` entity IDs are unchanged; wider IDs print as hyphenated UUIDs.
+ABI 2 `uint64_t` output fields report `n`, or 0 for a wider ID, which only an
+ABI 3 host can have supplied and which it reads through the ABI 3 getters.
+
+| ABI 2 | ABI 3 |
+|---|---|
+| `andamento_observe`, `AndamentoWorkspace`, `AndamentoPane` | `andamento_observe3`, `AndamentoWorkspace3`, `AndamentoPane3` |
+| `andamento_observe_workdirs`, `AndamentoWorkdir` | `andamento_observe_workdirs3`, `AndamentoWorkdir3` |
+| `andamento_complete` | `andamento_complete3` |
+| `AndamentoNode.workspace_id` | `andamento_snapshot_node_workspace` |
+| `AndamentoDetail.workspace_id` | `andamento_snapshot_detail_workspace` |
+| `AndamentoEffect.workspace_id` | `andamento_effects_workspace` |
+| `andamento_content_plan`/`valid`/`complete`/`retry` | `andamento_content_plan3`/`valid3`/`complete3`/`retry3` |
+| JSON `{"kind":"tab","value":7}` | JSON `{"kind":"tab","value":"<uuid>"}` |
+| none | `andamento_apply_workspace` (scalar facts on a workspace) |
+| none | `andamento_workspace_register`/`forget`/`registered` |
+
+JSON tab targets accept a number, a hyphenated UUID or 32 hex digits, in either
+case; embedded IDs serialize as numbers, as before. The replay `Request`s carry
+IDs in the same forms.
+
+Users create workspaces that never go through MATERIALIZE. The host declares
+them with `andamento_workspace_register` (`Sidebar::register_workspace`); a
+successful MATERIALIZE completion registers its workspace too. Registration is
+independent of topology: either may come first, and closing a workspace does
+not forget it. Forget a workspace the host deleted rather than kept. In this
+step registration changes neither the snapshot nor its revision; saved
+workspace records ([#142](https://github.com/flotilla-org/andamento/issues/142))
+build on it.
 
 ### Update and ownership rules
 

@@ -2,10 +2,17 @@ use andamento_core::presentation::UNPLACED_WORKSPACES_SECTION;
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::{
     EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
+    WorkspaceId,
 };
 use std::collections::BTreeMap;
 
 const CONFIG: &str = include_str!("fixtures/sidebar.kdl");
+// ABI 2-style IDs, named for use in patterns.
+const W7: WorkspaceId = WorkspaceId::from_u64(7);
+const W8: WorkspaceId = WorkspaceId::from_u64(8);
+const W42: WorkspaceId = WorkspaceId::from_u64(42);
+const W43: WorkspaceId = WorkspaceId::from_u64(43);
+const W80: WorkspaceId = WorkspaceId::from_u64(80);
 fn entity(kind: &str, id: &str) -> EntityRef {
     EntityRef {
         kind: kind.into(),
@@ -159,7 +166,7 @@ fn open(sidebar: &mut Sidebar) -> u64 {
 }
 fn workspace() -> Workspace {
     Workspace {
-        id: 42,
+        id: WorkspaceId::from(42),
         position: 0,
         name: "Tab 1".into(),
         selected: true,
@@ -185,7 +192,7 @@ fn host_results_preserve_identity_and_closing_returns_to_latent() {
         })
         .unwrap()
         .is_empty());
-    assert!(sidebar.complete(request, Ok(Some(42))));
+    assert!(sidebar.complete(request, Ok(Some(WorkspaceId::from(42)))));
     // Acknowledgement can precede the topology observation.
     assert!(sidebar
         .dispatch(Action::Activate {
@@ -197,7 +204,7 @@ fn host_results_preserve_identity_and_closing_returns_to_latent() {
     assert_eq!(
         sidebar.snapshot().surface.sections[0].nodes[0].children[0].state,
         PresentationState::Live {
-            workspace_id: 42,
+            workspace_id: WorkspaceId::from(42),
             selected: true
         }
     );
@@ -209,7 +216,7 @@ fn host_results_preserve_identity_and_closing_returns_to_latent() {
     let id = match effects[0] {
         HostEffect::Focus {
             request_id,
-            workspace_id: 42,
+            workspace_id: W42,
         } => request_id,
         ref other => panic!("{other:?}"),
     };
@@ -248,7 +255,7 @@ fn topology_can_precede_acknowledgement_and_stale_results_are_ignored() {
     let mut sidebar = sidebar();
     let request = open(&mut sidebar);
     sidebar.observe(vec![workspace()], vec![]);
-    assert!(sidebar.complete(request, Ok(Some(42))));
+    assert!(sidebar.complete(request, Ok(Some(WorkspaceId::from(42)))));
     assert!(!sidebar.complete(request, Err("late failure".into())));
     assert!(matches!(
         sidebar
@@ -257,7 +264,7 @@ fn topology_can_precede_acknowledgement_and_stale_results_are_ignored() {
             })
             .unwrap()[0],
         HostEffect::Focus {
-            workspace_id: 42,
+            workspace_id: W42,
             ..
         }
     ));
@@ -483,7 +490,7 @@ fn recipe_only_changes_invalidate_snapshot_and_activation() {
 fn identical_topology_is_unchanged_but_selection_invalidates() {
     let mut sidebar = sidebar();
     let mut workspaces = vec![Workspace {
-        id: 7,
+        id: WorkspaceId::from(7),
         position: 0,
         name: "Workspace".into(),
         selected: true,
@@ -537,7 +544,7 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
     let mut sidebar = sidebar();
     let mut first = workspace();
     let mut second = first.clone();
-    second.id = 43;
+    second.id = WorkspaceId::from(43);
     second.position = 1;
     second.selected = false;
     sidebar.observe(vec![first.clone(), second.clone()], vec![]);
@@ -551,7 +558,7 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
         .unwrap();
     let request_id = match effects[0] {
         HostEffect::Focus {
-            workspace_id: 43,
+            workspace_id: W43,
             request_id,
         } => request_id,
         ref effect => panic!("{effect:?}"),
@@ -567,7 +574,7 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
     assert_eq!(
         nodes[1].state,
         andamento_core::presentation::PresentationState::Live {
-            workspace_id: 43,
+            workspace_id: WorkspaceId::from(43),
             selected: true,
         }
     );
@@ -591,7 +598,7 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
 fn placements_cover_aliases_and_collapsed_children_but_filtered_workspaces_fall_back() {
     let mut sidebar = sidebar();
     let request = open(&mut sidebar);
-    sidebar.complete(request, Ok(Some(42)));
+    sidebar.complete(request, Ok(Some(WorkspaceId::from(42))));
     sidebar.observe(vec![workspace()], vec![]);
     assert!(fallback(&sidebar).is_empty());
     let parent = sidebar.snapshot().surface.sections[0].nodes[0].key.clone();
@@ -614,7 +621,7 @@ fn placements_cover_aliases_and_collapsed_children_but_filtered_workspaces_fall_
             .unwrap()
             .as_slice(),
         [HostEffect::Focus {
-            workspace_id: 42,
+            workspace_id: W42,
             ..
         }]
     ));
@@ -626,7 +633,7 @@ fn placements_cover_aliases_and_collapsed_children_but_filtered_workspaces_fall_
 fn removed_provider_facts_do_not_remove_open_workspaces() {
     let mut sidebar = sidebar();
     let request = open(&mut sidebar);
-    sidebar.complete(request, Ok(Some(42)));
+    sidebar.complete(request, Ok(Some(WorkspaceId::from(42))));
     sidebar.observe(vec![workspace()], vec![]);
     let mut remove = patch(entity("vessel", "v"), &[]);
     remove.unset = vec![
@@ -657,7 +664,7 @@ fn removed_provider_facts_do_not_remove_open_workspaces() {
             .unwrap()
             .as_slice(),
         [HostEffect::Focus {
-            workspace_id: 42,
+            workspace_id: W42,
             ..
         }]
     ));
@@ -696,7 +703,7 @@ fn compact_placement_template_preserves_independent_detail_template() {
 fn live_placement_focus_is_deduplicated_until_completion_and_can_retry() {
     let mut sidebar = sidebar();
     let request = open(&mut sidebar);
-    sidebar.complete(request, Ok(Some(42)));
+    sidebar.complete(request, Ok(Some(WorkspaceId::from(42))));
     sidebar.observe(vec![workspace()], vec![]);
     let key = sidebar.snapshot().surface.sections[0].nodes[0].children[0]
         .key
@@ -707,7 +714,7 @@ fn live_placement_focus_is_deduplicated_until_completion_and_can_retry() {
         let request_id = match effects.as_slice() {
             [HostEffect::Focus {
                 request_id,
-                workspace_id: 42,
+                workspace_id: W42,
             }] => *request_id,
             other => panic!("expected one focus, got {other:?}"),
         };
@@ -752,7 +759,7 @@ fn managed_primary_reconciles_resolution_not_global_revision() {
     publish(&mut sidebar, 101, "two");
     let first = sidebar
         .managed
-        .plan(42, subject.clone(), original.clone())
+        .plan(WorkspaceId::from(42), subject.clone(), original.clone())
         .update
         .unwrap();
     sidebar.apply(
@@ -765,37 +772,47 @@ fn managed_primary_reconciles_resolution_not_global_revision() {
     assert_eq!(
         sidebar
             .managed
-            .plan(42, subject.clone(), original.clone())
+            .plan(WorkspaceId::from(42), subject.clone(), original.clone())
             .update,
         Some(first.clone())
     );
     publish(&mut sidebar, 103, "three");
-    assert!(!sidebar.managed.valid(42, first.token));
-    assert!(!sidebar.managed.complete(42, first.token, true));
+    assert!(!sidebar.managed.valid(WorkspaceId::from(42), first.token));
+    assert!(!sidebar
+        .managed
+        .complete(WorkspaceId::from(42), first.token, true));
     let second = sidebar
         .managed
-        .plan(42, subject.clone(), original.clone())
+        .plan(WorkspaceId::from(42), subject.clone(), original.clone())
         .update
         .unwrap();
-    assert!(sidebar.managed.complete(42, second.token, false));
+    assert!(sidebar
+        .managed
+        .complete(WorkspaceId::from(42), second.token, false));
     assert_eq!(
         sidebar
             .managed
-            .plan(42, subject.clone(), original.clone())
+            .plan(WorkspaceId::from(42), subject.clone(), original.clone())
             .state,
         ContentState::Failed
     );
-    sidebar.managed.retry(42);
+    sidebar.managed.retry(WorkspaceId::from(42));
     let third = sidebar
         .managed
-        .plan(42, subject.clone(), original.clone())
+        .plan(WorkspaceId::from(42), subject.clone(), original.clone())
         .update
         .unwrap();
-    assert!(sidebar.managed.complete(42, third.token, true));
+    assert!(sidebar
+        .managed
+        .complete(WorkspaceId::from(42), third.token, true));
     assert_eq!(
         sidebar
             .managed
-            .plan(42, subject.clone(), third.content.clone())
+            .plan(
+                WorkspaceId::from(42),
+                subject.clone(),
+                third.content.clone()
+            )
             .state,
         ContentState::Current
     );
@@ -809,36 +826,58 @@ fn managed_primary_reconciles_resolution_not_global_revision() {
     assert_eq!(
         sidebar
             .managed
-            .plan(42, subject.clone(), third.content.clone())
+            .plan(
+                WorkspaceId::from(42),
+                subject.clone(),
+                third.content.clone()
+            )
             .state,
         ContentState::Held
     );
     publish(&mut sidebar, 105, "four");
     let fourth = sidebar
         .managed
-        .plan(42, subject.clone(), third.content.clone())
+        .plan(
+            WorkspaceId::from(42),
+            subject.clone(),
+            third.content.clone(),
+        )
         .update
         .unwrap();
     let mut expired = patch(subject.clone(), &[]);
     expired.unset = vec!["workspace.primary.state".into()];
     sidebar.apply(106, [expired]);
-    assert!(!sidebar.managed.valid(42, fourth.token));
+    assert!(!sidebar.managed.valid(WorkspaceId::from(42), fourth.token));
     assert_eq!(
         sidebar
             .managed
-            .plan(42, subject.clone(), third.content.clone())
+            .plan(
+                WorkspaceId::from(42),
+                subject.clone(),
+                third.content.clone()
+            )
             .state,
         ContentState::Unavailable
     );
     publish(&mut sidebar, 107, "four");
     let reconnected = sidebar
         .managed
-        .plan(42, subject.clone(), third.content.clone())
+        .plan(
+            WorkspaceId::from(42),
+            subject.clone(),
+            third.content.clone(),
+        )
         .update
         .unwrap();
     sidebar.observe(vec![], vec![]);
-    assert!(!sidebar.managed.valid(42, reconnected.token));
-    let reopened = sidebar.managed.plan(42, subject, original).update.unwrap();
+    assert!(!sidebar
+        .managed
+        .valid(WorkspaceId::from(42), reconnected.token));
+    let reopened = sidebar
+        .managed
+        .plan(WorkspaceId::from(42), subject, original)
+        .update
+        .unwrap();
     assert_ne!(reconnected.token, reopened.token);
 }
 
@@ -866,20 +905,24 @@ fn managed_content_is_independent_of_placement_and_expires_without_removal() {
     sidebar.apply(100, [desired.clone()]);
     let update = sidebar
         .managed
-        .plan(42, subject.clone(), applied.clone())
+        .plan(WorkspaceId::from(42), subject.clone(), applied.clone())
         .update
         .unwrap();
     sidebar.apply(111, []);
-    assert!(!sidebar.managed.valid(42, update.token));
+    assert!(!sidebar.managed.valid(WorkspaceId::from(42), update.token));
     assert_eq!(
         sidebar
             .managed
-            .plan(42, subject.clone(), applied.clone())
+            .plan(WorkspaceId::from(42), subject.clone(), applied.clone())
             .state,
         ContentState::Unavailable
     );
     sidebar.apply(112, [desired]);
-    let new = sidebar.managed.plan(42, subject, applied).update.unwrap();
+    let new = sidebar
+        .managed
+        .plan(WorkspaceId::from(42), subject, applied)
+        .update
+        .unwrap();
     assert_ne!(new.token, update.token);
 }
 
@@ -930,7 +973,10 @@ fn materializing_the_current_resolution_records_its_managed_target() {
         cwd: None,
     };
     assert_eq!(
-        sidebar.managed.plan(7, subject.clone(), applied).state,
+        sidebar
+            .managed
+            .plan(WorkspaceId::from(7), subject.clone(), applied)
+            .state,
         ContentState::Current
     );
 }
@@ -1056,7 +1102,10 @@ fn materialized_target_is_recorded_when_the_resolution_has_a_working_directory()
         cwd: Some("/work/repo".into()),
     };
     assert_eq!(
-        sidebar.managed.plan(7, subject, applied).state,
+        sidebar
+            .managed
+            .plan(WorkspaceId::from(7), subject, applied)
+            .state,
         ContentState::Current
     );
 }
@@ -1142,7 +1191,7 @@ fn directory_state(
 }
 fn directory_workspace(id: u64) -> Workspace {
     Workspace {
-        id,
+        id: WorkspaceId::from(id),
         position: id as usize,
         name: "user terminal".into(),
         selected: true,
@@ -1159,19 +1208,22 @@ fn directory_observations_focus_any_entity_kind_without_persisting_identity() {
     );
     sidebar.observe(vec![directory_workspace(7)], vec![]);
     sidebar.observe_workdirs(vec![
-        (7, "/repo".into()),
-        (7, "/other".into()),
-        (99, "/repo".into()),
+        (WorkspaceId::from(7), "/repo".into()),
+        (WorkspaceId::from(7), "/other".into()),
+        (WorkspaceId::from(99), "/repo".into()),
     ]);
     assert!(matches!(
         directory_state(&sidebar, &subject),
         PresentationState::Live {
-            workspace_id: 7,
+            workspace_id: W7,
             ..
         }
     ));
     let revision = sidebar.revision();
-    sidebar.observe_workdirs(vec![(7, "/other".into()), (7, "/repo".into())]);
+    sidebar.observe_workdirs(vec![
+        (WorkspaceId::from(7), "/other".into()),
+        (WorkspaceId::from(7), "/repo".into()),
+    ]);
     assert_eq!(sidebar.revision(), revision);
     let effects = sidebar
         .dispatch(Action::Activate {
@@ -1180,19 +1232,19 @@ fn directory_observations_focus_any_entity_kind_without_persisting_identity() {
         .unwrap();
     let HostEffect::Focus {
         request_id,
-        workspace_id: 7,
+        workspace_id: W7,
     } = effects[0]
     else {
         panic!("expected focus")
     };
     sidebar.complete(request_id, Ok(None));
     // Exact matching: a subdirectory is not a host-normalized repository root.
-    sidebar.observe_workdirs(vec![(7, "/repo/subdir".into())]);
+    sidebar.observe_workdirs(vec![(WorkspaceId::from(7), "/repo/subdir".into())]);
     assert!(matches!(
         directory_state(&sidebar, &subject),
         PresentationState::Latent { openable: true }
     ));
-    sidebar.observe_workdirs(vec![(7, "/repo".into())]);
+    sidebar.observe_workdirs(vec![(WorkspaceId::from(7), "/repo".into())]);
     sidebar.observe(vec![], vec![]);
     sidebar.observe(vec![directory_workspace(7)], vec![]);
     assert!(matches!(
@@ -1210,17 +1262,17 @@ fn explicit_binding_wins_and_directory_association_tracks_fact_updates() {
         [patch(subject.clone(), &[("git.root", text("/repo"))])],
     );
     sidebar.observe(vec![directory_workspace(7), directory_workspace(8)], vec![]);
-    sidebar.observe_workdirs(vec![(7, "/repo".into())]);
+    sidebar.observe_workdirs(vec![(WorkspaceId::from(7), "/repo".into())]);
     let mut binding = patch(
         subject.clone(),
         &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
     );
-    binding.target = MetadataTarget::Tab(8);
+    binding.target = MetadataTarget::Tab(WorkspaceId::from(8));
     sidebar.apply(100, [binding]);
     assert!(matches!(
         directory_state(&sidebar, &subject),
         PresentationState::Live {
-            workspace_id: 8,
+            workspace_id: W8,
             ..
         }
     ));
@@ -1228,7 +1280,7 @@ fn explicit_binding_wins_and_directory_association_tracks_fact_updates() {
     assert!(matches!(
         directory_state(&sidebar, &subject),
         PresentationState::Live {
-            workspace_id: 7,
+            workspace_id: W7,
             ..
         }
     ));
@@ -1240,7 +1292,7 @@ fn explicit_binding_wins_and_directory_association_tracks_fact_updates() {
         directory_state(&sidebar, &subject),
         PresentationState::Latent { .. }
     ));
-    sidebar.observe_workdirs(vec![(7, "/changed".into())]);
+    sidebar.observe_workdirs(vec![(WorkspaceId::from(7), "/changed".into())]);
     assert!(matches!(
         directory_state(&sidebar, &subject),
         PresentationState::Live { .. }
@@ -1272,12 +1324,15 @@ fn multiple_directories_associate_multiple_entities_but_not_explicit_workspace()
         ],
     );
     sidebar.observe(vec![directory_workspace(7)], vec![]);
-    sidebar.observe_workdirs(vec![(7, "/one".into()), (7, "/two".into())]);
+    sidebar.observe_workdirs(vec![
+        (WorkspaceId::from(7), "/one".into()),
+        (WorkspaceId::from(7), "/two".into()),
+    ]);
     for subject in [&first, &second] {
         assert!(matches!(
             directory_state(&sidebar, subject),
             PresentationState::Live {
-                workspace_id: 7,
+                workspace_id: W7,
                 ..
             }
         ));
@@ -1289,7 +1344,7 @@ fn multiple_directories_associate_multiple_entities_but_not_explicit_workspace()
             ("entity.id", text("explicit")),
         ],
     );
-    binding.target = MetadataTarget::Tab(7);
+    binding.target = MetadataTarget::Tab(WorkspaceId::from(7));
     sidebar.apply(101, [binding]);
     for subject in [&first, &second] {
         assert!(matches!(
@@ -1303,7 +1358,7 @@ fn retained_sidebar() -> Sidebar {
     let mut sidebar = sidebar();
     sidebar.configure(&format!("{CONFIG}\ndisplay-variable \"show-finished\" type=\"bool\" default=false label=\"Show finished\" icon=\"F\"\n")).unwrap();
     let request = open(&mut sidebar);
-    sidebar.complete(request, Ok(Some(42)));
+    sidebar.complete(request, Ok(Some(WorkspaceId::from(42))));
     sidebar.observe(vec![workspace()], vec![]);
     sidebar
 }
@@ -1319,7 +1374,7 @@ fn workspace_nodes(
             if matches!(
                 node.state,
                 andamento_core::presentation::PresentationState::Live {
-                    workspace_id: 42,
+                    workspace_id: W42,
                     ..
                 }
             ) {
@@ -1415,7 +1470,7 @@ fn ended_workspace_lifecycle_scenarios() {
         assert!(matches!(
             effects.as_slice(),
             [HostEffect::Focus {
-                workspace_id: 42,
+                workspace_id: W42,
                 ..
             }]
         ));
@@ -1485,7 +1540,7 @@ fn unrelated_source_removal_and_subjectless_workspaces_are_unaffected() {
         vec![
             workspace(),
             Workspace {
-                id: 99,
+                id: WorkspaceId::from(99),
                 position: 1,
                 name: "Unsaved notes".into(),
                 selected: false,
@@ -1564,7 +1619,7 @@ fn standing_role_outlives_terminal_attempt_phase() {
     let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
         panic!("{effects:?}")
     };
-    sidebar.complete(*request_id, Ok(Some(42)));
+    sidebar.complete(*request_id, Ok(Some(WorkspaceId::from(42))));
     sidebar.observe(vec![workspace()], vec![]);
     sidebar.apply(101, []);
     let snapshot = sidebar.snapshot();
@@ -1707,7 +1762,7 @@ fn closing_many_removed_workspaces_releases_retained_catalog_history() {
         let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
             panic!("{effects:?}")
         };
-        sidebar.complete(*request_id, Ok(Some(42)));
+        sidebar.complete(*request_id, Ok(Some(WorkspaceId::from(42))));
         sidebar.observe(vec![workspace()], vec![]);
         let mut removal = patch(subject.clone(), &[("source", text("flotilla"))]);
         removal.unset = publication.set.keys().cloned().collect();
@@ -1774,9 +1829,9 @@ fn shared_ancestor_survives_one_child_end_and_close() {
     let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
         panic!("{effects:?}")
     };
-    sidebar.complete(*request_id, Ok(Some(80)));
+    sidebar.complete(*request_id, Ok(Some(WorkspaceId::from(80))));
     let sibling = Workspace {
-        id: 80,
+        id: WorkspaceId::from(80),
         position: 1,
         name: "Sibling".into(),
         selected: false,
@@ -1807,7 +1862,7 @@ fn shared_ancestor_survives_one_child_end_and_close() {
         && matches!(
             n.state,
             andamento_core::presentation::PresentationState::Live {
-                workspace_id: 80,
+                workspace_id: W80,
                 ..
             }
         )
@@ -1889,7 +1944,7 @@ fn removal_after_first_topology_needs_no_intervening_snapshot() {
         )],
     );
     let request = open(&mut sidebar);
-    sidebar.complete(request, Ok(Some(42)));
+    sidebar.complete(request, Ok(Some(WorkspaceId::from(42))));
     sidebar.observe(vec![workspace()], vec![]);
     let mut removal = patch(entity("vessel", "v"), &[]);
     removal.unset = vec![
@@ -1932,20 +1987,20 @@ fn shared_action_targets_do_not_steal_subject_workspace_or_selection() {
             ("entity.id", text("other")),
         ],
     );
-    binding.target = MetadataTarget::Tab(43);
+    binding.target = MetadataTarget::Tab(WorkspaceId::from(43));
     sidebar.apply(102, [binding]);
     for selected in [42, 43] {
         for collapsed in [false, true] {
             sidebar.observe(
                 vec![
                     Workspace {
-                        id: 42,
+                        id: WorkspaceId::from(42),
                         position: 0,
                         name: "Vessel".into(),
                         selected: selected == 42,
                     },
                     Workspace {
-                        id: 43,
+                        id: WorkspaceId::from(43),
                         position: 1,
                         name: "Other".into(),
                         selected: selected == 43,
@@ -1973,7 +2028,7 @@ fn shared_action_targets_do_not_steal_subject_workspace_or_selection() {
                 assert_eq!(
                     node.state,
                     PresentationState::Live {
-                        workspace_id: id,
+                        workspace_id: WorkspaceId::from(id),
                         selected: selected == id
                     }
                 );
@@ -1992,7 +2047,7 @@ fn duplicate_subject_bindings_prefer_selection_then_inventory_order() {
         entity("vessel", "v"),
         &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
     );
-    binding.target = MetadataTarget::Tab(43);
+    binding.target = MetadataTarget::Tab(WorkspaceId::from(43));
     sidebar.apply(101, [binding]);
     for order in [[42, 43], [43, 42]] {
         for selected in [None, Some(42), Some(43)] {
@@ -2001,7 +2056,7 @@ fn duplicate_subject_bindings_prefer_selection_then_inventory_order() {
                     .iter()
                     .enumerate()
                     .map(|(position, id)| Workspace {
-                        id: *id,
+                        id: WorkspaceId::from(*id),
                         position,
                         name: "Duplicate".into(),
                         selected: selected == Some(*id),
@@ -2014,7 +2069,7 @@ fn duplicate_subject_bindings_prefer_selection_then_inventory_order() {
             assert_eq!(
                 node.state,
                 PresentationState::Live {
-                    workspace_id: selected.unwrap_or(order[0]),
+                    workspace_id: WorkspaceId::from(selected.unwrap_or(order[0])),
                     selected: selected.is_some()
                 }
             );
@@ -2032,13 +2087,13 @@ fn unbound_action_target_keeps_selection_on_its_alias() {
         entity("vessel", "v"),
         &[("action.primary.target", text("vessel:v"))],
     );
-    binding.target = MetadataTarget::Tab(42);
+    binding.target = MetadataTarget::Tab(WorkspaceId::from(42));
     sidebar.apply(101, [binding]);
     sidebar.observe(vec![workspace()], vec![]);
     assert_eq!(
         sidebar.snapshot().surface.sections[0].nodes[0].children[0].state,
         PresentationState::Live {
-            workspace_id: 42,
+            workspace_id: WorkspaceId::from(42),
             selected: true
         }
     );
@@ -2218,7 +2273,7 @@ template ".workspace/line" {
 
 fn tab_patch(tab: u64, facts: &[(&str, MetadataValue)]) -> MetadataPatch {
     let mut patch = patch(entity("unused", "unused"), facts);
-    patch.target = MetadataTarget::Tab(tab);
+    patch.target = MetadataTarget::Tab(WorkspaceId::from(tab));
     patch
 }
 
@@ -2266,7 +2321,7 @@ fn host_entities_place_and_cover_their_workspace_without_subject_lifecycle() {
     );
     sidebar.observe(vec![workspace()], vec![]);
     let live = andamento_core::presentation::PresentationState::Live {
-        workspace_id: 42,
+        workspace_id: WorkspaceId::from(42),
         selected: true,
     };
     // Homed with its project: placed there, live, and so not left over.
@@ -2278,7 +2333,7 @@ fn host_entities_place_and_cover_their_workspace_without_subject_lifecycle() {
     let card = sidebar
         .detail_card(&local)
         .expect("a host entity has details");
-    assert_eq!(card.workspace_id, Some(42));
+    assert_eq!(card.workspace_id, Some(WorkspaceId::from(42)));
 
     // Unhomed: left over, under its own identity rather than a synthetic one.
     let mut unhome = patch(local.clone(), &[]);
@@ -2318,11 +2373,11 @@ fn shared_or_incomplete_host_entities_keep_every_workspace_covered() {
         ],
     );
     let mut second = workspace();
-    second.id = 43;
+    second.id = WorkspaceId::from(43);
     second.position = 1;
     second.selected = false;
     let mut third = second.clone();
-    third.id = 44;
+    third.id = WorkspaceId::from(44);
     third.position = 2;
     sidebar.observe(vec![workspace(), second, third], vec![]);
     let nodes = fallback(&sidebar);
@@ -2373,7 +2428,7 @@ fn a_tab_with_a_subject_and_a_host_entity_makes_both_live() {
     );
     sidebar.observe(vec![workspace()], vec![]);
     let live = andamento_core::presentation::PresentationState::Live {
-        workspace_id: 42,
+        workspace_id: WorkspaceId::from(42),
         selected: true,
     };
     let children = project_children(&sidebar);
@@ -2395,7 +2450,7 @@ fn a_tab_with_a_subject_and_a_host_entity_makes_both_live() {
             matches!(
                 effects[..],
                 [HostEffect::Focus {
-                    workspace_id: 42,
+                    workspace_id: W42,
                     ..
                 }]
             ),
@@ -2519,7 +2574,7 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
         ],
     );
     let mut leftover = workspace();
-    leftover.id = 43;
+    leftover.id = WorkspaceId::from(43);
     leftover.position = 1;
     leftover.selected = false;
     sidebar.observe(vec![workspace(), leftover], vec![]);
@@ -2562,7 +2617,7 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
     assert_eq!(
         items[0].state,
         andamento_core::presentation::PresentationState::Live {
-            workspace_id: 42,
+            workspace_id: WorkspaceId::from(42),
             selected: true
         }
     );
@@ -2608,13 +2663,13 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
         )],
     );
     let mut opened = workspace();
-    opened.id = 44;
+    opened.id = WorkspaceId::from(44);
     opened.position = 2;
     opened.selected = false;
     let mut first = workspace();
     first.selected = true;
     let mut second = first.clone();
-    second.id = 43;
+    second.id = WorkspaceId::from(43);
     second.position = 1;
     second.selected = false;
     sidebar.observe(vec![first, second, opened], vec![]);
@@ -2633,7 +2688,7 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
     assert_eq!(
         ghost.state,
         andamento_core::presentation::PresentationState::Live {
-            workspace_id: 44,
+            workspace_id: WorkspaceId::from(44),
             selected: false
         }
     );
@@ -2949,7 +3004,7 @@ fn a_retracted_ref_leaves_its_group() {
         }] if subject == &vessel => *request_id,
         other => panic!("expected the target to open, got {other:?}"),
     };
-    sidebar.complete(request_id, Ok(Some(42)));
+    sidebar.complete(request_id, Ok(Some(WorkspaceId::from(42))));
     // The host names the opened workspace's subject, as Wheelhouse does.
     sidebar.apply(
         150,

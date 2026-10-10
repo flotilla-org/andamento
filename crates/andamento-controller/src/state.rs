@@ -1,7 +1,7 @@
 //! Zellij observations translated into core-owned values.
 use andamento_core::host::PaneObservation;
 pub use andamento_core::state::*;
-use andamento_shared::PaneTarget;
+use andamento_shared::{PaneTarget, WorkspaceId};
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
 pub trait ZellijObservations {
@@ -14,7 +14,7 @@ impl ZellijObservations for ControllerState {
         self.observe_workspaces(
             tabs.into_iter()
                 .map(|tab| ControllerTab {
-                    tab_id: tab.tab_id as u64,
+                    tab_id: WorkspaceId::from(tab.tab_id as u64),
                     position: tab.position,
                     name: tab.name,
                     active: tab.active,

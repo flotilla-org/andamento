@@ -1,6 +1,6 @@
 //! Reconciliation of one host-owned primary slot per workspace intent.
 //! Missing facts suspend updates; they never mean delete the existing content.
-use crate::EntityRef;
+use crate::{EntityRef, WorkspaceId};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,7 +41,7 @@ struct Binding {
 #[derive(Default)]
 pub struct ManagedContent {
     desired: BTreeMap<EntityRef, DesiredContent>,
-    bindings: BTreeMap<u64, Binding>,
+    bindings: BTreeMap<WorkspaceId, Binding>,
     next_token: u64,
 }
 impl ManagedContent {
@@ -54,13 +54,13 @@ impl ManagedContent {
         }
         self.desired = desired;
     }
-    pub fn retain_workspaces(&mut self, ids: &[u64]) {
+    pub fn retain_workspaces(&mut self, ids: &[WorkspaceId]) {
         let live: BTreeSet<_> = ids.iter().copied().collect();
         self.bindings.retain(|id, _| live.contains(id));
     }
     pub fn plan(
         &mut self,
-        workspace: u64,
+        workspace: WorkspaceId,
         entity: EntityRef,
         applied: TerminalContent,
     ) -> ContentPlan {
@@ -105,7 +105,7 @@ impl ManagedContent {
         }
     }
     /// Host calls immediately before mutation, on the same owner thread as publication.
-    pub fn valid(&self, workspace: u64, token: u64) -> bool {
+    pub fn valid(&self, workspace: WorkspaceId, token: u64) -> bool {
         self.bindings.get(&workspace).is_some_and(|b| {
             b.pending.as_ref().is_some_and(|u| {
                 u.token == token
@@ -114,7 +114,7 @@ impl ManagedContent {
             })
         })
     }
-    pub fn complete(&mut self, workspace: u64, token: u64, success: bool) -> bool {
+    pub fn complete(&mut self, workspace: WorkspaceId, token: u64, success: bool) -> bool {
         if !self.valid(workspace, token) {
             return false;
         }
@@ -127,7 +127,7 @@ impl ManagedContent {
         }
         true
     }
-    pub fn retry(&mut self, workspace: u64) {
+    pub fn retry(&mut self, workspace: WorkspaceId) {
         if let Some(binding) = self.bindings.get_mut(&workspace) {
             binding.failed = false;
         }
