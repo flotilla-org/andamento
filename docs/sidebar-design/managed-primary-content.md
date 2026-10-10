@@ -8,6 +8,8 @@ This supports one command terminal in a host-owned primary slot. It does not
 implement arbitrary content graphs, daemon attachment replacement, or multiple
 managed slots. Flotilla publishes standing project roles through these facts;
 see [Flotilla standing roles](#flotilla-standing-roles).
+[Suggested Layouts](suggested-layouts.md) define facts for several slots; these
+facts remain valid there as the `primary` slot.
 
 ## Producer facts
 
