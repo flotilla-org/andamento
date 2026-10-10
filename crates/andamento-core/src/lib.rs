@@ -15,6 +15,7 @@ pub mod records;
 pub mod replay;
 pub mod sidebar;
 pub mod state;
+pub mod suggested_layout;
 pub use sidebar::Sidebar;
 pub mod template_config;
 mod workspace_id;
