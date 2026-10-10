@@ -47,12 +47,21 @@ use std::{
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 
 use crate::{
+    slots::{
+        ArrangementDoc, Baseline, Panel, PanelNode, SlotDef, SlotOverride, StoredArrangement,
+        WorkspaceSlots,
+    },
+    suggested_layout::{
+        Axis, BaselineVersion, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec,
+    },
     DisplayVariableValue, EntityRef, MetadataValue, PlacementKey, PlacementLoopKey,
     PlacementSegment, WorkspaceId,
 };
 
-/// The record format version this Andamento writes. It also reads version 1.
-pub const RECORD_VERSION: i64 = 2;
+/// The record format version this Andamento writes. It also reads versions 1
+/// and 2. Version 3 adds a workspace's slots and arrangement; a version 2
+/// workspace record has none, and a dashboard record is unchanged.
+pub const RECORD_VERSION: i64 = 3;
 const ENVELOPE: &str = "andamento-record";
 
 /// The name of a record: `dashboard`, or `workspace/<id>` for a registered
@@ -102,13 +111,17 @@ pub struct DashboardRecord {
 }
 
 /// One workspace's logical state.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkspaceRecord {
     /// The entity the workspace was opened for.
     pub subject: Option<EntityRef>,
     /// The subject and the entities on its path, as last seen, so the row can
     /// be drawn where it was when no producer publishes them.
     pub retained: BTreeMap<EntityRef, SubjectRecord>,
+    /// Its slots: the cached baseline, the user's overrides and own slots.
+    pub slots: WorkspaceSlots,
+    /// Its arrangement document.
+    pub arrangement: Option<StoredArrangement>,
     /// Nodes this version doesn't know, as KDL text.
     pub unknown: Vec<String>,
 }
@@ -256,6 +269,52 @@ impl WorkspaceRecord {
             push_facts(&mut node, &subject.facts);
             body.push(node);
         }
+        if let Some(baseline) = &self.slots.baseline {
+            let mut node = KdlNode::new("baseline");
+            match &baseline.version {
+                BaselineVersion::Published(version) => node.insert("version", version.clone()),
+                BaselineVersion::PrimaryOnly => node.insert("primary-only", true),
+            };
+            let children = node.ensure_children();
+            for slot in &baseline.slots {
+                children.nodes_mut().push(slot_node("slot", slot));
+            }
+            if let Some(hint) = &baseline.hint {
+                children.nodes_mut().push(doc_node("hint", hint));
+            }
+            body.push(node);
+        }
+        for (key, edit) in &self.slots.overrides {
+            let mut node = slot_node(
+                "override",
+                &SlotDef {
+                    key: key.clone(),
+                    spec: edit.spec.clone(),
+                    rebind: edit.rebind,
+                },
+            );
+            let mut against = KdlNode::new("against");
+            push_spec(&mut against, &edit.against);
+            node.ensure_children().nodes_mut().push(against);
+            body.push(node);
+        }
+        for slot in &self.slots.user {
+            body.push(slot_node("slot", slot));
+        }
+        if let Some(arrangement) = &self.arrangement {
+            let mut node = doc_node("arrangement", &arrangement.doc);
+            node.insert(
+                "generation",
+                i64::try_from(arrangement.generation).unwrap_or(i64::MAX),
+            );
+            node.insert("owned", arrangement.owned);
+            for tab in &arrangement.placed {
+                let mut placed = KdlNode::new("placed");
+                placed.push(KdlEntry::new(tab.clone()));
+                node.ensure_children().nodes_mut().push(placed);
+            }
+            body.push(node);
+        }
         envelope(&RecordName::Workspace(id), body, &self.unknown)
     }
 
@@ -303,6 +362,72 @@ impl WorkspaceRecord {
                             facts: read.facts(&node)?,
                         },
                     );
+                }
+                "baseline" if version >= 3 => {
+                    let version = match (node.get("version"), node.get("primary-only")) {
+                        (Some(entry), None) => BaselineVersion::Published(
+                            entry
+                                .value()
+                                .as_string()
+                                .ok_or("baseline version must be a string")?
+                                .to_owned(),
+                        ),
+                        (None, Some(_)) => BaselineVersion::PrimaryOnly,
+                        _ => return Err("a baseline has a version or is primary-only".into()),
+                    };
+                    let mut baseline = Baseline {
+                        version,
+                        slots: Vec::new(),
+                        hint: None,
+                    };
+                    for child in children(&node) {
+                        match child.name().value() {
+                            "slot" => baseline.slots.push(read.slot(child)?),
+                            "hint" => baseline.hint = Some(read_doc(child)?),
+                            other => return Err(format!("unexpected {other:?} in baseline")),
+                        }
+                    }
+                    record.slots.baseline = Some(baseline);
+                }
+                "override" if version >= 3 => {
+                    let slot = read.slot(&node)?;
+                    let against = children(&node)
+                        .iter()
+                        .find(|child| child.name().value() == "against")
+                        .ok_or("an override records what it was made against")?;
+                    record.slots.overrides.insert(
+                        slot.key,
+                        SlotOverride {
+                            spec: slot.spec,
+                            rebind: slot.rebind,
+                            against: read.spec(against)?,
+                        },
+                    );
+                }
+                "slot" if version >= 3 => record.slots.user.push(read.slot(&node)?),
+                "arrangement" if version >= 3 => {
+                    let generation = node
+                        .get("generation")
+                        .and_then(|e| e.value().as_i64())
+                        .and_then(|n| u64::try_from(n).ok())
+                        .filter(|n| *n > 0)
+                        .ok_or("an arrangement needs a positive generation")?;
+                    let owned = node
+                        .get("owned")
+                        .map(|e| e.value().as_bool().ok_or("owned must be a boolean"))
+                        .transpose()?
+                        .unwrap_or(false);
+                    let placed = children(&node)
+                        .iter()
+                        .filter(|child| child.name().value() == "placed")
+                        .map(|child| string_arg(child, 0))
+                        .collect::<Result<_, _>>()?;
+                    record.arrangement = Some(StoredArrangement {
+                        generation,
+                        owned,
+                        doc: read_doc(&node)?,
+                        placed,
+                    });
                 }
                 _ => record.unknown.push(canonical(node)),
             }
@@ -459,6 +584,268 @@ impl<'a> Reader<'a> {
     fn facts(&self, node: &KdlNode) -> Result<BTreeMap<String, MetadataValue>, String> {
         read_facts(self, node)
     }
+}
+
+impl Reader<'_> {
+    /// A slot: `<name> "<key>" rebind=".." presentation=".." { <content> }`.
+    fn slot(&self, node: &KdlNode) -> Result<SlotDef, String> {
+        let rebind = match node.get("rebind").map(|e| e.value().as_string()) {
+            None | Some(Some("replace")) => RebindPolicy::Replace,
+            Some(Some("keep-previous")) => RebindPolicy::KeepPrevious,
+            Some(Some("ask")) => RebindPolicy::Ask,
+            _ => return Err("rebind must be \"replace\", \"keep-previous\" or \"ask\"".into()),
+        };
+        Ok(SlotDef {
+            key: string_arg(node, 0)?,
+            spec: self.spec(node)?,
+            rebind,
+        })
+    }
+
+    /// A View Spec: an optional `presentation` property, and one content child.
+    fn spec(&self, node: &KdlNode) -> Result<ViewSpec, String> {
+        let presentation = match node.get("presentation") {
+            None => None,
+            Some(entry) => Some(
+                entry
+                    .value()
+                    .as_string()
+                    .ok_or("presentation must be a string")?
+                    .to_owned(),
+            ),
+        };
+        let mut content = None;
+        for child in children(node) {
+            let cwd = || -> Result<Option<String>, String> {
+                child
+                    .get("cwd")
+                    .map(|e| {
+                        e.value()
+                            .as_string()
+                            .map(str::to_owned)
+                            .ok_or_else(|| "cwd must be a string".to_owned())
+                    })
+                    .transpose()
+            };
+            let next = match child.name().value() {
+                "facet" => Content::ProviderFacet {
+                    facet: string_arg(child, 0)?,
+                    entity: self.entity_at(child, 1)?,
+                },
+                "shell" => Content::Local(LocalRecipe::Command {
+                    line: CommandLine::Shell(string_arg(child, 0)?),
+                    cwd: cwd()?,
+                }),
+                "argv" => Content::Local(LocalRecipe::Command {
+                    line: CommandLine::Argv(
+                        (0..child
+                            .entries()
+                            .iter()
+                            .filter(|e| e.name().is_none())
+                            .count())
+                            .map(|n| string_arg(child, n))
+                            .collect::<Result<_, _>>()?,
+                    ),
+                    cwd: cwd()?,
+                }),
+                "file" => Content::Local(LocalRecipe::File {
+                    path: string_arg(child, 0)?,
+                }),
+                "url" => Content::Local(LocalRecipe::Url {
+                    url: string_arg(child, 0)?,
+                }),
+                "jackstay" => Content::Local(LocalRecipe::Jackstay {
+                    launcher: string_arg(child, 0)?,
+                    endpoint: string_arg(child, 1)?,
+                }),
+                "against" => continue,
+                other => return Err(format!("unexpected {other:?} in a view spec")),
+            };
+            if content.replace(next).is_some() {
+                return Err("a view spec has one content".into());
+            }
+        }
+        Ok(ViewSpec {
+            content: content.ok_or("a view spec needs content")?,
+            presentation,
+        })
+    }
+}
+
+fn slot_node(name: &str, slot: &SlotDef) -> KdlNode {
+    let mut node = KdlNode::new(name);
+    node.push(KdlEntry::new(slot.key.clone()));
+    match slot.rebind {
+        RebindPolicy::Replace => {}
+        RebindPolicy::KeepPrevious => {
+            node.insert("rebind", "keep-previous");
+        }
+        RebindPolicy::Ask => {
+            node.insert("rebind", "ask");
+        }
+    }
+    push_spec(&mut node, &slot.spec);
+    node
+}
+
+fn push_spec(node: &mut KdlNode, spec: &ViewSpec) {
+    if let Some(presentation) = &spec.presentation {
+        node.insert("presentation", presentation.clone());
+    }
+    let content = match &spec.content {
+        Content::ProviderFacet { entity, facet } => {
+            let mut content = entity_node("facet", entity);
+            content
+                .entries_mut()
+                .insert(0, KdlEntry::new(facet.clone()));
+            content
+        }
+        Content::Local(LocalRecipe::Command { line, cwd }) => {
+            let mut content = match line {
+                CommandLine::Shell(shell) => {
+                    let mut content = KdlNode::new("shell");
+                    content.push(KdlEntry::new(shell.clone()));
+                    content
+                }
+                CommandLine::Argv(argv) => {
+                    let mut content = KdlNode::new("argv");
+                    for arg in argv {
+                        content.push(KdlEntry::new(arg.clone()));
+                    }
+                    content
+                }
+            };
+            if let Some(cwd) = cwd {
+                content.insert("cwd", cwd.clone());
+            }
+            content
+        }
+        Content::Local(LocalRecipe::File { path }) => {
+            let mut content = KdlNode::new("file");
+            content.push(KdlEntry::new(path.clone()));
+            content
+        }
+        Content::Local(LocalRecipe::Url { url }) => {
+            let mut content = KdlNode::new("url");
+            content.push(KdlEntry::new(url.clone()));
+            content
+        }
+        Content::Local(LocalRecipe::Jackstay { launcher, endpoint }) => {
+            let mut content = KdlNode::new("jackstay");
+            content.push(KdlEntry::new(launcher.clone()));
+            content.push(KdlEntry::new(endpoint.clone()));
+            content
+        }
+    };
+    node.ensure_children().nodes_mut().push(content);
+}
+
+/// An arrangement document as `<name> { <root panel> }`: `split "<id>"
+/// axis="row|column" weight=1.0 { panels }` or `tabs "<id>" weight=1.0
+/// selected="<slot>" { tab "<slot>" ... }`.
+fn doc_node(name: &str, doc: &ArrangementDoc) -> KdlNode {
+    fn panel_node(panel: &Panel) -> KdlNode {
+        let mut node;
+        match &panel.node {
+            PanelNode::Split { axis, children } => {
+                node = KdlNode::new("split");
+                node.push(KdlEntry::new(panel.id.clone()));
+                node.insert(
+                    "axis",
+                    match axis {
+                        Axis::Row => "row",
+                        Axis::Column => "column",
+                    },
+                );
+                node.insert("weight", panel.weight);
+                let list = node.ensure_children();
+                for child in children {
+                    list.nodes_mut().push(panel_node(child));
+                }
+            }
+            PanelNode::Tabs { tabs, selected } => {
+                node = KdlNode::new("tabs");
+                node.push(KdlEntry::new(panel.id.clone()));
+                node.insert("weight", panel.weight);
+                if let Some(selected) = selected {
+                    node.insert("selected", selected.clone());
+                }
+                if !tabs.is_empty() {
+                    let list = node.ensure_children();
+                    for tab in tabs {
+                        let mut tab_node = KdlNode::new("tab");
+                        tab_node.push(KdlEntry::new(tab.clone()));
+                        list.nodes_mut().push(tab_node);
+                    }
+                }
+            }
+        }
+        node
+    }
+    let mut node = KdlNode::new(name);
+    if let Some(root) = &doc.root {
+        node.ensure_children().nodes_mut().push(panel_node(root));
+    }
+    node
+}
+
+fn read_doc(node: &KdlNode) -> Result<ArrangementDoc, String> {
+    fn read_panel(node: &KdlNode) -> Result<Panel, String> {
+        let weight = match node.get("weight").map(|e| e.value()) {
+            None => 1.0,
+            Some(KdlValue::Base10Float(weight)) => *weight,
+            Some(value) => value
+                .as_i64()
+                .map(|n| n as f64)
+                .ok_or("a panel weight is a number")?,
+        };
+        let id = string_arg(node, 0)?;
+        let node = match node.name().value() {
+            "split" => PanelNode::Split {
+                axis: match node.get("axis").and_then(|e| e.value().as_string()) {
+                    Some("row") => Axis::Row,
+                    Some("column") => Axis::Column,
+                    _ => return Err("a split's axis is \"row\" or \"column\"".into()),
+                },
+                children: children(node)
+                    .iter()
+                    .map(read_panel)
+                    .collect::<Result<_, _>>()?,
+            },
+            "tabs" => PanelNode::Tabs {
+                tabs: children(node)
+                    .iter()
+                    .map(|tab| match tab.name().value() {
+                        "tab" => string_arg(tab, 0),
+                        other => Err(format!("unexpected {other:?} in tabs")),
+                    })
+                    .collect::<Result<_, _>>()?,
+                selected: node
+                    .get("selected")
+                    .map(|e| {
+                        e.value()
+                            .as_string()
+                            .map(str::to_owned)
+                            .ok_or("selected must be a string")
+                    })
+                    .transpose()?,
+            },
+            other => return Err(format!("unexpected {other:?} in an arrangement")),
+        };
+        Ok(Panel { id, weight, node })
+    }
+    let mut root = None;
+    for child in children(node) {
+        if child.name().value() == "placed" {
+            continue;
+        }
+        if root.replace(read_panel(child)?).is_some() {
+            return Err("an arrangement has one root panel".into());
+        }
+    }
+    let doc = ArrangementDoc { root };
+    doc.check()?;
+    Ok(doc)
 }
 
 /// A placement key, as `at "<loop>" "<kind>" "<id>" provider="<provider>"`
@@ -660,11 +1047,13 @@ mod tests {
                 ),
                 (entity("project", "p"), SubjectRecord::default()),
             ]),
+            slots: WorkspaceSlots::default(),
+            arrangement: None,
             unknown: vec![],
         };
         let text = record.encode(id);
         assert!(text.starts_with(
-            "andamento-record \"workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b\" version=2"
+            "andamento-record \"workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b\" version=3"
         ));
         assert_eq!(
             WorkspaceRecord::decode(&text, id, "local").unwrap(),
@@ -673,6 +1062,238 @@ mod tests {
         );
         // A record for one workspace is not another's.
         assert!(WorkspaceRecord::decode(&text, WorkspaceId::from(7), "local").is_err());
+    }
+
+    fn spec(content: Content, presentation: Option<&str>) -> ViewSpec {
+        ViewSpec {
+            content,
+            presentation: presentation.map(str::to_owned),
+        }
+    }
+
+    fn tabs(id: &str, weight: f64, tabs: &[&str], selected: Option<&str>) -> Panel {
+        Panel {
+            id: id.into(),
+            weight,
+            node: PanelNode::Tabs {
+                tabs: tabs.iter().map(|t| t.to_string()).collect(),
+                selected: selected.map(str::to_owned),
+            },
+        }
+    }
+
+    /// Slots of every content kind, an override, user slots and an
+    /// arrangement with a hint.
+    fn workspace_with_slots() -> WorkspaceRecord {
+        let convoy = EntityRef::new("sub-1", "convoy", "c");
+        let reviewer = spec(
+            Content::ProviderFacet {
+                entity: EntityRef::new("sub-1", "vessel", "reviewer"),
+                facet: "terminal".into(),
+            },
+            Some("terminal"),
+        );
+        let hint = ArrangementDoc {
+            root: Some(Panel {
+                id: "main".into(),
+                weight: 1.0,
+                node: PanelNode::Split {
+                    axis: Axis::Row,
+                    children: vec![
+                        tabs("agents", 3.0, &["primary", "reviewer"], Some("reviewer")),
+                        tabs("notes-view", 2.0, &["notes"], Some("notes")),
+                    ],
+                },
+            }),
+        };
+        let mut arrangement = hint.clone();
+        if let Some(Panel {
+            node: PanelNode::Split { axis, children },
+            ..
+        }) = &mut arrangement.root
+        {
+            *axis = Axis::Column;
+            children[0].weight = 0.625;
+            children.push(tabs("7", 0.1, &["u:1", "u:2", "gone"], None));
+        }
+        WorkspaceRecord {
+            subject: Some(convoy.clone()),
+            retained: BTreeMap::new(),
+            slots: WorkspaceSlots {
+                baseline: Some(Baseline {
+                    version: BaselineVersion::Published("1".into()),
+                    slots: vec![
+                        SlotDef {
+                            key: "primary".into(),
+                            spec: spec(
+                                Content::ProviderFacet {
+                                    entity: convoy,
+                                    facet: "primary".into(),
+                                },
+                                None,
+                            ),
+                            rebind: RebindPolicy::Replace,
+                        },
+                        SlotDef {
+                            key: "reviewer".into(),
+                            spec: reviewer.clone(),
+                            rebind: RebindPolicy::KeepPrevious,
+                        },
+                        SlotDef {
+                            key: "notes".into(),
+                            spec: spec(
+                                Content::Local(LocalRecipe::File {
+                                    path: "/notes \"x\".md".into(),
+                                }),
+                                Some("markdown"),
+                            ),
+                            rebind: RebindPolicy::Ask,
+                        },
+                    ],
+                    hint: Some(hint),
+                }),
+                overrides: BTreeMap::from([(
+                    "reviewer".into(),
+                    SlotOverride {
+                        spec: spec(
+                            Content::Local(LocalRecipe::Command {
+                                line: CommandLine::Argv(vec!["htop".into(), "-d".into()]),
+                                cwd: Some("/srv".into()),
+                            }),
+                            None,
+                        ),
+                        rebind: RebindPolicy::Replace,
+                        against: reviewer,
+                    },
+                )]),
+                user: vec![
+                    SlotDef {
+                        key: "u:2".into(),
+                        spec: spec(
+                            Content::Local(LocalRecipe::Command {
+                                line: CommandLine::Shell("make test".into()),
+                                cwd: None,
+                            }),
+                            None,
+                        ),
+                        rebind: RebindPolicy::Replace,
+                    },
+                    SlotDef {
+                        key: "u:1".into(),
+                        spec: spec(
+                            Content::Local(LocalRecipe::Url {
+                                url: "https://example.com".into(),
+                            }),
+                            Some("web"),
+                        ),
+                        rebind: RebindPolicy::Replace,
+                    },
+                    SlotDef {
+                        key: "u:3".into(),
+                        spec: spec(
+                            Content::Local(LocalRecipe::Jackstay {
+                                launcher: "l".into(),
+                                endpoint: "e".into(),
+                            }),
+                            None,
+                        ),
+                        rebind: RebindPolicy::KeepPrevious,
+                    },
+                ],
+            },
+            arrangement: Some(StoredArrangement {
+                generation: 4,
+                owned: true,
+                doc: arrangement,
+                placed: BTreeSet::from(["u:2".into()]),
+            }),
+            unknown: vec![],
+        }
+    }
+
+    #[test]
+    fn workspace_slots_and_arrangement_round_trip() {
+        let id = WorkspaceId::from(7);
+        let record = workspace_with_slots();
+        let text = record.encode(id);
+        assert_eq!(
+            WorkspaceRecord::decode(&text, id, "local").unwrap(),
+            record,
+            "{text}"
+        );
+        assert_eq!(
+            WorkspaceRecord::decode(&text, id, "local")
+                .unwrap()
+                .encode(id),
+            text
+        );
+        for expected in [
+            r#"baseline version="1" {"#,
+            r#"slot "reviewer" rebind="keep-previous" presentation="terminal" {"#,
+            r#"facet "terminal" "vessel" "reviewer" provider="sub-1""#,
+            r#"override "reviewer" {"#,
+            r#"argv "htop" "-d" cwd="/srv""#,
+            r#"arrangement generation=4 owned=true {"#,
+            r#"split "main" axis="column" weight=1.0 {"#,
+            r#"tabs "agents" weight=0.625 selected="reviewer" {"#,
+            r#"tab "gone""#,
+            r#"placed "u:2""#,
+        ] {
+            assert!(text.contains(expected), "{expected}\n{text}");
+        }
+        // A primary-only baseline and an empty, uncommitted arrangement.
+        let mut record = WorkspaceRecord::default();
+        record.slots.baseline = Some(Baseline {
+            version: BaselineVersion::PrimaryOnly,
+            slots: vec![],
+            hint: None,
+        });
+        record.arrangement = Some(StoredArrangement {
+            generation: 1,
+            ..Default::default()
+        });
+        let text = record.encode(id);
+        assert_eq!(WorkspaceRecord::decode(&text, id, "local").unwrap(), record);
+    }
+
+    #[test]
+    fn version_2_workspace_records_have_no_slots() {
+        let id = WorkspaceId::from(7);
+        // Version 2 knew no slots: nodes with these names were unknown to it
+        // and are kept as unknown, not read as slots.
+        let v2 = r#"andamento-record "workspace/7" version=2 {
+    subject "vessel" "b" provider="sub-1"
+    slot "u:1" {
+        url "https://example.com"
+    }
+}"#;
+        let record = WorkspaceRecord::decode(v2, id, "local").unwrap();
+        assert_eq!(record.subject, Some(EntityRef::new("sub-1", "vessel", "b")));
+        assert!(record.slots.is_empty());
+        assert_eq!(record.arrangement, None);
+        assert_eq!(record.unknown.len(), 1);
+        assert!(record
+            .encode(id)
+            .starts_with("andamento-record \"workspace/7\" version=3"));
+        // Malformed slots and arrangements are rejected in version 3.
+        for body in [
+            r#"slot "u:1""#,
+            r#"slot "u:1" rebind="sometimes" { url "x"; }"#,
+            r#"slot "u:1" { url "x"; file "y"; }"#,
+            r#"override "k" { url "x"; }"#,
+            r#"arrangement owned=true"#,
+            r#"arrangement generation=1 { tabs "a" { tab "x"; }; tabs "a"; }"#,
+            r#"arrangement generation=1 { tabs "a" selected="y" { tab "x"; }; }"#,
+            r#"arrangement generation=1 { split "a" axis="diagonal" { tabs "b"; }; }"#,
+            r#"arrangement generation=1 { split "a" axis="row" { tabs "b" weight=0; }; }"#,
+            r#"baseline { slot "p" { url "x"; }; }"#,
+        ] {
+            let text = format!("andamento-record \"workspace/7\" version=3 {{ {body}; }}");
+            assert!(
+                WorkspaceRecord::decode(&text, id, "local").is_err(),
+                "{text}"
+            );
+        }
     }
 
     #[test]
@@ -700,7 +1321,7 @@ mod tests {
     #[test]
     fn other_versions_names_and_shapes_are_rejected() {
         for text in [
-            "andamento-record \"dashboard\" version=3",
+            "andamento-record \"dashboard\" version=4",
             "andamento-record \"dashboard\" version=0",
             "andamento-record \"dashboard\"",
             // Version 2 entities name their provider.
@@ -764,10 +1385,10 @@ mod tests {
             facts[".target"],
             MetadataValue::EntityRefs(vec![EntityRef::new("sub-1", "vessel", "b")])
         );
-        // Export writes version 2, naming every provider; it reads back the same.
+        // Export writes the current version, naming every provider; it reads back the same.
         let text = record.encode();
         assert!(
-            text.starts_with("andamento-record \"dashboard\" version=2"),
+            text.starts_with("andamento-record \"dashboard\" version=3"),
             "{text}"
         );
         assert!(

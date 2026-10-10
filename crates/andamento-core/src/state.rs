@@ -3261,33 +3261,71 @@ impl ControllerState {
             })
     }
 
-    pub(crate) fn managed_content(&self) -> BTreeMap<EntityRef, crate::managed::DesiredContent> {
-        self.metadata
-            .targets()
-            .filter_map(|target| {
-                let EntityId::Entity(entity) = target else {
-                    return None;
+    /// Every slot resolution producers publish now, keyed by the suggesting
+    /// entity and slot key: each entity's `primary` slot (read from the
+    /// `workspace.primary.*` facts, independently of any `layout.*` facts)
+    /// and the slots of its valid Suggested Layout. Unavailable resolutions
+    /// are absent.
+    pub(crate) fn slot_resolutions(
+        &self,
+    ) -> BTreeMap<(EntityRef, String), crate::managed::DesiredContent> {
+        use crate::managed::DesiredContent;
+        use crate::suggested_layout::{SlotResolution, PRIMARY_SLOT};
+        let mut resolutions = BTreeMap::new();
+        for target in self.metadata.targets() {
+            let EntityId::Entity(entity) = target else {
+                continue;
+            };
+            let values = self.metadata.resolved_entries_for(target, self.now());
+            if let Some(desired) = desired_primary(&values) {
+                resolutions.insert((entity.clone(), PRIMARY_SLOT.to_owned()), desired);
+            }
+            if !values.keys().any(|key| key.starts_with("layout.")) {
+                continue;
+            }
+            let facts = values
+                .into_iter()
+                .map(|(key, entry)| (key, entry.value))
+                .collect();
+            let Ok(Some(layout)) = crate::suggested_layout::parse(entity, &facts) else {
+                continue;
+            };
+            for slot in layout.slots {
+                if slot.key == PRIMARY_SLOT {
+                    continue;
+                }
+                let desired = match slot.resolution {
+                    SlotResolution::Ready { target, recipe } => {
+                        DesiredContent::Ready(crate::managed::Resolved { target, recipe })
+                    }
+                    SlotResolution::Held => DesiredContent::Held,
+                    SlotResolution::Unavailable => continue,
                 };
-                Some((entity.clone(), self.desired_content(target)?))
-            })
-            .collect()
+                resolutions.insert((entity.clone(), slot.key), desired);
+            }
+        }
+        resolutions
+    }
+
+    /// The Suggested Layout `entity` publishes now, read from its live facts.
+    pub(crate) fn suggested_layout(
+        &self,
+        entity: &EntityRef,
+    ) -> Result<
+        Option<crate::suggested_layout::SuggestedLayout>,
+        crate::suggested_layout::LayoutError,
+    > {
+        let facts = self
+            .metadata
+            .resolved_entries_for(&EntityId::Entity(entity.clone()), self.now())
+            .into_iter()
+            .map(|(key, entry)| (key, entry.value))
+            .collect();
+        crate::suggested_layout::parse(entity, &facts)
     }
 
     fn desired_content(&self, target: &EntityId) -> Option<crate::managed::DesiredContent> {
-        use crate::managed::{DesiredContent, TerminalContent};
-        let values = self.metadata.resolved_entries_for(target, self.now());
-        let text = |key| metadata_entry_text(&values, key).map(str::to_owned);
-        match text("workspace.primary.state").as_deref()? {
-            "held" => Some(DesiredContent::Held),
-            "ready" => Some(DesiredContent::Ready(TerminalContent {
-                target: text("workspace.primary.target").filter(|s| !s.is_empty())?,
-                command: text(KEY_MATERIALIZE_RECIPE).filter(|s| !s.is_empty())?,
-                // The same fact materialization launches in, so a workspace opened
-                // from this resolution compares equal to it.
-                cwd: text(KEY_CHECKOUT_PATH),
-            })),
-            _ => None,
-        }
+        desired_primary(&self.metadata.resolved_entries_for(target, self.now()))
     }
 
     /// The managed target a materialization of `recipe` would install, if the
@@ -3299,10 +3337,9 @@ impl ControllerState {
         cwd: Option<&str>,
     ) -> Option<String> {
         match self.desired_content(&EntityId::Entity(entity.clone()))? {
-            crate::managed::DesiredContent::Ready(content)
-                if content.command == recipe && content.cwd.as_deref() == cwd =>
-            {
-                Some(content.target)
+            crate::managed::DesiredContent::Ready(content) => {
+                let (target, command, content_cwd) = content.as_terminal()?;
+                (command == recipe && content_cwd == cwd).then(|| target.to_owned())
             }
             _ => None,
         }
@@ -3915,6 +3952,29 @@ fn subject_binding(subject: &EntityRef) -> BTreeMap<String, crate::MetadataValue
         )
     })
     .collect()
+}
+
+/// The `primary` slot's resolution, from the facts managed primary content
+/// has always read.
+fn desired_primary(
+    values: &BTreeMap<String, MetadataEntry>,
+) -> Option<crate::managed::DesiredContent> {
+    use crate::managed::{DesiredContent, TerminalContent};
+    let text = |key| metadata_entry_text(values, key).map(str::to_owned);
+    match text("workspace.primary.state").as_deref()? {
+        "held" => Some(DesiredContent::Held),
+        "ready" => Some(DesiredContent::Ready(
+            TerminalContent {
+                target: text("workspace.primary.target").filter(|s| !s.is_empty())?,
+                command: text(KEY_MATERIALIZE_RECIPE).filter(|s| !s.is_empty())?,
+                // The same fact materialization launches in, so a workspace opened
+                // from this resolution compares equal to it.
+                cwd: text(KEY_CHECKOUT_PATH),
+            }
+            .into(),
+        )),
+        _ => None,
+    }
 }
 
 fn metadata_entry_text<'a>(

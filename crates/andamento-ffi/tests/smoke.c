@@ -394,7 +394,7 @@ static void check_records(const char *config_path, const char *patches_path) {
     AndamentoBytes dashboard = {0}, workspace = {0}, again = {0};
     ok(andamento_record_export(h, T("dashboard"), &dashboard, &error));
     ok(andamento_record_export(h, workspace_name, &workspace, &error));
-    assert(has(dashboard, "andamento-record \"dashboard\" version=2"));
+    assert(has(dashboard, "andamento-record \"dashboard\" version=3"));
     assert(has(dashboard, "display \"show-issues\" false"));
     assert(has(dashboard, "local \".group\" \"g1\" provider=\"local\""));
     assert(!has(dashboard, "\"gone\""));
@@ -415,7 +415,7 @@ static void check_records(const char *config_path, const char *patches_path) {
     /* Another version, or another record's name, changes nothing. */
     uint64_t imported = andamento_record_generation(fresh, T("dashboard"), &error);
     expected_error(andamento_record_import(fresh, T("dashboard"),
-        T("andamento-record \"dashboard\" version=3"), &error));
+        T("andamento-record \"dashboard\" version=4"), &error));
     expected_error(andamento_record_import(fresh, T("dashboard"), (AndamentoText){workspace.data, workspace.len}, &error));
     assert(andamento_record_generation(fresh, T("dashboard"), &error) == imported);
     andamento_bytes_free(dashboard); andamento_bytes_free(workspace);
@@ -510,11 +510,121 @@ static void check_providers(const char *config_path) {
     andamento_destroy(h);
 }
 
+/* ABI 3 slots and arrangement documents: the host adds slots, plans their
+ * content, and commits whole arrangements without invalidating the snapshot. */
+static void check_slots(const char *config_path, const char *patches_path) {
+    Andamento *h = fixture(config_path, patches_path);
+    AndamentoWorkspaceId ws = uuid(0x7d);
+    ok(andamento_workspace_register(h, ws, &error));
+    AndamentoWorkspace3 open = {ws, 0, T("Scratch"), 1};
+    ok(andamento_observe3(h, &open, 1, NULL, 0, &error));
+    AndamentoSnapshot *s = snapshot(h);
+    uint64_t content_revision = andamento_workspace_content_revision(h, &error);
+    assert(!error);
+    /* Slots the user adds are in their own namespace. */
+    AndamentoText argv[] = {T("htop"), T("-d")};
+    AndamentoViewSpec spec = {.content = ANDAMENTO_SLOT_COMMAND, .argv = argv, .argc = 2,
+                              .has_cwd = 1, .cwd = T("/tmp"),
+                              .has_presentation = 1, .presentation = T("terminal")};
+    ok(andamento_slot_set(h, ws, T("u:1"), &spec, ANDAMENTO_REBIND_KEEP_PREVIOUS, &error));
+    AndamentoViewSpec url = {.content = ANDAMENTO_SLOT_URL, .url = T("https://example.com")};
+    ok(andamento_slot_set(h, ws, T("u:2"), &url, ANDAMENTO_REBIND_REPLACE, &error));
+    AndamentoViewSpec facet = {.content = ANDAMENTO_SLOT_FACET,
+                               .entity = {T(""), T("vessel"), T("v")}, .facet = T("primary")};
+    ok(andamento_slot_set(h, ws, T("u:3"), &facet, ANDAMENTO_REBIND_ASK, &error));
+    expected_error(andamento_slot_set(h, ws, T("nope"), &url, ANDAMENTO_REBIND_REPLACE, &error));
+    expected_error(andamento_slot_set(h, ws, T("u:4"), &url, 7, &error));
+    expected_error(andamento_slot_set(h, uuid(0x01), T("u:1"), &url, ANDAMENTO_REBIND_REPLACE, &error));
+    assert(andamento_workspace_content_revision(h, &error) > content_revision);
+    AndamentoSlots *slots = andamento_slots_acquire(h, ws, &error);
+    assert(slots && !error && andamento_slots_count(slots) == 3);
+    AndamentoSlot slot;
+    assert(andamento_slots_get(slots, 0, &slot) && eq(slot.key, "u:1"));
+    assert(slot.rebind == ANDAMENTO_REBIND_KEEP_PREVIOUS && !slot.in_baseline && !slot.detached);
+    assert(slot.spec.content == ANDAMENTO_SLOT_COMMAND && slot.spec.argc == 2);
+    assert(eq(slot.spec.argv[1], "-d") && slot.spec.has_cwd && eq(slot.spec.cwd, "/tmp"));
+    assert(slot.spec.has_presentation && eq(slot.spec.presentation, "terminal"));
+    assert(andamento_slots_get(slots, 2, &slot) && slot.spec.content == ANDAMENTO_SLOT_FACET);
+    assert(eq(slot.spec.entity.provider, "local") && eq(slot.spec.facet, "primary"));
+    assert(!andamento_slots_get(slots, 3, &slot));
+    /* A local recipe resolves to itself: plan, commit, acknowledge. */
+    AndamentoSlotPlan *plan = andamento_slot_plan(h, ws, T("u:1"), T(""), &error);
+    assert(plan && !error);
+    AndamentoSlotContent content; assert(andamento_slot_plan_get(plan, &content));
+    assert(content.state == ANDAMENTO_CONTENT_UPDATING && !content.has_target);
+    assert(content.recipe.content == ANDAMENTO_SLOT_COMMAND && content.recipe.argc == 2);
+    assert(eq(content.recipe.argv[0], "htop"));
+    assert(content.rebind == ANDAMENTO_REBIND_KEEP_PREVIOUS && !content.has_previous);
+    assert(andamento_slot_valid(h, ws, T("u:1"), content.token, &error));
+    assert(andamento_slot_complete(h, ws, T("u:1"), content.token, 1, &error));
+    AndamentoSlotPlan *current = andamento_slot_plan(h, ws, T("u:1"), content.resolution, &error);
+    assert(current && !error);
+    AndamentoSlotContent now; assert(andamento_slot_plan_get(current, &now));
+    assert(now.state == ANDAMENTO_CONTENT_CURRENT && now.token == 0);
+    andamento_slot_plan_release(current);
+    andamento_slot_plan_release(plan);
+    assert(!andamento_slot_release_previous(h, ws, T("u:1"), &error) && !error);
+    ok(andamento_slot_retry(h, ws, T("u:1"), &error));
+    assert(!andamento_slot_plan(h, ws, T("u:9"), T(""), &error));
+    andamento_string_free(error); error = NULL;
+    /* Commit an arrangement leaving u:3 out: it is placed in the first tab panel. */
+    AndamentoTab tabs[] = {{T("u:1"), 0, 0}, {T("u:2"), 0, 0}};
+    AndamentoPanel panels[] = {
+        {ANDAMENTO_NONE, T("root"), 1.0, ANDAMENTO_PANEL_SPLIT, ANDAMENTO_AXIS_ROW, 0, 0, ANDAMENTO_NONE},
+        {0, T("1"), 0.6, ANDAMENTO_PANEL_TABS, 0, 0, 2, 1},
+        {0, T("2"), 0.4, ANDAMENTO_PANEL_TABS, 0, 0, 0, ANDAMENTO_NONE},
+    };
+    uint64_t generation = 99;
+    assert(andamento_set_arrangement(h, ws, panels, 3, tabs, 2, 0, &generation, &error)
+        == ANDAMENTO_ARRANGEMENT_COMMITTED && !error && generation == 1);
+    /* The sidebar's snapshot is still current. */
+    ok(andamento_snapshot_is_current(h, s, &error));
+    /* A stale generation is rejected without effect, and without an error. */
+    generation = 99;
+    assert(andamento_set_arrangement(h, ws, panels, 1, tabs, 0, 0, &generation, &error)
+        == ANDAMENTO_ARRANGEMENT_STALE && !error && generation == 1);
+    /* So is a tab for a slot that doesn't exist, or a malformed panel tree. */
+    AndamentoTab unknown = {T("u:9"), 0, 0};
+    AndamentoPanel lone = {ANDAMENTO_NONE, T("1"), 1.0, ANDAMENTO_PANEL_TABS, 0, 0, 1, 0};
+    expected_error(andamento_set_arrangement(h, ws, &lone, 1, &unknown, 1, 1, &generation, &error));
+    AndamentoPanel orphan[] = {panels[0], panels[1]};
+    orphan[1].parent = ANDAMENTO_NONE;
+    expected_error(andamento_set_arrangement(h, ws, orphan, 2, tabs, 2, 1, &generation, &error));
+    AndamentoArrangement *a = andamento_arrangement_acquire(h, ws, &error);
+    assert(a && !error);
+    AndamentoArrangementInfo info; assert(andamento_arrangement_info(a, &info));
+    assert(info.generation == 1 && info.owned && info.panel_count == 3 && info.tab_count == 3);
+    AndamentoPanel panel; assert(andamento_arrangement_panel(a, 1, &panel));
+    assert(panel.parent == 0 && eq(panel.id, "1") && panel.weight == 0.6);
+    assert(panel.kind == ANDAMENTO_PANEL_TABS && panel.tab_count == 3 && panel.selected == 1);
+    AndamentoTab tab; assert(andamento_arrangement_tab(a, 2, &tab));
+    assert(eq(tab.slot, "u:3") && tab.placed && !tab.gone);
+    andamento_arrangement_release(a);
+    /* Removing a slot keeps its tab, reported gone. */
+    ok(andamento_slot_remove(h, ws, T("u:2"), &error));
+    a = andamento_arrangement_acquire(h, ws, &error);
+    assert(andamento_arrangement_tab(a, 1, &tab) && eq(tab.slot, "u:2") && tab.gone);
+    andamento_arrangement_release(a);
+    ok(andamento_snapshot_is_current(h, s, &error));
+    /* Both are in the workspace record. */
+    AndamentoBytes record = {0};
+    ok(andamento_record_export(h, T("workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7d"), &record, &error));
+    assert(has(record, "version=3"));
+    assert(has(record, "slot \"u:1\" rebind=\"keep-previous\" presentation=\"terminal\""));
+    assert(has(record, "arrangement generation=1 owned=true"));
+    andamento_bytes_free(record);
+    andamento_slots_release(slots);
+    andamento_slots_release(NULL); andamento_arrangement_release(NULL); andamento_slot_plan_release(NULL);
+    andamento_snapshot_release(s);
+    andamento_destroy(h);
+}
+
 int main(int argc, char **argv) {
     /* Everything but check_abi3 is an ABI 2 host, which ABI 3 keeps working. */
     assert(argc == 4 && andamento_abi_version() == 3);
     check_abi3(argv[1], argv[2]);
     check_records(argv[1], argv[2]);
+    check_slots(argv[1], argv[2]);
     check_typed_details(argv[3]);
     check_workdirs();
     check_sibling_order();

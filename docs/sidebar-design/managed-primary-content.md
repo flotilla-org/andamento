@@ -4,10 +4,15 @@ A workspace can be bound to a stable intent while the terminal content resolving
 that intent changes. A project-role entity is one example; its entity identity
 and action.primary.target remain stable across backing convoy attempts.
 
-This supports one command terminal in a host-owned primary slot. It does not
-implement arbitrary content graphs, daemon attachment replacement, or multiple
-managed slots. Flotilla publishes standing project roles through these facts;
+This supports one command terminal in a host-owned primary slot. Managed
+primary content is now the `primary` slot of a workspace's
+[slots](slots-and-arrangements.md), which generalise it to any number of slots
+with View Specs and rebind policies; the calls below are wrappers over that
+slot's. It does not implement arbitrary content graphs or daemon attachment
+replacement. Flotilla publishes standing project roles through these facts;
 see [Flotilla standing roles](#flotilla-standing-roles).
+[Suggested Layouts](suggested-layouts.md) define facts for several slots; these
+facts remain valid there as the `primary` slot.
 
 ## Producer facts
 
