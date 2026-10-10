@@ -2639,6 +2639,8 @@ pub unsafe extern "C" fn andamento_slot_reattach(
 pub struct AndamentoSlotPlan {
     plan: andamento_core::managed::SlotPlan,
     argv: Vec<Text>,
+    /// Views of `plan.saved`'s fields.
+    fields: Vec<ResolutionFieldView>,
 }
 
 #[repr(C)]
@@ -2669,7 +2671,11 @@ pub unsafe extern "C" fn andamento_slot_plan(
         let mut plan = Box::new(AndamentoSlotPlan {
             plan,
             argv: Vec::new(),
+            fields: Vec::new(),
         });
+        if let Some(saved) = &plan.plan.saved {
+            plan.fields = field_views(saved);
+        }
         if let Some(update) = &plan.plan.update {
             let argv = recipe_view(&update.resolution.recipe, &mut ViewSpecView::empty()).argv;
             plan.argv = argv;
@@ -2786,6 +2792,213 @@ pub unsafe extern "C" fn andamento_slot_release_previous(
             .release_slot_previous(workspace.into(), &key.read()?)
     })
     .unwrap_or(false) as u32
+}
+
+const RESOLUTION_INVALID: u32 = 0;
+const RESOLUTION_COMMITTED: u32 = 1;
+const RESOLUTION_STALE: u32 = 2;
+
+/// One named field of a portable Target Resolution.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ResolutionFieldView {
+    pub name: Text,
+    pub value: Text,
+}
+
+/// A saved portable Target Resolution, borrowed from its owner.
+#[repr(C)]
+pub struct ResolutionView {
+    pub generation: u64,
+    pub kind: Text,
+    pub fields: *const ResolutionFieldView,
+    pub field_count: usize,
+    pub against: Text,
+}
+
+/// Views of a saved resolution's fields, borrowing its text: the owner keeps
+/// both, and never changes the resolution while the views live.
+fn field_views(
+    saved: &andamento_core::target_resolution::SavedResolution,
+) -> Vec<ResolutionFieldView> {
+    saved
+        .resolution
+        .fields
+        .iter()
+        .map(|(name, value)| ResolutionFieldView {
+            name: Text::borrowed(name),
+            value: Text::borrowed(value),
+        })
+        .collect()
+}
+
+/// Fill `out` from `saved`, if any; returns whether there was one.
+unsafe fn resolution_view(
+    saved: Option<&andamento_core::target_resolution::SavedResolution>,
+    fields: &[ResolutionFieldView],
+    out: *mut ResolutionView,
+) -> u32 {
+    let (Some(saved), Some(out)) = (saved, out.as_mut()) else {
+        return 0;
+    };
+    *out = ResolutionView {
+        generation: saved.generation,
+        kind: Text::borrowed(&saved.resolution.kind),
+        fields: if fields.is_empty() {
+            ptr::null()
+        } else {
+            fields.as_ptr()
+        },
+        field_count: fields.len(),
+        against: Text::borrowed(&saved.against),
+    };
+    1
+}
+
+/// ABI 3: the portable Target Resolution saved with the plan's slot.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_slot_plan_resolution(
+    plan: *const AndamentoSlotPlan,
+    out: *mut ResolutionView,
+) -> u32 {
+    let Some(plan) = plan.as_ref() else {
+        return 0;
+    };
+    resolution_view(plan.plan.saved.as_ref(), &plan.fields, out)
+}
+
+/// ABI 3: save a slot's portable Target Resolution in the workspace record.
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub unsafe extern "C" fn andamento_slot_resolution_set(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    key: Text,
+    kind: Text,
+    fields: *const ResolutionFieldView,
+    field_count: usize,
+    applied: Text,
+    expected_generation: u64,
+    generation_out: *mut u64,
+    error: *mut *mut c_char,
+) -> u32 {
+    use andamento_core::target_resolution::{PortableResolution, ResolutionError};
+    run(h, error, |h| {
+        let key = key.read()?;
+        let mut resolution = PortableResolution {
+            kind: kind.read()?,
+            fields: Default::default(),
+        };
+        for field in slice(fields, field_count)? {
+            let name = field.name.read()?;
+            if resolution
+                .fields
+                .insert(name.clone(), field.value.read()?)
+                .is_some()
+            {
+                return Err(format!("resolution field {name:?} is given twice"));
+            }
+        }
+        let workspace = workspace.into();
+        let result = h.sidebar.set_slot_resolution(
+            workspace,
+            &key,
+            resolution,
+            &applied.read()?,
+            expected_generation,
+        );
+        let current = match &result {
+            Ok(generation) => Some(*generation),
+            Err(ResolutionError::Stale { current }) => Some(*current),
+            Err(ResolutionError::Invalid(_)) => None,
+        };
+        if let (Some(out), Some(current)) = (generation_out.as_mut(), current) {
+            *out = current;
+        }
+        match result {
+            Ok(_) => Ok(RESOLUTION_COMMITTED),
+            Err(ResolutionError::Stale { .. }) => Ok(RESOLUTION_STALE),
+            Err(error) => Err(error.to_string()),
+        }
+    })
+    .unwrap_or(RESOLUTION_INVALID)
+}
+
+/// ABI 3: clear a slot's saved portable Target Resolution.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_slot_resolution_clear(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    key: Text,
+    expected_generation: u64,
+    generation_out: *mut u64,
+    error: *mut *mut c_char,
+) -> u32 {
+    use andamento_core::target_resolution::ResolutionError;
+    run(h, error, |h| {
+        let result =
+            h.sidebar
+                .clear_slot_resolution(workspace.into(), &key.read()?, expected_generation);
+        let current = match &result {
+            Ok(_) => Some(0),
+            Err(ResolutionError::Stale { current }) => Some(*current),
+            Err(ResolutionError::Invalid(_)) => None,
+        };
+        if let (Some(out), Some(current)) = (generation_out.as_mut(), current) {
+            *out = current;
+        }
+        match result {
+            Ok(_) => Ok(RESOLUTION_COMMITTED),
+            Err(ResolutionError::Stale { .. }) => Ok(RESOLUTION_STALE),
+            Err(error) => Err(error.to_string()),
+        }
+    })
+    .unwrap_or(RESOLUTION_INVALID)
+}
+
+/// A slot's saved portable Target Resolution, owned until release.
+pub struct AndamentoSlotResolution {
+    saved: Option<andamento_core::target_resolution::SavedResolution>,
+    fields: Vec<ResolutionFieldView>,
+}
+
+/// ABI 3: read a slot's saved portable Target Resolution.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_slot_resolution_acquire(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    key: Text,
+    error: *mut *mut c_char,
+) -> *mut AndamentoSlotResolution {
+    run(h, error, |h| {
+        let saved = h.sidebar.slot_resolution(workspace.into(), &key.read()?)?;
+        let fields = saved.as_ref().map(field_views).unwrap_or_default();
+        Ok(Box::into_raw(Box::new(AndamentoSlotResolution {
+            saved,
+            fields,
+        })))
+    })
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_slot_resolution_get(
+    resolution: *const AndamentoSlotResolution,
+    out: *mut ResolutionView,
+) -> u32 {
+    let Some(resolution) = resolution.as_ref() else {
+        return 0;
+    };
+    resolution_view(resolution.saved.as_ref(), &resolution.fields, out)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_slot_resolution_release(
+    resolution: *mut AndamentoSlotResolution,
+) {
+    if !resolution.is_null() {
+        drop(Box::from_raw(resolution));
+    }
 }
 
 const PANEL_SPLIT: u32 = 0;

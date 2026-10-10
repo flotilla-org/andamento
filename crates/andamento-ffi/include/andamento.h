@@ -274,18 +274,19 @@ uint32_t andamento_set_sibling_order3(Andamento *, AndamentoText loop_key,
  *     the subject and its path as last seen (label, ended or retained, when
  *     last seen, and the facts placement reads), so its row is drawn where it
  *     was with no facts; and its slots (the cached Suggested Layout baseline
- *     with its arrangement hint, and the Workspace Overlay's edit set) and
- *     its arrangement document. A closed workspace keeps its record; forgetting
+ *     with its arrangement hint, and the Workspace Overlay's edit set), its
+ *     arrangement document and its slots' saved portable Target
+ *     Resolutions. A closed workspace keeps its record; forgetting
  *     the workspace drops it.
  * names: the record names, one per line (no trailing newline).
  * generation: nonzero; it changes when, and only when, the record's content
  *   changes, and is never reused. Write a record when its generation differs
  *   from the one last written; read it again after an import. Returns 0 with an
  *   error for an unknown record.
- * export: the record's KDL text (UTF-8), version 5: every entity names its
- *   provider, a workspace record holds its baseline, overlay edit set and
- *   arrangement, and the dashboard record its sidebar arrangement and
- *   template version.
+ * export: the record's KDL text (UTF-8), version 6: every entity names its
+ *   provider, a workspace record holds its baseline, overlay edit set,
+ *   arrangement and saved portable resolutions, and the dashboard record its
+ *   sidebar arrangement and template version.
  * import: may come before the first observe and needs no facts. Importing
  *   "workspace/<id>" registers the workspace and binds it to its subject. A
  *   record that doesn't parse, has another version or names another record is
@@ -296,7 +297,8 @@ uint32_t andamento_set_sibling_order3(Andamento *, AndamentoText loop_key,
  *   Version 2 records import with no slots and no arrangement; version 3
  *   dashboard records with no sidebar arrangement, which the template's
  *   hints then place; version 3 and 4 workspace records' overrides and user
- *   slots migrate into the overlay edit set.
+ *   slots migrate into the overlay edit set; workspace records before
+ *   version 6 have no saved portable resolutions.
  * Bytes out-parameters are written only on success; free them with
  * andamento_bytes_free (a zeroed AndamentoBytes is harmless). */
 typedef struct { uint8_t *data; size_t len; } AndamentoBytes;
@@ -597,6 +599,67 @@ uint32_t andamento_slot_complete(Andamento *, AndamentoWorkspaceId, AndamentoTex
     uint32_t success, char **error_out);
 uint32_t andamento_slot_retry(Andamento *, AndamentoWorkspaceId, AndamentoText key, char **error_out);
 uint32_t andamento_slot_release_previous(Andamento *, AndamentoWorkspaceId, AndamentoText key, char **error_out);
+
+/* ABI 3: portable Target Resolutions (Wheelhouse CONTEXT.md, Target
+ * Resolution). Resolving a slot's content yields a way of connecting, such as
+ * a Cleat session on a host. A portable one works from any device that can
+ * reach it and is saved per slot in the workspace record; a machine-local one
+ * (a local socket, an attach token) stays with the host's device. The host
+ * decides which is which. Andamento stores a portable resolution as an opaque
+ * typed value and never interprets it: a kind and named text fields (kind and
+ * field names are 1 to 64 of [a-z0-9_-]; values are any text; a name given
+ * twice is invalid), e.g. kind "cleat-session" with host=feta session=S
+ * daemon=D. Fields are returned in name order.
+ *
+ * resolution_set saves one for a slot, made for the slot resolution the host
+ * applied: applied is that identity, as passed to slot_plan (nonempty). When
+ * the slot is known to resolve to something else (its plan would not be
+ * CURRENT for applied), the save is INVALID: plan again. Saving compares
+ * expected_generation with the slot's saved generation (0 for none): it
+ * returns COMMITTED, or STALE with no error and no change, or INVALID (0)
+ * with an error. generation_out, when not NULL, receives the generation
+ * after the call (0 after a clear). Generations are never reused within a
+ * workspace, and saving what is saved keeps its generation. resolution_clear
+ * drops a slot's saved resolution in the same way.
+ *
+ * A slot plan carries the slot's saved resolution in every state
+ * (slot_plan_resolution returns 1 and fills out; 0 for none). A host starting
+ * with no instance plans with an empty applied; the plan is UPDATING to the
+ * resolution whose identity is the saved one's against, so the host tries
+ * connecting through the saved resolution before resolving the target afresh,
+ * then validates the token and completes as usual.
+ *
+ * Invalidation: a saved resolution is cleared, never kept marked stale, when
+ * the slot resolves to something else: once its resolution is known (not
+ * UNAVAILABLE or HELD: expiry is silence, not a new target) and its identity
+ * differs from against, as when the provider names a new target, including in
+ * a record imported later; when the user edits the slot's content (set,
+ * reattach); and when the slot goes. The slot then rebinds by its policy as
+ * for any resolution change: the previous instance a KEEP_PREVIOUS rebind
+ * keeps is the host's to reach through its own handle. Saving, clearing and
+ * invalidation change the record and andamento_workspace_content_revision,
+ * never the sidebar's revision. resolution_acquire fails for an unknown slot;
+ * its text and field array are valid until release, as are a plan's. */
+enum { ANDAMENTO_RESOLUTION_INVALID, ANDAMENTO_RESOLUTION_COMMITTED, ANDAMENTO_RESOLUTION_STALE };
+typedef struct { AndamentoText name, value; } AndamentoResolutionField;
+typedef struct {
+    uint64_t generation;
+    AndamentoText kind;
+    const AndamentoResolutionField *fields;
+    size_t field_count;
+    AndamentoText against;
+} AndamentoResolution;
+typedef struct AndamentoSlotResolution AndamentoSlotResolution;
+uint32_t andamento_slot_resolution_set(Andamento *, AndamentoWorkspaceId, AndamentoText key,
+    AndamentoText kind, const AndamentoResolutionField *fields, size_t field_count,
+    AndamentoText applied, uint64_t expected_generation, uint64_t *generation_out, char **error_out);
+uint32_t andamento_slot_resolution_clear(Andamento *, AndamentoWorkspaceId, AndamentoText key,
+    uint64_t expected_generation, uint64_t *generation_out, char **error_out);
+AndamentoSlotResolution *andamento_slot_resolution_acquire(Andamento *, AndamentoWorkspaceId,
+    AndamentoText key, char **error_out);
+uint32_t andamento_slot_resolution_get(const AndamentoSlotResolution *, AndamentoResolution *out);
+void andamento_slot_resolution_release(AndamentoSlotResolution *);
+uint32_t andamento_slot_plan_resolution(const AndamentoSlotPlan *, AndamentoResolution *out);
 
 /* ABI 3: a workspace's arrangement is one document the host commits whole at
  * the end of a gesture: a tree of panels with stable, unique, nonempty IDs.

@@ -55,6 +55,7 @@ use crate::{
     suggested_layout::{
         Axis, BaselineVersion, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec,
     },
+    target_resolution::{PortableResolution, SavedResolution, SavedResolutions},
     DisplayVariableValue, EntityRef, MetadataValue, PlacementKey, PlacementLoopKey,
     PlacementSegment, WorkspaceId,
 };
@@ -69,7 +70,11 @@ use crate::{
 /// departed slots and provider changes to an owned arrangement; a version 3
 /// or 4 workspace record's `override` and `slot` nodes migrate into it. It
 /// also records the template version a dashboard record was made against.
-pub const RECORD_VERSION: i64 = 5;
+/// Version 6 adds a workspace's saved portable Target Resolutions
+/// (`resolutions`); an earlier workspace record has none, and in one a node
+/// of that name is kept as an unknown node. A dashboard record is unchanged
+/// in version 6.
+pub const RECORD_VERSION: i64 = 6;
 const ENVELOPE: &str = "andamento-record";
 
 /// The name of a record: `dashboard`, or `workspace/<id>` for a registered
@@ -135,6 +140,8 @@ pub struct WorkspaceRecord {
     pub slots: WorkspaceSlots,
     /// Its arrangement document.
     pub arrangement: Option<StoredArrangement>,
+    /// Portable Target Resolutions saved for its slots.
+    pub resolutions: SavedResolutions,
     /// Nodes this version doesn't know, as KDL text.
     pub unknown: Vec<String>,
 }
@@ -350,6 +357,9 @@ impl WorkspaceRecord {
             node.insert("rebind", rebind_name(*rebind));
             body.push(node);
         }
+        if !self.resolutions.is_empty() {
+            body.push(resolutions_node(&self.resolutions));
+        }
         envelope(&RecordName::Workspace(id), body, &self.unknown)
     }
 
@@ -453,6 +463,7 @@ impl WorkspaceRecord {
                     record.slots.mood = edits.mood;
                     soft = edits.panels;
                 }
+                "resolutions" if version >= 6 => record.resolutions = read_resolutions(&node)?,
                 "departed" if version >= 5 => {
                     record
                         .slots
@@ -521,6 +532,107 @@ impl WorkspaceRecord {
         }
         Ok(record)
     }
+}
+
+/// A workspace's saved portable resolutions:
+///
+/// ```kdl
+/// resolutions last-generation=3 {
+///     resolution "reviewer" kind="cleat-session" generation=3 against="…" {
+///         field "daemon" "D"
+///         field "host" "feta"
+///     }
+/// }
+/// ```
+fn resolutions_node(resolutions: &SavedResolutions) -> KdlNode {
+    let mut node = KdlNode::new("resolutions");
+    node.insert(
+        "last-generation",
+        i64::try_from(resolutions.last_generation).unwrap_or(i64::MAX),
+    );
+    for (key, saved) in &resolutions.by_slot {
+        let mut child = KdlNode::new("resolution");
+        child.push(KdlEntry::new(key.clone()));
+        child.insert("kind", saved.resolution.kind.clone());
+        child.insert(
+            "generation",
+            i64::try_from(saved.generation).unwrap_or(i64::MAX),
+        );
+        child.insert("against", saved.against.clone());
+        for (name, value) in &saved.resolution.fields {
+            let mut field = KdlNode::new("field");
+            field.push(KdlEntry::new(name.clone()));
+            field.push(KdlEntry::new(value.clone()));
+            child.ensure_children().nodes_mut().push(field);
+        }
+        node.ensure_children().nodes_mut().push(child);
+    }
+    node
+}
+
+fn read_resolutions(node: &KdlNode) -> Result<SavedResolutions, String> {
+    let positive = |node: &KdlNode, name: &str| {
+        node.get(name)
+            .and_then(|e| e.value().as_i64())
+            .and_then(|n| u64::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .ok_or_else(|| format!("{} needs a positive {name}", node.name().value()))
+    };
+    let string = |node: &KdlNode, name: &str| {
+        node.get(name)
+            .and_then(|e| e.value().as_string())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("{} needs a string {name}", node.name().value()))
+    };
+    let mut out = SavedResolutions {
+        last_generation: positive(node, "last-generation")?,
+        ..SavedResolutions::default()
+    };
+    for child in children(node) {
+        if child.name().value() != "resolution" {
+            return Err(format!(
+                "unexpected {:?} in resolutions",
+                child.name().value()
+            ));
+        }
+        let key = string_arg(child, 0)?;
+        let mut resolution = PortableResolution {
+            kind: string(child, "kind")?,
+            fields: BTreeMap::new(),
+        };
+        for field in children(child) {
+            if field.name().value() != "field" {
+                return Err(format!(
+                    "unexpected {:?} in resolution",
+                    field.name().value()
+                ));
+            }
+            let name = string_arg(field, 0)?;
+            if resolution
+                .fields
+                .insert(name.clone(), string_arg(field, 1)?)
+                .is_some()
+            {
+                return Err(format!("resolution field {name:?} is given twice"));
+            }
+        }
+        resolution.check()?;
+        let saved = SavedResolution {
+            resolution,
+            against: string(child, "against")?,
+            generation: positive(child, "generation")?,
+        };
+        if saved.against.is_empty() {
+            return Err("a saved resolution names the slot resolution it resolves".into());
+        }
+        if saved.generation > out.last_generation {
+            return Err("a saved resolution's generation is past last-generation".into());
+        }
+        if out.by_slot.insert(key.clone(), saved).is_some() {
+            return Err(format!("slot {key:?} has two saved resolutions"));
+        }
+    }
+    Ok(out)
 }
 
 /// Whether a fact value can be written to a record. Lists of text and group
@@ -1476,11 +1588,12 @@ mod tests {
             ]),
             slots: WorkspaceSlots::default(),
             arrangement: None,
+            resolutions: SavedResolutions::default(),
             unknown: vec![],
         };
         let text = record.encode(id);
         assert!(text.starts_with(
-            "andamento-record \"workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b\" version=5"
+            "andamento-record \"workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b\" version=6"
         ));
         assert_eq!(
             WorkspaceRecord::decode(&text, id, "local").unwrap(),
@@ -1661,6 +1774,37 @@ mod tests {
                 soft: BTreeMap::new(),
                 provider_changed: true,
             }),
+            resolutions: SavedResolutions {
+                by_slot: BTreeMap::from([
+                    (
+                        "reviewer".into(),
+                        SavedResolution {
+                            resolution: PortableResolution {
+                                kind: "cleat-session".into(),
+                                fields: BTreeMap::from([
+                                    ("host".into(), "feta".into()),
+                                    ("session".into(), "S \"1\"".into()),
+                                    ("daemon".into(), "D".into()),
+                                ]),
+                            },
+                            against: "4:r#12:shell".into(),
+                            generation: 5,
+                        },
+                    ),
+                    (
+                        "u:3".into(),
+                        SavedResolution {
+                            resolution: PortableResolution {
+                                kind: "jackstay-endpoint".into(),
+                                fields: BTreeMap::new(),
+                            },
+                            against: "0:8:jackstay".into(),
+                            generation: 2,
+                        },
+                    ),
+                ]),
+                last_generation: 6,
+            },
             unknown: vec![],
         }
     }
@@ -1702,9 +1846,30 @@ mod tests {
             r#"tabs "agents" weight=0.625 selected="reviewer" {"#,
             r#"tab "gone""#,
             r#"placed "u:2""#,
+            r#"resolutions last-generation=6 {"#,
+            r##"resolution "reviewer" kind="cleat-session" generation=5 against="4:r#12:shell" {"##,
+            r#"field "daemon" "D""#,
+            r#"field "session" "S \"1\"""#,
+            r#"resolution "u:3" kind="jackstay-endpoint" generation=2 against="0:8:jackstay""#,
         ] {
             assert!(text.contains(expected), "{expected}\n{text}");
         }
+        // Every generation given out is remembered, even with none saved.
+        let mut cleared = WorkspaceRecord {
+            resolutions: SavedResolutions {
+                last_generation: 6,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let text = cleared.encode(id);
+        assert!(text.contains("resolutions last-generation=6"), "{text}");
+        assert_eq!(
+            WorkspaceRecord::decode(&text, id, "local").unwrap(),
+            cleared
+        );
+        cleared.resolutions.last_generation = 0;
+        assert!(!cleared.encode(id).contains("resolutions"));
         // A primary-only baseline and an empty, uncommitted arrangement.
         let mut record = WorkspaceRecord::default();
         record.slots.baseline = Some(Baseline {
@@ -1760,8 +1925,18 @@ mod tests {
             r#"overlay { edit "a" { tombstone; override { url "y"; }; against { url "x"; }; }; }"#,
             r#"overlay { nope; }"#,
             r#"departed "a" rebind="never""#,
+            r#"resolutions"#,
+            r#"resolutions last-generation=0"#,
+            r#"resolutions last-generation=1 { nope; }"#,
+            r#"resolutions last-generation=1 { resolution "a" kind="k" against="x"; }"#,
+            r#"resolutions last-generation=1 { resolution "a" kind="k" generation=2 against="x"; }"#,
+            r#"resolutions last-generation=1 { resolution "a" kind="K" generation=1 against="x"; }"#,
+            r#"resolutions last-generation=1 { resolution "a" kind="k" generation=1; }"#,
+            r#"resolutions last-generation=1 { resolution "a" kind="k" generation=1 against=""; }"#,
+            r#"resolutions last-generation=1 { resolution "a" kind="k" generation=1 against="x" { field "h" "1"; field "h" "2"; }; }"#,
+            r#"resolutions last-generation=2 { resolution "a" kind="k" generation=1 against="x"; resolution "a" kind="k" generation=2 against="x"; }"#,
         ] {
-            let text = format!("andamento-record \"workspace/7\" version=5 {{ {body}; }}");
+            let text = format!("andamento-record \"workspace/7\" version=6 {{ {body}; }}");
             assert!(
                 WorkspaceRecord::decode(&text, id, "local").is_err(),
                 "{text}"
@@ -1800,10 +1975,16 @@ mod tests {
         assert!(slots[0].detached && slots[1].detached);
         assert_eq!(slots[0].rebind, RebindPolicy::Ask);
         let text = record.encode(id);
-        assert!(text.starts_with("andamento-record \"workspace/7\" version=5"));
+        assert!(text.starts_with("andamento-record \"workspace/7\" version=6"));
         assert!(text.contains("overlay {"), "{text}");
         assert!(!text.contains("\n    override"), "{text}");
         assert_eq!(WorkspaceRecord::decode(&text, id, "local").unwrap(), record);
+        // Version 5 records have no saved resolutions: a node of that name is
+        // unknown, and kept.
+        let v5 = r#"andamento-record "workspace/7" version=5 { resolutions last-generation=1; }"#;
+        let record = WorkspaceRecord::decode(v5, id, "local").unwrap();
+        assert!(record.resolutions.is_empty());
+        assert_eq!(record.unknown.len(), 1);
         // In version 5, top-level override and slot nodes are unknown.
         let v5 = r#"andamento-record "workspace/7" version=5 { slot "u:1" { url "u"; }; }"#;
         let record = WorkspaceRecord::decode(v5, id, "local").unwrap();
@@ -1845,7 +2026,7 @@ mod tests {
         assert_eq!(record.unknown.len(), 1);
         assert!(record
             .encode()
-            .starts_with("andamento-record \"dashboard\" version=5"));
+            .starts_with("andamento-record \"dashboard\" version=6"));
         // In version 4 it is read, duplicates and all (reconciling removes
         // them); a malformed one is rejected.
         let v4 = r#"andamento-record "dashboard" version=4 {
@@ -1897,7 +2078,7 @@ mod tests {
         assert_eq!(record.unknown.len(), 1);
         assert!(record
             .encode(id)
-            .starts_with("andamento-record \"workspace/7\" version=5"));
+            .starts_with("andamento-record \"workspace/7\" version=6"));
         // Malformed slots and arrangements are rejected in version 3.
         for body in [
             r#"slot "u:1""#,
@@ -1944,7 +2125,7 @@ mod tests {
     #[test]
     fn other_versions_names_and_shapes_are_rejected() {
         for text in [
-            "andamento-record \"dashboard\" version=6",
+            "andamento-record \"dashboard\" version=7",
             "andamento-record \"dashboard\" version=0",
             "andamento-record \"dashboard\"",
             // Version 2 entities name their provider.
@@ -2011,7 +2192,7 @@ mod tests {
         // Export writes the current version, naming every provider; it reads back the same.
         let text = record.encode();
         assert!(
-            text.starts_with("andamento-record \"dashboard\" version=5"),
+            text.starts_with("andamento-record \"dashboard\" version=6"),
             "{text}"
         );
         assert!(

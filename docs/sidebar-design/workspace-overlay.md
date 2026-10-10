@@ -35,7 +35,7 @@ control of the saved records.
 | Split weight, selected tab | panel ID | A **soft override**. |
 | The whole arrangement | the workspace | Once a **structural** edit has taken ownership. |
 
-`EditSet` is the Rust shape. In the `workspace/<id>` record (version 5) the
+`EditSet` is the Rust shape. In the `workspace/<id>` record (version 5 and later) the
 edits are an `overlay` node, and an owned arrangement is the `arrangement`
 node with `owned=true`:
 

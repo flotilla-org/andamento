@@ -239,7 +239,7 @@ fn an_imported_record_with_duplicates_is_repaired_and_older_records_migrate() {
     assert!(migrated
         .export_record("dashboard")
         .unwrap()
-        .starts_with("andamento-record \"dashboard\" version=5"));
+        .starts_with("andamento-record \"dashboard\" version=6"));
 }
 
 #[test]
