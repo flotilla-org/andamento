@@ -156,6 +156,7 @@ ABI 3 host can have supplied and which it reads through the ABI 3 getters.
 | `AndamentoEffect.entity_kind`/`entity_id` | `andamento_effects_provider` |
 | none | `andamento_set_default_provider`, `andamento_provider_retract`, `andamento_provider_set_stale` |
 | `andamento_content_*` (the `primary` slot) | `andamento_slot_*`, `andamento_slots_*`, `andamento_set_arrangement`, `andamento_arrangement_*`, `andamento_workspace_content_revision` ([Slots and arrangements](slots-and-arrangements.md)) |
+| `andamento_snapshot_region_hints` (the host placed sections itself) | `andamento_set_sidebar_arrangement`, `andamento_sidebar_restore_section`, `andamento_sidebar_reset`, `andamento_sidebar_arrangement_*` ([The sidebar arrangement](sidebar-arrangement.md)) |
 
 JSON tab targets accept a number, a hyphenated UUID or 32 hex digits, in either
 case; embedded IDs serialize as numbers, as before. The replay `Request`s carry
@@ -235,14 +236,14 @@ filesystem, so this works in Zellij's sandbox and under WASM too.
 
 | Record | Holds |
 |---|---|
-| `dashboard` | display variables that persist, row (placement) collapse, sibling orders, placement variables set on rows, and local sections, groups and refs |
+| `dashboard` | display variables that persist, row (placement) collapse, sibling orders, placement variables set on rows, local sections, groups and refs, and the sidebar arrangement ([The sidebar arrangement](sidebar-arrangement.md)) |
 | `workspace/<id>` | for each registered workspace: its subject, the subject and the entities on its path as last seen, its slots (the cached Suggested Layout baseline, the user's overrides and own slots) and its arrangement document ([Slots and arrangements](slots-and-arrangements.md)) |
 
 Scroll offset, display variables declared `persist=false`, and section collapse
 are presentation state and are not recorded.
 
 ```kdl
-andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=3 {
+andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=4 {
     subject "vessel" "v" provider="sub-1"
     retained "project" "p" provider="sub-1" label="Project P" status="retained" last-seen=100 {
         fact "flotilla.project" "p"
@@ -255,7 +256,8 @@ andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=3 {
 
 A dashboard record lists `display "<name>" <value>`, `collapsed { at … }`,
 `order "<region>" "<binding>" { parent { at … }; entity "<kind>" "<id>" provider="<provider>" … }`,
-`variable "<name>" "<value>" { at … }` and `local "<kind>" "<id>" provider="local" { fact … }`
+`variable "<name>" "<value>" { at … }`, `local "<kind>" "<id>" provider="local" { fact … }`
+and `sidebar generation=… owned=… { dock { … }; floating { … }; closed "<key>"; placed "<key>" }`
 nodes; a placement key is its `at "<loop>" "<kind>" "<id>" provider="<provider>"`
 segments, outermost first. Every entity names its provider. `records.rs` has a
 full sample.
@@ -278,15 +280,17 @@ full sample.
   when the workspace is observed, its recorded path is drawn until a producer
   publishes the subject again. A record that doesn't parse, has another
   version, or names another record is rejected without changing anything.
-- **Versions.** Andamento writes version 3, where every entity names its
-  provider and a workspace record holds its slots and arrangement. Version 2
-  records import with no slots and no arrangement; the dashboard record is
-  the same in both. Version 1 records, from before providers, still import: their
+- **Versions.** Andamento writes version 4, where every entity names its
+  provider, a workspace record holds its slots and arrangement, and the
+  dashboard record holds the sidebar arrangement. Version 3 dashboard records
+  import with no sidebar arrangement, which the template's hints then place;
+  workspace records are the same in versions 3 and 4. Version 2 records
+  import with no slots and no arrangement. Version 1 records, from before providers, still import: their
   sections, groups and refs (`.section`, `.group`, `.ref`) get `local`, and
   every other entity gets the default provider at import, which is the
   provider ABI 2 calls stamp, so migrated keys match the facts a host still
   publishes the old way. A host that sets a default provider sets it before
-  importing. Export always writes version 3.
+  importing. Export always writes version 4.
 - **Unknown nodes** directly inside the envelope are kept and exported again,
   after the known ones. Unknown properties or children of known nodes are not
   kept, so a later version adds nodes, or raises the version.

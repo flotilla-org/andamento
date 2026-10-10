@@ -2809,18 +2809,35 @@ unsafe fn read_arrangement(
     panels: &[PanelView],
     tabs: &[TabView],
 ) -> Result<andamento_core::slots::ArrangementDoc, String> {
-    use andamento_core::slots::{ArrangementDoc, Panel, PanelNode};
-    use andamento_core::suggested_layout::Axis;
-    let mut built: Vec<Option<Panel>> = Vec::with_capacity(panels.len());
     for (index, view) in panels.iter().enumerate() {
         match (index, view.parent) {
             (0, NONE) => {}
             (0, _) => return Err("the first panel is the root; its parent is NONE".into()),
             (_, NONE) => return Err(format!("panel {index} has no parent; only one root")),
-            (_, parent) if parent >= index => {
+            _ => {}
+        }
+    }
+    Ok(andamento_core::slots::ArrangementDoc {
+        root: read_trees(panels, tabs)?.into_iter().next(),
+    })
+}
+
+/// A flat preorder panel array as trees: each panel whose parent is NONE
+/// starts one, and every other names an earlier split as its parent.
+unsafe fn read_trees(
+    panels: &[PanelView],
+    tabs: &[TabView],
+) -> Result<Vec<andamento_core::slots::Panel>, String> {
+    use andamento_core::slots::{Panel, PanelNode};
+    use andamento_core::suggested_layout::Axis;
+    let mut built: Vec<Option<Panel>> = Vec::with_capacity(panels.len());
+    for (index, view) in panels.iter().enumerate() {
+        match view.parent {
+            NONE => {}
+            parent if parent >= index => {
                 return Err(format!("panel {index}'s parent is not an earlier panel"))
             }
-            (_, parent) if panels[parent].kind != PANEL_SPLIT => {
+            parent if panels[parent].kind != PANEL_SPLIT => {
                 return Err(format!("panel {index}'s parent is not a split"))
             }
             _ => {}
@@ -2872,9 +2889,12 @@ unsafe fn read_arrangement(
     }
     // Attach children to parents, last first, so each parent is complete
     // when it is attached in turn.
-    for index in (1..built.len()).rev() {
-        let child = built[index].take().expect("attached once");
+    for index in (0..built.len()).rev() {
         let parent = panels[index].parent;
+        if parent == NONE {
+            continue;
+        }
+        let child = built[index].take().expect("attached once");
         if let Some(Panel {
             node: PanelNode::Split { children, .. },
             ..
@@ -2883,9 +2903,7 @@ unsafe fn read_arrangement(
             children.insert(0, child);
         }
     }
-    Ok(ArrangementDoc {
-        root: built.into_iter().next().flatten(),
-    })
+    Ok(built.into_iter().flatten().collect())
 }
 
 const ARRANGEMENT_INVALID: u32 = 0;
@@ -2924,12 +2942,16 @@ pub unsafe extern "C" fn andamento_set_arrangement(
     .unwrap_or(ARRANGEMENT_INVALID)
 }
 
-/// A workspace's arrangement, owned until release.
+/// A workspace's or the sidebar's arrangement, owned until release.
 pub struct AndamentoArrangement {
     generation: u64,
     owned: bool,
     panels: Vec<FlatPanel>,
     tabs: Vec<(String, bool, bool)>,
+    /// The first floating panel's index: panel_count for a workspace.
+    floating_first: usize,
+    /// The sidebar's section notes: (kind, key).
+    notes: Vec<(u32, String)>,
 }
 
 /// A panel of an acquired arrangement, owning its ID.
@@ -2952,14 +2974,67 @@ pub struct ArrangementInfoView {
     pub tab_count: usize,
 }
 
+/// Flatten one panel tree into `out`, in preorder, under `parent`.
+fn flatten_panel(
+    panel: &andamento_core::slots::Panel,
+    parent: usize,
+    placed: &std::collections::BTreeSet<String>,
+    gone: &std::collections::BTreeSet<String>,
+    out: &mut AndamentoArrangement,
+) {
+    use andamento_core::slots::PanelNode;
+    use andamento_core::suggested_layout::Axis;
+    let index = out.panels.len();
+    match &panel.node {
+        PanelNode::Split { axis, children } => {
+            let axis = match axis {
+                Axis::Row => 0,
+                Axis::Column => 1,
+            };
+            out.panels.push(FlatPanel {
+                parent,
+                id: panel.id.clone(),
+                weight: panel.weight,
+                kind: PANEL_SPLIT,
+                axis,
+                first_tab: 0,
+                tab_count: 0,
+                selected: NONE,
+            });
+            for child in children {
+                flatten_panel(child, index, placed, gone, out);
+            }
+        }
+        PanelNode::Tabs { tabs, selected } => {
+            let first = out.tabs.len();
+            for tab in tabs {
+                out.tabs
+                    .push((tab.clone(), placed.contains(tab), gone.contains(tab)));
+            }
+            let selected = selected
+                .as_ref()
+                .and_then(|s| tabs.iter().position(|t| t == s))
+                .unwrap_or(NONE);
+            out.panels.push(FlatPanel {
+                parent,
+                id: panel.id.clone(),
+                weight: panel.weight,
+                kind: PANEL_TABS,
+                axis: 0,
+                first_tab: first,
+                tab_count: tabs.len(),
+                selected,
+            });
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn andamento_arrangement_acquire(
     h: *mut Andamento,
     workspace: WorkspaceIdView,
     error: *mut *mut c_char,
 ) -> *mut AndamentoArrangement {
-    use andamento_core::slots::{Panel, PanelNode};
-    use andamento_core::suggested_layout::Axis;
     run(h, error, |h| {
         let view = h.sidebar.arrangement(workspace.into())?;
         let mut out = AndamentoArrangement {
@@ -2967,63 +3042,13 @@ pub unsafe extern "C" fn andamento_arrangement_acquire(
             owned: view.owned,
             panels: Vec::new(),
             tabs: Vec::new(),
+            floating_first: 0,
+            notes: Vec::new(),
         };
-        fn walk(
-            panel: &Panel,
-            parent: usize,
-            view: &andamento_core::slots::ArrangementView,
-            out: &mut AndamentoArrangement,
-        ) {
-            let index = out.panels.len();
-            match &panel.node {
-                PanelNode::Split { axis, children } => {
-                    let axis = match axis {
-                        Axis::Row => 0,
-                        Axis::Column => 1,
-                    };
-                    out.panels.push(FlatPanel {
-                        parent,
-                        id: panel.id.clone(),
-                        weight: panel.weight,
-                        kind: PANEL_SPLIT,
-                        axis,
-                        first_tab: 0,
-                        tab_count: 0,
-                        selected: NONE,
-                    });
-                    for child in children {
-                        walk(child, index, view, out);
-                    }
-                }
-                PanelNode::Tabs { tabs, selected } => {
-                    let first = out.tabs.len();
-                    for tab in tabs {
-                        out.tabs.push((
-                            tab.clone(),
-                            view.placed.contains(tab),
-                            view.gone.contains(tab),
-                        ));
-                    }
-                    let selected = selected
-                        .as_ref()
-                        .and_then(|s| tabs.iter().position(|t| t == s))
-                        .unwrap_or(NONE);
-                    out.panels.push(FlatPanel {
-                        parent,
-                        id: panel.id.clone(),
-                        weight: panel.weight,
-                        kind: PANEL_TABS,
-                        axis: 0,
-                        first_tab: first,
-                        tab_count: tabs.len(),
-                        selected,
-                    });
-                }
-            }
-        }
         if let Some(root) = &view.doc.root {
-            walk(root, NONE, &view, &mut out);
+            flatten_panel(root, NONE, &view.placed, &view.gone, &mut out);
         }
+        out.floating_first = out.panels.len();
         Ok(Box::into_raw(Box::new(out)))
     })
     .unwrap_or(ptr::null_mut())
@@ -3096,6 +3121,211 @@ pub unsafe extern "C" fn andamento_arrangement_release(arrangement: *mut Andamen
     if !arrangement.is_null() {
         drop(Box::from_raw(arrangement));
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_arrangement_floating_first(
+    arrangement: *const AndamentoArrangement,
+) -> usize {
+    arrangement.as_ref().map_or(0, |a| a.floating_first)
+}
+
+const SECTION_CLOSED: u32 = 0;
+const SECTION_PLACED: u32 = 1;
+const SECTION_RESTORED: u32 = 2;
+const SECTION_DUPLICATE: u32 = 3;
+const SECTION_UNRESOLVED: u32 = 4;
+
+#[repr(C)]
+pub struct SectionNoteView {
+    pub kind: u32,
+    pub key: Text,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_arrangement_note_count(
+    arrangement: *const AndamentoArrangement,
+) -> usize {
+    arrangement.as_ref().map_or(0, |a| a.notes.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_arrangement_note(
+    arrangement: *const AndamentoArrangement,
+    index: usize,
+    out: *mut SectionNoteView,
+) -> u32 {
+    let (Some(arrangement), Some(out)) = (arrangement.as_ref(), out.as_mut()) else {
+        return 0;
+    };
+    let Some((kind, key)) = arrangement.notes.get(index) else {
+        return 0;
+    };
+    *out = SectionNoteView {
+        kind: *kind,
+        key: Text::borrowed(key),
+    };
+    1
+}
+
+/// The sidebar's document from the host's arrays: panels before
+/// `floating_first` are the dock (one tree, or none when it is 0); the rest
+/// are floating panels, each a tree whose root's parent is NONE.
+unsafe fn read_sidebar_doc(
+    panels: &[PanelView],
+    floating_first: usize,
+    tabs: &[TabView],
+) -> Result<andamento_core::sidebar_arrangement::SidebarDoc, String> {
+    if floating_first > panels.len() {
+        return Err("floating_first is past the last panel".into());
+    }
+    for (index, view) in panels.iter().enumerate() {
+        let root = view.parent == NONE;
+        let starts = index == 0 || index == floating_first;
+        if index < floating_first && root != (index == 0) {
+            return Err(format!(
+                "panel {index}: the dock is one tree, rooted at panel 0"
+            ));
+        }
+        if index >= floating_first && starts && !root {
+            return Err(format!(
+                "panel {index} starts the floating panels; its parent is NONE"
+            ));
+        }
+        if index >= floating_first && !root && view.parent < floating_first {
+            return Err(format!("panel {index} is floating; its parent is docked"));
+        }
+    }
+    let mut trees = read_trees(panels, tabs)?.into_iter();
+    let dock = if floating_first > 0 {
+        trees.next()
+    } else {
+        None
+    };
+    Ok(andamento_core::sidebar_arrangement::SidebarDoc {
+        dock: andamento_core::slots::ArrangementDoc { root: dock },
+        floating: trees.collect(),
+    })
+}
+
+/// The C result of a sidebar arrangement call, writing the generation after.
+fn sidebar_result(
+    h: &Andamento,
+    result: Result<
+        andamento_core::sidebar_arrangement::Report,
+        andamento_core::slots::ArrangementError,
+    >,
+    generation_out: *mut u64,
+) -> Result<u32, String> {
+    if let Some(out) = unsafe { generation_out.as_mut() } {
+        *out = h.sidebar.sidebar_arrangement_generation();
+    }
+    match result {
+        Ok(_) => Ok(ARRANGEMENT_COMMITTED),
+        Err(andamento_core::slots::ArrangementError::Stale { .. }) => Ok(ARRANGEMENT_STALE),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub unsafe extern "C" fn andamento_set_sidebar_arrangement(
+    h: *mut Andamento,
+    panels: *const PanelView,
+    panel_count: usize,
+    floating_first: usize,
+    tabs: *const TabView,
+    tab_count: usize,
+    expected_generation: u64,
+    generation_out: *mut u64,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let doc = read_sidebar_doc(
+            slice(panels, panel_count)?,
+            floating_first,
+            slice(tabs, tab_count)?,
+        )?;
+        let result = h.sidebar.set_sidebar_arrangement(doc, expected_generation);
+        sidebar_result(h, result, generation_out)
+    })
+    .unwrap_or(ARRANGEMENT_INVALID)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_sidebar_restore_section(
+    h: *mut Andamento,
+    key: Text,
+    expected_generation: u64,
+    generation_out: *mut u64,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let key = key.read()?;
+        let result = h.sidebar.restore_sidebar_section(&key, expected_generation);
+        sidebar_result(h, result, generation_out)
+    })
+    .unwrap_or(ARRANGEMENT_INVALID)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_sidebar_reset(
+    h: *mut Andamento,
+    expected_generation: u64,
+    generation_out: *mut u64,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let result = h.sidebar.reset_sidebar_arrangement(expected_generation);
+        sidebar_result(h, result, generation_out)
+    })
+    .unwrap_or(ARRANGEMENT_INVALID)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_sidebar_arrangement_generation(
+    h: *mut Andamento,
+    error: *mut *mut c_char,
+) -> u64 {
+    run(h, error, |h| Ok(h.sidebar.sidebar_arrangement_generation())).unwrap_or(0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_sidebar_arrangement_acquire(
+    h: *mut Andamento,
+    error: *mut *mut c_char,
+) -> *mut AndamentoArrangement {
+    run(h, error, |h| {
+        let (view, report) = h.sidebar.sidebar_arrangement();
+        let mut out = AndamentoArrangement {
+            generation: view.generation,
+            owned: view.owned,
+            panels: Vec::new(),
+            tabs: Vec::new(),
+            floating_first: 0,
+            notes: Vec::new(),
+        };
+        if let Some(root) = &view.doc.dock.root {
+            flatten_panel(root, NONE, &view.placed, &view.unresolved, &mut out);
+        }
+        out.floating_first = out.panels.len();
+        for panel in &view.doc.floating {
+            flatten_panel(panel, NONE, &view.placed, &view.unresolved, &mut out);
+        }
+        let notes = [
+            (SECTION_CLOSED, view.closed.iter().collect::<Vec<_>>()),
+            (SECTION_PLACED, report.placed.iter().collect()),
+            (SECTION_RESTORED, report.restored.iter().collect()),
+            (SECTION_DUPLICATE, report.duplicates.iter().collect()),
+            (SECTION_UNRESOLVED, view.unresolved.iter().collect()),
+        ];
+        for (kind, keys) in notes {
+            out.notes
+                .extend(keys.into_iter().map(|key| (kind, key.clone())));
+        }
+        Ok(Box::into_raw(Box::new(out)))
+    })
+    .unwrap_or(ptr::null_mut())
 }
 
 /// ABI 3: the revision of workspace content (slots, resolutions and

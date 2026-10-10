@@ -258,7 +258,10 @@ hosts can share this policy through
 as `a order=10`, `b` (no order), and `c order=0` have keys `(10, 0)`,
 `(1, 1)`, and `(0, 2)`, so the default order is `c, b, a`. A saved user
 arrangement takes precedence over all three hints. Andamento keeps the
-declared region sequence; Zellij may ignore these hints.
+declared region sequence; Zellij may ignore these hints. Andamento itself
+places sections by these hints in the Dashboard's sidebar arrangement, which
+also puts pinned regions first: see [The sidebar
+arrangement](sidebar-arrangement.md).
 
 An unhinted region at index 2 sorts before a region with `order=10`. Authors
 can specify order on all regions, or omit it on all regions, to avoid mixing

@@ -14,6 +14,7 @@ pub mod profile;
 pub mod records;
 pub mod replay;
 pub mod sidebar;
+pub mod sidebar_arrangement;
 pub mod slots;
 pub mod state;
 pub mod suggested_layout;

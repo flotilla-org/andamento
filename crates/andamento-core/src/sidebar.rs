@@ -196,6 +196,10 @@ pub struct Sidebar {
     /// arrangements. Separate from `revision`, so committing an arrangement
     /// leaves the sidebar's snapshot and evaluation current.
     content_revision: u64,
+    /// The Dashboard's sidebar arrangement, and what its last
+    /// reconciliation did.
+    sidebar_arrangement: crate::sidebar_arrangement::SidebarArrangement,
+    sidebar_report: crate::sidebar_arrangement::Report,
 }
 
 #[derive(Default)]
@@ -310,6 +314,7 @@ impl Sidebar {
         ));
         self.placement_keys = self.state.placement_fact_keys();
         self.invalidate();
+        self.follow_sidebar_declarations();
         Ok(())
     }
 
@@ -680,8 +685,12 @@ impl Sidebar {
             return Err("local facts are text, booleans, integers or entity references".into());
         }
         let patch = self.local_patch(&entity, Some(&facts));
+        let section = entity.kind != crate::presentation::system::REF;
         self.local.insert(entity, facts);
         self.apply_local([patch]);
+        if section {
+            self.follow_sidebar_declarations();
+        }
         Ok(())
     }
 
@@ -696,6 +705,9 @@ impl Sidebar {
         let patch = self.local_patch(entity, None);
         self.local.remove(entity);
         self.apply_local([patch]);
+        if entity.kind != crate::presentation::system::REF {
+            self.follow_sidebar_declarations();
+        }
         true
     }
 
@@ -842,6 +854,8 @@ impl Sidebar {
                 orders: self.state.sibling_orders().clone(),
                 variables: self.state.placement_variables(),
                 local: self.local.clone(),
+                sidebar: Some(self.sidebar_arrangement.clone())
+                    .filter(|arrangement| arrangement.generation != 0),
                 unknown: self.dashboard_unknown.clone(),
             }
             .encode()),
@@ -927,6 +941,7 @@ impl Sidebar {
                     self.state.apply_metadata_patch(patch);
                 }
                 self.maintain(true);
+                self.import_sidebar_arrangement(record.sidebar.unwrap_or_default());
             }
             RecordName::Workspace(id) => {
                 let record = WorkspaceRecord::decode(kdl, id, self.state.default_provider())?;
@@ -1115,6 +1130,145 @@ impl Sidebar {
         let record = self.workspace_record(workspace)?;
         let slots = record.slots.slots();
         Ok(record.arrangement.clone().unwrap_or_default().view(&slots))
+    }
+
+    /// What the template and local sections declare, for the sidebar
+    /// arrangement.
+    fn sidebar_declared(&self) -> crate::sidebar_arrangement::Declared {
+        use crate::presentation::system;
+        let sections_with_default: BTreeSet<&str> = self
+            .local
+            .iter()
+            .filter(|(entity, facts)| {
+                entity.kind == system::GROUP
+                    && matches!(
+                        facts.get(system::DEFAULT),
+                        Some(crate::MetadataValue::Bool(true))
+                    )
+            })
+            .filter_map(|(_, facts)| match facts.get(system::SECTION) {
+                Some(crate::MetadataValue::EntityRefs(refs)) if refs.len() == 1 => {
+                    Some(refs[0].id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        let local: Vec<crate::sidebar_arrangement::LocalSection> = self
+            .local
+            .iter()
+            .filter(|(entity, _)| entity.kind == system::SECTION)
+            .map(|(entity, facts)| crate::sidebar_arrangement::LocalSection {
+                id: entity.id.clone(),
+                position: match facts.get(".position") {
+                    Some(crate::MetadataValue::Integer(n)) => Some(*n),
+                    Some(crate::MetadataValue::Text(text)) => text.trim().parse().ok(),
+                    _ => None,
+                },
+                default: sections_with_default.contains(entity.id.as_str()),
+            })
+            .collect();
+        crate::sidebar_arrangement::Declared::new(&self.state.sidebar_regions(), &local)
+    }
+
+    /// Reconcile the sidebar arrangement after the declarations may have
+    /// changed: on configure, and when local sections or groups change.
+    fn follow_sidebar_declarations(&mut self) {
+        let declared = self.sidebar_declared();
+        let stored = &mut self.sidebar_arrangement;
+        let before = stored.generation;
+        self.sidebar_report = stored.follow(&declared, &mut || before + 1);
+    }
+
+    /// Adopt an imported arrangement, reconciled. It keeps its own
+    /// generation if reconciling changed nothing and that is newer than the
+    /// stored one; otherwise a changed arrangement moves past both, so a
+    /// host commit prepared before the import is stale.
+    fn import_sidebar_arrangement(
+        &mut self,
+        imported: crate::sidebar_arrangement::SidebarArrangement,
+    ) {
+        let declared = self.sidebar_declared();
+        let (mut next, report) = crate::sidebar_arrangement::reconcile(&declared, &imported);
+        let generation = if next == imported {
+            imported.generation
+        } else {
+            imported.generation + 1
+        };
+        let current = self.sidebar_arrangement.generation;
+        next.generation = current;
+        if next != self.sidebar_arrangement {
+            next.generation = if generation > current {
+                generation
+            } else {
+                current + 1
+            };
+            self.sidebar_arrangement = next;
+        }
+        self.sidebar_report = report;
+    }
+
+    /// The Dashboard's sidebar arrangement: the dock and floating panels,
+    /// closed sections, flags, and what its last reconciliation did.
+    pub fn sidebar_arrangement(
+        &self,
+    ) -> (
+        crate::sidebar_arrangement::SidebarView,
+        &crate::sidebar_arrangement::Report,
+    ) {
+        (
+            self.sidebar_arrangement.view(&self.sidebar_declared()),
+            &self.sidebar_report,
+        )
+    }
+
+    /// The sidebar arrangement's generation: 0 before anything is stored,
+    /// and changed whenever it is. Cheap enough to poll.
+    pub fn sidebar_arrangement_generation(&self) -> u64 {
+        self.sidebar_arrangement.generation
+    }
+
+    /// Commit the host's whole sidebar arrangement, if `expected` is its
+    /// generation. Declared sections it leaves out are closed. A stale or
+    /// invalid commit changes nothing; neither invalidates the snapshot.
+    pub fn set_sidebar_arrangement(
+        &mut self,
+        doc: crate::sidebar_arrangement::SidebarDoc,
+        expected: u64,
+    ) -> Result<crate::sidebar_arrangement::Report, crate::slots::ArrangementError> {
+        let declared = self.sidebar_declared();
+        let stored = &mut self.sidebar_arrangement;
+        let before = stored.generation;
+        let report = stored.commit(&declared, doc, expected, &mut || before + 1)?;
+        self.sidebar_report = report.clone();
+        Ok(report)
+    }
+
+    /// Reopen a closed section by its hints, with an equal share of its host.
+    pub fn restore_sidebar_section(
+        &mut self,
+        key: &str,
+        expected: u64,
+    ) -> Result<crate::sidebar_arrangement::Report, crate::slots::ArrangementError> {
+        let declared = self.sidebar_declared();
+        let stored = &mut self.sidebar_arrangement;
+        let before = stored.generation;
+        let report = stored.restore(&declared, key, expected, &mut || before + 1)?;
+        self.sidebar_report = report.clone();
+        Ok(report)
+    }
+
+    /// Return the sidebar to its default arrangement: every declared section
+    /// placed by its hints, nothing closed.
+    pub fn reset_sidebar_arrangement(
+        &mut self,
+        expected: u64,
+    ) -> Result<crate::sidebar_arrangement::Report, crate::slots::ArrangementError> {
+        let declared = self.sidebar_declared();
+        let stored = &mut self.sidebar_arrangement;
+        let before = stored.generation;
+        let report = stored.reset(&declared, expected, &mut || before + 1)?;
+        self.sidebar_report = report.clone();
+        Ok(report)
     }
 
     /// Conservative revision of presentation and action dependencies. Unchanged

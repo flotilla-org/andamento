@@ -2710,6 +2710,34 @@ impl ControllerState {
         self.apply_metadata_patch(patch)
     }
 
+    /// Each configured region's placement hints, in declaration order, for
+    /// the sidebar arrangement.
+    pub(crate) fn sidebar_regions(&self) -> Vec<crate::sidebar_arrangement::RegionHints> {
+        fn hosts_sections(loops: &[crate::template_config::PlacementLoop]) -> bool {
+            loops
+                .iter()
+                .any(|l| l.layout.as_deref() == Some("section") || hosts_sections(&l.loops))
+        }
+        let Some(catalog) = self.template_catalog.as_ref() else {
+            return Vec::new();
+        };
+        catalog
+            .regions()
+            .iter()
+            .map(|region| crate::sidebar_arrangement::RegionHints {
+                name: region.name.clone(),
+                default_host: region.default_host.clone(),
+                order: region.order,
+                pinned: region.pinned,
+                hosts_local_sections: region
+                    .placement
+                    .as_deref()
+                    .and_then(|name| catalog.placement(name))
+                    .is_some_and(|placement| hosts_sections(&placement.loops)),
+            })
+            .collect()
+    }
+
     /// Fact keys placement reads, for subject records.
     pub(crate) fn placement_fact_keys(&self) -> BTreeSet<String> {
         self.template_catalog

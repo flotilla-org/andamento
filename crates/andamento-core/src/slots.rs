@@ -235,7 +235,7 @@ impl WorkspaceSlots {
 }
 
 /// Slot keys and panel IDs: what a Suggested Layout allows.
-fn check_key(id: &str) -> Result<(), String> {
+pub(crate) fn check_key(id: &str) -> Result<(), String> {
     let mut chars = id.chars();
     let valid = id.len() <= 64
         && chars
@@ -296,6 +296,33 @@ pub struct Panel {
     pub node: PanelNode,
 }
 
+impl Panel {
+    /// This panel and its descendants, in preorder.
+    pub fn preorder(&self) -> Vec<&Panel> {
+        fn walk<'a>(panel: &'a Panel, out: &mut Vec<&'a Panel>) {
+            out.push(panel);
+            if let PanelNode::Split { children, .. } = &panel.node {
+                children.iter().for_each(|child| walk(child, out));
+            }
+        }
+        let mut out = Vec::new();
+        walk(self, &mut out);
+        out
+    }
+
+    /// Slot (or section) keys of this panel's tabs and its descendants', in
+    /// preorder.
+    pub fn tabs(&self) -> Vec<&str> {
+        self.preorder()
+            .into_iter()
+            .flat_map(|panel| match &panel.node {
+                PanelNode::Tabs { tabs, .. } => tabs.iter().map(String::as_str).collect(),
+                PanelNode::Split { .. } => Vec::new(),
+            })
+            .collect()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum PanelNode {
     Split {
@@ -337,17 +364,7 @@ impl ArrangementDoc {
 
     /// Panels in preorder.
     pub fn panels(&self) -> Vec<&Panel> {
-        fn walk<'a>(panel: &'a Panel, out: &mut Vec<&'a Panel>) {
-            out.push(panel);
-            if let PanelNode::Split { children, .. } = &panel.node {
-                children.iter().for_each(|child| walk(child, out));
-            }
-        }
-        let mut out = Vec::new();
-        if let Some(root) = &self.root {
-            walk(root, &mut out);
-        }
-        out
+        self.root.iter().flat_map(Panel::preorder).collect()
     }
 
     /// Every tab's slot key, in preorder.
@@ -363,50 +380,7 @@ impl ArrangementDoc {
 
     /// The document's shape rules, independent of any slot set.
     pub fn check(&self) -> Result<(), String> {
-        let mut ids = BTreeSet::new();
-        let mut tabs = BTreeSet::new();
-        for panel in self.panels() {
-            if panel.id.is_empty() {
-                return Err("a panel needs an ID".into());
-            }
-            if !ids.insert(panel.id.as_str()) {
-                return Err(format!("panel ID {:?} is used twice", panel.id));
-            }
-            if !(panel.weight.is_finite() && panel.weight > 0.0) {
-                return Err(format!(
-                    "panel {:?} has weight {}; weights are positive",
-                    panel.id, panel.weight
-                ));
-            }
-            match &panel.node {
-                PanelNode::Split { children, .. } if children.is_empty() => {
-                    return Err(format!("split {:?} has no panels", panel.id));
-                }
-                PanelNode::Split { .. } => {}
-                PanelNode::Tabs {
-                    tabs: panel_tabs,
-                    selected,
-                } => {
-                    for tab in panel_tabs {
-                        if tab.is_empty() {
-                            return Err(format!("panel {:?} has a tab with no slot", panel.id));
-                        }
-                        if !tabs.insert(tab.as_str()) {
-                            return Err(format!("slot {tab:?} has two tabs"));
-                        }
-                    }
-                    if let Some(selected) = selected {
-                        if !panel_tabs.contains(selected) {
-                            return Err(format!(
-                                "panel {:?} selects {selected:?}, which is not one of its tabs",
-                                panel.id
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
+        check_panels(self.panels(), false)
     }
 
     /// Place every slot in `order` that has no tab by the default rule:
@@ -447,6 +421,56 @@ impl ArrangementDoc {
         }
         missing
     }
+}
+
+/// Shape rules for panels in preorder: IDs nonempty and unique, weights
+/// finite and positive, splits nonempty, tabs nonempty, a selected tab one of
+/// its panel's, and, unless `duplicate_tabs`, each key tabbed at most once.
+pub(crate) fn check_panels(panels: Vec<&Panel>, duplicate_tabs: bool) -> Result<(), String> {
+    let mut ids = BTreeSet::new();
+    let mut tabs = BTreeSet::new();
+    for panel in panels {
+        if panel.id.is_empty() {
+            return Err("a panel needs an ID".into());
+        }
+        if !ids.insert(panel.id.as_str()) {
+            return Err(format!("panel ID {:?} is used twice", panel.id));
+        }
+        if !(panel.weight.is_finite() && panel.weight > 0.0) {
+            return Err(format!(
+                "panel {:?} has weight {}; weights are positive",
+                panel.id, panel.weight
+            ));
+        }
+        match &panel.node {
+            PanelNode::Split { children, .. } if children.is_empty() => {
+                return Err(format!("split {:?} has no panels", panel.id));
+            }
+            PanelNode::Split { .. } => {}
+            PanelNode::Tabs {
+                tabs: panel_tabs,
+                selected,
+            } => {
+                for tab in panel_tabs {
+                    if tab.is_empty() {
+                        return Err(format!("panel {:?} has a tab with no slot", panel.id));
+                    }
+                    if !tabs.insert(tab.as_str()) && !duplicate_tabs {
+                        return Err(format!("slot {tab:?} has two tabs"));
+                    }
+                }
+                if let Some(selected) = selected {
+                    if !panel_tabs.contains(selected) {
+                        return Err(format!(
+                            "panel {:?} selects {selected:?}, which is not one of its tabs",
+                            panel.id
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A workspace's stored arrangement.

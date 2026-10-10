@@ -394,7 +394,7 @@ static void check_records(const char *config_path, const char *patches_path) {
     AndamentoBytes dashboard = {0}, workspace = {0}, again = {0};
     ok(andamento_record_export(h, T("dashboard"), &dashboard, &error));
     ok(andamento_record_export(h, workspace_name, &workspace, &error));
-    assert(has(dashboard, "andamento-record \"dashboard\" version=3"));
+    assert(has(dashboard, "andamento-record \"dashboard\" version=4"));
     assert(has(dashboard, "display \"show-issues\" false"));
     assert(has(dashboard, "local \".group\" \"g1\" provider=\"local\""));
     assert(!has(dashboard, "\"gone\""));
@@ -415,7 +415,7 @@ static void check_records(const char *config_path, const char *patches_path) {
     /* Another version, or another record's name, changes nothing. */
     uint64_t imported = andamento_record_generation(fresh, T("dashboard"), &error);
     expected_error(andamento_record_import(fresh, T("dashboard"),
-        T("andamento-record \"dashboard\" version=4"), &error));
+        T("andamento-record \"dashboard\" version=5"), &error));
     expected_error(andamento_record_import(fresh, T("dashboard"), (AndamentoText){workspace.data, workspace.len}, &error));
     assert(andamento_record_generation(fresh, T("dashboard"), &error) == imported);
     andamento_bytes_free(dashboard); andamento_bytes_free(workspace);
@@ -609,12 +609,99 @@ static void check_slots(const char *config_path, const char *patches_path) {
     /* Both are in the workspace record. */
     AndamentoBytes record = {0};
     ok(andamento_record_export(h, T("workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7d"), &record, &error));
-    assert(has(record, "version=3"));
+    assert(has(record, "version=4"));
     assert(has(record, "slot \"u:1\" rebind=\"keep-previous\" presentation=\"terminal\""));
     assert(has(record, "arrangement generation=1 owned=true"));
     andamento_bytes_free(record);
     andamento_slots_release(slots);
     andamento_slots_release(NULL); andamento_arrangement_release(NULL); andamento_slot_plan_release(NULL);
+    andamento_snapshot_release(s);
+    andamento_destroy(h);
+}
+
+/* ABI 3: the Dashboard's sidebar arrangement: placed by hints, committed at
+ * a generation, closed by leaving out, restored, flagged, reset. */
+static int note(AndamentoArrangement *a, uint32_t kind, const char *key) {
+    AndamentoSectionNote n;
+    for (size_t i = 0; i < andamento_arrangement_note_count(a); i++) {
+        assert(andamento_arrangement_note(a, i, &n));
+        if (n.kind == kind && eq(n.key, key)) return 1;
+    }
+    return 0;
+}
+static void check_sidebar_arrangement(void) {
+    const char *config = "region \"b\" root-template=\"flotilla/region/tree\" default-host=\"sidebar\" order=20\n"
+                         "region \"a\" root-template=\"flotilla/region/tree\" default-host=\"sidebar\" order=10\n"
+                         "region \"f\" root-template=\"flotilla/region/tree\" default-host=\"floating\" order=5\n";
+    Andamento *h = andamento_create((const uint8_t *)config, strlen(config), &error);
+    assert(h && !error);
+    AndamentoSnapshot *s = snapshot(h);
+    assert(andamento_sidebar_arrangement_generation(h, &error) == 1 && !error);
+    AndamentoArrangement *a = andamento_sidebar_arrangement_acquire(h, &error);
+    assert(a && !error);
+    AndamentoArrangementInfo info; assert(andamento_arrangement_info(a, &info));
+    /* A column split holding a, b and .unplaced; then f's floating panel. */
+    assert(info.generation == 1 && !info.owned && info.panel_count == 5 && info.tab_count == 4);
+    assert(andamento_arrangement_floating_first(a) == 4);
+    AndamentoPanel panel; AndamentoTab tab;
+    assert(andamento_arrangement_panel(a, 0, &panel) && panel.parent == ANDAMENTO_NONE);
+    assert(panel.kind == ANDAMENTO_PANEL_SPLIT && panel.axis == ANDAMENTO_AXIS_COLUMN);
+    assert(andamento_arrangement_panel(a, 1, &panel) && panel.parent == 0 && panel.selected == 0);
+    assert(andamento_arrangement_tab(a, panel.first_tab, &tab) && eq(tab.slot, "a") && tab.placed);
+    assert(andamento_arrangement_panel(a, 4, &panel) && panel.parent == ANDAMENTO_NONE);
+    assert(andamento_arrangement_tab(a, panel.first_tab, &tab) && eq(tab.slot, "f"));
+    assert(note(a, ANDAMENTO_SECTION_PLACED, ".unplaced") && !note(a, ANDAMENTO_SECTION_CLOSED, "a"));
+    andamento_arrangement_release(a);
+    /* The user puts b first and closes the workspace fallback; f stays floating. */
+    AndamentoTab tabs[] = {{T("b"), 0, 0}, {T("a"), 0, 0}, {T("f"), 0, 0}};
+    AndamentoPanel panels[] = {
+        {ANDAMENTO_NONE, T("root"), 1.0, ANDAMENTO_PANEL_SPLIT, ANDAMENTO_AXIS_COLUMN, 0, 0, ANDAMENTO_NONE},
+        {0, T("1"), 1.0, ANDAMENTO_PANEL_TABS, 0, 0, 1, 0},
+        {0, T("2"), 1.0, ANDAMENTO_PANEL_TABS, 0, 1, 1, 0},
+        {ANDAMENTO_NONE, T("3"), 1.0, ANDAMENTO_PANEL_TABS, 0, 2, 1, 0},
+    };
+    uint64_t generation = 99;
+    assert(andamento_set_sidebar_arrangement(h, panels, 4, 3, tabs, 3, 1, &generation, &error)
+        == ANDAMENTO_ARRANGEMENT_COMMITTED && !error && generation == 2);
+    ok(andamento_snapshot_is_current(h, s, &error));
+    /* Stale: no change, no error. */
+    assert(andamento_set_sidebar_arrangement(h, panels, 4, 3, tabs, 3, 1, &generation, &error)
+        == ANDAMENTO_ARRANGEMENT_STALE && !error && generation == 2);
+    /* An unknown section, or a floating panel under a docked one, is invalid. */
+    AndamentoTab unknown[] = {{T("nope"), 0, 0}, {T("a"), 0, 0}, {T("f"), 0, 0}};
+    expected_error(andamento_set_sidebar_arrangement(h, panels, 4, 3, unknown, 3, 2, &generation, &error));
+    AndamentoPanel crossed[] = {panels[0], panels[1], panels[2], panels[3]};
+    crossed[3].parent = 0;
+    expected_error(andamento_set_sidebar_arrangement(h, crossed, 4, 3, tabs, 3, 2, &generation, &error));
+    a = andamento_sidebar_arrangement_acquire(h, &error);
+    assert(andamento_arrangement_info(a, &info) && info.owned && info.generation == 2);
+    assert(note(a, ANDAMENTO_SECTION_CLOSED, ".unplaced"));
+    andamento_arrangement_release(a);
+    /* Restore it: by its hint, after a. */
+    assert(andamento_sidebar_restore_section(h, T(".unplaced"), 2, &generation, &error)
+        == ANDAMENTO_ARRANGEMENT_COMMITTED && !error && generation == 3);
+    expected_error(andamento_sidebar_restore_section(h, T("undeclared"), 3, &generation, &error));
+    /* A template without b flags its tab and keeps it. */
+    const char *without_b = "region \"a\" root-template=\"flotilla/region/tree\" order=10\n"
+                            "region \"f\" root-template=\"flotilla/region/tree\" default-host=\"floating\"\n";
+    ok(andamento_configure(h, (AndamentoText){(const uint8_t *)without_b, strlen(without_b)}, &error));
+    a = andamento_sidebar_arrangement_acquire(h, &error);
+    assert(andamento_arrangement_tab(a, 0, &tab) && eq(tab.slot, "b") && tab.gone);
+    assert(note(a, ANDAMENTO_SECTION_UNRESOLVED, "b") && note(a, ANDAMENTO_SECTION_RESTORED, ".unplaced") == 0);
+    andamento_arrangement_release(a);
+    AndamentoBytes record = {0};
+    ok(andamento_record_export(h, T("dashboard"), &record, &error));
+    assert(has(record, "sidebar generation=3 owned=true"));
+    andamento_bytes_free(record);
+    /* Reset places what is declared by its hints and forgets b. */
+    assert(andamento_sidebar_reset(h, 3, &generation, &error) == ANDAMENTO_ARRANGEMENT_COMMITTED
+        && generation == 4);
+    a = andamento_sidebar_arrangement_acquire(h, &error);
+    assert(andamento_arrangement_info(a, &info) && !info.owned && info.tab_count == 3);
+    assert(andamento_arrangement_note_count(a) > 0 && !note(a, ANDAMENTO_SECTION_UNRESOLVED, "b"));
+    andamento_arrangement_release(a);
+    /* A workspace's arrangement has no floating panels or notes. */
+    assert(andamento_arrangement_floating_first(NULL) == 0 && andamento_arrangement_note_count(NULL) == 0);
     andamento_snapshot_release(s);
     andamento_destroy(h);
 }
@@ -625,6 +712,7 @@ int main(int argc, char **argv) {
     check_abi3(argv[1], argv[2]);
     check_records(argv[1], argv[2]);
     check_slots(argv[1], argv[2]);
+    check_sidebar_arrangement();
     check_typed_details(argv[3]);
     check_workdirs();
     check_sibling_order();
