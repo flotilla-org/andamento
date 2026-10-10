@@ -325,10 +325,109 @@ static void check_abi3(const char *config_path, const char *patches_path) {
     andamento_destroy(h);
 }
 
+/* ABI 3 records: export a sidebar's state and import it into a fresh one
+ * before it observes anything, with direct display and local-entity setters. */
+static int has(AndamentoBytes b, const char *needle) {
+    size_t n = strlen(needle);
+    for (size_t i = 0; i + n <= b.len; ++i)
+        if (memcmp(b.data + i, needle, n) == 0) return 1;
+    return 0;
+}
+static Andamento *fixture(const char *config_path, const char *patches_path) {
+    char *config = read_file(config_path);
+    Andamento *h = andamento_create((const uint8_t *)config, strlen(config), &error);
+    assert(h && !error); free(config);
+    if (patches_path) {
+        char *patches = read_file(patches_path);
+        for (char *line = strtok(patches, "\n"); line; line = strtok(NULL, "\n"))
+            ok(andamento_apply_patch_json(h, 100, (AndamentoText){(uint8_t *)line, strlen(line)}, &error));
+        free(patches);
+    }
+    return h;
+}
+static void check_records(const char *config_path, const char *patches_path) {
+    Andamento *h = fixture(config_path, patches_path);
+    AndamentoSnapshot *s = snapshot(h);
+    assert(find_control(s).checked);
+    andamento_snapshot_release(s);
+    /* Display variables are set directly: no snapshot, no retry. */
+    ok(andamento_set_display_variable(h, T("show-issues"), T("false"), &error));
+    expected_error(andamento_set_display_variable(h, T("show-issues"), T("maybe"), &error));
+    expected_error(andamento_set_display_variable(h, T("missing"), T("true"), &error));
+    s = snapshot(h);
+    assert(!find_control(s).checked);
+    andamento_snapshot_release(s);
+    /* Local sections, groups and pins are Andamento's. */
+    AndamentoLocalFact label = {.key=T("display.label"), .kind=ANDAMENTO_FACT_TEXT, .text=T("Mine")};
+    ok(andamento_local_set(h, T(".section"), T("s1"), &label, 1, &error));
+    AndamentoLocalFact group[] = {
+        {.key=T("display.label"), .kind=ANDAMENTO_FACT_TEXT, .text=T("Pinned")},
+        {.key=T(".section"), .kind=ANDAMENTO_FACT_ENTITY, .entity={T(".section"), T("s1")}},
+        {.key=T(".position"), .kind=ANDAMENTO_FACT_INTEGER, .integer=2},
+    };
+    ok(andamento_local_set(h, T(".group"), T("g1"), group, 3, &error));
+    ok(andamento_local_set(h, T(".group"), T("gone"), NULL, 0, &error));
+    ok(andamento_local_remove(h, T(".group"), T("gone"), &error));
+    ok(andamento_local_remove(h, T(".group"), T("never"), &error));
+    expected_error(andamento_local_set(h, T("vessel"), T("v"), &label, 1, &error));
+    AndamentoLocalFact twice[] = {label, label};
+    expected_error(andamento_local_set(h, T(".group"), T("g2"), twice, 2, &error));
+    /* A workspace the user made gets a record. */
+    AndamentoWorkspaceId notes = uuid(0x7b);
+    ok(andamento_workspace_register(h, notes, &error));
+    AndamentoWorkspace3 ws = {notes, 0, T("Notes"), 1};
+    ok(andamento_observe3(h, &ws, 1, NULL, 0, &error));
+    AndamentoBytes names = {0};
+    ok(andamento_record_names(h, &names, &error));
+    assert(names.len == strlen("dashboard\nworkspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b"));
+    assert(memcmp(names.data, "dashboard\nworkspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b", names.len) == 0);
+    andamento_bytes_free(names);
+    AndamentoText workspace_name = T("workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b");
+    uint64_t generation = andamento_record_generation(h, T("dashboard"), &error);
+    assert(generation && !error);
+    assert(andamento_record_generation(h, T("dashboard"), &error) == generation);
+    ok(andamento_tick(h, 200, &error));
+    assert(andamento_record_generation(h, T("dashboard"), &error) == generation);
+    assert(andamento_record_generation(h, workspace_name, &error) && !error);
+    assert(andamento_record_generation(h, T("workspace/9"), &error) == 0 && error);
+    andamento_string_free(error); error = NULL;
+    AndamentoBytes dashboard = {0}, workspace = {0}, again = {0};
+    ok(andamento_record_export(h, T("dashboard"), &dashboard, &error));
+    ok(andamento_record_export(h, workspace_name, &workspace, &error));
+    assert(has(dashboard, "andamento-record \"dashboard\" version=1"));
+    assert(has(dashboard, "display \"show-issues\" false"));
+    assert(has(dashboard, "local \".group\" \"g1\""));
+    assert(!has(dashboard, "\"gone\""));
+    expected_error(andamento_record_export(h, T("nonsense"), &again, &error));
+    expected_error(andamento_record_export(h, T("dashboard"), NULL, &error));
+    assert(again.data == NULL);
+    /* A fresh sidebar imports before observing anything or receiving a fact. */
+    Andamento *fresh = fixture(config_path, NULL);
+    ok(andamento_record_import(fresh, T("dashboard"), (AndamentoText){dashboard.data, dashboard.len}, &error));
+    ok(andamento_record_import(fresh, workspace_name, (AndamentoText){workspace.data, workspace.len}, &error));
+    assert(andamento_workspace_registered(fresh, notes, &error) && !error);
+    ok(andamento_record_export(fresh, T("dashboard"), &again, &error));
+    assert(again.len == dashboard.len && memcmp(again.data, dashboard.data, again.len) == 0);
+    andamento_bytes_free(again);
+    s = snapshot(fresh);
+    assert(!find_control(s).checked);
+    andamento_snapshot_release(s);
+    /* Another version, or another record's name, changes nothing. */
+    uint64_t imported = andamento_record_generation(fresh, T("dashboard"), &error);
+    expected_error(andamento_record_import(fresh, T("dashboard"),
+        T("andamento-record \"dashboard\" version=2"), &error));
+    expected_error(andamento_record_import(fresh, T("dashboard"), (AndamentoText){workspace.data, workspace.len}, &error));
+    assert(andamento_record_generation(fresh, T("dashboard"), &error) == imported);
+    andamento_bytes_free(dashboard); andamento_bytes_free(workspace);
+    andamento_bytes_free((AndamentoBytes){0});
+    andamento_destroy(fresh); andamento_destroy(h);
+}
+
 int main(int argc, char **argv) {
     /* Everything but check_abi3 is an ABI 2 host, which ABI 3 keeps working. */
     assert(argc == 4 && andamento_abi_version() == 3);
     check_abi3(argv[1], argv[2]);
+    check_records(argv[1], argv[2]);
     check_typed_details(argv[3]);
     check_workdirs();
     check_sibling_order();

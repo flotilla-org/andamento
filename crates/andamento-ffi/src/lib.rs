@@ -580,6 +580,187 @@ pub unsafe extern "C" fn andamento_workspace_registered(
     .unwrap_or(false) as u32
 }
 
+/// ABI 3: bytes the library allocated; the caller frees them with
+/// andamento_bytes_free.
+#[repr(C)]
+pub struct Bytes {
+    pub data: *mut u8,
+    pub len: usize,
+}
+fn owned_bytes(bytes: Vec<u8>) -> Bytes {
+    let boxed = bytes.into_boxed_slice();
+    let len = boxed.len();
+    Bytes {
+        data: Box::into_raw(boxed) as *mut u8,
+        len,
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn andamento_bytes_free(bytes: Bytes) {
+    if !bytes.data.is_null() {
+        drop(Box::from_raw(ptr::slice_from_raw_parts_mut(
+            bytes.data, bytes.len,
+        )));
+    }
+}
+unsafe fn write_bytes(out: *mut Bytes, bytes: Vec<u8>) -> Result<(), String> {
+    let out = out.as_mut().ok_or("null output")?;
+    *out = owned_bytes(bytes);
+    Ok(())
+}
+/// ABI 3: the names of the records Andamento holds, one per line:
+/// `dashboard`, then `workspace/<id>` for each registered workspace.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_record_names(
+    h: *mut Andamento,
+    out: *mut Bytes,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        write_bytes(out, h.sidebar.record_names().join("\n").into_bytes())
+    })
+    .is_some() as u32
+}
+/// ABI 3: a record's generation; 0 with an error for an unknown record.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_record_generation(
+    h: *mut Andamento,
+    name: Text,
+    error: *mut *mut c_char,
+) -> u64 {
+    run(h, error, |h| h.sidebar.record_generation(&name.read()?)).unwrap_or(0)
+}
+/// ABI 3: a record as KDL text (UTF-8) in its versioned envelope.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_record_export(
+    h: *mut Andamento,
+    name: Text,
+    out: *mut Bytes,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        if out.is_null() {
+            return Err("null output".into());
+        }
+        let text = h.sidebar.export_record(&name.read()?)?;
+        write_bytes(out, text.into_bytes())
+    })
+    .is_some() as u32
+}
+/// ABI 3: import a record; rejected without change if it doesn't parse, has
+/// another version or names another record.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_record_import(
+    h: *mut Andamento,
+    name: Text,
+    kdl: Text,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        h.sidebar.import_record(&name.read()?, &kdl.read()?)
+    })
+    .is_some() as u32
+}
+/// ABI 3: set a declared display variable: "true"/"false" for a boolean, a
+/// declared value for an enum; empty returns it to its default.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_set_display_variable(
+    h: *mut Andamento,
+    name: Text,
+    value: Text,
+    error: *mut *mut c_char,
+) -> u32 {
+    use andamento_core::DisplayVariableValue;
+    run(h, error, |h| {
+        let name = name.read()?;
+        let value = value.read()?;
+        if value.is_empty() {
+            return h.sidebar.set_display_variable(&name, None);
+        }
+        let flag = match value.as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        };
+        // An enum may declare "true" or "false" as a value.
+        match flag {
+            Some(flag) => h
+                .sidebar
+                .set_display_variable(&name, Some(DisplayVariableValue::Bool(flag)))
+                .or_else(|_| {
+                    h.sidebar
+                        .set_display_variable(&name, Some(DisplayVariableValue::Enum(value)))
+                }),
+            None => h
+                .sidebar
+                .set_display_variable(&name, Some(DisplayVariableValue::Enum(value))),
+        }
+    })
+    .is_some() as u32
+}
+/// ABI 3: a fact of a local entity. kind is text, bool or integer as in Fact,
+/// or ANDAMENTO_FACT_ENTITY (4), a single entity reference.
+#[repr(C)]
+pub struct LocalFact {
+    pub key: Text,
+    pub kind: u32,
+    pub text: Text,
+    pub integer: i64,
+    pub entity: EntityView,
+}
+/// ABI 3: set a local section, group or ref, replacing all its facts.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_local_set(
+    h: *mut Andamento,
+    kind: Text,
+    id: Text,
+    facts: *const LocalFact,
+    count: usize,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let entity = EntityRef {
+            kind: kind.read()?,
+            id: id.read()?,
+        };
+        let mut values = std::collections::BTreeMap::new();
+        for f in slice(facts, count)? {
+            let value = match f.kind {
+                1 => MetadataValue::Text(f.text.read()?),
+                2 if f.integer == 0 || f.integer == 1 => MetadataValue::Bool(f.integer != 0),
+                3 => MetadataValue::Integer(f.integer),
+                4 => MetadataValue::EntityRefs(vec![EntityRef {
+                    kind: f.entity.kind.read()?,
+                    id: f.entity.id.read()?,
+                }]),
+                _ => return Err("invalid local fact kind or boolean".into()),
+            };
+            if values.insert(f.key.read()?, value).is_some() {
+                return Err("duplicate fact key".into());
+            }
+        }
+        h.sidebar.set_local(entity, values)
+    })
+    .is_some() as u32
+}
+/// ABI 3: remove a local entity; removing an unknown one is harmless.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_local_remove(
+    h: *mut Andamento,
+    kind: Text,
+    id: Text,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        h.sidebar.remove_local(&EntityRef {
+            kind: kind.read()?,
+            id: id.read()?,
+        });
+        Ok(())
+    })
+    .is_some() as u32
+}
+
 struct Field {
     text: String,
     class: u32,

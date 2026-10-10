@@ -11,6 +11,7 @@ mod metadata;
 pub mod presentation;
 #[doc(hidden)]
 pub mod profile;
+pub mod records;
 pub mod replay;
 pub mod sidebar;
 pub mod state;
