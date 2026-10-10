@@ -192,6 +192,10 @@ pub struct Sidebar {
     /// Fact keys the configured placement reads, kept in subject records.
     placement_keys: BTreeSet<String>,
     pub managed: crate::managed::ManagedContent,
+    /// Revision of workspace content: slots, their resolutions and
+    /// arrangements. Separate from `revision`, so committing an arrangement
+    /// leaves the sidebar's snapshot and evaluation current.
+    content_revision: u64,
 }
 
 #[derive(Default)]
@@ -415,10 +419,12 @@ impl Sidebar {
             .mark_ended_workspace_paths(&self.retained_paths, &subjects);
         drop(maintenance);
         if changed {
-            self.managed.publish(self.state.managed_content());
             self.invalidate();
         }
         self.refresh_workspace_records();
+        if changed {
+            self.refresh_content();
+        }
     }
 
     fn retain_workspace_paths(&mut self, subjects: &BTreeMap<WorkspaceId, EntityRef>) -> bool {
@@ -559,10 +565,12 @@ impl Sidebar {
             .state
             .mark_ended_workspace_paths(&self.retained_paths, &subjects);
         if changed {
-            self.managed.publish(self.state.managed_content());
             self.invalidate();
         }
         self.refresh_workspace_records();
+        if changed {
+            self.refresh_content();
+        }
     }
 
     /// Replace terminal directory observations after supplying workspace topology.
@@ -586,6 +594,7 @@ impl Sidebar {
         self.workspaces.entry(id).or_default();
         let new = self.registered.insert(id);
         self.refresh_workspace_records();
+        self.refresh_content();
         new
     }
 
@@ -751,10 +760,12 @@ impl Sidebar {
             .state
             .mark_ended_workspace_paths(&self.retained_paths, &subjects);
         if changed {
-            self.managed.publish(self.state.managed_content());
             self.invalidate();
         }
         self.refresh_workspace_records();
+        if changed {
+            self.refresh_content();
+        }
     }
 
     /// Bring the records of open, registered workspaces up to date: their
@@ -935,6 +946,175 @@ impl Sidebar {
             }
         }
         Ok(())
+    }
+
+    /// Publish slot resolutions to managed content, and bring open
+    /// workspaces' baselines and arrangements up to date with their
+    /// subjects' Suggested Layouts. A layout that is malformed or gone keeps
+    /// the cached baseline: expiry is silence, not removal. This never
+    /// invalidates the sidebar's snapshot; it bumps the content revision.
+    fn refresh_content(&mut self) {
+        let mut changed = self.managed.publish(self.state.slot_resolutions());
+        let open: BTreeSet<WorkspaceId> = self
+            .state
+            .workspaces()
+            .iter()
+            .map(|tab| tab.tab_id)
+            .collect();
+        let state = &self.state;
+        for (id, entry) in self.workspaces.iter_mut() {
+            if !open.contains(id) {
+                continue;
+            }
+            let record = &mut entry.record;
+            let mut slots_changed = false;
+            if let Some(subject) = &record.subject {
+                if let Ok(Some(layout)) = state.suggested_layout(subject) {
+                    slots_changed = record
+                        .slots
+                        .set_baseline(crate::slots::Baseline::from_layout(&layout));
+                }
+            }
+            if slots_changed || (record.arrangement.is_none() && !record.slots.is_empty()) {
+                changed |= follow_slots(record);
+            }
+            changed |= slots_changed;
+        }
+        if changed {
+            self.content_revision += 1;
+        }
+    }
+
+    /// Revision of workspace content: slots, their resolutions and
+    /// arrangements. It changes when any of them may have; the sidebar's
+    /// [`revision`](Self::revision) does not change with them.
+    pub fn content_revision(&self) -> u64 {
+        self.content_revision
+    }
+
+    fn workspace_record(&self, id: WorkspaceId) -> Result<&WorkspaceRecord, String> {
+        self.workspaces
+            .get(&id)
+            .map(|entry| &entry.record)
+            .ok_or_else(|| format!("workspace {id} is not registered"))
+    }
+
+    fn workspace_record_mut(&mut self, id: WorkspaceId) -> Result<&mut WorkspaceRecord, String> {
+        self.workspaces
+            .get_mut(&id)
+            .map(|entry| &mut entry.record)
+            .ok_or_else(|| format!("workspace {id} is not registered"))
+    }
+
+    /// A registered workspace's slots, in default placement order.
+    pub fn slots(&self, workspace: WorkspaceId) -> Result<Vec<crate::slots::SlotInfo>, String> {
+        Ok(self.workspace_record(workspace)?.slots.slots())
+    }
+
+    /// Add the user's own slot (`u:<id>`), or override a baseline slot,
+    /// detaching it. The arrangement is unchanged: the host gives the slot
+    /// a tab in its next commit, which otherwise places it. Entity
+    /// references that name no provider get the default provider.
+    pub fn set_slot(
+        &mut self,
+        workspace: WorkspaceId,
+        key: &str,
+        mut spec: crate::suggested_layout::ViewSpec,
+        rebind: crate::suggested_layout::RebindPolicy,
+    ) -> Result<bool, String> {
+        if let crate::suggested_layout::Content::ProviderFacet { entity, .. } = &mut spec.content {
+            entity.fill_provider(self.state.default_provider());
+        }
+        let changed = self
+            .workspace_record_mut(workspace)?
+            .slots
+            .set(key, spec, rebind)?;
+        if changed {
+            self.content_revision += 1;
+        }
+        Ok(changed)
+    }
+
+    /// Remove the user's own slot, or a detached slot its baseline dropped.
+    /// Its tab, if any, is reported gone until the host removes it.
+    pub fn remove_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
+        let removed = self.workspace_record_mut(workspace)?.slots.remove(key)?;
+        if removed {
+            self.managed.forget_slot(workspace, key);
+            self.content_revision += 1;
+        }
+        Ok(removed)
+    }
+
+    /// Drop a baseline slot's override, so it follows the provider again.
+    pub fn reattach_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
+        let reattached = self.workspace_record_mut(workspace)?.slots.reattach(key);
+        if reattached {
+            self.content_revision += 1;
+        }
+        Ok(reattached)
+    }
+
+    /// Plan one slot, given the identity of the resolution the host applied
+    /// to it (empty for none). See [`crate::managed`].
+    pub fn plan_slot(
+        &mut self,
+        workspace: WorkspaceId,
+        key: &str,
+        applied: &str,
+    ) -> Result<crate::managed::SlotPlan, String> {
+        let record = self.workspace_record(workspace)?;
+        let slot = record
+            .slots
+            .slot(key)
+            .ok_or_else(|| format!("workspace {workspace} has no slot {key:?}"))?;
+        let source = slot_source(record.subject.as_ref(), &slot);
+        Ok(self
+            .managed
+            .plan_slot(workspace, key, source, slot.rebind, applied))
+    }
+
+    /// Commit a workspace's whole arrangement, if `expected` is its current
+    /// generation (0 before any). It is validated against the slot set: a
+    /// tab names a slot, or a slot the stored arrangement already tabbed
+    /// that has since gone. Slots with no tab are then placed by the default
+    /// rule. A stale or invalid commit changes nothing. This never
+    /// invalidates the sidebar's snapshot.
+    pub fn set_arrangement(
+        &mut self,
+        workspace: WorkspaceId,
+        doc: crate::slots::ArrangementDoc,
+        expected: u64,
+    ) -> Result<crate::slots::ArrangementCommit, crate::slots::ArrangementError> {
+        let record = self
+            .workspace_record_mut(workspace)
+            .map_err(crate::slots::ArrangementError::Invalid)?;
+        let slots = record.slots.slots();
+        let stored = record.arrangement.get_or_insert_with(Default::default);
+        let before = stored.generation;
+        let mut next = || before + 1;
+        let result = stored.commit(doc, expected, &slots, &mut next);
+        if stored.generation == 0 {
+            record.arrangement = None;
+        }
+        if result
+            .as_ref()
+            .is_ok_and(|commit| commit.generation != before)
+        {
+            self.content_revision += 1;
+        }
+        result
+    }
+
+    /// A registered workspace's arrangement. Before anything is stored it is
+    /// empty, at generation 0.
+    pub fn arrangement(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Result<crate::slots::ArrangementView, String> {
+        let record = self.workspace_record(workspace)?;
+        let slots = record.slots.slots();
+        Ok(record.arrangement.clone().unwrap_or_default().view(&slots))
     }
 
     /// Conservative revision of presentation and action dependencies. Unchanged
@@ -1217,6 +1397,7 @@ impl Sidebar {
         }
         self.invalidate();
         self.refresh_workspace_records();
+        self.refresh_content();
         true
     }
 
@@ -1235,6 +1416,41 @@ impl Sidebar {
 /// Ended presentation expiry policy is intentionally undecided. Keep the seam
 /// shared by all retained workspace paths; user close is the only expiry today.
 // TODO: apply the policy decided in flotilla-org/wheelhouse#159 here.
+/// Where a slot's resolution comes from: a baseline slot that follows its
+/// provider resolves from the subject's layout; any other slot from its spec,
+/// as a local recipe or a provider facet (`facet` of the entity's own layout,
+/// `primary` for the `workspace.primary.*` facts).
+fn slot_source(
+    subject: Option<&EntityRef>,
+    slot: &crate::slots::SlotInfo,
+) -> crate::managed::SlotSource {
+    use crate::{managed::SlotSource, suggested_layout::Content};
+    match (
+        subject,
+        slot.in_baseline && !slot.detached,
+        &slot.spec.content,
+    ) {
+        (Some(subject), true, _) => SlotSource::Provider {
+            entity: subject.clone(),
+            slot: slot.key.clone(),
+        },
+        (_, _, Content::ProviderFacet { entity, facet }) => SlotSource::Provider {
+            entity: entity.clone(),
+            slot: facet.clone(),
+        },
+        (_, _, Content::Local(recipe)) => SlotSource::Local(recipe.clone()),
+    }
+}
+
+/// Bring a record's arrangement up to date with its slots. Returns whether
+/// it changed.
+fn follow_slots(record: &mut WorkspaceRecord) -> bool {
+    let slots = record.slots.slots();
+    let stored = record.arrangement.get_or_insert_with(Default::default);
+    let next = stored.generation + 1;
+    stored.follow(record.slots.baseline.as_ref(), &slots, &mut || next)
+}
+
 fn retained_workspace_expired(_state: &ControllerState, _subjects: &BTreeSet<EntityRef>) -> bool {
     false
 }

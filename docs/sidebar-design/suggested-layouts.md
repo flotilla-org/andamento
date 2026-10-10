@@ -14,8 +14,10 @@ and [the Workspace Overlay](https://github.com/flotilla-org/wheelhouse/issues/29
 [flotilla#3012](https://github.com/flotilla-org/flotilla/issues/3012).
 
 `andamento_core::suggested_layout::parse` reads an entity's resolved facts into
-a `SuggestedLayout`. Nothing consumes it yet: managed content, placement and
-snapshots behave exactly as before.
+a `SuggestedLayout`. A workspace's slots follow its subject's layout, and each
+slot's resolution is planned like managed primary content: see
+[Slots and arrangements](slots-and-arrangements.md). Placement and snapshots
+don't read it.
 
 ## Shape
 
@@ -162,9 +164,9 @@ The rules match managed primary content:
   publishes no layout, and its workspace keeps what it shows, as it does today
   when the primary facts expire.
 
-Each slot is expected to follow managed content's token protocol (plan, prepare,
-validate, commit, acknowledge) with its own Unavailable, Held, Current,
-Updating and Failed state. That is the next step, not part of this schema.
+Each slot follows managed content's token protocol (plan, prepare, validate,
+commit, acknowledge) with its own Unavailable, Held, Current, Updating and
+Failed state: see [Slots and arrangements](slots-and-arrangements.md).
 
 ## Fixture: an in-crew review
 

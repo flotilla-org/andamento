@@ -272,15 +272,17 @@ uint32_t andamento_set_sibling_order3(Andamento *, AndamentoText loop_key,
  *     it: decimal for an embedded ID, else a hyphenated UUID): its subject, and
  *     the subject and its path as last seen (label, ended or retained, when
  *     last seen, and the facts placement reads), so its row is drawn where it
- *     was with no facts. A closed workspace keeps its record; forgetting the
- *     workspace drops it.
+ *     was with no facts; and its slots (the cached Suggested Layout baseline
+ *     with its arrangement hint, the user's overrides and own slots) and its
+ *     arrangement document. A closed workspace keeps its record; forgetting
+ *     the workspace drops it.
  * names: the record names, one per line (no trailing newline).
  * generation: nonzero; it changes when, and only when, the record's content
  *   changes, and is never reused. Write a record when its generation differs
  *   from the one last written; read it again after an import. Returns 0 with an
  *   error for an unknown record.
- * export: the record's KDL text (UTF-8), version 2: every entity names its
- *   provider.
+ * export: the record's KDL text (UTF-8), version 3: every entity names its
+ *   provider, and a workspace record holds its slots and arrangement.
  * import: may come before the first observe and needs no facts. Importing
  *   "workspace/<id>" registers the workspace and binds it to its subject. A
  *   record that doesn't parse, has another version or names another record is
@@ -288,6 +290,7 @@ uint32_t andamento_set_sibling_order3(Andamento *, AndamentoText loop_key,
  *   the envelope, are kept and exported again. Version 1 records (before
  *   providers) still import: local sections, groups and refs get "local" and
  *   every other entity the default provider, so set the default first.
+ *   Version 2 records import with no slots and no arrangement.
  * Bytes out-parameters are written only on success; free them with
  * andamento_bytes_free (a zeroed AndamentoBytes is harmless). */
 typedef struct { uint8_t *data; size_t len; } AndamentoBytes;
@@ -433,7 +436,9 @@ uint32_t andamento_effects_primary_target(const AndamentoEffects *, size_t index
 void andamento_effects_release(AndamentoEffects *);
 void andamento_string_free(char *);
 void andamento_destroy(Andamento *);
-/* Optional managed-primary content reconciliation; additive to ABI 2.
+/* Optional managed-primary content reconciliation; additive to ABI 2. It
+ * plans the "primary" slot (see Slots below): these calls and the slot calls
+ * for "primary" share one binding and its tokens.
  * Only entities declaring workspace.primary.state opt in. Missing/expired facts
  * suspend updates; they never delete content. Plans own borrowed text.
  * Plan using the host's actual persisted descriptor. Validate immediately before
@@ -470,6 +475,163 @@ AndamentoContentPlan *andamento_content_plan_entity(Andamento *, AndamentoWorksp
     AndamentoEntity3 entity, AndamentoText applied_target, AndamentoText applied_command,
     uint32_t has_cwd, AndamentoText applied_cwd, char **error_out);
 void andamento_content_release(AndamentoContentPlan *);
+
+/* ABI 3: Slots and arrangement documents (docs/sidebar-design/
+ * slots-and-arrangements.md). Every call names a registered workspace.
+ *
+ * Slots. A workspace's slots are its subject's Suggested Layout slots (a
+ * cached baseline: a malformed or expired layout keeps it, and a new valid
+ * layout replaces it), then detached slots the baseline has since dropped,
+ * then the slots the host adds, in that order, which is also the default
+ * placement order. A host adds the user's own slots with keys "u:<id>",
+ * <id> being 1 to 64 of [a-z0-9_-]; provider keys never contain ':'.
+ * Setting a baseline slot's key overrides its View Spec and rebind policy,
+ * which detaches it from the provider; setting the baseline's own spec and
+ * policy, or reattach, drops the override. remove deletes the user's own
+ * slot or a detached slot the baseline dropped (a baseline slot is the
+ * provider's to remove: an error); removing an unknown key is harmless. The
+ * managed primary content of an entity publishing workspace.primary.* is the
+ * "primary" slot, and the andamento_content_* calls plan that slot.
+ *
+ * A View Spec's content is a provider FACET (entity and facet; an empty
+ * provider is the default provider) or a local recipe: COMMAND (argv when
+ * argc is nonzero, else the shell line in command; optional cwd), FILE
+ * (path), URL (url) or JACKSTAY (launcher and endpoint). Fields other kinds
+ * don't use are ignored on input and empty on output. presentation is an
+ * open vocabulary ("terminal", "web", "markdown", ...): a frontend that can't
+ * render the content shows a placeholder and never drops the slot. Rebind:
+ * REPLACE closes the instance a rebind replaces; KEEP_PREVIOUS keeps it
+ * reachable, reported as previous until release_previous; ASK asks the user
+ * first, and declining is completing the update unsuccessfully (FAILED, not
+ * retried until the resolution changes or retry).
+ *
+ * slots_acquire returns an owned list; its text and argv arrays are valid
+ * until slots_release, which, like every release, accepts NULL. */
+enum { ANDAMENTO_SLOT_COMMAND, ANDAMENTO_SLOT_FILE, ANDAMENTO_SLOT_URL,
+       ANDAMENTO_SLOT_JACKSTAY, ANDAMENTO_SLOT_FACET };
+enum { ANDAMENTO_REBIND_REPLACE, ANDAMENTO_REBIND_KEEP_PREVIOUS, ANDAMENTO_REBIND_ASK };
+typedef struct {
+    uint32_t content;
+    AndamentoEntity3 entity;
+    AndamentoText facet;
+    AndamentoText command;
+    const AndamentoText *argv;
+    size_t argc;
+    uint32_t has_cwd;
+    AndamentoText cwd;
+    AndamentoText path, url, launcher, endpoint;
+    uint32_t has_presentation;
+    AndamentoText presentation;
+} AndamentoViewSpec;
+typedef struct {
+    AndamentoText key;
+    AndamentoViewSpec spec;
+    uint32_t rebind;
+    /* in_baseline: the current baseline has this key. detached: the user
+     * overrode it, so it no longer follows the provider. */
+    uint32_t in_baseline, detached;
+} AndamentoSlot;
+typedef struct AndamentoSlots AndamentoSlots;
+AndamentoSlots *andamento_slots_acquire(Andamento *, AndamentoWorkspaceId, char **error_out);
+size_t andamento_slots_count(const AndamentoSlots *);
+uint32_t andamento_slots_get(const AndamentoSlots *, size_t index, AndamentoSlot *out);
+void andamento_slots_release(AndamentoSlots *);
+uint32_t andamento_slot_set(Andamento *, AndamentoWorkspaceId, AndamentoText key,
+    const AndamentoViewSpec *, uint32_t rebind, char **error_out);
+uint32_t andamento_slot_remove(Andamento *, AndamentoWorkspaceId, AndamentoText key, char **error_out);
+uint32_t andamento_slot_reattach(Andamento *, AndamentoWorkspaceId, AndamentoText key, char **error_out);
+
+/* ABI 3: each slot follows managed primary content's protocol: plan with the
+ * resolution identity the host applied (empty for none), prepare the runtime
+ * instance without touching the current one, validate the token immediately
+ * before committing on the owner thread, then complete. state is an
+ * ANDAMENTO_CONTENT_* value. While UPDATING, token, resolution (an opaque
+ * identity: record it and pass it back as applied), target (the backing
+ * instance, when the provider names one) and recipe (what to run; its
+ * presentation is unset) describe the update. A provider facet resolves
+ * from the subject's layout while the slot follows it, else from the facet
+ * entity's own layout slot of that name ("primary": its workspace.primary.*
+ * facts); a local recipe resolves to itself. previous: the resolution a
+ * KEEP_PREVIOUS rebind replaced, until release_previous (which returns 1 if
+ * there was one). Plans own their text until release. Topology observation
+ * forgets closed workspaces' bindings; removing a slot forgets its own. */
+typedef struct AndamentoSlotPlan AndamentoSlotPlan;
+typedef struct {
+    uint32_t state;
+    uint64_t token;
+    AndamentoText resolution;
+    uint32_t has_target;
+    AndamentoText target;
+    AndamentoViewSpec recipe;
+    uint32_t rebind;
+    uint32_t has_previous;
+    AndamentoText previous;
+} AndamentoSlotContent;
+AndamentoSlotPlan *andamento_slot_plan(Andamento *, AndamentoWorkspaceId, AndamentoText key,
+    AndamentoText applied, char **error_out);
+uint32_t andamento_slot_plan_get(const AndamentoSlotPlan *, AndamentoSlotContent *out);
+void andamento_slot_plan_release(AndamentoSlotPlan *);
+uint32_t andamento_slot_valid(Andamento *, AndamentoWorkspaceId, AndamentoText key, uint64_t token, char **error_out);
+uint32_t andamento_slot_complete(Andamento *, AndamentoWorkspaceId, AndamentoText key, uint64_t token,
+    uint32_t success, char **error_out);
+uint32_t andamento_slot_retry(Andamento *, AndamentoWorkspaceId, AndamentoText key, char **error_out);
+uint32_t andamento_slot_release_previous(Andamento *, AndamentoWorkspaceId, AndamentoText key, char **error_out);
+
+/* ABI 3: a workspace's arrangement is one document the host commits whole at
+ * the end of a gesture: a tree of panels with stable, unique, nonempty IDs.
+ * Panels are a preorder array: the first is the root (parent NONE), every
+ * other names an earlier SPLIT as its parent, and a split's children are the
+ * panels naming it, in array order. A SPLIT lays its children out along axis
+ * (ROW: left to right; COLUMN: top to bottom) and has no tabs. A TABS panel's
+ * tabs are tabs[first_tab .. first_tab + tab_count), each naming a slot key;
+ * selected indexes them, or is NONE. weight is relative to siblings, finite
+ * and positive (the root's is kept but unused). No panels: an empty document.
+ *
+ * set_arrangement stores the document if expected_generation is the current
+ * generation (0 before any): it returns COMMITTED, or STALE with no error and
+ * no change (read the arrangement again), or INVALID (0) with an error and
+ * no change. generation_out, when not NULL, receives the generation after
+ * the call. The document is validated against the slot set: each slot has at
+ * most one tab, and a tab names a slot, or a slot the stored document already
+ * tabbed that has since gone. Then it is reconciled: each slot with no tab is
+ * appended to the first TABS panel in preorder (selected there if that panel
+ * selects nothing), and a tab whose slot has gone is kept and reported gone.
+ * Committing the stored document again keeps its generation. Andamento also
+ * reconciles when the baseline changes, and until the host first commits,
+ * the document is the baseline's arrangement hint; either changes the
+ * generation, so the host's next commit at the old one is STALE.
+ *
+ * Neither committing an arrangement nor any slot call changes the sidebar's
+ * revision: snapshots stay current (andamento_snapshot_is_current). They
+ * change andamento_workspace_content_revision instead, as do resolution
+ * changes; poll it to learn when to re-read slots, plans and arrangements.
+ *
+ * arrangement_acquire returns an owned copy in the same form: tabs carry
+ * placed (Andamento placed it since the host last committed) and gone (its
+ * slot has gone); both are ignored on input. Its text is valid until release. */
+enum { ANDAMENTO_PANEL_SPLIT, ANDAMENTO_PANEL_TABS };
+enum { ANDAMENTO_AXIS_ROW, ANDAMENTO_AXIS_COLUMN };
+enum { ANDAMENTO_ARRANGEMENT_INVALID, ANDAMENTO_ARRANGEMENT_COMMITTED, ANDAMENTO_ARRANGEMENT_STALE };
+typedef struct {
+    size_t parent;
+    AndamentoText id;
+    double weight;
+    uint32_t kind, axis;
+    size_t first_tab, tab_count, selected;
+} AndamentoPanel;
+typedef struct { AndamentoText slot; uint32_t placed, gone; } AndamentoTab;
+typedef struct AndamentoArrangement AndamentoArrangement;
+typedef struct { uint64_t generation; uint32_t owned; size_t panel_count, tab_count; } AndamentoArrangementInfo;
+uint32_t andamento_set_arrangement(Andamento *, AndamentoWorkspaceId,
+    const AndamentoPanel *panels, size_t panel_count, const AndamentoTab *tabs, size_t tab_count,
+    uint64_t expected_generation, uint64_t *generation_out, char **error_out);
+AndamentoArrangement *andamento_arrangement_acquire(Andamento *, AndamentoWorkspaceId, char **error_out);
+/* owned: the host has committed it; until then it follows the baseline's hint. */
+uint32_t andamento_arrangement_info(const AndamentoArrangement *, AndamentoArrangementInfo *out);
+uint32_t andamento_arrangement_panel(const AndamentoArrangement *, size_t index, AndamentoPanel *out);
+uint32_t andamento_arrangement_tab(const AndamentoArrangement *, size_t index, AndamentoTab *out);
+void andamento_arrangement_release(AndamentoArrangement *);
+uint64_t andamento_workspace_content_revision(Andamento *, char **error_out);
 
 #ifdef __cplusplus
 }
