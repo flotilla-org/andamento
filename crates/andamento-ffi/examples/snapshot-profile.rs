@@ -219,7 +219,6 @@ fn main() {
                 );
                 commits.push(start.elapsed().as_secs_f64() * 1000.);
             }
-            andamento_snapshot_release(rendered);
             commits.sort_by(f64::total_cmp);
             let phases = andamento_core::profile::take();
             assert!(!phases.contains_key("revision-evaluation"));
@@ -228,6 +227,63 @@ fn main() {
                 commits[10],
                 commits[19],
                 serde_json::to_string(&phases).unwrap()
+            );
+            // The sidebar arrangement: the document Andamento placed, with a
+            // dock weight dragged at each commit.
+            let sidebar = andamento_sidebar_arrangement_acquire(h, ptr::null_mut());
+            assert!(!sidebar.is_null());
+            let mut info: ArrangementInfoView = std::mem::zeroed();
+            assert_eq!(andamento_arrangement_info(sidebar, &mut info), 1);
+            let floating_first = andamento_arrangement_floating_first(sidebar);
+            let mut panels: Vec<PanelView> = (0..info.panel_count)
+                .map(|i| {
+                    let mut panel: PanelView = std::mem::zeroed();
+                    assert_eq!(andamento_arrangement_panel(sidebar, i, &mut panel), 1);
+                    panel
+                })
+                .collect();
+            let tabs: Vec<TabView> = (0..info.tab_count)
+                .map(|i| {
+                    let mut tab: TabView = std::mem::zeroed();
+                    assert_eq!(andamento_arrangement_tab(sidebar, i, &mut tab), 1);
+                    tab
+                })
+                .collect();
+            let mut generation = info.generation;
+            let mut commits = vec![];
+            for iteration in 0..20 {
+                if panels.len() > 1 {
+                    panels[1].weight = 0.3 + 0.02 * iteration as f64;
+                }
+                let start = Instant::now();
+                assert_eq!(
+                    andamento_set_sidebar_arrangement(
+                        h,
+                        panels.as_ptr(),
+                        panels.len(),
+                        floating_first,
+                        tabs.as_ptr(),
+                        tabs.len(),
+                        generation,
+                        &mut generation,
+                        ptr::null_mut()
+                    ),
+                    1
+                );
+                assert_eq!(
+                    andamento_snapshot_is_current(h, rendered, ptr::null_mut()),
+                    1
+                );
+                commits.push(start.elapsed().as_secs_f64() * 1000.);
+            }
+            andamento_arrangement_release(sidebar);
+            andamento_snapshot_release(rendered);
+            commits.sort_by(f64::total_cmp);
+            println!(
+                "sidebar-arrangement entities={n} panels={} commits=20 generation={generation} median_ms={:.4} max_ms={:.4} snapshot_current=20/20",
+                panels.len(),
+                commits[10],
+                commits[19],
             );
             #[cfg(target_os = "linux")]
             println!(

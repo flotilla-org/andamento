@@ -47,6 +47,7 @@ use std::{
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 
 use crate::{
+    sidebar_arrangement::{SidebarArrangement, SidebarDoc},
     slots::{
         ArrangementDoc, Baseline, Panel, PanelNode, SlotDef, SlotOverride, StoredArrangement,
         WorkspaceSlots,
@@ -59,9 +60,11 @@ use crate::{
 };
 
 /// The record format version this Andamento writes. It also reads versions 1
-/// and 2. Version 3 adds a workspace's slots and arrangement; a version 2
-/// workspace record has none, and a dashboard record is unchanged.
-pub const RECORD_VERSION: i64 = 3;
+/// to 3. Version 3 adds a workspace's slots and arrangement; a version 2
+/// workspace record has none. Version 4 adds the Dashboard's sidebar
+/// arrangement; an earlier dashboard record has none, so it is placed by the
+/// template's hints. A workspace record is unchanged in version 4.
+pub const RECORD_VERSION: i64 = 4;
 const ENVELOPE: &str = "andamento-record";
 
 /// The name of a record: `dashboard`, or `workspace/<id>` for a registered
@@ -94,7 +97,7 @@ impl fmt::Display for RecordName {
 }
 
 /// The Dashboard's sidebar state.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DashboardRecord {
     /// Persisted display variables.
     pub display: BTreeMap<String, DisplayVariableValue>,
@@ -106,6 +109,8 @@ pub struct DashboardRecord {
     pub variables: BTreeMap<PlacementKey, BTreeMap<String, String>>,
     /// Local sections, groups and refs, with their facts.
     pub local: BTreeMap<EntityRef, BTreeMap<String, MetadataValue>>,
+    /// The sidebar arrangement, once stored.
+    pub sidebar: Option<SidebarArrangement>,
     /// Nodes this version doesn't know, as KDL text.
     pub unknown: Vec<String>,
 }
@@ -186,6 +191,9 @@ impl DashboardRecord {
             push_facts(&mut node, facts);
             body.push(node);
         }
+        if let Some(sidebar) = &self.sidebar {
+            body.push(sidebar_node(sidebar));
+        }
         envelope(&RecordName::Dashboard, body, &self.unknown)
     }
 
@@ -244,6 +252,7 @@ impl DashboardRecord {
                 "local" => {
                     record.local.insert(read.entity(&node)?, read.facts(&node)?);
                 }
+                "sidebar" if version >= 4 => record.sidebar = Some(read_sidebar(&node)?),
                 _ => record.unknown.push(canonical(node)),
             }
         }
@@ -744,44 +753,6 @@ fn push_spec(node: &mut KdlNode, spec: &ViewSpec) {
 /// axis="row|column" weight=1.0 { panels }` or `tabs "<id>" weight=1.0
 /// selected="<slot>" { tab "<slot>" ... }`.
 fn doc_node(name: &str, doc: &ArrangementDoc) -> KdlNode {
-    fn panel_node(panel: &Panel) -> KdlNode {
-        let mut node;
-        match &panel.node {
-            PanelNode::Split { axis, children } => {
-                node = KdlNode::new("split");
-                node.push(KdlEntry::new(panel.id.clone()));
-                node.insert(
-                    "axis",
-                    match axis {
-                        Axis::Row => "row",
-                        Axis::Column => "column",
-                    },
-                );
-                node.insert("weight", panel.weight);
-                let list = node.ensure_children();
-                for child in children {
-                    list.nodes_mut().push(panel_node(child));
-                }
-            }
-            PanelNode::Tabs { tabs, selected } => {
-                node = KdlNode::new("tabs");
-                node.push(KdlEntry::new(panel.id.clone()));
-                node.insert("weight", panel.weight);
-                if let Some(selected) = selected {
-                    node.insert("selected", selected.clone());
-                }
-                if !tabs.is_empty() {
-                    let list = node.ensure_children();
-                    for tab in tabs {
-                        let mut tab_node = KdlNode::new("tab");
-                        tab_node.push(KdlEntry::new(tab.clone()));
-                        list.nodes_mut().push(tab_node);
-                    }
-                }
-            }
-        }
-        node
-    }
     let mut node = KdlNode::new(name);
     if let Some(root) = &doc.root {
         node.ensure_children().nodes_mut().push(panel_node(root));
@@ -789,7 +760,65 @@ fn doc_node(name: &str, doc: &ArrangementDoc) -> KdlNode {
     node
 }
 
+fn panel_node(panel: &Panel) -> KdlNode {
+    let mut node;
+    match &panel.node {
+        PanelNode::Split { axis, children } => {
+            node = KdlNode::new("split");
+            node.push(KdlEntry::new(panel.id.clone()));
+            node.insert(
+                "axis",
+                match axis {
+                    Axis::Row => "row",
+                    Axis::Column => "column",
+                },
+            );
+            node.insert("weight", panel.weight);
+            let list = node.ensure_children();
+            for child in children {
+                list.nodes_mut().push(panel_node(child));
+            }
+        }
+        PanelNode::Tabs { tabs, selected } => {
+            node = KdlNode::new("tabs");
+            node.push(KdlEntry::new(panel.id.clone()));
+            node.insert("weight", panel.weight);
+            if let Some(selected) = selected {
+                node.insert("selected", selected.clone());
+            }
+            if !tabs.is_empty() {
+                let list = node.ensure_children();
+                for tab in tabs {
+                    let mut tab_node = KdlNode::new("tab");
+                    tab_node.push(KdlEntry::new(tab.clone()));
+                    list.nodes_mut().push(tab_node);
+                }
+            }
+        }
+    }
+    node
+}
+
 fn read_doc(node: &KdlNode) -> Result<ArrangementDoc, String> {
+    let doc = ArrangementDoc {
+        root: read_root(node)?,
+    };
+    doc.check()?;
+    Ok(doc)
+}
+
+/// The one root panel among a node's children, if any, unchecked.
+fn read_root(node: &KdlNode) -> Result<Option<Panel>, String> {
+    let mut panels = read_panels(node)?.into_iter();
+    let root = panels.next();
+    if panels.next().is_some() {
+        return Err("an arrangement has one root panel".into());
+    }
+    Ok(root)
+}
+
+/// The panels among a node's children (other than `placed`), unchecked.
+fn read_panels(node: &KdlNode) -> Result<Vec<Panel>, String> {
     fn read_panel(node: &KdlNode) -> Result<Panel, String> {
         let weight = match node.get("weight").map(|e| e.value()) {
             None => 1.0,
@@ -834,18 +863,76 @@ fn read_doc(node: &KdlNode) -> Result<ArrangementDoc, String> {
         };
         Ok(Panel { id, weight, node })
     }
-    let mut root = None;
-    for child in children(node) {
-        if child.name().value() == "placed" {
-            continue;
-        }
-        if root.replace(read_panel(child)?).is_some() {
-            return Err("an arrangement has one root panel".into());
+    children(node)
+        .iter()
+        .filter(|child| child.name().value() != "placed")
+        .map(read_panel)
+        .collect()
+}
+
+/// The sidebar arrangement as `sidebar generation=N owned=B { dock { <root
+/// panel> }; floating { <panels> }; closed "<key>"; placed "<key>" }`.
+fn sidebar_node(sidebar: &SidebarArrangement) -> KdlNode {
+    let mut node = KdlNode::new("sidebar");
+    node.insert(
+        "generation",
+        i64::try_from(sidebar.generation).unwrap_or(i64::MAX),
+    );
+    node.insert("owned", sidebar.owned);
+    let list = node.ensure_children();
+    list.nodes_mut().push(doc_node("dock", &sidebar.doc.dock));
+    let mut floating = KdlNode::new("floating");
+    for panel in &sidebar.doc.floating {
+        floating
+            .ensure_children()
+            .nodes_mut()
+            .push(panel_node(panel));
+    }
+    list.nodes_mut().push(floating);
+    for (name, keys) in [("closed", &sidebar.closed), ("placed", &sidebar.placed)] {
+        for key in keys {
+            let mut child = KdlNode::new(name);
+            child.push(KdlEntry::new(key.clone()));
+            list.nodes_mut().push(child);
         }
     }
-    let doc = ArrangementDoc { root };
-    doc.check()?;
-    Ok(doc)
+    node
+}
+
+/// A stored sidebar arrangement. A key may have two tabs: reconciling
+/// removes the later ones, as it does for a host's commit.
+fn read_sidebar(node: &KdlNode) -> Result<SidebarArrangement, String> {
+    let generation = node
+        .get("generation")
+        .and_then(|e| e.value().as_i64())
+        .and_then(|n| u64::try_from(n).ok())
+        .filter(|n| *n > 0)
+        .ok_or("a sidebar arrangement needs a positive generation")?;
+    let owned = node
+        .get("owned")
+        .map(|e| e.value().as_bool().ok_or("owned must be a boolean"))
+        .transpose()?
+        .unwrap_or(false);
+    let mut sidebar = SidebarArrangement {
+        generation,
+        owned,
+        ..SidebarArrangement::default()
+    };
+    for child in children(node) {
+        match child.name().value() {
+            "dock" => sidebar.doc.dock.root = read_root(child)?,
+            "floating" => sidebar.doc.floating = read_panels(child)?,
+            "closed" => {
+                sidebar.closed.insert(string_arg(child, 0)?);
+            }
+            "placed" => {
+                sidebar.placed.insert(string_arg(child, 0)?);
+            }
+            other => return Err(format!("unexpected {other:?} in the sidebar arrangement")),
+        }
+    }
+    SidebarDoc::check(&sidebar.doc)?;
+    Ok(sidebar)
 }
 
 /// A placement key, as `at "<loop>" "<kind>" "<id>" provider="<provider>"`
@@ -1008,6 +1095,32 @@ mod tests {
                     ("empty".into(), MetadataValue::EntityRefs(vec![])),
                 ]),
             )]),
+            sidebar: Some(SidebarArrangement {
+                generation: 7,
+                owned: true,
+                doc: SidebarDoc {
+                    dock: ArrangementDoc {
+                        root: Some(Panel {
+                            id: "1".into(),
+                            weight: 1.0,
+                            node: PanelNode::Split {
+                                axis: Axis::Column,
+                                children: vec![
+                                    tabs("2", 0.25, &["tree", "u:notes"], Some("u:notes")),
+                                    tabs("3", 0.75, &["123", ".section:s1"], None),
+                                    tabs("4", 1.0, &[], None),
+                                ],
+                            },
+                        }),
+                    },
+                    floating: vec![
+                        tabs("5", 1.0, &["git"], Some("git")),
+                        tabs("6", 1.0, &[".unplaced"], Some(".unplaced")),
+                    ],
+                },
+                closed: BTreeSet::from(["closed".into(), "gone \"old\"".into()]),
+                placed: BTreeSet::from(["git".into()]),
+            }),
             unknown: vec![],
         }
     }
@@ -1053,7 +1166,7 @@ mod tests {
         };
         let text = record.encode(id);
         assert!(text.starts_with(
-            "andamento-record \"workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b\" version=3"
+            "andamento-record \"workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b\" version=4"
         ));
         assert_eq!(
             WorkspaceRecord::decode(&text, id, "local").unwrap(),
@@ -1257,6 +1370,55 @@ mod tests {
     }
 
     #[test]
+    fn version_3_dashboard_records_have_no_sidebar_arrangement() {
+        // Version 3 knew no sidebar arrangement: a node with its name was
+        // unknown to it, and stays unknown.
+        let v3 = r#"andamento-record "dashboard" version=3 {
+    display "show-finished" true
+    sidebar generation=1 {
+        dock
+    }
+}"#;
+        let record = DashboardRecord::decode(v3, "local").unwrap();
+        assert_eq!(record.sidebar, None);
+        assert_eq!(record.unknown.len(), 1);
+        assert!(record
+            .encode()
+            .starts_with("andamento-record \"dashboard\" version=4"));
+        // In version 4 it is read, duplicates and all (reconciling removes
+        // them); a malformed one is rejected.
+        let v4 = r#"andamento-record "dashboard" version=4 {
+    sidebar generation=2 {
+        dock {
+            tabs "1" { tab "a"; tab "a"; }
+        }
+        floating {
+            tabs "2" { tab "a"; }
+        }
+        closed "b"
+    }
+}"#;
+        let sidebar = DashboardRecord::decode(v4, "local")
+            .unwrap()
+            .sidebar
+            .unwrap();
+        assert_eq!(sidebar.doc.tabs(), ["a", "a", "a"]);
+        assert_eq!(sidebar.closed, BTreeSet::from(["b".to_owned()]));
+        assert!(!sidebar.owned);
+        for body in [
+            "sidebar",
+            "sidebar generation=0",
+            "sidebar generation=1 { dock { tabs \"1\"; tabs \"2\"; }; }",
+            "sidebar generation=1 { dock { tabs \"1\" weight=0; }; }",
+            "sidebar generation=1 { floating { tabs \"1\"; tabs \"1\"; }; }",
+            "sidebar generation=1 { nope; }",
+        ] {
+            let text = format!("andamento-record \"dashboard\" version=4 {{ {body}; }}");
+            assert!(DashboardRecord::decode(&text, "local").is_err(), "{text}");
+        }
+    }
+
+    #[test]
     fn version_2_workspace_records_have_no_slots() {
         let id = WorkspaceId::from(7);
         // Version 2 knew no slots: nodes with these names were unknown to it
@@ -1274,7 +1436,7 @@ mod tests {
         assert_eq!(record.unknown.len(), 1);
         assert!(record
             .encode(id)
-            .starts_with("andamento-record \"workspace/7\" version=3"));
+            .starts_with("andamento-record \"workspace/7\" version=4"));
         // Malformed slots and arrangements are rejected in version 3.
         for body in [
             r#"slot "u:1""#,
@@ -1321,7 +1483,7 @@ mod tests {
     #[test]
     fn other_versions_names_and_shapes_are_rejected() {
         for text in [
-            "andamento-record \"dashboard\" version=4",
+            "andamento-record \"dashboard\" version=5",
             "andamento-record \"dashboard\" version=0",
             "andamento-record \"dashboard\"",
             // Version 2 entities name their provider.
@@ -1388,7 +1550,7 @@ mod tests {
         // Export writes the current version, naming every provider; it reads back the same.
         let text = record.encode();
         assert!(
-            text.starts_with("andamento-record \"dashboard\" version=3"),
+            text.starts_with("andamento-record \"dashboard\" version=4"),
             "{text}"
         );
         assert!(

@@ -267,7 +267,8 @@ uint32_t andamento_set_sibling_order3(Andamento *, AndamentoText loop_key,
  * it as records, KDL text in a versioned envelope; the host decides where each
  * is stored and when it is written. Andamento never touches the filesystem.
  *   "dashboard": persisted display variables, row collapse, sibling orders,
- *     placement variables, and local sections, groups and refs.
+ *     placement variables, local sections, groups and refs, and the sidebar
+ *     arrangement.
  *   "workspace/<id>": one per registered workspace (<id> as Andamento prints
  *     it: decimal for an embedded ID, else a hyphenated UUID): its subject, and
  *     the subject and its path as last seen (label, ended or retained, when
@@ -281,8 +282,9 @@ uint32_t andamento_set_sibling_order3(Andamento *, AndamentoText loop_key,
  *   changes, and is never reused. Write a record when its generation differs
  *   from the one last written; read it again after an import. Returns 0 with an
  *   error for an unknown record.
- * export: the record's KDL text (UTF-8), version 3: every entity names its
- *   provider, and a workspace record holds its slots and arrangement.
+ * export: the record's KDL text (UTF-8), version 4: every entity names its
+ *   provider, a workspace record holds its slots and arrangement, and the
+ *   dashboard record its sidebar arrangement.
  * import: may come before the first observe and needs no facts. Importing
  *   "workspace/<id>" registers the workspace and binds it to its subject. A
  *   record that doesn't parse, has another version or names another record is
@@ -290,7 +292,9 @@ uint32_t andamento_set_sibling_order3(Andamento *, AndamentoText loop_key,
  *   the envelope, are kept and exported again. Version 1 records (before
  *   providers) still import: local sections, groups and refs get "local" and
  *   every other entity the default provider, so set the default first.
- *   Version 2 records import with no slots and no arrangement.
+ *   Version 2 records import with no slots and no arrangement; version 3
+ *   dashboard records with no sidebar arrangement, which the template's
+ *   hints then place.
  * Bytes out-parameters are written only on success; free them with
  * andamento_bytes_free (a zeroed AndamentoBytes is harmless). */
 typedef struct { uint8_t *data; size_t len; } AndamentoBytes;
@@ -632,6 +636,76 @@ uint32_t andamento_arrangement_panel(const AndamentoArrangement *, size_t index,
 uint32_t andamento_arrangement_tab(const AndamentoArrangement *, size_t index, AndamentoTab *out);
 void andamento_arrangement_release(AndamentoArrangement *);
 uint64_t andamento_workspace_content_revision(Andamento *, char **error_out);
+
+/* ABI 3: the Dashboard's sidebar arrangement (docs/sidebar-design/
+ * sidebar-arrangement.md): which sections are docked where, as one document
+ * in the same form as a workspace's arrangement, stored in the dashboard
+ * record. Tabs hold section keys: a region's name, ".section:<id>" for a
+ * local section (in the region whose placement has a layout="section" loop),
+ * ".unplaced" for the workspace fallback (always declared; hide it while it
+ * has no rows), or "u:<id>" for a View of the host's own, which Andamento
+ * stores but never places or flags. Pixel geometry and section collapse stay
+ * with the host.
+ *
+ * The panel array is the dock, then the floating panels: panels before
+ * floating_first are the dock's one tree (none when floating_first is 0),
+ * and from floating_first on, each panel whose parent is NONE starts a
+ * floating panel (its position and size are the host's). Parents never
+ * cross that boundary. A key may have two tabs: the later ones are removed.
+ *
+ * set_sidebar_arrangement commits the host's whole document at the expected
+ * generation, as set_arrangement does (COMMITTED, STALE or INVALID), at the
+ * end of a gesture. A tab names a declared or local section, a host View, or
+ * a key the stored document already holds. Every declared section the
+ * document leaves out is closed: the host closes a section by committing
+ * without it, and the first commit adopts a layout the host saved before
+ * Andamento stored one. A closed section it tabs again is restored.
+ *
+ * Andamento reconciles the document when what is declared changes: on
+ * configure and when local sections or groups change or are imported. A
+ * section that has neither a tab nor a closed record is placed in a new tab
+ * panel of its default-host ("floating", else the dock), before the subtree
+ * holding the next section in default order that is placed there, else last.
+ * Default order: pinned regions first, then by order, an omitted order being
+ * the declaration index (an unhinted ".unplaced" or default local section
+ * last); ties keep declaration order. Placed sections keep their place when
+ * hints change. Keys that no longer resolve, tabbed or closed, are kept and
+ * flagged (the tab's gone flag, an UNRESOLVED note), never dropped: they are
+ * where they were if they resolve again, and go when the host commits
+ * without them. Each change moves the generation; poll it (cheap) to learn
+ * when to read the arrangement again. None of these calls changes the
+ * snapshot's revision.
+ *
+ * restore_section reopens a closed (or never placed) declared section by its
+ * hints, with an equal share of the dock, scaling the others' weights to make
+ * room; a section with a tab is left alone, an undeclared one is INVALID.
+ * reset drops the user's arrangement, closed sections and flagged keys, and
+ * places every declared section by its hints.
+ *
+ * sidebar_arrangement_acquire returns the document through the arrangement
+ * getters (owned: the host has committed since the last reset; a tab's
+ * placed: Andamento placed it since the host last committed; gone: its key
+ * no longer resolves), with floating_first, and notes: every CLOSED section,
+ * every UNRESOLVED key, and what the last reconciliation or call did
+ * (PLACED, RESTORED, DUPLICATE: a key whose later tabs it removed). For a
+ * workspace's arrangement floating_first is panel_count and there are no
+ * notes. */
+enum { ANDAMENTO_SECTION_CLOSED, ANDAMENTO_SECTION_PLACED, ANDAMENTO_SECTION_RESTORED,
+       ANDAMENTO_SECTION_DUPLICATE, ANDAMENTO_SECTION_UNRESOLVED };
+typedef struct { uint32_t kind; AndamentoText key; } AndamentoSectionNote;
+uint32_t andamento_set_sidebar_arrangement(Andamento *,
+    const AndamentoPanel *panels, size_t panel_count, size_t floating_first,
+    const AndamentoTab *tabs, size_t tab_count,
+    uint64_t expected_generation, uint64_t *generation_out, char **error_out);
+uint32_t andamento_sidebar_restore_section(Andamento *, AndamentoText key,
+    uint64_t expected_generation, uint64_t *generation_out, char **error_out);
+uint32_t andamento_sidebar_reset(Andamento *, uint64_t expected_generation,
+    uint64_t *generation_out, char **error_out);
+uint64_t andamento_sidebar_arrangement_generation(Andamento *, char **error_out);
+AndamentoArrangement *andamento_sidebar_arrangement_acquire(Andamento *, char **error_out);
+size_t andamento_arrangement_floating_first(const AndamentoArrangement *);
+size_t andamento_arrangement_note_count(const AndamentoArrangement *);
+uint32_t andamento_arrangement_note(const AndamentoArrangement *, size_t index, AndamentoSectionNote *out);
 
 #ifdef __cplusplus
 }

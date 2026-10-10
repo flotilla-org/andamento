@@ -172,10 +172,10 @@ and `smoke.c` (`check_slots`) assert the snapshot stays current.
 
 ## Records
 
-The `workspace/<id>` record, version 3, holds the slots and the arrangement:
+The `workspace/<id>` record (version 3, unchanged in version 4) holds the slots and the arrangement:
 
 ```kdl
-andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=3 {
+andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=4 {
     subject "convoy" "c" provider="sub-1"
     baseline version="1" {
         slot "primary" {
@@ -232,7 +232,8 @@ kept as such.
   owned arrangement. Today any host commit takes ownership.
 - **Target Resolutions** (`session`, `daemon_name`, `attach_token`) are not
   stored; Wheelhouse moves them in its step 7b.
-- **The Dashboard's sidebar arrangement** uses the same document shape but is
-  not stored yet.
+- **The Dashboard's sidebar arrangement** uses the same document shape, with
+  floating panels, a closed set and hint-based placement: see [The sidebar
+  arrangement](sidebar-arrangement.md).
 - Closed workspaces keep the slots and arrangement they had; baselines follow
   only open workspaces' subjects.
