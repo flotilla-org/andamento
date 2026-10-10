@@ -394,7 +394,7 @@ static void check_records(const char *config_path, const char *patches_path) {
     AndamentoBytes dashboard = {0}, workspace = {0}, again = {0};
     ok(andamento_record_export(h, T("dashboard"), &dashboard, &error));
     ok(andamento_record_export(h, workspace_name, &workspace, &error));
-    assert(has(dashboard, "andamento-record \"dashboard\" version=5"));
+    assert(has(dashboard, "andamento-record \"dashboard\" version=6"));
     assert(has(dashboard, "display \"show-issues\" false"));
     assert(has(dashboard, "local \".group\" \"g1\" provider=\"local\""));
     assert(!has(dashboard, "\"gone\""));
@@ -415,7 +415,7 @@ static void check_records(const char *config_path, const char *patches_path) {
     /* Another version, or another record's name, changes nothing. */
     uint64_t imported = andamento_record_generation(fresh, T("dashboard"), &error);
     expected_error(andamento_record_import(fresh, T("dashboard"),
-        T("andamento-record \"dashboard\" version=6"), &error));
+        T("andamento-record \"dashboard\" version=7"), &error));
     expected_error(andamento_record_import(fresh, T("dashboard"), (AndamentoText){workspace.data, workspace.len}, &error));
     assert(andamento_record_generation(fresh, T("dashboard"), &error) == imported);
     andamento_bytes_free(dashboard); andamento_bytes_free(workspace);
@@ -609,7 +609,7 @@ static void check_slots(const char *config_path, const char *patches_path) {
     /* Both are in the workspace record. */
     AndamentoBytes record = {0};
     ok(andamento_record_export(h, T("workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7d"), &record, &error));
-    assert(has(record, "version=5"));
+    assert(has(record, "version=6"));
     assert(has(record, "slot \"u:1\" rebind=\"keep-previous\" presentation=\"terminal\""));
     assert(has(record, "arrangement generation=1 owned=true"));
     andamento_bytes_free(record);
@@ -829,6 +829,105 @@ static void check_sidebar_arrangement(void) {
     andamento_destroy(h);
 }
 
+/* ABI 3: portable Target Resolutions saved with a slot: set, get, the
+ * plan reporting it, the record round trip, and clearing by generation and
+ * by a change of the slot's content. */
+static void check_resolutions(const char *config_path) {
+    Andamento *h = fixture(config_path, NULL);
+    AndamentoWorkspaceId ws = uuid(0x7f);
+    ok(andamento_workspace_register(h, ws, &error));
+    AndamentoWorkspace3 open = {ws, 0, T("Build"), 1};
+    ok(andamento_observe3(h, &open, 1, NULL, 0, &error));
+    AndamentoViewSpec make = {.content = ANDAMENTO_SLOT_COMMAND, .command = T("make test")};
+    ok(andamento_slot_set(h, ws, T("u:1"), &make, ANDAMENTO_REBIND_REPLACE, &error));
+    AndamentoSlotPlan *plan = andamento_slot_plan(h, ws, T("u:1"), T(""), &error);
+    assert(plan && !error);
+    AndamentoSlotContent content; assert(andamento_slot_plan_get(plan, &content));
+    assert(content.state == ANDAMENTO_CONTENT_UPDATING);
+    AndamentoResolution r;
+    assert(!andamento_slot_plan_resolution(plan, &r) && !andamento_slot_plan_resolution(NULL, &r));
+    assert(andamento_slot_complete(h, ws, T("u:1"), content.token, 1, &error));
+    AndamentoText applied = content.resolution;
+    /* The host saves what it connected through; Andamento keeps it opaque. */
+    AndamentoResolutionField fields[] = {
+        {T("session"), T("S")}, {T("host"), T("feta")}, {T("daemon"), T("D")}};
+    uint64_t content_revision = andamento_workspace_content_revision(h, &error);
+    uint64_t generation = 99;
+    assert(andamento_slot_resolution_set(h, ws, T("u:1"), T("cleat-session"), fields, 3,
+        applied, 0, &generation, &error) == ANDAMENTO_RESOLUTION_COMMITTED && !error);
+    assert(generation == 1);
+    assert(andamento_workspace_content_revision(h, &error) > content_revision);
+    /* A stale generation changes nothing, without an error. */
+    generation = 99;
+    assert(andamento_slot_resolution_set(h, ws, T("u:1"), T("cleat-session"), fields, 1,
+        applied, 0, &generation, &error) == ANDAMENTO_RESOLUTION_STALE && !error);
+    assert(generation == 1);
+    /* A field given twice, another resolution, a bad kind or slot: invalid. */
+    AndamentoResolutionField twice[] = {{T("host"), T("a")}, {T("host"), T("b")}};
+    expected_error(andamento_slot_resolution_set(h, ws, T("u:1"), T("cleat-session"), twice, 2,
+        applied, 1, NULL, &error));
+    expected_error(andamento_slot_resolution_set(h, ws, T("u:1"), T("cleat-session"), fields, 3,
+        T("something else"), 1, NULL, &error));
+    expected_error(andamento_slot_resolution_set(h, ws, T("u:1"), T("Cleat Session"), fields, 3,
+        applied, 1, NULL, &error));
+    expected_error(andamento_slot_resolution_set(h, ws, T("u:9"), T("cleat-session"), fields, 3,
+        applied, 0, NULL, &error));
+    /* Read back, fields in name order. */
+    AndamentoSlotResolution *saved = andamento_slot_resolution_acquire(h, ws, T("u:1"), &error);
+    assert(saved && !error);
+    assert(andamento_slot_resolution_get(saved, &r));
+    assert(r.generation == 1 && eq(r.kind, "cleat-session") && r.field_count == 3);
+    assert(eq(r.fields[0].name, "daemon") && eq(r.fields[0].value, "D"));
+    assert(eq(r.fields[2].name, "session") && eq(r.fields[2].value, "S"));
+    assert(r.against.len == applied.len && memcmp(r.against.data, applied.data, applied.len) == 0);
+    andamento_slot_resolution_release(saved);
+    assert(!andamento_slot_resolution_acquire(h, ws, T("u:9"), &error) && error);
+    andamento_string_free(error); error = NULL;
+    /* Every plan of the slot carries it. */
+    AndamentoSlotPlan *current = andamento_slot_plan(h, ws, T("u:1"), applied, &error);
+    assert(current && !error);
+    AndamentoSlotContent now; assert(andamento_slot_plan_get(current, &now));
+    assert(now.state == ANDAMENTO_CONTENT_CURRENT);
+    assert(andamento_slot_plan_resolution(current, &r) && r.generation == 1 && r.field_count == 3);
+    assert(eq(r.fields[1].name, "host") && eq(r.fields[1].value, "feta"));
+    andamento_slot_plan_release(current);
+    /* It is in the workspace record, and another device reads it back. */
+    AndamentoText name = T("workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7f");
+    AndamentoBytes record = {0};
+    ok(andamento_record_export(h, name, &record, &error));
+    assert(has(record, "version=6"));
+    assert(has(record, "resolution \"u:1\" kind=\"cleat-session\" generation=1"));
+    assert(has(record, "field \"host\" \"feta\""));
+    Andamento *other = fixture(config_path, NULL);
+    ok(andamento_record_import(other, name, (AndamentoText){record.data, record.len}, &error));
+    saved = andamento_slot_resolution_acquire(other, ws, T("u:1"), &error);
+    assert(saved && andamento_slot_resolution_get(saved, &r) && r.generation == 1);
+    andamento_slot_resolution_release(saved);
+    andamento_bytes_free(record);
+    andamento_destroy(other);
+    /* The slot resolving to something else clears it. */
+    AndamentoViewSpec check = {.content = ANDAMENTO_SLOT_COMMAND, .command = T("make check")};
+    ok(andamento_slot_set(h, ws, T("u:1"), &check, ANDAMENTO_REBIND_REPLACE, &error));
+    saved = andamento_slot_resolution_acquire(h, ws, T("u:1"), &error);
+    assert(saved && !error && !andamento_slot_resolution_get(saved, &r));
+    andamento_slot_resolution_release(saved);
+    andamento_slot_plan_release(plan);
+    /* Clearing compares generations; generations are not reused. */
+    plan = andamento_slot_plan(h, ws, T("u:1"), T(""), &error);
+    assert(plan && andamento_slot_plan_get(plan, &content));
+    assert(andamento_slot_resolution_set(h, ws, T("u:1"), T("cleat-session"), NULL, 0,
+        content.resolution, 0, &generation, &error) == ANDAMENTO_RESOLUTION_COMMITTED);
+    assert(generation == 2);
+    assert(andamento_slot_resolution_clear(h, ws, T("u:1"), 1, &generation, &error)
+        == ANDAMENTO_RESOLUTION_STALE && !error && generation == 2);
+    assert(andamento_slot_resolution_clear(h, ws, T("u:1"), 2, &generation, &error)
+        == ANDAMENTO_RESOLUTION_COMMITTED && !error && generation == 0);
+    andamento_slot_plan_release(plan);
+    andamento_slot_resolution_release(NULL);
+    assert(!andamento_slot_resolution_get(NULL, &r));
+    andamento_destroy(h);
+}
+
 int main(int argc, char **argv) {
     /* Everything but check_abi3 is an ABI 2 host, which ABI 3 keeps working. */
     assert(argc == 4 && andamento_abi_version() == 3);
@@ -837,6 +936,7 @@ int main(int argc, char **argv) {
     check_slots(argv[1], argv[2]);
     check_sidebar_arrangement();
     check_overlay(argv[1]);
+    check_resolutions(argv[1]);
     check_typed_details(argv[3]);
     check_workdirs();
     check_sibling_order();

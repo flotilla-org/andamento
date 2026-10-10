@@ -163,6 +163,13 @@ pub struct SlotPlan {
     /// Under `KeepPrevious`, the identity of the resolution a committed
     /// rebind replaced, until the host releases that instance.
     pub previous: Option<String>,
+    /// The portable Target Resolution saved with the workspace for this
+    /// slot, if any. It was made for the resolution whose identity is its
+    /// `against`: while Updating to that resolution (a host starting with
+    /// no instance), try connecting through it before resolving the target
+    /// afresh. A saved resolution the slot no longer resolves to is cleared,
+    /// so it is never one for other content.
+    pub saved: Option<crate::target_resolution::SavedResolution>,
 }
 
 struct Binding {
@@ -292,6 +299,7 @@ impl ManagedContent {
                 .filter(|_| state == ContentState::Updating),
             rebind: binding.rebind,
             previous: binding.previous.clone(),
+            saved: None,
         }
     }
 

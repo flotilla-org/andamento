@@ -10,10 +10,11 @@ facts. The vocabulary is Wheelhouse's `CONTEXT.md`; the overlay rules are
 Wheelhouse ADR 0013.
 
 The Rust interface is `Sidebar::slots`, `set_slot`, `remove_slot`,
-`reattach_slot`, `plan_slot`, `set_arrangement`, `arrangement` and
+`reattach_slot`, `plan_slot`, `set_arrangement`, `arrangement`,
+`slot_resolution`, `set_slot_resolution`, `clear_slot_resolution` and
 `content_revision`, with the token calls on `Sidebar::managed`. The C
-interface is the ABI 3 block "Slots and arrangement documents" in
-`andamento.h`.
+interface is the ABI 3 blocks "Slots and arrangement documents" and
+"portable Target Resolutions" in `andamento.h`.
 
 ## Slots
 
@@ -93,6 +94,62 @@ how to show the change.
 - `ask`: the host asks the user before committing. Declining is completing
   the update unsuccessfully: the slot is Failed and stays on its current
   content until the resolution changes again or the host retries.
+
+### Portable Target Resolutions
+
+Resolving a slot's content yields a **Target Resolution**, a way of
+connecting such as a Cleat session on a host or a Jackstay endpoint
+(Wheelhouse `CONTEXT.md`; decisions wheelhouse#294 and #297). A
+**portable** resolution works from any device that can reach it (a remote
+session and its host, a remote endpoint), so Andamento saves it per slot in
+the workspace record. A **machine-local** one (a local socket, an attach
+token) stays with the device, in the host's Presentation State. The host
+decides which is which; Andamento never interprets either.
+
+A saved resolution is an opaque typed value: a **kind** and named text
+**fields**, for example kind `cleat-session` with `host=feta session=S
+daemon=D`. Kind and field names are 1 to 64 of `[a-z0-9_-]`; values are any
+text. Each also records **against**, the identity of the slot resolution it
+resolves (what the host applied, as it passes it to plan), and a
+**generation**:
+
+- `set_slot_resolution(workspace, key, resolution, applied, expected)` saves
+  it if `expected` is the slot's saved generation (0 for none); otherwise it
+  is stale and changes nothing, like an arrangement commit. When the slot is
+  known to resolve to something other than `applied`, the save is invalid:
+  plan again. Saving what is saved keeps the generation. Generations are
+  never reused within a workspace, even after a clear, so a host holding an
+  old one can't overwrite a newer save.
+- `clear_slot_resolution(workspace, key, expected)` drops it the same way.
+- `slot_resolution(workspace, key)` reads it.
+- Every **slot plan** carries the slot's saved resolution (`SlotPlan::saved`,
+  `andamento_slot_plan_resolution`), in any state. A host that starts with no
+  instance, on a restart or another device, plans with an empty applied
+  identity. The plan is Updating to the resolution the saved one is
+  `against`, so the host tries connecting through the saved resolution
+  before resolving the target afresh, then validates the token and
+  completes as usual. If it no longer works, the host resolves again and
+  saves the new one: it is always disposable.
+
+**Invalidation: cleared, not marked stale.** A saved resolution is only
+useful for the slot resolution it was made for, so Andamento clears it as
+soon as the slot resolves to something else:
+
+- the slot's resolution is known (Ready: not Unavailable or Held) and its
+  identity differs from `against`, as when the provider names a new target.
+  This is checked whenever resolutions are published and after a record is
+  imported, so a record saved before the change is cleared on another device
+  too. Expired or held facts are silence, not a new target: the saved
+  resolution stays and the plan still reports it;
+- the user edits the slot's content (set or reattach);
+- the slot goes (removed, tombstoned, or dropped by its provider).
+
+Clearing keeps the record and the plan simple: a reported resolution is
+always one for the slot's current content, and nothing is left to sweep. The
+slot then rebinds by its rebind policy as for any resolution change; the
+instance a `keep-previous` rebind keeps reachable is the host's to reach
+through its own handle until it releases it. Saving, clearing and
+invalidation bump the content revision, never the sidebar's revision.
 
 ## Arrangement documents
 
@@ -183,7 +240,8 @@ and `smoke.c` (`check_slots`) assert the snapshot stays current.
 The `workspace/<id>` record holds the slots and the arrangement. This is
 version 4; version 5 moves the overrides and user slots into an `overlay`
 edit set, described in [Workspace Overlay](workspace-overlay.md), and
-imports version 3 and 4 records by migrating them:
+imports version 3 and 4 records by migrating them. Version 6 adds the saved
+portable resolutions (below):
 
 ```kdl
 andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=4 {
@@ -226,6 +284,26 @@ andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=4 {
 }
 ```
 
+Version 6 adds a `resolutions` node, written once any resolution has been
+saved. `last-generation` is the last generation given out, kept even when
+none is saved so generations are never reused; each `resolution` names its
+slot, kind, generation and `against`, with its fields in name order:
+
+```kdl
+    resolutions last-generation=3 {
+        resolution "reviewer" kind="cleat-session" generation=3 against="…" {
+            field "daemon" "D"
+            field "host" "feta"
+            field "session" "S"
+        }
+    }
+```
+
+Records before version 6 import with no saved resolutions; in them a
+`resolutions` node is unknown and kept as such. The migration of the
+resolutions Wheelhouse keeps on each device today is Wheelhouse's: it saves
+the portable ones through `set_slot_resolution`.
+
 A View Spec's content is one child: `facet "<facet>" "<kind>" "<id>"
 provider=".."`, `shell "<command>"` or `argv "<arg>" ...` (each with an
 optional `cwd`), `file "<path>"`, `url "<url>"` or `jackstay "<launcher>"
@@ -237,8 +315,9 @@ kept as such.
 ## Limits and next steps
 
 - **Overlay rules** (ADR 0013) are in [Workspace Overlay](workspace-overlay.md).
-- **Target Resolutions** (`session`, `daemon_name`, `attach_token`) are not
-  stored; Wheelhouse moves them in its step 7b.
+- **Machine-local Target Resolutions** (a local socket, `attach_token`) are
+  not stored: they stay in the host's device-local state. Portable ones are
+  above.
 - **The Dashboard's sidebar arrangement** uses the same document shape, with
   floating panels, a closed set and hint-based placement: see [The sidebar
   arrangement](sidebar-arrangement.md).

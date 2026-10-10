@@ -1025,6 +1025,7 @@ impl Sidebar {
             }
             changed |= slots_changed;
         }
+        changed |= self.invalidate_resolutions();
         if changed {
             self.content_revision += 1;
         }
@@ -1075,11 +1076,13 @@ impl Sidebar {
         }
         let record = self.workspace_record_mut(workspace)?;
         let hidden = record.slots.hidden();
+        let before = record.slots.slot(key).map(|slot| slot.spec);
         let changed = record.slots.set(key, spec, rebind)?;
         // Setting a tombstoned slot shows it again.
         if record.slots.hidden() != hidden {
             follow_unowned(record);
         }
+        forget_resolution_if_edited(record, key, before);
         if changed {
             self.content_revision += 1;
         }
@@ -1096,6 +1099,9 @@ impl Sidebar {
         let removed = record.slots.remove(key)?;
         if removed {
             follow_unowned(record);
+            if record.slots.slot(key).is_none() {
+                record.resolutions.forget(key);
+            }
             self.managed.forget_slot(workspace, key);
             self.content_revision += 1;
         }
@@ -1106,9 +1112,11 @@ impl Sidebar {
     /// provider again.
     pub fn reattach_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
         let record = self.workspace_record_mut(workspace)?;
+        let before = record.slots.slot(key).map(|slot| slot.spec);
         let reattached = record.slots.reattach(key);
         if reattached {
             follow_unowned(record);
+            forget_resolution_if_edited(record, key, before);
             self.content_revision += 1;
         }
         Ok(reattached)
@@ -1199,9 +1207,115 @@ impl Sidebar {
             .slot(key)
             .ok_or_else(|| format!("workspace {workspace} has no slot {key:?}"))?;
         let source = slot_source(record.subject.as_ref(), &slot);
-        Ok(self
+        let saved = record.resolutions.get(key).cloned();
+        let mut plan = self
             .managed
-            .plan_slot(workspace, key, source, slot.rebind, applied))
+            .plan_slot(workspace, key, source, slot.rebind, applied);
+        plan.saved = saved;
+        Ok(plan)
+    }
+
+    /// The portable Target Resolution saved for a slot, if any (see
+    /// [`crate::target_resolution`]).
+    pub fn slot_resolution(
+        &self,
+        workspace: WorkspaceId,
+        key: &str,
+    ) -> Result<Option<crate::target_resolution::SavedResolution>, String> {
+        let record = self.workspace_record(workspace)?;
+        record
+            .slots
+            .slot(key)
+            .ok_or_else(|| format!("workspace {workspace} has no slot {key:?}"))?;
+        Ok(record.resolutions.get(key).cloned())
+    }
+
+    /// Save a slot's portable Target Resolution in the workspace record, if
+    /// `expected` is the slot's saved generation (0 for none). `applied` is
+    /// the identity of the slot resolution it resolves, as the host passes
+    /// it to plan: when the slot's resolution is known to be another, the
+    /// save is invalid. Returns the generation after; saving what is saved
+    /// keeps it. Only the record and the content revision change.
+    pub fn set_slot_resolution(
+        &mut self,
+        workspace: WorkspaceId,
+        key: &str,
+        resolution: crate::target_resolution::PortableResolution,
+        applied: &str,
+        expected: u64,
+    ) -> Result<u64, crate::target_resolution::ResolutionError> {
+        use crate::{managed::DesiredContent, target_resolution::ResolutionError};
+        let record = self
+            .workspace_record(workspace)
+            .map_err(ResolutionError::Invalid)?;
+        let slot = record.slots.slot(key).ok_or_else(|| {
+            ResolutionError::Invalid(format!("workspace {workspace} has no slot {key:?}"))
+        })?;
+        let source = slot_source(record.subject.as_ref(), &slot);
+        if let Some(DesiredContent::Ready(desired)) = self.managed.desired(&source) {
+            if desired.id() != applied {
+                return Err(ResolutionError::Invalid(format!(
+                    "slot {key:?} no longer resolves to what was applied: plan it again"
+                )));
+            }
+        }
+        let record = self
+            .workspace_record_mut(workspace)
+            .map_err(ResolutionError::Invalid)?;
+        let before = record.resolutions.generation(key);
+        let generation = record.resolutions.set(key, resolution, applied, expected)?;
+        if generation != before {
+            self.content_revision += 1;
+        }
+        Ok(generation)
+    }
+
+    /// Clear a slot's saved portable Target Resolution, if `expected` is its
+    /// saved generation. Returns whether there was one.
+    pub fn clear_slot_resolution(
+        &mut self,
+        workspace: WorkspaceId,
+        key: &str,
+        expected: u64,
+    ) -> Result<bool, crate::target_resolution::ResolutionError> {
+        use crate::target_resolution::ResolutionError;
+        let record = self
+            .workspace_record_mut(workspace)
+            .map_err(ResolutionError::Invalid)?;
+        let cleared = record.resolutions.clear(key, expected)?;
+        if cleared {
+            self.content_revision += 1;
+        }
+        Ok(cleared)
+    }
+
+    /// Clear saved portable resolutions the slot no longer resolves to: the
+    /// slot has gone, or its resolution is known (Ready) and its identity is
+    /// not the one the resolution was saved for. Unavailable and Held keep
+    /// them: expiry is silence, not a new target. Returns whether any were
+    /// cleared.
+    fn invalidate_resolutions(&mut self) -> bool {
+        use crate::managed::DesiredContent;
+        let managed = &self.managed;
+        let mut changed = false;
+        for entry in self.workspaces.values_mut() {
+            let record = &mut entry.record;
+            if record.resolutions.by_slot.is_empty() {
+                continue;
+            }
+            let slots = record.slots.slots();
+            let subject = record.subject.as_ref();
+            changed |= record.resolutions.retain(|key, saved| {
+                let Some(slot) = slots.iter().find(|slot| slot.key == key) else {
+                    return false;
+                };
+                match managed.desired(&slot_source(subject, slot)) {
+                    Some(DesiredContent::Ready(desired)) => desired.id() == saved.against,
+                    _ => true,
+                }
+            });
+        }
+        changed
     }
 
     /// Commit a workspace's whole arrangement, if `expected` is its current
@@ -1806,6 +1920,18 @@ fn slot_source(
             slot: facet.clone(),
         },
         (_, _, Content::Local(recipe)) => SlotSource::Local(recipe.clone()),
+    }
+}
+
+/// A slot whose content the user edited, or which went, loses its saved
+/// portable resolution: it was made for other content.
+fn forget_resolution_if_edited(
+    record: &mut WorkspaceRecord,
+    key: &str,
+    before: Option<crate::suggested_layout::ViewSpec>,
+) {
+    if record.slots.slot(key).map(|slot| slot.spec) != before {
+        record.resolutions.forget(key);
     }
 }
 
