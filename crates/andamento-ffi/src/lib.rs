@@ -2573,6 +2573,15 @@ pub unsafe extern "C" fn andamento_slots_get(
     1
 }
 
+/// ABI 3: a listed slot's ANDAMENTO_SLOT_FLAG_* bits; 0 past the end.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_slots_flags(slots: *const AndamentoSlots, index: usize) -> u32 {
+    slots
+        .as_ref()
+        .and_then(|slots| slots.slots.get(index))
+        .map_or(0, |slot| slot.flags)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn andamento_slots_release(slots: *mut AndamentoSlots) {
     if !slots.is_null() {
@@ -2773,9 +2782,8 @@ pub unsafe extern "C" fn andamento_slot_release_previous(
     error: *mut *mut c_char,
 ) -> u32 {
     run(h, error, |h| {
-        Ok(h.sidebar
-            .managed
-            .release_previous(workspace.into(), &key.read()?))
+        h.sidebar
+            .release_slot_previous(workspace.into(), &key.read()?)
     })
     .unwrap_or(false) as u32
 }
@@ -2946,6 +2954,8 @@ pub unsafe extern "C" fn andamento_set_arrangement(
 pub struct AndamentoArrangement {
     generation: u64,
     owned: bool,
+    /// ARRANGEMENT_FLAG_* bits; 0 for the sidebar's.
+    flags: u32,
     panels: Vec<FlatPanel>,
     tabs: Vec<(String, bool, bool)>,
     /// The first floating panel's index: panel_count for a workspace.
@@ -3037,13 +3047,28 @@ pub unsafe extern "C" fn andamento_arrangement_acquire(
 ) -> *mut AndamentoArrangement {
     run(h, error, |h| {
         let view = h.sidebar.arrangement(workspace.into())?;
+        let mut flags = 0;
+        if view.provider_changed {
+            flags |= ARRANGEMENT_FLAG_PROVIDER_CHANGED;
+        }
+        if !view.soft.is_empty() {
+            flags |= ARRANGEMENT_FLAG_SOFT;
+        }
+        if !view.unresolved.is_empty() {
+            flags |= ARRANGEMENT_FLAG_UNRESOLVED;
+        }
         let mut out = AndamentoArrangement {
             generation: view.generation,
             owned: view.owned,
+            flags,
             panels: Vec::new(),
             tabs: Vec::new(),
             floating_first: 0,
-            notes: Vec::new(),
+            notes: view
+                .unresolved
+                .iter()
+                .map(|id| (SECTION_UNRESOLVED, id.clone()))
+                .collect(),
         };
         if let Some(root) = &view.doc.root {
             flatten_panel(root, NONE, &view.placed, &view.gone, &mut out);
@@ -3121,6 +3146,56 @@ pub unsafe extern "C" fn andamento_arrangement_release(arrangement: *mut Andamen
     if !arrangement.is_null() {
         drop(Box::from_raw(arrangement));
     }
+}
+
+const ARRANGEMENT_FLAG_PROVIDER_CHANGED: u32 = 1;
+const ARRANGEMENT_FLAG_SOFT: u32 = 2;
+const ARRANGEMENT_FLAG_UNRESOLVED: u32 = 4;
+
+/// ABI 3: a workspace arrangement's ANDAMENTO_ARRANGEMENT_FLAG_* bits.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_arrangement_flags(
+    arrangement: *const AndamentoArrangement,
+) -> u32 {
+    arrangement.as_ref().map_or(0, |a| a.flags)
+}
+
+const ARRANGEMENT_KEEP: u32 = 0;
+const ARRANGEMENT_FOLLOW: u32 = 1;
+
+/// ABI 3: keep the user's arrangement over a provider change, or follow the
+/// provider's again.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_arrangement_resolve(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    choice: u32,
+    expected_generation: u64,
+    generation_out: *mut u64,
+    error: *mut *mut c_char,
+) -> u32 {
+    use andamento_core::slots::{ArrangementError, Resolve};
+    run(h, error, |h| {
+        let choice = match choice {
+            ARRANGEMENT_KEEP => Resolve::Keep,
+            ARRANGEMENT_FOLLOW => Resolve::Follow,
+            other => return Err(format!("unknown arrangement choice {other}")),
+        };
+        let workspace = workspace.into();
+        let result = h
+            .sidebar
+            .resolve_arrangement(workspace, choice, expected_generation);
+        let current = h.sidebar.arrangement(workspace).map(|v| v.generation);
+        if let (Some(out), Ok(current)) = (generation_out.as_mut(), current) {
+            *out = current;
+        }
+        match result {
+            Ok(_) => Ok(ARRANGEMENT_COMMITTED),
+            Err(ArrangementError::Stale { .. }) => Ok(ARRANGEMENT_STALE),
+            Err(error) => Err(error.to_string()),
+        }
+    })
+    .unwrap_or(ARRANGEMENT_INVALID)
 }
 
 #[no_mangle]
@@ -3300,6 +3375,7 @@ pub unsafe extern "C" fn andamento_sidebar_arrangement_acquire(
         let mut out = AndamentoArrangement {
             generation: view.generation,
             owned: view.owned,
+            flags: 0,
             panels: Vec::new(),
             tabs: Vec::new(),
             floating_first: 0,
@@ -3745,5 +3821,274 @@ mod tests {
                 andamento_string_free(error);
             }
         }
+    }
+}
+
+/// An optional text argument: `has` says whether it is set.
+unsafe fn optional_text(has: u32, text: Text) -> Result<Option<String>, String> {
+    Ok(if has != 0 { Some(text.read()?) } else { None })
+}
+
+/// ABI 3: the user's name for a workspace (has_name 0 drops it).
+#[no_mangle]
+pub unsafe extern "C" fn andamento_workspace_set_name(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    has_name: u32,
+    name: Text,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let name = optional_text(has_name, name)?;
+        h.sidebar.set_workspace_name(workspace.into(), name)?;
+        Ok(())
+    })
+    .is_some() as u32
+}
+
+/// ABI 3: the user's mood for a workspace (has_mood 0 drops it).
+#[no_mangle]
+pub unsafe extern "C" fn andamento_workspace_set_mood(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    has_mood: u32,
+    mood: Text,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let mood = optional_text(has_mood, mood)?;
+        h.sidebar.set_workspace_mood(workspace.into(), mood)?;
+        Ok(())
+    })
+    .is_some() as u32
+}
+
+/// A workspace's overlay, owned until release.
+pub struct AndamentoOverlay {
+    baseline: Option<andamento_core::suggested_layout::BaselineVersion>,
+    name: Option<String>,
+    mood: Option<String>,
+    owned: bool,
+    edit_count: usize,
+    notes: Vec<(u32, String, u32)>,
+}
+
+#[repr(C)]
+pub struct OverlayInfoView {
+    pub has_baseline: u32,
+    pub primary_only: u32,
+    pub baseline_version: Text,
+    pub has_name: u32,
+    pub name: Text,
+    pub has_mood: u32,
+    pub mood: Text,
+    pub owned: u32,
+    pub edit_count: usize,
+    pub note_count: usize,
+}
+
+#[repr(C)]
+pub struct OverlayNoteView {
+    pub kind: u32,
+    pub key: Text,
+    pub rebind: u32,
+}
+
+const OVERLAY_TOMBSTONED: u32 = 0;
+const OVERLAY_DEPARTED: u32 = 1;
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_overlay_acquire(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    error: *mut *mut c_char,
+) -> *mut AndamentoOverlay {
+    run(h, error, |h| {
+        let view = h.sidebar.overlay(workspace.into())?;
+        let edits = &view.edits;
+        let mut notes: Vec<(u32, String, u32)> = view
+            .tombstoned
+            .iter()
+            .map(|key| (OVERLAY_TOMBSTONED, key.clone(), 0))
+            .collect();
+        notes.extend(
+            view.departed
+                .iter()
+                .map(|(key, rebind)| (OVERLAY_DEPARTED, key.clone(), rebind_code(*rebind))),
+        );
+        Ok(Box::into_raw(Box::new(AndamentoOverlay {
+            baseline: edits.baseline.clone(),
+            name: edits.name.clone(),
+            mood: edits.mood.clone(),
+            owned: view.owned,
+            edit_count: edits.slots.len()
+                + edits.added.len()
+                + edits.panels.len()
+                + usize::from(edits.arrangement.is_some())
+                + usize::from(edits.name.is_some())
+                + usize::from(edits.mood.is_some()),
+            notes,
+        })))
+    })
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_overlay_info(
+    overlay: *const AndamentoOverlay,
+    out: *mut OverlayInfoView,
+) -> u32 {
+    use andamento_core::suggested_layout::BaselineVersion;
+    let (Some(overlay), Some(out)) = (overlay.as_ref(), out.as_mut()) else {
+        return 0;
+    };
+    let version = match &overlay.baseline {
+        Some(BaselineVersion::Published(version)) => version.as_str(),
+        _ => "",
+    };
+    *out = OverlayInfoView {
+        has_baseline: overlay.baseline.is_some() as u32,
+        primary_only: matches!(overlay.baseline, Some(BaselineVersion::PrimaryOnly)) as u32,
+        baseline_version: Text::borrowed(version),
+        has_name: overlay.name.is_some() as u32,
+        name: Text::borrowed(overlay.name.as_deref().unwrap_or_default()),
+        has_mood: overlay.mood.is_some() as u32,
+        mood: Text::borrowed(overlay.mood.as_deref().unwrap_or_default()),
+        owned: overlay.owned as u32,
+        edit_count: overlay.edit_count,
+        note_count: overlay.notes.len(),
+    };
+    1
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_overlay_note(
+    overlay: *const AndamentoOverlay,
+    index: usize,
+    out: *mut OverlayNoteView,
+) -> u32 {
+    let (Some(overlay), Some(out)) = (overlay.as_ref(), out.as_mut()) else {
+        return 0;
+    };
+    let Some((kind, key, rebind)) = overlay.notes.get(index) else {
+        return 0;
+    };
+    *out = OverlayNoteView {
+        kind: *kind,
+        key: Text::borrowed(key),
+        rebind: *rebind,
+    };
+    1
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_overlay_release(overlay: *mut AndamentoOverlay) {
+    if !overlay.is_null() {
+        drop(Box::from_raw(overlay));
+    }
+}
+
+/// ABI 3: the workspace's edit set as an Overlay Sync proposal (KDL), read
+/// only. Free with andamento_bytes_free.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_overlay_export(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    out: *mut Bytes,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        if out.is_null() {
+            return Err("null output".into());
+        }
+        let text = h.sidebar.export_overlay(workspace.into())?;
+        write_bytes(out, text.into_bytes())
+    })
+    .is_some() as u32
+}
+
+/// The Dashboard's relation to its template, owned until release.
+pub struct AndamentoDashboardOverlay {
+    overlay: andamento_core::dashboard_overlay::DashboardOverlay,
+}
+
+#[repr(C)]
+pub struct DashboardOverlayInfoView {
+    pub template_version: Text,
+    pub has_recorded: u32,
+    pub recorded_version: Text,
+    pub note_count: usize,
+}
+
+#[repr(C)]
+pub struct DashboardNoteView {
+    pub kind: u32,
+    pub key: Text,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_dashboard_overlay_acquire(
+    h: *mut Andamento,
+    error: *mut *mut c_char,
+) -> *mut AndamentoDashboardOverlay {
+    run(h, error, |h| {
+        Ok(Box::into_raw(Box::new(AndamentoDashboardOverlay {
+            overlay: h.sidebar.dashboard_overlay(),
+        })))
+    })
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_dashboard_overlay_info(
+    overlay: *const AndamentoDashboardOverlay,
+    out: *mut DashboardOverlayInfoView,
+) -> u32 {
+    let (Some(overlay), Some(out)) = (overlay.as_ref(), out.as_mut()) else {
+        return 0;
+    };
+    let overlay = &overlay.overlay;
+    *out = DashboardOverlayInfoView {
+        template_version: Text::borrowed(&overlay.template),
+        has_recorded: overlay.recorded.is_some() as u32,
+        recorded_version: Text::borrowed(overlay.recorded.as_deref().unwrap_or_default()),
+        note_count: overlay.unresolved.len(),
+    };
+    1
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_dashboard_overlay_note(
+    overlay: *const AndamentoDashboardOverlay,
+    index: usize,
+    out: *mut DashboardNoteView,
+) -> u32 {
+    use andamento_core::dashboard_overlay::KeyKind;
+    let (Some(overlay), Some(out)) = (overlay.as_ref(), out.as_mut()) else {
+        return 0;
+    };
+    let Some((kind, key)) = overlay.overlay.unresolved.get(index) else {
+        return 0;
+    };
+    *out = DashboardNoteView {
+        kind: match kind {
+            KeyKind::Display => 0,
+            KeyKind::Collapse => 1,
+            KeyKind::Order => 2,
+            KeyKind::Variable => 3,
+            KeyKind::Section => 4,
+            KeyKind::Pin => 5,
+        },
+        key: Text::borrowed(key),
+    };
+    1
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_dashboard_overlay_release(
+    overlay: *mut AndamentoDashboardOverlay,
+) {
+    if !overlay.is_null() {
+        drop(Box::from_raw(overlay));
     }
 }

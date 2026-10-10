@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+pub mod dashboard_overlay;
 pub mod detail;
 pub mod host;
 pub mod managed;

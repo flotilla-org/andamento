@@ -394,7 +394,7 @@ static void check_records(const char *config_path, const char *patches_path) {
     AndamentoBytes dashboard = {0}, workspace = {0}, again = {0};
     ok(andamento_record_export(h, T("dashboard"), &dashboard, &error));
     ok(andamento_record_export(h, workspace_name, &workspace, &error));
-    assert(has(dashboard, "andamento-record \"dashboard\" version=4"));
+    assert(has(dashboard, "andamento-record \"dashboard\" version=5"));
     assert(has(dashboard, "display \"show-issues\" false"));
     assert(has(dashboard, "local \".group\" \"g1\" provider=\"local\""));
     assert(!has(dashboard, "\"gone\""));
@@ -415,7 +415,7 @@ static void check_records(const char *config_path, const char *patches_path) {
     /* Another version, or another record's name, changes nothing. */
     uint64_t imported = andamento_record_generation(fresh, T("dashboard"), &error);
     expected_error(andamento_record_import(fresh, T("dashboard"),
-        T("andamento-record \"dashboard\" version=5"), &error));
+        T("andamento-record \"dashboard\" version=6"), &error));
     expected_error(andamento_record_import(fresh, T("dashboard"), (AndamentoText){workspace.data, workspace.len}, &error));
     assert(andamento_record_generation(fresh, T("dashboard"), &error) == imported);
     andamento_bytes_free(dashboard); andamento_bytes_free(workspace);
@@ -609,13 +609,136 @@ static void check_slots(const char *config_path, const char *patches_path) {
     /* Both are in the workspace record. */
     AndamentoBytes record = {0};
     ok(andamento_record_export(h, T("workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7d"), &record, &error));
-    assert(has(record, "version=4"));
+    assert(has(record, "version=5"));
     assert(has(record, "slot \"u:1\" rebind=\"keep-previous\" presentation=\"terminal\""));
     assert(has(record, "arrangement generation=1 owned=true"));
     andamento_bytes_free(record);
     andamento_slots_release(slots);
     andamento_slots_release(NULL); andamento_arrangement_release(NULL); andamento_slot_plan_release(NULL);
     andamento_snapshot_release(s);
+    andamento_destroy(h);
+}
+
+/* ABI 3: the Workspace Overlay: tombstones, overrides and flags, soft
+ * overrides that leave the provider's structure flowing, the proposal
+ * export, and a Dashboard pin to a View. */
+static int note(AndamentoArrangement *a, uint32_t kind, const char *key);
+static int overlay_note(AndamentoOverlay *o, uint32_t kind, const char *key) {
+    AndamentoOverlayInfo info; assert(andamento_overlay_info(o, &info));
+    AndamentoOverlayNote n;
+    for (size_t i = 0; i < info.note_count; i++) {
+        assert(andamento_overlay_note(o, i, &n));
+        if (n.kind == kind && eq(n.key, key)) return 1;
+    }
+    return 0;
+}
+static size_t dashboard_notes(Andamento *h, uint32_t kind, const char *key) {
+    AndamentoDashboardOverlay *d = andamento_dashboard_overlay_acquire(h, &error);
+    assert(d && !error);
+    AndamentoDashboardOverlayInfo info; assert(andamento_dashboard_overlay_info(d, &info));
+    assert(info.template_version.len == 16);
+    size_t found = 0;
+    AndamentoDashboardNote n;
+    for (size_t i = 0; i < info.note_count; i++) {
+        assert(andamento_dashboard_overlay_note(d, i, &n));
+        if (n.kind == kind && eq(n.key, key)) found++;
+    }
+    assert(!andamento_dashboard_overlay_note(d, info.note_count, &n));
+    andamento_dashboard_overlay_release(d);
+    return found;
+}
+static void check_overlay(const char *config_path) {
+    Andamento *h = fixture(config_path, NULL);
+    const char *record =
+        "andamento-record \"workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7e\" version=5 {\n"
+        "    baseline version=\"1\" {\n"
+        "        slot \"a\" { shell \"top\"; }\n"
+        "        slot \"b\" rebind=\"keep-previous\" { shell \"make\"; }\n"
+        "        hint { split \"main\" axis=\"row\" { tabs \"left\" selected=\"a\" { tab \"a\"; }; "
+        "tabs \"right\" selected=\"b\" { tab \"b\"; }; }; }\n"
+        "    }\n"
+        "    arrangement generation=1 { split \"main\" axis=\"row\" { tabs \"left\" selected=\"a\" "
+        "{ tab \"a\"; }; tabs \"right\" selected=\"b\" { tab \"b\"; }; }; }\n"
+        "}";
+    ok(andamento_record_import(h, T("workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7e"),
+        (AndamentoText){(const uint8_t *)record, strlen(record)}, &error));
+    AndamentoWorkspaceId ws = uuid(0x7e);
+    /* Override b, change a's policy only: flags say which. */
+    AndamentoViewSpec mine = {.content = ANDAMENTO_SLOT_COMMAND, .command = T("make check")};
+    ok(andamento_slot_set(h, ws, T("b"), &mine, ANDAMENTO_REBIND_KEEP_PREVIOUS, &error));
+    AndamentoViewSpec top = {.content = ANDAMENTO_SLOT_COMMAND, .command = T("top")};
+    ok(andamento_slot_set(h, ws, T("a"), &top, ANDAMENTO_REBIND_ASK, &error));
+    AndamentoSlots *slots = andamento_slots_acquire(h, ws, &error);
+    assert(slots && andamento_slots_count(slots) == 2);
+    assert(andamento_slots_flags(slots, 0) == ANDAMENTO_SLOT_FLAG_REBIND);
+    assert(andamento_slots_flags(slots, 1) == ANDAMENTO_SLOT_FLAG_DETACHED);
+    assert(andamento_slots_flags(slots, 2) == 0 && andamento_slots_flags(NULL, 0) == 0);
+    andamento_slots_release(slots);
+    /* A divider resize is a soft override: not owned. */
+    AndamentoTab tabs[] = {{T("a"), 0, 0}, {T("b"), 0, 0}};
+    AndamentoPanel panels[] = {
+        {ANDAMENTO_NONE, T("main"), 1.0, ANDAMENTO_PANEL_SPLIT, ANDAMENTO_AXIS_ROW, 0, 0, ANDAMENTO_NONE},
+        {0, T("left"), 3.0, ANDAMENTO_PANEL_TABS, 0, 0, 1, 0},
+        {0, T("right"), 1.0, ANDAMENTO_PANEL_TABS, 0, 1, 1, 0},
+    };
+    uint64_t generation = 0;
+    AndamentoArrangement *a = andamento_arrangement_acquire(h, ws, &error);
+    AndamentoArrangementInfo info; assert(andamento_arrangement_info(a, &info));
+    andamento_arrangement_release(a);
+    assert(andamento_set_arrangement(h, ws, panels, 3, tabs, 2, info.generation, &generation, &error)
+        == ANDAMENTO_ARRANGEMENT_COMMITTED && !error);
+    a = andamento_arrangement_acquire(h, ws, &error);
+    assert(andamento_arrangement_info(a, &info) && !info.owned);
+    assert(andamento_arrangement_flags(a) == ANDAMENTO_ARRANGEMENT_FLAG_SOFT);
+    andamento_arrangement_release(a);
+    /* Removing a baseline slot tombstones it; the derived arrangement drops its panel. */
+    ok(andamento_slot_remove(h, ws, T("a"), &error));
+    AndamentoOverlay *o = andamento_overlay_acquire(h, ws, &error);
+    assert(o && !error && overlay_note(o, ANDAMENTO_OVERLAY_TOMBSTONED, "a"));
+    andamento_overlay_release(o);
+    a = andamento_arrangement_acquire(h, ws, &error);
+    assert(andamento_arrangement_info(a, &info) && info.tab_count == 1);
+    /* The soft override on the gone panel is kept and flagged. */
+    assert(andamento_arrangement_flags(a) == (ANDAMENTO_ARRANGEMENT_FLAG_SOFT | ANDAMENTO_ARRANGEMENT_FLAG_UNRESOLVED));
+    assert(note(a, ANDAMENTO_SECTION_UNRESOLVED, "left"));
+    andamento_arrangement_release(a);
+    /* Following the provider drops soft overrides. */
+    assert(andamento_arrangement_resolve(h, ws, ANDAMENTO_ARRANGEMENT_FOLLOW, info.generation, &generation, &error)
+        == ANDAMENTO_ARRANGEMENT_COMMITTED && !error && generation > info.generation);
+    assert(andamento_arrangement_resolve(h, ws, ANDAMENTO_ARRANGEMENT_KEEP, info.generation, &generation, &error)
+        == ANDAMENTO_ARRANGEMENT_STALE && !error);
+    expected_error(andamento_arrangement_resolve(h, ws, 9, generation, &generation, &error));
+    /* Name and mood are edits too. */
+    ok(andamento_workspace_set_name(h, ws, 1, T("Build"), &error));
+    ok(andamento_workspace_set_mood(h, ws, 1, T("calm"), &error));
+    ok(andamento_workspace_set_mood(h, ws, 0, T(""), &error));
+    o = andamento_overlay_acquire(h, ws, &error);
+    AndamentoOverlayInfo oi; assert(andamento_overlay_info(o, &oi));
+    assert(oi.has_baseline && !oi.primary_only && eq(oi.baseline_version, "1"));
+    assert(oi.has_name && eq(oi.name, "Build") && !oi.has_mood && !oi.owned);
+    assert(oi.edit_count == 3); /* a's tombstone, b's override, the name */
+    andamento_overlay_release(o);
+    andamento_overlay_release(NULL);
+    assert(!andamento_overlay_acquire(h, uuid(0x01), &error) && error);
+    andamento_string_free(error); error = NULL;
+    /* The proposal: the edit set and its baseline version. */
+    AndamentoBytes proposal = {0};
+    ok(andamento_overlay_export(h, ws, &proposal, &error));
+    assert(has(proposal, "overlay-proposal workspace=\"01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7e\" baseline=\"1\""));
+    assert(has(proposal, "edit \"a\" {") && has(proposal, "tombstone"));
+    assert(has(proposal, "edit \"b\" {") && has(proposal, "override {"));
+    assert(has(proposal, "name \"Build\""));
+    andamento_bytes_free(proposal);
+    /* A Dashboard pin to b: flagged when b goes, kept until removed. */
+    AndamentoLocalFact view = {.key=T(".view"), .kind=ANDAMENTO_FACT_TEXT,
+                               .text=T("01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7e/b")};
+    ok(andamento_local_set(h, T(".ref"), T("pin"), &view, 1, &error));
+    assert(dashboard_notes(h, ANDAMENTO_DASHBOARD_PIN, "pin") == 0);
+    ok(andamento_slot_remove(h, ws, T("b"), &error));
+    assert(dashboard_notes(h, ANDAMENTO_DASHBOARD_PIN, "pin") == 1);
+    ok(andamento_local_remove(h, T(".ref"), T("pin"), &error));
+    assert(dashboard_notes(h, ANDAMENTO_DASHBOARD_PIN, "pin") == 0);
+    andamento_dashboard_overlay_release(NULL);
     andamento_destroy(h);
 }
 
@@ -713,6 +836,7 @@ int main(int argc, char **argv) {
     check_records(argv[1], argv[2]);
     check_slots(argv[1], argv[2]);
     check_sidebar_arrangement();
+    check_overlay(argv[1]);
     check_typed_details(argv[3]);
     check_workdirs();
     check_sibling_order();

@@ -268,23 +268,24 @@ uint32_t andamento_set_sibling_order3(Andamento *, AndamentoText loop_key,
  * is stored and when it is written. Andamento never touches the filesystem.
  *   "dashboard": persisted display variables, row collapse, sibling orders,
  *     placement variables, local sections, groups and refs, and the sidebar
- *     arrangement.
+ *     arrangement, with the template version they were made against.
  *   "workspace/<id>": one per registered workspace (<id> as Andamento prints
  *     it: decimal for an embedded ID, else a hyphenated UUID): its subject, and
  *     the subject and its path as last seen (label, ended or retained, when
  *     last seen, and the facts placement reads), so its row is drawn where it
  *     was with no facts; and its slots (the cached Suggested Layout baseline
- *     with its arrangement hint, the user's overrides and own slots) and its
- *     arrangement document. A closed workspace keeps its record; forgetting
+ *     with its arrangement hint, and the Workspace Overlay's edit set) and
+ *     its arrangement document. A closed workspace keeps its record; forgetting
  *     the workspace drops it.
  * names: the record names, one per line (no trailing newline).
  * generation: nonzero; it changes when, and only when, the record's content
  *   changes, and is never reused. Write a record when its generation differs
  *   from the one last written; read it again after an import. Returns 0 with an
  *   error for an unknown record.
- * export: the record's KDL text (UTF-8), version 4: every entity names its
- *   provider, a workspace record holds its slots and arrangement, and the
- *   dashboard record its sidebar arrangement.
+ * export: the record's KDL text (UTF-8), version 5: every entity names its
+ *   provider, a workspace record holds its baseline, overlay edit set and
+ *   arrangement, and the dashboard record its sidebar arrangement and
+ *   template version.
  * import: may come before the first observe and needs no facts. Importing
  *   "workspace/<id>" registers the workspace and binds it to its subject. A
  *   record that doesn't parse, has another version or names another record is
@@ -294,7 +295,8 @@ uint32_t andamento_set_sibling_order3(Andamento *, AndamentoText loop_key,
  *   every other entity the default provider, so set the default first.
  *   Version 2 records import with no slots and no arrangement; version 3
  *   dashboard records with no sidebar arrangement, which the template's
- *   hints then place.
+ *   hints then place; version 3 and 4 workspace records' overrides and user
+ *   slots migrate into the overlay edit set.
  * Bytes out-parameters are written only on success; free them with
  * andamento_bytes_free (a zeroed AndamentoBytes is harmless). */
 typedef struct { uint8_t *data; size_t len; } AndamentoBytes;
@@ -489,11 +491,14 @@ void andamento_content_release(AndamentoContentPlan *);
  * then the slots the host adds, in that order, which is also the default
  * placement order. A host adds the user's own slots with keys "u:<id>",
  * <id> being 1 to 64 of [a-z0-9_-]; provider keys never contain ':'.
- * Setting a baseline slot's key overrides its View Spec and rebind policy,
- * which detaches it from the provider; setting the baseline's own spec and
- * policy, or reattach, drops the override. remove deletes the user's own
- * slot or a detached slot the baseline dropped (a baseline slot is the
- * provider's to remove: an error); removing an unknown key is harmless. The
+ * Setting a baseline slot's key edits it (see Workspace Overlay below):
+ * a View Spec other than the baseline's overrides its content, which
+ * detaches it from the provider; a rebind policy other than the baseline's
+ * is a rebind edit, which does not. Setting the baseline's own spec and
+ * policy drops both; reattach drops an override or a tombstone. remove
+ * deletes the user's own slot or a detached slot the baseline dropped, and
+ * gives a baseline slot a tombstone, hiding it; removing an unknown key is
+ * harmless. The
  * managed primary content of an entity publishing workspace.primary.* is the
  * "primary" slot, and the andamento_content_* calls plan that slot.
  *
@@ -535,10 +540,20 @@ typedef struct {
      * overrode it, so it no longer follows the provider. */
     uint32_t in_baseline, detached;
 } AndamentoSlot;
+/* slots_flags: a listed slot's flags. DETACHED: its content is overridden.
+ * CHANGED: the provider's content for its key is not what the user's
+ * override or tombstone was made against; an override still wins, and a
+ * tombstone no longer hides the slot (setting the slot, removing it again or
+ * reattaching settles it). REMOVED: the provider removed this overridden
+ * slot, which is kept as the user's own. REBIND: the user changed its rebind
+ * policy. */
+enum { ANDAMENTO_SLOT_FLAG_DETACHED = 1, ANDAMENTO_SLOT_FLAG_CHANGED = 2,
+       ANDAMENTO_SLOT_FLAG_REMOVED = 4, ANDAMENTO_SLOT_FLAG_REBIND = 8 };
 typedef struct AndamentoSlots AndamentoSlots;
 AndamentoSlots *andamento_slots_acquire(Andamento *, AndamentoWorkspaceId, char **error_out);
 size_t andamento_slots_count(const AndamentoSlots *);
 uint32_t andamento_slots_get(const AndamentoSlots *, size_t index, AndamentoSlot *out);
+uint32_t andamento_slots_flags(const AndamentoSlots *, size_t index);
 void andamento_slots_release(AndamentoSlots *);
 uint32_t andamento_slot_set(Andamento *, AndamentoWorkspaceId, AndamentoText key,
     const AndamentoViewSpec *, uint32_t rebind, char **error_out);
@@ -557,7 +572,9 @@ uint32_t andamento_slot_reattach(Andamento *, AndamentoWorkspaceId, AndamentoTex
  * entity's own layout slot of that name ("primary": its workspace.primary.*
  * facts); a local recipe resolves to itself. previous: the resolution a
  * KEEP_PREVIOUS rebind replaced, until release_previous (which returns 1 if
- * there was one). Plans own their text until release. Topology observation
+ * there was one). release_previous also releases a slot the provider
+ * removed (an overlay DEPARTED note) once the host has closed or kept its
+ * instance as its rebind policy says. Plans own their text until release. Topology observation
  * forgets closed workspaces' bindings; removing a slot forgets its own. */
 typedef struct AndamentoSlotPlan AndamentoSlotPlan;
 typedef struct {
@@ -600,10 +617,21 @@ uint32_t andamento_slot_release_previous(Andamento *, AndamentoWorkspaceId, Anda
  * tabbed that has since gone. Then it is reconciled: each slot with no tab is
  * appended to the first TABS panel in preorder (selected there if that panel
  * selects nothing), and a tab whose slot has gone is kept and reported gone.
- * Committing the stored document again keeps its generation. Andamento also
- * reconciles when the baseline changes, and until the host first commits,
- * the document is the baseline's arrangement hint; either changes the
- * generation, so the host's next commit at the old one is STALE.
+ * Committing the stored document again keeps its generation.
+ *
+ * Ownership. A commit is diffed against the stored document. While the user
+ * doesn't own the arrangement, a commit that changes only weights and
+ * selected tabs records them as soft overrides keyed by panel ID, and the
+ * document stays derived from the provider: its arrangement hint, less
+ * slots the user removed, every slot placed, soft overrides reapplied, so
+ * a divider resize leaves the provider's structure flowing. A commit that
+ * changes the structure (a split, move, close, reorder or added tab) makes
+ * the overlay own the whole document; new baseline slots are then placed by
+ * the default rule, and a changed hint is not applied but flagged
+ * PROVIDER_CHANGED until arrangement_resolve KEEPs the user's document or
+ * FOLLOWs the provider's (dropping ownership and soft overrides). Either
+ * re-derivation or placement changes the generation, so the host's next
+ * commit at the old one is STALE.
  *
  * Neither committing an arrangement nor any slot call changes the sidebar's
  * revision: snapshots stay current (andamento_snapshot_is_current). They
@@ -634,8 +662,66 @@ AndamentoArrangement *andamento_arrangement_acquire(Andamento *, AndamentoWorksp
 uint32_t andamento_arrangement_info(const AndamentoArrangement *, AndamentoArrangementInfo *out);
 uint32_t andamento_arrangement_panel(const AndamentoArrangement *, size_t index, AndamentoPanel *out);
 uint32_t andamento_arrangement_tab(const AndamentoArrangement *, size_t index, AndamentoTab *out);
+/* arrangement_flags: PROVIDER_CHANGED (see Ownership), SOFT (soft overrides
+ * apply), UNRESOLVED (a soft override names a panel, or a selected tab, no
+ * longer there; it is kept, and each is an UNRESOLVED note with the panel
+ * ID). 0 for the sidebar's. */
+enum { ANDAMENTO_ARRANGEMENT_FLAG_PROVIDER_CHANGED = 1, ANDAMENTO_ARRANGEMENT_FLAG_SOFT = 2,
+       ANDAMENTO_ARRANGEMENT_FLAG_UNRESOLVED = 4 };
+uint32_t andamento_arrangement_flags(const AndamentoArrangement *);
+enum { ANDAMENTO_ARRANGEMENT_KEEP, ANDAMENTO_ARRANGEMENT_FOLLOW };
+uint32_t andamento_arrangement_resolve(Andamento *, AndamentoWorkspaceId, uint32_t choice,
+    uint64_t expected_generation, uint64_t *generation_out, char **error_out);
 void andamento_arrangement_release(AndamentoArrangement *);
 uint64_t andamento_workspace_content_revision(Andamento *, char **error_out);
+
+/* ABI 3: the Workspace Overlay (Wheelhouse ADR 0013; docs/sidebar-design/
+ * workspace-overlay.md): the user's edits of a workspace, an addressed edit
+ * set keyed by slot key and panel ID, kept with the cached baseline and its
+ * version. Edits are: the user's own slots ("u:<id>"); per baseline slot an
+ * override (detached) or a tombstone, each recording the content it was
+ * made against, and a rebind policy; the workspace's name and mood; soft
+ * overrides; and the whole arrangement once owned. It is normalised: an edit
+ * the baseline comes to equal drops out.
+ *
+ * When the baseline changes nothing is dropped silently: a new slot is
+ * placed; an untouched slot removed goes, and a DEPARTED note gives its
+ * rebind policy for its live instance until release_previous; an overridden
+ * slot removed is kept (flag REMOVED); an untouched slot whose content
+ * changes follows through an Updating plan; an overridden one keeps its
+ * override (flag CHANGED). A tombstoned slot stays hidden (a TOMBSTONED
+ * note) until the provider reuses its key for other content (flag CHANGED).
+ *
+ * overlay_acquire returns an owned copy: the baseline version (has_baseline
+ * 0: no Suggested Layout, an empty baseline; primary_only: only the primary
+ * facts), name and mood, whether it owns the arrangement, how many edits it
+ * holds, and notes (rebind is set for DEPARTED). Its text is valid until
+ * release. overlay_export writes the edit set as an Overlay Sync proposal,
+ * KDL `overlay-proposal workspace=".." baseline=".." { .. }` (free with
+ * andamento_bytes_free); it changes nothing, and no sync protocol reads it
+ * yet. set_name and set_mood set the user's (has 0 drops it). */
+enum { ANDAMENTO_OVERLAY_TOMBSTONED, ANDAMENTO_OVERLAY_DEPARTED };
+typedef struct AndamentoOverlay AndamentoOverlay;
+typedef struct {
+    uint32_t has_baseline, primary_only;
+    AndamentoText baseline_version;
+    uint32_t has_name;
+    AndamentoText name;
+    uint32_t has_mood;
+    AndamentoText mood;
+    uint32_t owned;
+    size_t edit_count, note_count;
+} AndamentoOverlayInfo;
+typedef struct { uint32_t kind; AndamentoText key; uint32_t rebind; } AndamentoOverlayNote;
+AndamentoOverlay *andamento_overlay_acquire(Andamento *, AndamentoWorkspaceId, char **error_out);
+uint32_t andamento_overlay_info(const AndamentoOverlay *, AndamentoOverlayInfo *out);
+uint32_t andamento_overlay_note(const AndamentoOverlay *, size_t index, AndamentoOverlayNote *out);
+void andamento_overlay_release(AndamentoOverlay *);
+uint32_t andamento_overlay_export(Andamento *, AndamentoWorkspaceId, AndamentoBytes *out, char **error_out);
+uint32_t andamento_workspace_set_name(Andamento *, AndamentoWorkspaceId, uint32_t has_name,
+    AndamentoText name, char **error_out);
+uint32_t andamento_workspace_set_mood(Andamento *, AndamentoWorkspaceId, uint32_t has_mood,
+    AndamentoText mood, char **error_out);
 
 /* ABI 3: the Dashboard's sidebar arrangement (docs/sidebar-design/
  * sidebar-arrangement.md): which sections are docked where, as one document
@@ -706,6 +792,39 @@ AndamentoArrangement *andamento_sidebar_arrangement_acquire(Andamento *, char **
 size_t andamento_arrangement_floating_first(const AndamentoArrangement *);
 size_t andamento_arrangement_note_count(const AndamentoArrangement *);
 uint32_t andamento_arrangement_note(const AndamentoArrangement *, size_t index, AndamentoSectionNote *out);
+
+/* ABI 3: the Dashboard over its template, as a Workspace Overlay over its
+ * Suggested Layout. The dashboard record's collapse, sibling order and
+ * placement-variable keys embed the template's region and loop names, its
+ * display variables name declared ones, and its sidebar arrangement names
+ * sections. The record names the template version it was made against (a
+ * digest of the configuration text). Keys that no longer resolve are kept,
+ * never dropped, and noted: DISPLAY, COLLAPSE, ORDER and VARIABLE (key as
+ * text), SECTION (the sidebar arrangement's UNRESOLVED keys), and PIN.
+ *
+ * A local ref may pin a View with the text fact ".view",
+ * "<workspace-id>/<slot-key>". When its workspace is forgotten or its slot
+ * removed, the pin is kept and noted PIN (key: the ref's ID); the host
+ * offers to remove it with andamento_local_remove.
+ *
+ * dashboard_overlay_acquire returns an owned copy: the configured template
+ * version, the one the last imported dashboard record named, and the notes.
+ * Its text is valid until release. */
+enum { ANDAMENTO_DASHBOARD_DISPLAY, ANDAMENTO_DASHBOARD_COLLAPSE, ANDAMENTO_DASHBOARD_ORDER,
+       ANDAMENTO_DASHBOARD_VARIABLE, ANDAMENTO_DASHBOARD_SECTION, ANDAMENTO_DASHBOARD_PIN };
+typedef struct AndamentoDashboardOverlay AndamentoDashboardOverlay;
+typedef struct {
+    AndamentoText template_version;
+    uint32_t has_recorded;
+    AndamentoText recorded_version;
+    size_t note_count;
+} AndamentoDashboardOverlayInfo;
+typedef struct { uint32_t kind; AndamentoText key; } AndamentoDashboardNote;
+AndamentoDashboardOverlay *andamento_dashboard_overlay_acquire(Andamento *, char **error_out);
+uint32_t andamento_dashboard_overlay_info(const AndamentoDashboardOverlay *, AndamentoDashboardOverlayInfo *out);
+uint32_t andamento_dashboard_overlay_note(const AndamentoDashboardOverlay *, size_t index,
+    AndamentoDashboardNote *out);
+void andamento_dashboard_overlay_release(AndamentoDashboardOverlay *);
 
 #ifdef __cplusplus
 }

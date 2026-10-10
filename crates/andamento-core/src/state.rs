@@ -2738,6 +2738,22 @@ impl ControllerState {
             .collect()
     }
 
+    /// Loop bindings and display variables the configured template
+    /// declares, for flagging dashboard keys that no longer resolve.
+    pub(crate) fn template_names(&self) -> (BTreeSet<String>, BTreeSet<String>) {
+        let Some(catalog) = self.template_catalog.as_ref() else {
+            return Default::default();
+        };
+        (
+            catalog.loop_bindings(),
+            catalog
+                .display_variables()
+                .iter()
+                .map(|variable| variable.name.clone())
+                .collect(),
+        )
+    }
+
     /// Fact keys placement reads, for subject records.
     pub(crate) fn placement_fact_keys(&self) -> BTreeSet<String> {
         self.template_catalog

@@ -49,8 +49,8 @@ use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 use crate::{
     sidebar_arrangement::{SidebarArrangement, SidebarDoc},
     slots::{
-        ArrangementDoc, Baseline, Panel, PanelNode, SlotDef, SlotOverride, StoredArrangement,
-        WorkspaceSlots,
+        ArrangementDoc, Baseline, ContentChange, ContentEdit, EditSet, Panel, PanelNode, SlotDef,
+        SlotEdit, SoftOverride, StoredArrangement, WorkspaceSlots,
     },
     suggested_layout::{
         Axis, BaselineVersion, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec,
@@ -60,11 +60,16 @@ use crate::{
 };
 
 /// The record format version this Andamento writes. It also reads versions 1
-/// to 3. Version 3 adds a workspace's slots and arrangement; a version 2
+/// to 4. Version 3 adds a workspace's slots and arrangement; a version 2
 /// workspace record has none. Version 4 adds the Dashboard's sidebar
 /// arrangement; an earlier dashboard record has none, so it is placed by the
-/// template's hints. A workspace record is unchanged in version 4.
-pub const RECORD_VERSION: i64 = 4;
+/// template's hints. A workspace record is unchanged in version 4. Version 5
+/// makes a workspace's Workspace Overlay an explicit `overlay` edit set
+/// (tombstones, rebind edits, name, mood and soft overrides) and records
+/// departed slots and provider changes to an owned arrangement; a version 3
+/// or 4 workspace record's `override` and `slot` nodes migrate into it. It
+/// also records the template version a dashboard record was made against.
+pub const RECORD_VERSION: i64 = 5;
 const ENVELOPE: &str = "andamento-record";
 
 /// The name of a record: `dashboard`, or `workspace/<id>` for a registered
@@ -111,6 +116,8 @@ pub struct DashboardRecord {
     pub local: BTreeMap<EntityRef, BTreeMap<String, MetadataValue>>,
     /// The sidebar arrangement, once stored.
     pub sidebar: Option<SidebarArrangement>,
+    /// The template version these keys were made against, if recorded.
+    pub template: Option<String>,
     /// Nodes this version doesn't know, as KDL text.
     pub unknown: Vec<String>,
 }
@@ -123,7 +130,8 @@ pub struct WorkspaceRecord {
     /// The subject and the entities on its path, as last seen, so the row can
     /// be drawn where it was when no producer publishes them.
     pub retained: BTreeMap<EntityRef, SubjectRecord>,
-    /// Its slots: the cached baseline, the user's overrides and own slots.
+    /// Its slots: the cached baseline and the Workspace Overlay's edits of
+    /// it, the user's own slots among them.
     pub slots: WorkspaceSlots,
     /// Its arrangement document.
     pub arrangement: Option<StoredArrangement>,
@@ -148,6 +156,11 @@ pub struct SubjectRecord {
 impl DashboardRecord {
     pub fn encode(&self) -> String {
         let mut body = Vec::new();
+        if let Some(template) = &self.template {
+            let mut node = KdlNode::new("template");
+            node.insert("version", template.clone());
+            body.push(node);
+        }
         for (name, value) in &self.display {
             let mut node = KdlNode::new("display");
             node.push(KdlEntry::new(name.clone()));
@@ -253,6 +266,14 @@ impl DashboardRecord {
                     record.local.insert(read.entity(&node)?, read.facts(&node)?);
                 }
                 "sidebar" if version >= 4 => record.sidebar = Some(read_sidebar(&node)?),
+                "template" if version >= 5 => {
+                    record.template = Some(
+                        node.get("version")
+                            .and_then(|e| e.value().as_string())
+                            .ok_or("a template version is a string")?
+                            .to_owned(),
+                    )
+                }
                 _ => record.unknown.push(canonical(node)),
             }
         }
@@ -293,22 +314,18 @@ impl WorkspaceRecord {
             }
             body.push(node);
         }
-        for (key, edit) in &self.slots.overrides {
-            let mut node = slot_node(
-                "override",
-                &SlotDef {
-                    key: key.clone(),
-                    spec: edit.spec.clone(),
-                    rebind: edit.rebind,
-                },
-            );
-            let mut against = KdlNode::new("against");
-            push_spec(&mut against, &edit.against);
-            node.ensure_children().nodes_mut().push(against);
-            body.push(node);
-        }
-        for slot in &self.slots.user {
-            body.push(slot_node("slot", slot));
+        let edits = EditSet::new(&self.slots, self.arrangement.as_ref());
+        let mut overlay = KdlNode::new("overlay");
+        // The owned arrangement is the `arrangement` node below.
+        push_edits(
+            &mut overlay,
+            &EditSet {
+                arrangement: None,
+                ..edits
+            },
+        );
+        if overlay.children().is_some() {
+            body.push(overlay);
         }
         if let Some(arrangement) = &self.arrangement {
             let mut node = doc_node("arrangement", &arrangement.doc);
@@ -317,11 +334,20 @@ impl WorkspaceRecord {
                 i64::try_from(arrangement.generation).unwrap_or(i64::MAX),
             );
             node.insert("owned", arrangement.owned);
+            if arrangement.provider_changed {
+                node.insert("provider-changed", true);
+            }
             for tab in &arrangement.placed {
                 let mut placed = KdlNode::new("placed");
                 placed.push(KdlEntry::new(tab.clone()));
                 node.ensure_children().nodes_mut().push(placed);
             }
+            body.push(node);
+        }
+        for (key, rebind) in &self.slots.departed {
+            let mut node = KdlNode::new("departed");
+            node.push(KdlEntry::new(key.clone()));
+            node.insert("rebind", rebind_name(*rebind));
             body.push(node);
         }
         envelope(&RecordName::Workspace(id), body, &self.unknown)
@@ -331,6 +357,7 @@ impl WorkspaceRecord {
     /// (see the module documentation).
     pub fn decode(text: &str, id: WorkspaceId, default_provider: &str) -> Result<Self, String> {
         let mut record = Self::default();
+        let mut soft = BTreeMap::new();
         let (version, nodes) = open_envelope(text, &RecordName::Workspace(id))?;
         let read = Reader::new(version, default_provider);
         for node in nodes {
@@ -398,22 +425,40 @@ impl WorkspaceRecord {
                     }
                     record.slots.baseline = Some(baseline);
                 }
-                "override" if version >= 3 => {
+                // Versions 3 and 4: an override set content and policy
+                // together, and user slots sat in the envelope.
+                "override" if (3..5).contains(&version) => {
                     let slot = read.slot(&node)?;
                     let against = children(&node)
                         .iter()
                         .find(|child| child.name().value() == "against")
                         .ok_or("an override records what it was made against")?;
-                    record.slots.overrides.insert(
+                    record.slots.edits.insert(
                         slot.key,
-                        SlotOverride {
-                            spec: slot.spec,
-                            rebind: slot.rebind,
-                            against: read.spec(against)?,
+                        SlotEdit {
+                            content: Some(ContentEdit {
+                                change: ContentChange::Override(slot.spec),
+                                against: read.spec(against)?,
+                            }),
+                            rebind: Some(slot.rebind),
                         },
                     );
                 }
-                "slot" if version >= 3 => record.slots.user.push(read.slot(&node)?),
+                "slot" if (3..5).contains(&version) => record.slots.user.push(read.slot(&node)?),
+                "overlay" if version >= 5 => {
+                    let edits = read.edits(&node)?;
+                    record.slots.edits = edits.slots;
+                    record.slots.user = edits.added;
+                    record.slots.name = edits.name;
+                    record.slots.mood = edits.mood;
+                    soft = edits.panels;
+                }
+                "departed" if version >= 5 => {
+                    record
+                        .slots
+                        .departed
+                        .insert(string_arg(&node, 0)?, read_rebind(&node)?);
+                }
                 "arrangement" if version >= 3 => {
                     let generation = node
                         .get("generation")
@@ -431,14 +476,47 @@ impl WorkspaceRecord {
                         .filter(|child| child.name().value() == "placed")
                         .map(|child| string_arg(child, 0))
                         .collect::<Result<_, _>>()?;
+                    let provider_changed = node
+                        .get("provider-changed")
+                        .map(|e| {
+                            e.value()
+                                .as_bool()
+                                .ok_or("provider-changed must be a boolean")
+                        })
+                        .transpose()?
+                        .unwrap_or(false);
                     record.arrangement = Some(StoredArrangement {
                         generation,
                         owned,
                         doc: read_doc(&node)?,
                         placed,
+                        soft: BTreeMap::new(),
+                        provider_changed,
                     });
                 }
                 _ => record.unknown.push(canonical(node)),
+            }
+        }
+        if !soft.is_empty() {
+            let arrangement = record
+                .arrangement
+                .as_mut()
+                .ok_or("soft overrides need an arrangement")?;
+            if arrangement.owned {
+                return Err("an owned arrangement has no soft overrides".into());
+            }
+            arrangement.soft = soft;
+        }
+        if version < 5 {
+            // Normalise migrated overrides: a policy that is the baseline's
+            // is no edit.
+            for (key, edit) in record.slots.edits.iter_mut() {
+                let slot = record.slots.baseline.as_ref().and_then(|b| b.slot(key));
+                if let Some(slot) = slot {
+                    if edit.rebind == Some(slot.rebind) {
+                        edit.rebind = None;
+                    }
+                }
             }
         }
         Ok(record)
@@ -598,17 +676,98 @@ impl<'a> Reader<'a> {
 impl Reader<'_> {
     /// A slot: `<name> "<key>" rebind=".." presentation=".." { <content> }`.
     fn slot(&self, node: &KdlNode) -> Result<SlotDef, String> {
-        let rebind = match node.get("rebind").map(|e| e.value().as_string()) {
-            None | Some(Some("replace")) => RebindPolicy::Replace,
-            Some(Some("keep-previous")) => RebindPolicy::KeepPrevious,
-            Some(Some("ask")) => RebindPolicy::Ask,
-            _ => return Err("rebind must be \"replace\", \"keep-previous\" or \"ask\"".into()),
-        };
         Ok(SlotDef {
             key: string_arg(node, 0)?,
             spec: self.spec(node)?,
-            rebind,
+            rebind: read_rebind(node)?,
         })
+    }
+
+    /// An edit set's nodes (see [`push_edits`]).
+    fn edits(&self, node: &KdlNode) -> Result<EditSet, String> {
+        let mut edits = EditSet::default();
+        for child in children(node) {
+            match child.name().value() {
+                "name" => edits.name = Some(string_arg(child, 0)?),
+                "mood" => edits.mood = Some(string_arg(child, 0)?),
+                "edit" => {
+                    let key = string_arg(child, 0)?;
+                    let rebind = child
+                        .get("rebind")
+                        .map(|_| read_rebind(child))
+                        .transpose()?;
+                    let mut change = None;
+                    let mut against = None;
+                    for part in children(child) {
+                        let next = match part.name().value() {
+                            "override" => ContentChange::Override(self.spec(part)?),
+                            "tombstone" => ContentChange::Tombstone,
+                            "against" => {
+                                against = Some(self.spec(part)?);
+                                continue;
+                            }
+                            other => return Err(format!("unexpected {other:?} in an edit")),
+                        };
+                        if change.replace(next).is_some() {
+                            return Err(format!("edit {key:?} has two content changes"));
+                        }
+                    }
+                    let content = match (change, against) {
+                        (Some(change), Some(against)) => Some(ContentEdit { change, against }),
+                        (None, None) => None,
+                        (Some(_), None) => {
+                            return Err(format!(
+                                "edit {key:?} records no content it was made against"
+                            ))
+                        }
+                        (None, Some(_)) => return Err(format!("edit {key:?} changes no content")),
+                    };
+                    let edit = SlotEdit { content, rebind };
+                    if edit.is_empty() {
+                        return Err(format!("edit {key:?} changes nothing"));
+                    }
+                    edits.slots.insert(key, edit);
+                }
+                "slot" => edits.added.push(self.slot(child)?),
+                "panel" => {
+                    let number = |name: &str| -> Result<Option<f64>, String> {
+                        match child.get(name).map(|e| e.value()) {
+                            None => Ok(None),
+                            Some(KdlValue::Base10Float(n)) => Ok(Some(*n)),
+                            Some(value) => value
+                                .as_i64()
+                                .map(|n| Some(n as f64))
+                                .ok_or_else(|| format!("{name} is a number")),
+                        }
+                    };
+                    let edit = SoftOverride {
+                        weight: number("weight")?
+                            .map(|w| {
+                                (w.is_finite() && w > 0.0)
+                                    .then_some(w)
+                                    .ok_or("weights are positive")
+                            })
+                            .transpose()?,
+                        selected: child
+                            .get("selected")
+                            .map(|e| {
+                                e.value()
+                                    .as_string()
+                                    .map(str::to_owned)
+                                    .ok_or("selected must be a string")
+                            })
+                            .transpose()?,
+                    };
+                    if edit.is_empty() {
+                        return Err("a panel edit changes a weight or a selection".into());
+                    }
+                    edits.panels.insert(string_arg(child, 0)?, edit);
+                }
+                "arrangement" => edits.arrangement = Some(read_doc(child)?),
+                other => return Err(format!("unexpected {other:?} in an overlay")),
+            }
+        }
+        Ok(edits)
     }
 
     /// A View Spec: an optional `presentation` property, and one content child.
@@ -684,17 +843,171 @@ impl Reader<'_> {
 fn slot_node(name: &str, slot: &SlotDef) -> KdlNode {
     let mut node = KdlNode::new(name);
     node.push(KdlEntry::new(slot.key.clone()));
-    match slot.rebind {
-        RebindPolicy::Replace => {}
-        RebindPolicy::KeepPrevious => {
-            node.insert("rebind", "keep-previous");
-        }
-        RebindPolicy::Ask => {
-            node.insert("rebind", "ask");
-        }
+    if slot.rebind != RebindPolicy::Replace {
+        node.insert("rebind", rebind_name(slot.rebind));
     }
     push_spec(&mut node, &slot.spec);
     node
+}
+
+fn rebind_name(rebind: RebindPolicy) -> &'static str {
+    match rebind {
+        RebindPolicy::Replace => "replace",
+        RebindPolicy::KeepPrevious => "keep-previous",
+        RebindPolicy::Ask => "ask",
+    }
+}
+
+fn read_rebind(node: &KdlNode) -> Result<RebindPolicy, String> {
+    match node.get("rebind").map(|e| e.value().as_string()) {
+        None | Some(Some("replace")) => Ok(RebindPolicy::Replace),
+        Some(Some("keep-previous")) => Ok(RebindPolicy::KeepPrevious),
+        Some(Some("ask")) => Ok(RebindPolicy::Ask),
+        _ => Err("rebind must be \"replace\", \"keep-previous\" or \"ask\"".into()),
+    }
+}
+
+/// An edit set as children of `node`, in a fixed order:
+///
+/// ```kdl
+/// name "Review"
+/// mood "focused"
+/// edit "reviewer" rebind="ask" {
+///     override { argv "htop" }
+///     against presentation="terminal" { facet "terminal" "vessel" "r" provider="sub-1" }
+/// }
+/// edit "logs" { tombstone; against { shell "tail -f log" } }
+/// slot "u:1" presentation="web" { url "https://example.com" }
+/// panel "main" weight=0.6 selected="reviewer"
+/// arrangement { split "main" axis="row" { ... } }
+/// ```
+fn push_edits(node: &mut KdlNode, edits: &EditSet) {
+    let mut out = Vec::new();
+    for (name, value) in [("name", &edits.name), ("mood", &edits.mood)] {
+        if let Some(value) = value {
+            let mut child = KdlNode::new(name);
+            child.push(KdlEntry::new(value.clone()));
+            out.push(child);
+        }
+    }
+    for (key, edit) in &edits.slots {
+        let mut child = KdlNode::new("edit");
+        child.push(KdlEntry::new(key.clone()));
+        if let Some(rebind) = edit.rebind {
+            child.insert("rebind", rebind_name(rebind));
+        }
+        if let Some(content) = &edit.content {
+            let change = match &content.change {
+                ContentChange::Override(spec) => {
+                    let mut change = KdlNode::new("override");
+                    push_spec(&mut change, spec);
+                    change
+                }
+                ContentChange::Tombstone => KdlNode::new("tombstone"),
+            };
+            let mut against = KdlNode::new("against");
+            push_spec(&mut against, &content.against);
+            let parts = child.ensure_children().nodes_mut();
+            parts.push(change);
+            parts.push(against);
+        }
+        out.push(child);
+    }
+    for slot in &edits.added {
+        out.push(slot_node("slot", slot));
+    }
+    for (id, edit) in &edits.panels {
+        let mut child = KdlNode::new("panel");
+        child.push(KdlEntry::new(id.clone()));
+        if let Some(weight) = edit.weight {
+            child.insert("weight", weight);
+        }
+        if let Some(selected) = &edit.selected {
+            child.insert("selected", selected.clone());
+        }
+        out.push(child);
+    }
+    if let Some(arrangement) = &edits.arrangement {
+        out.push(doc_node("arrangement", arrangement));
+    }
+    if !out.is_empty() {
+        node.ensure_children().nodes_mut().extend(out);
+    }
+}
+
+/// A workspace's edit set as an Overlay Sync proposal: the edits and the
+/// baseline version they apply to. No sync protocol reads it yet.
+///
+/// ```kdl
+/// overlay-proposal workspace="01920a6b-..." baseline="2" {
+///     subject "vessel" "v" provider="sub-1"
+///     edit "logs" { tombstone; against { shell "tail -f log" } }
+///     panel "main" weight=0.6
+/// }
+/// ```
+///
+/// `baseline` is the Suggested Layout's `layout.version`; a baseline of
+/// only the primary facts is `primary-only=true`, and a workspace with no
+/// Suggested Layout has neither (an empty baseline).
+pub fn encode_proposal(
+    workspace: WorkspaceId,
+    subject: Option<&EntityRef>,
+    edits: &EditSet,
+) -> String {
+    let mut node = KdlNode::new("overlay-proposal");
+    node.insert("workspace", workspace.to_string());
+    match &edits.baseline {
+        Some(BaselineVersion::Published(version)) => {
+            node.insert("baseline", version.clone());
+        }
+        Some(BaselineVersion::PrimaryOnly) => {
+            node.insert("primary-only", true);
+        }
+        None => {}
+    }
+    if let Some(subject) = subject {
+        node.ensure_children()
+            .nodes_mut()
+            .push(entity_node("subject", subject));
+    }
+    push_edits(&mut node, edits);
+    canonical(node)
+}
+
+/// Read a proposal written by [`encode_proposal`], for tests and tools.
+pub fn decode_proposal(text: &str) -> Result<(WorkspaceId, EditSet), String> {
+    let doc: KdlDocument = text.parse().map_err(|e| format!("{e}"))?;
+    let [node] = doc.nodes() else {
+        return Err("a proposal is one overlay-proposal node".into());
+    };
+    if node.name().value() != "overlay-proposal" {
+        return Err("a proposal is one overlay-proposal node".into());
+    }
+    let workspace = node
+        .get("workspace")
+        .and_then(|e| e.value().as_string())
+        .and_then(|id| id.parse().ok())
+        .ok_or("a proposal names its workspace")?;
+    let mut body = node.clone();
+    if let Some(children) = body.children_mut() {
+        children
+            .nodes_mut()
+            .retain(|child| child.name().value() != "subject");
+    }
+    let mut edits = Reader::new(RECORD_VERSION, "").edits(&body)?;
+    edits.baseline = match (node.get("baseline"), node.get("primary-only")) {
+        (Some(entry), None) => Some(BaselineVersion::Published(
+            entry
+                .value()
+                .as_string()
+                .ok_or("a baseline version is a string")?
+                .to_owned(),
+        )),
+        (None, Some(_)) => Some(BaselineVersion::PrimaryOnly),
+        (None, None) => None,
+        _ => return Err("a proposal has one baseline".into()),
+    };
+    Ok((workspace, edits))
 }
 
 fn push_spec(node: &mut KdlNode, spec: &ViewSpec) {
@@ -1121,6 +1434,7 @@ mod tests {
                 closed: BTreeSet::from(["closed".into(), "gone \"old\"".into()]),
                 placed: BTreeSet::from(["git".into()]),
             }),
+            template: Some("0123456789abcdef".into()),
             unknown: vec![],
         }
     }
@@ -1166,7 +1480,7 @@ mod tests {
         };
         let text = record.encode(id);
         assert!(text.starts_with(
-            "andamento-record \"workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b\" version=4"
+            "andamento-record \"workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b\" version=5"
         ));
         assert_eq!(
             WorkspaceRecord::decode(&text, id, "local").unwrap(),
@@ -1199,6 +1513,12 @@ mod tests {
     /// arrangement with a hint.
     fn workspace_with_slots() -> WorkspaceRecord {
         let convoy = EntityRef::new("sub-1", "convoy", "c");
+        let notes = spec(
+            Content::Local(LocalRecipe::File {
+                path: "/notes \"x\".md".into(),
+            }),
+            Some("markdown"),
+        );
         let reviewer = spec(
             Content::ProviderFacet {
                 entity: EntityRef::new("sub-1", "vessel", "reviewer"),
@@ -1254,31 +1574,50 @@ mod tests {
                         },
                         SlotDef {
                             key: "notes".into(),
-                            spec: spec(
-                                Content::Local(LocalRecipe::File {
-                                    path: "/notes \"x\".md".into(),
-                                }),
-                                Some("markdown"),
-                            ),
+                            spec: notes.clone(),
                             rebind: RebindPolicy::Ask,
                         },
                     ],
                     hint: Some(hint),
                 }),
-                overrides: BTreeMap::from([(
-                    "reviewer".into(),
-                    SlotOverride {
-                        spec: spec(
-                            Content::Local(LocalRecipe::Command {
-                                line: CommandLine::Argv(vec!["htop".into(), "-d".into()]),
-                                cwd: Some("/srv".into()),
+                edits: BTreeMap::from([
+                    (
+                        "reviewer".into(),
+                        SlotEdit {
+                            content: Some(ContentEdit {
+                                change: ContentChange::Override(spec(
+                                    Content::Local(LocalRecipe::Command {
+                                        line: CommandLine::Argv(vec!["htop".into(), "-d".into()]),
+                                        cwd: Some("/srv".into()),
+                                    }),
+                                    None,
+                                )),
+                                against: reviewer,
                             }),
-                            None,
-                        ),
-                        rebind: RebindPolicy::Replace,
-                        against: reviewer,
-                    },
-                )]),
+                            rebind: Some(RebindPolicy::Replace),
+                        },
+                    ),
+                    (
+                        "notes".into(),
+                        SlotEdit {
+                            content: Some(ContentEdit {
+                                change: ContentChange::Tombstone,
+                                against: notes.clone(),
+                            }),
+                            rebind: None,
+                        },
+                    ),
+                    (
+                        "primary".into(),
+                        SlotEdit {
+                            content: None,
+                            rebind: Some(RebindPolicy::Ask),
+                        },
+                    ),
+                ]),
+                name: Some("Review \"two\"".into()),
+                mood: Some("focused".into()),
+                departed: BTreeMap::from([("old".into(), RebindPolicy::KeepPrevious)]),
                 user: vec![
                     SlotDef {
                         key: "u:2".into(),
@@ -1319,6 +1658,8 @@ mod tests {
                 owned: true,
                 doc: arrangement,
                 placed: BTreeSet::from(["u:2".into()]),
+                soft: BTreeMap::new(),
+                provider_changed: true,
             }),
             unknown: vec![],
         }
@@ -1344,9 +1685,19 @@ mod tests {
             r#"baseline version="1" {"#,
             r#"slot "reviewer" rebind="keep-previous" presentation="terminal" {"#,
             r#"facet "terminal" "vessel" "reviewer" provider="sub-1""#,
-            r#"override "reviewer" {"#,
+            r#"overlay {"#,
+            r#"name "Review \"two\"""#,
+            r#"mood "focused""#,
+            r#"edit "notes" {"#,
+            r#"tombstone"#,
+            r#"edit "primary" rebind="ask""#,
+            r#"edit "reviewer" rebind="replace" {"#,
+            r#"override {"#,
             r#"argv "htop" "-d" cwd="/srv""#,
-            r#"arrangement generation=4 owned=true {"#,
+            r#"against presentation="terminal" {"#,
+            r#"slot "u:2" {"#,
+            r#"arrangement generation=4 owned=true provider-changed=true {"#,
+            r#"departed "old" rebind="keep-previous""#,
             r#"split "main" axis="column" weight=1.0 {"#,
             r#"tabs "agents" weight=0.625 selected="reviewer" {"#,
             r#"tab "gone""#,
@@ -1366,7 +1717,117 @@ mod tests {
             ..Default::default()
         });
         let text = record.encode(id);
+        assert!(!text.contains("overlay"), "{text}");
         assert_eq!(WorkspaceRecord::decode(&text, id, "local").unwrap(), record);
+        // Soft overrides of an arrangement the overlay doesn't own.
+        record.arrangement = Some(StoredArrangement {
+            generation: 2,
+            doc: ArrangementDoc {
+                root: Some(tabs("p", 1.0, &["primary"], Some("primary"))),
+            },
+            soft: BTreeMap::from([
+                (
+                    "p".into(),
+                    SoftOverride {
+                        weight: Some(0.25),
+                        selected: Some("primary".into()),
+                    },
+                ),
+                (
+                    "gone".into(),
+                    SoftOverride {
+                        weight: None,
+                        selected: Some("x".into()),
+                    },
+                ),
+            ]),
+            ..Default::default()
+        });
+        let text = record.encode(id);
+        assert!(
+            text.contains(r#"panel "p" weight=0.25 selected="primary""#),
+            "{text}"
+        );
+        assert_eq!(WorkspaceRecord::decode(&text, id, "local").unwrap(), record);
+        // An owned arrangement has none; an edit says what it changes.
+        for body in [
+            r#"overlay { panel "p" weight=0.5; }; arrangement generation=1 owned=true { tabs "p"; }"#,
+            r#"overlay { panel "p"; }; arrangement generation=1 { tabs "p"; }"#,
+            r#"overlay { panel "p" weight=0.5; }"#,
+            r#"overlay { edit "a"; }"#,
+            r#"overlay { edit "a" { tombstone; }; }"#,
+            r#"overlay { edit "a" { against { url "x"; }; }; }"#,
+            r#"overlay { edit "a" { tombstone; override { url "y"; }; against { url "x"; }; }; }"#,
+            r#"overlay { nope; }"#,
+            r#"departed "a" rebind="never""#,
+        ] {
+            let text = format!("andamento-record \"workspace/7\" version=5 {{ {body}; }}");
+            assert!(
+                WorkspaceRecord::decode(&text, id, "local").is_err(),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn version_4_workspace_overrides_migrate_into_the_overlay() {
+        let id = WorkspaceId::from(7);
+        let v4 = r#"andamento-record "workspace/7" version=4 {
+    baseline version="1" {
+        slot "a" rebind="ask" { url "a"; }
+        slot "b" { url "b"; }
+    }
+    override "a" rebind="ask" {
+        url "mine"
+        against { url "a"; }
+    }
+    override "b" rebind="keep-previous" {
+        url "also mine"
+        against { url "b"; }
+    }
+    slot "u:1" { url "u"; }
+    arrangement generation=2 owned=true { tabs "1" { tab "a"; tab "b"; tab "u:1"; }; }
+}"#;
+        let record = WorkspaceRecord::decode(v4, id, "local").unwrap();
+        // a's policy is the baseline's, so only its content is an edit.
+        assert_eq!(record.slots.edits["a"].rebind, None);
+        assert_eq!(
+            record.slots.edits["b"].rebind,
+            Some(RebindPolicy::KeepPrevious)
+        );
+        assert_eq!(record.slots.user.len(), 1);
+        let slots = record.slots.slots();
+        assert!(slots[0].detached && slots[1].detached);
+        assert_eq!(slots[0].rebind, RebindPolicy::Ask);
+        let text = record.encode(id);
+        assert!(text.starts_with("andamento-record \"workspace/7\" version=5"));
+        assert!(text.contains("overlay {"), "{text}");
+        assert!(!text.contains("\n    override"), "{text}");
+        assert_eq!(WorkspaceRecord::decode(&text, id, "local").unwrap(), record);
+        // In version 5, top-level override and slot nodes are unknown.
+        let v5 = r#"andamento-record "workspace/7" version=5 { slot "u:1" { url "u"; }; }"#;
+        let record = WorkspaceRecord::decode(v5, id, "local").unwrap();
+        assert!(record.slots.user.is_empty());
+        assert_eq!(record.unknown.len(), 1);
+    }
+
+    #[test]
+    fn proposals_carry_the_edit_set_and_its_baseline() {
+        let id = WorkspaceId::from(7);
+        let record = workspace_with_slots();
+        let edits = EditSet::new(&record.slots, record.arrangement.as_ref());
+        let text = encode_proposal(id, record.subject.as_ref(), &edits);
+        assert!(
+            text.starts_with(r#"overlay-proposal workspace="7" baseline="1" {"#),
+            "{text}"
+        );
+        assert!(text.contains("arrangement {"), "{text}");
+        assert!(!text.contains("departed"), "{text}");
+        assert_eq!(decode_proposal(&text).unwrap(), (id, edits));
+        let empty = EditSet::default();
+        let text = encode_proposal(id, None, &empty);
+        assert_eq!(text.trim(), r#"overlay-proposal workspace="7""#);
+        assert_eq!(decode_proposal(&text).unwrap(), (id, empty));
     }
 
     #[test]
@@ -1384,7 +1845,7 @@ mod tests {
         assert_eq!(record.unknown.len(), 1);
         assert!(record
             .encode()
-            .starts_with("andamento-record \"dashboard\" version=4"));
+            .starts_with("andamento-record \"dashboard\" version=5"));
         // In version 4 it is read, duplicates and all (reconciling removes
         // them); a malformed one is rejected.
         let v4 = r#"andamento-record "dashboard" version=4 {
@@ -1436,7 +1897,7 @@ mod tests {
         assert_eq!(record.unknown.len(), 1);
         assert!(record
             .encode(id)
-            .starts_with("andamento-record \"workspace/7\" version=4"));
+            .starts_with("andamento-record \"workspace/7\" version=5"));
         // Malformed slots and arrangements are rejected in version 3.
         for body in [
             r#"slot "u:1""#,
@@ -1483,7 +1944,7 @@ mod tests {
     #[test]
     fn other_versions_names_and_shapes_are_rejected() {
         for text in [
-            "andamento-record \"dashboard\" version=5",
+            "andamento-record \"dashboard\" version=6",
             "andamento-record \"dashboard\" version=0",
             "andamento-record \"dashboard\"",
             // Version 2 entities name their provider.
@@ -1550,7 +2011,7 @@ mod tests {
         // Export writes the current version, naming every provider; it reads back the same.
         let text = record.encode();
         assert!(
-            text.starts_with("andamento-record \"dashboard\" version=4"),
+            text.starts_with("andamento-record \"dashboard\" version=5"),
             "{text}"
         );
         assert!(
