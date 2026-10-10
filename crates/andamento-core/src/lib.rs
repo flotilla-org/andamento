@@ -453,8 +453,23 @@ pub struct MetadataIdentity {
     pub value: MetadataValue,
 }
 
+/// The provider of Andamento's own entities and of anything a host publishes
+/// without naming a subscription: local sections, groups and refs, one-off
+/// local scripts, and every fact while no other default is configured.
+pub const LOCAL_PROVIDER: &str = "local";
+
+/// An entity: `{provider, kind, id}`. The provider is the Dashboard's
+/// subscription ID, which the host supplies per patch source; a producer
+/// never names it, and the identity a provider reports is not part of the
+/// key. The same kind and ID under two providers are distinct entities.
+///
+/// In JSON a missing `provider` is empty, which means "not named": patch
+/// application stamps the patch's provider over it, and other entry points
+/// fill in the configured default provider. A stored entity always has one.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EntityRef {
+    #[serde(default)]
+    pub provider: String,
     pub kind: String,
     pub id: String,
 }
@@ -492,26 +507,50 @@ impl PlacementKey {
     }
 }
 
+impl PlacementKey {
+    /// Fill in `provider` wherever a segment's entity names none.
+    pub fn fill_provider(&mut self, provider: &str) {
+        for segment in &mut self.0 {
+            segment.entity.fill_provider(provider);
+        }
+    }
+}
+
+/// Marks the loop-key encoding that carries providers (see
+/// [`PlacementLoopKey::encode`]). The earlier encoding starts with a digit.
+const LOOP_KEY_V2: &str = "v2;";
+
 impl PlacementLoopKey {
-    /// Stable text for hosts: each part is length-prefixed (`len:text`), in
-    /// the order region, then each parent segment's loop name, entity kind and
-    /// id, then the loop binding. Hosts treat it as opaque and compare it for
-    /// equality; only Andamento decodes it.
+    /// Stable text for hosts: `v2;`, then each part length-prefixed
+    /// (`len:text`), in the order region, then each parent segment's loop
+    /// name, entity provider, kind and id, then the loop binding. Hosts treat
+    /// it as opaque and compare it for equality; only Andamento decodes it.
     pub fn encode(&self) -> String {
-        std::iter::once(&self.region)
+        std::iter::once(LOOP_KEY_V2.to_owned())
             .chain(
-                self.parent
-                    .0
-                    .iter()
-                    .flat_map(|s| [&s.loop_name, &s.entity.kind, &s.entity.id]),
+                std::iter::once(&self.region)
+                    .chain(self.parent.0.iter().flat_map(|s| {
+                        [
+                            &s.loop_name,
+                            &s.entity.provider,
+                            &s.entity.kind,
+                            &s.entity.id,
+                        ]
+                    }))
+                    .chain(std::iter::once(&self.binding))
+                    .map(|s| format!("{}:{}", s.len(), s)),
             )
-            .chain(std::iter::once(&self.binding))
-            .map(|s| format!("{}:{}", s.len(), s))
             .collect()
     }
 
-    /// Inverse of [`encode`](Self::encode), for keys a host hands back.
+    /// Inverse of [`encode`](Self::encode), for keys a host hands back. Keys
+    /// in the earlier encoding, without `v2;` and providers, still decode;
+    /// their entities name no provider, so the sidebar gives them its default.
     pub fn decode(text: &str) -> Option<Self> {
+        let (text, width) = match text.strip_prefix(LOOP_KEY_V2) {
+            Some(rest) => (rest, 4),
+            None => (text, 3),
+        };
         let mut parts = Vec::new();
         let mut rest = text;
         while !rest.is_empty() {
@@ -523,18 +562,19 @@ impl PlacementLoopKey {
             parts.push(tail[..len].to_owned());
             rest = &tail[len..];
         }
-        if parts.len() < 2 || (parts.len() - 2) % 3 != 0 {
+        if parts.len() < 2 || (parts.len() - 2) % width != 0 {
             return None;
         }
         let binding = parts.pop()?;
         let region = parts.remove(0);
         let parent = parts
-            .chunks(3)
+            .chunks(width)
             .map(|c| PlacementSegment {
                 loop_name: c[0].clone(),
-                entity: EntityRef {
-                    kind: c[1].clone(),
-                    id: c[2].clone(),
+                entity: match c {
+                    [_, provider, kind, id] => EntityRef::new(provider, kind, id),
+                    [_, kind, id] => EntityRef::new("", kind, id),
+                    _ => unreachable!("chunks have the encoding's width"),
                 },
             })
             .collect();
@@ -546,9 +586,95 @@ impl PlacementLoopKey {
     }
 }
 
+impl PlacementLoopKey {
+    /// Fill in `provider` wherever a parent segment's entity names none.
+    pub fn fill_provider(&mut self, provider: &str) {
+        self.parent.fill_provider(provider);
+    }
+}
+
 impl EntityRef {
+    pub fn new(
+        provider: impl Into<String>,
+        kind: impl Into<String>,
+        id: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            kind: kind.into(),
+            id: id.into(),
+        }
+    }
+
+    /// An entity of the [`LOCAL_PROVIDER`].
+    pub fn local(kind: impl Into<String>, id: impl Into<String>) -> Self {
+        Self::new(LOCAL_PROVIDER, kind, id)
+    }
+
+    /// The text a workspace's subject is matched by when its producer names no
+    /// `action.primary.target`: `kind:id` for a local entity, as before
+    /// providers, and `kind:id@provider` for any other, so the same kind and
+    /// ID under two providers never alias.
     pub fn action_target(&self) -> String {
-        format!("{}:{}", self.kind, self.id)
+        if self.provider == LOCAL_PROVIDER {
+            format!("{}:{}", self.kind, self.id)
+        } else {
+            format!("{}:{}@{}", self.kind, self.id, self.provider)
+        }
+    }
+
+    /// Give the entity `provider` if it names none.
+    pub fn fill_provider(&mut self, provider: &str) {
+        if self.provider.is_empty() {
+            self.provider = provider.to_owned();
+        }
+    }
+}
+
+impl MetadataValue {
+    /// Set the provider of every entity this value refers to: `stamp`
+    /// replaces any provider, `fill` only gives one to entities naming none.
+    fn set_providers(&mut self, provider: &str, stamp: bool) {
+        if let MetadataValue::EntityRefs(refs) = self {
+            for entity in refs {
+                if stamp {
+                    entity.provider = provider.to_owned();
+                } else {
+                    entity.fill_provider(provider);
+                }
+            }
+        }
+    }
+
+    /// Give every entity this value refers to `provider` if it names none.
+    pub fn fill_provider(&mut self, provider: &str) {
+        self.set_providers(provider, false);
+    }
+}
+
+impl MetadataPatch {
+    fn set_providers(&mut self, provider: &str, stamp: bool) {
+        match &mut self.target {
+            MetadataTarget::Entity(entity) if stamp => entity.provider = provider.to_owned(),
+            MetadataTarget::Entity(entity) => entity.fill_provider(provider),
+            MetadataTarget::Identity(identity) => identity.value.set_providers(provider, stamp),
+            _ => {}
+        }
+        for update in self.set.values_mut() {
+            update.value.set_providers(provider, stamp);
+        }
+    }
+
+    /// Stamp `provider` over every entity the patch names: its target and
+    /// any entity references among its values. A patch never names its own
+    /// provider; the host supplies the subscription it came from.
+    pub fn stamp_provider(&mut self, provider: &str) {
+        self.set_providers(provider, true);
+    }
+
+    /// Give every entity the patch names `provider` if it names none.
+    pub fn fill_provider(&mut self, provider: &str) {
+        self.set_providers(provider, false);
     }
 }
 
@@ -1204,17 +1330,11 @@ mod tests {
         let key = PlacementKey(vec![
             PlacementSegment {
                 loop_name: "project".to_owned(),
-                entity: EntityRef {
-                    kind: "project".to_owned(),
-                    id: "andamento".to_owned(),
-                },
+                entity: EntityRef::local("project".to_owned(), "andamento".to_owned()),
             },
             PlacementSegment {
                 loop_name: "vessel".to_owned(),
-                entity: EntityRef {
-                    kind: "vessel".to_owned(),
-                    id: "andamento/work".to_owned(),
-                },
+                entity: EntityRef::local("vessel".to_owned(), "andamento/work".to_owned()),
             },
         ]);
         let encoded = serde_json::to_string(&key).unwrap();
@@ -1224,10 +1344,10 @@ mod tests {
 
     #[test]
     fn metadata_target_entity_round_trips_json() {
-        let target = MetadataTarget::Entity(EntityRef {
-            kind: "convoy".to_owned(),
-            id: "dev/cutover@kiwi".to_owned(),
-        });
+        let target = MetadataTarget::Entity(EntityRef::local(
+            "convoy".to_owned(),
+            "dev/cutover@kiwi".to_owned(),
+        ));
 
         let encoded = serde_json::to_string(&target).unwrap();
         let decoded: MetadataTarget = serde_json::from_str(&encoded).unwrap();
@@ -1235,8 +1355,43 @@ mod tests {
         assert_eq!(decoded, target);
         assert_eq!(
             encoded,
-            r#"{"kind":"entity","value":{"kind":"convoy","id":"dev/cutover@kiwi"}}"#
+            r#"{"kind":"entity","value":{"provider":"local","kind":"convoy","id":"dev/cutover@kiwi"}}"#
         );
+        // Producers don't name a provider; the entity names none until the
+        // host's provider is stamped over it.
+        let unnamed: MetadataTarget = serde_json::from_str(
+            r#"{"kind":"entity","value":{"kind":"convoy","id":"dev/cutover@kiwi"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            unnamed,
+            MetadataTarget::Entity(EntityRef::new("", "convoy", "dev/cutover@kiwi"))
+        );
+    }
+
+    #[test]
+    fn loop_keys_carry_providers_and_old_keys_still_decode() {
+        let key = PlacementLoopKey {
+            region: "tree".into(),
+            parent: PlacementKey(vec![PlacementSegment {
+                loop_name: "project".into(),
+                entity: EntityRef::new("sub-1", "project", "p"),
+            }]),
+            binding: "vessel".into(),
+        };
+        let text = key.encode();
+        assert_eq!(text, "v2;4:tree7:project5:sub-17:project1:p6:vessel");
+        assert_eq!(PlacementLoopKey::decode(&text), Some(key.clone()));
+        // The same kind and ID under another provider is another key.
+        let mut other = key.clone();
+        other.parent.0[0].entity.provider = "sub-2".into();
+        assert_ne!(other.encode(), text);
+        // A key encoded before providers names none; the sidebar fills in its
+        // default.
+        let mut old = PlacementLoopKey::decode("4:tree7:project7:project1:p6:vessel").unwrap();
+        assert_eq!(old.parent.0[0].entity, EntityRef::new("", "project", "p"));
+        old.fill_provider("sub-1");
+        assert_eq!(old, key);
     }
 
     #[test]
@@ -1255,10 +1410,10 @@ mod tests {
     #[test]
     fn metadata_patch_round_trips_json() {
         let patch = MetadataPatch {
-            target: MetadataTarget::Entity(EntityRef {
-                kind: "project".to_owned(),
-                id: "dev/zellij@fleet".to_owned(),
-            }),
+            target: MetadataTarget::Entity(EntityRef::local(
+                "project".to_owned(),
+                "dev/zellij@fleet".to_owned(),
+            )),
             source_id: "flotilla".to_owned(),
             set: std::collections::BTreeMap::from([(
                 "summary.local_llm".to_owned(),

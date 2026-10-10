@@ -14,10 +14,7 @@ const W42: WorkspaceId = WorkspaceId::from_u64(42);
 const W43: WorkspaceId = WorkspaceId::from_u64(43);
 const W80: WorkspaceId = WorkspaceId::from_u64(80);
 fn entity(kind: &str, id: &str) -> EntityRef {
-    EntityRef {
-        kind: kind.into(),
-        id: id.into(),
-    }
+    EntityRef::local(kind, id)
 }
 fn patch(subject: EntityRef, facts: &[(&str, MetadataValue)]) -> MetadataPatch {
     MetadataPatch {

@@ -46,12 +46,18 @@ const KEY_PANE_CWD: &str = "zellij.pane.cwd";
 const KEY_PANE_CWD_LABEL: &str = "zellij.pane.cwd.label";
 const KEY_ENTITY_KIND: &str = "entity.kind";
 const KEY_ENTITY_ID: &str = "entity.id";
+/// The provider of the entity `entity.kind`/`entity.id` name, on a target
+/// that isn't that entity (such as a workspace). The core stamps it from the
+/// provider of the patch that names the entity; a patch never sets it. Where
+/// it is missing, the entity has the default provider.
+const KEY_ENTITY_PROVIDER: &str = "entity.provider";
 /// A host-owned entity published for one workspace, such as a local workspace
 /// the host gives its own identity. Its rows are live for the tab, as a
 /// subject's are, but it is not the tab's subject: closing the tab retains no
 /// path, and the host retracts the entity.
 const KEY_HOST_ENTITY_KIND: &str = crate::presentation::system::HOST_KIND;
 const KEY_HOST_ENTITY_ID: &str = crate::presentation::system::HOST_ID;
+const KEY_HOST_ENTITY_PROVIDER: &str = crate::presentation::system::HOST_PROVIDER;
 const KEY_ACTION_TARGET: &str = "action.primary.target";
 const KEY_MATERIALIZE_RECIPE: &str = "action.primary.recipe";
 const KEY_CHECKOUT_PATH: &str = "git.root";
@@ -476,6 +482,9 @@ pub struct ControllerState {
     rail_ui: ControllerRailUiState,
     rail_ui_writer_client_id: u16,
     node_variable_overrides: BTreeMap<NodeKey, BTreeMap<String, String>>,
+    /// The provider of entities that name none: those from patches applied
+    /// without a provider, and those hosts name by kind and ID alone.
+    default_provider: String,
 }
 impl Default for ControllerState {
     fn default() -> Self {
@@ -501,6 +510,7 @@ impl Default for ControllerState {
             rail_ui: Default::default(),
             rail_ui_writer_client_id: Default::default(),
             node_variable_overrides: Default::default(),
+            default_provider: crate::LOCAL_PROVIDER.to_owned(),
         }
     }
 }
@@ -925,7 +935,69 @@ impl ControllerState {
         &self.template_config
     }
 
-    pub fn apply_metadata_patch(&mut self, patch: crate::MetadataPatch) -> bool {
+    /// The provider of entities that name none.
+    pub fn default_provider(&self) -> &str {
+        &self.default_provider
+    }
+
+    /// Set the provider of entities that name none, before applying facts:
+    /// workspace subjects stamped without a provider resolve to the default
+    /// current when they are read.
+    pub fn set_default_provider(&mut self, provider: &str) -> Result<(), String> {
+        if provider.is_empty() {
+            return Err("a provider needs a name".into());
+        }
+        self.default_provider = provider.to_owned();
+        Ok(())
+    }
+
+    /// Apply a patch the core or host owns, as written: entities keep the
+    /// providers they name, and those naming none get the default. Its facts
+    /// belong to no provider, so no retraction or staleness touches them.
+    pub fn apply_metadata_patch(&mut self, mut patch: crate::MetadataPatch) -> bool {
+        patch.fill_provider(&self.default_provider);
+        self.apply_patch_from(None, patch)
+    }
+
+    /// Apply a patch from `provider`, the subscription it came from. The
+    /// provider is stamped over every entity the patch names, and over the
+    /// provider of any entity it names by `entity.kind`/`entity.id` (or the
+    /// `.host.` keys) on another target; the patch never names it itself.
+    pub fn apply_provider_patch(
+        &mut self,
+        provider: &str,
+        mut patch: crate::MetadataPatch,
+    ) -> bool {
+        patch.stamp_provider(provider);
+        stamp_identity_providers(&mut patch, provider);
+        self.apply_patch_from(Some(provider), patch)
+    }
+
+    /// Remove every fact `provider` contributed. Subjects on open workspace
+    /// paths that it published are retained, as when their facts expire.
+    pub fn retract_provider(&mut self, provider: &str) -> bool {
+        let (changed, affected) = self.metadata.retract(provider);
+        let mut retained_changed = false;
+        for entity in &affected {
+            retained_changed |= self.refresh_retained_subjects_for(Some(entity));
+        }
+        changed || retained_changed
+    }
+
+    /// Mark a provider stale (its connection dropped) or fresh again. A
+    /// stale provider's facts are kept as they were when it became stale and
+    /// none expires; fresh again, each TTL fact that was live renews its lease
+    /// from now, as though reasserted.
+    pub fn set_provider_stale(&mut self, provider: &str, stale: bool) -> bool {
+        let now = self.now();
+        self.metadata.set_stale(provider, stale, now)
+    }
+
+    pub fn provider_is_stale(&self, provider: &str) -> bool {
+        self.metadata.is_stale(provider)
+    }
+
+    fn apply_patch_from(&mut self, provider: Option<&str>, patch: crate::MetadataPatch) -> bool {
         // A producer removes an entity by unsetting both identity facts. TTL
         // expiry and reassertion after a connection loss never take this path.
         let removed = match &patch.target {
@@ -937,6 +1009,7 @@ impl ControllerState {
                     && self.metadata.source_contributes(
                         &EntityId::Entity(entity.clone()),
                         KEY_ENTITY_ID,
+                        provider,
                         &patch.source_id,
                     ) =>
             {
@@ -955,6 +1028,7 @@ impl ControllerState {
                 self.metadata.source_contributes(
                     &EntityId::from(patch.target.clone()),
                     key,
+                    provider,
                     &patch.source_id,
                 )
             })
@@ -962,9 +1036,11 @@ impl ControllerState {
             .collect();
         let is_removal = removed.is_some();
         let next_receive_counter = self.receive_counter.saturating_add(1);
-        let outcome = self
-            .metadata
-            .apply_patch(patch, self.clock_ms.unwrap_or(next_receive_counter));
+        let outcome = self.metadata.apply_patch_from(
+            provider,
+            patch,
+            self.clock_ms.unwrap_or(next_receive_counter),
+        );
         if outcome.touched {
             self.receive_counter = next_receive_counter;
         }
@@ -1635,11 +1711,40 @@ impl ControllerState {
                 .map(|e| e.entity.clone())
                 .collect::<Vec<_>>();
             surface.cover_workspaces(&self.tabs, &host_entities, &default_groups);
+            if self.metadata.has_stale() {
+                self.mark_stale(&mut surface.sections, catalog);
+            }
             surface
                 .diagnostics
                 .extend(model.template_config.warnings.iter().cloned());
         }
         model
+    }
+
+    /// Flag nodes whose presented entity (a ref's target) has a stale provider.
+    fn mark_stale(
+        &self,
+        sections: &mut [crate::presentation::Section],
+        catalog: &CatalogEvaluation,
+    ) {
+        fn mark(
+            state: &ControllerState,
+            nodes: &mut [crate::presentation::PlacementNode],
+            catalog: &CatalogEvaluation,
+        ) {
+            for node in nodes {
+                let target = (node.entity.kind == crate::presentation::system::REF)
+                    .then(|| catalog.entity(&node.entity))
+                    .flatten()
+                    .and_then(|entity| ref_target(&entity.values));
+                let presented = target.as_ref().unwrap_or(&node.entity);
+                node.stale = state.metadata.is_stale(&presented.provider);
+                mark(state, &mut node.children, catalog);
+            }
+        }
+        for section in sections {
+            mark(self, &mut section.nodes, catalog);
+        }
     }
 
     pub fn view_model_for_client(&self, client_id: u16) -> ControllerViewModel {
@@ -1685,9 +1790,13 @@ impl ControllerState {
             if let Some(values) = tab_metadata.get(&workspace.tab_id) {
                 let target = metadata_entry_text(values, KEY_ACTION_TARGET)
                     .map(str::to_owned)
-                    .or_else(|| entity_ref_from_entries(values).map(|e| e.action_target()));
+                    .or_else(|| {
+                        entity_ref_from_entries(values, &self.default_provider)
+                            .map(|e| e.action_target())
+                    });
                 // A tab's host entity is live there too, alongside any subject.
-                let host = host_entity_ref_from_entries(values).map(|e| e.action_target());
+                let host = host_entity_ref_from_entries(values, &self.default_provider)
+                    .map(|e| e.action_target());
                 for target in [target, host].into_iter().flatten() {
                     live.entry(target).or_insert(PresentationState::Live {
                         workspace_id: workspace.tab_id,
@@ -1915,6 +2024,17 @@ impl ControllerState {
                     .unwrap_or_default()
             })
             .collect::<Vec<_>>();
+        // A join on a provider's entity (`of`) stays within that provider:
+        // another subscription's facts with the same text are another
+        // provider's entities. Joins on local entities (sections, groups)
+        // span providers.
+        let joined_providers = loop_definition
+            .predicates
+            .iter()
+            .filter_map(|predicate| bindings.get(predicate.of.as_deref()?))
+            .map(|bound| bound.entity.provider.as_str())
+            .filter(|provider| *provider != crate::LOCAL_PROVIDER)
+            .collect::<BTreeSet<_>>();
         let show_finished = self.show_finished();
         postings.sort_by_key(|matches| matches.len());
         let Some((seed, rest)) = postings.split_first() else {
@@ -1948,6 +2068,11 @@ impl ControllerState {
                 })
             })
             .filter_map(|position| entities.get(*position))
+            .filter(|entity| {
+                joined_providers
+                    .iter()
+                    .all(|provider| entity.entity.provider == *provider)
+            })
             .filter(|entity| !ancestors.contains(&entity.entity))
             .filter(|entity| {
                 show_finished
@@ -2566,33 +2691,20 @@ impl ControllerState {
         tab_id: WorkspaceId,
         subject: Option<&EntityRef>,
     ) -> bool {
-        let keys = [KEY_ENTITY_KIND.to_owned(), KEY_ENTITY_ID.to_owned()];
         let patch = match subject {
             Some(subject) => crate::MetadataPatch {
                 target: crate::MetadataTarget::Tab(tab_id),
                 source_id: SOURCE_LATENT_MATERIALIZER.to_owned(),
-                set: keys
-                    .into_iter()
-                    .zip([subject.kind.clone(), subject.id.clone()])
-                    .map(|(key, value)| {
-                        (
-                            key,
-                            crate::MetadataValueUpdate {
-                                value: MetadataValue::Text(value),
-                                ttl_ms: None,
-                                precedence: Some(LATENT_MATERIALIZER_PRECEDENCE),
-                                ordinal: None,
-                            },
-                        )
-                    })
-                    .collect(),
+                set: subject_binding(subject),
                 unset: vec![],
             },
             None => crate::MetadataPatch {
                 target: crate::MetadataTarget::Tab(tab_id),
                 source_id: SOURCE_LATENT_MATERIALIZER.to_owned(),
                 set: BTreeMap::new(),
-                unset: keys.to_vec(),
+                unset: [KEY_ENTITY_PROVIDER, KEY_ENTITY_KIND, KEY_ENTITY_ID]
+                    .map(str::to_owned)
+                    .to_vec(),
             },
         };
         self.apply_metadata_patch(patch)
@@ -2747,10 +2859,10 @@ impl ControllerState {
                 &EntityId::Tab(tab.tab_id),
                 seeds.get(&tab.tab_id).cloned().unwrap_or_default(),
             );
-            if let Some(subject) = entity_ref_from_entries(&values) {
+            if let Some(subject) = entity_ref_from_entries(&values, &self.default_provider) {
                 identities.subjects.insert(tab.tab_id, subject);
             }
-            if let Some(host) = host_entity_ref_from_entries(&values) {
+            if let Some(host) = host_entity_ref_from_entries(&values, &self.default_provider) {
                 identities.hosts.insert(tab.tab_id, host);
             }
         }
@@ -2961,7 +3073,7 @@ impl ControllerState {
                     &EntityId::Tab(tab.tab_id),
                     seeds.get(&tab.tab_id).cloned().unwrap_or_default(),
                 );
-                entity_ref_from_entries(&values).is_none()
+                entity_ref_from_entries(&values, &self.default_provider).is_none()
                     && metadata_entry_text(&values, KEY_ACTION_TARGET).is_none()
             })
             .collect();
@@ -3004,7 +3116,7 @@ impl ControllerState {
         let target = EntityId::Tab(tab_id);
         let seed_values = tab_seed_metadata.get(&tab_id).cloned().unwrap_or_default();
         let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
-        entity_ref_from_entries(&values)
+        entity_ref_from_entries(&values, &self.default_provider)
     }
 
     pub fn can_materialize_latent(&self, request: &crate::MaterializeLatentRequest) -> bool {
@@ -3117,15 +3229,15 @@ impl ControllerState {
                     .cloned()
                     .unwrap_or_default();
                 let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
-                let entity_target =
-                    entity_ref_from_entries(&values).map(|entity| entity.action_target());
+                let entity_target = entity_ref_from_entries(&values, &self.default_provider)
+                    .map(|entity| entity.action_target());
                 let resolved_action_target = metadata_entry_text(&values, KEY_ACTION_TARGET)
                     .map(str::to_owned)
                     .or(entity_target);
                 // A tab's host entity is live there too (live_presentation_states),
                 // so activating it focuses the tab.
-                let host_target =
-                    host_entity_ref_from_entries(&values).map(|entity| entity.action_target());
+                let host_target = host_entity_ref_from_entries(&values, &self.default_provider)
+                    .map(|entity| entity.action_target());
                 (resolved_action_target.as_deref() == Some(action_target)
                     || host_target.as_deref() == Some(action_target))
                 .then_some(tab.position)
@@ -3308,26 +3420,7 @@ impl ControllerState {
         self.apply_metadata_patch(crate::MetadataPatch {
             target: crate::MetadataTarget::Tab(tab_id),
             source_id: SOURCE_LATENT_MATERIALIZER.to_owned(),
-            set: BTreeMap::from([
-                (
-                    KEY_ENTITY_KIND.to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text(entity.kind.clone()),
-                        ttl_ms: None,
-                        precedence: Some(LATENT_MATERIALIZER_PRECEDENCE),
-                        ordinal: None,
-                    },
-                ),
-                (
-                    KEY_ENTITY_ID.to_owned(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::Text(entity.id),
-                        ttl_ms: None,
-                        precedence: Some(LATENT_MATERIALIZER_PRECEDENCE),
-                        ordinal: None,
-                    },
-                ),
-            ]),
+            set: subject_binding(&entity),
             unset: vec![],
         })
     }
@@ -3453,7 +3546,27 @@ impl ControllerState {
             } else {
                 current_values
             };
-            if let Some(entity) = entity_ref_from_entries(&current_values) {
+            // An entity restating its own identity names itself.
+            let provider = match &current {
+                EntityId::Entity(entity) => entity.provider.as_str(),
+                _ => self.default_provider.as_str(),
+            };
+            let current_values = match &current {
+                EntityId::Entity(entity)
+                    if !current_values.contains_key(KEY_ENTITY_PROVIDER)
+                        && current_values.contains_key(KEY_ENTITY_ID) =>
+                {
+                    let mut values = current_values;
+                    let entry = MetadataEntry {
+                        value: MetadataValue::Text(entity.provider.clone()),
+                        ..values[KEY_ENTITY_ID].clone()
+                    };
+                    values.insert(KEY_ENTITY_PROVIDER.to_owned(), entry);
+                    values
+                }
+                _ => current_values,
+            };
+            if let Some(entity) = entity_ref_from_entries(&current_values, provider) {
                 let entity_target = EntityId::Entity(entity);
                 if !visited.contains(&entity_target) {
                     queue.push_back((entity_target, distance + 1));
@@ -3692,11 +3805,46 @@ fn ref_target(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
     }
 }
 
-fn host_entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
-    Some(EntityRef {
-        kind: metadata_entry_text(entries, KEY_HOST_ENTITY_KIND)?.to_owned(),
-        id: metadata_entry_text(entries, KEY_HOST_ENTITY_ID)?.to_owned(),
-    })
+fn host_entity_ref_from_entries(
+    entries: &BTreeMap<String, MetadataEntry>,
+    default_provider: &str,
+) -> Option<EntityRef> {
+    Some(EntityRef::new(
+        metadata_entry_text(entries, KEY_HOST_ENTITY_PROVIDER).unwrap_or(default_provider),
+        metadata_entry_text(entries, KEY_HOST_ENTITY_KIND)?,
+        metadata_entry_text(entries, KEY_HOST_ENTITY_ID)?,
+    ))
+}
+
+/// Replace any provider a patch names by `entity.provider` (or
+/// `.host.provider`) with `provider`, wherever it names an entity by kind and
+/// ID on another target, so the entity is the patch's provider's.
+fn stamp_identity_providers(patch: &mut crate::MetadataPatch, provider: &str) {
+    for (kind, id, key) in [
+        (KEY_ENTITY_KIND, KEY_ENTITY_ID, KEY_ENTITY_PROVIDER),
+        (
+            KEY_HOST_ENTITY_KIND,
+            KEY_HOST_ENTITY_ID,
+            KEY_HOST_ENTITY_PROVIDER,
+        ),
+    ] {
+        patch.set.remove(key);
+        patch.unset.retain(|unset| unset != key);
+        if matches!(patch.target, crate::MetadataTarget::Entity(_)) {
+            continue;
+        }
+        if let Some(update) = patch.set.get(id).or_else(|| patch.set.get(kind)).cloned() {
+            patch.set.insert(
+                key.to_owned(),
+                crate::MetadataValueUpdate {
+                    value: MetadataValue::Text(provider.to_owned()),
+                    ..update
+                },
+            );
+        } else if patch.unset.iter().any(|unset| unset == id || unset == kind) {
+            patch.unset.push(key.to_owned());
+        }
+    }
 }
 
 /// A retained subject drawn from its record alone: its label and the facts
@@ -3736,11 +3884,37 @@ fn saved_catalog_entity(
     }
 }
 
-fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
-    Some(EntityRef {
-        kind: metadata_entry_text(entries, KEY_ENTITY_KIND)?.to_owned(),
-        id: metadata_entry_text(entries, KEY_ENTITY_ID)?.to_owned(),
+fn entity_ref_from_entries(
+    entries: &BTreeMap<String, MetadataEntry>,
+    default_provider: &str,
+) -> Option<EntityRef> {
+    Some(EntityRef::new(
+        metadata_entry_text(entries, KEY_ENTITY_PROVIDER).unwrap_or(default_provider),
+        metadata_entry_text(entries, KEY_ENTITY_KIND)?,
+        metadata_entry_text(entries, KEY_ENTITY_ID)?,
+    ))
+}
+
+/// The tab facts that bind a workspace to `subject`, as the core owns them.
+fn subject_binding(subject: &EntityRef) -> BTreeMap<String, crate::MetadataValueUpdate> {
+    [
+        (KEY_ENTITY_PROVIDER, &subject.provider),
+        (KEY_ENTITY_KIND, &subject.kind),
+        (KEY_ENTITY_ID, &subject.id),
+    ]
+    .into_iter()
+    .map(|(key, value)| {
+        (
+            key.to_owned(),
+            crate::MetadataValueUpdate {
+                value: MetadataValue::Text(value.clone()),
+                ttl_ms: None,
+                precedence: Some(LATENT_MATERIALIZER_PRECEDENCE),
+                ordinal: None,
+            },
+        )
     })
+    .collect()
 }
 
 fn metadata_entry_text<'a>(
@@ -3863,10 +4037,7 @@ mod tests {
     }
 
     fn entity_ref(kind: &str, id: &str) -> crate::EntityRef {
-        crate::EntityRef {
-            kind: kind.to_owned(),
-            id: id.to_owned(),
-        }
+        crate::EntityRef::local(kind.to_owned(), id.to_owned())
     }
 
     // EntityRefs joins must use only prebuilt postings, including each identity
@@ -4571,10 +4742,7 @@ placement "identity-descending" {
 
     #[test]
     fn placement_state_is_independent_per_appearance_and_survives_model_pushes() {
-        let entity = EntityRef {
-            kind: "vessel".to_owned(),
-            id: "dev/focus/worker@lab".to_owned(),
-        };
+        let entity = EntityRef::local("vessel".to_owned(), "dev/focus/worker@lab".to_owned());
         let key = |loop_name: &str| {
             PlacementKey(vec![PlacementSegment {
                 loop_name: loop_name.to_owned(),
@@ -4595,10 +4763,7 @@ placement "identity-descending" {
 
     #[test]
     fn placement_layout_variables_are_scoped_by_the_full_key() {
-        let entity = EntityRef {
-            kind: "vessel".to_owned(),
-            id: "dev/focus/worker@lab".to_owned(),
-        };
+        let entity = EntityRef::local("vessel".to_owned(), "dev/focus/worker@lab".to_owned());
         let placement = |loop_name: &str| {
             NodeKey::Placement(PlacementKey(vec![PlacementSegment {
                 loop_name: loop_name.to_owned(),
@@ -4628,10 +4793,7 @@ placement "identity-descending" {
 
     #[test]
     fn renaming_a_loop_deliberately_resets_its_placement_subtree_state() {
-        let entity = EntityRef {
-            kind: "vessel".to_owned(),
-            id: "dev/focus/worker@lab".to_owned(),
-        };
+        let entity = EntityRef::local("vessel".to_owned(), "dev/focus/worker@lab".to_owned());
         let key = |loop_name: &str| {
             PlacementKey(vec![PlacementSegment {
                 loop_name: loop_name.to_owned(),
@@ -5270,10 +5432,7 @@ placement "identity-descending" {
             parent: PlacementKey(vec![]),
             binding: binding.to_owned(),
         };
-        let vessel = |id: &str| crate::EntityRef {
-            kind: "vessel".to_owned(),
-            id: id.to_owned(),
-        };
+        let vessel = |id: &str| crate::EntityRef::local("vessel".to_owned(), id.to_owned());
         let mut source = ControllerState::default();
         source.apply_rail_ui_action(RailUiAction::SetSiblingOrder {
             loop_key: key("vessel"),

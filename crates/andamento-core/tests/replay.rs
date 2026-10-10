@@ -171,7 +171,10 @@ fn advancing_over_a_gap_does_not_refresh_old_facts() {
         .unwrap();
     let mut late = input.remove(index);
     late.offset_ms = 40_000;
-    let target = late.patch.target.clone();
+    // The replayed patch names no provider; the sidebar stamps its default.
+    let mut stamped = late.patch.clone();
+    stamped.stamp_provider(andamento_core::LOCAL_PROVIDER);
+    let target = stamped.target;
     input.push(late);
     let mut replay = Replay::new(input).unwrap();
     let mut sidebar = Sidebar::new(CONFIG).unwrap();

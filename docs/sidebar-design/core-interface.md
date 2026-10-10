@@ -147,6 +147,14 @@ ABI 3 host can have supplied and which it reads through the ABI 3 getters.
 | none | `andamento_workspace_register`/`forget`/`registered` |
 | none | `andamento_record_names`/`generation`/`export`/`import`, `andamento_bytes_free` |
 | none | `andamento_set_display_variable`, `andamento_local_set`/`remove` |
+| `andamento_apply_patch_json`, `andamento_apply_entity`, `andamento_apply_workspace` (default provider) | `andamento_apply_patch_json_from`, `andamento_apply_entity_from`, `andamento_apply_workspace_from` |
+| `AndamentoEntity` (kind, id; default provider) | `AndamentoEntity3` (provider, kind, id) |
+| `andamento_set_sibling_order`, `andamento_local_set`, `andamento_copy_subject_url` | `andamento_set_sibling_order3`, `andamento_local_set3`, `andamento_copy_subject_url3` |
+| `andamento_snapshot_detail_find`/`request` | `andamento_snapshot_detail_find3`/`request3`, `andamento_snapshot_detail_provider` |
+| `andamento_content_plan3` | `andamento_content_plan_entity` |
+| `AndamentoNode.entity_kind`/`entity_id` | `andamento_snapshot_node_provider` (with stale) |
+| `AndamentoEffect.entity_kind`/`entity_id` | `andamento_effects_provider` |
+| none | `andamento_set_default_provider`, `andamento_provider_retract`, `andamento_provider_set_stale` |
 
 JSON tab targets accept a number, a hyphenated UUID or 32 hex digits, in either
 case; embedded IDs serialize as numbers, as before. The replay `Request`s carry
@@ -159,6 +167,63 @@ independent of topology: either may come first, and closing a workspace does
 not forget it. Forget a workspace the host deleted rather than kept.
 Registration changes neither the snapshot nor its revision; it gives the
 workspace a record (see Named records below).
+
+### Providers (ABI 3)
+
+An entity is `{provider, kind, id}` (`EntityRef` in Rust). The provider is the
+Dashboard's **subscription ID** (wheelhouse ADR 0012), stable and owned by the
+Dashboard; the host supplies it per patch source. A producer never names it,
+and the identity a provider reports is an attribute of the subscription, not
+part of any key. The same kind and ID under two providers are two entities:
+two rows, two placement keys, two records, two activation targets. Andamento's
+own sections, groups and refs, and anything a one-off local script publishes,
+have the provider `local` (`LOCAL_PROVIDER`).
+
+- **Stamping.** `apply_from(now_ms, provider, patches)`
+  (`andamento_apply_patch_json_from`, `andamento_apply_entity_from`,
+  `andamento_apply_workspace_from`) stamps `provider` over every entity a patch
+  names: its target, entity references among its values, and the entity a
+  workspace's `entity.kind`/`entity.id` (or `.host.kind`/`.host.id`) facts
+  name, recorded as `entity.provider` (`.host.provider`). Any provider the
+  patch itself names is overwritten.
+- **Default provider.** `apply` and every ABI 2 call use the default provider,
+  `local` until `set_default_provider` (`andamento_set_default_provider`)
+  changes it, so Wheelhouse can move one source at a time. Entities named by
+  kind and ID alone (ABI 2 entity arguments, JSON entities without
+  `"provider"`, loop keys encoded before providers) get the default provider.
+- **Joins stay within a provider.** A placement loop that matches on a bound
+  entity (`match "<key>" of="<loop>"`) only matches that entity's provider's
+  entities when it is not `local`, so two subscriptions' projects named `p`
+  each hold only their own vessels. Joins on local sections and groups span
+  providers.
+- **Activation targets.** A `local` entity's fallback activation target stays
+  `kind:id`; any other provider's is `kind:id@provider`, so the same kind and
+  ID never alias across providers. Explicit `action.primary.target` facts are
+  producer text and are not qualified.
+- **Retraction.** `retract_provider` (`andamento_provider_retract`) removes
+  every fact a provider contributed in one call, as when its subscription is
+  removed. It reuses the retained/ended machinery: subjects on open workspace
+  paths and the targets of local refs (pins) are retained with their last
+  facts, a workspace bound to its subject by that provider's facts keeps the
+  binding, and nothing is marked ended. Closing the workspace or removing the
+  ref lets the retained entity go.
+- **Stale facts.** `set_provider_stale(provider, true)`
+  (`andamento_provider_set_stale`) is for a dropped connection, instead of
+  waiting for TTLs. A stale provider's facts are kept as they were when it
+  became stale: those live then stay live, and no TTL expires them while it
+  stays stale; facts that had already expired stay expired. Snapshot nodes
+  presenting its entities (a ref presenting its target included) set `stale`
+  (`andamento_snapshot_node_provider`). Marked fresh again, each TTL fact that
+  was live renews its lease from that moment, as though the provider had
+  reasserted it, so the reconnected stream has one TTL to reassert it before
+  it expires. Facts without a TTL are unaffected either way. Retraction clears
+  staleness.
+
+Placement keys carry the provider. `PlacementLoopKey::encode` (the text from
+`andamento_snapshot_node_loop_key`) is now `v2;` followed by length-prefixed
+parts with each parent segment's loop name, provider, kind and ID; keys in the
+earlier encoding still decode, and their entities get the default provider.
+The opaque node key (`AndamentoNode.key`) includes each segment's provider.
 
 ### Named records (ABI 3)
 
@@ -176,30 +241,30 @@ Scroll offset, display variables declared `persist=false`, and section collapse
 are presentation state and are not recorded.
 
 ```kdl
-andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=1 {
-    subject "vessel" "v"
-    retained "project" "p" label="Project P" status="retained" last-seen=100 {
+andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=2 {
+    subject "vessel" "v" provider="sub-1"
+    retained "project" "p" provider="sub-1" label="Project P" status="retained" last-seen=100 {
         fact "flotilla.project" "p"
     }
-    retained "vessel" "v" label="Vee" status="ended" last-seen=150 {
+    retained "vessel" "v" provider="sub-1" label="Vee" status="ended" last-seen=150 {
         fact "flotilla.project" "p"
     }
 }
 ```
 
 A dashboard record lists `display "<name>" <value>`, `collapsed { at … }`,
-`order "<region>" "<binding>" { parent { at … }; entity "<kind>" "<id>" … }`,
-`variable "<name>" "<value>" { at … }` and `local "<kind>" "<id>" { fact … }`
-nodes; a placement key is its `at "<loop>" "<kind>" "<id>"` segments, outermost
-first. `records.rs` has a full sample.
+`order "<region>" "<binding>" { parent { at … }; entity "<kind>" "<id>" provider="<provider>" … }`,
+`variable "<name>" "<value>" { at … }` and `local "<kind>" "<id>" provider="local" { fact … }`
+nodes; a placement key is its `at "<loop>" "<kind>" "<id>" provider="<provider>"`
+segments, outermost first. Every entity names its provider. `records.rs` has a
+full sample.
 
 - **Retained and ended subjects** are recorded with the least needed to draw
   their rows with no facts: identity, label, whether they ended, when they were
   last seen (the host's `now_ms` when their facts last appeared, changed or went
   away), and the facts placement reads (loop matches, `in` lists, order keys and
   visibility rules), so a row is drawn on its path, not in the fallback section.
-  The full fact set is not saved: producers republish it. The provider part of
-  an entity's identity is added with subscriptions (state model step 5).
+  The full fact set is not saved: producers republish it.
 - A workspace's record follows it while it is open; a closed workspace keeps
   the record it had, and forgetting the workspace drops it.
 - **Generations.** `record_generation` (`andamento_record_generation`) is
@@ -212,6 +277,13 @@ first. `records.rs` has a full sample.
   when the workspace is observed, its recorded path is drawn until a producer
   publishes the subject again. A record that doesn't parse, has another
   version, or names another record is rejected without changing anything.
+- **Versions.** Andamento writes version 2, where every entity names its
+  provider. Version 1 records, from before providers, still import: their
+  sections, groups and refs (`.section`, `.group`, `.ref`) get `local`, and
+  every other entity gets the default provider at import, which is the
+  provider ABI 2 calls stamp, so migrated keys match the facts a host still
+  publishes the old way. A host that sets a default provider sets it before
+  importing. Export always writes version 2.
 - **Unknown nodes** directly inside the envelope are kept and exported again,
   after the known ones. Unknown properties or children of known nodes are not
   kept, so a later version adds nodes, or raises the version.

@@ -28,10 +28,7 @@ fn config(input: &str) -> TemplateConfigCatalog {
 }
 fn publish(state: &mut ControllerState, id: &str, facts: &[(&str, MetadataValue)]) {
     state.apply_metadata_patch(MetadataPatch {
-        target: MetadataTarget::Entity(EntityRef {
-            kind: "vessel".into(),
-            id: id.into(),
-        }),
+        target: MetadataTarget::Entity(EntityRef::local("vessel", id)),
         source_id: "test".into(),
         set: facts
             .iter()

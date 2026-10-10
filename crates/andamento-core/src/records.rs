@@ -3,29 +3,37 @@
 //! it is written; Andamento never touches the filesystem.
 //!
 //! ```kdl
-//! andamento-record "dashboard" version=1 {
+//! andamento-record "dashboard" version=2 {
 //!     display "show-finished" true
 //!     collapsed {
-//!         at "project" "project" "p"
+//!         at "project" "project" "p" provider="sub-1"
 //!     }
 //!     order "tree" "vessel" {
 //!         parent {
-//!             at "project" "project" "p"
+//!             at "project" "project" "p" provider="sub-1"
 //!         }
-//!         entity "vessel" "b"
-//!         entity "vessel" "a"
+//!         entity "vessel" "b" provider="sub-1"
+//!         entity "vessel" "a" provider="sub-1"
 //!     }
 //!     variable "density" "compact" {
-//!         at "project" "project" "p"
+//!         at "project" "project" "p" provider="sub-1"
 //!     }
-//!     local ".group" "g1" {
+//!     local ".group" "g1" provider="local" {
 //!         fact ".section" {
-//!             entity ".section" "s1"
+//!             entity ".section" "s1" provider="local"
 //!         }
 //!         fact "display.label" "Pinned"
 //!     }
 //! }
 //! ```
+//!
+//! Every entity names its provider, the Dashboard subscription its facts
+//! come from (`local` for Andamento's own). Version 1 records, written before
+//! entities had providers, still import: their sections, groups and refs
+//! (`.section`, `.group`, `.ref`) get the `local` provider and every other
+//! entity gets the sidebar's default provider, which is the provider ABI 2
+//! calls stamp, so migrated keys match the facts a host still publishes the
+//! old way. Export always writes the current version.
 //!
 //! Nodes this version doesn't know, directly inside the envelope, are kept and
 //! written back unchanged, after the known ones. Unknown properties or
@@ -43,8 +51,8 @@ use crate::{
     PlacementSegment, WorkspaceId,
 };
 
-/// The record format version this Andamento reads and writes.
-pub const RECORD_VERSION: i64 = 1;
+/// The record format version this Andamento writes. It also reads version 1.
+pub const RECORD_VERSION: i64 = 2;
 const ENVELOPE: &str = "andamento-record";
 
 /// The name of a record: `dashboard`, or `workspace/<id>` for a registered
@@ -168,9 +176,13 @@ impl DashboardRecord {
         envelope(&RecordName::Dashboard, body, &self.unknown)
     }
 
-    pub fn decode(text: &str) -> Result<Self, String> {
+    /// Read a record. A version 1 record's entities get `default_provider`
+    /// (see the module documentation).
+    pub fn decode(text: &str, default_provider: &str) -> Result<Self, String> {
         let mut record = Self::default();
-        for node in open_envelope(text, &RecordName::Dashboard)? {
+        let (version, nodes) = open_envelope(text, &RecordName::Dashboard)?;
+        let read = Reader::new(version, default_provider);
+        for node in nodes {
             match node.name().value() {
                 "display" => {
                     let name = string_arg(&node, 0)?;
@@ -186,15 +198,15 @@ impl DashboardRecord {
                     record.display.insert(name, value);
                 }
                 "collapsed" => {
-                    record.collapsed.insert(read_key(&node)?);
+                    record.collapsed.insert(read.key(&node)?);
                 }
                 "order" => {
                     let mut parent = PlacementKey::default();
                     let mut entities = Vec::new();
                     for child in children(&node) {
                         match child.name().value() {
-                            "parent" => parent = read_key(child)?,
-                            "entity" => entities.push(read_entity(child)?),
+                            "parent" => parent = read.key(child)?,
+                            "entity" => entities.push(read.entity(child)?),
                             other => return Err(format!("unexpected {other:?} in order")),
                         }
                     }
@@ -212,12 +224,12 @@ impl DashboardRecord {
                     let value = string_arg(&node, 1)?;
                     record
                         .variables
-                        .entry(read_key(&node)?)
+                        .entry(read.key(&node)?)
                         .or_default()
                         .insert(name, value);
                 }
                 "local" => {
-                    record.local.insert(read_entity(&node)?, read_facts(&node)?);
+                    record.local.insert(read.entity(&node)?, read.facts(&node)?);
                 }
                 _ => record.unknown.push(canonical(node)),
             }
@@ -247,11 +259,15 @@ impl WorkspaceRecord {
         envelope(&RecordName::Workspace(id), body, &self.unknown)
     }
 
-    pub fn decode(text: &str, id: WorkspaceId) -> Result<Self, String> {
+    /// Read a record. A version 1 record's entities get `default_provider`
+    /// (see the module documentation).
+    pub fn decode(text: &str, id: WorkspaceId, default_provider: &str) -> Result<Self, String> {
         let mut record = Self::default();
-        for node in open_envelope(text, &RecordName::Workspace(id))? {
+        let (version, nodes) = open_envelope(text, &RecordName::Workspace(id))?;
+        let read = Reader::new(version, default_provider);
+        for node in nodes {
             match node.name().value() {
-                "subject" => record.subject = Some(read_entity(&node)?),
+                "subject" => record.subject = Some(read.entity(&node)?),
                 "retained" => {
                     let ended = match node.get("status").map(|e| e.value().as_string()) {
                         None | Some(Some("retained")) => false,
@@ -279,12 +295,12 @@ impl WorkspaceRecord {
                         ),
                     };
                     record.retained.insert(
-                        read_entity(&node)?,
+                        read.entity(&node)?,
                         SubjectRecord {
                             label,
                             ended,
                             last_seen_ms,
-                            facts: read_facts(&node)?,
+                            facts: read.facts(&node)?,
                         },
                     );
                 }
@@ -329,7 +345,7 @@ fn envelope(name: &RecordName, body: Vec<KdlNode>, unknown: &[String]) -> String
 
 /// The envelope's body, after checking its name and version. Nothing is
 /// applied until the whole record has been read.
-fn open_envelope(text: &str, expected: &RecordName) -> Result<Vec<KdlNode>, String> {
+fn open_envelope(text: &str, expected: &RecordName) -> Result<(i64, Vec<KdlNode>), String> {
     let document = text
         .parse::<KdlDocument>()
         .map_err(|e| format!("record is not valid KDL: {e}"))?;
@@ -343,16 +359,16 @@ fn open_envelope(text: &str, expected: &RecordName) -> Result<Vec<KdlNode>, Stri
         .get("version")
         .and_then(|e| e.value().as_i64())
         .ok_or("record has no integer version")?;
-    if version != RECORD_VERSION {
+    if !(1..=RECORD_VERSION).contains(&version) {
         return Err(format!(
-            "record version {version} is not supported; this Andamento reads version {RECORD_VERSION}"
+            "record version {version} is not supported; this Andamento reads versions 1 to {RECORD_VERSION}"
         ));
     }
     let name = string_arg(node, 0)?;
     if name != expected.to_string() {
         return Err(format!("record {name:?} imported as {expected}"));
     }
-    Ok(children(node).to_vec())
+    Ok((version, children(node).to_vec()))
 }
 
 fn canonical(mut node: KdlNode) -> String {
@@ -393,17 +409,60 @@ fn entity_node(name: &str, entity: &EntityRef) -> KdlNode {
     let mut node = KdlNode::new(name);
     node.push(KdlEntry::new(entity.kind.clone()));
     node.push(KdlEntry::new(entity.id.clone()));
+    node.insert("provider", entity.provider.clone());
     node
 }
 
-fn read_entity(node: &KdlNode) -> Result<EntityRef, String> {
-    Ok(EntityRef {
-        kind: string_arg(node, 0)?,
-        id: string_arg(node, 1)?,
-    })
+/// Reads entities, placement keys and facts of one record version.
+struct Reader<'a> {
+    version: i64,
+    default_provider: &'a str,
 }
 
-/// A placement key, as `at "<loop>" "<kind>" "<id>"` children, outermost first.
+impl<'a> Reader<'a> {
+    fn new(version: i64, default_provider: &'a str) -> Self {
+        Self {
+            version,
+            default_provider,
+        }
+    }
+
+    /// An entity: its kind and ID from arguments `first` and `first + 1`,
+    /// and its provider.
+    fn entity_at(&self, node: &KdlNode, first: usize) -> Result<EntityRef, String> {
+        let kind = string_arg(node, first)?;
+        let id = string_arg(node, first + 1)?;
+        let provider = match (self.version, node.get("provider")) {
+            (_, Some(entry)) => entry
+                .value()
+                .as_string()
+                .filter(|p| !p.is_empty())
+                .ok_or("provider must be a nonempty string")?
+                .to_owned(),
+            (1, None) if crate::sidebar::LOCAL_KINDS.contains(&kind.as_str()) => {
+                crate::LOCAL_PROVIDER.to_owned()
+            }
+            (1, None) => self.default_provider.to_owned(),
+            (_, None) => return Err(format!("{} needs a provider", node.name().value())),
+        };
+        Ok(EntityRef::new(provider, kind, id))
+    }
+
+    fn entity(&self, node: &KdlNode) -> Result<EntityRef, String> {
+        self.entity_at(node, 0)
+    }
+
+    fn key(&self, node: &KdlNode) -> Result<PlacementKey, String> {
+        read_key(self, node)
+    }
+
+    fn facts(&self, node: &KdlNode) -> Result<BTreeMap<String, MetadataValue>, String> {
+        read_facts(self, node)
+    }
+}
+
+/// A placement key, as `at "<loop>" "<kind>" "<id>" provider="<provider>"`
+/// children, outermost first.
 fn push_key(node: &mut KdlNode, key: &PlacementKey) {
     let children = node.ensure_children();
     for segment in &key.0 {
@@ -414,7 +473,7 @@ fn push_key(node: &mut KdlNode, key: &PlacementKey) {
     }
 }
 
-fn read_key(node: &KdlNode) -> Result<PlacementKey, String> {
+fn read_key(read: &Reader, node: &KdlNode) -> Result<PlacementKey, String> {
     children(node)
         .iter()
         .map(|at| {
@@ -426,10 +485,7 @@ fn read_key(node: &KdlNode) -> Result<PlacementKey, String> {
             }
             Ok(PlacementSegment {
                 loop_name: string_arg(at, 0)?,
-                entity: EntityRef {
-                    kind: string_arg(at, 1)?,
-                    id: string_arg(at, 2)?,
-                },
+                entity: read.entity_at(at, 1)?,
             })
         })
         .collect::<Result<_, _>>()
@@ -462,7 +518,7 @@ fn push_facts(node: &mut KdlNode, facts: &BTreeMap<String, MetadataValue>) {
     }
 }
 
-fn read_facts(node: &KdlNode) -> Result<BTreeMap<String, MetadataValue>, String> {
+fn read_facts(read: &Reader, node: &KdlNode) -> Result<BTreeMap<String, MetadataValue>, String> {
     let mut facts = BTreeMap::new();
     for fact in children(node) {
         if fact.name().value() != "fact" {
@@ -477,7 +533,7 @@ fn read_facts(node: &KdlNode) -> Result<BTreeMap<String, MetadataValue>, String>
                         if entity.name().value() != "entity" {
                             return Err("an entity-reference fact lists entity nodes".to_owned());
                         }
-                        read_entity(entity)
+                        read.entity(entity)
                     })
                     .collect::<Result<_, _>>()?,
             )
@@ -505,10 +561,7 @@ mod tests {
     use super::*;
 
     fn entity(kind: &str, id: &str) -> EntityRef {
-        EntityRef {
-            kind: kind.into(),
-            id: id.into(),
-        }
+        EntityRef::local(kind, id)
     }
     fn key(segments: &[(&str, &str, &str)]) -> PlacementKey {
         PlacementKey(
@@ -576,8 +629,15 @@ mod tests {
     fn dashboard_round_trips() {
         let record = dashboard();
         let text = record.encode();
-        assert_eq!(DashboardRecord::decode(&text).unwrap(), record, "{text}");
-        assert_eq!(DashboardRecord::decode(&text).unwrap().encode(), text);
+        assert_eq!(
+            DashboardRecord::decode(&text, "local").unwrap(),
+            record,
+            "{text}"
+        );
+        assert_eq!(
+            DashboardRecord::decode(&text, "local").unwrap().encode(),
+            text
+        );
     }
 
     #[test]
@@ -604,15 +664,15 @@ mod tests {
         };
         let text = record.encode(id);
         assert!(text.starts_with(
-            "andamento-record \"workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b\" version=1"
+            "andamento-record \"workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b\" version=2"
         ));
         assert_eq!(
-            WorkspaceRecord::decode(&text, id).unwrap(),
+            WorkspaceRecord::decode(&text, id, "local").unwrap(),
             record,
             "{text}"
         );
         // A record for one workspace is not another's.
-        assert!(WorkspaceRecord::decode(&text, WorkspaceId::from(7)).is_err());
+        assert!(WorkspaceRecord::decode(&text, WorkspaceId::from(7), "local").is_err());
     }
 
     #[test]
@@ -623,14 +683,16 @@ mod tests {
             "{\n    future-thing \"x\" mode=2 {\n        nested 1\n    }\n",
             1,
         );
-        let record = DashboardRecord::decode(&extended).unwrap();
+        let record = DashboardRecord::decode(&extended, "local").unwrap();
         assert_eq!(record.unknown.len(), 1);
         let exported = record.encode();
         assert!(exported.contains("future-thing \"x\" mode=2"), "{exported}");
         assert!(exported.contains("nested 1"), "{exported}");
-        assert_eq!(DashboardRecord::decode(&exported).unwrap(), record);
+        assert_eq!(DashboardRecord::decode(&exported, "local").unwrap(), record);
         assert_eq!(
-            DashboardRecord::decode(&exported).unwrap().encode(),
+            DashboardRecord::decode(&exported, "local")
+                .unwrap()
+                .encode(),
             exported
         );
     }
@@ -638,8 +700,12 @@ mod tests {
     #[test]
     fn other_versions_names_and_shapes_are_rejected() {
         for text in [
-            "andamento-record \"dashboard\" version=2",
+            "andamento-record \"dashboard\" version=3",
+            "andamento-record \"dashboard\" version=0",
             "andamento-record \"dashboard\"",
+            // Version 2 entities name their provider.
+            "andamento-record \"dashboard\" version=2 { collapsed { at \"p\" \"project\" \"p\"; }; }",
+            "andamento-record \"dashboard\" version=2 { collapsed { at \"p\" \"project\" \"p\" provider=\"\"; }; }",
             "andamento-record \"workspace/7\" version=1",
             "something-else \"dashboard\" version=1",
             "andamento-record \"dashboard\" version=1\nandamento-record \"dashboard\" version=1",
@@ -647,9 +713,103 @@ mod tests {
             "andamento-record \"dashboard\" version=1 { collapsed { nope; }; }",
             "not { kdl",
         ] {
-            assert!(DashboardRecord::decode(text).is_err(), "{text}");
+            assert!(DashboardRecord::decode(text, "local").is_err(), "{text}");
         }
-        assert!(DashboardRecord::decode("andamento-record \"dashboard\" version=1").is_ok());
+        assert!(
+            DashboardRecord::decode("andamento-record \"dashboard\" version=1", "local").is_ok()
+        );
+        assert!(
+            DashboardRecord::decode("andamento-record \"dashboard\" version=2", "local").is_ok()
+        );
+    }
+
+    #[test]
+    fn version_1_records_migrate_to_the_default_provider() {
+        let v1 = r#"andamento-record "dashboard" version=1 {
+    collapsed {
+        at "project" "project" "p"
+    }
+    order "tree" "vessel" {
+        parent {
+            at "project" "project" "p"
+        }
+        entity "vessel" "b"
+    }
+    local ".ref" "r1" {
+        fact ".group" {
+            entity ".group" "g1"
+        }
+        fact ".target" {
+            entity "vessel" "b"
+        }
+    }
+}"#;
+        let record = DashboardRecord::decode(v1, "sub-1").unwrap();
+        let project = PlacementKey(vec![PlacementSegment {
+            loop_name: "project".into(),
+            entity: EntityRef::new("sub-1", "project", "p"),
+        }]);
+        assert_eq!(record.collapsed, BTreeSet::from([project.clone()]));
+        let (loop_key, order) = record.orders.iter().next().unwrap();
+        assert_eq!(loop_key.parent, project);
+        assert_eq!(order, &vec![EntityRef::new("sub-1", "vessel", "b")]);
+        // Andamento's own sections, groups and refs are local; what a ref
+        // points at gets the default.
+        let facts = &record.local[&EntityRef::local(".ref", "r1")];
+        assert_eq!(
+            facts[".group"],
+            MetadataValue::EntityRefs(vec![EntityRef::local(".group", "g1")])
+        );
+        assert_eq!(
+            facts[".target"],
+            MetadataValue::EntityRefs(vec![EntityRef::new("sub-1", "vessel", "b")])
+        );
+        // Export writes version 2, naming every provider; it reads back the same.
+        let text = record.encode();
+        assert!(
+            text.starts_with("andamento-record \"dashboard\" version=2"),
+            "{text}"
+        );
+        assert!(
+            text.contains(r#"at "project" "project" "p" provider="sub-1""#),
+            "{text}"
+        );
+        assert_eq!(DashboardRecord::decode(&text, "other").unwrap(), record);
+
+        let id = WorkspaceId::from(7);
+        let v1 = r#"andamento-record "workspace/7" version=1 {
+    subject "vessel" "b"
+    retained "vessel" "b" label="B" status="retained"
+}"#;
+        let record = WorkspaceRecord::decode(v1, id, "local").unwrap();
+        assert_eq!(record.subject, Some(EntityRef::local("vessel", "b")));
+        assert!(record
+            .retained
+            .contains_key(&EntityRef::local("vessel", "b")));
+        assert!(record
+            .encode(id)
+            .contains(r#"subject "vessel" "b" provider="local""#));
+    }
+
+    #[test]
+    fn the_same_kind_and_id_under_two_providers_are_two_entities() {
+        let mut record = dashboard();
+        record.orders.clear();
+        record.orders.insert(
+            PlacementLoopKey {
+                region: "tree".into(),
+                parent: PlacementKey::default(),
+                binding: "vessel".into(),
+            },
+            vec![
+                EntityRef::new("sub-1", "vessel", "v"),
+                EntityRef::new("sub-2", "vessel", "v"),
+            ],
+        );
+        let text = record.encode();
+        let decoded = DashboardRecord::decode(&text, "local").unwrap();
+        assert_eq!(decoded, record);
+        assert_eq!(decoded.orders.values().next().unwrap().len(), 2);
     }
 
     #[test]

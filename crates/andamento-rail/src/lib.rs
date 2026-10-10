@@ -742,10 +742,10 @@ mod tests {
 
     #[test]
     fn detail_hover_updates_live_and_click_remains_as_selection_fallback() {
-        let entity = andamento_shared::EntityRef {
-            kind: "issue".to_owned(),
-            id: "github/flotilla-org/andamento#27".to_owned(),
-        };
+        let entity = andamento_shared::EntityRef::local(
+            "issue".to_owned(),
+            "github/flotilla-org/andamento#27".to_owned(),
+        );
         let target = NodeKey::Entity(entity);
         let mut state = PluginState {
             hit_regions: vec![HitRegion {
@@ -776,10 +776,10 @@ mod tests {
         let target = NodeKey::Placement(andamento_shared::PlacementKey(vec![
             andamento_shared::PlacementSegment {
                 loop_name: "attention".to_owned(),
-                entity: andamento_shared::EntityRef {
-                    kind: "vessel".to_owned(),
-                    id: "worker".to_owned(),
-                },
+                entity: andamento_shared::EntityRef::local(
+                    "vessel".to_owned(),
+                    "worker".to_owned(),
+                ),
             },
         ]));
         let mut state = PluginState {
@@ -803,14 +803,14 @@ mod tests {
 
     #[test]
     fn detail_hover_does_not_clear_between_compact_chips() {
-        let first = NodeKey::Entity(andamento_shared::EntityRef {
-            kind: "action".to_owned(),
-            id: "tui".to_owned(),
-        });
-        let second = NodeKey::Entity(andamento_shared::EntityRef {
-            kind: "action".to_owned(),
-            id: "governor".to_owned(),
-        });
+        let first = NodeKey::Entity(andamento_shared::EntityRef::local(
+            "action".to_owned(),
+            "tui".to_owned(),
+        ));
+        let second = NodeKey::Entity(andamento_shared::EntityRef::local(
+            "action".to_owned(),
+            "governor".to_owned(),
+        ));
         let detail_hit = |col_start, col_end, target| HitRegion {
             row_start: 1,
             row_end: 1,
@@ -839,14 +839,14 @@ mod tests {
 
     #[test]
     fn detail_hover_clears_in_a_different_compact_row_gap() {
-        let first = NodeKey::Entity(andamento_shared::EntityRef {
-            kind: "action".to_owned(),
-            id: "tui".to_owned(),
-        });
-        let second_row_target = NodeKey::Entity(andamento_shared::EntityRef {
-            kind: "action".to_owned(),
-            id: "filesystem".to_owned(),
-        });
+        let first = NodeKey::Entity(andamento_shared::EntityRef::local(
+            "action".to_owned(),
+            "tui".to_owned(),
+        ));
+        let second_row_target = NodeKey::Entity(andamento_shared::EntityRef::local(
+            "action".to_owned(),
+            "filesystem".to_owned(),
+        ));
         let mut state = PluginState {
             hit_regions: vec![
                 HitRegion {
@@ -1117,10 +1117,10 @@ mod tests {
 
     #[test]
     fn attention_activation_builds_an_entity_only_controller_request() {
-        let entity = andamento_shared::EntityRef {
-            kind: "vessel".to_owned(),
-            id: "dev/focus/worker@lab".to_owned(),
-        };
+        let entity = andamento_shared::EntityRef::local(
+            "vessel".to_owned(),
+            "dev/focus/worker@lab".to_owned(),
+        );
 
         let message = build_activate_entity_message(
             "andamento-controller",

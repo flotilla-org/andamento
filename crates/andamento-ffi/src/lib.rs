@@ -124,6 +124,20 @@ unsafe fn write_workspace(out: *mut WorkspaceIdView, id: Option<WorkspaceId>) ->
     }
 }
 
+/// An entity named by kind and ID alone: the sidebar gives it its default
+/// provider.
+unsafe fn unnamed(kind: Text, id: Text) -> Result<EntityRef, String> {
+    Ok(EntityRef::new("", kind.read()?, id.read()?))
+}
+/// A provider (subscription ID) a host passes: nonempty UTF-8.
+unsafe fn provider(provider: Text) -> Result<String, String> {
+    let provider = provider.read()?;
+    if provider.is_empty() {
+        return Err("a provider needs a name".into());
+    }
+    Ok(provider)
+}
+
 #[no_mangle]
 pub extern "C" fn andamento_abi_version() -> u32 {
     3
@@ -187,6 +201,67 @@ pub unsafe extern "C" fn andamento_apply_patch_json(
     })
     .is_some() as u32
 }
+/// ABI 3: as andamento_apply_patch_json, from `provider` (a subscription ID),
+/// which is stamped over every entity the patch names.
+#[cfg(feature = "json")]
+#[no_mangle]
+pub unsafe extern "C" fn andamento_apply_patch_json_from(
+    h: *mut Andamento,
+    now_ms: u64,
+    provider: Text,
+    json: Text,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let provider = self::provider(provider)?;
+        let patch: MetadataPatch =
+            serde_json::from_str(&json.read()?).map_err(|e| e.to_string())?;
+        h.sidebar.apply_from(now_ms, &provider, [patch])
+    })
+    .is_some() as u32
+}
+/// ABI 3: the default provider, which ABI 2 calls and patches applied without
+/// a provider are stamped with, and which entities named by kind and ID
+/// alone belong to. It is "local" until set.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_set_default_provider(
+    h: *mut Andamento,
+    provider: Text,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        h.sidebar.set_default_provider(&self::provider(provider)?)
+    })
+    .is_some() as u32
+}
+/// ABI 3: remove all of a provider's facts in one call.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_provider_retract(
+    h: *mut Andamento,
+    provider: Text,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        h.sidebar.retract_provider(&self::provider(provider)?);
+        Ok(())
+    })
+    .is_some() as u32
+}
+/// ABI 3: mark a provider stale (nonzero) or fresh again (zero).
+#[no_mangle]
+pub unsafe extern "C" fn andamento_provider_set_stale(
+    h: *mut Andamento,
+    provider: Text,
+    stale: u32,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        h.sidebar
+            .set_provider_stale(&self::provider(provider)?, stale != 0);
+        Ok(())
+    })
+    .is_some() as u32
+}
 
 /// Typed entity facts for native hosts. Deliberately covers scalar facts used
 /// by the fixture, rather than duplicating the entire producer schema in C.
@@ -215,13 +290,31 @@ pub unsafe extern "C" fn andamento_apply_entity(
     error: *mut *mut c_char,
 ) -> u32 {
     run(h, error, |h| {
-        let target = MetadataTarget::Entity(EntityRef {
-            kind: kind.read()?,
-            id: id.read()?,
-        });
+        let target = MetadataTarget::Entity(unnamed(kind, id)?);
         h.sidebar
             .apply(now_ms, [scalar_patch(target, source, facts, count)?]);
         Ok(())
+    })
+    .is_some() as u32
+}
+/// ABI 3: as andamento_apply_entity, from `provider` (a subscription ID).
+#[no_mangle]
+pub unsafe extern "C" fn andamento_apply_entity_from(
+    h: *mut Andamento,
+    now_ms: u64,
+    provider: Text,
+    kind: Text,
+    id: Text,
+    source: Text,
+    facts: *const Fact,
+    count: usize,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let provider = self::provider(provider)?;
+        let target = MetadataTarget::Entity(unnamed(kind, id)?);
+        let patch = scalar_patch(target, source, facts, count)?;
+        h.sidebar.apply_from(now_ms, &provider, [patch])
     })
     .is_some() as u32
 }
@@ -242,6 +335,28 @@ pub unsafe extern "C" fn andamento_apply_workspace(
         h.sidebar
             .apply(now_ms, [scalar_patch(target, source, facts, count)?]);
         Ok(())
+    })
+    .is_some() as u32
+}
+/// ABI 3: as andamento_apply_workspace, from `provider` (a subscription ID).
+/// An entity named by `entity.kind`/`entity.id` (or the `.host.` keys) is the
+/// provider's.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_apply_workspace_from(
+    h: *mut Andamento,
+    now_ms: u64,
+    provider: Text,
+    workspace: WorkspaceIdView,
+    source: Text,
+    facts: *const Fact,
+    count: usize,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let provider = self::provider(provider)?;
+        let target = MetadataTarget::Tab(workspace.into());
+        let patch = scalar_patch(target, source, facts, count)?;
+        h.sidebar.apply_from(now_ms, &provider, [patch])
     })
     .is_some() as u32
 }
@@ -481,12 +596,45 @@ pub unsafe extern "C" fn andamento_set_sibling_order(
         let key = andamento_core::PlacementLoopKey::decode(&key).ok_or("invalid loop key")?;
         let order = slice(entities, count)?
             .iter()
-            .map(|e| {
-                Ok(andamento_core::EntityRef {
-                    kind: e.kind.read()?,
-                    id: e.id.read()?,
-                })
-            })
+            .map(|e| unnamed(e.kind, e.id))
+            .collect::<Result<Vec<_>, String>>()?;
+        h.sidebar.set_sibling_order(key, order);
+        Ok(())
+    })
+    .is_some() as u32
+}
+/// ABI 3: an entity with its provider.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct EntityView3 {
+    pub provider: Text,
+    pub kind: Text,
+    pub id: Text,
+}
+impl EntityView3 {
+    unsafe fn read(self) -> Result<EntityRef, String> {
+        Ok(EntityRef::new(
+            provider(self.provider)?,
+            self.kind.read()?,
+            self.id.read()?,
+        ))
+    }
+}
+/// ABI 3: as andamento_set_sibling_order, naming each entity's provider.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_set_sibling_order3(
+    h: *mut Andamento,
+    loop_key: Text,
+    entities: *const EntityView3,
+    count: usize,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let key = loop_key.read()?;
+        let key = andamento_core::PlacementLoopKey::decode(&key).ok_or("invalid loop key")?;
+        let order = slice(entities, count)?
+            .iter()
+            .map(|e| e.read())
             .collect::<Result<Vec<_>, String>>()?;
         h.sidebar.set_sibling_order(key, order);
         Ok(())
@@ -719,29 +867,78 @@ pub unsafe extern "C" fn andamento_local_set(
     error: *mut *mut c_char,
 ) -> u32 {
     run(h, error, |h| {
-        let entity = EntityRef {
-            kind: kind.read()?,
-            id: id.read()?,
-        };
-        let mut values = std::collections::BTreeMap::new();
-        for f in slice(facts, count)? {
-            let value = match f.kind {
-                1 => MetadataValue::Text(f.text.read()?),
-                2 if f.integer == 0 || f.integer == 1 => MetadataValue::Bool(f.integer != 0),
-                3 => MetadataValue::Integer(f.integer),
-                4 => MetadataValue::EntityRefs(vec![EntityRef {
-                    kind: f.entity.kind.read()?,
-                    id: f.entity.id.read()?,
-                }]),
-                _ => return Err("invalid local fact kind or boolean".into()),
-            };
-            if values.insert(f.key.read()?, value).is_some() {
-                return Err("duplicate fact key".into());
-            }
-        }
-        h.sidebar.set_local(entity, values)
+        let facts = slice(facts, count)?
+            .iter()
+            .map(|f| {
+                let entity = || unnamed(f.entity.kind, f.entity.id);
+                Ok((f.key, local_fact(f.kind, f.text, f.integer, entity)?))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        set_local(h, kind, id, facts)
     })
     .is_some() as u32
+}
+/// ABI 3: as AndamentoLocalFact, with the referenced entity's provider.
+#[repr(C)]
+pub struct LocalFact3 {
+    pub key: Text,
+    pub kind: u32,
+    pub text: Text,
+    pub integer: i64,
+    pub entity: EntityView3,
+}
+/// ABI 3: as andamento_local_set, where entity facts name their provider.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_local_set3(
+    h: *mut Andamento,
+    kind: Text,
+    id: Text,
+    facts: *const LocalFact3,
+    count: usize,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let facts = slice(facts, count)?
+            .iter()
+            .map(|f| {
+                Ok((
+                    f.key,
+                    local_fact(f.kind, f.text, f.integer, || f.entity.read())?,
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        set_local(h, kind, id, facts)
+    })
+    .is_some() as u32
+}
+unsafe fn local_fact(
+    kind: u32,
+    text: Text,
+    integer: i64,
+    entity: impl FnOnce() -> Result<EntityRef, String>,
+) -> Result<MetadataValue, String> {
+    Ok(match kind {
+        1 => MetadataValue::Text(text.read()?),
+        2 if integer == 0 || integer == 1 => MetadataValue::Bool(integer != 0),
+        3 => MetadataValue::Integer(integer),
+        4 => MetadataValue::EntityRefs(vec![entity()?]),
+        _ => return Err("invalid local fact kind or boolean".into()),
+    })
+}
+unsafe fn set_local(
+    h: &mut Andamento,
+    kind: Text,
+    id: Text,
+    facts: Vec<(Text, MetadataValue)>,
+) -> Result<(), String> {
+    let entity = EntityRef::local(kind.read()?, id.read()?);
+    let mut values = std::collections::BTreeMap::new();
+    for (key, value) in facts {
+        if values.insert(key.read()?, value).is_some() {
+            return Err("duplicate fact key".into());
+        }
+    }
+    h.sidebar.set_local(entity, values)
 }
 /// ABI 3: remove a local entity; removing an unknown one is harmless.
 #[no_mangle]
@@ -752,10 +949,8 @@ pub unsafe extern "C" fn andamento_local_remove(
     error: *mut *mut c_char,
 ) -> u32 {
     run(h, error, |h| {
-        h.sidebar.remove_local(&EntityRef {
-            kind: kind.read()?,
-            id: id.read()?,
-        });
+        h.sidebar
+            .remove_local(&EntityRef::local(kind.read()?, id.read()?));
         Ok(())
     })
     .is_some() as u32
@@ -794,6 +989,7 @@ struct Node {
     openable: bool,
     collapsed: bool,
     pinned: bool,
+    stale: bool,
     fields: usize,
     field_count: usize,
     details: usize,
@@ -812,6 +1008,9 @@ struct Detail {
 }
 pub struct AndamentoSnapshot {
     now_ms: u64,
+    /// The sidebar's default provider at acquisition, for ABI 2 lookups by
+    /// kind and ID.
+    default_provider: String,
     details: Vec<Detail>,
     detail_index: std::collections::BTreeMap<EntityRef, usize>,
     client: u64,
@@ -922,7 +1121,14 @@ impl AndamentoSnapshot {
             .key
             .0
             .iter()
-            .flat_map(|s| [&s.loop_name, &s.entity.kind, &s.entity.id])
+            .flat_map(|s| {
+                [
+                    &s.loop_name,
+                    &s.entity.provider,
+                    &s.entity.kind,
+                    &s.entity.id,
+                ]
+            })
             .map(|s| format!("{}:{}", s.len(), s))
             .collect();
         let (state, workspace, selected, openable) = match n.state {
@@ -952,6 +1158,7 @@ impl AndamentoSnapshot {
             openable: openable || has_url,
             collapsed: n.collapsed,
             pinned: false,
+            stale: n.stale,
             fields,
             field_count,
             details,
@@ -1008,6 +1215,7 @@ unsafe fn acquire_snapshot(
         let _flatten = andamento_core::profile::span("abi-flatten");
         let mut out = AndamentoSnapshot {
             now_ms: h.sidebar.now_ms(),
+            default_provider: h.sidebar.default_provider().to_owned(),
             details: vec![],
             detail_index: Default::default(),
             client: h.client,
@@ -1031,10 +1239,8 @@ unsafe fn acquire_snapshot(
                 default_host: section.default_host.unwrap_or_default(),
                 order: section.order,
                 key: section.name.clone(),
-                entity: EntityRef {
-                    kind: String::new(),
-                    id: String::new(),
-                },
+                entity: EntityRef::new("", "", ""),
+                stale: false,
                 label: section.name,
                 layout: String::new(),
                 loop_key: String::new(),
@@ -1173,12 +1379,28 @@ pub unsafe extern "C" fn andamento_snapshot_detail_request(
     id: Text,
     error: *mut *mut c_char,
 ) -> usize {
+    detail_request(h, s, || unnamed(kind, id), error)
+}
+/// ABI 3: as andamento_snapshot_detail_request, naming the entity's provider.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_detail_request3(
+    h: *mut Andamento,
+    s: *mut AndamentoSnapshot,
+    entity: EntityView3,
+    error: *mut *mut c_char,
+) -> usize {
+    detail_request(h, s, || entity.read(), error)
+}
+unsafe fn detail_request(
+    h: *mut Andamento,
+    s: *mut AndamentoSnapshot,
+    entity: impl FnOnce() -> Result<EntityRef, String>,
+    error: *mut *mut c_char,
+) -> usize {
     run(h, error, |h| {
         let s = s.as_mut().ok_or("null snapshot")?;
-        let entity = EntityRef {
-            kind: kind.read()?,
-            id: id.read()?,
-        };
+        let mut entity = entity()?;
+        entity.fill_provider(h.sidebar.default_provider());
         if s.client != h.client {
             return Err("snapshot belongs to another client".into());
         }
@@ -1210,9 +1432,33 @@ pub unsafe extern "C" fn andamento_snapshot_detail_find(
         return NONE;
     };
     s.detail_index
-        .get(&EntityRef { kind, id })
+        .get(&EntityRef::new(s.default_provider.clone(), kind, id))
         .copied()
         .unwrap_or(NONE)
+}
+/// ABI 3: as andamento_snapshot_detail_find, naming the entity's provider.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_detail_find3(
+    s: *const AndamentoSnapshot,
+    entity: EntityView3,
+) -> usize {
+    let (Some(s), Ok(entity)) = (s.as_ref(), entity.read()) else {
+        return NONE;
+    };
+    s.detail_index.get(&entity).copied().unwrap_or(NONE)
+}
+/// ABI 3: the provider of a detail's entity.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_detail_provider(
+    s: *const AndamentoSnapshot,
+    index: usize,
+    out: *mut Text,
+) -> u32 {
+    let (Some(d), Some(out)) = (s.as_ref().and_then(|s| s.details.get(index)), out.as_mut()) else {
+        return 0;
+    };
+    *out = Text::borrowed(&d.card.entity.provider);
+    1
 }
 #[no_mangle]
 pub unsafe extern "C" fn andamento_snapshot_detail(
@@ -1483,6 +1729,31 @@ pub unsafe extern "C" fn andamento_snapshot_region_hints(
     1
 }
 
+/// ABI 3: a node's entity provider, and whether the provider of the entity it
+/// presents (a ref's target) is stale. Returns 0 for section nodes.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_snapshot_node_provider(
+    s: *const AndamentoSnapshot,
+    index: usize,
+    provider: *mut Text,
+    stale: *mut u32,
+) -> u32 {
+    let Some(node) = s
+        .as_ref()
+        .and_then(|s| s.nodes.get(index))
+        .filter(|n| !n.section)
+    else {
+        return 0;
+    };
+    if provider.is_null() {
+        return 0;
+    }
+    *provider = Text::borrowed(&node.entity.provider);
+    if let Some(stale) = stale.as_mut() {
+        *stale = node.stale as u32;
+    }
+    1
+}
 /// Additive ABI 2 accessor: no change to the layout of AndamentoNode.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_snapshot_node_loop_key(
@@ -1706,6 +1977,24 @@ pub unsafe extern "C" fn andamento_effects_get(
     *out = v;
     1
 }
+/// ABI 3: the provider of a MATERIALIZE or INSPECT effect's entity. Returns 0
+/// for other effects.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_effects_provider(
+    e: *const AndamentoEffects,
+    index: usize,
+    out: *mut Text,
+) -> u32 {
+    let entity = match e.as_ref().and_then(|e| e.effects.get(index)) {
+        Some(HostEffect::Materialize { entity, .. } | HostEffect::Inspect { entity }) => entity,
+        _ => return 0,
+    };
+    let Some(out) = out.as_mut() else {
+        return 0;
+    };
+    *out = Text::borrowed(&entity.provider);
+    1
+}
 /// ABI 3: a FOCUS effect's 128-bit workspace ID. Returns 0 for other effects.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_effects_workspace(
@@ -1741,10 +2030,23 @@ pub unsafe extern "C" fn andamento_copy_subject_url(
 ) -> u32 {
     run(h, error, |h| {
         let effects = h.sidebar.dispatch(Action::CopySubjectUrl {
-            entity: EntityRef {
-                kind: kind.read()?,
-                id: id.read()?,
-            },
+            entity: unnamed(kind, id)?,
+        })?;
+        h.effects.extend(effects);
+        Ok(())
+    })
+    .is_some() as u32
+}
+/// ABI 3: as andamento_copy_subject_url, naming the entity's provider.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_copy_subject_url3(
+    h: *mut Andamento,
+    entity: EntityView3,
+    error: *mut *mut c_char,
+) -> u32 {
+    run(h, error, |h| {
+        let effects = h.sidebar.dispatch(Action::CopySubjectUrl {
+            entity: entity.read()?,
         })?;
         h.effects.extend(effects);
         Ok(())
@@ -1822,7 +2124,8 @@ pub unsafe extern "C" fn andamento_content_plan(
     error: *mut *mut c_char,
 ) -> *mut AndamentoContentPlan {
     let workspace = workspace.into();
-    content_plan(h, workspace, kind, id, target, command, has_cwd, cwd, error)
+    let entity = || unnamed(kind, id);
+    content_plan(h, workspace, entity, target, command, has_cwd, cwd, error)
 }
 /// ABI 3: the andamento_content_* calls with 128-bit IDs.
 #[no_mangle]
@@ -1838,14 +2141,31 @@ pub unsafe extern "C" fn andamento_content_plan3(
     error: *mut *mut c_char,
 ) -> *mut AndamentoContentPlan {
     let workspace = workspace.into();
-    content_plan(h, workspace, kind, id, target, command, has_cwd, cwd, error)
+    let entity = || unnamed(kind, id);
+    content_plan(h, workspace, entity, target, command, has_cwd, cwd, error)
+}
+/// ABI 3: as andamento_content_plan3, naming the entity's provider.
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub unsafe extern "C" fn andamento_content_plan_entity(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    entity: EntityView3,
+    target: Text,
+    command: Text,
+    has_cwd: u32,
+    cwd: Text,
+    error: *mut *mut c_char,
+) -> *mut AndamentoContentPlan {
+    let workspace = workspace.into();
+    let entity = || entity.read();
+    content_plan(h, workspace, entity, target, command, has_cwd, cwd, error)
 }
 #[allow(clippy::too_many_arguments)]
 unsafe fn content_plan(
     h: *mut Andamento,
     workspace: WorkspaceId,
-    kind: Text,
-    id: Text,
+    entity: impl FnOnce() -> Result<EntityRef, String>,
     target: Text,
     command: Text,
     has_cwd: u32,
@@ -1853,10 +2173,8 @@ unsafe fn content_plan(
     error: *mut *mut c_char,
 ) -> *mut AndamentoContentPlan {
     run(h, error, |h| {
-        let entity = EntityRef {
-            kind: kind.read()?,
-            id: id.read()?,
-        };
+        let mut entity = entity()?;
+        entity.fill_provider(h.sidebar.default_provider());
         let applied = andamento_core::managed::TerminalContent {
             target: target.read()?,
             command: command.read()?,
