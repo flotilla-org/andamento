@@ -78,9 +78,9 @@ impl Store {
         expected: u64,
         baseline: Option<&Baseline>,
         slots: &[SlotInfo],
-    ) -> Result<ArrangementCommit, ArrangementError> {
+    ) -> Result<ArrangementCommit, crate::versioned::CommitError> {
         let (generation, placed) = self.stored.update(Some(expected), &mut self.clock, |s| {
-            Arrangement::commit(s, doc, baseline, slots)
+            Ok(Arrangement::commit(s, doc, baseline, slots)?)
         })?;
         Ok(ArrangementCommit {
             generation,
@@ -206,7 +206,7 @@ fn stale_or_invalid_commits_change_nothing() {
     let other = doc(tabs("1", &["b", "a"], Some("b")));
     assert_eq!(
         stored.commit(other.clone(), 0, slots.baseline.as_ref(), &infos),
-        Err(ArrangementError::Stale { current: 1 })
+        Err(crate::versioned::CommitError::Stale { current: 1 })
     );
     assert_eq!(stored.stored, before);
     // A tab for a slot that never existed, or a malformed document.
@@ -216,7 +216,7 @@ fn stale_or_invalid_commits_change_nothing() {
     ] {
         assert!(matches!(
             stored.commit(invalid, 1, slots.baseline.as_ref(), &infos),
-            Err(ArrangementError::Invalid(_))
+            Err(crate::versioned::CommitError::Invalid(_))
         ));
         assert_eq!(stored.stored, before);
     }

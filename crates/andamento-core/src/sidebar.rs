@@ -10,8 +10,13 @@ use serde::{Deserialize, Serialize};
 use crate::{
     host::PaneObservation,
     presentation::SurfaceSnapshot,
-    records::{DashboardRecord, RecordName, SubjectRecord, WorkspaceRecord},
+    records::{DashboardRecord, DashboardState, RecordName, SubjectRecord},
+    sidebar_arrangement::{Declared, Report, SidebarArrangement, SidebarDoc, SidebarView},
+    slots::{ArrangementCommit, ArrangementDoc, ArrangementView, OverlayView, Resolve, SlotInfo},
     state::{ControllerState, ControllerTab, EntityActivation},
+    target_resolution::{PortableResolution, SavedResolution},
+    versioned::{Clock, CommitError, Versioned},
+    workspace::{Subject, WorkspaceRecord},
     EntityRef, MaterializeLatentRequest, MetadataPatch, NodeKey, PlacementKey, RailUiAction,
     WorkspaceId,
 };
@@ -105,7 +110,7 @@ pub enum Request {
     },
     ImportRecord {
         name: String,
-        kdl: String,
+        record: String,
     },
     Snapshot,
 }
@@ -177,33 +182,30 @@ pub struct Sidebar {
     errors: BTreeMap<EntityRef, String>,
     retained_paths: BTreeMap<WorkspaceId, BTreeSet<EntityRef>>,
     retained_paths_revision: Option<u64>,
-    registered: BTreeSet<WorkspaceId>,
     /// Each registered workspace's record (`workspace/<id>`).
     workspaces: BTreeMap<WorkspaceId, WorkspaceEntry>,
     /// Local sections, groups and refs, with their facts.
     local: BTreeMap<EntityRef, BTreeMap<String, crate::MetadataValue>>,
-    /// Every document and record generation comes from this clock.
-    clock: crate::versioned::Clock,
-    /// The dashboard record's generation and the text it was assigned for.
-    dashboard_generation: Option<(u64, String)>,
+    /// Every revision and generation comes from this clock.
+    clock: Clock,
+    /// The Dashboard's state as of the last change (see
+    /// [`invalidate`](Self::invalidate)), for the dashboard record.
+    dashboard: Versioned<DashboardState>,
     /// Fact keys the configured placement reads, kept in subject records.
     placement_keys: BTreeSet<String>,
     pub managed: crate::managed::ManagedContent,
-    /// Revision of workspace content: slots, their resolutions and
-    /// arrangements. Separate from `revision`, so committing an arrangement
-    /// leaves the sidebar's snapshot and evaluation current.
-    content_revision: u64,
+    /// When workspace content outside the records last changed: managed
+    /// content's resolutions, or a workspace forgotten.
+    content_changed: u64,
     /// The Dashboard's sidebar arrangement, and what its last
     /// reconciliation did.
-    sidebar_arrangement: crate::sidebar_arrangement::SidebarArrangement,
-    sidebar_report: crate::sidebar_arrangement::Report,
+    sidebar_arrangement: Versioned<SidebarArrangement>,
+    sidebar_report: Report,
 }
 
 #[derive(Default)]
 struct WorkspaceEntry {
     record: WorkspaceRecord,
-    /// The record's generation: a new one from the clock whenever it changes.
-    generation: u64,
     /// Retained subjects a producer published at the last refresh.
     observed: BTreeSet<EntityRef>,
 }
@@ -283,8 +285,8 @@ impl Sidebar {
                 self.remove_local(&entity);
                 vec![]
             }
-            Request::ImportRecord { name, kdl } => {
-                self.import_record(&name, &kdl)?;
+            Request::ImportRecord { name, record } => {
+                self.import_record(&name, &record)?;
                 vec![]
             }
             Request::Snapshot => vec![],
@@ -465,14 +467,14 @@ impl Sidebar {
         // was before any producer publishes it. A path from a snapshot
         // replaces it.
         for (id, entry) in &self.workspaces {
-            let record = &entry.record;
-            if record.subject.is_some()
-                && subjects.get(id) == record.subject.as_ref()
-                && !record.retained.is_empty()
+            let subject = entry.record.subject.get();
+            if subject.entity.is_some()
+                && subjects.get(id) == subject.entity.as_ref()
+                && !subject.retained.is_empty()
                 && !self.retained_paths.contains_key(id)
             {
                 self.retained_paths
-                    .insert(*id, record.retained.keys().cloned().collect());
+                    .insert(*id, subject.retained.keys().cloned().collect());
             }
         }
         self.retained_paths.retain(|id, subjects_on_path| {
@@ -507,7 +509,7 @@ impl Sidebar {
     fn saved_subjects(&self) -> BTreeMap<EntityRef, SubjectRecord> {
         let mut saved = BTreeMap::<EntityRef, SubjectRecord>::new();
         for entry in self.workspaces.values() {
-            for (entity, record) in &entry.record.retained {
+            for (entity, record) in &entry.record.subject.get().retained {
                 let newer = saved.get(entity).is_none_or(|current| {
                     (record.ended, record.last_seen_ms) > (current.ended, current.last_seen_ms)
                 });
@@ -580,32 +582,37 @@ impl Sidebar {
     /// It does not change the snapshot or its revision. The workspace gets a
     /// record, `workspace/<id>`. Returns whether the ID was new.
     pub fn register_workspace(&mut self, id: WorkspaceId) -> bool {
-        if !self.workspaces.contains_key(&id) {
-            let generation = self.clock.tick();
-            self.workspaces.insert(
-                id,
-                WorkspaceEntry {
-                    generation,
-                    ..WorkspaceEntry::default()
-                },
-            );
-        }
-        let new = self.registered.insert(id);
+        let new = self.ensure_workspace(id);
         self.refresh_workspace_records();
         self.refresh_content();
         new
     }
 
+    /// Give a workspace a record if it has none. Returns whether it was new.
+    fn ensure_workspace(&mut self, id: WorkspaceId) -> bool {
+        if self.workspaces.contains_key(&id) {
+            return false;
+        }
+        let mut entry = WorkspaceEntry::default();
+        // A record's generation is nonzero from the start.
+        entry.record.subject.restamp(&mut self.clock);
+        self.workspaces.insert(id, entry);
+        true
+    }
+
     /// The host deleted the workspace rather than keeping it. Returns whether
     /// it was registered.
     pub fn forget_workspace(&mut self, id: WorkspaceId) -> bool {
-        self.workspaces.remove(&id);
-        self.registered.remove(&id)
+        let forgotten = self.workspaces.remove(&id).is_some();
+        if forgotten {
+            self.content_changed = self.clock.tick();
+        }
+        forgotten
     }
 
     /// Workspaces the host registered or materialized and has not forgotten.
-    pub fn registered_workspaces(&self) -> &BTreeSet<WorkspaceId> {
-        &self.registered
+    pub fn registered_workspaces(&self) -> BTreeSet<WorkspaceId> {
+        self.workspaces.keys().copied().collect()
     }
 
     /// Set the host-owned order of one sibling run, identified by the loop key
@@ -676,8 +683,9 @@ impl Sidebar {
         }
         let patch = self.local_patch(&entity, Some(&facts));
         let section = entity.kind != crate::presentation::system::REF;
+        let changed = self.local.get(&entity) != Some(&facts);
         self.local.insert(entity, facts);
-        self.apply_local([patch]);
+        self.apply_local([patch], changed);
         if section {
             self.follow_sidebar_declarations();
         }
@@ -691,7 +699,7 @@ impl Sidebar {
         }
         let patch = self.local_patch(entity, None);
         self.local.remove(entity);
-        self.apply_local([patch]);
+        self.apply_local([patch], true);
         if entity.kind != crate::presentation::system::REF {
             self.follow_sidebar_declarations();
         }
@@ -741,8 +749,8 @@ impl Sidebar {
     }
 
     /// Apply local patches at the current time, without advancing it.
-    fn apply_local(&mut self, patches: impl IntoIterator<Item = MetadataPatch>) {
-        let mut changed = false;
+    /// `changed`: the local entities changed, whatever their facts did.
+    fn apply_local(&mut self, patches: impl IntoIterator<Item = MetadataPatch>, mut changed: bool) {
         for patch in patches {
             changed |= self.state.apply_metadata_patch(patch);
         }
@@ -795,12 +803,12 @@ impl Sidebar {
             for entity in path {
                 let Some((mut record, seen)) = self.state.retained_subject_record(&entity, keys)
                 else {
-                    if let Some(old) = entry.record.retained.get(&entity) {
+                    if let Some(old) = entry.record.subject.get().retained.get(&entity) {
                         retained.insert(entity, old.clone());
                     }
                     continue;
                 };
-                let old = entry.record.retained.get(&entity);
+                let old = entry.record.subject.get().retained.get(&entity);
                 // Last seen moves when the subject appears, changes or goes
                 // away, not on every heartbeat.
                 record.last_seen_ms = match old {
@@ -818,12 +826,11 @@ impl Sidebar {
                 }
                 retained.insert(entity, record);
             }
-            let subject = subjects.get(&id).cloned();
-            if (&entry.record.subject, &entry.record.retained) != (&subject, &retained) {
-                entry.record.subject = subject;
-                entry.record.retained = retained;
-                entry.generation = self.clock.tick();
-            }
+            let subject = Subject {
+                entity: subjects.get(&id).cloned(),
+                retained,
+            };
+            entry.record.follow_subject(&mut self.clock, subject);
             entry.observed = observed;
         }
     }
@@ -832,7 +839,7 @@ impl Sidebar {
     /// `workspace/<id>` for each registered workspace.
     pub fn record_names(&self) -> Vec<String> {
         std::iter::once(RecordName::Dashboard)
-            .chain(self.registered.iter().copied().map(RecordName::Workspace))
+            .chain(self.workspaces.keys().copied().map(RecordName::Workspace))
             .map(|name| name.to_string())
             .collect()
     }
@@ -841,68 +848,58 @@ impl Sidebar {
     /// Andamento reads it.
     pub fn export_record(&self, name: &str) -> Result<String, String> {
         match RecordName::parse(name)? {
-            RecordName::Dashboard => Ok(self.dashboard_text()),
-            RecordName::Workspace(id) => Ok(self.workspace_entry(id)?.record.encode()),
+            RecordName::Dashboard => Ok(DashboardRecord {
+                state: self.dashboard.get().clone(),
+                sidebar: (self.sidebar_arrangement.generation() != 0)
+                    .then(|| self.sidebar_arrangement.get().clone()),
+            }
+            .encode()),
+            RecordName::Workspace(id) => Ok(self.workspace(id)?.encode()),
         }
-    }
-
-    fn dashboard_text(&self) -> String {
-        DashboardRecord {
-            display: self.state.recorded_display_variables(),
-            collapsed: self.state.collapsed_placements().clone(),
-            orders: self.state.sibling_orders().clone(),
-            variables: self.state.placement_variables(),
-            local: self.local.clone(),
-            sidebar: Some(self.sidebar_arrangement.clone())
-                .filter(|arrangement| arrangement.generation != 0),
-        }
-        .encode()
-    }
-
-    fn workspace_entry(&self, id: WorkspaceId) -> Result<&WorkspaceEntry, String> {
-        self.workspaces
-            .get(&id)
-            .ok_or_else(|| format!("no record workspace/{id}: the workspace is not registered"))
     }
 
     /// A record's generation, nonzero. It changes whenever the record does,
     /// and is never reused. Store the record when it differs from the one
     /// last stored.
-    pub fn record_generation(&mut self, name: &str) -> Result<u64, String> {
+    pub fn record_generation(&self, name: &str) -> Result<u64, String> {
         match RecordName::parse(name)? {
-            RecordName::Dashboard => {
-                // Not yet a document: compared by its text.
-                let text = self.dashboard_text();
-                match &self.dashboard_generation {
-                    Some((generation, known)) if *known == text => Ok(*generation),
-                    _ => {
-                        let generation = self.clock.tick();
-                        self.dashboard_generation = Some((generation, text));
-                        Ok(generation)
-                    }
-                }
-            }
-            RecordName::Workspace(id) => Ok(self.workspace_entry(id)?.generation),
+            RecordName::Dashboard => Ok(self
+                .dashboard
+                .generation()
+                .max(self.sidebar_arrangement.generation())),
+            RecordName::Workspace(id) => Ok(self.workspace(id)?.generation()),
         }
     }
 
-    /// Import a record exported by this or an earlier Andamento. It may come
-    /// before the first observation and needs no facts. A record that doesn't
-    /// parse, has another version, or names another record is rejected
-    /// without changing anything. Importing `workspace/<id>` registers the
-    /// workspace and binds it to its recorded subject.
+    /// The Dashboard's state other than its sidebar arrangement, as it is
+    /// now.
+    fn dashboard_state(&self) -> DashboardState {
+        DashboardState {
+            display: self.state.recorded_display_variables(),
+            collapsed: self.state.collapsed_placements().clone(),
+            orders: self.state.sibling_orders().clone(),
+            variables: self.state.placement_variables(),
+            local: self.local.clone(),
+        }
+    }
+
+    /// Import a record exported by this Andamento. It may come before the
+    /// first observation and needs no facts. A record that doesn't read, or
+    /// names another record, is rejected without changing anything.
+    /// Importing `workspace/<id>` registers the workspace and binds it to
+    /// its recorded subject.
     pub fn import_record(&mut self, name: &str, text: &str) -> Result<(), String> {
         match RecordName::parse(name)? {
             RecordName::Dashboard => {
-                let record = DashboardRecord::decode(text)?;
-                if let Some(entity) = record
+                let DashboardRecord { state, sidebar } = DashboardRecord::decode(text)?;
+                if let Some(entity) = state
                     .local
                     .keys()
                     .find(|entity| !LOCAL_KINDS.contains(&entity.kind.as_str()))
                 {
                     return Err(format!("{:?} is not a local entity kind", entity.kind));
                 }
-                if let Some(entity) = record
+                if let Some(entity) = state
                     .local
                     .keys()
                     .find(|entity| entity.provider != crate::LOCAL_PROVIDER)
@@ -912,42 +909,34 @@ impl Sidebar {
                         entity.id, entity.provider
                     ));
                 }
-                self.state.restore_dashboard(&record);
+                self.state.restore_dashboard(&state);
                 let mut patches = Vec::new();
                 for entity in self.local.keys() {
-                    if !record.local.contains_key(entity) {
+                    if !state.local.contains_key(entity) {
                         patches.push(self.local_patch(entity, None));
                     }
                 }
-                for (entity, facts) in &record.local {
+                for (entity, facts) in &state.local {
                     if self.local.get(entity) != Some(facts) {
                         patches.push(self.local_patch(entity, Some(facts)));
                     }
                 }
-                self.local = record.local;
+                self.local = state.local;
                 for patch in patches {
                     self.state.apply_metadata_patch(patch);
                 }
                 self.maintain(true);
-                self.import_sidebar_arrangement(record.sidebar.unwrap_or_default());
+                self.import_sidebar_arrangement(sidebar.unwrap_or_default());
             }
             RecordName::Workspace(id) => {
-                let mut record = WorkspaceRecord::decode(text)?;
-                // New generations: no state the host saw before has these.
-                if record.arrangement.get().is_some() {
-                    record.arrangement.restamp(&mut self.clock);
-                }
-                let generation = self.clock.tick();
-                self.state
-                    .bind_workspace_subject(id, record.subject.as_ref());
-                self.registered.insert(id);
+                let record = WorkspaceRecord::decode(text, &mut self.clock)?;
+                self.state.bind_workspace_subject(id, record.subject());
                 // A path from this session is no longer the recorded one.
                 self.retained_paths.remove(&id);
                 self.workspaces.insert(
                     id,
                     WorkspaceEntry {
                         record,
-                        generation,
                         observed: BTreeSet::new(),
                     },
                 );
@@ -961,95 +950,75 @@ impl Sidebar {
     /// workspaces' baselines and arrangements up to date with their
     /// subjects' Suggested Layouts. A layout that is malformed or gone keeps
     /// the cached baseline: expiry is silence, not removal. This never
-    /// invalidates the sidebar's snapshot; it bumps the content revision.
+    /// invalidates the sidebar's snapshot; it moves the content revision.
     fn refresh_content(&mut self) {
-        let mut changed = self.managed.publish(self.state.slot_resolutions());
+        if self.managed.publish(self.state.slot_resolutions()) {
+            self.content_changed = self.clock.tick();
+        }
         let open: BTreeSet<WorkspaceId> = self
             .state
             .workspaces()
             .iter()
             .map(|tab| tab.tab_id)
             .collect();
-        let state = &self.state;
-        let clock = &mut self.clock;
         for (id, entry) in self.workspaces.iter_mut() {
-            if !open.contains(id) {
-                continue;
-            }
             let record = &mut entry.record;
-            let mut entry_changed = false;
-            if let Some(subject) = &record.subject {
-                if let Ok(Some(layout)) = state.suggested_layout(subject) {
-                    let baseline = crate::slots::Baseline::from_layout(&layout);
-                    let hint_changed = record
-                        .slots
-                        .baseline
-                        .as_ref()
-                        .is_some_and(|old| old.hint != baseline.hint);
-                    entry_changed = record.slots.set_baseline(baseline);
-                    if hint_changed {
-                        entry_changed |= record
-                            .arrangement
-                            .follow(clock, crate::slots::Arrangement::note_hint_change);
-                    }
-                }
+            if open.contains(id) {
+                let baseline = record
+                    .subject()
+                    .and_then(|subject| self.state.suggested_layout(subject).ok().flatten())
+                    .map(|layout| crate::slots::Baseline::from_layout(&layout));
+                record.follow_baseline(&mut self.clock, baseline);
             }
-            if entry_changed || (record.arrangement.get().is_none() && !record.slots.is_empty()) {
-                entry_changed |= follow_slots(record, clock);
-            }
-            if entry_changed {
-                entry.generation = clock.tick();
-                changed = true;
-            }
-        }
-        changed |= self.invalidate_resolutions();
-        if changed {
-            self.content_revision += 1;
+            record.invalidate_resolutions(&mut self.clock, &self.managed);
         }
     }
 
-    /// Revision of workspace content: slots, their resolutions and
-    /// arrangements. It changes when any of them may have; the sidebar's
-    /// [`revision`](Self::revision) does not change with them.
+    /// Revision of workspace content: slots, their resolutions and plans,
+    /// and arrangements. It changes when any of them may have; the
+    /// sidebar's [`revision`](Self::revision) does not change with them.
     pub fn content_revision(&self) -> u64 {
-        self.content_revision
+        self.workspaces
+            .values()
+            .map(|entry| entry.record.content_generation())
+            .fold(self.content_changed, u64::max)
     }
 
-    /// A workspace's record changed: it takes a new generation, and the
-    /// content revision moves.
-    fn workspace_changed(&mut self, id: WorkspaceId) {
-        if let Some(entry) = self.workspaces.get_mut(&id) {
-            entry.generation = self.clock.tick();
-        }
-        self.content_revision += 1;
-    }
-
-    fn workspace_record(&self, id: WorkspaceId) -> Result<&WorkspaceRecord, String> {
+    fn workspace(&self, id: WorkspaceId) -> Result<&WorkspaceRecord, String> {
         self.workspaces
             .get(&id)
             .map(|entry| &entry.record)
             .ok_or_else(|| format!("workspace {id} is not registered"))
     }
 
-    fn workspace_record_mut(&mut self, id: WorkspaceId) -> Result<&mut WorkspaceRecord, String> {
-        self.workspaces
+    /// Edit a registered workspace's record, with the clock its parts take
+    /// their generations from.
+    fn with_workspace<R, E: From<String>>(
+        &mut self,
+        id: WorkspaceId,
+        edit: impl FnOnce(
+            &mut WorkspaceRecord,
+            &mut Clock,
+            &crate::managed::ManagedContent,
+        ) -> Result<R, E>,
+    ) -> Result<R, E> {
+        let entry = self
+            .workspaces
             .get_mut(&id)
-            .map(|entry| &mut entry.record)
-            .ok_or_else(|| format!("workspace {id} is not registered"))
+            .ok_or_else(|| E::from(format!("workspace {id} is not registered")))?;
+        edit(&mut entry.record, &mut self.clock, &self.managed)
     }
 
     /// A registered workspace's slots, in default placement order.
-    pub fn slots(&self, workspace: WorkspaceId) -> Result<Vec<crate::slots::SlotInfo>, String> {
-        Ok(self.workspace_record(workspace)?.slots.slots())
+    pub fn slots(&self, workspace: WorkspaceId) -> Result<Vec<SlotInfo>, String> {
+        Ok(self.workspace(workspace)?.slots.get().slots())
     }
 
     /// Add the user's own slot (`u:<id>`), or edit a baseline slot: other
     /// content overrides it, detaching it, and another policy is a rebind
     /// edit (see [`WorkspaceSlots::set`](crate::slots::WorkspaceSlots::set)).
-    /// The arrangement is unchanged, except that an unowned one shows a
-    /// tombstoned slot this restores: the host gives a new slot a tab in its
-    /// next commit, which otherwise places it. A facet's entity names its
-    /// provider.
+    /// The host gives a new slot a tab in its next commit, which otherwise
+    /// places it. A facet's entity names its provider.
     pub fn set_slot(
         &mut self,
         workspace: WorkspaceId,
@@ -1057,47 +1026,19 @@ impl Sidebar {
         spec: crate::suggested_layout::ViewSpec,
         rebind: crate::suggested_layout::RebindPolicy,
     ) -> Result<bool, String> {
-        if let crate::suggested_layout::Content::ProviderFacet { entity, .. } = &spec.content {
-            entity.check_provider()?;
-        }
-        let entry = self
-            .workspaces
-            .get_mut(&workspace)
-            .ok_or_else(|| format!("workspace {workspace} is not registered"))?;
-        let record = &mut entry.record;
-        let hidden = record.slots.hidden();
-        let before = record.slots.slot(key).map(|slot| slot.spec);
-        let changed = record.slots.set(key, spec, rebind)?;
-        // Setting a tombstoned slot shows it again.
-        if record.slots.hidden() != hidden {
-            follow_unowned(record, &mut self.clock);
-        }
-        forget_resolution_if_edited(record, key, before);
-        if changed {
-            self.workspace_changed(workspace);
-        }
-        Ok(changed)
+        self.with_workspace(workspace, |record, clock, _| {
+            record.set_slot(clock, key, spec, rebind)
+        })
     }
 
     /// Remove a slot: the user's own slot or a detached slot its baseline
     /// dropped goes; a baseline slot gets a tombstone (see
-    /// [`WorkspaceSlots::remove`](crate::slots::WorkspaceSlots::remove)). In
-    /// an arrangement the user owns, its tab is reported gone until the host
-    /// removes it; one derived from the provider's hint loses the tab.
+    /// [`WorkspaceSlots::remove`](crate::slots::WorkspaceSlots::remove)).
     pub fn remove_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
-        let entry = self
-            .workspaces
-            .get_mut(&workspace)
-            .ok_or_else(|| format!("workspace {workspace} is not registered"))?;
-        let record = &mut entry.record;
-        let removed = record.slots.remove(key)?;
+        let removed =
+            self.with_workspace(workspace, |record, clock, _| record.remove_slot(clock, key))?;
         if removed {
-            follow_unowned(record, &mut self.clock);
-            if record.slots.slot(key).is_none() {
-                record.resolutions.forget(key);
-            }
             self.managed.forget_slot(workspace, key);
-            self.workspace_changed(workspace);
         }
         Ok(removed)
     }
@@ -1105,19 +1046,9 @@ impl Sidebar {
     /// Drop a baseline slot's override or tombstone, so it follows the
     /// provider again.
     pub fn reattach_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
-        let entry = self
-            .workspaces
-            .get_mut(&workspace)
-            .ok_or_else(|| format!("workspace {workspace} is not registered"))?;
-        let record = &mut entry.record;
-        let before = record.slots.slot(key).map(|slot| slot.spec);
-        let reattached = record.slots.reattach(key);
-        if reattached {
-            follow_unowned(record, &mut self.clock);
-            forget_resolution_if_edited(record, key, before);
-            self.workspace_changed(workspace);
-        }
-        Ok(reattached)
+        self.with_workspace(workspace, |record, clock, _| {
+            Ok(record.reattach_slot(clock, key))
+        })
     }
 
     /// Set the user's name for a workspace over the provider's, or drop it
@@ -1127,13 +1058,9 @@ impl Sidebar {
         workspace: WorkspaceId,
         name: Option<String>,
     ) -> Result<bool, String> {
-        let slots = &mut self.workspace_record_mut(workspace)?.slots;
-        let changed = slots.name != name;
-        slots.name = name;
-        if changed {
-            self.workspace_changed(workspace);
-        }
-        Ok(changed)
+        self.with_workspace(workspace, |record, clock, _| {
+            Ok(record.set_name(clock, name))
+        })
     }
 
     /// Set the user's mood for a workspace over the provider's, or drop it
@@ -1143,13 +1070,9 @@ impl Sidebar {
         workspace: WorkspaceId,
         mood: Option<String>,
     ) -> Result<bool, String> {
-        let slots = &mut self.workspace_record_mut(workspace)?.slots;
-        let changed = slots.mood != mood;
-        slots.mood = mood;
-        if changed {
-            self.workspace_changed(workspace);
-        }
-        Ok(changed)
+        self.with_workspace(workspace, |record, clock, _| {
+            Ok(record.set_mood(clock, mood))
+        })
     }
 
     /// The host has dealt with the live instance a rebind replaced: a
@@ -1160,24 +1083,16 @@ impl Sidebar {
         workspace: WorkspaceId,
         key: &str,
     ) -> Result<bool, String> {
-        let released = self
-            .workspace_record_mut(workspace)?
-            .slots
-            .release_departed(key);
-        if released {
-            self.workspace_changed(workspace);
-        }
+        let released = self.with_workspace(workspace, |record, clock, _| {
+            Ok::<_, String>(record.release_departed(clock, key))
+        })?;
         Ok(self.managed.release_previous(workspace, key) || released)
     }
 
-    /// A workspace's overlay: its edit set, baseline version and what the
-    /// host should know about it (removed slots, departed instances).
-    pub fn overlay(&self, workspace: WorkspaceId) -> Result<crate::slots::OverlayView, String> {
-        let record = self.workspace_record(workspace)?;
-        Ok(crate::slots::OverlayView::new(
-            &record.slots,
-            record.arrangement.get().as_ref(),
-        ))
+    /// A workspace's overlay: its baseline version, name and mood, and what
+    /// the host should know about it (removed slots, departed instances).
+    pub fn overlay(&self, workspace: WorkspaceId) -> Result<OverlayView, String> {
+        Ok(self.workspace(workspace)?.overlay())
     }
 
     /// Plan one slot, given the identity of the resolution the host applied
@@ -1188,13 +1103,10 @@ impl Sidebar {
         key: &str,
         applied: &str,
     ) -> Result<crate::managed::SlotPlan, String> {
-        let record = self.workspace_record(workspace)?;
-        let slot = record
-            .slots
-            .slot(key)
-            .ok_or_else(|| format!("workspace {workspace} has no slot {key:?}"))?;
-        let source = slot_source(record.subject.as_ref(), &slot);
-        let saved = record.resolutions.get(key).cloned();
+        let record = self.workspace(workspace)?;
+        let slot = record.slot(key)?;
+        let source = record.slot_source(&slot);
+        let saved = record.resolutions.get().get(key).cloned();
         let mut plan = self
             .managed
             .plan_slot(workspace, key, source, slot.rebind, applied);
@@ -1208,13 +1120,8 @@ impl Sidebar {
         &self,
         workspace: WorkspaceId,
         key: &str,
-    ) -> Result<Option<crate::target_resolution::SavedResolution>, String> {
-        let record = self.workspace_record(workspace)?;
-        record
-            .slots
-            .slot(key)
-            .ok_or_else(|| format!("workspace {workspace} has no slot {key:?}"))?;
-        Ok(record.resolutions.get(key).cloned())
+    ) -> Result<Option<SavedResolution>, String> {
+        self.workspace(workspace)?.resolution(key)
     }
 
     /// Save a slot's portable Target Resolution in the workspace record, if
@@ -1227,34 +1134,13 @@ impl Sidebar {
         &mut self,
         workspace: WorkspaceId,
         key: &str,
-        resolution: crate::target_resolution::PortableResolution,
+        resolution: PortableResolution,
         applied: &str,
         expected: u64,
-    ) -> Result<u64, crate::target_resolution::ResolutionError> {
-        use crate::{managed::DesiredContent, target_resolution::ResolutionError};
-        let record = self
-            .workspace_record(workspace)
-            .map_err(ResolutionError::Invalid)?;
-        let slot = record.slots.slot(key).ok_or_else(|| {
-            ResolutionError::Invalid(format!("workspace {workspace} has no slot {key:?}"))
-        })?;
-        let source = slot_source(record.subject.as_ref(), &slot);
-        if let Some(DesiredContent::Ready(desired)) = self.managed.desired(&source) {
-            if desired.id() != applied {
-                return Err(ResolutionError::Invalid(format!(
-                    "slot {key:?} no longer resolves to what was applied: plan it again"
-                )));
-            }
-        }
-        let record = self
-            .workspace_record_mut(workspace)
-            .map_err(ResolutionError::Invalid)?;
-        let before = record.resolutions.generation(key);
-        let generation = record.resolutions.set(key, resolution, applied, expected)?;
-        if generation != before {
-            self.workspace_changed(workspace);
-        }
-        Ok(generation)
+    ) -> Result<u64, CommitError> {
+        self.with_workspace(workspace, |record, clock, managed| {
+            record.set_resolution(clock, managed, key, resolution, applied, expected)
+        })
     }
 
     /// Clear a slot's saved portable Target Resolution, if `expected` is its
@@ -1264,48 +1150,10 @@ impl Sidebar {
         workspace: WorkspaceId,
         key: &str,
         expected: u64,
-    ) -> Result<bool, crate::target_resolution::ResolutionError> {
-        use crate::target_resolution::ResolutionError;
-        let record = self
-            .workspace_record_mut(workspace)
-            .map_err(ResolutionError::Invalid)?;
-        let cleared = record.resolutions.clear(key, expected)?;
-        if cleared {
-            self.workspace_changed(workspace);
-        }
-        Ok(cleared)
-    }
-
-    /// Clear saved portable resolutions the slot no longer resolves to: the
-    /// slot has gone, or its resolution is known (Ready) and its identity is
-    /// not the one the resolution was saved for. Unavailable and Held keep
-    /// them: expiry is silence, not a new target. Returns whether any were
-    /// cleared.
-    fn invalidate_resolutions(&mut self) -> bool {
-        use crate::managed::DesiredContent;
-        let managed = &self.managed;
-        let mut changed = false;
-        for entry in self.workspaces.values_mut() {
-            let record = &mut entry.record;
-            if record.resolutions.by_slot.is_empty() {
-                continue;
-            }
-            let slots = record.slots.slots();
-            let subject = record.subject.as_ref();
-            if record.resolutions.retain(|key, saved| {
-                let Some(slot) = slots.iter().find(|slot| slot.key == key) else {
-                    return false;
-                };
-                match managed.desired(&slot_source(subject, slot)) {
-                    Some(DesiredContent::Ready(desired)) => desired.id() == saved.against,
-                    _ => true,
-                }
-            }) {
-                entry.generation = self.clock.tick();
-                changed = true;
-            }
-        }
-        changed
+    ) -> Result<bool, CommitError> {
+        self.with_workspace(workspace, |record, clock, _| {
+            record.clear_resolution(clock, key, expected)
+        })
     }
 
     /// Commit a workspace's whole arrangement, if `expected` is its current
@@ -1317,33 +1165,12 @@ impl Sidebar {
     pub fn set_arrangement(
         &mut self,
         workspace: WorkspaceId,
-        doc: crate::slots::ArrangementDoc,
+        doc: ArrangementDoc,
         expected: u64,
-    ) -> Result<crate::slots::ArrangementCommit, crate::slots::ArrangementError> {
-        use crate::slots::{Arrangement, ArrangementCommit, ArrangementError};
-        let entry = self.workspaces.get_mut(&workspace).ok_or_else(|| {
-            ArrangementError::Invalid(format!("workspace {workspace} is not registered"))
-        })?;
-        let record = &mut entry.record;
-        let slots = record.slots.slots();
-        let before = record.arrangement.generation();
-        let (generation, placed) =
-            record
-                .arrangement
-                .update(Some(expected), &mut self.clock, |stored| {
-                    Arrangement::commit(stored, doc, record.slots.baseline.as_ref(), &slots)
-                })?;
-        let stored = record.arrangement.get().as_ref().expect("committed");
-        let commit = ArrangementCommit {
-            generation,
-            placed,
-            gone: stored.gone(&slots).into_iter().collect(),
-            owned: stored.owned,
-        };
-        if generation != before {
-            self.workspace_changed(workspace);
-        }
-        Ok(commit)
+    ) -> Result<ArrangementCommit, CommitError> {
+        self.with_workspace(workspace, |record, clock, _| {
+            record.commit_arrangement(clock, doc, expected)
+        })
     }
 
     /// Settle a provider change to an arrangement the user owns: keep the
@@ -1352,38 +1179,18 @@ impl Sidebar {
     pub fn resolve_arrangement(
         &mut self,
         workspace: WorkspaceId,
-        choice: crate::slots::Resolve,
+        choice: Resolve,
         expected: u64,
-    ) -> Result<u64, crate::slots::ArrangementError> {
-        use crate::slots::{Arrangement, ArrangementError};
-        let entry = self.workspaces.get_mut(&workspace).ok_or_else(|| {
-            ArrangementError::Invalid(format!("workspace {workspace} is not registered"))
-        })?;
-        let record = &mut entry.record;
-        let slots = record.slots.slots();
-        let before = record.arrangement.generation();
-        let (generation, ()) =
-            record
-                .arrangement
-                .update(Some(expected), &mut self.clock, |stored| {
-                    Arrangement::resolve(stored, choice, record.slots.baseline.as_ref(), &slots);
-                    Ok(())
-                })?;
-        if generation != before {
-            self.workspace_changed(workspace);
-        }
-        Ok(generation)
+    ) -> Result<u64, CommitError> {
+        self.with_workspace(workspace, |record, clock, _| {
+            record.resolve_arrangement(clock, choice, expected)
+        })
     }
 
     /// A registered workspace's arrangement. Before anything is stored it is
     /// empty, at generation 0.
-    pub fn arrangement(
-        &self,
-        workspace: WorkspaceId,
-    ) -> Result<crate::slots::ArrangementView, String> {
-        let record = self.workspace_record(workspace)?;
-        let slots = record.slots.slots();
-        Ok(crate::slots::Arrangement::view(&record.arrangement, &slots))
+    pub fn arrangement(&self, workspace: WorkspaceId) -> Result<ArrangementView, String> {
+        Ok(self.workspace(workspace)?.arrangement_view())
     }
 
     /// What the template and local sections declare, for the sidebar
@@ -1428,49 +1235,31 @@ impl Sidebar {
     /// changed: on configure, and when local sections or groups change.
     fn follow_sidebar_declarations(&mut self) {
         let declared = self.sidebar_declared();
-        let stored = &mut self.sidebar_arrangement;
-        let before = stored.generation;
-        self.sidebar_report = stored.follow(&declared, &mut || before + 1);
+        let mut report = Report::default();
+        self.sidebar_arrangement
+            .follow(&mut self.clock, |stored| report = stored.follow(&declared));
+        self.sidebar_report = report;
     }
 
-    /// Adopt an imported arrangement, reconciled. It keeps its own
-    /// generation if reconciling changed nothing and that is newer than the
-    /// stored one; otherwise a changed arrangement moves past both, so a
-    /// host commit prepared before the import is stale.
-    fn import_sidebar_arrangement(
-        &mut self,
-        imported: crate::sidebar_arrangement::SidebarArrangement,
-    ) {
-        let declared = self.sidebar_declared();
-        let (mut next, report) = crate::sidebar_arrangement::reconcile(&declared, &imported);
-        let generation = if next == imported {
-            imported.generation
-        } else {
-            imported.generation + 1
-        };
-        let current = self.sidebar_arrangement.generation;
-        next.generation = current;
-        if next != self.sidebar_arrangement {
-            next.generation = if generation > current {
-                generation
-            } else {
-                current + 1
-            };
-            self.sidebar_arrangement = next;
-        }
+    /// Adopt an imported arrangement, reconciled, at a new generation.
+    fn import_sidebar_arrangement(&mut self, imported: SidebarArrangement) {
+        let (next, report) =
+            crate::sidebar_arrangement::reconcile(&self.sidebar_declared(), &imported);
+        self.sidebar_arrangement
+            .follow(&mut self.clock, |stored| *stored = next);
         self.sidebar_report = report;
     }
 
     /// The Dashboard's sidebar arrangement: the dock and floating panels,
-    /// closed sections, flags, and what its last reconciliation did.
-    pub fn sidebar_arrangement(
-        &self,
-    ) -> (
-        crate::sidebar_arrangement::SidebarView,
-        &crate::sidebar_arrangement::Report,
-    ) {
+    /// closed sections, flags, and what its last reconciliation did. Its
+    /// unresolved keys include saved dashboard keys the template no longer
+    /// resolves.
+    pub fn sidebar_arrangement(&self) -> (SidebarView, &Report) {
         let declared = self.sidebar_declared();
-        let mut view = self.sidebar_arrangement.view(&declared);
+        let mut view = self
+            .sidebar_arrangement
+            .get()
+            .view(self.sidebar_arrangement.generation(), &declared);
         view.unresolved
             .extend(self.unresolved_dashboard_keys(&declared));
         (view, &self.sidebar_report)
@@ -1527,7 +1316,7 @@ impl Sidebar {
     /// The sidebar arrangement's generation: 0 before anything is stored,
     /// and changed whenever it is. Cheap enough to poll.
     pub fn sidebar_arrangement_generation(&self) -> u64 {
-        self.sidebar_arrangement.generation
+        self.sidebar_arrangement.generation()
     }
 
     /// Commit the host's whole sidebar arrangement, if `expected` is its
@@ -1535,15 +1324,10 @@ impl Sidebar {
     /// invalid commit changes nothing; neither invalidates the snapshot.
     pub fn set_sidebar_arrangement(
         &mut self,
-        doc: crate::sidebar_arrangement::SidebarDoc,
+        doc: SidebarDoc,
         expected: u64,
-    ) -> Result<crate::sidebar_arrangement::Report, crate::slots::ArrangementError> {
-        let declared = self.sidebar_declared();
-        let stored = &mut self.sidebar_arrangement;
-        let before = stored.generation;
-        let report = stored.commit(&declared, doc, expected, &mut || before + 1)?;
-        self.sidebar_report = report.clone();
-        Ok(report)
+    ) -> Result<Report, CommitError> {
+        self.edit_sidebar_arrangement(expected, |stored, declared| stored.commit(declared, doc))
     }
 
     /// Reopen a closed section by its hints, with an equal share of its host.
@@ -1551,25 +1335,29 @@ impl Sidebar {
         &mut self,
         key: &str,
         expected: u64,
-    ) -> Result<crate::sidebar_arrangement::Report, crate::slots::ArrangementError> {
-        let declared = self.sidebar_declared();
-        let stored = &mut self.sidebar_arrangement;
-        let before = stored.generation;
-        let report = stored.restore(&declared, key, expected, &mut || before + 1)?;
-        self.sidebar_report = report.clone();
-        Ok(report)
+    ) -> Result<Report, CommitError> {
+        self.edit_sidebar_arrangement(expected, |stored, declared| stored.restore(declared, key))
     }
 
     /// Return the sidebar to its default arrangement: every declared section
     /// placed by its hints, nothing closed.
-    pub fn reset_sidebar_arrangement(
+    pub fn reset_sidebar_arrangement(&mut self, expected: u64) -> Result<Report, CommitError> {
+        self.edit_sidebar_arrangement(expected, |stored, declared| Ok(stored.reset(declared)))
+    }
+
+    /// A host's edit of the sidebar arrangement at `expected`, reconciled
+    /// against what is declared.
+    fn edit_sidebar_arrangement(
         &mut self,
         expected: u64,
-    ) -> Result<crate::sidebar_arrangement::Report, crate::slots::ArrangementError> {
+        edit: impl FnOnce(&mut SidebarArrangement, &Declared) -> Result<Report, String>,
+    ) -> Result<Report, CommitError> {
         let declared = self.sidebar_declared();
-        let stored = &mut self.sidebar_arrangement;
-        let before = stored.generation;
-        let report = stored.reset(&declared, expected, &mut || before + 1)?;
+        let (_, report) =
+            self.sidebar_arrangement
+                .update(Some(expected), &mut self.clock, |stored| {
+                    Ok(edit(stored, &declared)?)
+                })?;
         self.sidebar_report = report.clone();
         Ok(report)
     }
@@ -1581,11 +1369,17 @@ impl Sidebar {
         self.revision
     }
 
+    /// Every change to what the sidebar presents comes through here, the
+    /// Dashboard's state among it, so this is also where the dashboard
+    /// record takes a new generation when its state changed.
     fn invalidate(&mut self) {
-        self.revision += 1;
+        self.revision = self.clock.tick();
         self.snapshot.take();
         self.evaluation.take();
         self.details.get_mut().clear();
+        let state = self.dashboard_state();
+        self.dashboard
+            .follow(&mut self.clock, |current| *current = state);
     }
 
     fn evaluation(&self) -> &crate::state::RevisionEvaluation {
@@ -1815,8 +1609,7 @@ impl Sidebar {
             }
             Pending::Materialize(entity, request) => match result {
                 Ok(Some(id)) => {
-                    self.registered.insert(id);
-                    self.workspaces.entry(id).or_default();
+                    self.ensure_workspace(id);
                     self.state
                         .bind_materializing_subject(&request, id, entity.clone());
                     // If observation arrived before acknowledgement, claim now.
@@ -1855,63 +1648,6 @@ impl Sidebar {
 /// Ended presentation expiry policy is intentionally undecided. Keep the seam
 /// shared by all retained workspace paths; user close is the only expiry today.
 // TODO: apply the policy decided in flotilla-org/wheelhouse#159 here.
-/// Where a slot's resolution comes from: a baseline slot that follows its
-/// provider resolves from the subject's layout; any other slot from its spec,
-/// as a local recipe or a provider facet (`facet` of the entity's own layout,
-/// `primary` for the `workspace.primary.*` facts).
-fn slot_source(
-    subject: Option<&EntityRef>,
-    slot: &crate::slots::SlotInfo,
-) -> crate::managed::SlotSource {
-    use crate::{managed::SlotSource, suggested_layout::Content};
-    match (
-        subject,
-        slot.in_baseline && !slot.detached,
-        &slot.spec.content,
-    ) {
-        (Some(subject), true, _) => SlotSource::Provider {
-            entity: subject.clone(),
-            slot: slot.key.clone(),
-        },
-        (_, _, Content::ProviderFacet { entity, facet }) => SlotSource::Provider {
-            entity: entity.clone(),
-            slot: facet.clone(),
-        },
-        (_, _, Content::Local(recipe)) => SlotSource::Local(recipe.clone()),
-    }
-}
-
-/// A slot whose content the user edited, or which went, loses its saved
-/// portable resolution: it was made for other content.
-fn forget_resolution_if_edited(
-    record: &mut WorkspaceRecord,
-    key: &str,
-    before: Option<crate::suggested_layout::ViewSpec>,
-) {
-    if record.slots.slot(key).map(|slot| slot.spec) != before {
-        record.resolutions.forget(key);
-    }
-}
-
-/// Re-derive an arrangement the user doesn't own after a slot edit that
-/// hides or shows a baseline slot. An owned one is left to the host.
-fn follow_unowned(record: &mut WorkspaceRecord, clock: &mut crate::versioned::Clock) -> bool {
-    if record.arrangement.get().as_ref().is_some_and(|a| !a.owned) {
-        return follow_slots(record, clock);
-    }
-    false
-}
-
-/// Bring a record's arrangement up to date with its slots. Returns whether
-/// it changed.
-fn follow_slots(record: &mut WorkspaceRecord, clock: &mut crate::versioned::Clock) -> bool {
-    let slots = record.slots.slots();
-    let baseline = record.slots.baseline.as_ref();
-    record.arrangement.follow(clock, |stored| {
-        crate::slots::Arrangement::follow(stored, baseline, &slots)
-    })
-}
-
 fn retained_workspace_expired(_state: &ControllerState, _subjects: &BTreeSet<EntityRef>) -> bool {
     false
 }

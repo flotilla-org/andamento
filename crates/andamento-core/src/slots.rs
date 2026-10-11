@@ -723,27 +723,6 @@ pub struct ArrangementView {
     pub unresolved: BTreeSet<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ArrangementError {
-    /// The expected generation is not the current one; nothing changed.
-    Stale {
-        current: u64,
-    },
-    Invalid(String),
-}
-
-impl std::fmt::Display for ArrangementError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stale { current } => write!(
-                f,
-                "the arrangement changed: its generation is {current}; read it again"
-            ),
-            Self::Invalid(message) => f.write_str(message),
-        }
-    }
-}
-
 /// What a commit did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArrangementCommit {

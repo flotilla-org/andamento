@@ -22,6 +22,7 @@ pub use sidebar::Sidebar;
 pub mod target_resolution;
 pub mod template_config;
 pub mod versioned;
+pub mod workspace;
 mod workspace_id;
 pub use host::tab_workspace_id;
 pub use workspace_id::WorkspaceId;

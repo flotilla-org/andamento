@@ -11,7 +11,7 @@
 //! section collapse are the host's Presentation State.
 use std::collections::BTreeSet;
 
-use crate::slots::{self, ArrangementDoc, ArrangementError, Panel, PanelNode};
+use crate::slots::{self, ArrangementDoc, Panel, PanelNode};
 use crate::suggested_layout::Axis;
 
 /// The key of a local section (`.section` entity `<id>`) among sections.
@@ -193,11 +193,10 @@ impl SidebarDoc {
     }
 }
 
-/// The Dashboard's stored sidebar arrangement.
+/// The Dashboard's stored sidebar arrangement. Its generation is the
+/// [`Versioned`](crate::versioned::Versioned) the sidebar keeps it in.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SidebarArrangement {
-    /// Nonzero once stored; it changes whenever anything here does.
-    pub generation: u64,
     /// The host has committed it since it was last reset.
     pub owned: bool,
     pub doc: SidebarDoc,
@@ -225,8 +224,7 @@ pub struct Report {
 /// Reconcile a stored arrangement with what is declared: remove duplicate
 /// tabs (keeping the first, dock before floating, in preorder), and place
 /// each declared section that has neither a tab nor a closed record by its
-/// hints. Nothing that no longer resolves is dropped; it is reported. The
-/// generation is the caller's.
+/// hints. Nothing that no longer resolves is dropped; it is reported.
 pub fn reconcile(declared: &Declared, stored: &SidebarArrangement) -> (SidebarArrangement, Report) {
     let mut next = stored.clone();
     let mut report = Report {
@@ -265,7 +263,6 @@ pub fn unresolved(declared: &Declared, arrangement: &SidebarArrangement) -> BTre
 /// An arrangement as the host reads it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SidebarView {
-    /// 0 when nothing is stored yet.
     pub generation: u64,
     pub owned: bool,
     pub doc: SidebarDoc,
@@ -275,9 +272,9 @@ pub struct SidebarView {
 }
 
 impl SidebarArrangement {
-    pub fn view(&self, declared: &Declared) -> SidebarView {
+    pub fn view(&self, generation: u64, declared: &Declared) -> SidebarView {
         SidebarView {
-            generation: self.generation,
+            generation,
             owned: self.owned,
             doc: self.doc.clone(),
             closed: self.closed.clone(),
@@ -286,62 +283,28 @@ impl SidebarArrangement {
         }
     }
 
-    /// Store `next` if it differs, at a new generation. Returns whether it did.
-    fn adopt(&mut self, mut next: Self, next_generation: &mut impl FnMut() -> u64) -> bool {
-        next.generation = self.generation;
-        if next == *self {
-            return false;
-        }
-        next.generation = next_generation();
-        *self = next;
-        true
-    }
-
-    fn expect(&self, expected: u64) -> Result<(), ArrangementError> {
-        if expected == self.generation {
-            Ok(())
-        } else {
-            Err(ArrangementError::Stale {
-                current: self.generation,
-            })
-        }
-    }
-
     /// Follow what is declared: on configure, a template change, a local
     /// section change or an import. Returns the reconciliation's report.
-    pub fn follow(
-        &mut self,
-        declared: &Declared,
-        next_generation: &mut impl FnMut() -> u64,
-    ) -> Report {
+    pub fn follow(&mut self, declared: &Declared) -> Report {
         let (next, report) = reconcile(declared, self);
-        self.adopt(next, next_generation);
+        *self = next;
         report
     }
 
-    /// Commit the host's whole document, if `expected` is the current
-    /// generation (0 before any). A tab names something that resolves, or a
-    /// key the stored arrangement already holds. Declared sections it leaves
-    /// out are closed; closed sections it tabs are restored. A stale or
-    /// invalid commit changes nothing.
-    pub fn commit(
-        &mut self,
-        declared: &Declared,
-        doc: SidebarDoc,
-        expected: u64,
-        next_generation: &mut impl FnMut() -> u64,
-    ) -> Result<Report, ArrangementError> {
-        self.expect(expected)?;
-        doc.check().map_err(ArrangementError::Invalid)?;
+    /// Adopt the host's whole document. A tab names something that
+    /// resolves, or a key the stored arrangement already holds. Declared
+    /// sections it leaves out are closed; closed sections it tabs are
+    /// restored.
+    pub fn commit(&mut self, declared: &Declared, doc: SidebarDoc) -> Result<Report, String> {
+        doc.check()?;
         if let Some(key) = doc.tabs().into_iter().find(|key| {
             !declared.resolves(key) && !self.doc.contains(key) && !self.closed.contains(*key)
         }) {
-            return Err(ArrangementError::Invalid(format!(
+            return Err(format!(
                 "no section {key:?}: a tab names a declared or local section, or a host view \"{HOST_VIEW_PREFIX}<id>\""
-            )));
+            ));
         }
         let mut next = Self {
-            generation: self.generation,
             owned: true,
             doc,
             closed: self.closed.clone(),
@@ -364,49 +327,34 @@ impl SidebarArrangement {
         let (next, mut report) = reconcile(declared, &next);
         report.duplicates = duplicates;
         report.restored = restored;
-        self.adopt(next, next_generation);
+        *self = next;
         Ok(report)
     }
 
     /// Reopen a declared section the user closed, by its hints, with an
     /// equal share of its host. A section that has a tab is left where it is.
-    pub fn restore(
-        &mut self,
-        declared: &Declared,
-        key: &str,
-        expected: u64,
-        next_generation: &mut impl FnMut() -> u64,
-    ) -> Result<Report, ArrangementError> {
-        self.expect(expected)?;
-        let index = declared.index(key).ok_or_else(|| {
-            ArrangementError::Invalid(format!("no section {key:?} is declared to restore"))
-        })?;
-        let mut next = self.clone();
+    pub fn restore(&mut self, declared: &Declared, key: &str) -> Result<Report, String> {
+        let index = declared
+            .index(key)
+            .ok_or_else(|| format!("no section {key:?} is declared to restore"))?;
         let mut report = Report::default();
-        next.closed.remove(key);
-        if !next.doc.contains(key) {
-            place(&mut next.doc, declared, index, Share::Equal);
-            next.placed.insert(key.to_owned());
-            next.owned = true;
+        self.closed.remove(key);
+        if !self.doc.contains(key) {
+            place(&mut self.doc, declared, index, Share::Equal);
+            self.placed.insert(key.to_owned());
+            self.owned = true;
             report.restored.push(key.to_owned());
         }
-        report.unresolved = unresolved(declared, &next).into_iter().collect();
-        self.adopt(next, next_generation);
+        report.unresolved = unresolved(declared, self).into_iter().collect();
         Ok(report)
     }
 
     /// Forget the user's arrangement and closed sections, and every key that
     /// no longer resolves, placing every declared section by its hints.
-    pub fn reset(
-        &mut self,
-        declared: &Declared,
-        expected: u64,
-        next_generation: &mut impl FnMut() -> u64,
-    ) -> Result<Report, ArrangementError> {
-        self.expect(expected)?;
+    pub fn reset(&mut self, declared: &Declared) -> Report {
         let (next, report) = reconcile(declared, &Self::default());
-        self.adopt(next, next_generation);
-        Ok(report)
+        *self = next;
+        report
     }
 }
 

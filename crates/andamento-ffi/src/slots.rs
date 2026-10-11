@@ -629,7 +629,7 @@ pub unsafe extern "C" fn andamento_slot_resolution_set(
     generation_out: *mut u64,
     error_out: *mut *mut c_char,
 ) -> u32 {
-    use andamento_core::target_resolution::{PortableResolution, ResolutionError};
+    use andamento_core::{target_resolution::PortableResolution, versioned::CommitError};
     run(h, error_out, |h| {
         let key = key.read()?;
         let mut resolution = PortableResolution {
@@ -656,15 +656,15 @@ pub unsafe extern "C" fn andamento_slot_resolution_set(
         );
         let current = match &result {
             Ok(generation) => Some(*generation),
-            Err(ResolutionError::Stale { current }) => Some(*current),
-            Err(ResolutionError::Invalid(_)) => None,
+            Err(CommitError::Stale { current }) => Some(*current),
+            Err(CommitError::Invalid(_)) => None,
         };
         if let (Some(out), Some(current)) = (generation_out.as_mut(), current) {
             *out = current;
         }
         match result {
             Ok(_) => Ok(ANDAMENTO_COMMITTED),
-            Err(ResolutionError::Stale { .. }) => Ok(ANDAMENTO_STALE),
+            Err(CommitError::Stale { .. }) => Ok(ANDAMENTO_STALE),
             Err(error) => Err(error.to_string()),
         }
     })
@@ -682,22 +682,22 @@ pub unsafe extern "C" fn andamento_slot_resolution_clear(
     generation_out: *mut u64,
     error_out: *mut *mut c_char,
 ) -> u32 {
-    use andamento_core::target_resolution::ResolutionError;
+    use andamento_core::versioned::CommitError;
     run(h, error_out, |h| {
         let result =
             h.sidebar
                 .clear_slot_resolution(workspace.into(), &key.read()?, expected_generation);
         let current = match &result {
             Ok(_) => Some(0),
-            Err(ResolutionError::Stale { current }) => Some(*current),
-            Err(ResolutionError::Invalid(_)) => None,
+            Err(CommitError::Stale { current }) => Some(*current),
+            Err(CommitError::Invalid(_)) => None,
         };
         if let (Some(out), Some(current)) = (generation_out.as_mut(), current) {
             *out = current;
         }
         match result {
             Ok(_) => Ok(ANDAMENTO_COMMITTED),
-            Err(ResolutionError::Stale { .. }) => Ok(ANDAMENTO_STALE),
+            Err(CommitError::Stale { .. }) => Ok(ANDAMENTO_STALE),
             Err(error) => Err(error.to_string()),
         }
     })

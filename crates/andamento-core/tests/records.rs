@@ -3,8 +3,9 @@
 //! observed anything or received a fact.
 mod common;
 use andamento_core::presentation::{PlacementNode, PresentationState, SurfaceSnapshot};
-use andamento_core::records::{DashboardRecord, WorkspaceRecord};
+use andamento_core::records::{DashboardRecord, DashboardState};
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
+use andamento_core::workspace::WorkspaceRecord;
 use andamento_core::{
     DisplayVariableValue, EntityRef, MetadataPatch, MetadataTarget, MetadataValue,
     MetadataValueUpdate, Sidebar, WorkspaceId,
@@ -261,21 +262,22 @@ fn records_are_named_for_the_dashboard_and_registered_workspaces() {
         &sidebar
             .export_record(&format!("workspace/{WORKER}"))
             .unwrap(),
+        &mut Default::default(),
     )
     .unwrap();
-    assert_eq!(workspace.subject, Some(entity("vessel", "v")));
-    let vessel = &workspace.retained[&entity("vessel", "v")];
+    assert_eq!(workspace.subject(), Some(&entity("vessel", "v")));
+    let vessel = &workspace.subject.get().retained[&entity("vessel", "v")];
     assert_eq!(
         (vessel.label.as_deref(), vessel.ended, vessel.last_seen_ms),
         (Some("Vee"), true, Some(150))
     );
-    let project = &workspace.retained[&entity("project", "p")];
+    let project = &workspace.subject.get().retained[&entity("project", "p")];
     assert_eq!(
         (project.label.as_deref(), project.ended),
         (Some("Project P"), false)
     );
     // Only facts placement reads are kept, not the full fact set.
-    for retained in workspace.retained.values() {
+    for retained in workspace.subject.get().retained.values() {
         assert_eq!(
             retained.facts.keys().collect::<Vec<_>>(),
             ["flotilla.project"]
@@ -284,15 +286,16 @@ fn records_are_named_for_the_dashboard_and_registered_workspaces() {
     let dashboard = DashboardRecord::decode(&sidebar.export_record("dashboard").unwrap()).unwrap();
     // A display variable that doesn't persist is presentation, not saved.
     assert_eq!(
-        dashboard.display,
+        dashboard.state.display,
         BTreeMap::from([
             ("show-finished".into(), DisplayVariableValue::Bool(true)),
             ("show-issues".into(), DisplayVariableValue::Bool(false)),
         ])
     );
-    assert_eq!(dashboard.orders.len(), 1);
-    assert_eq!(dashboard.variables.len(), 1);
+    assert_eq!(dashboard.state.orders.len(), 1);
+    assert_eq!(dashboard.state.variables.len(), 1);
     assert!(dashboard
+        .state
         .local
         .contains_key(&EntityRef::local(".ref", "r1")));
     let unknown = format!("workspace/{}", andamento_core::tab_workspace_id(7));
@@ -406,8 +409,11 @@ fn bad_records_are_rejected_without_change() {
         .collect::<Vec<_>>();
     let revision = sidebar.revision();
     let not_local = DashboardRecord {
-        local: BTreeMap::from([(entity("vessel", "x"), BTreeMap::new())]),
-        ..DashboardRecord::default()
+        state: DashboardState {
+            local: BTreeMap::from([(entity("vessel", "x"), BTreeMap::new())]),
+            ..DashboardState::default()
+        },
+        sidebar: None,
     };
     let workspace = format!("workspace/{WORKER}");
     for (name, text, reason) in [
@@ -491,9 +497,15 @@ fn generations_change_only_with_content() {
         .unwrap();
     let renamed = sidebar.record_generation(&name).unwrap();
     assert!(renamed > workspace);
-    let record = WorkspaceRecord::decode(&sidebar.export_record(&name).unwrap()).unwrap();
+    let record = WorkspaceRecord::decode(
+        &sidebar.export_record(&name).unwrap(),
+        &mut Default::default(),
+    )
+    .unwrap();
     assert_eq!(
-        record.retained[&entity("vessel", "v")].label.as_deref(),
+        record.subject.get().retained[&entity("vessel", "v")]
+            .label
+            .as_deref(),
         Some("Renamed")
     );
 

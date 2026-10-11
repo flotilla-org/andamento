@@ -4,13 +4,14 @@
 //! Portable Target Resolutions (#158) are saved per slot in the record.
 mod common;
 use andamento_core::managed::{ContentState, Resolved, TerminalContent};
-use andamento_core::records::WorkspaceRecord;
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
-use andamento_core::slots::{ArrangementDoc, ArrangementError, Panel, PanelNode};
+use andamento_core::slots::{ArrangementDoc, Panel, PanelNode};
 use andamento_core::suggested_layout::{
     Axis, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec,
 };
-use andamento_core::target_resolution::{PortableResolution, ResolutionError};
+use andamento_core::target_resolution::PortableResolution;
+use andamento_core::versioned::CommitError;
+use andamento_core::workspace::WorkspaceRecord;
 use andamento_core::{
     EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
     WorkspaceId,
@@ -223,7 +224,7 @@ fn slots_follow_the_layout_and_arrangements_reconcile() {
     let stale = sidebar.set_arrangement(worker(), row(vec![tabs("1", &["b", "a"])]), 1);
     assert_eq!(
         stale,
-        Err(ArrangementError::Stale {
+        Err(CommitError::Stale {
             current: commit.generation
         })
     );
@@ -241,7 +242,7 @@ fn slots_follow_the_layout_and_arrangements_reconcile() {
             row(vec![tabs("1", &["a", "zz"]), tabs("2", &["b"])]),
             commit.generation,
         ),
-        Err(ArrangementError::Invalid(_))
+        Err(CommitError::Invalid(_))
     ));
 
     // Baseline 2 drops a and adds c: c is placed in the first tab panel,
@@ -565,21 +566,20 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     let revision = sidebar.content_revision();
     assert!(matches!(
         sidebar.set_slot_resolution(worker(), "r", cleat("S1"), "other", 0),
-        Err(ResolutionError::Invalid(_))
+        Err(CommitError::Invalid(_))
     ));
     assert_eq!(
         sidebar.set_slot_resolution(worker(), "r", cleat("S1"), &first.id, 1),
-        Err(ResolutionError::Stale { current: 0 })
+        Err(CommitError::Stale { current: 0 })
     );
     assert!(sidebar
         .set_slot_resolution(worker(), "nope", cleat("S1"), &first.id, 0)
         .is_err());
     assert_eq!(sidebar.content_revision(), revision);
-    assert_eq!(
-        sidebar.set_slot_resolution(worker(), "r", cleat("S1"), &first.id, 0),
-        Ok(1)
-    );
-    assert!(sidebar.content_revision() > revision);
+    let g1 = sidebar
+        .set_slot_resolution(worker(), "r", cleat("S1"), &first.id, 0)
+        .unwrap();
+    assert!(g1 > 0 && sidebar.content_revision() > revision);
     let saved = sidebar.slot_resolution(worker(), "r").unwrap().unwrap();
     assert_eq!(
         (
@@ -587,13 +587,13 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
             saved.against.as_str(),
             saved.generation
         ),
-        (cleat("S1"), first.id.as_str(), 1)
+        (cleat("S1"), first.id.as_str(), g1)
     );
     // Saving it again changes nothing.
     let revision = sidebar.content_revision();
     assert_eq!(
-        sidebar.set_slot_resolution(worker(), "r", cleat("S1"), &first.id, 1),
-        Ok(1)
+        sidebar.set_slot_resolution(worker(), "r", cleat("S1"), &first.id, g1),
+        Ok(g1)
     );
     assert_eq!(sidebar.content_revision(), revision);
     // The plan reports it whatever the state.
@@ -608,10 +608,16 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     let mut other = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
     other.import_record(&name, &record).unwrap();
     assert_eq!(other.export_record(&name).unwrap(), record);
-    // No facts yet: Unavailable, and the saved resolution is kept.
+    // No facts yet: Unavailable, and the saved resolution is kept, at a
+    // generation of the other sidebar's own.
+    let same = |plan: &andamento_core::managed::SlotPlan| {
+        plan.saved
+            .as_ref()
+            .is_some_and(|s| (&s.resolution, &s.against) == (&saved.resolution, &saved.against))
+    };
     let plan = other.plan_slot(worker(), "r", "").unwrap();
     assert_eq!(plan.state, ContentState::Unavailable);
-    assert_eq!(plan.saved.as_ref(), Some(&saved));
+    assert!(same(&plan));
     other
         .apply(
             100,
@@ -621,8 +627,8 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
         .unwrap();
     let plan = other.plan_slot(worker(), "r", "").unwrap();
     assert_eq!(plan.state, ContentState::Updating);
+    assert!(same(&plan));
     assert_eq!(plan.update.unwrap().id, saved.against);
-    assert_eq!(plan.saved.as_ref(), Some(&saved));
 
     // The provider resolves r to a new target: the saved resolution is
     // cleared, and the slot rebinds by its policy as for any change.
@@ -637,9 +643,10 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     assert!(sidebar.content_revision() > revision);
     assert_eq!(sidebar.slot_resolution(worker(), "r").unwrap(), None);
     let record = sidebar.export_record(&name).unwrap();
-    let resolutions = WorkspaceRecord::decode(&record).unwrap().resolutions;
-    assert!(resolutions.get("r").is_none());
-    assert_eq!(resolutions.last_generation, 1);
+    let resolutions = WorkspaceRecord::decode(&record, &mut Default::default())
+        .unwrap()
+        .resolutions;
+    assert!(resolutions.get().get("r").is_none());
     let plan = sidebar.plan_slot(worker(), "r", &first.id).unwrap();
     assert_eq!(
         (plan.state, plan.rebind, plan.saved),
@@ -652,10 +659,10 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     let plan = sidebar.plan_slot(worker(), "r", &second.id).unwrap();
     assert_eq!(plan.previous.as_ref(), Some(&first.id));
     // A generation is never given out twice.
-    assert_eq!(
-        sidebar.set_slot_resolution(worker(), "r", cleat("S2"), &second.id, 0),
-        Ok(2)
-    );
+    let g2 = sidebar
+        .set_slot_resolution(worker(), "r", cleat("S2"), &second.id, 0)
+        .unwrap();
+    assert!(g2 > g1);
     // The same happens to a device that imports the old record later.
     other.import_record(&name, &record).unwrap();
     other
@@ -673,9 +680,11 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
         .unwrap()
         .update
         .unwrap();
-    assert_eq!(
-        sidebar.set_slot_resolution(worker(), "k", cleat("K1"), &k.id, 0),
-        Ok(3)
+    assert!(
+        sidebar
+            .set_slot_resolution(worker(), "k", cleat("K1"), &k.id, 0)
+            .unwrap()
+            > g2
     );
     sidebar
         .apply(
@@ -708,10 +717,10 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
 
     // Clearing compares generations.
     assert_eq!(
-        sidebar.clear_slot_resolution(worker(), "r", 1),
-        Err(ResolutionError::Stale { current: 2 })
+        sidebar.clear_slot_resolution(worker(), "r", g1),
+        Err(CommitError::Stale { current: g2 })
     );
-    assert_eq!(sidebar.clear_slot_resolution(worker(), "r", 2), Ok(true));
+    assert_eq!(sidebar.clear_slot_resolution(worker(), "r", g2), Ok(true));
     assert_eq!(sidebar.clear_slot_resolution(worker(), "r", 0), Ok(false));
     // Removing a slot drops what was saved for it.
     let r = sidebar.plan_slot(worker(), "r", "").unwrap();
@@ -721,6 +730,53 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
         .unwrap();
     assert!(sidebar.remove_slot(worker(), "r").unwrap());
     assert!(sidebar.slot_resolution(worker(), "r").is_err());
-    let record = WorkspaceRecord::decode(&sidebar.export_record(&name).unwrap()).unwrap();
-    assert!(record.resolutions.get("r").is_none());
+    let record = WorkspaceRecord::decode(
+        &sidebar.export_record(&name).unwrap(),
+        &mut Default::default(),
+    )
+    .unwrap();
+    assert!(record.resolutions.get().get("r").is_none());
+}
+
+/// Regression: an imported record's saved resolutions take generations no
+/// earlier state had, so a save prepared against the resolution an import
+/// replaced is stale (as for an arrangement), not applied over the import.
+#[test]
+fn an_imported_resolution_never_reuses_a_generation() {
+    let url = |url: &str| ViewSpec {
+        content: Content::Local(LocalRecipe::Url { url: url.into() }),
+        presentation: None,
+    };
+    let name = format!("workspace/{WORKER}");
+    let saved_at = |sidebar: &mut Sidebar, session: &str| {
+        sidebar.register_workspace(worker());
+        sidebar
+            .set_slot(worker(), "u:1", url("https://a"), RebindPolicy::Replace)
+            .unwrap();
+        let applied = sidebar
+            .plan_slot(worker(), "u:1", "")
+            .unwrap()
+            .update
+            .unwrap()
+            .id;
+        let generation = sidebar
+            .set_slot_resolution(worker(), "u:1", cleat(session), &applied, 0)
+            .unwrap();
+        (generation, applied)
+    };
+    let mut here = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
+    let mut there = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
+    let (read, applied) = saved_at(&mut here, "S1");
+    saved_at(&mut there, "S2");
+    here.import_record(&name, &there.export_record(&name).unwrap())
+        .unwrap();
+    let imported = here.slot_resolution(worker(), "u:1").unwrap().unwrap();
+    assert_eq!(imported.resolution, cleat("S2"));
+    assert!(imported.generation > read);
+    assert_eq!(
+        here.set_slot_resolution(worker(), "u:1", cleat("S3"), &applied, read),
+        Err(CommitError::Stale {
+            current: imported.generation
+        })
+    );
 }

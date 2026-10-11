@@ -5,12 +5,11 @@
 mod common;
 use andamento_core::managed::ContentState;
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
-use andamento_core::slots::{
-    flag, ArrangementDoc, ArrangementError, Panel, PanelNode, Resolve, SlotInfo,
-};
+use andamento_core::slots::{flag, ArrangementDoc, Panel, PanelNode, Resolve, SlotInfo};
 use andamento_core::suggested_layout::{
     Axis, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec,
 };
+use andamento_core::versioned::CommitError;
 use andamento_core::{
     EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
     WorkspaceId,
@@ -682,7 +681,7 @@ fn a_provider_change_moves_the_generation_so_a_commit_cannot_erase_it() {
     // A commit made against what the host read is stale, and the flag stays.
     assert_eq!(
         sidebar.set_arrangement(worker(), moved.clone(), read),
-        Err(ArrangementError::Stale {
+        Err(CommitError::Stale {
             current: flagged.generation
         })
     );
@@ -722,7 +721,7 @@ fn an_imported_record_never_reuses_a_generation() {
     assert!(imported.generation > read);
     assert!(matches!(
         sidebar.set_arrangement(worker(), live.doc, read),
-        Err(ArrangementError::Stale { .. })
+        Err(CommitError::Stale { .. })
     ));
 }
 
@@ -797,7 +796,7 @@ fn template_a() -> String {
 
 #[test]
 fn dashboard_keys_that_no_longer_resolve_are_flagged_and_kept() {
-    use andamento_core::records::DashboardRecord;
+    use andamento_core::records::{DashboardRecord, DashboardState};
     use andamento_core::{DisplayVariableValue, PlacementKey, PlacementLoopKey, PlacementSegment};
     let template_a = template_a();
     let mut sidebar = Sidebar::new(&template_a).unwrap();
@@ -810,7 +809,7 @@ fn dashboard_keys_that_no_longer_resolve_are_flagged_and_kept() {
         parent: PlacementKey::default(),
         binding: binding.into(),
     };
-    let record = DashboardRecord {
+    let record = DashboardState {
         display: BTreeMap::from([("show-issues".into(), DisplayVariableValue::Bool(false))]),
         collapsed: BTreeSet::from([board.clone()]),
         orders: BTreeMap::from([
@@ -821,11 +820,14 @@ fn dashboard_keys_that_no_longer_resolve_are_flagged_and_kept() {
             board,
             BTreeMap::from([("density".into(), "compact".into())]),
         )]),
-        ..DashboardRecord::default()
+        ..DashboardState::default()
     };
-    sidebar
-        .import_record("dashboard", &record.encode())
-        .unwrap();
+    let encoded = DashboardRecord {
+        state: record.clone(),
+        sidebar: None,
+    }
+    .encode();
+    sidebar.import_record("dashboard", &encoded).unwrap();
     let unresolved = |sidebar: &Sidebar| sidebar.sidebar_arrangement().0.unresolved;
     assert!(
         unresolved(&sidebar).is_empty(),
@@ -866,10 +868,10 @@ fn dashboard_keys_that_no_longer_resolve_are_flagged_and_kept() {
     let exported = DashboardRecord::decode(&sidebar.export_record("dashboard").unwrap()).unwrap();
     assert_eq!(
         (
-            exported.display,
-            exported.collapsed,
-            exported.orders,
-            exported.variables
+            exported.state.display,
+            exported.state.collapsed,
+            exported.state.orders,
+            exported.state.variables
         ),
         (
             record.display,

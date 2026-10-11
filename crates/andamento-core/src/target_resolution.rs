@@ -17,6 +17,8 @@
 //! [`Resolved::id`]: crate::managed::Resolved::id
 use std::collections::BTreeMap;
 
+use crate::versioned::CommitError;
+
 /// A portable Target Resolution as the host supplies it, for example kind
 /// `cleat-session` with fields `host=feta session=S daemon=D`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -48,46 +50,20 @@ pub struct SavedResolution {
     /// The identity of the slot resolution this resolves: what the host
     /// applied, as it passes it to plan.
     pub against: String,
-    /// Nonzero; never reused within the workspace.
+    /// The generation it was saved at: from the sidebar's clock, so never
+    /// reused. Not persisted: an imported record's are new.
+    #[serde(skip)]
     pub generation: u64,
-}
-
-/// Why a save or clear changed nothing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ResolutionError {
-    /// The expected generation is not the slot's current one (0 for none).
-    Stale {
-        current: u64,
-    },
-    Invalid(String),
-}
-
-impl std::fmt::Display for ResolutionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stale { current } => write!(
-                f,
-                "the saved resolution changed: its generation is {current}; read it again"
-            ),
-            Self::Invalid(message) => f.write_str(message),
-        }
-    }
 }
 
 /// A workspace's saved portable resolutions, by slot key.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct SavedResolutions {
     pub by_slot: BTreeMap<String, SavedResolution>,
-    /// The last generation given out, so a clear never lets a generation be
-    /// reused.
-    pub last_generation: u64,
 }
 
 impl SavedResolutions {
-    pub fn is_empty(&self) -> bool {
-        self.by_slot.is_empty() && self.last_generation == 0
-    }
-
     pub fn get(&self, key: &str) -> Option<&SavedResolution> {
         self.by_slot.get(key)
     }
@@ -97,67 +73,70 @@ impl SavedResolutions {
         self.get(key).map_or(0, |saved| saved.generation)
     }
 
-    fn check_expected(&self, key: &str, expected: u64) -> Result<(), ResolutionError> {
+    fn check_expected(&self, key: &str, expected: u64) -> Result<(), CommitError> {
         let current = self.generation(key);
         if current != expected {
-            return Err(ResolutionError::Stale { current });
+            return Err(CommitError::Stale { current });
         }
         Ok(())
     }
 
     /// Save `resolution` for `key`, made for the slot resolution `against`,
-    /// if `expected` is the slot's current generation. Saving what is
-    /// already saved keeps its generation. Returns the generation after.
+    /// if `expected` is the slot's current generation; `stamp` is the
+    /// generation the change takes. Saving what is already saved keeps its
+    /// generation. Returns the generation after.
     pub fn set(
         &mut self,
         key: &str,
         resolution: PortableResolution,
         against: &str,
         expected: u64,
-    ) -> Result<u64, ResolutionError> {
+        stamp: u64,
+    ) -> Result<u64, CommitError> {
         self.check_expected(key, expected)?;
-        resolution.check().map_err(ResolutionError::Invalid)?;
+        resolution.check()?;
         if against.is_empty() {
-            return Err(ResolutionError::Invalid(
-                "a saved resolution names the slot resolution it resolves".into(),
-            ));
+            return Err("a saved resolution names the slot resolution it resolves".into());
         }
         if let Some(saved) = self.by_slot.get(key) {
             if saved.resolution == resolution && saved.against == against {
                 return Ok(saved.generation);
             }
         }
-        self.last_generation += 1;
         self.by_slot.insert(
             key.to_owned(),
             SavedResolution {
                 resolution,
                 against: against.to_owned(),
-                generation: self.last_generation,
+                generation: stamp,
             },
         );
-        Ok(self.last_generation)
+        Ok(stamp)
     }
 
     /// Clear `key`'s saved resolution if `expected` is its current
     /// generation. Returns whether there was one.
-    pub fn clear(&mut self, key: &str, expected: u64) -> Result<bool, ResolutionError> {
+    pub fn clear(&mut self, key: &str, expected: u64) -> Result<bool, CommitError> {
         self.check_expected(key, expected)?;
         Ok(self.by_slot.remove(key).is_some())
     }
 
-    /// Drop the slot's saved resolution, whatever its generation. Returns
-    /// whether there was one.
-    pub fn forget(&mut self, key: &str) -> bool {
-        self.by_slot.remove(key).is_some()
+    /// Drop the slot's saved resolution, whatever its generation.
+    pub fn forget(&mut self, key: &str) {
+        self.by_slot.remove(key);
     }
 
-    /// Keep only the saved resolutions `keep` accepts. Returns whether any
-    /// were dropped.
-    pub fn retain(&mut self, mut keep: impl FnMut(&str, &SavedResolution) -> bool) -> bool {
-        let before = self.by_slot.len();
+    /// Keep only the saved resolutions `keep` accepts.
+    pub fn retain(&mut self, mut keep: impl FnMut(&str, &SavedResolution) -> bool) {
         self.by_slot.retain(|key, saved| keep(key, saved));
-        self.by_slot.len() != before
+    }
+
+    /// Give every saved resolution generation `generation`: an imported
+    /// record's, which no earlier state had.
+    pub fn restamp(&mut self, generation: u64) {
+        for saved in self.by_slot.values_mut() {
+            saved.generation = generation;
+        }
     }
 }
 
@@ -176,41 +155,37 @@ mod tests {
     }
 
     #[test]
-    fn saves_compare_generations_and_never_reuse_one() {
+    fn saves_compare_generations() {
         let mut saved = SavedResolutions::default();
-        assert_eq!(saved.set("a", cleat("S"), "id1", 0), Ok(1));
+        assert_eq!(saved.set("a", cleat("S"), "id1", 0, 5), Ok(5));
         // Saving the same again keeps the generation.
-        assert_eq!(saved.set("a", cleat("S"), "id1", 1), Ok(1));
+        assert_eq!(saved.set("a", cleat("S"), "id1", 5, 6), Ok(5));
         assert_eq!(
-            saved.set("a", cleat("T"), "id1", 0),
-            Err(ResolutionError::Stale { current: 1 })
+            saved.set("a", cleat("T"), "id1", 0, 7),
+            Err(CommitError::Stale { current: 5 })
         );
-        assert_eq!(saved.clear("a", 1), Ok(true));
+        assert_eq!(saved.clear("a", 5), Ok(true));
         assert_eq!(saved.generation("a"), 0);
-        // A cleared generation is not given out again.
-        assert_eq!(saved.set("a", cleat("T"), "id1", 0), Ok(2));
         assert_eq!(saved.clear("b", 0), Ok(false));
     }
 
     #[test]
     fn kinds_field_names_and_against_are_checked() {
         let mut saved = SavedResolutions::default();
-        let mut bad = cleat("S");
-        bad.kind = "Cleat Session".into();
-        assert!(matches!(
-            saved.set("a", bad, "id", 0),
-            Err(ResolutionError::Invalid(_))
-        ));
-        let mut bad = cleat("S");
-        bad.fields.insert(String::new(), "x".into());
-        assert!(matches!(
-            saved.set("a", bad, "id", 0),
-            Err(ResolutionError::Invalid(_))
-        ));
-        assert!(matches!(
-            saved.set("a", cleat("S"), "", 0),
-            Err(ResolutionError::Invalid(_))
-        ));
-        assert!(saved.is_empty());
+        let mut bad_kind = cleat("S");
+        bad_kind.kind = "Cleat Session".into();
+        let mut bad_field = cleat("S");
+        bad_field.fields.insert(String::new(), "x".into());
+        for (resolution, against, reason) in [
+            (bad_kind, "id", "invalid resolution kind"),
+            (bad_field, "id", "invalid resolution field name"),
+            (cleat("S"), "", "names the slot resolution"),
+        ] {
+            match saved.set("a", resolution, against, 0, 1) {
+                Err(CommitError::Invalid(error)) => assert!(error.contains(reason), "{error}"),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(saved, SavedResolutions::default());
     }
 }

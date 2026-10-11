@@ -2,8 +2,8 @@
 //! from: the same kind and ID under two providers are two entities; a
 //! provider's facts can be retracted at once or kept stale.
 use andamento_core::presentation::{PlacementNode, PresentationState, SurfaceSnapshot};
-use andamento_core::records::WorkspaceRecord;
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
+use andamento_core::workspace::WorkspaceRecord;
 use andamento_core::{
     EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
     WorkspaceId,
@@ -170,10 +170,15 @@ fn the_same_kind_and_id_under_two_providers_are_two_entities() {
         }
     }
     // The workspace's subject keeps its provider in its record.
-    let record =
-        WorkspaceRecord::decode(&sidebar.export_record(&format!("workspace/{W42}")).unwrap())
-            .unwrap();
-    assert_eq!(record.subject, Some(EntityRef::new("sub-1", "vessel", "v")));
+    let record = WorkspaceRecord::decode(
+        &sidebar.export_record(&format!("workspace/{W42}")).unwrap(),
+        &mut Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        record.subject(),
+        Some(&EntityRef::new("sub-1", "vessel", "v"))
+    );
 }
 
 #[test]
@@ -242,10 +247,15 @@ fn a_workspace_bound_by_a_providers_own_facts_is_that_providers() {
             selected: true
         }
     );
-    let record =
-        WorkspaceRecord::decode(&sidebar.export_record(&format!("workspace/{W42}")).unwrap())
-            .unwrap();
-    assert_eq!(record.subject, Some(EntityRef::new("sub-2", "vessel", "v")));
+    let record = WorkspaceRecord::decode(
+        &sidebar.export_record(&format!("workspace/{W42}")).unwrap(),
+        &mut Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        record.subject(),
+        Some(&EntityRef::new("sub-2", "vessel", "v"))
+    );
 }
 
 #[test]
@@ -296,10 +306,12 @@ fn retracting_a_provider_removes_its_facts_and_retains_open_workspaces() {
         .unwrap();
     assert_eq!(two.children[0].label, "Vessel two");
     // The workspace record keeps the retained path, with providers.
-    let record =
-        WorkspaceRecord::decode(&sidebar.export_record(&format!("workspace/{W42}")).unwrap())
-            .unwrap();
-    let retained = &record.retained[&EntityRef::new("sub-1", "vessel", "v")];
+    let record = WorkspaceRecord::decode(
+        &sidebar.export_record(&format!("workspace/{W42}")).unwrap(),
+        &mut Default::default(),
+    )
+    .unwrap();
+    let retained = &record.subject.get().retained[&EntityRef::new("sub-1", "vessel", "v")];
     assert_eq!(retained.label.as_deref(), Some("Vessel one"));
     assert!(!retained.ended);
 
@@ -390,7 +402,7 @@ fn refs_keep_presenting_a_retracted_target() {
     // The pinned target is kept in the dashboard record with its provider.
     let dashboard = sidebar.export_record("dashboard").unwrap();
     let dashboard = andamento_core::records::DashboardRecord::decode(&dashboard).unwrap();
-    let pin = &dashboard.local[&EntityRef::local(".ref", "sub-1")];
+    let pin = &dashboard.state.local[&EntityRef::local(".ref", "sub-1")];
     assert_eq!(pin[".target"], refs(entity("sub-1", "vessel", "v")));
 }
 

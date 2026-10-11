@@ -2790,7 +2790,7 @@ impl ControllerState {
     /// Replace the Dashboard's display variables, collapse, sibling orders and
     /// placement variables with a record's. Variables that persist and the
     /// record leaves out return to their defaults; others keep their values.
-    pub(crate) fn restore_dashboard(&mut self, record: &crate::records::DashboardRecord) {
+    pub(crate) fn restore_dashboard(&mut self, record: &crate::records::DashboardState) {
         let declared = self
             .template_catalog
             .as_ref()

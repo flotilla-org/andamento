@@ -3,8 +3,9 @@
 //! without invalidating the snapshot, and survives a restart as part of the
 //! dashboard record.
 use andamento_core::sidebar_arrangement::SidebarDoc;
-use andamento_core::slots::{ArrangementDoc, ArrangementError, Panel, PanelNode};
+use andamento_core::slots::{ArrangementDoc, Panel, PanelNode};
 use andamento_core::suggested_layout::Axis;
+use andamento_core::versioned::CommitError;
 use andamento_core::{EntityRef, MetadataValue, Sidebar};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -107,24 +108,27 @@ fn configuration_places_sections_and_commits_leave_the_snapshot_current() {
     let mut sidebar = Sidebar::new(&ab()).unwrap();
     assert_eq!(docked(&sidebar), keys(&[&["a"], &["b"], &[".unplaced"]]));
     let generation = sidebar.sidebar_arrangement_generation();
-    assert_eq!(generation, 1);
+    assert_ne!(generation, 0);
     let revision = sidebar.revision();
     let snapshot = sidebar.snapshot();
 
     // The user reorders and closes the workspace fallback.
     let report = sidebar
-        .set_sidebar_arrangement(dock(vec![tabs("1", &["b"]), tabs("2", &["a"])]), 1)
+        .set_sidebar_arrangement(dock(vec![tabs("1", &["b"]), tabs("2", &["a"])]), generation)
         .unwrap();
+    let committed = sidebar.sidebar_arrangement_generation();
     assert!(report.duplicates.is_empty());
     let (view, _) = sidebar.sidebar_arrangement();
     assert_eq!(view.closed, set(&[".unplaced"]));
     assert!(view.owned);
     // A stale commit changes nothing.
     assert_eq!(
-        sidebar.set_sidebar_arrangement(dock(vec![tabs("1", &["a", "b"])]), 1),
-        Err(ArrangementError::Stale { current: 2 })
+        sidebar.set_sidebar_arrangement(dock(vec![tabs("1", &["a", "b"])]), generation),
+        Err(CommitError::Stale { current: committed })
     );
-    sidebar.restore_sidebar_section(".unplaced", 2).unwrap();
+    sidebar
+        .restore_sidebar_section(".unplaced", committed)
+        .unwrap();
     assert_eq!(docked(&sidebar), keys(&[&["b"], &["a"], &[".unplaced"]]));
     // None of it touched the sidebar's evaluation.
     assert_eq!(sidebar.revision(), revision);
@@ -162,31 +166,34 @@ fn configuration_places_sections_and_commits_leave_the_snapshot_current() {
 #[test]
 fn the_arrangement_survives_a_restart_in_the_dashboard_record() {
     let mut before = Sidebar::new(&ab()).unwrap();
+    let generation = before.sidebar_arrangement_generation();
     before
         .set_sidebar_arrangement(
             dock(vec![
                 tabs("1", &["b", "u:notes"]),
                 tabs("2", &[".unplaced"]),
             ]),
-            1,
+            generation,
         )
         .unwrap();
     let record = before.export_record("dashboard").unwrap();
 
     let mut after = Sidebar::new(&ab()).unwrap();
+    let fresh = after.sidebar_arrangement_generation();
     after.import_record("dashboard", &record).unwrap();
     assert_eq!(after.export_record("dashboard").unwrap(), record);
     let (view, _) = after.sidebar_arrangement();
-    assert_eq!(view.generation, 2);
+    assert!(view.generation > fresh);
     assert_eq!(view.closed, set(&["a"]));
     assert_eq!(docked(&after), keys(&[&["b", "u:notes"], &[".unplaced"]]));
     // Closed stays closed after the restart.
     after.configure(&ab()).unwrap();
     assert_eq!(after.sidebar_arrangement().0.closed, set(&["a"]));
 
-    // A stale commit leaves the record byte-identical.
+    // A commit at a generation from before the import is stale, and leaves
+    // the record byte-identical.
     assert!(after
-        .set_sidebar_arrangement(dock(vec![tabs("1", &["a"])]), 1)
+        .set_sidebar_arrangement(dock(vec![tabs("1", &["a"])]), fresh)
         .is_err());
     assert_eq!(after.export_record("dashboard").unwrap(), record);
 }
@@ -200,7 +207,6 @@ fn an_imported_record_with_duplicates_is_repaired() {
     doc.floating.push(tabs("4", &["b", "a"]));
     let record = DashboardRecord {
         sidebar: Some(SidebarArrangement {
-            generation: 5,
             owned: true,
             doc,
             closed: set(&[".unplaced"]),

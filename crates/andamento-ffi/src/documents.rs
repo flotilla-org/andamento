@@ -5,8 +5,9 @@
 //! then. A document the host passes in is only read, during the call.
 use super::*;
 use andamento_core::{
-    slots::{ArrangementDoc, ArrangementError, ArrangementView, Panel, PanelNode},
+    slots::{ArrangementDoc, ArrangementView, Panel, PanelNode},
     suggested_layout::Axis,
+    versioned::CommitError,
 };
 
 /// A split panel: its children divide it along `axis`.
@@ -262,7 +263,7 @@ pub unsafe extern "C" fn andamento_arrangement_commit(
             .set_arrangement(workspace, doc, expected_generation)
         {
             Ok(_) => ANDAMENTO_COMMITTED,
-            Err(ArrangementError::Stale { .. }) => ANDAMENTO_STALE,
+            Err(CommitError::Stale { .. }) => ANDAMENTO_STALE,
             Err(error) => return Err(error.to_string()),
         };
         Ok(arrangement_c(h.sidebar.arrangement(workspace)?, status))
@@ -675,7 +676,7 @@ pub unsafe extern "C" fn andamento_arrangement_resolve(
     generation_out: *mut u64,
     error_out: *mut *mut c_char,
 ) -> u32 {
-    use andamento_core::slots::{ArrangementError, Resolve};
+    use andamento_core::{slots::Resolve, versioned::CommitError};
     run(h, error_out, |h| {
         let choice = match choice {
             ANDAMENTO_ARRANGEMENT_KEEP => Resolve::Keep,
@@ -692,7 +693,7 @@ pub unsafe extern "C" fn andamento_arrangement_resolve(
         }
         match result {
             Ok(_) => Ok(ANDAMENTO_COMMITTED),
-            Err(ArrangementError::Stale { .. }) => Ok(ANDAMENTO_STALE),
+            Err(CommitError::Stale { .. }) => Ok(ANDAMENTO_STALE),
             Err(error) => Err(error.to_string()),
         }
     })
@@ -796,7 +797,7 @@ fn sidebar_result(
     h: &Andamento,
     result: Result<
         andamento_core::sidebar_arrangement::Report,
-        andamento_core::slots::ArrangementError,
+        andamento_core::versioned::CommitError,
     >,
     generation_out: *mut u64,
 ) -> Result<u32, String> {
@@ -805,7 +806,7 @@ fn sidebar_result(
     }
     match result {
         Ok(_) => Ok(ANDAMENTO_COMMITTED),
-        Err(andamento_core::slots::ArrangementError::Stale { .. }) => Ok(ANDAMENTO_STALE),
+        Err(andamento_core::versioned::CommitError::Stale { .. }) => Ok(ANDAMENTO_STALE),
         Err(error) => Err(error.to_string()),
     }
 }

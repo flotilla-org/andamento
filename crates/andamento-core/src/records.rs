@@ -1,5 +1,6 @@
 //! Named records: the logical sidebar state Andamento owns, as bytes the host
-//! stores without reading. The host decides where each record is stored and
+//! stores without reading: `dashboard` ([`DashboardRecord`]) and
+//! `workspace/<id>` ([`WorkspaceRecord`](crate::workspace::WorkspaceRecord)). The host decides where each record is stored and
 //! when it is written; Andamento never touches the filesystem. A record is
 //! its struct serialised as JSON: private to this Andamento, unversioned, and
 //! free to change from one build to the next.
@@ -11,8 +12,7 @@ use std::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{
-    sidebar_arrangement::SidebarArrangement, slots::StoredArrangement, slots::WorkspaceSlots,
-    target_resolution::SavedResolutions, DisplayVariableValue, EntityRef, MetadataValue,
+    sidebar_arrangement::SidebarArrangement, DisplayVariableValue, EntityRef, MetadataValue,
     PlacementKey, PlacementLoopKey, WorkspaceId,
 };
 
@@ -45,9 +45,19 @@ impl fmt::Display for RecordName {
     }
 }
 
-/// The Dashboard's sidebar state.
+/// The `dashboard` record: the Dashboard's state and its sidebar
+/// arrangement.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DashboardRecord {
+    #[serde(flatten)]
+    pub state: DashboardState,
+    /// The sidebar arrangement, once stored.
+    pub sidebar: Option<SidebarArrangement>,
+}
+
+/// The Dashboard's state other than its sidebar arrangement.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DashboardState {
     /// Persisted display variables.
     pub display: BTreeMap<String, DisplayVariableValue>,
     /// Collapsed rows, by placement key.
@@ -61,27 +71,6 @@ pub struct DashboardRecord {
     /// Local sections, groups and refs, with their facts.
     #[serde(with = "pairs")]
     pub local: BTreeMap<EntityRef, BTreeMap<String, MetadataValue>>,
-    /// The sidebar arrangement, once stored.
-    pub sidebar: Option<SidebarArrangement>,
-}
-
-/// One workspace's logical state. It is stored as private, unversioned
-/// bytes ([`WorkspaceRecord::encode`]); only this Andamento reads them.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct WorkspaceRecord {
-    /// The entity the workspace was opened for.
-    pub subject: Option<EntityRef>,
-    /// The subject and the entities on its path, as last seen, so the row can
-    /// be drawn where it was when no producer publishes them.
-    #[serde(with = "pairs")]
-    pub retained: BTreeMap<EntityRef, SubjectRecord>,
-    /// Its slots: the cached baseline and the Workspace Overlay's edits of
-    /// it, the user's own slots among them.
-    pub slots: WorkspaceSlots,
-    /// Its arrangement document. Its generation is not stored.
-    pub arrangement: StoredArrangement,
-    /// Portable Target Resolutions saved for its slots.
-    pub resolutions: SavedResolutions,
 }
 
 /// The least needed to draw a row with no facts.
@@ -108,7 +97,7 @@ impl DashboardRecord {
         if let Some(sidebar) = &record.sidebar {
             sidebar.doc.check()?;
         }
-        for facts in record.local.values() {
+        for facts in record.state.local.values() {
             if !facts.values().all(recordable) {
                 return Err("local facts are text, booleans, integers or entity references".into());
             }
@@ -117,30 +106,8 @@ impl DashboardRecord {
     }
 }
 
-impl WorkspaceRecord {
-    pub fn encode(&self) -> String {
-        encode(self)
-    }
-
-    /// Read bytes [`encode`](Self::encode) wrote. The documents in it have
-    /// no generation yet: the caller gives them new ones.
-    pub fn decode(text: &str) -> Result<Self, String> {
-        let record: Self = decode(text, "workspace")?;
-        if let Some(arrangement) = record.arrangement.get() {
-            arrangement.doc.check()?;
-            if arrangement.owned && !arrangement.soft.is_empty() {
-                return Err("an owned arrangement has no soft overrides".into());
-            }
-        }
-        for saved in record.resolutions.by_slot.values() {
-            saved.resolution.check()?;
-        }
-        Ok(record)
-    }
-}
-
 /// A map with structured keys as a list of pairs (JSON keys are strings).
-mod pairs {
+pub(crate) mod pairs {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::BTreeMap;
 
@@ -165,11 +132,11 @@ mod pairs {
     }
 }
 
-fn encode<T: Serialize>(record: &T) -> String {
+pub(crate) fn encode<T: Serialize>(record: &T) -> String {
     serde_json::to_string(record).expect("records serialise")
 }
 
-fn decode<T: DeserializeOwned>(text: &str, what: &str) -> Result<T, String> {
+pub(crate) fn decode<T: DeserializeOwned>(text: &str, what: &str) -> Result<T, String> {
     serde_json::from_str(text).map_err(|error| format!("not a {what} record: {error}"))
 }
 
@@ -213,37 +180,39 @@ mod tests {
             },
         };
         DashboardRecord {
-            display: BTreeMap::from([
-                ("show-finished".into(), DisplayVariableValue::Bool(true)),
-                ("mode".into(), DisplayVariableValue::Enum("wide".into())),
-            ]),
-            collapsed: BTreeSet::from([project.clone()]),
-            orders: BTreeMap::from([(
-                PlacementLoopKey {
-                    region: "tree".into(),
-                    parent: project.clone(),
-                    binding: "vessel".into(),
-                },
-                // The same kind and ID under two providers are two entities.
-                vec![
-                    entity("vessel", "b"),
-                    EntityRef::new("sub-2", "vessel", "b"),
-                ],
-            )]),
-            variables: BTreeMap::from([(
-                project,
-                BTreeMap::from([("density".into(), "compact".into())]),
-            )]),
-            local: BTreeMap::from([(
-                EntityRef::local(".group", "g1"),
-                BTreeMap::from([
-                    (
-                        ".section".into(),
-                        MetadataValue::EntityRefs(vec![EntityRef::local(".section", "s1")]),
-                    ),
-                    (".position".into(), MetadataValue::Integer(12)),
+            state: DashboardState {
+                display: BTreeMap::from([
+                    ("show-finished".into(), DisplayVariableValue::Bool(true)),
+                    ("mode".into(), DisplayVariableValue::Enum("wide".into())),
                 ]),
-            )]),
+                collapsed: BTreeSet::from([project.clone()]),
+                orders: BTreeMap::from([(
+                    PlacementLoopKey {
+                        region: "tree".into(),
+                        parent: project.clone(),
+                        binding: "vessel".into(),
+                    },
+                    // The same kind and ID under two providers are two entities.
+                    vec![
+                        entity("vessel", "b"),
+                        EntityRef::new("sub-2", "vessel", "b"),
+                    ],
+                )]),
+                variables: BTreeMap::from([(
+                    project,
+                    BTreeMap::from([("density".into(), "compact".into())]),
+                )]),
+                local: BTreeMap::from([(
+                    EntityRef::local(".group", "g1"),
+                    BTreeMap::from([
+                        (
+                            ".section".into(),
+                            MetadataValue::EntityRefs(vec![EntityRef::local(".section", "s1")]),
+                        ),
+                        (".position".into(), MetadataValue::Integer(12)),
+                    ]),
+                )]),
+            },
             sidebar: Some(SidebarArrangement {
                 owned: true,
                 doc: SidebarDoc {
@@ -269,23 +238,6 @@ mod tests {
     fn records_round_trip() {
         let record = dashboard();
         assert_eq!(DashboardRecord::decode(&record.encode()), Ok(record));
-        let record = WorkspaceRecord {
-            subject: Some(entity("vessel", "v")),
-            retained: BTreeMap::from([(
-                entity("vessel", "v"),
-                SubjectRecord {
-                    label: Some("Worker".into()),
-                    ended: true,
-                    last_seen_ms: Some(102),
-                    facts: BTreeMap::from([(
-                        "flotilla.project".into(),
-                        MetadataValue::Text("p".into()),
-                    )]),
-                },
-            )]),
-            ..WorkspaceRecord::default()
-        };
-        assert_eq!(WorkspaceRecord::decode(&record.encode()), Ok(record));
     }
 
     #[test]
@@ -295,6 +247,7 @@ mod tests {
         sidebar.doc.floating[0].weight = -1.0;
         let mut bad_fact = dashboard();
         bad_fact
+            .state
             .local
             .values_mut()
             .next()
@@ -309,8 +262,6 @@ mod tests {
             let error = DashboardRecord::decode(&text).unwrap_err();
             assert!(error.contains(reason), "{text}: {error}");
         }
-        let error = WorkspaceRecord::decode("[]").unwrap_err();
-        assert!(error.contains("not a workspace record"), "{error}");
     }
 
     #[test]
