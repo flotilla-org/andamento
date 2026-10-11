@@ -1,63 +1,90 @@
-//! Arrangement documents: a workspace's and the sidebar's.
+//! Arrangement documents, a workspace's and the sidebar's, as plain structs.
 //!
-//! A document Andamento returns is one allocation the host frees with its
-//! `_free` call: every pointer in it, and all its text, stays valid until
-//! then. A document the host passes in is only read, during the call.
+//! A document is an array of panels, each naming its parent by index: a
+//! host writes one by walking its tree in preorder, and reads one in a
+//! single pass, linking each panel to its parent. A document Andamento
+//! returns is one allocation the host frees with its `_free` call: every
+//! pointer in it, and all its text, stays valid until then. A document the
+//! host passes in is only read, during the call.
 use super::*;
 use andamento_core::{
-    slots::{ArrangementDoc, ArrangementView, Panel, PanelNode},
+    sidebar_arrangement::{Report, SidebarDoc, SidebarView},
+    slots::{ArrangementDoc, ArrangementView, Panel, PanelNode, Resolve},
     suggested_layout::Axis,
     versioned::CommitError,
 };
 
-/// A split panel: its children divide it along `axis`.
+/// A split panel: its children are the panels that name it as their parent,
+/// in array order, laid out along its axis.
 pub const ANDAMENTO_PANEL_SPLIT: u32 = 0;
-/// A tab panel: its tabs are slot keys.
+/// A tab panel: its tabs are slot keys (a workspace's) or section keys (the
+/// sidebar's).
 pub const ANDAMENTO_PANEL_TABS: u32 = 1;
 /// Children left to right.
 pub const ANDAMENTO_AXIS_ROW: u32 = 0;
 /// Children top to bottom.
 pub const ANDAMENTO_AXIS_COLUMN: u32 = 1;
 
-/// A panel of an arrangement document and, for a split, its children.
+/// A panel of an arrangement document.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct AndamentoDocPanel {
+    /// The index of an earlier SPLIT panel in the same array, or
+    /// ANDAMENTO_NONE for a root.
+    pub parent: usize,
     /// Stable within its document; nonempty and unique.
     pub id: Text,
-    /// Relative to its siblings: finite and positive. The root's is kept but
+    /// Relative to its siblings: finite and positive. A root's is kept but
     /// means nothing.
     pub weight: f64,
     /// ANDAMENTO_PANEL_SPLIT or ANDAMENTO_PANEL_TABS.
     pub kind: u32,
     /// A split's ANDAMENTO_AXIS_*.
     pub axis: u32,
-    /// A split's panels, in order; at least one.
-    pub children: *const AndamentoDocPanel,
-    pub child_count: usize,
-    /// A tab panel's slot keys, in tab order; at least one.
+    /// A tab panel's keys, in tab order; at least one. None for a split.
     pub tabs: *const Text,
     pub tab_count: usize,
-    /// The Selected View: one of `tabs`, or empty for none.
-    pub selected: Text,
+    /// The Selected View: an index into tabs, or ANDAMENTO_NONE.
+    pub selected: usize,
 }
 
-/// A whole arrangement document: a tree of panels.
+/// Panels, each after its parent. A split has at least one child.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct AndamentoArrangementDoc {
-    /// NULL for a document with no panels.
-    pub root: *const AndamentoDocPanel,
+    pub panels: *const AndamentoDocPanel,
+    pub panel_count: usize,
 }
 
-/// A note's key is a slot Andamento placed since the host last committed.
+/// The sidebar's document: the dock, one tree or none, and the floating
+/// panels, each a tree of its own (their positions and sizes are the
+/// host's).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AndamentoSidebarDoc {
+    pub dock: AndamentoArrangementDoc,
+    pub floating: AndamentoArrangementDoc,
+}
+
+/// A key Andamento placed since the host last committed.
 pub const ANDAMENTO_NOTE_PLACED: u32 = 0;
-/// A note's key is a tab whose slot has gone; it stays until the host
-/// removes it.
+/// A workspace tab whose slot has gone. It stays until the host removes it.
 pub const ANDAMENTO_NOTE_GONE: u32 = 1;
-/// A note's key is the panel ID of a soft override that no longer resolves.
+/// A key that no longer resolves, kept until the host drops it: a soft
+/// override's panel ID (a workspace's); a tabbed or closed section, or a
+/// saved dashboard key ("display:", "collapse:", "order:" or "variable:"
+/// and the key) the template no longer has (the sidebar's).
 pub const ANDAMENTO_NOTE_UNRESOLVED: u32 = 2;
+/// A declared section with no tab, closed on purpose.
+pub const ANDAMENTO_NOTE_CLOSED: u32 = 3;
+/// A closed section that has a tab again.
+pub const ANDAMENTO_NOTE_RESTORED: u32 = 4;
+/// A key whose later tabs were removed.
+pub const ANDAMENTO_NOTE_DUPLICATE: u32 = 5;
 
 #[repr(C)]
 pub struct AndamentoNote {
+    /// ANDAMENTO_NOTE_*.
     pub kind: u32,
     pub key: Text,
 }
@@ -66,96 +93,211 @@ pub struct AndamentoNote {
 pub const ANDAMENTO_ARRANGEMENT_FLAG_PROVIDER_CHANGED: u32 = 1;
 /// Soft overrides apply.
 pub const ANDAMENTO_ARRANGEMENT_FLAG_SOFT: u32 = 2;
-/// A soft override no longer resolves (see ANDAMENTO_NOTE_UNRESOLVED).
+/// A soft override no longer resolves (an UNRESOLVED note).
 pub const ANDAMENTO_ARRANGEMENT_FLAG_UNRESOLVED: u32 = 4;
 
-/// A workspace's arrangement as stored, or after a commit.
+/// A workspace's arrangement as stored, or after a commit. While the user
+/// doesn't own it, it is derived from the provider's hint, less slots the
+/// user removed, every slot placed, with soft overrides (weights and
+/// selected tabs, keyed by panel ID) applied. A structural commit (a split,
+/// move, close, reorder or added tab) makes the user own it; a changed hint
+/// is then flagged PROVIDER_CHANGED until andamento_arrangement_resolve.
 #[repr(C)]
 pub struct AndamentoWorkspaceArrangement {
-    /// ANDAMENTO_ANDAMENTO_COMMITTED, or after a commit
-    /// ANDAMENTO_ANDAMENTO_STALE: the expected generation was not the
-    /// current one, nothing changed, and this is the current document.
+    /// ANDAMENTO_COMMITTED, or ANDAMENTO_STALE after a commit at another
+    /// generation: nothing changed, and this is the current document.
     pub status: u32,
     /// 0 until a document is stored. Never reused, and never kept across
     /// sessions: commit at the generation last read.
     pub generation: u64,
-    /// The user owns the document; until then it follows the provider's hint.
     pub owned: u32,
     /// ANDAMENTO_ARRANGEMENT_FLAG_* bits.
     pub flags: u32,
+    /// At most one root.
     pub doc: AndamentoArrangementDoc,
     pub notes: *const AndamentoNote,
     pub note_count: usize,
 }
 
-/// What the C struct points into; freed with it. Text points into the
-/// view's strings, whose bytes don't move when the view does.
+/// The Dashboard's sidebar arrangement: which sections are docked where.
+/// Tabs hold section keys: a region's name, ".section:<id>" for a local
+/// section, ".unplaced" for the workspace fallback, or "u:<id>" for a view
+/// of the host's own, which Andamento stores but never places or flags.
 #[repr(C)]
-struct OwnedArrangement {
-    value: AndamentoWorkspaceArrangement,
-    view: ArrangementView,
-    keep: Keep,
+pub struct AndamentoSidebarArrangement {
+    /// As for a workspace's arrangement.
+    pub status: u32,
+    pub generation: u64,
+    /// The host has committed since the last reset.
+    pub owned: u32,
+    pub doc: AndamentoSidebarDoc,
+    /// Every CLOSED section and UNRESOLVED key, and what the last
+    /// reconciliation or call did: PLACED, RESTORED and DUPLICATE.
+    pub notes: *const AndamentoNote,
+    pub note_count: usize,
 }
 
-#[derive(Default)]
-struct Keep {
-    panels: Vec<Vec<AndamentoDocPanel>>,
+/// Text a document's panels and notes borrow. The views own the strings,
+/// whose bytes don't move when the views do.
+struct Panels {
+    panels: Vec<AndamentoDocPanel>,
     tabs: Vec<Vec<Text>>,
-    notes: Vec<AndamentoNote>,
-    root: Option<Box<AndamentoDocPanel>>,
 }
 
-fn panel_c(panel: &Panel, keep: &mut Keep) -> AndamentoDocPanel {
-    let mut c = AndamentoDocPanel {
-        id: Text::borrowed(&panel.id),
-        weight: panel.weight,
-        kind: ANDAMENTO_PANEL_TABS,
-        axis: ANDAMENTO_AXIS_ROW,
-        children: ptr::null(),
-        child_count: 0,
-        tabs: ptr::null(),
-        tab_count: 0,
-        selected: Text::borrowed(""),
-    };
-    match &panel.node {
-        PanelNode::Split { axis, children } => {
-            let children: Vec<_> = children.iter().map(|child| panel_c(child, keep)).collect();
-            c.kind = ANDAMENTO_PANEL_SPLIT;
-            c.axis = match axis {
-                Axis::Row => ANDAMENTO_AXIS_ROW,
-                Axis::Column => ANDAMENTO_AXIS_COLUMN,
+impl Panels {
+    /// Trees in preorder, each panel naming its parent.
+    fn of<'a>(roots: impl IntoIterator<Item = &'a Panel>) -> Self {
+        fn walk(panel: &Panel, parent: usize, out: &mut Panels) {
+            let index = out.panels.len();
+            let mut c = AndamentoDocPanel {
+                parent,
+                id: Text::borrowed(&panel.id),
+                weight: panel.weight,
+                kind: ANDAMENTO_PANEL_TABS,
+                axis: ANDAMENTO_AXIS_ROW,
+                tabs: ptr::null(),
+                tab_count: 0,
+                selected: NONE,
             };
-            (c.children, c.child_count) = (children.as_ptr(), children.len());
-            keep.panels.push(children);
+            match &panel.node {
+                PanelNode::Split { axis, children } => {
+                    c.kind = ANDAMENTO_PANEL_SPLIT;
+                    if *axis == Axis::Column {
+                        c.axis = ANDAMENTO_AXIS_COLUMN;
+                    }
+                    out.panels.push(c);
+                    for child in children {
+                        walk(child, index, out);
+                    }
+                }
+                PanelNode::Tabs { tabs, selected } => {
+                    let texts: Vec<Text> = tabs.iter().map(|tab| Text::borrowed(tab)).collect();
+                    (c.tabs, c.tab_count) = (texts.as_ptr(), texts.len());
+                    c.selected = selected
+                        .as_ref()
+                        .and_then(|key| tabs.iter().position(|tab| tab == key))
+                        .unwrap_or(NONE);
+                    out.tabs.push(texts);
+                    out.panels.push(c);
+                }
+            }
         }
-        PanelNode::Tabs { tabs, selected } => {
-            let tabs: Vec<_> = tabs.iter().map(|tab| Text::borrowed(tab)).collect();
-            (c.tabs, c.tab_count) = (tabs.as_ptr(), tabs.len());
-            c.selected = Text::borrowed(selected.as_deref().unwrap_or(""));
-            keep.tabs.push(tabs);
+        let mut out = Self {
+            panels: Vec::new(),
+            tabs: Vec::new(),
+        };
+        for root in roots {
+            walk(root, NONE, &mut out);
+        }
+        out
+    }
+
+    fn doc(&self) -> AndamentoArrangementDoc {
+        AndamentoArrangementDoc {
+            panels: self.panels.as_ptr(),
+            panel_count: self.panels.len(),
         }
     }
-    c
 }
 
-fn arrangement_c(view: ArrangementView, status: u32) -> *mut AndamentoWorkspaceArrangement {
-    let mut keep = Keep::default();
-    keep.root = view
-        .doc
-        .root
-        .as_ref()
-        .map(|root| Box::new(panel_c(root, &mut keep)));
-    let notes = [
-        (ANDAMENTO_NOTE_PLACED, &view.placed),
-        (ANDAMENTO_NOTE_GONE, &view.gone),
-        (ANDAMENTO_NOTE_UNRESOLVED, &view.unresolved),
-    ];
-    for (kind, keys) in notes {
-        keep.notes.extend(keys.iter().map(|key| AndamentoNote {
-            kind,
-            key: Text::borrowed(key),
+/// A host's document as trees, one per root.
+unsafe fn read_doc(doc: &AndamentoArrangementDoc) -> Result<Vec<Panel>, String> {
+    let views = slice(doc.panels, doc.panel_count)?;
+    let mut built: Vec<Option<Panel>> = Vec::with_capacity(views.len());
+    for (index, view) in views.iter().enumerate() {
+        if view.parent != NONE
+            && (view.parent >= index || views[view.parent].kind != ANDAMENTO_PANEL_SPLIT)
+        {
+            return Err(format!("panel {index}'s parent is not an earlier split"));
+        }
+        let node = match view.kind {
+            ANDAMENTO_PANEL_SPLIT if view.tab_count == 0 => PanelNode::Split {
+                axis: match view.axis {
+                    ANDAMENTO_AXIS_ROW => Axis::Row,
+                    ANDAMENTO_AXIS_COLUMN => Axis::Column,
+                    other => return Err(format!("unknown axis {other}")),
+                },
+                children: Vec::new(),
+            },
+            ANDAMENTO_PANEL_SPLIT => return Err(format!("split {index} has tabs")),
+            ANDAMENTO_PANEL_TABS => {
+                let tabs = slice(view.tabs, view.tab_count)?
+                    .iter()
+                    .map(|tab| tab.read())
+                    .collect::<Result<Vec<_>, _>>()?;
+                let selected = match view.selected {
+                    NONE => None,
+                    n => Some(
+                        tabs.get(n)
+                            .ok_or_else(|| format!("panel {index} selects a tab it doesn't have"))?
+                            .clone(),
+                    ),
+                };
+                PanelNode::Tabs { tabs, selected }
+            }
+            other => return Err(format!("unknown panel kind {other}")),
+        };
+        built.push(Some(Panel {
+            id: view.id.read()?,
+            weight: view.weight,
+            node,
         }));
     }
+    // Attach children last first, so each is complete when attached.
+    for index in (0..built.len()).rev() {
+        let parent = views[index].parent;
+        if parent == NONE {
+            continue;
+        }
+        let child = built[index].take().expect("attached once");
+        if let Some(Panel {
+            node: PanelNode::Split { children, .. },
+            ..
+        }) = &mut built[parent]
+        {
+            children.insert(0, child);
+        }
+    }
+    Ok(built.into_iter().flatten().collect())
+}
+
+/// At most one root.
+fn one_root(mut roots: Vec<Panel>) -> Result<Option<Panel>, String> {
+    let root = roots.pop();
+    if !roots.is_empty() {
+        return Err("a document has one root".into());
+    }
+    Ok(root)
+}
+
+fn notes<'a>(groups: impl IntoIterator<Item = (u32, Vec<&'a String>)>) -> Vec<AndamentoNote> {
+    groups
+        .into_iter()
+        .flat_map(|(kind, keys)| {
+            keys.into_iter().map(move |key| AndamentoNote {
+                kind,
+                key: Text::borrowed(key),
+            })
+        })
+        .collect()
+}
+
+/// A compare-and-set's result as a status, or the error for an invalid one.
+fn status<T>(result: Result<T, CommitError>) -> Result<u32, String> {
+    match result {
+        Ok(_) => Ok(ANDAMENTO_COMMITTED),
+        Err(CommitError::Stale { .. }) => Ok(ANDAMENTO_STALE),
+        Err(CommitError::Invalid(error)) => Err(error),
+    }
+}
+
+fn workspace_c(view: ArrangementView, status: u32) -> *mut AndamentoWorkspaceArrangement {
+    let panels = Panels::of(&view.doc.root);
+    let notes = notes([
+        (ANDAMENTO_NOTE_PLACED, view.placed.iter().collect()),
+        (ANDAMENTO_NOTE_GONE, view.gone.iter().collect()),
+        (ANDAMENTO_NOTE_UNRESOLVED, view.unresolved.iter().collect()),
+    ]);
     let flags = [
         (
             view.provider_changed,
@@ -172,55 +314,13 @@ fn arrangement_c(view: ArrangementView, status: u32) -> *mut AndamentoWorkspaceA
         generation: view.generation,
         owned: view.owned as u32,
         flags: flags.iter().filter(|(on, _)| *on).map(|(_, bit)| bit).sum(),
-        doc: AndamentoArrangementDoc {
-            root: keep
-                .root
-                .as_deref()
-                .map_or(ptr::null(), |root| root as *const _),
-        },
-        notes: keep.notes.as_ptr(),
-        note_count: keep.notes.len(),
+        doc: panels.doc(),
+        notes: notes.as_ptr(),
+        note_count: notes.len(),
     };
-    Box::into_raw(Box::new(OwnedArrangement { value, view, keep })).cast()
+    give(value, (view, panels, notes))
 }
-
-/// Deeper than any arrangement a person makes; it stops a cycle of pointers.
-const MAX_DEPTH: usize = 64;
-
-unsafe fn panel_from_c(panel: &AndamentoDocPanel, depth: usize) -> Result<Panel, String> {
-    if depth > MAX_DEPTH {
-        return Err("panels nest too deeply".into());
-    }
-    let node = match panel.kind {
-        ANDAMENTO_PANEL_SPLIT if panel.tab_count == 0 => PanelNode::Split {
-            axis: match panel.axis {
-                ANDAMENTO_AXIS_ROW => Axis::Row,
-                ANDAMENTO_AXIS_COLUMN => Axis::Column,
-                other => return Err(format!("unknown axis {other}")),
-            },
-            children: slice(panel.children, panel.child_count)?
-                .iter()
-                .map(|child| panel_from_c(child, depth + 1))
-                .collect::<Result<_, _>>()?,
-        },
-        ANDAMENTO_PANEL_TABS if panel.child_count == 0 => PanelNode::Tabs {
-            tabs: slice(panel.tabs, panel.tab_count)?
-                .iter()
-                .map(|tab| tab.read())
-                .collect::<Result<_, _>>()?,
-            selected: Some(panel.selected.read()?).filter(|key| !key.is_empty()),
-        },
-        ANDAMENTO_PANEL_SPLIT | ANDAMENTO_PANEL_TABS => {
-            return Err("a split has panels, and a tab panel tabs".into())
-        }
-        other => return Err(format!("unknown panel kind {other}")),
-    };
-    Ok(Panel {
-        id: panel.id.read()?,
-        weight: panel.weight,
-        node,
-    })
-}
+type WorkspaceKeep = (ArrangementView, Panels, Vec<AndamentoNote>);
 
 /// A workspace's arrangement. Free it with andamento_arrangement_free.
 #[no_mangle]
@@ -231,16 +331,19 @@ pub unsafe extern "C" fn andamento_arrangement_get(
 ) -> *mut AndamentoWorkspaceArrangement {
     run(h, error_out, |h| {
         let view = h.sidebar.arrangement(workspace.into())?;
-        Ok(arrangement_c(view, ANDAMENTO_COMMITTED))
+        Ok(workspace_c(view, ANDAMENTO_COMMITTED))
     })
     .unwrap_or(ptr::null_mut())
 }
 
-/// Commit a workspace's whole arrangement if `expected_generation` is the
-/// current one, and return the arrangement after: COMMITTED, reconciled
-/// (slots with no tab placed, gone tabs noted), or STALE and unchanged.
-/// NULL with an error for an invalid document; nothing changes. Free the
-/// result with andamento_arrangement_free.
+/// Commit a workspace's whole arrangement at the end of a gesture, if
+/// expected_generation is the current one (0 before any), and return the
+/// arrangement after: COMMITTED or STALE. NULL with an error, and no
+/// change, for an invalid document. A tab names a slot, or a slot the
+/// stored document already tabbed that has since gone (noted GONE); each
+/// slot has at most one tab. Slots with no tab are appended to the first
+/// tab panel in preorder (selected there if it selects nothing) and noted
+/// PLACED. Neither this nor any slot call changes the snapshot's revision.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_arrangement_commit(
     h: *mut Andamento,
@@ -252,411 +355,16 @@ pub unsafe extern "C" fn andamento_arrangement_commit(
     run(h, error_out, |h| {
         let doc = doc.as_ref().ok_or("null document")?;
         let doc = ArrangementDoc {
-            root: match doc.root.as_ref() {
-                Some(root) => Some(panel_from_c(root, 0)?),
-                None => None,
-            },
+            root: one_root(read_doc(doc)?)?,
         };
         let workspace = workspace.into();
-        let status = match h
-            .sidebar
-            .set_arrangement(workspace, doc, expected_generation)
-        {
-            Ok(_) => ANDAMENTO_COMMITTED,
-            Err(CommitError::Stale { .. }) => ANDAMENTO_STALE,
-            Err(error) => return Err(error.to_string()),
-        };
-        Ok(arrangement_c(h.sidebar.arrangement(workspace)?, status))
+        let status = status(
+            h.sidebar
+                .set_arrangement(workspace, doc, expected_generation),
+        )?;
+        Ok(workspace_c(h.sidebar.arrangement(workspace)?, status))
     })
     .unwrap_or(ptr::null_mut())
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_arrangement_free(
-    arrangement: *mut AndamentoWorkspaceArrangement,
-) {
-    if !arrangement.is_null() {
-        drop(Box::from_raw(arrangement.cast::<OwnedArrangement>()));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        andamento_create, andamento_destroy, andamento_slot_set, andamento_workspace_register,
-    };
-
-    fn text(s: &str) -> Text {
-        Text::borrowed(s)
-    }
-
-    unsafe fn read(text: Text) -> String {
-        text.read().unwrap()
-    }
-
-    /// A document as nested Rust values, for comparing.
-    unsafe fn tree(panel: &AndamentoDocPanel) -> String {
-        let children = slice(panel.children, panel.child_count).unwrap();
-        let tabs = slice(panel.tabs, panel.tab_count).unwrap();
-        format!(
-            "{}:{}[{}|{}]<{}>",
-            read(panel.id),
-            panel.weight,
-            children
-                .iter()
-                .map(|c| tree(c))
-                .collect::<Vec<_>>()
-                .join(","),
-            tabs.iter().map(|t| read(*t)).collect::<Vec<_>>().join(","),
-            read(panel.selected)
-        )
-    }
-
-    #[test]
-    fn documents_round_trip_as_nested_structs() {
-        unsafe {
-            let config = include_str!("../../andamento-core/tests/fixtures/abbreviation.kdl");
-            let h = andamento_create(config.as_ptr(), config.len(), ptr::null_mut());
-            let ws = WorkspaceIdView { bytes: [7; 16] };
-            assert_eq!(andamento_workspace_register(h, ws, ptr::null_mut()), 1);
-            for key in ["u:1", "u:2", "u:3"] {
-                let mut spec: crate::ViewSpecView = std::mem::zeroed();
-                spec.content = 2;
-                spec.url = text("https://example.com");
-                assert_eq!(
-                    andamento_slot_set(h, ws, text(key), &spec, 0, ptr::null_mut()),
-                    1
-                );
-            }
-            let tabs = [text("u:1"), text("u:2")];
-            let leaf = |id, tabs: &[Text], selected| AndamentoDocPanel {
-                id: text(id),
-                weight: 0.5,
-                kind: ANDAMENTO_PANEL_TABS,
-                axis: 0,
-                children: ptr::null(),
-                child_count: 0,
-                tabs: tabs.as_ptr(),
-                tab_count: tabs.len(),
-                selected: text(selected),
-            };
-            let split = |id, children: &[AndamentoDocPanel]| AndamentoDocPanel {
-                kind: ANDAMENTO_PANEL_SPLIT,
-                axis: ANDAMENTO_AXIS_COLUMN,
-                children: children.as_ptr(),
-                child_count: children.len(),
-                ..leaf(id, &[], "")
-            };
-            // u:3 is left out: committing places it.
-            let inner = [leaf("2", &tabs, "u:2")];
-            let outer = [split("1", &inner)];
-            let root = split("root", &outer);
-            let doc = AndamentoArrangementDoc { root: &root };
-            let committed = andamento_arrangement_commit(h, ws, &doc, 0, ptr::null_mut());
-            let c = &*committed;
-            assert_eq!((c.status, c.owned), (crate::ANDAMENTO_COMMITTED, 1));
-            assert_eq!(
-                tree(&*c.doc.root),
-                "root:0.5[1:0.5[2:0.5[|u:1,u:2,u:3]<u:2>|]<>|]<>"
-            );
-            let notes = slice(c.notes, c.note_count).unwrap();
-            assert_eq!(notes.len(), 1);
-            assert_eq!(
-                (notes[0].kind, read(notes[0].key)),
-                (ANDAMENTO_NOTE_PLACED, "u:3".into())
-            );
-            // What get returns is what the commit returned.
-            let got = andamento_arrangement_get(h, ws, ptr::null_mut());
-            assert_eq!((*got).generation, c.generation);
-            assert_eq!(tree(&*(*got).doc.root), tree(&*c.doc.root));
-            // A commit at the old generation is stale and returns the current one.
-            let stale = andamento_arrangement_commit(h, ws, &doc, 0, ptr::null_mut());
-            assert_eq!((*stale).status, crate::ANDAMENTO_STALE);
-            assert_eq!((*stale).generation, c.generation);
-            // An unknown kind is invalid: NULL with an error.
-            let bad = AndamentoDocPanel {
-                kind: 9,
-                ..leaf("x", &tabs, "")
-            };
-            let mut error = ptr::null_mut();
-            let invalid = andamento_arrangement_commit(
-                h,
-                ws,
-                &AndamentoArrangementDoc { root: &bad },
-                c.generation,
-                &mut error,
-            );
-            assert!(invalid.is_null() && !error.is_null());
-            crate::andamento_string_free(error);
-            for result in [committed, got, stale] {
-                andamento_arrangement_free(result);
-            }
-            andamento_destroy(h);
-        }
-    }
-}
-
-// The sidebar arrangement as flat panel and tab arrays.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct PanelView {
-    pub parent: usize,
-    pub id: Text,
-    pub weight: f64,
-    pub kind: u32,
-    pub axis: u32,
-    pub first_tab: usize,
-    pub tab_count: usize,
-    pub selected: usize,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct TabView {
-    pub slot: Text,
-    pub placed: u32,
-    pub gone: u32,
-}
-
-/// A flat preorder panel array as trees: each panel whose parent is NONE
-/// starts one, and every other names an earlier split as its parent.
-unsafe fn read_trees(
-    panels: &[PanelView],
-    tabs: &[TabView],
-) -> Result<Vec<andamento_core::slots::Panel>, String> {
-    use andamento_core::slots::{Panel, PanelNode};
-    use andamento_core::suggested_layout::Axis;
-    let mut built: Vec<Option<Panel>> = Vec::with_capacity(panels.len());
-    for (index, view) in panels.iter().enumerate() {
-        match view.parent {
-            NONE => {}
-            parent if parent >= index => {
-                return Err(format!("panel {index}'s parent is not an earlier panel"))
-            }
-            parent if panels[parent].kind != ANDAMENTO_PANEL_SPLIT => {
-                return Err(format!("panel {index}'s parent is not a split"))
-            }
-            _ => {}
-        }
-        let node = match view.kind {
-            ANDAMENTO_PANEL_SPLIT => {
-                if view.tab_count != 0 {
-                    return Err(format!("split {index} has tabs"));
-                }
-                PanelNode::Split {
-                    axis: match view.axis {
-                        0 => Axis::Row,
-                        1 => Axis::Column,
-                        other => return Err(format!("unknown axis {other}")),
-                    },
-                    children: Vec::new(),
-                }
-            }
-            ANDAMENTO_PANEL_TABS => {
-                let end = view
-                    .first_tab
-                    .checked_add(view.tab_count)
-                    .filter(|end| *end <= tabs.len())
-                    .ok_or_else(|| format!("panel {index}'s tabs are out of range"))?;
-                let keys = tabs[view.first_tab..end]
-                    .iter()
-                    .map(|tab| tab.slot.read())
-                    .collect::<Result<Vec<_>, _>>()?;
-                let selected = match view.selected {
-                    NONE => None,
-                    n => Some(
-                        keys.get(n)
-                            .ok_or_else(|| format!("panel {index} selects a tab it doesn't have"))?
-                            .clone(),
-                    ),
-                };
-                PanelNode::Tabs {
-                    tabs: keys,
-                    selected,
-                }
-            }
-            other => return Err(format!("unknown panel kind {other}")),
-        };
-        built.push(Some(Panel {
-            id: view.id.read()?,
-            weight: view.weight,
-            node,
-        }));
-    }
-    // Attach children to parents, last first, so each parent is complete
-    // when it is attached in turn.
-    for index in (0..built.len()).rev() {
-        let parent = panels[index].parent;
-        if parent == NONE {
-            continue;
-        }
-        let child = built[index].take().expect("attached once");
-        if let Some(Panel {
-            node: PanelNode::Split { children, .. },
-            ..
-        }) = &mut built[parent]
-        {
-            children.insert(0, child);
-        }
-    }
-    Ok(built.into_iter().flatten().collect())
-}
-
-/// The sidebar's arrangement, owned until release.
-pub struct AndamentoArrangement {
-    generation: u64,
-    owned: bool,
-    panels: Vec<FlatPanel>,
-    tabs: Vec<(String, bool, bool)>,
-    /// The first floating panel's index: panel_count for a workspace.
-    floating_first: usize,
-    /// The sidebar's section notes: (kind, key).
-    notes: Vec<(u32, String)>,
-}
-
-/// A panel of an acquired arrangement, owning its ID.
-struct FlatPanel {
-    parent: usize,
-    id: String,
-    weight: f64,
-    kind: u32,
-    axis: u32,
-    first_tab: usize,
-    tab_count: usize,
-    selected: usize,
-}
-
-#[repr(C)]
-pub struct ArrangementInfoView {
-    pub generation: u64,
-    pub owned: u32,
-    pub panel_count: usize,
-    pub tab_count: usize,
-}
-
-/// Flatten one panel tree into `out`, in preorder, under `parent`.
-fn flatten_panel(
-    panel: &andamento_core::slots::Panel,
-    parent: usize,
-    placed: &std::collections::BTreeSet<String>,
-    gone: &std::collections::BTreeSet<String>,
-    out: &mut AndamentoArrangement,
-) {
-    use andamento_core::slots::PanelNode;
-    use andamento_core::suggested_layout::Axis;
-    let index = out.panels.len();
-    match &panel.node {
-        PanelNode::Split { axis, children } => {
-            let axis = match axis {
-                Axis::Row => 0,
-                Axis::Column => 1,
-            };
-            out.panels.push(FlatPanel {
-                parent,
-                id: panel.id.clone(),
-                weight: panel.weight,
-                kind: ANDAMENTO_PANEL_SPLIT,
-                axis,
-                first_tab: 0,
-                tab_count: 0,
-                selected: NONE,
-            });
-            for child in children {
-                flatten_panel(child, index, placed, gone, out);
-            }
-        }
-        PanelNode::Tabs { tabs, selected } => {
-            let first = out.tabs.len();
-            for tab in tabs {
-                out.tabs
-                    .push((tab.clone(), placed.contains(tab), gone.contains(tab)));
-            }
-            let selected = selected
-                .as_ref()
-                .and_then(|s| tabs.iter().position(|t| t == s))
-                .unwrap_or(NONE);
-            out.panels.push(FlatPanel {
-                parent,
-                id: panel.id.clone(),
-                weight: panel.weight,
-                kind: ANDAMENTO_PANEL_TABS,
-                axis: 0,
-                first_tab: first,
-                tab_count: tabs.len(),
-                selected,
-            });
-        }
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_arrangement_info(
-    arrangement: *const AndamentoArrangement,
-    out: *mut ArrangementInfoView,
-) -> u32 {
-    let (Some(arrangement), Some(out)) = (arrangement.as_ref(), out.as_mut()) else {
-        return 0;
-    };
-    *out = ArrangementInfoView {
-        generation: arrangement.generation,
-        owned: arrangement.owned as u32,
-        panel_count: arrangement.panels.len(),
-        tab_count: arrangement.tabs.len(),
-    };
-    1
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_arrangement_panel(
-    arrangement: *const AndamentoArrangement,
-    index: usize,
-    out: *mut PanelView,
-) -> u32 {
-    let (Some(arrangement), Some(out)) = (arrangement.as_ref(), out.as_mut()) else {
-        return 0;
-    };
-    let Some(panel) = arrangement.panels.get(index) else {
-        return 0;
-    };
-    *out = PanelView {
-        parent: panel.parent,
-        id: Text::borrowed(&panel.id),
-        weight: panel.weight,
-        kind: panel.kind,
-        axis: panel.axis,
-        first_tab: panel.first_tab,
-        tab_count: panel.tab_count,
-        selected: panel.selected,
-    };
-    1
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_arrangement_tab(
-    arrangement: *const AndamentoArrangement,
-    index: usize,
-    out: *mut TabView,
-) -> u32 {
-    let (Some(arrangement), Some(out)) = (arrangement.as_ref(), out.as_mut()) else {
-        return 0;
-    };
-    let Some((slot, placed, gone)) = arrangement.tabs.get(index) else {
-        return 0;
-    };
-    *out = TabView {
-        slot: Text::borrowed(slot),
-        placed: *placed as u32,
-        gone: *gone as u32,
-    };
-    1
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_arrangement_release(arrangement: *mut AndamentoArrangement) {
-    if !arrangement.is_null() {
-        drop(Box::from_raw(arrangement));
-    }
 }
 
 /// Keep the user's arrangement over the provider's change.
@@ -665,8 +373,9 @@ pub const ANDAMENTO_ARRANGEMENT_KEEP: u32 = 0;
 /// overrides.
 pub const ANDAMENTO_ARRANGEMENT_FOLLOW: u32 = 1;
 
-/// keep the user's arrangement over a provider change, or follow the
-/// provider's again.
+/// Settle a PROVIDER_CHANGED arrangement at expected_generation: KEEP or
+/// FOLLOW. Returns ANDAMENTO_COMMITTED, _STALE or _INVALID (with an
+/// error); generation_out, when not NULL, receives the generation after.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_arrangement_resolve(
     h: *mut Andamento,
@@ -676,7 +385,6 @@ pub unsafe extern "C" fn andamento_arrangement_resolve(
     generation_out: *mut u64,
     error_out: *mut *mut c_char,
 ) -> u32 {
-    use andamento_core::{slots::Resolve, versioned::CommitError};
     run(h, error_out, |h| {
         let choice = match choice {
             ANDAMENTO_ARRANGEMENT_KEEP => Resolve::Keep,
@@ -687,185 +395,144 @@ pub unsafe extern "C" fn andamento_arrangement_resolve(
         let result = h
             .sidebar
             .resolve_arrangement(workspace, choice, expected_generation);
-        let current = h.sidebar.arrangement(workspace).map(|v| v.generation);
-        if let (Some(out), Ok(current)) = (generation_out.as_mut(), current) {
-            *out = current;
+        if let Some(out) = generation_out.as_mut() {
+            *out = h.sidebar.arrangement(workspace)?.generation;
         }
-        match result {
-            Ok(_) => Ok(ANDAMENTO_COMMITTED),
-            Err(CommitError::Stale { .. }) => Ok(ANDAMENTO_STALE),
-            Err(error) => Err(error.to_string()),
-        }
+        status(result)
     })
     .unwrap_or(ANDAMENTO_INVALID)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn andamento_arrangement_floating_first(
-    arrangement: *const AndamentoArrangement,
-) -> usize {
-    arrangement.as_ref().map_or(0, |a| a.floating_first)
+pub unsafe extern "C" fn andamento_arrangement_free(
+    arrangement: *mut AndamentoWorkspaceArrangement,
+) {
+    take::<_, WorkspaceKeep>(arrangement)
 }
 
-/// A declared section with no tab, closed on purpose.
-pub const ANDAMENTO_SECTION_CLOSED: u32 = 0;
-/// A section Andamento placed by its hints.
-pub const ANDAMENTO_SECTION_PLACED: u32 = 1;
-/// A closed section that has a tab again.
-pub const ANDAMENTO_SECTION_RESTORED: u32 = 2;
-/// A key whose later tabs were removed.
-pub const ANDAMENTO_SECTION_DUPLICATE: u32 = 3;
-/// A key that no longer resolves: a tabbed or closed section, or a saved
-/// dashboard key ("display:", "collapse:", "order:" or "variable:" and
-/// the key). Kept until the host drops it.
-pub const ANDAMENTO_SECTION_UNRESOLVED: u32 = 4;
-
-#[repr(C)]
-pub struct SectionNoteView {
-    pub kind: u32,
-    pub key: Text,
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_arrangement_note_count(
-    arrangement: *const AndamentoArrangement,
-) -> usize {
-    arrangement.as_ref().map_or(0, |a| a.notes.len())
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_arrangement_note(
-    arrangement: *const AndamentoArrangement,
-    index: usize,
-    out: *mut SectionNoteView,
-) -> u32 {
-    let (Some(arrangement), Some(out)) = (arrangement.as_ref(), out.as_mut()) else {
-        return 0;
+fn sidebar_c(view: SidebarView, report: &Report, status: u32) -> *mut AndamentoSidebarArrangement {
+    let dock = Panels::of(&view.doc.dock.root);
+    let floating = Panels::of(&view.doc.floating);
+    let report = report.clone();
+    let notes = notes([
+        (ANDAMENTO_NOTE_CLOSED, view.closed.iter().collect()),
+        (ANDAMENTO_NOTE_UNRESOLVED, view.unresolved.iter().collect()),
+        (ANDAMENTO_NOTE_PLACED, report.placed.iter().collect()),
+        (ANDAMENTO_NOTE_RESTORED, report.restored.iter().collect()),
+        (ANDAMENTO_NOTE_DUPLICATE, report.duplicates.iter().collect()),
+    ]);
+    let value = AndamentoSidebarArrangement {
+        status,
+        generation: view.generation,
+        owned: view.owned as u32,
+        doc: AndamentoSidebarDoc {
+            dock: dock.doc(),
+            floating: floating.doc(),
+        },
+        notes: notes.as_ptr(),
+        note_count: notes.len(),
     };
-    let Some((kind, key)) = arrangement.notes.get(index) else {
-        return 0;
-    };
-    *out = SectionNoteView {
-        kind: *kind,
-        key: Text::borrowed(key),
-    };
-    1
+    give(value, (view, report, dock, floating, notes))
 }
+type SidebarKeep = (SidebarView, Report, Panels, Panels, Vec<AndamentoNote>);
 
-/// The sidebar's document from the host's arrays: panels before
-/// `floating_first` are the dock (one tree, or none when it is 0); the rest
-/// are floating panels, each a tree whose root's parent is NONE.
-unsafe fn read_sidebar_doc(
-    panels: &[PanelView],
-    floating_first: usize,
-    tabs: &[TabView],
-) -> Result<andamento_core::sidebar_arrangement::SidebarDoc, String> {
-    if floating_first > panels.len() {
-        return Err("floating_first is past the last panel".into());
-    }
-    for (index, view) in panels.iter().enumerate() {
-        let root = view.parent == NONE;
-        let starts = index == 0 || index == floating_first;
-        if index < floating_first && root != (index == 0) {
-            return Err(format!(
-                "panel {index}: the dock is one tree, rooted at panel 0"
-            ));
-        }
-        if index >= floating_first && starts && !root {
-            return Err(format!(
-                "panel {index} starts the floating panels; its parent is NONE"
-            ));
-        }
-        if index >= floating_first && !root && view.parent < floating_first {
-            return Err(format!("panel {index} is floating; its parent is docked"));
-        }
-    }
-    let mut trees = read_trees(panels, tabs)?.into_iter();
-    let dock = if floating_first > 0 {
-        trees.next()
-    } else {
-        None
-    };
-    Ok(andamento_core::sidebar_arrangement::SidebarDoc {
-        dock: andamento_core::slots::ArrangementDoc { root: dock },
-        floating: trees.collect(),
-    })
-}
-
-/// The C result of a sidebar arrangement call, writing the generation after.
-fn sidebar_result(
+/// The sidebar arrangement after a compare-and-set.
+fn sidebar_after(
     h: &Andamento,
-    result: Result<
-        andamento_core::sidebar_arrangement::Report,
-        andamento_core::versioned::CommitError,
-    >,
-    generation_out: *mut u64,
-) -> Result<u32, String> {
-    if let Some(out) = unsafe { generation_out.as_mut() } {
-        *out = h.sidebar.sidebar_arrangement_generation();
-    }
-    match result {
-        Ok(_) => Ok(ANDAMENTO_COMMITTED),
-        Err(andamento_core::versioned::CommitError::Stale { .. }) => Ok(ANDAMENTO_STALE),
-        Err(error) => Err(error.to_string()),
-    }
+    result: Result<Report, CommitError>,
+) -> Result<*mut AndamentoSidebarArrangement, String> {
+    let status = status(result)?;
+    let (view, report) = h.sidebar.sidebar_arrangement();
+    Ok(sidebar_c(view, report, status))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The sidebar arrangement. Free it with andamento_sidebar_arrangement_free.
+/// Andamento reconciles it when what is declared changes (on configure, and
+/// when local sections or groups change or are imported): a section with
+/// neither a tab nor a closed record is placed in a new tab panel of its
+/// default-host ("floating", else the dock), before the subtree holding the
+/// next section in default order placed there, else last.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_set_sidebar_arrangement(
+pub unsafe extern "C" fn andamento_sidebar_arrangement_get(
     h: *mut Andamento,
-    panels: *const PanelView,
-    panel_count: usize,
-    floating_first: usize,
-    tabs: *const TabView,
-    tab_count: usize,
-    expected_generation: u64,
-    generation_out: *mut u64,
     error_out: *mut *mut c_char,
-) -> u32 {
+) -> *mut AndamentoSidebarArrangement {
     run(h, error_out, |h| {
-        let doc = read_sidebar_doc(
-            slice(panels, panel_count)?,
-            floating_first,
-            slice(tabs, tab_count)?,
-        )?;
-        let result = h.sidebar.set_sidebar_arrangement(doc, expected_generation);
-        sidebar_result(h, result, generation_out)
+        let (view, report) = h.sidebar.sidebar_arrangement();
+        Ok(sidebar_c(view, report, ANDAMENTO_COMMITTED))
     })
-    .unwrap_or(ANDAMENTO_INVALID)
+    .unwrap_or(ptr::null_mut())
 }
 
+/// Commit the host's whole sidebar document at the end of a gesture, as
+/// andamento_arrangement_commit does. A tab names a declared or local
+/// section, a host view, or a key the stored document already holds; a key
+/// with two tabs keeps the first. Every declared section the document leaves
+/// out is closed, and a closed one it tabs again is restored.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_sidebar_arrangement_commit(
+    h: *mut Andamento,
+    doc: *const AndamentoSidebarDoc,
+    expected_generation: u64,
+    error_out: *mut *mut c_char,
+) -> *mut AndamentoSidebarArrangement {
+    run(h, error_out, |h| {
+        let doc = doc.as_ref().ok_or("null document")?;
+        let doc = SidebarDoc {
+            dock: ArrangementDoc {
+                root: one_root(read_doc(&doc.dock)?)?,
+            },
+            floating: read_doc(&doc.floating)?,
+        };
+        let result = h.sidebar.set_sidebar_arrangement(doc, expected_generation);
+        sidebar_after(h, result)
+    })
+    .unwrap_or(ptr::null_mut())
+}
+
+/// Reopen a closed (or never placed) declared section by its hints, with an
+/// equal share of its host, at expected_generation. A section with a tab is
+/// left alone; an undeclared one is invalid.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_sidebar_restore_section(
     h: *mut Andamento,
     key: Text,
     expected_generation: u64,
-    generation_out: *mut u64,
     error_out: *mut *mut c_char,
-) -> u32 {
+) -> *mut AndamentoSidebarArrangement {
     run(h, error_out, |h| {
-        let key = key.read()?;
-        let result = h.sidebar.restore_sidebar_section(&key, expected_generation);
-        sidebar_result(h, result, generation_out)
+        let result = h
+            .sidebar
+            .restore_sidebar_section(&key.read()?, expected_generation);
+        sidebar_after(h, result)
     })
-    .unwrap_or(ANDAMENTO_INVALID)
+    .unwrap_or(ptr::null_mut())
 }
 
+/// Drop the user's sidebar arrangement, closed sections and unresolved keys,
+/// and place every declared section by its hints, at expected_generation.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_sidebar_reset(
     h: *mut Andamento,
     expected_generation: u64,
-    generation_out: *mut u64,
     error_out: *mut *mut c_char,
-) -> u32 {
+) -> *mut AndamentoSidebarArrangement {
     run(h, error_out, |h| {
         let result = h.sidebar.reset_sidebar_arrangement(expected_generation);
-        sidebar_result(h, result, generation_out)
+        sidebar_after(h, result)
     })
-    .unwrap_or(ANDAMENTO_INVALID)
+    .unwrap_or(ptr::null_mut())
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn andamento_sidebar_arrangement_free(
+    arrangement: *mut AndamentoSidebarArrangement,
+) {
+    take::<_, SidebarKeep>(arrangement)
+}
+
+/// The sidebar arrangement's generation: cheap enough to poll, to learn
+/// when to read it again.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_sidebar_arrangement_generation(
     h: *mut Andamento,
@@ -877,59 +544,139 @@ pub unsafe extern "C" fn andamento_sidebar_arrangement_generation(
     .unwrap_or(0)
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn andamento_sidebar_arrangement_acquire(
-    h: *mut Andamento,
-    error_out: *mut *mut c_char,
-) -> *mut AndamentoArrangement {
-    run(h, error_out, |h| {
-        let (view, report) = h.sidebar.sidebar_arrangement();
-        let mut out = AndamentoArrangement {
-            generation: view.generation,
-            owned: view.owned,
-            panels: Vec::new(),
-            tabs: Vec::new(),
-            floating_first: 0,
-            notes: Vec::new(),
-        };
-        if let Some(root) = &view.doc.dock.root {
-            flatten_panel(root, NONE, &view.placed, &view.unresolved, &mut out);
-        }
-        out.floating_first = out.panels.len();
-        for panel in &view.doc.floating {
-            flatten_panel(panel, NONE, &view.placed, &view.unresolved, &mut out);
-        }
-        let notes = [
-            (
-                ANDAMENTO_SECTION_CLOSED,
-                view.closed.iter().collect::<Vec<_>>(),
-            ),
-            (ANDAMENTO_SECTION_PLACED, report.placed.iter().collect()),
-            (ANDAMENTO_SECTION_RESTORED, report.restored.iter().collect()),
-            (
-                ANDAMENTO_SECTION_DUPLICATE,
-                report.duplicates.iter().collect(),
-            ),
-            (
-                ANDAMENTO_SECTION_UNRESOLVED,
-                view.unresolved.iter().collect(),
-            ),
-        ];
-        for (kind, keys) in notes {
-            out.notes
-                .extend(keys.into_iter().map(|key| (kind, key.clone())));
-        }
-        Ok(Box::into_raw(Box::new(out)))
-    })
-    .unwrap_or(ptr::null_mut())
-}
-
-/// the revision of workspace content (slots, resolutions and
-/// arrangements), separate from the sidebar snapshot's.
+/// The revision of workspace content: slots, their plans and saved
+/// resolutions, and arrangements. Poll it to learn when to read them again;
+/// it is separate from the snapshot's.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_workspace_content_revision(
     h: *mut Andamento,
     error_out: *mut *mut c_char,
 ) -> u64 {
     run(h, error_out, |h| Ok(h.sidebar.content_revision())).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(s: &str) -> Text {
+        Text::borrowed(s)
+    }
+
+    /// A document as `id(parent):tabs<selected>` per panel, for comparing.
+    unsafe fn shape(doc: AndamentoArrangementDoc) -> Vec<String> {
+        slice(doc.panels, doc.panel_count)
+            .unwrap()
+            .iter()
+            .map(|panel| {
+                let tabs = slice(panel.tabs, panel.tab_count).unwrap();
+                format!(
+                    "{}({}):{}<{}>",
+                    panel.id.read().unwrap(),
+                    panel.parent as isize,
+                    tabs.iter()
+                        .map(|tab| tab.read().unwrap())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    panel.selected as isize
+                )
+            })
+            .collect()
+    }
+
+    fn panel(parent: usize, id: &str, tabs: &[Text], selected: usize) -> AndamentoDocPanel {
+        AndamentoDocPanel {
+            parent,
+            id: text(id),
+            weight: 0.5,
+            kind: if tabs.is_empty() {
+                ANDAMENTO_PANEL_SPLIT
+            } else {
+                ANDAMENTO_PANEL_TABS
+            },
+            axis: ANDAMENTO_AXIS_COLUMN,
+            tabs: tabs.as_ptr(),
+            tab_count: tabs.len(),
+            selected,
+        }
+    }
+
+    fn doc(panels: &[AndamentoDocPanel]) -> AndamentoArrangementDoc {
+        AndamentoArrangementDoc {
+            panels: panels.as_ptr(),
+            panel_count: panels.len(),
+        }
+    }
+
+    #[test]
+    fn documents_round_trip_as_panel_arrays() {
+        unsafe {
+            let config = include_str!("../../andamento-core/tests/fixtures/abbreviation.kdl");
+            let h = andamento_create(config.as_ptr(), config.len(), ptr::null_mut());
+            let ws: WorkspaceIdView = andamento_core::tab_workspace_id(7).into();
+            assert_eq!(andamento_workspace_register(h, ws, ptr::null_mut()), 1);
+            for key in ["u:1", "u:2", "u:3"] {
+                let mut spec: ViewSpecView = std::mem::zeroed();
+                spec.content = ANDAMENTO_SLOT_URL;
+                spec.url = text("https://example.com");
+                assert_eq!(
+                    andamento_slot_set(h, ws, text(key), &spec, 0, ptr::null_mut()),
+                    1
+                );
+            }
+            // u:3 is left out: committing places it.
+            let tabs = [text("u:1"), text("u:2")];
+            let panels = [
+                panel(NONE, "root", &[], NONE),
+                panel(0, "1", &[], NONE),
+                panel(1, "2", &tabs, 1),
+            ];
+            let committed = andamento_arrangement_commit(h, ws, &doc(&panels), 0, ptr::null_mut());
+            let c = &*committed;
+            assert_eq!((c.status, c.owned), (ANDAMENTO_COMMITTED, 1));
+            assert_eq!(
+                shape(c.doc),
+                ["root(-1):<-1>", "1(0):<-1>", "2(1):u:1,u:2,u:3<1>"]
+            );
+            let notes = slice(c.notes, c.note_count).unwrap();
+            assert_eq!(notes.len(), 1);
+            assert_eq!(
+                (notes[0].kind, notes[0].key.read().unwrap().as_str()),
+                (ANDAMENTO_NOTE_PLACED, "u:3")
+            );
+            // What get returns is what the commit returned.
+            let got = andamento_arrangement_get(h, ws, ptr::null_mut());
+            assert_eq!((*got).generation, c.generation);
+            assert_eq!(shape((*got).doc), shape(c.doc));
+            // A stale commit returns the current document.
+            let stale = andamento_arrangement_commit(h, ws, &doc(&panels), 0, ptr::null_mut());
+            assert_eq!(
+                ((*stale).status, (*stale).generation),
+                (ANDAMENTO_STALE, c.generation)
+            );
+            // Malformed documents are invalid, with a reason.
+            let two_roots = [panel(NONE, "a", &tabs, 0), panel(NONE, "b", &tabs[..1], 0)];
+            let later_parent = [panel(1, "a", &tabs, 0), panel(NONE, "b", &[], NONE)];
+            let tab_parent = [panel(NONE, "a", &tabs, 0), panel(0, "b", &tabs, 0)];
+            let bad_selection = [panel(NONE, "a", &tabs, 5)];
+            for (panels, reason) in [
+                (&two_roots[..], "one root"),
+                (&later_parent[..], "earlier split"),
+                (&tab_parent[..], "earlier split"),
+                (&bad_selection[..], "selects a tab"),
+            ] {
+                let mut error = ptr::null_mut();
+                let result =
+                    andamento_arrangement_commit(h, ws, &doc(panels), c.generation, &mut error);
+                assert!(result.is_null());
+                let message = std::ffi::CStr::from_ptr(error).to_str().unwrap();
+                assert!(message.contains(reason), "{message}");
+                andamento_string_free(error);
+            }
+            for result in [committed, got, stale] {
+                andamento_arrangement_free(result);
+            }
+            andamento_destroy(h);
+        }
+    }
 }

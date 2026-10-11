@@ -120,10 +120,12 @@
 // Copy the URL in recipe; needs no completion.
 #define ANDAMENTO_EFFECT_COPY_URL 4
 
-// A split panel: its children divide it along `axis`.
+// A split panel: its children are the panels that name it as their parent,
+// in array order, laid out along its axis.
 #define ANDAMENTO_PANEL_SPLIT 0
 
-// A tab panel: its tabs are slot keys.
+// A tab panel: its tabs are slot keys (a workspace's) or section keys (the
+// sidebar's).
 #define ANDAMENTO_PANEL_TABS 1
 
 // Children left to right.
@@ -132,15 +134,26 @@
 // Children top to bottom.
 #define ANDAMENTO_AXIS_COLUMN 1
 
-// A note's key is a slot Andamento placed since the host last committed.
+// A key Andamento placed since the host last committed.
 #define ANDAMENTO_NOTE_PLACED 0
 
-// A note's key is a tab whose slot has gone; it stays until the host
-// removes it.
+// A workspace tab whose slot has gone. It stays until the host removes it.
 #define ANDAMENTO_NOTE_GONE 1
 
-// A note's key is the panel ID of a soft override that no longer resolves.
+// A key that no longer resolves, kept until the host drops it: a soft
+// override's panel ID (a workspace's); a tabbed or closed section, or a
+// saved dashboard key ("display:", "collapse:", "order:" or "variable:"
+// and the key) the template no longer has (the sidebar's).
 #define ANDAMENTO_NOTE_UNRESOLVED 2
+
+// A declared section with no tab, closed on purpose.
+#define ANDAMENTO_NOTE_CLOSED 3
+
+// A closed section that has a tab again.
+#define ANDAMENTO_NOTE_RESTORED 4
+
+// A key whose later tabs were removed.
+#define ANDAMENTO_NOTE_DUPLICATE 5
 
 // The provider changed its hint while the user owns the document.
 #define ANDAMENTO_ARRANGEMENT_FLAG_PROVIDER_CHANGED 1
@@ -148,7 +161,7 @@
 // Soft overrides apply.
 #define ANDAMENTO_ARRANGEMENT_FLAG_SOFT 2
 
-// A soft override no longer resolves (see ANDAMENTO_NOTE_UNRESOLVED).
+// A soft override no longer resolves (an UNRESOLVED note).
 #define ANDAMENTO_ARRANGEMENT_FLAG_UNRESOLVED 4
 
 // Keep the user's arrangement over the provider's change.
@@ -157,23 +170,6 @@
 // Follow the provider's arrangement again, dropping ownership and soft
 // overrides.
 #define ANDAMENTO_ARRANGEMENT_FOLLOW 1
-
-// A declared section with no tab, closed on purpose.
-#define ANDAMENTO_SECTION_CLOSED 0
-
-// A section Andamento placed by its hints.
-#define ANDAMENTO_SECTION_PLACED 1
-
-// A closed section that has a tab again.
-#define ANDAMENTO_SECTION_RESTORED 2
-
-// A key whose later tabs were removed.
-#define ANDAMENTO_SECTION_DUPLICATE 3
-
-// A key that no longer resolves: a tabbed or closed section, or a saved
-// dashboard key ("display:", "collapse:", "order:" or "variable:" and
-// the key). Kept until the host drops it.
-#define ANDAMENTO_SECTION_UNRESOLVED 4
 
 // A View Spec's content: a local command (argv when argc is nonzero, else
 // the shell line in command; optional cwd).
@@ -245,39 +241,16 @@
 // by the host.
 typedef struct Andamento Andamento;
 
-// The sidebar's arrangement, owned until release.
-typedef struct AndamentoArrangement AndamentoArrangement;
-
 // A batch of effects, taken once. It owns its text and survives the
 // sidebar; releasing it does not complete its requests.
 typedef struct AndamentoEffects AndamentoEffects;
-
-// A workspace's overlay, owned until release.
-typedef struct AndamentoOverlay AndamentoOverlay;
-
-// One slot's plan, owned until release. Plan with the resolution identity
-// the host applied (empty for none), prepare the runtime instance without
-// touching the current one, validate the token immediately before
-// committing, then complete. Repeated plans return the same token until
-// the desired resolution or binding changes.
-typedef struct AndamentoSlotPlan AndamentoSlotPlan;
-
-// A slot's saved portable Target Resolution, owned until release.
-// Acquiring fails for an unknown slot.
-typedef struct AndamentoSlotResolution AndamentoSlotResolution;
-
-// A workspace's slots, owned until release: its subject's Suggested Layout
-// slots (a cached baseline), then detached slots the baseline has since
-// dropped, then the slots the host added ("u:<id>"), which is also their
-// default placement order.
-typedef struct AndamentoSlots AndamentoSlots;
 
 typedef struct AndamentoSnapshot AndamentoSnapshot;
 
 // UTF-8 text, length-delimited (it may contain NUL). Input text is
 // borrowed for the call only; output text is borrowed from the object that
 // returned it. Empty output text has a non-NULL pointer.
-typedef struct AndamentoText {
+typedef struct {
   const uint8_t *data;
   size_t len;
 } AndamentoText;
@@ -285,17 +258,17 @@ typedef struct AndamentoText {
 // Bytes the library allocated; free them with andamento_bytes_free (a
 // zeroed AndamentoBytes is harmless). Out-parameters are written only on
 // success.
-typedef struct AndamentoBytes {
+typedef struct {
   uint8_t *data;
   size_t len;
 } AndamentoBytes;
 
 // A scalar fact (ANDAMENTO_FACT_UNSET, _TEXT, _BOOL or _INTEGER), with
 // optional TTL, precedence and ordinal. Keys are unique within a call.
-typedef struct AndamentoFact {
-  struct AndamentoText key;
+typedef struct {
+  AndamentoText key;
   uint32_t kind;
-  struct AndamentoText text;
+  AndamentoText text;
   int64_t integer;
   uint32_t has_ttl;
   uint64_t ttl_ms;
@@ -307,22 +280,22 @@ typedef struct AndamentoFact {
 
 // A Workspace ID: 16 bytes the host supplies (UUIDv7 in practice).
 // Andamento never generates one, and only compares and prints them.
-typedef struct AndamentoWorkspaceId {
+typedef struct {
   uint8_t bytes[16];
 } AndamentoWorkspaceId;
 
 // One open workspace in the host's topology.
-typedef struct AndamentoWorkspace {
-  struct AndamentoWorkspaceId id;
+typedef struct {
+  AndamentoWorkspaceId id;
   size_t position;
-  struct AndamentoText name;
+  AndamentoText name;
   uint32_t selected;
 } AndamentoWorkspace;
 
 // A pane in a workspace (Zellij's terminal/plugin u32 identity). Hosts
 // with other kinds of views pass no panes.
-typedef struct AndamentoPane {
-  struct AndamentoWorkspaceId workspace_id;
+typedef struct {
+  AndamentoWorkspaceId workspace_id;
   uint32_t pane_id;
   // ANDAMENTO_PANE_TERMINAL or ANDAMENTO_PANE_PLUGIN.
   uint32_t kind;
@@ -332,64 +305,54 @@ typedef struct AndamentoPane {
 } AndamentoPane;
 
 // A workspace's working directory, normalised by the host.
-typedef struct AndamentoWorkdir {
-  struct AndamentoWorkspaceId workspace_id;
-  struct AndamentoText cwd;
+typedef struct {
+  AndamentoWorkspaceId workspace_id;
+  AndamentoText cwd;
 } AndamentoWorkdir;
 
 // An entity: `{provider, kind, id}`. The provider is the Dashboard
 // subscription its facts come from ("local" for Andamento's own sections,
 // groups and refs); the same kind and ID under two providers are two
 // entities. An entity a host passes names its provider.
-typedef struct AndamentoEntity {
-  struct AndamentoText provider;
-  struct AndamentoText kind;
-  struct AndamentoText id;
+typedef struct {
+  AndamentoText provider;
+  AndamentoText kind;
+  AndamentoText id;
 } AndamentoEntity;
-
-// A fact of a local entity: ANDAMENTO_FACT_TEXT, _BOOL, _INTEGER or
-// _ENTITY (one entity reference, such as .section, .group or .target).
-typedef struct AndamentoLocalFact {
-  struct AndamentoText key;
-  uint32_t kind;
-  struct AndamentoText text;
-  int64_t integer;
-  struct AndamentoEntity entity;
-} AndamentoLocalFact;
 
 // A catalog card: an entity's exact detail, independent of where it is
 // placed. Observations use host monotonic milliseconds; a field's
 // observed_at_ms is the winning fact's receipt time, and TTL and source_id
 // give its freshness and producer.
-typedef struct AndamentoDetail {
-  struct AndamentoEntity entity;
-  struct AndamentoText label;
+typedef struct {
+  AndamentoEntity entity;
+  AndamentoText label;
   size_t field_count;
   size_t activate;
   size_t copy_url;
   uint64_t now_ms;
-  struct AndamentoText error;
+  AndamentoText error;
   // The workspace live for the entity, if any.
   uint32_t has_workspace;
-  struct AndamentoWorkspaceId workspace_id;
+  AndamentoWorkspaceId workspace_id;
 } AndamentoDetail;
 
-typedef struct AndamentoDetailAction {
-  struct AndamentoText intent;
-  struct AndamentoText label;
-  struct AndamentoEntity entity;
+typedef struct {
+  AndamentoText intent;
+  AndamentoText label;
+  AndamentoEntity entity;
   size_t action;
 } AndamentoDetailAction;
 
-typedef struct AndamentoDetailField {
-  struct AndamentoText name;
-  struct AndamentoText section;
+typedef struct {
+  AndamentoText name;
+  AndamentoText section;
   uint32_t role;
-  struct AndamentoText label;
+  AndamentoText label;
   uint32_t has_value;
-  struct AndamentoText text;
-  struct AndamentoText source_key;
-  struct AndamentoText source_id;
+  AndamentoText text;
+  AndamentoText source_key;
+  AndamentoText source_id;
   uint32_t has_observation;
   uint64_t observed_at_ms;
   uint32_t has_ttl;
@@ -398,40 +361,40 @@ typedef struct AndamentoDetailField {
   size_t relation_count;
 } AndamentoDetailField;
 
-typedef struct AndamentoDetailRelation {
-  struct AndamentoEntity entity;
-  struct AndamentoText display_text;
+typedef struct {
+  AndamentoEntity entity;
+  AndamentoText display_text;
   // Index for detail lookup, or NONE if the referenced entity is unavailable.
   size_t detail;
 } AndamentoDetailRelation;
 
 // A snapshot node. Keys are opaque and stable for a placement across
 // snapshots; qualify a section's with is_section.
-typedef struct AndamentoNode {
+typedef struct {
   size_t parent;
   uint32_t is_section;
-  struct AndamentoText key;
+  AndamentoText key;
   // Empty for a section.
-  struct AndamentoEntity entity;
+  AndamentoEntity entity;
   // The provider of the entity the node presents (a ref's target) is stale.
   uint32_t stale;
-  struct AndamentoText label;
-  struct AndamentoText layout;
-  struct AndamentoText form;
+  AndamentoText label;
+  AndamentoText layout;
+  AndamentoText form;
   // Opaque loop invocation key: compare for equality, don't parse. Empty
   // for a section.
-  struct AndamentoText loop_key;
+  AndamentoText loop_key;
   // ANDAMENTO_CATALOG, _LATENT, _OPENING or _LIVE.
   uint32_t state;
   // A LIVE node's workspace; zeroes otherwise.
-  struct AndamentoWorkspaceId workspace_id;
+  AndamentoWorkspaceId workspace_id;
   uint32_t selected;
   uint32_t openable;
   uint32_t collapsed;
   uint32_t pinned;
   // A section's placement defaults: its region's default host (empty when
   // absent) and order (when has_order).
-  struct AndamentoText default_host;
+  AndamentoText default_host;
   uint32_t has_order;
   int64_t order;
   size_t first_field;
@@ -447,8 +410,8 @@ typedef struct AndamentoNode {
 } AndamentoNode;
 
 // A rendered field: ANDAMENTO_FIELD_REQUIRED, _OPTIONAL or _PRIORITY.
-typedef struct AndamentoField {
-  struct AndamentoText text;
+typedef struct {
+  AndamentoText text;
   uint32_t class_;
   uint32_t has_priority;
   int64_t priority;
@@ -456,158 +419,182 @@ typedef struct AndamentoField {
 
 // A control (ANDAMENTO_CONTROL_*). One without a core action has action
 // ANDAMENTO_NONE: its intent (such as scrolling) is the host's.
-typedef struct AndamentoControl {
+typedef struct {
   uint32_t kind;
-  struct AndamentoText label;
-  struct AndamentoText glyph;
+  AndamentoText label;
+  AndamentoText glyph;
   size_t action;
   // ANDAMENTO_VALUE_NONE, _BOOL (checked) or _ENUM (value).
   uint32_t value_kind;
   uint32_t checked;
-  struct AndamentoText value;
+  AndamentoText value;
   // A display-variable control's variable name (empty otherwise), and
   // whether its declaration persists it.
-  struct AndamentoText variable;
+  AndamentoText variable;
   uint32_t persist;
 } AndamentoControl;
 
-typedef struct AndamentoEffect {
+typedef struct {
   // ANDAMENTO_EFFECT_*.
   uint32_t kind;
   uint64_t request_id;
   // A FOCUS effect's workspace; zeroes otherwise.
-  struct AndamentoWorkspaceId workspace_id;
+  AndamentoWorkspaceId workspace_id;
   // A MATERIALIZE or INSPECT effect's entity; empty otherwise.
-  struct AndamentoEntity entity;
-  struct AndamentoText name;
+  AndamentoEntity entity;
+  AndamentoText name;
   // A MATERIALIZE effect's recipe, or an OPEN_URL or COPY_URL effect's URL.
-  struct AndamentoText recipe;
+  AndamentoText recipe;
   uint32_t has_cwd;
-  struct AndamentoText cwd;
+  AndamentoText cwd;
   // The managed-content target a MATERIALIZE effect's recipe resolves.
   // Record it as the applied target, so the first plan of the primary
   // slot sees the new content as current.
   uint32_t has_primary_target;
-  struct AndamentoText primary_target;
+  AndamentoText primary_target;
 } AndamentoEffect;
 
-// A panel of an arrangement document and, for a split, its children.
-typedef struct AndamentoDocPanel {
+// A fact of a local entity: ANDAMENTO_FACT_TEXT, _BOOL, _INTEGER or
+// _ENTITY (one entity reference, such as .section, .group or .target).
+typedef struct {
+  AndamentoText key;
+  uint32_t kind;
+  AndamentoText text;
+  int64_t integer;
+  AndamentoEntity entity;
+} AndamentoLocalFact;
+
+// A local entity and its facts, as andamento_local_set takes them (an
+// entity reference fact gives its first entity).
+typedef struct {
+  AndamentoEntity entity;
+  const AndamentoLocalFact *facts;
+  size_t fact_count;
+} AndamentoLocalEntity;
+
+// A saved sibling order: the run's loop key (as a node's loop_key) and its
+// entities in order.
+typedef struct {
+  AndamentoText loop_key;
+  const AndamentoEntity *entities;
+  size_t entity_count;
+} AndamentoSiblingOrder;
+
+// The Dashboard's local entities and saved sibling orders, as stored.
+typedef struct {
+  // The dashboard record's generation (andamento_record_generation): read
+  // again when it moves.
+  uint64_t generation;
+  const AndamentoLocalEntity *locals;
+  size_t local_count;
+  const AndamentoSiblingOrder *orders;
+  size_t order_count;
+} AndamentoDashboard;
+
+// A panel of an arrangement document.
+typedef struct {
+  // The index of an earlier SPLIT panel in the same array, or
+  // ANDAMENTO_NONE for a root.
+  size_t parent;
   // Stable within its document; nonempty and unique.
-  struct AndamentoText id;
-  // Relative to its siblings: finite and positive. The root's is kept but
+  AndamentoText id;
+  // Relative to its siblings: finite and positive. A root's is kept but
   // means nothing.
   double weight;
   // ANDAMENTO_PANEL_SPLIT or ANDAMENTO_PANEL_TABS.
   uint32_t kind;
   // A split's ANDAMENTO_AXIS_*.
   uint32_t axis;
-  // A split's panels, in order; at least one.
-  const struct AndamentoDocPanel *children;
-  size_t child_count;
-  // A tab panel's slot keys, in tab order; at least one.
-  const struct AndamentoText *tabs;
+  // A tab panel's keys, in tab order; at least one. None for a split.
+  const AndamentoText *tabs;
   size_t tab_count;
-  // The Selected View: one of `tabs`, or empty for none.
-  struct AndamentoText selected;
+  // The Selected View: an index into tabs, or ANDAMENTO_NONE.
+  size_t selected;
 } AndamentoDocPanel;
 
-// A whole arrangement document: a tree of panels.
-typedef struct AndamentoArrangementDoc {
-  // NULL for a document with no panels.
-  const struct AndamentoDocPanel *root;
+// Panels, each after its parent. A split has at least one child.
+typedef struct {
+  const AndamentoDocPanel *panels;
+  size_t panel_count;
 } AndamentoArrangementDoc;
 
-typedef struct AndamentoNote {
+typedef struct {
+  // ANDAMENTO_NOTE_*.
   uint32_t kind;
-  struct AndamentoText key;
+  AndamentoText key;
 } AndamentoNote;
 
-// A workspace's arrangement as stored, or after a commit.
-typedef struct AndamentoWorkspaceArrangement {
-  // ANDAMENTO_ANDAMENTO_COMMITTED, or after a commit
-  // ANDAMENTO_ANDAMENTO_STALE: the expected generation was not the
-  // current one, nothing changed, and this is the current document.
+// A workspace's arrangement as stored, or after a commit. While the user
+// doesn't own it, it is derived from the provider's hint, less slots the
+// user removed, every slot placed, with soft overrides (weights and
+// selected tabs, keyed by panel ID) applied. A structural commit (a split,
+// move, close, reorder or added tab) makes the user own it; a changed hint
+// is then flagged PROVIDER_CHANGED until andamento_arrangement_resolve.
+typedef struct {
+  // ANDAMENTO_COMMITTED, or ANDAMENTO_STALE after a commit at another
+  // generation: nothing changed, and this is the current document.
   uint32_t status;
   // 0 until a document is stored. Never reused, and never kept across
   // sessions: commit at the generation last read.
   uint64_t generation;
-  // The user owns the document; until then it follows the provider's hint.
   uint32_t owned;
   // ANDAMENTO_ARRANGEMENT_FLAG_* bits.
   uint32_t flags;
-  struct AndamentoArrangementDoc doc;
-  const struct AndamentoNote *notes;
+  // At most one root.
+  AndamentoArrangementDoc doc;
+  const AndamentoNote *notes;
   size_t note_count;
 } AndamentoWorkspaceArrangement;
 
-typedef struct AndamentoArrangementInfo {
+// The sidebar's document: the dock, one tree or none, and the floating
+// panels, each a tree of its own (their positions and sizes are the
+// host's).
+typedef struct {
+  AndamentoArrangementDoc dock;
+  AndamentoArrangementDoc floating;
+} AndamentoSidebarDoc;
+
+// The Dashboard's sidebar arrangement: which sections are docked where.
+// Tabs hold section keys: a region's name, ".section:<id>" for a local
+// section, ".unplaced" for the workspace fallback, or "u:<id>" for a view
+// of the host's own, which Andamento stores but never places or flags.
+typedef struct {
+  // As for a workspace's arrangement.
+  uint32_t status;
   uint64_t generation;
+  // The host has committed since the last reset.
   uint32_t owned;
-  size_t panel_count;
-  size_t tab_count;
-} AndamentoArrangementInfo;
-
-typedef struct AndamentoPanel {
-  size_t parent;
-  struct AndamentoText id;
-  double weight;
-  uint32_t kind;
-  uint32_t axis;
-  size_t first_tab;
-  size_t tab_count;
-  size_t selected;
-} AndamentoPanel;
-
-typedef struct AndamentoTab {
-  struct AndamentoText slot;
-  uint32_t placed;
-  uint32_t gone;
-} AndamentoTab;
-
-typedef struct AndamentoSectionNote {
-  uint32_t kind;
-  struct AndamentoText key;
-} AndamentoSectionNote;
+  AndamentoSidebarDoc doc;
+  // Every CLOSED section and UNRESOLVED key, and what the last
+  // reconciliation or call did: PLACED, RESTORED and DUPLICATE.
+  const AndamentoNote *notes;
+  size_t note_count;
+} AndamentoSidebarArrangement;
 
 // A View Spec, or a resolution's recipe (whose presentation is unset).
 // Fields its content kind doesn't use are ignored on input and empty on
 // output. presentation is an open vocabulary ("terminal", "web", ...).
-typedef struct AndamentoViewSpec {
+typedef struct {
   uint32_t content;
-  struct AndamentoEntity entity;
-  struct AndamentoText facet;
-  struct AndamentoText command;
-  const struct AndamentoText *argv;
+  AndamentoEntity entity;
+  AndamentoText facet;
+  AndamentoText command;
+  const AndamentoText *argv;
   size_t argc;
   uint32_t has_cwd;
-  struct AndamentoText cwd;
-  struct AndamentoText path;
-  struct AndamentoText url;
-  struct AndamentoText launcher;
-  struct AndamentoText endpoint;
+  AndamentoText cwd;
+  AndamentoText path;
+  AndamentoText url;
+  AndamentoText launcher;
+  AndamentoText endpoint;
   uint32_t has_presentation;
-  struct AndamentoText presentation;
+  AndamentoText presentation;
 } AndamentoViewSpec;
 
-// One of a workspace's slots.
-typedef struct AndamentoSlot {
-  struct AndamentoText key;
-  struct AndamentoViewSpec spec;
-  // ANDAMENTO_REBIND_*.
-  uint32_t rebind;
-  // The current baseline has this key.
-  uint32_t in_baseline;
-  // The user overrode it, so it no longer follows the provider.
-  uint32_t detached;
-  // ANDAMENTO_SLOT_FLAG_* bits.
-  uint32_t flags;
-} AndamentoSlot;
-
 // One named field of a portable Target Resolution.
-typedef struct AndamentoResolutionField {
-  struct AndamentoText name;
-  struct AndamentoText value;
+typedef struct {
+  AndamentoText name;
+  AndamentoText value;
 } AndamentoResolutionField;
 
 // A portable Target Resolution saved for a slot: a way of connecting that
@@ -616,60 +603,97 @@ typedef struct AndamentoResolutionField {
 // made for the slot resolution whose identity is against, and is cleared
 // when the slot resolves to something else, its content is edited, or it
 // goes.
-typedef struct AndamentoResolution {
+typedef struct {
   uint64_t generation;
-  struct AndamentoText kind;
-  const struct AndamentoResolutionField *fields;
+  AndamentoText kind;
+  const AndamentoResolutionField *fields;
   size_t field_count;
-  struct AndamentoText against;
+  AndamentoText against;
 } AndamentoResolution;
+
+// One of a workspace's slots.
+typedef struct {
+  AndamentoText key;
+  AndamentoViewSpec spec;
+  // ANDAMENTO_REBIND_*.
+  uint32_t rebind;
+  // The current baseline has this key.
+  uint32_t in_baseline;
+  // The user overrode it, so it no longer follows the provider.
+  uint32_t detached;
+  // ANDAMENTO_SLOT_FLAG_* bits.
+  uint32_t flags;
+  // The portable Target Resolution saved for the slot.
+  uint32_t has_saved;
+  AndamentoResolution saved;
+} AndamentoSlot;
+
+// A workspace's slots: its subject's Suggested Layout slots (a cached
+// baseline), then detached slots the baseline has since dropped, then the
+// slots the host added ("u:<id>"), which is also their default placement
+// order.
+typedef struct {
+  const AndamentoSlot *slots;
+  size_t slot_count;
+} AndamentoSlots;
 
 // A slot's plan. While UPDATING, token, resolution (an opaque identity:
 // record it and pass it back as applied), target (the backing instance,
 // when the provider names one) and recipe (what to run) describe the
 // update.
-typedef struct AndamentoSlotContent {
+typedef struct {
   // ANDAMENTO_CONTENT_*.
   uint32_t state;
   uint64_t token;
-  struct AndamentoText resolution;
+  AndamentoText resolution;
   uint32_t has_target;
-  struct AndamentoText target;
-  struct AndamentoViewSpec recipe;
+  AndamentoText target;
+  AndamentoViewSpec recipe;
   // ANDAMENTO_REBIND_*.
   uint32_t rebind;
   // The resolution a KEEP_PREVIOUS rebind replaced, until
   // andamento_slot_release_previous.
   uint32_t has_previous;
-  struct AndamentoText previous;
+  AndamentoText previous;
   // The portable Target Resolution saved for the slot, in every state.
   // While UPDATING to the resolution it was saved against, try
   // connecting through it before resolving the target afresh.
   uint32_t has_saved;
-  struct AndamentoResolution saved;
+  AndamentoResolution saved;
 } AndamentoSlotContent;
 
-// The Workspace Overlay's baseline version (has_baseline 0: no Suggested
-// Layout; primary_only: only the primary facts), the user's name and mood,
-// whether it owns the arrangement, and its note count.
-typedef struct AndamentoOverlayInfo {
-  uint32_t has_baseline;
-  uint32_t primary_only;
-  struct AndamentoText baseline_version;
-  uint32_t has_name;
-  struct AndamentoText name;
-  uint32_t has_mood;
-  struct AndamentoText mood;
-  uint32_t owned;
-  size_t note_count;
-} AndamentoOverlayInfo;
-
-// An overlay note: ANDAMENTO_OVERLAY_TOMBSTONED or _DEPARTED.
-typedef struct AndamentoOverlayNote {
+// An overlay note.
+typedef struct {
+  // ANDAMENTO_OVERLAY_TOMBSTONED or _DEPARTED.
   uint32_t kind;
-  struct AndamentoText key;
+  AndamentoText key;
+  // A DEPARTED slot's ANDAMENTO_REBIND_*.
   uint32_t rebind;
 } AndamentoOverlayNote;
+
+// A workspace's Workspace Overlay: the user's edits of its Suggested
+// Layout, beyond each slot's flags. When the baseline changes nothing is
+// dropped silently: a new slot is placed; an untouched slot removed
+// departs (a DEPARTED note); an overridden slot removed is kept (flag
+// REMOVED); an overridden slot whose content changes keeps its override
+// (flag CHANGED); a tombstoned slot stays hidden until the provider reuses
+// its key for other content (flag CHANGED).
+typedef struct {
+  // The baseline's version (has_baseline 0: no Suggested Layout, an empty
+  // baseline; primary_only: only the primary facts).
+  uint32_t has_baseline;
+  uint32_t primary_only;
+  AndamentoText baseline_version;
+  // The user's name and mood for the workspace, over the provider's.
+  uint32_t has_name;
+  AndamentoText name;
+  uint32_t has_mood;
+  AndamentoText mood;
+  // The overlay owns the arrangement.
+  uint32_t owned;
+  const AndamentoOverlayNote *notes;
+  size_t note_count;
+} AndamentoOverlay;
 
 #ifdef __cplusplus
 extern "C" {
@@ -681,17 +705,17 @@ uint32_t andamento_abi_version(void);
 
 // A sidebar configured with a template catalog (KDL), or NULL with an
 // error.
-struct Andamento *andamento_create(const uint8_t *config_kdl, size_t len, char **error_out);
+Andamento *andamento_create(const uint8_t *config_kdl, size_t len, char **error_out);
 
 // Replace the template catalog; an invalid one changes nothing.
-uint32_t andamento_configure(struct Andamento *h, struct AndamentoText kdl, char **error_out);
+uint32_t andamento_configure(Andamento *h, AndamentoText kdl, char **error_out);
 
-void andamento_destroy(struct Andamento *h);
+void andamento_destroy(Andamento *h);
 
 // Free an error string.
 void andamento_string_free(char *s);
 
-void andamento_bytes_free(struct AndamentoBytes bytes);
+void andamento_bytes_free(AndamentoBytes bytes);
 
 // Apply one producer MetadataPatch, as JSON, from `provider` (a
 // subscription ID other than "local"), which is stamped over every entity
@@ -699,141 +723,235 @@ void andamento_bytes_free(struct AndamentoBytes bytes);
 // entity a workspace's entity.kind/entity.id or .host.kind/.host.id facts
 // name. A patch never names its own provider. Requires the default "json"
 // feature.
-uint32_t andamento_apply_patch_json(struct Andamento *h,
+uint32_t andamento_apply_patch_json(Andamento *h,
                                     uint64_t now_ms,
-                                    struct AndamentoText provider,
-                                    struct AndamentoText json,
+                                    AndamentoText provider,
+                                    AndamentoText json,
                                     char **error_out);
 
 // Remove all of a provider's facts, as when its subscription is removed.
 // What open workspaces and refs showed of its entities is retained, as when
 // facts expire.
-uint32_t andamento_provider_retract(struct Andamento *h,
-                                    struct AndamentoText provider,
-                                    char **error_out);
+uint32_t andamento_provider_retract(Andamento *h, AndamentoText provider, char **error_out);
 
 // Mark a provider stale (nonzero), when its connection drops, or fresh
 // again (zero). A stale provider's facts don't expire, and nodes presenting
 // its entities report stale; fresh again, each live TTL fact renews its
 // lease from now. Retracting a provider clears its staleness.
-uint32_t andamento_provider_set_stale(struct Andamento *h,
-                                      struct AndamentoText provider,
+uint32_t andamento_provider_set_stale(Andamento *h,
+                                      AndamentoText provider,
                                       uint32_t stale,
                                       char **error_out);
 
 // Apply scalar facts to an entity, from `provider` as for
 // andamento_apply_patch_json. The batch is validated before it applies.
-uint32_t andamento_apply_entity(struct Andamento *h,
+uint32_t andamento_apply_entity(Andamento *h,
                                 uint64_t now_ms,
-                                struct AndamentoText provider,
-                                struct AndamentoText kind,
-                                struct AndamentoText id,
-                                struct AndamentoText source,
-                                const struct AndamentoFact *facts,
+                                AndamentoText provider,
+                                AndamentoText kind,
+                                AndamentoText id,
+                                AndamentoText source,
+                                const AndamentoFact *facts,
                                 size_t count,
                                 char **error_out);
 
 // Apply scalar facts to a workspace (a tab target), such as the
 // .host.kind/.host.id naming its host entity, which is the provider's.
-uint32_t andamento_apply_workspace(struct Andamento *h,
+uint32_t andamento_apply_workspace(Andamento *h,
                                    uint64_t now_ms,
-                                   struct AndamentoText provider,
-                                   struct AndamentoWorkspaceId workspace,
-                                   struct AndamentoText source,
-                                   const struct AndamentoFact *facts,
+                                   AndamentoText provider,
+                                   AndamentoWorkspaceId workspace,
+                                   AndamentoText source,
+                                   const AndamentoFact *facts,
                                    size_t count,
                                    char **error_out);
 
 // Advance time without facts. Time is monotonic milliseconds scoped to
 // this sidebar. Drain facts, topology and completions before acquiring a
 // snapshot.
-uint32_t andamento_tick(struct Andamento *h, uint64_t now_ms, char **error_out);
+uint32_t andamento_tick(Andamento *h, uint64_t now_ms, char **error_out);
 
 // Replace the whole topology: the open workspaces and their panes.
-uint32_t andamento_observe(struct Andamento *h,
-                           const struct AndamentoWorkspace *workspaces,
+uint32_t andamento_observe(Andamento *h,
+                           const AndamentoWorkspace *workspaces,
                            size_t count,
-                           const struct AndamentoPane *panes,
+                           const AndamentoPane *panes,
                            size_t pane_count,
                            char **error_out);
 
 // Replace the directory associations (supply topology first). Matching is
 // exact; empty paths and unknown workspaces are ignored, and a workspace's
 // explicit identity wins. Nothing is persisted.
-uint32_t andamento_observe_workdirs(struct Andamento *h,
-                                    const struct AndamentoWorkdir *workdirs,
+uint32_t andamento_observe_workdirs(Andamento *h,
+                                    const AndamentoWorkdir *workdirs,
                                     size_t count,
                                     char **error_out);
 
 // Complete a FOCUS or MATERIALIZE effect's request (every one, including
 // cancellation and timeout). Unknown or repeated request IDs are ignored.
-uint32_t andamento_complete(struct Andamento *h,
+uint32_t andamento_complete(Andamento *h,
                             uint64_t request_id,
                             uint32_t outcome,
-                            struct AndamentoWorkspaceId workspace_id,
-                            struct AndamentoText message,
+                            AndamentoWorkspaceId workspace_id,
+                            AndamentoText message,
                             char **error_out);
 
 // Declare a workspace the host created itself (one that never went through
 // MATERIALIZE, whose completion registers it too). Registration gives it a
 // record and is independent of topology; registering twice is harmless.
-uint32_t andamento_workspace_register(struct Andamento *h,
-                                      struct AndamentoWorkspaceId workspace,
+uint32_t andamento_workspace_register(Andamento *h,
+                                      AndamentoWorkspaceId workspace,
                                       char **error_out);
 
 // The host deleted the workspace rather than closing it: its record goes.
-uint32_t andamento_workspace_forget(struct Andamento *h,
-                                    struct AndamentoWorkspaceId workspace,
-                                    char **error_out);
+uint32_t andamento_workspace_forget(Andamento *h, AndamentoWorkspaceId workspace, char **error_out);
 
 // 1 if the workspace is registered (or materialized) and not forgotten.
-uint32_t andamento_workspace_registered(struct Andamento *h,
-                                        struct AndamentoWorkspaceId workspace,
+uint32_t andamento_workspace_registered(Andamento *h,
+                                        AndamentoWorkspaceId workspace,
                                         char **error_out);
+
+// 1 if the snapshot still matches this sidebar; 0 for a stale, NULL or
+// other sidebar's snapshot (no error), or an invalid or poisoned sidebar
+// (error). Unchanged heartbeats and ticks keep it current; recipe changes
+// don't, even when nothing visible changed. It builds nothing: check after
+// draining a batch, and acquire only when stale.
+uint32_t andamento_snapshot_is_current(Andamento *h,
+                                       const AndamentoSnapshot *snapshot,
+                                       char **error_out);
+
+// The sidebar as nodes in preorder: sections have parent ANDAMENTO_NONE,
+// and every other node's parent is an earlier node. Collapsed children
+// are included.
+AndamentoSnapshot *andamento_snapshot_acquire(Andamento *h, char **error_out);
+
+// As andamento_snapshot_acquire, with every catalog card's detail.
+// andamento_snapshot_acquire resolves none (detail_count is 0 until
+// requested).
+AndamentoSnapshot *andamento_snapshot_acquire_details(Andamento *h, char **error_out);
+
+// Append an entity's detail to a current snapshot and return its index:
+// ANDAMENTO_NONE without an error when the catalog has no such entity.
+// Each entity is appended once; earlier text and action indices stay valid
+// until release. A stale snapshot's existing details stay readable, but it
+// takes no new requests. Not safe with concurrent use of the snapshot.
+size_t andamento_snapshot_detail_request(Andamento *h,
+                                         AndamentoSnapshot *s,
+                                         AndamentoEntity entity,
+                                         char **error_out);
+
+size_t andamento_snapshot_detail_count(const AndamentoSnapshot *s);
+
+// The index of an entity's detail in the snapshot, or ANDAMENTO_NONE.
+size_t andamento_snapshot_detail_find(const AndamentoSnapshot *s, AndamentoEntity entity);
+
+uint32_t andamento_snapshot_detail(const AndamentoSnapshot *s, size_t index, AndamentoDetail *out);
+
+// A detail's action: index 0 is its primary action (intent open-url,
+// focus-workspace, materialize-workspace or inspect), index 1 copies its URL
+// (0 when it has none). Both dispatch like snapshot actions.
+uint32_t andamento_snapshot_detail_action(const AndamentoSnapshot *s,
+                                          size_t detail,
+                                          size_t index,
+                                          AndamentoDetailAction *out);
+
+uint32_t andamento_snapshot_detail_field(const AndamentoSnapshot *s,
+                                         size_t detail,
+                                         size_t field,
+                                         AndamentoDetailField *out);
+
+// A relation of a detail's field: an entity, its detail (or
+// ANDAMENTO_NONE) and the text to show. Pass the navigation path of
+// entities: a relation already on it returns 0.
+uint32_t andamento_snapshot_detail_relation(const AndamentoSnapshot *s,
+                                            size_t detail,
+                                            size_t field,
+                                            size_t relation,
+                                            const AndamentoEntity *path,
+                                            size_t path_count,
+                                            AndamentoDetailRelation *out);
+
+size_t andamento_snapshot_node_count(const AndamentoSnapshot *s);
+
+uint32_t andamento_snapshot_node(const AndamentoSnapshot *s, size_t index, AndamentoNode *out);
+
+uint32_t andamento_snapshot_field(const AndamentoSnapshot *s, size_t index, AndamentoField *out);
+
+uint32_t andamento_snapshot_control(const AndamentoSnapshot *s,
+                                    size_t index,
+                                    AndamentoControl *out);
+
+size_t andamento_snapshot_diagnostic_count(const AndamentoSnapshot *s);
+
+uint32_t andamento_snapshot_diagnostic(const AndamentoSnapshot *s,
+                                       size_t index,
+                                       AndamentoText *out);
+
+// Dispatch a snapshot's action. Actions belong to one snapshot: another
+// sidebar's, or one from before a revision-changing mutation, is rejected.
+// Dispatch a click against the snapshot it was drawn from before draining
+// queued facts; if an update intervened, discard it and redraw. Dispatch
+// queues effects; it runs nothing.
+uint32_t andamento_dispatch(Andamento *h,
+                            const AndamentoSnapshot *s,
+                            size_t action,
+                            char **error_out);
+
+// Drain the effect queue; an empty queue returns an empty batch.
+AndamentoEffects *andamento_effects_take(Andamento *h, char **error_out);
+
+size_t andamento_effects_count(const AndamentoEffects *e);
+
+uint32_t andamento_effects_get(const AndamentoEffects *e, size_t index, AndamentoEffect *out);
+
+// Queue a COPY_URL effect for a subject's current forge URL.
+uint32_t andamento_copy_subject_url(Andamento *h, AndamentoEntity entity, char **error_out);
+
+void andamento_snapshot_release(AndamentoSnapshot *s);
+
+void andamento_effects_release(AndamentoEffects *e);
 
 // The names of the records Andamento holds, one per line (no trailing
 // newline): "dashboard", then "workspace/<id>" for each registered
 // workspace (<id> a hyphenated UUID).
-uint32_t andamento_record_names(struct Andamento *h, struct AndamentoBytes *out, char **error_out);
+uint32_t andamento_record_names(Andamento *h, AndamentoBytes *out, char **error_out);
 
 // A record's generation, nonzero: it changes whenever the record does and
 // is never reused. 0 with an error for an unknown record. Store a record
 // when its generation differs from the one last stored.
-uint64_t andamento_record_generation(struct Andamento *h,
-                                     struct AndamentoText name,
-                                     char **error_out);
+uint64_t andamento_record_generation(Andamento *h, AndamentoText name, char **error_out);
 
 // A record to store as it is: its bytes are private to Andamento and may
 // change from one build to the next. Free them with andamento_bytes_free.
-uint32_t andamento_record_get(struct Andamento *h,
-                              struct AndamentoText name,
-                              struct AndamentoBytes *out,
+uint32_t andamento_record_get(Andamento *h,
+                              AndamentoText name,
+                              AndamentoBytes *out,
                               char **error_out);
 
 // Restore a record andamento_record_get returned, before the first
 // observe. A record that doesn't read is rejected without change.
 // Restoring "workspace/<id>" registers the workspace.
-uint32_t andamento_record_put(struct Andamento *h,
-                              struct AndamentoText name,
-                              struct AndamentoText record,
+uint32_t andamento_record_put(Andamento *h,
+                              AndamentoText name,
+                              AndamentoText record,
                               char **error_out);
 
 // Set a declared display variable without a snapshot action, so a host
 // can restore one before the first snapshot: "true"/"false" for a boolean,
 // one of an enum's values, or empty for its default. Unknown variables and
 // values the declaration doesn't allow are rejected.
-uint32_t andamento_set_display_variable(struct Andamento *h,
-                                        struct AndamentoText name,
-                                        struct AndamentoText value,
+uint32_t andamento_set_display_variable(Andamento *h,
+                                        AndamentoText name,
+                                        AndamentoText value,
                                         char **error_out);
 
 // Set the host-owned order of the sibling run identified by `loop_key` (a
 // node's loop_key). Entities the list omits keep data order relative to it
 // (each after its nearest named data-order predecessor, else first);
 // entities that no longer match are ignored. An empty list clears it.
-uint32_t andamento_set_sibling_order(struct Andamento *h,
-                                     struct AndamentoText loop_key,
-                                     const struct AndamentoEntity *entities,
+uint32_t andamento_set_sibling_order(Andamento *h,
+                                     AndamentoText loop_key,
+                                     const AndamentoEntity *entities,
                                      size_t count,
                                      char **error_out);
 
@@ -841,289 +959,175 @@ uint32_t andamento_set_sibling_order(struct Andamento *h,
 // pin), replacing all its facts. Andamento owns local entities (their
 // provider is "local") and keeps them in the dashboard record; they are
 // placed exactly as the same entities published as facts.
-uint32_t andamento_local_set(struct Andamento *h,
-                             struct AndamentoText kind,
-                             struct AndamentoText id,
-                             const struct AndamentoLocalFact *facts,
+uint32_t andamento_local_set(Andamento *h,
+                             AndamentoText kind,
+                             AndamentoText id,
+                             const AndamentoLocalFact *facts,
                              size_t count,
                              char **error_out);
 
 // Remove a local entity; removing an unknown one is harmless.
-uint32_t andamento_local_remove(struct Andamento *h,
-                                struct AndamentoText kind,
-                                struct AndamentoText id,
+uint32_t andamento_local_remove(Andamento *h,
+                                AndamentoText kind,
+                                AndamentoText id,
                                 char **error_out);
 
-// 1 if the snapshot still matches this sidebar; 0 for a stale, NULL or
-// other sidebar's snapshot (no error), or an invalid or poisoned sidebar
-// (error). Unchanged heartbeats and ticks keep it current; recipe changes
-// don't, even when nothing visible changed. It builds nothing: check after
-// draining a batch, and acquire only when stale.
-uint32_t andamento_snapshot_is_current(struct Andamento *h,
-                                       const struct AndamentoSnapshot *snapshot,
-                                       char **error_out);
+// The Dashboard's local entities, in key order, and its saved sibling
+// orders. Free it with andamento_dashboard_free.
+AndamentoDashboard *andamento_dashboard_get(Andamento *h, char **error_out);
 
-// The sidebar as nodes in preorder: sections have parent ANDAMENTO_NONE,
-// and every other node's parent is an earlier node. Collapsed children
-// are included.
-struct AndamentoSnapshot *andamento_snapshot_acquire(struct Andamento *h, char **error_out);
-
-// As andamento_snapshot_acquire, with every catalog card's detail.
-// andamento_snapshot_acquire resolves none (detail_count is 0 until
-// requested).
-struct AndamentoSnapshot *andamento_snapshot_acquire_details(struct Andamento *h, char **error_out);
-
-// Append an entity's detail to a current snapshot and return its index:
-// ANDAMENTO_NONE without an error when the catalog has no such entity.
-// Each entity is appended once; earlier text and action indices stay valid
-// until release. A stale snapshot's existing details stay readable, but it
-// takes no new requests. Not safe with concurrent use of the snapshot.
-size_t andamento_snapshot_detail_request(struct Andamento *h,
-                                         struct AndamentoSnapshot *s,
-                                         struct AndamentoEntity entity,
-                                         char **error_out);
-
-size_t andamento_snapshot_detail_count(const struct AndamentoSnapshot *s);
-
-// The index of an entity's detail in the snapshot, or ANDAMENTO_NONE.
-size_t andamento_snapshot_detail_find(const struct AndamentoSnapshot *s,
-                                      struct AndamentoEntity entity);
-
-uint32_t andamento_snapshot_detail(const struct AndamentoSnapshot *s,
-                                   size_t index,
-                                   struct AndamentoDetail *out);
-
-// A detail's action: index 0 is its primary action (intent open-url,
-// focus-workspace, materialize-workspace or inspect), index 1 copies its URL
-// (0 when it has none). Both dispatch like snapshot actions.
-uint32_t andamento_snapshot_detail_action(const struct AndamentoSnapshot *s,
-                                          size_t detail,
-                                          size_t index,
-                                          struct AndamentoDetailAction *out);
-
-uint32_t andamento_snapshot_detail_field(const struct AndamentoSnapshot *s,
-                                         size_t detail,
-                                         size_t field,
-                                         struct AndamentoDetailField *out);
-
-// A relation of a detail's field: an entity, its detail (or
-// ANDAMENTO_NONE) and the text to show. Pass the navigation path of
-// entities: a relation already on it returns 0.
-uint32_t andamento_snapshot_detail_relation(const struct AndamentoSnapshot *s,
-                                            size_t detail,
-                                            size_t field,
-                                            size_t relation,
-                                            const struct AndamentoEntity *path,
-                                            size_t path_count,
-                                            struct AndamentoDetailRelation *out);
-
-size_t andamento_snapshot_node_count(const struct AndamentoSnapshot *s);
-
-uint32_t andamento_snapshot_node(const struct AndamentoSnapshot *s,
-                                 size_t index,
-                                 struct AndamentoNode *out);
-
-uint32_t andamento_snapshot_field(const struct AndamentoSnapshot *s,
-                                  size_t index,
-                                  struct AndamentoField *out);
-
-uint32_t andamento_snapshot_control(const struct AndamentoSnapshot *s,
-                                    size_t index,
-                                    struct AndamentoControl *out);
-
-size_t andamento_snapshot_diagnostic_count(const struct AndamentoSnapshot *s);
-
-uint32_t andamento_snapshot_diagnostic(const struct AndamentoSnapshot *s,
-                                       size_t index,
-                                       struct AndamentoText *out);
-
-// Dispatch a snapshot's action. Actions belong to one snapshot: another
-// sidebar's, or one from before a revision-changing mutation, is rejected.
-// Dispatch a click against the snapshot it was drawn from before draining
-// queued facts; if an update intervened, discard it and redraw. Dispatch
-// queues effects; it runs nothing.
-uint32_t andamento_dispatch(struct Andamento *h,
-                            const struct AndamentoSnapshot *s,
-                            size_t action,
-                            char **error_out);
-
-// Drain the effect queue; an empty queue returns an empty batch.
-struct AndamentoEffects *andamento_effects_take(struct Andamento *h, char **error_out);
-
-size_t andamento_effects_count(const struct AndamentoEffects *e);
-
-uint32_t andamento_effects_get(const struct AndamentoEffects *e,
-                               size_t index,
-                               struct AndamentoEffect *out);
-
-// Queue a COPY_URL effect for a subject's current forge URL.
-uint32_t andamento_copy_subject_url(struct Andamento *h,
-                                    struct AndamentoEntity entity,
-                                    char **error_out);
-
-void andamento_snapshot_release(struct AndamentoSnapshot *s);
-
-void andamento_effects_release(struct AndamentoEffects *e);
+void andamento_dashboard_free(AndamentoDashboard *dashboard);
 
 // A workspace's arrangement. Free it with andamento_arrangement_free.
-struct AndamentoWorkspaceArrangement *andamento_arrangement_get(struct Andamento *h,
-                                                                struct AndamentoWorkspaceId workspace,
-                                                                char **error_out);
+AndamentoWorkspaceArrangement *andamento_arrangement_get(Andamento *h,
+                                                         AndamentoWorkspaceId workspace,
+                                                         char **error_out);
 
-// Commit a workspace's whole arrangement if `expected_generation` is the
-// current one, and return the arrangement after: COMMITTED, reconciled
-// (slots with no tab placed, gone tabs noted), or STALE and unchanged.
-// NULL with an error for an invalid document; nothing changes. Free the
-// result with andamento_arrangement_free.
-struct AndamentoWorkspaceArrangement *andamento_arrangement_commit(struct Andamento *h,
-                                                                   struct AndamentoWorkspaceId workspace,
-                                                                   const struct AndamentoArrangementDoc *doc,
-                                                                   uint64_t expected_generation,
-                                                                   char **error_out);
+// Commit a workspace's whole arrangement at the end of a gesture, if
+// expected_generation is the current one (0 before any), and return the
+// arrangement after: COMMITTED or STALE. NULL with an error, and no
+// change, for an invalid document. A tab names a slot, or a slot the
+// stored document already tabbed that has since gone (noted GONE); each
+// slot has at most one tab. Slots with no tab are appended to the first
+// tab panel in preorder (selected there if it selects nothing) and noted
+// PLACED. Neither this nor any slot call changes the snapshot's revision.
+AndamentoWorkspaceArrangement *andamento_arrangement_commit(Andamento *h,
+                                                            AndamentoWorkspaceId workspace,
+                                                            const AndamentoArrangementDoc *doc,
+                                                            uint64_t expected_generation,
+                                                            char **error_out);
 
-void andamento_arrangement_free(struct AndamentoWorkspaceArrangement *arrangement);
-
-uint32_t andamento_arrangement_info(const struct AndamentoArrangement *arrangement,
-                                    struct AndamentoArrangementInfo *out);
-
-uint32_t andamento_arrangement_panel(const struct AndamentoArrangement *arrangement,
-                                     size_t index,
-                                     struct AndamentoPanel *out);
-
-uint32_t andamento_arrangement_tab(const struct AndamentoArrangement *arrangement,
-                                   size_t index,
-                                   struct AndamentoTab *out);
-
-void andamento_arrangement_release(struct AndamentoArrangement *arrangement);
-
-// keep the user's arrangement over a provider change, or follow the
-// provider's again.
-uint32_t andamento_arrangement_resolve(struct Andamento *h,
-                                       struct AndamentoWorkspaceId workspace,
+// Settle a PROVIDER_CHANGED arrangement at expected_generation: KEEP or
+// FOLLOW. Returns ANDAMENTO_COMMITTED, _STALE or _INVALID (with an
+// error); generation_out, when not NULL, receives the generation after.
+uint32_t andamento_arrangement_resolve(Andamento *h,
+                                       AndamentoWorkspaceId workspace,
                                        uint32_t choice,
                                        uint64_t expected_generation,
                                        uint64_t *generation_out,
                                        char **error_out);
 
-size_t andamento_arrangement_floating_first(const struct AndamentoArrangement *arrangement);
+void andamento_arrangement_free(AndamentoWorkspaceArrangement *arrangement);
 
-size_t andamento_arrangement_note_count(const struct AndamentoArrangement *arrangement);
+// The sidebar arrangement. Free it with andamento_sidebar_arrangement_free.
+// Andamento reconciles it when what is declared changes (on configure, and
+// when local sections or groups change or are imported): a section with
+// neither a tab nor a closed record is placed in a new tab panel of its
+// default-host ("floating", else the dock), before the subtree holding the
+// next section in default order placed there, else last.
+AndamentoSidebarArrangement *andamento_sidebar_arrangement_get(Andamento *h, char **error_out);
 
-uint32_t andamento_arrangement_note(const struct AndamentoArrangement *arrangement,
-                                    size_t index,
-                                    struct AndamentoSectionNote *out);
+// Commit the host's whole sidebar document at the end of a gesture, as
+// andamento_arrangement_commit does. A tab names a declared or local
+// section, a host view, or a key the stored document already holds; a key
+// with two tabs keeps the first. Every declared section the document leaves
+// out is closed, and a closed one it tabs again is restored.
+AndamentoSidebarArrangement *andamento_sidebar_arrangement_commit(Andamento *h,
+                                                                  const AndamentoSidebarDoc *doc,
+                                                                  uint64_t expected_generation,
+                                                                  char **error_out);
 
-uint32_t andamento_set_sidebar_arrangement(struct Andamento *h,
-                                           const struct AndamentoPanel *panels,
-                                           size_t panel_count,
-                                           size_t floating_first,
-                                           const struct AndamentoTab *tabs,
-                                           size_t tab_count,
-                                           uint64_t expected_generation,
-                                           uint64_t *generation_out,
-                                           char **error_out);
+// Reopen a closed (or never placed) declared section by its hints, with an
+// equal share of its host, at expected_generation. A section with a tab is
+// left alone; an undeclared one is invalid.
+AndamentoSidebarArrangement *andamento_sidebar_restore_section(Andamento *h,
+                                                               AndamentoText key,
+                                                               uint64_t expected_generation,
+                                                               char **error_out);
 
-uint32_t andamento_sidebar_restore_section(struct Andamento *h,
-                                           struct AndamentoText key,
-                                           uint64_t expected_generation,
-                                           uint64_t *generation_out,
-                                           char **error_out);
+// Drop the user's sidebar arrangement, closed sections and unresolved keys,
+// and place every declared section by its hints, at expected_generation.
+AndamentoSidebarArrangement *andamento_sidebar_reset(Andamento *h,
+                                                     uint64_t expected_generation,
+                                                     char **error_out);
 
-uint32_t andamento_sidebar_reset(struct Andamento *h,
-                                 uint64_t expected_generation,
-                                 uint64_t *generation_out,
-                                 char **error_out);
+void andamento_sidebar_arrangement_free(AndamentoSidebarArrangement *arrangement);
 
-uint64_t andamento_sidebar_arrangement_generation(struct Andamento *h, char **error_out);
+// The sidebar arrangement's generation: cheap enough to poll, to learn
+// when to read it again.
+uint64_t andamento_sidebar_arrangement_generation(Andamento *h, char **error_out);
 
-struct AndamentoArrangement *andamento_sidebar_arrangement_acquire(struct Andamento *h,
-                                                                   char **error_out);
+// The revision of workspace content: slots, their plans and saved
+// resolutions, and arrangements. Poll it to learn when to read them again;
+// it is separate from the snapshot's.
+uint64_t andamento_workspace_content_revision(Andamento *h, char **error_out);
 
-// the revision of workspace content (slots, resolutions and
-// arrangements), separate from the sidebar snapshot's.
-uint64_t andamento_workspace_content_revision(struct Andamento *h, char **error_out);
+// A registered workspace's slots. Free them with andamento_slots_free.
+AndamentoSlots *andamento_slots_get(Andamento *h, AndamentoWorkspaceId workspace, char **error_out);
 
-struct AndamentoSlots *andamento_slots_acquire(struct Andamento *h,
-                                               struct AndamentoWorkspaceId workspace,
-                                               char **error_out);
-
-size_t andamento_slots_count(const struct AndamentoSlots *slots);
-
-uint32_t andamento_slots_get(const struct AndamentoSlots *slots,
-                             size_t index,
-                             struct AndamentoSlot *out);
-
-void andamento_slots_release(struct AndamentoSlots *slots);
+void andamento_slots_free(AndamentoSlots *slots);
 
 // Add the user's own slot ("u:<id>", <id> 1 to 64 of [a-z0-9_-]; provider
 // keys never contain ':'), or edit a baseline slot: a View Spec other than
 // the baseline's overrides its content, detaching it; a rebind policy other
 // than the baseline's is a rebind edit, which doesn't. Setting the
 // baseline's own spec and policy drops both.
-uint32_t andamento_slot_set(struct Andamento *h,
-                            struct AndamentoWorkspaceId workspace,
-                            struct AndamentoText key,
-                            const struct AndamentoViewSpec *spec,
+uint32_t andamento_slot_set(Andamento *h,
+                            AndamentoWorkspaceId workspace,
+                            AndamentoText key,
+                            const AndamentoViewSpec *spec,
                             uint32_t rebind,
                             char **error_out);
 
 // Remove the user's own slot or a detached slot the baseline dropped, or
 // give a baseline slot a tombstone, hiding it. An unknown key is harmless.
-uint32_t andamento_slot_remove(struct Andamento *h,
-                               struct AndamentoWorkspaceId workspace,
-                               struct AndamentoText key,
+uint32_t andamento_slot_remove(Andamento *h,
+                               AndamentoWorkspaceId workspace,
+                               AndamentoText key,
                                char **error_out);
 
 // Drop a baseline slot's override or tombstone, so it follows the provider
 // again.
-uint32_t andamento_slot_reattach(struct Andamento *h,
-                                 struct AndamentoWorkspaceId workspace,
-                                 struct AndamentoText key,
+uint32_t andamento_slot_reattach(Andamento *h,
+                                 AndamentoWorkspaceId workspace,
+                                 AndamentoText key,
                                  char **error_out);
 
-// Plan a slot. A provider facet resolves from the subject's layout while
-// the slot follows it, else from the facet entity's own layout ("primary":
-// its workspace.primary.* facts); a local recipe resolves to itself.
-struct AndamentoSlotPlan *andamento_slot_plan(struct Andamento *h,
-                                              struct AndamentoWorkspaceId workspace,
-                                              struct AndamentoText key,
-                                              struct AndamentoText applied,
-                                              char **error_out);
+// Plan a slot, given the identity of the resolution the host applied to it
+// (empty for none): prepare the runtime instance without touching the
+// current one, validate the token immediately before committing, then
+// complete. Repeated plans return the same token until the desired
+// resolution or binding changes. A provider facet resolves from the
+// subject's layout while the slot follows it, else from the facet entity's
+// own layout ("primary": its workspace.primary.* facts); a local recipe
+// resolves to itself. Free the plan with andamento_slot_plan_free.
+AndamentoSlotContent *andamento_slot_plan(Andamento *h,
+                                          AndamentoWorkspaceId workspace,
+                                          AndamentoText key,
+                                          AndamentoText applied,
+                                          char **error_out);
 
-uint32_t andamento_slot_plan_get(const struct AndamentoSlotPlan *plan,
-                                 struct AndamentoSlotContent *out);
-
-void andamento_slot_plan_release(struct AndamentoSlotPlan *plan);
+void andamento_slot_plan_free(AndamentoSlotContent *plan);
 
 // 1 if the plan's token is still valid: check immediately before
 // committing the update.
-uint32_t andamento_slot_valid(struct Andamento *h,
-                              struct AndamentoWorkspaceId workspace,
-                              struct AndamentoText key,
+uint32_t andamento_slot_valid(Andamento *h,
+                              AndamentoWorkspaceId workspace,
+                              AndamentoText key,
                               uint64_t token,
                               char **error_out);
 
 // The host committed (success nonzero) or abandoned the update. Returns 1
 // if the token was current.
-uint32_t andamento_slot_complete(struct Andamento *h,
-                                 struct AndamentoWorkspaceId workspace,
-                                 struct AndamentoText key,
+uint32_t andamento_slot_complete(Andamento *h,
+                                 AndamentoWorkspaceId workspace,
+                                 AndamentoText key,
                                  uint64_t token,
                                  uint32_t success,
                                  char **error_out);
 
 // Plan a FAILED slot's update again.
-uint32_t andamento_slot_retry(struct Andamento *h,
-                              struct AndamentoWorkspaceId workspace,
-                              struct AndamentoText key,
+uint32_t andamento_slot_retry(Andamento *h,
+                              AndamentoWorkspaceId workspace,
+                              AndamentoText key,
                               char **error_out);
 
 // The host has dealt with the instance a rebind replaced: a KEEP_PREVIOUS
 // slot's previous instance, or the instance of a slot the provider removed
 // (a DEPARTED overlay note). Returns 1 if there was one.
-uint32_t andamento_slot_release_previous(struct Andamento *h,
-                                         struct AndamentoWorkspaceId workspace,
-                                         struct AndamentoText key,
+uint32_t andamento_slot_release_previous(Andamento *h,
+                                         AndamentoWorkspaceId workspace,
+                                         AndamentoText key,
                                          char **error_out);
 
 // Save a slot's portable Target Resolution in the workspace record, made
@@ -1131,65 +1135,48 @@ uint32_t andamento_slot_release_previous(struct Andamento *h,
 // passed to andamento_slot_plan). If the slot is known to resolve to
 // something else, it is INVALID: plan again. A compare-and-set on the
 // slot's saved generation (0 for none); saving what is saved keeps it.
-uint32_t andamento_slot_resolution_set(struct Andamento *h,
-                                       struct AndamentoWorkspaceId workspace,
-                                       struct AndamentoText key,
-                                       struct AndamentoText kind,
-                                       const struct AndamentoResolutionField *fields,
+uint32_t andamento_slot_resolution_set(Andamento *h,
+                                       AndamentoWorkspaceId workspace,
+                                       AndamentoText key,
+                                       AndamentoText kind,
+                                       const AndamentoResolutionField *fields,
                                        size_t field_count,
-                                       struct AndamentoText applied,
+                                       AndamentoText applied,
                                        uint64_t expected_generation,
                                        uint64_t *generation_out,
                                        char **error_out);
 
 // Clear a slot's saved portable Target Resolution: a compare-and-set as
 // for andamento_slot_resolution_set (generation_out receives 0).
-uint32_t andamento_slot_resolution_clear(struct Andamento *h,
-                                         struct AndamentoWorkspaceId workspace,
-                                         struct AndamentoText key,
+uint32_t andamento_slot_resolution_clear(Andamento *h,
+                                         AndamentoWorkspaceId workspace,
+                                         AndamentoText key,
                                          uint64_t expected_generation,
                                          uint64_t *generation_out,
                                          char **error_out);
 
-struct AndamentoSlotResolution *andamento_slot_resolution_acquire(struct Andamento *h,
-                                                                  struct AndamentoWorkspaceId workspace,
-                                                                  struct AndamentoText key,
-                                                                  char **error_out);
-
-// Fill out with the saved resolution; returns 0 when there is none.
-uint32_t andamento_slot_resolution_get(const struct AndamentoSlotResolution *resolution,
-                                       struct AndamentoResolution *out);
-
-void andamento_slot_resolution_release(struct AndamentoSlotResolution *resolution);
-
 // Set the user's name for a workspace over the provider's (has_name 0
 // drops it).
-uint32_t andamento_workspace_set_name(struct Andamento *h,
-                                      struct AndamentoWorkspaceId workspace,
+uint32_t andamento_workspace_set_name(Andamento *h,
+                                      AndamentoWorkspaceId workspace,
                                       uint32_t has_name,
-                                      struct AndamentoText name,
+                                      AndamentoText name,
                                       char **error_out);
 
 // Set the user's mood for a workspace over the provider's (has_mood 0
 // drops it).
-uint32_t andamento_workspace_set_mood(struct Andamento *h,
-                                      struct AndamentoWorkspaceId workspace,
+uint32_t andamento_workspace_set_mood(Andamento *h,
+                                      AndamentoWorkspaceId workspace,
                                       uint32_t has_mood,
-                                      struct AndamentoText mood,
+                                      AndamentoText mood,
                                       char **error_out);
 
-struct AndamentoOverlay *andamento_overlay_acquire(struct Andamento *h,
-                                                   struct AndamentoWorkspaceId workspace,
-                                                   char **error_out);
+// A workspace's overlay. Free it with andamento_overlay_free.
+AndamentoOverlay *andamento_overlay_get(Andamento *h,
+                                        AndamentoWorkspaceId workspace,
+                                        char **error_out);
 
-uint32_t andamento_overlay_info(const struct AndamentoOverlay *overlay,
-                                struct AndamentoOverlayInfo *out);
-
-uint32_t andamento_overlay_note(const struct AndamentoOverlay *overlay,
-                                size_t index,
-                                struct AndamentoOverlayNote *out);
-
-void andamento_overlay_release(struct AndamentoOverlay *overlay);
+void andamento_overlay_free(AndamentoOverlay *overlay);
 
 #ifdef __cplusplus
 }  // extern "C"

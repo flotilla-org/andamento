@@ -200,35 +200,33 @@ fn main() {
             let mut generation = 0;
             for iteration in 0..20 {
                 let left = 0.3 + 0.02 * iteration as f64;
-                let panel = |id, weight, tabs: &[Text]| AndamentoDocPanel {
+                let panel = |parent, id, weight, tabs: &[Text]| AndamentoDocPanel {
+                    parent,
                     id: text(id),
                     weight,
-                    kind: ANDAMENTO_PANEL_TABS,
-                    axis: 0,
-                    children: ptr::null(),
-                    child_count: 0,
+                    kind: if tabs.is_empty() {
+                        ANDAMENTO_PANEL_SPLIT
+                    } else {
+                        ANDAMENTO_PANEL_TABS
+                    },
+                    axis: ANDAMENTO_AXIS_ROW,
                     tabs: tabs.as_ptr(),
                     tab_count: tabs.len(),
-                    selected: tabs[0],
+                    selected: if tabs.is_empty() { usize::MAX } else { 0 },
                 };
-                let children = [
-                    panel("1", left, &tabs[..4]),
-                    panel("2", 1.0 - left, &tabs[4..]),
+                let panels = [
+                    panel(usize::MAX, "root", 1.0, &[]),
+                    panel(0, "1", left, &tabs[..4]),
+                    panel(0, "2", 1.0 - left, &tabs[4..]),
                 ];
-                let root = AndamentoDocPanel {
-                    kind: ANDAMENTO_PANEL_SPLIT,
-                    children: children.as_ptr(),
-                    child_count: children.len(),
-                    tabs: ptr::null(),
-                    tab_count: 0,
-                    selected: text(""),
-                    ..panel("root", 1.0, &tabs)
+                let doc = AndamentoArrangementDoc {
+                    panels: panels.as_ptr(),
+                    panel_count: panels.len(),
                 };
-                let doc = AndamentoArrangementDoc { root: &root };
                 let start = Instant::now();
                 let committed =
                     andamento_arrangement_commit(h, ws, &doc, generation, ptr::null_mut());
-                assert!(!committed.is_null() && (*committed).status == 1);
+                assert!(!committed.is_null() && (*committed).status == ANDAMENTO_COMMITTED);
                 generation = (*committed).generation;
                 andamento_arrangement_free(committed);
                 assert_eq!(
@@ -248,58 +246,45 @@ fn main() {
             );
             // The sidebar arrangement: the document Andamento placed, with a
             // dock weight dragged at each commit.
-            let sidebar = andamento_sidebar_arrangement_acquire(h, ptr::null_mut());
+            let sidebar = andamento_sidebar_arrangement_get(h, ptr::null_mut());
             assert!(!sidebar.is_null());
-            let mut info: ArrangementInfoView = std::mem::zeroed();
-            assert_eq!(andamento_arrangement_info(sidebar, &mut info), 1);
-            let floating_first = andamento_arrangement_floating_first(sidebar);
-            let mut panels: Vec<PanelView> = (0..info.panel_count)
-                .map(|i| {
-                    let mut panel: PanelView = std::mem::zeroed();
-                    assert_eq!(andamento_arrangement_panel(sidebar, i, &mut panel), 1);
-                    panel
-                })
-                .collect();
-            let tabs: Vec<TabView> = (0..info.tab_count)
-                .map(|i| {
-                    let mut tab: TabView = std::mem::zeroed();
-                    assert_eq!(andamento_arrangement_tab(sidebar, i, &mut tab), 1);
-                    tab
-                })
-                .collect();
-            let mut generation = info.generation;
+            let mut dock = std::slice::from_raw_parts(
+                (*sidebar).doc.dock.panels,
+                (*sidebar).doc.dock.panel_count,
+            )
+            .to_vec();
+            let mut generation = (*sidebar).generation;
             let mut commits = vec![];
             for iteration in 0..20 {
-                if panels.len() > 1 {
-                    panels[1].weight = 0.3 + 0.02 * iteration as f64;
+                if dock.len() > 1 {
+                    dock[1].weight = 0.3 + 0.02 * iteration as f64;
                 }
+                let doc = AndamentoSidebarDoc {
+                    dock: AndamentoArrangementDoc {
+                        panels: dock.as_ptr(),
+                        panel_count: dock.len(),
+                    },
+                    floating: (*sidebar).doc.floating,
+                };
                 let start = Instant::now();
-                assert_eq!(
-                    andamento_set_sidebar_arrangement(
-                        h,
-                        panels.as_ptr(),
-                        panels.len(),
-                        floating_first,
-                        tabs.as_ptr(),
-                        tabs.len(),
-                        generation,
-                        &mut generation,
-                        ptr::null_mut()
-                    ),
-                    1
-                );
+                let committed =
+                    andamento_sidebar_arrangement_commit(h, &doc, generation, ptr::null_mut());
+                assert_eq!((*committed).status, ANDAMENTO_COMMITTED);
+                generation = (*committed).generation;
+                andamento_sidebar_arrangement_free(committed);
                 assert_eq!(
                     andamento_snapshot_is_current(h, rendered, ptr::null_mut()),
                     1
                 );
                 commits.push(start.elapsed().as_secs_f64() * 1000.);
             }
-            andamento_arrangement_release(sidebar);
+            let panels = dock.len();
+            andamento_sidebar_arrangement_free(sidebar);
             andamento_snapshot_release(rendered);
             commits.sort_by(f64::total_cmp);
             println!(
                 "sidebar-arrangement entities={n} panels={} commits=20 generation={generation} median_ms={:.4} max_ms={:.4} snapshot_current=20/20",
-                panels.len(),
+                panels,
                 commits[10],
                 commits[19],
             );

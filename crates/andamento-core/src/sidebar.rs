@@ -706,6 +706,11 @@ impl Sidebar {
         true
     }
 
+    /// Saved sibling orders, by the loop key of the run each orders.
+    pub fn sibling_orders(&self) -> &BTreeMap<crate::PlacementLoopKey, Vec<EntityRef>> {
+        self.state.sibling_orders()
+    }
+
     /// Local entities, with their facts.
     pub fn local_entities(&self) -> &BTreeMap<EntityRef, BTreeMap<String, crate::MetadataValue>> {
         &self.local

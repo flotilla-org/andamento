@@ -18,8 +18,10 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+pub mod dashboard;
 pub mod documents;
 pub mod slots;
+pub use dashboard::*;
 pub use documents::*;
 pub use slots::*;
 
@@ -86,6 +88,22 @@ unsafe fn write_bytes(out: *mut Bytes, bytes: Vec<u8>) -> Result<(), String> {
     let out = out.as_mut().ok_or("null output")?;
     *out = owned_bytes(bytes);
     Ok(())
+}
+
+/// A struct returned to the host and what it points into, in one
+/// allocation the host frees with the struct's `_free` call.
+#[repr(C)]
+struct Owned<T, K> {
+    value: T,
+    keep: K,
+}
+fn give<T, K>(value: T, keep: K) -> *mut T {
+    Box::into_raw(Box::new(Owned { value, keep })).cast()
+}
+unsafe fn take<T, K>(value: *mut T) {
+    if !value.is_null() {
+        drop(Box::from_raw(value.cast::<Owned<T, K>>()));
+    }
 }
 
 /// A sidebar: one presentation client's core. Calls on one are serialised
@@ -625,179 +643,6 @@ pub unsafe extern "C" fn andamento_workspace_registered(
             .contains(&workspace.into()))
     })
     .unwrap_or(false) as u32
-}
-
-/// The names of the records Andamento holds, one per line (no trailing
-/// newline): "dashboard", then "workspace/<id>" for each registered
-/// workspace (<id> a hyphenated UUID).
-#[no_mangle]
-pub unsafe extern "C" fn andamento_record_names(
-    h: *mut Andamento,
-    out: *mut Bytes,
-    error_out: *mut *mut c_char,
-) -> u32 {
-    run(h, error_out, |h| {
-        write_bytes(out, h.sidebar.record_names().join("\n").into_bytes())
-    })
-    .is_some() as u32
-}
-/// A record's generation, nonzero: it changes whenever the record does and
-/// is never reused. 0 with an error for an unknown record. Store a record
-/// when its generation differs from the one last stored.
-#[no_mangle]
-pub unsafe extern "C" fn andamento_record_generation(
-    h: *mut Andamento,
-    name: Text,
-    error_out: *mut *mut c_char,
-) -> u64 {
-    run(h, error_out, |h| h.sidebar.record_generation(&name.read()?)).unwrap_or(0)
-}
-/// A record to store as it is: its bytes are private to Andamento and may
-/// change from one build to the next. Free them with andamento_bytes_free.
-#[no_mangle]
-pub unsafe extern "C" fn andamento_record_get(
-    h: *mut Andamento,
-    name: Text,
-    out: *mut Bytes,
-    error_out: *mut *mut c_char,
-) -> u32 {
-    run(h, error_out, |h| {
-        write_bytes(out, h.sidebar.export_record(&name.read()?)?.into_bytes())
-    })
-    .is_some() as u32
-}
-/// Restore a record andamento_record_get returned, before the first
-/// observe. A record that doesn't read is rejected without change.
-/// Restoring "workspace/<id>" registers the workspace.
-#[no_mangle]
-pub unsafe extern "C" fn andamento_record_put(
-    h: *mut Andamento,
-    name: Text,
-    record: Text,
-    error_out: *mut *mut c_char,
-) -> u32 {
-    run(h, error_out, |h| {
-        h.sidebar.import_record(&name.read()?, &record.read()?)
-    })
-    .is_some() as u32
-}
-
-/// Set a declared display variable without a snapshot action, so a host
-/// can restore one before the first snapshot: "true"/"false" for a boolean,
-/// one of an enum's values, or empty for its default. Unknown variables and
-/// values the declaration doesn't allow are rejected.
-#[no_mangle]
-pub unsafe extern "C" fn andamento_set_display_variable(
-    h: *mut Andamento,
-    name: Text,
-    value: Text,
-    error_out: *mut *mut c_char,
-) -> u32 {
-    use andamento_core::DisplayVariableValue;
-    run(h, error_out, |h| {
-        let name = name.read()?;
-        let value = value.read()?;
-        if value.is_empty() {
-            return h.sidebar.set_display_variable(&name, None);
-        }
-        let flag = match value.as_str() {
-            "true" => Some(true),
-            "false" => Some(false),
-            _ => None,
-        };
-        // An enum may declare "true" or "false" as a value.
-        match flag {
-            Some(flag) => h
-                .sidebar
-                .set_display_variable(&name, Some(DisplayVariableValue::Bool(flag)))
-                .or_else(|_| {
-                    h.sidebar
-                        .set_display_variable(&name, Some(DisplayVariableValue::Enum(value)))
-                }),
-            None => h
-                .sidebar
-                .set_display_variable(&name, Some(DisplayVariableValue::Enum(value))),
-        }
-    })
-    .is_some() as u32
-}
-/// Set the host-owned order of the sibling run identified by `loop_key` (a
-/// node's loop_key). Entities the list omits keep data order relative to it
-/// (each after its nearest named data-order predecessor, else first);
-/// entities that no longer match are ignored. An empty list clears it.
-#[no_mangle]
-pub unsafe extern "C" fn andamento_set_sibling_order(
-    h: *mut Andamento,
-    loop_key: Text,
-    entities: *const EntityView,
-    count: usize,
-    error_out: *mut *mut c_char,
-) -> u32 {
-    run(h, error_out, |h| {
-        let key = loop_key.read()?;
-        let key = andamento_core::PlacementLoopKey::decode(&key).ok_or("invalid loop key")?;
-        let order = slice(entities, count)?
-            .iter()
-            .map(|e| e.read())
-            .collect::<Result<Vec<_>, String>>()?;
-        h.sidebar.set_sibling_order(key, order)
-    })
-    .is_some() as u32
-}
-
-/// A fact of a local entity: ANDAMENTO_FACT_TEXT, _BOOL, _INTEGER or
-/// _ENTITY (one entity reference, such as .section, .group or .target).
-#[repr(C)]
-pub struct LocalFact {
-    pub key: Text,
-    pub kind: u32,
-    pub text: Text,
-    pub integer: i64,
-    pub entity: EntityView,
-}
-/// Set a local section (".section"), group (".group") or ref (".ref", a
-/// pin), replacing all its facts. Andamento owns local entities (their
-/// provider is "local") and keeps them in the dashboard record; they are
-/// placed exactly as the same entities published as facts.
-#[no_mangle]
-pub unsafe extern "C" fn andamento_local_set(
-    h: *mut Andamento,
-    kind: Text,
-    id: Text,
-    facts: *const LocalFact,
-    count: usize,
-    error_out: *mut *mut c_char,
-) -> u32 {
-    run(h, error_out, |h| {
-        let entity = EntityRef::local(kind.read()?, id.read()?);
-        let mut values = std::collections::BTreeMap::new();
-        for f in slice(facts, count)? {
-            let value = match f.kind {
-                ANDAMENTO_FACT_ENTITY => MetadataValue::EntityRefs(vec![f.entity.read()?]),
-                kind => scalar(kind, f.text, f.integer)?,
-            };
-            if values.insert(f.key.read()?, value).is_some() {
-                return Err("duplicate fact key".into());
-            }
-        }
-        h.sidebar.set_local(entity, values)
-    })
-    .is_some() as u32
-}
-/// Remove a local entity; removing an unknown one is harmless.
-#[no_mangle]
-pub unsafe extern "C" fn andamento_local_remove(
-    h: *mut Andamento,
-    kind: Text,
-    id: Text,
-    error_out: *mut *mut c_char,
-) -> u32 {
-    run(h, error_out, |h| {
-        h.sidebar
-            .remove_local(&EntityRef::local(kind.read()?, id.read()?));
-        Ok(())
-    })
-    .is_some() as u32
 }
 
 // Snapshots, details, dispatch and effects. A snapshot owns all the text it

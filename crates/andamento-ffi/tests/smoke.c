@@ -193,6 +193,20 @@ static void check_dashboard(const char *config_path, const char *patches_path) {
     AndamentoEntity order[] = {{T("sub-1"), T("vessel"), T("v")}};
     ok(andamento_set_sibling_order(h, n.loop_key, order, 1, &error));
     fails(andamento_set_sibling_order(h, T("not a loop key"), order, 1, &error));
+    /* What the Dashboard keeps: local entities with their facts, and orders. */
+    AndamentoDashboard *kept = andamento_dashboard_get(h, &error);
+    assert(kept && !error && kept->generation == andamento_record_generation(h, T("dashboard"), &error));
+    assert(kept->local_count == 2 && kept->order_count == 1);
+    const AndamentoLocalEntity *g1 = &kept->locals[0];
+    assert(eq(g1->entity.provider, "local") && eq(g1->entity.kind, ".group") && g1->fact_count == 2);
+    assert(eq(g1->facts[0].key, ".position") && g1->facts[0].kind == ANDAMENTO_FACT_INTEGER && g1->facts[0].integer == 2);
+    assert(g1->facts[1].kind == ANDAMENTO_FACT_ENTITY && eq(g1->facts[1].entity.id, "s1"));
+    assert(eq(kept->locals[1].facts[0].text, "Mine"));
+    assert(kept->orders[0].loop_key.len == n.loop_key.len &&
+           memcmp(kept->orders[0].loop_key.data, n.loop_key.data, n.loop_key.len) == 0);
+    assert(kept->orders[0].entity_count == 1 && eq(kept->orders[0].entities[0].id, "v"));
+    andamento_dashboard_free(kept);
+    andamento_dashboard_free(NULL);
     andamento_snapshot_release(s);
     ok(andamento_workspace_register(h, uuid(0x7d), &error));
 
@@ -277,41 +291,39 @@ static void check_workspace(const char *config_path) {
     fails(andamento_slot_set(h, uuid(0x01), T("u:3"), &spec, ANDAMENTO_REBIND_REPLACE, &error));
     assert(andamento_workspace_content_revision(h, &error) > revision);
 
-    AndamentoSlots *slots = andamento_slots_acquire(h, ws, &error);
-    assert(slots && !error && andamento_slots_count(slots) == 2);
-    AndamentoSlot slot;
-    assert(andamento_slots_get(slots, 0, &slot) && eq(slot.key, "u:1") && slot.flags == 0);
-    assert(slot.spec.argc == 2 && eq(slot.spec.argv[1], "-d") && eq(slot.spec.presentation, "terminal"));
-    assert(andamento_slots_get(slots, 1, &slot) && eq(slot.spec.entity.provider, "sub-1"));
-    assert(!andamento_slots_get(slots, 2, &slot));
-    andamento_slots_release(slots);
+    AndamentoSlots *slots = andamento_slots_get(h, ws, &error);
+    assert(slots && !error && slots->slot_count == 2);
+    const AndamentoSlot *slot = &slots->slots[0];
+    assert(eq(slot->key, "u:1") && slot->flags == 0 && !slot->has_saved);
+    assert(slot->spec.argc == 2 && eq(slot->spec.argv[1], "-d") && eq(slot->spec.presentation, "terminal"));
+    assert(eq(slots->slots[1].spec.entity.provider, "sub-1"));
+    andamento_slots_free(slots);
+    assert(!andamento_slots_get(h, uuid(0x01), &error));
+    fails(0);
 
     /* Plan, validate, complete; save a portable resolution for it. */
-    AndamentoSlotPlan *plan = andamento_slot_plan(h, ws, T("u:1"), T(""), &error);
-    AndamentoSlotContent content;
-    assert(plan && !error && andamento_slot_plan_get(plan, &content));
-    assert(content.state == ANDAMENTO_CONTENT_UPDATING && content.recipe.argc == 2 && !content.has_saved);
-    assert(andamento_slot_valid(h, ws, T("u:1"), content.token, &error));
-    assert(andamento_slot_complete(h, ws, T("u:1"), content.token, 1, &error));
+    AndamentoSlotContent *plan = andamento_slot_plan(h, ws, T("u:1"), T(""), &error);
+    assert(plan && !error && plan->state == ANDAMENTO_CONTENT_UPDATING);
+    assert(plan->recipe.argc == 2 && !plan->has_saved);
+    assert(andamento_slot_valid(h, ws, T("u:1"), plan->token, &error));
+    assert(andamento_slot_complete(h, ws, T("u:1"), plan->token, 1, &error));
     AndamentoResolutionField fields[] = {{T("session"), T("S")}, {T("host"), T("feta")}};
     uint64_t generation = 0;
-    assert(andamento_slot_resolution_set(h, ws, T("u:1"), T("cleat-session"), fields, 2, content.resolution, 0,
+    assert(andamento_slot_resolution_set(h, ws, T("u:1"), T("cleat-session"), fields, 2, plan->resolution, 0,
                                          &generation, &error) == ANDAMENTO_COMMITTED && generation);
-    assert(andamento_slot_resolution_set(h, ws, T("u:1"), T("cleat-session"), fields, 1, content.resolution, 0,
+    assert(andamento_slot_resolution_set(h, ws, T("u:1"), T("cleat-session"), fields, 1, plan->resolution, 0,
                                          &generation, &error) == ANDAMENTO_STALE && !error);
-    assert(andamento_slot_resolution_set(h, ws, T("u:1"), T("Bad Kind"), fields, 2, content.resolution,
+    assert(andamento_slot_resolution_set(h, ws, T("u:1"), T("Bad Kind"), fields, 2, plan->resolution,
                                          generation, NULL, &error) == ANDAMENTO_INVALID);
     fails(0);
-    AndamentoSlotPlan *again = andamento_slot_plan(h, ws, T("u:1"), content.resolution, &error);
-    AndamentoSlotContent current;
-    assert(andamento_slot_plan_get(again, &current) && current.state == ANDAMENTO_CONTENT_CURRENT);
-    assert(current.has_saved && current.saved.field_count == 2 && eq(current.saved.fields[0].name, "host"));
-    andamento_slot_plan_release(again);
-    andamento_slot_plan_release(plan);
-    AndamentoSlotResolution *saved = andamento_slot_resolution_acquire(h, ws, T("u:1"), &error);
-    AndamentoResolution resolution;
-    assert(saved && andamento_slot_resolution_get(saved, &resolution) && resolution.generation == generation);
-    andamento_slot_resolution_release(saved);
+    AndamentoSlotContent *current = andamento_slot_plan(h, ws, T("u:1"), plan->resolution, &error);
+    assert(current && current->state == ANDAMENTO_CONTENT_CURRENT);
+    assert(current->has_saved && current->saved.field_count == 2 && eq(current->saved.fields[0].name, "host"));
+    andamento_slot_plan_free(current);
+    andamento_slot_plan_free(plan);
+    slots = andamento_slots_get(h, ws, &error);
+    assert(slots->slots[0].has_saved && slots->slots[0].saved.generation == generation);
+    andamento_slots_free(slots);
     assert(andamento_slot_resolution_clear(h, ws, T("u:1"), generation, &generation, &error) == ANDAMENTO_COMMITTED);
     ok(andamento_slot_retry(h, ws, T("u:1"), &error));
     assert(!andamento_slot_release_previous(h, ws, T("u:1"), &error) && !error);
@@ -321,48 +333,61 @@ static void check_workspace(const char *config_path) {
     ok(andamento_workspace_set_mood(h, ws, 0, T(""), &error));
     ok(andamento_slot_remove(h, ws, T("u:2"), &error));
     ok(andamento_slot_reattach(h, ws, T("u:1"), &error));
-    AndamentoOverlay *overlay = andamento_overlay_acquire(h, ws, &error);
-    AndamentoOverlayInfo info;
-    assert(overlay && andamento_overlay_info(overlay, &info));
-    assert(!info.has_baseline && eq(info.name, "Build") && !info.has_mood && info.note_count == 0);
-    andamento_overlay_release(overlay);
+    AndamentoOverlay *overlay = andamento_overlay_get(h, ws, &error);
+    assert(overlay && !error && !overlay->has_baseline && eq(overlay->name, "Build"));
+    assert(!overlay->has_mood && overlay->mood.data && overlay->note_count == 0);
+    andamento_overlay_free(overlay);
+    assert(!andamento_overlay_get(h, uuid(0x01), &error));
+    fails(0);
 
-    /* The arrangement: commit at a generation, stale, invalid. */
+    /* The arrangement: panels name their parents; commit, stale, invalid. */
     AndamentoWorkspaceArrangement *a = andamento_arrangement_get(h, ws, &error);
-    assert(a && !error && !a->doc.root && a->generation == 0);
+    assert(a && !error && a->doc.panel_count == 0 && a->generation == 0);
     andamento_arrangement_free(a);
-    AndamentoText tab = T("u:1");
-    AndamentoDocPanel root = {T("1"), 1.0, ANDAMENTO_PANEL_TABS, 0, NULL, 0, &tab, 1, T("u:1")};
-    a = andamento_arrangement_commit(h, ws, &(AndamentoArrangementDoc){&root}, 0, &error);
-    assert(a && !error && a->status == ANDAMENTO_COMMITTED && a->owned && a->doc.root->tab_count == 1);
+    AndamentoText tabs[] = {T("u:1")};
+    AndamentoDocPanel panels[] = {
+        {ANDAMENTO_NONE, T("root"), 1.0, ANDAMENTO_PANEL_SPLIT, ANDAMENTO_AXIS_ROW, NULL, 0, ANDAMENTO_NONE},
+        {0, T("1"), 1.0, ANDAMENTO_PANEL_TABS, 0, tabs, 1, 0},
+    };
+    AndamentoArrangementDoc doc = {panels, 2};
+    a = andamento_arrangement_commit(h, ws, &doc, 0, &error);
+    assert(a && !error && a->status == ANDAMENTO_COMMITTED && a->owned && a->doc.panel_count == 2);
+    assert(a->doc.panels[1].parent == 0 && eq(a->doc.panels[1].tabs[0], "u:1") && a->doc.panels[1].selected == 0);
     uint64_t at = a->generation;
     andamento_arrangement_free(a);
-    a = andamento_arrangement_commit(h, ws, &(AndamentoArrangementDoc){&root}, 0, &error);
+    a = andamento_arrangement_commit(h, ws, &doc, 0, &error);
     assert(a && !error && a->status == ANDAMENTO_STALE && a->generation == at);
     andamento_arrangement_free(a);
-    root.kind = 9;
-    assert(!andamento_arrangement_commit(h, ws, &(AndamentoArrangementDoc){&root}, at, &error));
+    panels[1].parent = 1;
+    assert(!andamento_arrangement_commit(h, ws, &doc, at, &error));
     fails(0);
     assert(andamento_arrangement_resolve(h, ws, ANDAMENTO_ARRANGEMENT_KEEP, at, &generation, &error) ==
            ANDAMENTO_COMMITTED);
 
-    /* The sidebar's arrangement. */
-    assert(andamento_sidebar_arrangement_generation(h, &error) && !error);
-    AndamentoArrangement *sidebar = andamento_sidebar_arrangement_acquire(h, &error);
-    AndamentoArrangementInfo sidebar_info;
-    assert(sidebar && andamento_arrangement_info(sidebar, &sidebar_info) && sidebar_info.panel_count);
-    andamento_arrangement_release(sidebar);
-    assert(andamento_sidebar_reset(h, sidebar_info.generation, &generation, &error) == ANDAMENTO_COMMITTED);
-    assert(andamento_sidebar_restore_section(h, T("undeclared"), generation, &generation, &error) ==
-           ANDAMENTO_INVALID);
+    /* The sidebar's arrangement: the same panels, a dock and floating ones. */
+    AndamentoSidebarArrangement *sidebar = andamento_sidebar_arrangement_get(h, &error);
+    assert(sidebar && !error && sidebar->doc.dock.panel_count && sidebar->note_count);
+    assert(sidebar->generation == andamento_sidebar_arrangement_generation(h, &error));
+    AndamentoSidebarArrangement *committed =
+        andamento_sidebar_arrangement_commit(h, &sidebar->doc, sidebar->generation, &error);
+    assert(committed && !error && committed->status == ANDAMENTO_COMMITTED && committed->owned);
+    andamento_sidebar_arrangement_free(committed);
+    committed = andamento_sidebar_reset(h, sidebar->generation, &error);
+    assert(committed && !error && committed->status == ANDAMENTO_STALE);
+    generation = committed->generation;
+    andamento_sidebar_arrangement_free(committed);
+    andamento_sidebar_arrangement_free(sidebar);
+    assert(!andamento_sidebar_restore_section(h, T("undeclared"), generation, &error));
     fails(0);
+    committed = andamento_sidebar_reset(h, generation, &error);
+    assert(committed && committed->status == ANDAMENTO_COMMITTED && !committed->owned);
+    andamento_sidebar_arrangement_free(committed);
 
-    andamento_slots_release(NULL);
-    andamento_slot_plan_release(NULL);
-    andamento_slot_resolution_release(NULL);
-    andamento_overlay_release(NULL);
+    andamento_slots_free(NULL);
+    andamento_slot_plan_free(NULL);
+    andamento_overlay_free(NULL);
     andamento_arrangement_free(NULL);
-    andamento_arrangement_release(NULL);
+    andamento_sidebar_arrangement_free(NULL);
     andamento_destroy(h);
 }
 

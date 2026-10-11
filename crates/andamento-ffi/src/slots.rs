@@ -221,79 +221,85 @@ pub struct SlotView {
     pub detached: u32,
     /// ANDAMENTO_SLOT_FLAG_* bits.
     pub flags: u32,
+    /// The portable Target Resolution saved for the slot.
+    pub has_saved: u32,
+    pub saved: ResolutionView,
 }
 
-/// A workspace's slots, owned until release: its subject's Suggested Layout
-/// slots (a cached baseline), then detached slots the baseline has since
-/// dropped, then the slots the host added ("u:<id>"), which is also their
-/// default placement order.
-pub struct AndamentoSlots {
-    slots: Vec<andamento_core::slots::SlotInfo>,
-    argv: Vec<Vec<Text>>,
+/// A workspace's slots: its subject's Suggested Layout slots (a cached
+/// baseline), then detached slots the baseline has since dropped, then the
+/// slots the host added ("u:<id>"), which is also their default placement
+/// order.
+#[repr(C)]
+pub struct SlotListView {
+    pub slots: *const SlotView,
+    pub slot_count: usize,
 }
 
+type SlotsKeep = (
+    Vec<andamento_core::slots::SlotInfo>,
+    Vec<Option<andamento_core::target_resolution::SavedResolution>>,
+    Vec<Vec<Text>>,
+    Vec<Vec<ResolutionFieldView>>,
+    Vec<SlotView>,
+);
+
+/// A registered workspace's slots. Free them with andamento_slots_free.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_slots_acquire(
+pub unsafe extern "C" fn andamento_slots_get(
     h: *mut Andamento,
     workspace: WorkspaceIdView,
     error_out: *mut *mut c_char,
-) -> *mut AndamentoSlots {
+) -> *mut SlotListView {
     run(h, error_out, |h| {
-        let mut slots = Box::new(AndamentoSlots {
-            slots: h.sidebar.slots(workspace.into())?,
-            argv: Vec::new(),
-        });
-        // The argv arrays borrow the boxed slots, which never move.
-        let argv = slots
-            .slots
+        let workspace = workspace.into();
+        let slots = h.sidebar.slots(workspace)?;
+        let saved = slots
             .iter()
-            .map(|slot| spec_view(&slot.spec).1.argv)
+            .map(|slot| h.sidebar.slot_resolution(workspace, &slot.key))
+            .collect::<Result<Vec<_>, _>>()?;
+        let fields: Vec<Vec<ResolutionFieldView>> = saved
+            .iter()
+            .map(|saved| saved.as_ref().map(field_views).unwrap_or_default())
             .collect();
-        slots.argv = argv;
-        Ok(Box::into_raw(slots))
+        let mut argv = Vec::new();
+        let views = slots
+            .iter()
+            .zip(&saved)
+            .zip(&fields)
+            .map(|((slot, saved), fields)| {
+                let (mut spec, storage) = spec_view(&slot.spec);
+                if !storage.argv.is_empty() {
+                    (spec.argv, spec.argc) = (storage.argv.as_ptr(), storage.argv.len());
+                }
+                argv.push(storage.argv);
+                SlotView {
+                    key: Text::borrowed(&slot.key),
+                    spec,
+                    rebind: rebind_code(slot.rebind),
+                    in_baseline: slot.in_baseline as u32,
+                    detached: slot.detached as u32,
+                    flags: slot.flags,
+                    has_saved: saved.is_some() as u32,
+                    saved: resolution_view(saved.as_ref(), fields),
+                }
+            })
+            .collect::<Vec<_>>();
+        let value = SlotListView {
+            slots: views.as_ptr(),
+            slot_count: views.len(),
+        };
+        Ok(give::<_, SlotsKeep>(
+            value,
+            (slots, saved, argv, fields, views),
+        ))
     })
     .unwrap_or(ptr::null_mut())
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn andamento_slots_count(slots: *const AndamentoSlots) -> usize {
-    slots.as_ref().map_or(0, |slots| slots.slots.len())
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_slots_get(
-    slots: *const AndamentoSlots,
-    index: usize,
-    out: *mut SlotView,
-) -> u32 {
-    let (Some(slots), Some(out)) = (slots.as_ref(), out.as_mut()) else {
-        return 0;
-    };
-    let Some(slot) = slots.slots.get(index) else {
-        return 0;
-    };
-    let (mut spec, _) = spec_view(&slot.spec);
-    let argv = &slots.argv[index];
-    if !argv.is_empty() {
-        spec.argv = argv.as_ptr();
-        spec.argc = argv.len();
-    }
-    *out = SlotView {
-        key: Text::borrowed(&slot.key),
-        spec,
-        rebind: rebind_code(slot.rebind),
-        in_baseline: slot.in_baseline as u32,
-        detached: slot.detached as u32,
-        flags: slot.flags,
-    };
-    1
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_slots_release(slots: *mut AndamentoSlots) {
-    if !slots.is_null() {
-        drop(Box::from_raw(slots));
-    }
+pub unsafe extern "C" fn andamento_slots_free(slots: *mut SlotListView) {
+    take::<_, SlotsKeep>(slots)
 }
 
 /// Add the user's own slot ("u:<id>", <id> 1 to 64 of [a-z0-9_-]; provider
@@ -364,18 +370,6 @@ pub const ANDAMENTO_CONTENT_UPDATING: u32 = 3;
 /// andamento_slot_retry.
 pub const ANDAMENTO_CONTENT_FAILED: u32 = 4;
 
-/// One slot's plan, owned until release. Plan with the resolution identity
-/// the host applied (empty for none), prepare the runtime instance without
-/// touching the current one, validate the token immediately before
-/// committing, then complete. Repeated plans return the same token until
-/// the desired resolution or binding changes.
-pub struct AndamentoSlotPlan {
-    plan: andamento_core::managed::SlotPlan,
-    argv: Vec<Text>,
-    /// Views of `plan.saved`'s fields.
-    fields: Vec<ResolutionFieldView>,
-}
-
 /// A slot's plan. While UPDATING, token, resolution (an opaque identity:
 /// record it and pass it back as applied), target (the backing instance,
 /// when the provider names one) and recipe (what to run) describe the
@@ -402,9 +396,14 @@ pub struct SlotContentView {
     pub saved: ResolutionView,
 }
 
-/// Plan a slot. A provider facet resolves from the subject's layout while
-/// the slot follows it, else from the facet entity's own layout ("primary":
-/// its workspace.primary.* facts); a local recipe resolves to itself.
+/// Plan a slot, given the identity of the resolution the host applied to it
+/// (empty for none): prepare the runtime instance without touching the
+/// current one, validate the token immediately before committing, then
+/// complete. Repeated plans return the same token until the desired
+/// resolution or binding changes. A provider facet resolves from the
+/// subject's layout while the slot follows it, else from the facet entity's
+/// own layout ("primary": its workspace.primary.* facts); a local recipe
+/// resolves to itself. Free the plan with andamento_slot_plan_free.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_slot_plan(
     h: *mut Andamento,
@@ -412,76 +411,56 @@ pub unsafe extern "C" fn andamento_slot_plan(
     key: Text,
     applied: Text,
     error_out: *mut *mut c_char,
-) -> *mut AndamentoSlotPlan {
+) -> *mut SlotContentView {
+    use andamento_core::managed::ContentState;
     run(h, error_out, |h| {
         let plan = h
             .sidebar
             .plan_slot(workspace.into(), &key.read()?, &applied.read()?)?;
-        let mut plan = Box::new(AndamentoSlotPlan {
-            plan,
-            argv: Vec::new(),
-            fields: Vec::new(),
-        });
-        if let Some(saved) = &plan.plan.saved {
-            plan.fields = field_views(saved);
+        let fields = plan.saved.as_ref().map(field_views).unwrap_or_default();
+        let mut value = SlotContentView {
+            state: match plan.state {
+                ContentState::Unavailable => ANDAMENTO_CONTENT_UNAVAILABLE,
+                ContentState::Held => ANDAMENTO_CONTENT_HELD,
+                ContentState::Current => ANDAMENTO_CONTENT_CURRENT,
+                ContentState::Updating => ANDAMENTO_CONTENT_UPDATING,
+                ContentState::Failed => ANDAMENTO_CONTENT_FAILED,
+            },
+            token: 0,
+            resolution: Text::borrowed(""),
+            has_target: 0,
+            target: Text::borrowed(""),
+            recipe: ViewSpecView::empty(),
+            rebind: rebind_code(plan.rebind),
+            has_previous: plan.previous.is_some() as u32,
+            previous: Text::borrowed(plan.previous.as_deref().unwrap_or_default()),
+            has_saved: plan.saved.is_some() as u32,
+            saved: resolution_view(plan.saved.as_ref(), &fields),
+        };
+        let mut argv = Vec::new();
+        if let Some(update) = &plan.update {
+            value.token = update.token;
+            value.resolution = Text::borrowed(&update.id);
+            value.has_target = update.resolution.target.is_some() as u32;
+            value.target = Text::borrowed(update.resolution.target.as_deref().unwrap_or_default());
+            argv = recipe_view(&update.resolution.recipe, &mut value.recipe).argv;
+            if !argv.is_empty() {
+                (value.recipe.argv, value.recipe.argc) = (argv.as_ptr(), argv.len());
+            }
         }
-        if let Some(update) = &plan.plan.update {
-            let argv = recipe_view(&update.resolution.recipe, &mut ViewSpecView::empty()).argv;
-            plan.argv = argv;
-        }
-        Ok(Box::into_raw(plan))
+        Ok(give::<_, PlanKeep>(value, (plan, fields, argv)))
     })
     .unwrap_or(ptr::null_mut())
 }
+type PlanKeep = (
+    andamento_core::managed::SlotPlan,
+    Vec<ResolutionFieldView>,
+    Vec<Text>,
+);
 
 #[no_mangle]
-pub unsafe extern "C" fn andamento_slot_plan_get(
-    plan: *const AndamentoSlotPlan,
-    out: *mut SlotContentView,
-) -> u32 {
-    let (Some(plan), Some(out)) = (plan.as_ref(), out.as_mut()) else {
-        return 0;
-    };
-    use andamento_core::managed::ContentState;
-    let content = &plan.plan;
-    *out = SlotContentView {
-        state: match content.state {
-            ContentState::Unavailable => ANDAMENTO_CONTENT_UNAVAILABLE,
-            ContentState::Held => ANDAMENTO_CONTENT_HELD,
-            ContentState::Current => ANDAMENTO_CONTENT_CURRENT,
-            ContentState::Updating => ANDAMENTO_CONTENT_UPDATING,
-            ContentState::Failed => ANDAMENTO_CONTENT_FAILED,
-        },
-        token: 0,
-        resolution: Text::borrowed(""),
-        has_target: 0,
-        target: Text::borrowed(""),
-        recipe: ViewSpecView::empty(),
-        rebind: rebind_code(content.rebind),
-        has_previous: content.previous.is_some() as u32,
-        previous: Text::borrowed(content.previous.as_deref().unwrap_or_default()),
-        has_saved: content.saved.is_some() as u32,
-        saved: resolution_view(content.saved.as_ref(), &plan.fields),
-    };
-    if let Some(update) = &content.update {
-        out.token = update.token;
-        out.resolution = Text::borrowed(&update.id);
-        out.has_target = update.resolution.target.is_some() as u32;
-        out.target = Text::borrowed(update.resolution.target.as_deref().unwrap_or_default());
-        recipe_view(&update.resolution.recipe, &mut out.recipe);
-        if !plan.argv.is_empty() {
-            out.recipe.argv = plan.argv.as_ptr();
-            out.recipe.argc = plan.argv.len();
-        }
-    }
-    1
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_slot_plan_release(plan: *mut AndamentoSlotPlan) {
-    if !plan.is_null() {
-        drop(Box::from_raw(plan));
-    }
+pub unsafe extern "C" fn andamento_slot_plan_free(plan: *mut SlotContentView) {
+    take::<_, PlanKeep>(plan)
 }
 
 /// 1 if the plan's token is still valid: check immediately before
@@ -704,56 +683,6 @@ pub unsafe extern "C" fn andamento_slot_resolution_clear(
     .unwrap_or(ANDAMENTO_INVALID)
 }
 
-/// A slot's saved portable Target Resolution, owned until release.
-/// Acquiring fails for an unknown slot.
-pub struct AndamentoSlotResolution {
-    saved: Option<andamento_core::target_resolution::SavedResolution>,
-    fields: Vec<ResolutionFieldView>,
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_slot_resolution_acquire(
-    h: *mut Andamento,
-    workspace: WorkspaceIdView,
-    key: Text,
-    error_out: *mut *mut c_char,
-) -> *mut AndamentoSlotResolution {
-    run(h, error_out, |h| {
-        let saved = h.sidebar.slot_resolution(workspace.into(), &key.read()?)?;
-        let fields = saved.as_ref().map(field_views).unwrap_or_default();
-        Ok(Box::into_raw(Box::new(AndamentoSlotResolution {
-            saved,
-            fields,
-        })))
-    })
-    .unwrap_or(ptr::null_mut())
-}
-
-/// Fill out with the saved resolution; returns 0 when there is none.
-#[no_mangle]
-pub unsafe extern "C" fn andamento_slot_resolution_get(
-    resolution: *const AndamentoSlotResolution,
-    out: *mut ResolutionView,
-) -> u32 {
-    let (Some(resolution), Some(out)) = (resolution.as_ref(), out.as_mut()) else {
-        return 0;
-    };
-    if resolution.saved.is_none() {
-        return 0;
-    }
-    *out = resolution_view(resolution.saved.as_ref(), &resolution.fields);
-    1
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_slot_resolution_release(
-    resolution: *mut AndamentoSlotResolution,
-) {
-    if !resolution.is_null() {
-        drop(Box::from_raw(resolution));
-    }
-}
-
 /// An optional text argument: `has` says whether it is set.
 unsafe fn optional_text(has: u32, text: Text) -> Result<Option<String>, String> {
     Ok(if has != 0 { Some(text.read()?) } else { None })
@@ -795,39 +724,6 @@ pub unsafe extern "C" fn andamento_workspace_set_mood(
     .is_some() as u32
 }
 
-/// A workspace's overlay, owned until release.
-pub struct AndamentoOverlay {
-    baseline: Option<andamento_core::suggested_layout::BaselineVersion>,
-    name: Option<String>,
-    mood: Option<String>,
-    owned: bool,
-    notes: Vec<(u32, String, u32)>,
-}
-
-/// The Workspace Overlay's baseline version (has_baseline 0: no Suggested
-/// Layout; primary_only: only the primary facts), the user's name and mood,
-/// whether it owns the arrangement, and its note count.
-#[repr(C)]
-pub struct OverlayInfoView {
-    pub has_baseline: u32,
-    pub primary_only: u32,
-    pub baseline_version: Text,
-    pub has_name: u32,
-    pub name: Text,
-    pub has_mood: u32,
-    pub mood: Text,
-    pub owned: u32,
-    pub note_count: usize,
-}
-
-/// An overlay note: ANDAMENTO_OVERLAY_TOMBSTONED or _DEPARTED.
-#[repr(C)]
-pub struct OverlayNoteView {
-    pub kind: u32,
-    pub key: Text,
-    pub rebind: u32,
-}
-
 /// A baseline slot the user removed, hidden while the provider's content is
 /// what it was removed against; reattach it to show it again.
 pub const ANDAMENTO_OVERLAY_TOMBSTONED: u32 = 0;
@@ -835,87 +731,99 @@ pub const ANDAMENTO_OVERLAY_TOMBSTONED: u32 = 0;
 /// instance follows, until andamento_slot_release_previous.
 pub const ANDAMENTO_OVERLAY_DEPARTED: u32 = 1;
 
+/// An overlay note.
+#[repr(C)]
+pub struct OverlayNoteView {
+    /// ANDAMENTO_OVERLAY_TOMBSTONED or _DEPARTED.
+    pub kind: u32,
+    pub key: Text,
+    /// A DEPARTED slot's ANDAMENTO_REBIND_*.
+    pub rebind: u32,
+}
+
+/// A workspace's Workspace Overlay: the user's edits of its Suggested
+/// Layout, beyond each slot's flags. When the baseline changes nothing is
+/// dropped silently: a new slot is placed; an untouched slot removed
+/// departs (a DEPARTED note); an overridden slot removed is kept (flag
+/// REMOVED); an overridden slot whose content changes keeps its override
+/// (flag CHANGED); a tombstoned slot stays hidden until the provider reuses
+/// its key for other content (flag CHANGED).
+#[repr(C)]
+pub struct OverlayView {
+    /// The baseline's version (has_baseline 0: no Suggested Layout, an empty
+    /// baseline; primary_only: only the primary facts).
+    pub has_baseline: u32,
+    pub primary_only: u32,
+    pub baseline_version: Text,
+    /// The user's name and mood for the workspace, over the provider's.
+    pub has_name: u32,
+    pub name: Text,
+    pub has_mood: u32,
+    pub mood: Text,
+    /// The overlay owns the arrangement.
+    pub owned: u32,
+    pub notes: *const OverlayNoteView,
+    pub note_count: usize,
+}
+
+/// What an OverlayView points into.
+#[repr(C)]
+struct OwnedOverlay {
+    value: OverlayView,
+    view: andamento_core::slots::OverlayView,
+    notes: Vec<OverlayNoteView>,
+}
+
+/// A workspace's overlay. Free it with andamento_overlay_free.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_overlay_acquire(
+pub unsafe extern "C" fn andamento_overlay_get(
     h: *mut Andamento,
     workspace: WorkspaceIdView,
     error_out: *mut *mut c_char,
-) -> *mut AndamentoOverlay {
+) -> *mut OverlayView {
+    use andamento_core::suggested_layout::BaselineVersion;
     run(h, error_out, |h| {
         let view = h.sidebar.overlay(workspace.into())?;
-        let mut notes: Vec<(u32, String, u32)> = view
+        let notes: Vec<OverlayNoteView> = view
             .tombstoned
             .iter()
-            .map(|key| (ANDAMENTO_OVERLAY_TOMBSTONED, key.clone(), 0))
-            .collect();
-        notes.extend(view.departed.iter().map(|(key, rebind)| {
-            (
-                ANDAMENTO_OVERLAY_DEPARTED,
-                key.clone(),
-                rebind_code(*rebind),
+            .map(|key| (ANDAMENTO_OVERLAY_TOMBSTONED, key, 0))
+            .chain(
+                view.departed
+                    .iter()
+                    .map(|(key, rebind)| (ANDAMENTO_OVERLAY_DEPARTED, key, rebind_code(*rebind))),
             )
-        }));
-        Ok(Box::into_raw(Box::new(AndamentoOverlay {
-            baseline: view.baseline,
-            name: view.name,
-            mood: view.mood,
-            owned: view.owned,
-            notes,
-        })))
+            .map(|(kind, key, rebind)| OverlayNoteView {
+                kind,
+                key: Text::borrowed(key),
+                rebind,
+            })
+            .collect();
+        let version = match &view.baseline {
+            Some(BaselineVersion::Published(version)) => version.as_str(),
+            _ => "",
+        };
+        let text = |value: &Option<String>| Text::borrowed(value.as_deref().unwrap_or_default());
+        let value = OverlayView {
+            has_baseline: view.baseline.is_some() as u32,
+            primary_only: matches!(view.baseline, Some(BaselineVersion::PrimaryOnly)) as u32,
+            baseline_version: Text::borrowed(version),
+            has_name: view.name.is_some() as u32,
+            name: text(&view.name),
+            has_mood: view.mood.is_some() as u32,
+            mood: text(&view.mood),
+            owned: view.owned as u32,
+            notes: notes.as_ptr(),
+            note_count: notes.len(),
+        };
+        Ok(Box::into_raw(Box::new(OwnedOverlay { value, view, notes })).cast::<OverlayView>())
     })
     .unwrap_or(ptr::null_mut())
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn andamento_overlay_info(
-    overlay: *const AndamentoOverlay,
-    out: *mut OverlayInfoView,
-) -> u32 {
-    use andamento_core::suggested_layout::BaselineVersion;
-    let (Some(overlay), Some(out)) = (overlay.as_ref(), out.as_mut()) else {
-        return 0;
-    };
-    let version = match &overlay.baseline {
-        Some(BaselineVersion::Published(version)) => version.as_str(),
-        _ => "",
-    };
-    *out = OverlayInfoView {
-        has_baseline: overlay.baseline.is_some() as u32,
-        primary_only: matches!(overlay.baseline, Some(BaselineVersion::PrimaryOnly)) as u32,
-        baseline_version: Text::borrowed(version),
-        has_name: overlay.name.is_some() as u32,
-        name: Text::borrowed(overlay.name.as_deref().unwrap_or_default()),
-        has_mood: overlay.mood.is_some() as u32,
-        mood: Text::borrowed(overlay.mood.as_deref().unwrap_or_default()),
-        owned: overlay.owned as u32,
-        note_count: overlay.notes.len(),
-    };
-    1
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_overlay_note(
-    overlay: *const AndamentoOverlay,
-    index: usize,
-    out: *mut OverlayNoteView,
-) -> u32 {
-    let (Some(overlay), Some(out)) = (overlay.as_ref(), out.as_mut()) else {
-        return 0;
-    };
-    let Some((kind, key, rebind)) = overlay.notes.get(index) else {
-        return 0;
-    };
-    *out = OverlayNoteView {
-        kind: *kind,
-        key: Text::borrowed(key),
-        rebind: *rebind,
-    };
-    1
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_overlay_release(overlay: *mut AndamentoOverlay) {
+pub unsafe extern "C" fn andamento_overlay_free(overlay: *mut OverlayView) {
     if !overlay.is_null() {
-        drop(Box::from_raw(overlay));
+        drop(Box::from_raw(overlay.cast::<OwnedOverlay>()));
     }
 }
