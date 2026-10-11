@@ -3,6 +3,7 @@
 //! expected generation, and neither invalidates the sidebar's snapshot.
 //! Portable Target Resolutions (#158) are saved per slot in the record.
 use andamento_core::managed::{ContentState, TerminalContent};
+use andamento_core::records::WorkspaceRecord;
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::slots::{ArrangementDoc, ArrangementError, Panel, PanelNode};
 use andamento_core::suggested_layout::{
@@ -305,14 +306,15 @@ fn slots_follow_the_layout_and_arrangements_reconcile() {
 
     let name = format!("workspace/{WORKER}");
     let record = sidebar.export_record(&name).unwrap();
-    assert!(
-        record.contains(r#"slot "u:1" rebind="ask" presentation="terminal""#),
-        "{record}"
-    );
     let mut fresh = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
     fresh.import_record(&name, &record).unwrap();
     assert_eq!(fresh.slots(worker()), sidebar.slots(worker()));
-    assert_eq!(fresh.arrangement(worker()), sidebar.arrangement(worker()));
+    let (mut imported, live) = (
+        fresh.arrangement(worker()).unwrap(),
+        sidebar.arrangement(worker()).unwrap(),
+    );
+    imported.generation = live.generation;
+    assert_eq!(imported, live);
     assert_eq!(fresh.export_record(&name).unwrap(), record);
 }
 
@@ -596,11 +598,6 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     // plans Updating to the same resolution, with the saved one to try first.
     let name = format!("workspace/{WORKER}");
     let record = sidebar.export_record(&name).unwrap();
-    assert!(
-        record.contains(r#"resolution "r" kind="cleat-session" generation=1"#),
-        "{record}"
-    );
-    assert!(record.contains(r#"field "session" "S1""#), "{record}");
     let mut other = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
     other.import_record(&name, &record).unwrap();
     assert_eq!(other.export_record(&name).unwrap(), record);
@@ -621,8 +618,9 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     assert!(sidebar.content_revision() > revision);
     assert_eq!(sidebar.slot_resolution(worker(), "r").unwrap(), None);
     let record = sidebar.export_record(&name).unwrap();
-    assert!(!record.contains("resolution \"r\""), "{record}");
-    assert!(record.contains("resolutions last-generation=1"), "{record}");
+    let resolutions = WorkspaceRecord::decode(&record).unwrap().resolutions;
+    assert!(resolutions.get("r").is_none());
+    assert_eq!(resolutions.last_generation, 1);
     let plan = sidebar.plan_slot(worker(), "r", &first.id).unwrap();
     assert_eq!(
         (plan.state, plan.rebind, plan.saved),
@@ -695,8 +693,6 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
         .unwrap();
     assert!(sidebar.remove_slot(worker(), "r").unwrap());
     assert!(sidebar.slot_resolution(worker(), "r").is_err());
-    assert!(!sidebar
-        .export_record(&name)
-        .unwrap()
-        .contains("resolution \"r\""));
+    let record = WorkspaceRecord::decode(&sidebar.export_record(&name).unwrap()).unwrap();
+    assert!(record.resolutions.get("r").is_none());
 }

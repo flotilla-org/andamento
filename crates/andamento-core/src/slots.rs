@@ -9,13 +9,15 @@
 use crate::suggested_layout::{
     self, Axis, BaselineVersion, Content, RebindPolicy, SuggestedLayout, ViewSpec,
 };
+use crate::versioned::Versioned;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The prefix of slot keys the host adds. Provider keys never contain `:`.
 pub const USER_PREFIX: &str = "u:";
 
 /// The cached copy of the Suggested Layout a workspace's slots follow.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Baseline {
     pub version: BaselineVersion,
     /// In the provider's order.
@@ -47,7 +49,7 @@ impl Baseline {
 }
 
 /// A slot's definition: its key, View Spec and rebind policy.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotDef {
     pub key: String,
     pub spec: ViewSpec,
@@ -74,7 +76,7 @@ pub mod flag {
 
 /// The user's edit of one provider slot, keyed by slot key in the
 /// [`EditSet`]. Empty edits are never stored.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotEdit {
     /// An override or a tombstone, with the baseline content it was made
     /// against.
@@ -99,7 +101,7 @@ impl SlotEdit {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentEdit {
     pub change: ContentChange,
     /// The baseline content the edit was made against. When the provider's
@@ -108,7 +110,7 @@ pub struct ContentEdit {
     pub against: ViewSpec,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContentChange {
     /// The slot shows this instead, and is detached.
     Override(ViewSpec),
@@ -135,7 +137,7 @@ pub struct SlotInfo {
 
 /// A workspace's slot set: the cached baseline, the user's edits of it, and
 /// the slots the user added.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSlots {
     pub baseline: Option<Baseline>,
     /// Edits of provider slots, by slot key: normalised, so an edit that
@@ -471,13 +473,13 @@ fn check_spec(spec: &ViewSpec) -> Result<(), String> {
 
 /// A whole arrangement: a tree of panels with stable IDs. Leaves are tab
 /// panels holding slot keys; inner panels split along an axis.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ArrangementDoc {
     /// `None`: no panels.
     pub root: Option<Panel>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Panel {
     /// Stable within its arrangement; nonempty and unique.
     pub id: String,
@@ -514,7 +516,7 @@ impl Panel {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PanelNode {
     Split {
         axis: Axis,
@@ -667,7 +669,7 @@ pub(crate) fn check_panels(panels: Vec<&Panel>, duplicate_tabs: bool) -> Result<
 /// A soft override of one panel, keyed by panel ID: a split weight or the
 /// Selected View. Soft overrides never take ownership of the arrangement,
 /// so the provider's structure keeps flowing under them.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SoftOverride {
     pub weight: Option<f64>,
     pub selected: Option<String>,
@@ -679,11 +681,11 @@ impl SoftOverride {
     }
 }
 
-/// A workspace's stored arrangement.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct StoredArrangement {
-    /// Nonzero once stored; it changes whenever the document does.
-    pub generation: u64,
+/// A workspace's arrangement once stored. Its generation is the
+/// [`Versioned`] around it ([`StoredArrangement`]), so every field here,
+/// `provider_changed` among them, moves the generation when it changes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Arrangement {
     /// The user made a structural edit (split, move, close, reorder, add), so
     /// the overlay owns the whole document. Until then it is derived from the
     /// baseline's hint, with the soft overrides applied.
@@ -695,9 +697,13 @@ pub struct StoredArrangement {
     pub soft: BTreeMap<String, SoftOverride>,
     /// The provider changed its arrangement hint while the user owned the
     /// document. It is not applied; the host keeps the user's arrangement or
-    /// follows the provider's ([`StoredArrangement::resolve`]).
+    /// follows the provider's ([`Arrangement::resolve`]).
     pub provider_changed: bool,
 }
+
+/// A workspace's stored arrangement: `None`, at generation 0, until first
+/// stored.
+pub type StoredArrangement = Versioned<Option<Arrangement>>;
 
 /// An arrangement as the host reads it.
 #[derive(Clone, Debug, PartialEq)]
@@ -850,7 +856,7 @@ impl ArrangementDoc {
     }
 }
 
-impl StoredArrangement {
+impl Arrangement {
     /// The document the provider's baseline gives, before soft overrides:
     /// its hint less the slots the user removed, with every slot placed.
     fn derived(baseline: Option<&Baseline>, slots: &[SlotInfo]) -> (ArrangementDoc, Vec<String>) {
@@ -868,9 +874,10 @@ impl StoredArrangement {
         (doc, placed)
     }
 
-    /// Validate `doc` against the slot set and store it if `expected` is the
-    /// current generation, then reconcile it. Tabs may name current slots,
-    /// or slots already tabbed in the stored document that have since gone.
+    /// Validate `doc` against the slot set and make it the stored
+    /// arrangement, reconciled. Tabs may name current slots, or slots
+    /// already tabbed in the stored document that have since gone. Returns
+    /// the slots reconciling placed.
     ///
     /// The commit is diffed against the stored document. If only weights
     /// and selections differ and the user doesn't own the arrangement yet,
@@ -879,42 +886,34 @@ impl StoredArrangement {
     /// split, move, close, reorder or added tab) makes the overlay own the
     /// whole document from now on.
     pub fn commit(
-        &mut self,
+        stored: &mut Option<Self>,
         doc: ArrangementDoc,
-        expected: u64,
         baseline: Option<&Baseline>,
         slots: &[SlotInfo],
-        next_generation: &mut impl FnMut() -> u64,
-    ) -> Result<ArrangementCommit, ArrangementError> {
-        if expected != self.generation {
-            return Err(ArrangementError::Stale {
-                current: self.generation,
-            });
-        }
-        doc.check().map_err(ArrangementError::Invalid)?;
+    ) -> Result<Vec<String>, String> {
+        doc.check()?;
         let known: BTreeSet<&str> = slots.iter().map(|slot| slot.key.as_str()).collect();
-        let stored: BTreeSet<&str> = self.doc.tabs().into_iter().collect();
+        let tabbed: BTreeSet<&str> = stored.iter().flat_map(|a| a.doc.tabs()).collect();
         if let Some(tab) = doc
             .tabs()
             .into_iter()
-            .find(|tab| !known.contains(tab) && !stored.contains(tab))
+            .find(|tab| !known.contains(tab) && !tabbed.contains(tab))
         {
-            return Err(ArrangementError::Invalid(format!(
+            return Err(format!(
                 "no slot {tab:?}: add a slot before giving it a tab"
-            )));
+            ));
         }
-        let soft_only = !self.owned && self.generation != 0 && shape(&doc) == shape(&self.doc);
+        let soft_from = stored
+            .as_ref()
+            .filter(|a| !a.owned && shape(&doc) == shape(&a.doc));
         let mut next = Self {
-            generation: self.generation,
             owned: true,
             doc,
-            placed: BTreeSet::new(),
-            soft: BTreeMap::new(),
-            provider_changed: false,
+            ..Self::default()
         };
-        if soft_only {
+        if let Some(stored) = soft_from {
             next.owned = false;
-            next.soft = self.soft.clone();
+            next.soft = stored.soft.clone();
             let (base, _) = Self::derived(baseline, slots);
             for panel in next.doc.panels() {
                 let Some(from) = base.panels().into_iter().find(|p| p.id == panel.id) else {
@@ -943,16 +942,8 @@ impl StoredArrangement {
             }
         }
         let placed = next.reconcile(slots);
-        if next != *self {
-            next.generation = next_generation();
-            *self = next;
-        }
-        Ok(ArrangementCommit {
-            generation: self.generation,
-            placed,
-            gone: self.gone(slots).into_iter().collect(),
-            owned: self.owned,
-        })
+        *stored = Some(next);
+        Ok(placed)
     }
 
     /// Place slots with no tab. Returns those placed.
@@ -963,17 +954,12 @@ impl StoredArrangement {
         placed
     }
 
-    /// Follow a changed slot set or baseline. An arrangement the user
-    /// doesn't own is derived again: the baseline's hint less removed slots,
-    /// every slot placed, soft overrides reapplied. An owned one only gets
-    /// new slots placed. Returns whether the document changed.
-    pub fn follow(
-        &mut self,
-        baseline: Option<&Baseline>,
-        slots: &[SlotInfo],
-        next_generation: &mut impl FnMut() -> u64,
-    ) -> bool {
-        let mut next = self.clone();
+    /// Follow a changed slot set or baseline, storing the arrangement if
+    /// nothing is stored yet. One the user doesn't own is derived again: the
+    /// baseline's hint less removed slots, every slot placed, soft overrides
+    /// reapplied. An owned one only gets new slots placed.
+    pub fn follow(stored: &mut Option<Self>, baseline: Option<&Baseline>, slots: &[SlotInfo]) {
+        let mut next = stored.take().unwrap_or_default();
         if !next.owned {
             let (mut doc, placed) = Self::derived(baseline, slots);
             doc.apply_soft(&next.soft);
@@ -984,56 +970,36 @@ impl StoredArrangement {
         // Placed marks only tabs that still exist.
         let tabs: BTreeSet<String> = next.doc.tabs().into_iter().map(str::to_owned).collect();
         next.placed.retain(|tab| tabs.contains(tab));
-        if next == *self && self.generation != 0 {
-            return false;
-        }
-        next.generation = next_generation();
-        *self = next;
-        true
+        *stored = Some(next);
     }
 
     /// The provider's arrangement hint changed. An owned arrangement is
-    /// flagged rather than changed; returns whether the flag was raised.
-    pub fn note_hint_change(&mut self) -> bool {
-        if self.owned && !self.provider_changed {
-            self.provider_changed = true;
-            return true;
+    /// flagged rather than changed.
+    pub fn note_hint_change(stored: &mut Option<Self>) {
+        if let Some(arrangement) = stored.as_mut().filter(|a| a.owned) {
+            arrangement.provider_changed = true;
         }
-        false
     }
 
     /// Keep the user's arrangement over a provider change, or follow the
     /// provider again, dropping ownership and soft overrides.
     pub fn resolve(
-        &mut self,
+        stored: &mut Option<Self>,
         choice: Resolve,
-        expected: u64,
         baseline: Option<&Baseline>,
         slots: &[SlotInfo],
-        next_generation: &mut impl FnMut() -> u64,
-    ) -> Result<u64, ArrangementError> {
-        if expected != self.generation {
-            return Err(ArrangementError::Stale {
-                current: self.generation,
-            });
-        }
+    ) {
         match choice {
-            Resolve::Keep => self.provider_changed = false,
-            Resolve::Follow => {
-                let mut next = Self {
-                    generation: self.generation,
-                    doc: self.doc.clone(),
-                    ..Self::default()
-                };
-                next.follow(baseline, slots, &mut || 0);
-                next.generation = self.generation;
-                if next != *self {
-                    next.generation = next_generation();
-                    *self = next;
+            Resolve::Keep => {
+                if let Some(arrangement) = stored {
+                    arrangement.provider_changed = false;
                 }
             }
+            Resolve::Follow => {
+                *stored = None;
+                Self::follow(stored, baseline, slots);
+            }
         }
-        Ok(self.generation)
     }
 
     pub fn gone(&self, slots: &[SlotInfo]) -> BTreeSet<String> {
@@ -1066,16 +1032,17 @@ impl StoredArrangement {
             .collect()
     }
 
-    pub fn view(&self, slots: &[SlotInfo]) -> ArrangementView {
+    pub fn view(stored: &StoredArrangement, slots: &[SlotInfo]) -> ArrangementView {
+        let arrangement = stored.get().clone().unwrap_or_default();
         ArrangementView {
-            generation: self.generation,
-            owned: self.owned,
-            doc: self.doc.clone(),
-            placed: self.placed.clone(),
-            gone: self.gone(slots),
-            soft: self.soft.clone(),
-            provider_changed: self.provider_changed,
-            unresolved: self.unresolved(),
+            generation: stored.generation(),
+            gone: arrangement.gone(slots),
+            unresolved: arrangement.unresolved(),
+            owned: arrangement.owned,
+            doc: arrangement.doc,
+            placed: arrangement.placed,
+            soft: arrangement.soft,
+            provider_changed: arrangement.provider_changed,
         }
     }
 }
@@ -1101,7 +1068,7 @@ pub struct EditSet {
 }
 
 impl EditSet {
-    pub fn new(slots: &WorkspaceSlots, arrangement: Option<&StoredArrangement>) -> Self {
+    pub fn new(slots: &WorkspaceSlots, arrangement: Option<&Arrangement>) -> Self {
         Self {
             baseline: slots.baseline.as_ref().map(|b| b.version.clone()),
             name: slots.name.clone(),
@@ -1130,7 +1097,7 @@ pub struct OverlayView {
 }
 
 impl OverlayView {
-    pub fn new(slots: &WorkspaceSlots, arrangement: Option<&StoredArrangement>) -> Self {
+    pub fn new(slots: &WorkspaceSlots, arrangement: Option<&Arrangement>) -> Self {
         Self {
             edits: EditSet::new(slots, arrangement),
             owned: arrangement.is_some_and(|a| a.owned),

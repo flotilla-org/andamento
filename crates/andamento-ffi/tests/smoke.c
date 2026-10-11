@@ -392,21 +392,21 @@ static void check_records(const char *config_path, const char *patches_path) {
     assert(andamento_record_generation(h, T("workspace/9"), &error) == 0 && error);
     andamento_string_free(error); error = NULL;
     AndamentoBytes dashboard = {0}, workspace = {0}, again = {0};
-    ok(andamento_record_export(h, T("dashboard"), &dashboard, &error));
-    ok(andamento_record_export(h, workspace_name, &workspace, &error));
+    ok(andamento_record_get(h, T("dashboard"), &dashboard, &error));
+    ok(andamento_record_get(h, workspace_name, &workspace, &error));
     assert(has(dashboard, "andamento-record \"dashboard\" version=6"));
     assert(has(dashboard, "display \"show-issues\" false"));
     assert(has(dashboard, "local \".group\" \"g1\" provider=\"local\""));
     assert(!has(dashboard, "\"gone\""));
-    expected_error(andamento_record_export(h, T("nonsense"), &again, &error));
-    expected_error(andamento_record_export(h, T("dashboard"), NULL, &error));
+    expected_error(andamento_record_get(h, T("nonsense"), &again, &error));
+    expected_error(andamento_record_get(h, T("dashboard"), NULL, &error));
     assert(again.data == NULL);
     /* A fresh sidebar imports before observing anything or receiving a fact. */
     Andamento *fresh = fixture(config_path, NULL);
-    ok(andamento_record_import(fresh, T("dashboard"), (AndamentoText){dashboard.data, dashboard.len}, &error));
-    ok(andamento_record_import(fresh, workspace_name, (AndamentoText){workspace.data, workspace.len}, &error));
+    ok(andamento_record_put(fresh, T("dashboard"), (AndamentoText){dashboard.data, dashboard.len}, &error));
+    ok(andamento_record_put(fresh, workspace_name, (AndamentoText){workspace.data, workspace.len}, &error));
     assert(andamento_workspace_registered(fresh, notes, &error) && !error);
-    ok(andamento_record_export(fresh, T("dashboard"), &again, &error));
+    ok(andamento_record_get(fresh, T("dashboard"), &again, &error));
     assert(again.len == dashboard.len && memcmp(again.data, dashboard.data, again.len) == 0);
     andamento_bytes_free(again);
     s = snapshot(fresh);
@@ -414,9 +414,9 @@ static void check_records(const char *config_path, const char *patches_path) {
     andamento_snapshot_release(s);
     /* Another version, or another record's name, changes nothing. */
     uint64_t imported = andamento_record_generation(fresh, T("dashboard"), &error);
-    expected_error(andamento_record_import(fresh, T("dashboard"),
+    expected_error(andamento_record_put(fresh, T("dashboard"),
         T("andamento-record \"dashboard\" version=7"), &error));
-    expected_error(andamento_record_import(fresh, T("dashboard"), (AndamentoText){workspace.data, workspace.len}, &error));
+    expected_error(andamento_record_put(fresh, T("dashboard"), (AndamentoText){workspace.data, workspace.len}, &error));
     assert(andamento_record_generation(fresh, T("dashboard"), &error) == imported);
     andamento_bytes_free(dashboard); andamento_bytes_free(workspace);
     andamento_bytes_free((AndamentoBytes){0});
@@ -568,53 +568,53 @@ static void check_slots(const char *config_path, const char *patches_path) {
     assert(!andamento_slot_plan(h, ws, T("u:9"), T(""), &error));
     andamento_string_free(error); error = NULL;
     /* Commit an arrangement leaving u:3 out: it is placed in the first tab panel. */
-    AndamentoTab tabs[] = {{T("u:1"), 0, 0}, {T("u:2"), 0, 0}};
-    AndamentoPanel panels[] = {
-        {ANDAMENTO_NONE, T("root"), 1.0, ANDAMENTO_PANEL_SPLIT, ANDAMENTO_AXIS_ROW, 0, 0, ANDAMENTO_NONE},
-        {0, T("1"), 0.6, ANDAMENTO_PANEL_TABS, 0, 0, 2, 1},
-        {0, T("2"), 0.4, ANDAMENTO_PANEL_TABS, 0, 0, 0, ANDAMENTO_NONE},
+    AndamentoText tabs[] = {T("u:1"), T("u:2")};
+    AndamentoDocPanel leaves[] = {
+        {T("1"), 0.6, ANDAMENTO_PANEL_TABS, 0, NULL, 0, tabs, 2, T("u:2")},
+        {T("2"), 0.4, ANDAMENTO_PANEL_TABS, 0, NULL, 0, NULL, 0, T("")},
     };
-    uint64_t generation = 99;
-    assert(andamento_set_arrangement(h, ws, panels, 3, tabs, 2, 0, &generation, &error)
-        == ANDAMENTO_ARRANGEMENT_COMMITTED && !error && generation == 1);
+    AndamentoDocPanel root = {T("root"), 1.0, ANDAMENTO_PANEL_SPLIT, ANDAMENTO_AXIS_ROW, leaves, 2, NULL, 0, T("")};
+    AndamentoArrangementDoc doc = {&root};
+    AndamentoWorkspaceArrangement *a = andamento_arrangement_commit(h, ws, &doc, 0, &error);
+    assert(a && !error && a->status == ANDAMENTO_ARRANGEMENT_COMMITTED && a->owned);
+    uint64_t generation = a->generation;
+    assert(generation && a->doc.root->child_count == 2);
+    const AndamentoDocPanel *first = &a->doc.root->children[0];
+    assert(eq(first->id, "1") && first->weight == 0.6 && first->tab_count == 3);
+    assert(eq(first->tabs[2], "u:3") && eq(first->selected, "u:2"));
+    assert(a->note_count == 1 && a->notes[0].kind == ANDAMENTO_NOTE_PLACED && eq(a->notes[0].key, "u:3"));
+    andamento_arrangement_free(a);
     /* The sidebar's snapshot is still current. */
     ok(andamento_snapshot_is_current(h, s, &error));
     /* A stale generation is rejected without effect, and without an error. */
-    generation = 99;
-    assert(andamento_set_arrangement(h, ws, panels, 1, tabs, 0, 0, &generation, &error)
-        == ANDAMENTO_ARRANGEMENT_STALE && !error && generation == 1);
-    /* So is a tab for a slot that doesn't exist, or a malformed panel tree. */
-    AndamentoTab unknown = {T("u:9"), 0, 0};
-    AndamentoPanel lone = {ANDAMENTO_NONE, T("1"), 1.0, ANDAMENTO_PANEL_TABS, 0, 0, 1, 0};
-    expected_error(andamento_set_arrangement(h, ws, &lone, 1, &unknown, 1, 1, &generation, &error));
-    AndamentoPanel orphan[] = {panels[0], panels[1]};
-    orphan[1].parent = ANDAMENTO_NONE;
-    expected_error(andamento_set_arrangement(h, ws, orphan, 2, tabs, 2, 1, &generation, &error));
-    AndamentoArrangement *a = andamento_arrangement_acquire(h, ws, &error);
-    assert(a && !error);
-    AndamentoArrangementInfo info; assert(andamento_arrangement_info(a, &info));
-    assert(info.generation == 1 && info.owned && info.panel_count == 3 && info.tab_count == 3);
-    AndamentoPanel panel; assert(andamento_arrangement_panel(a, 1, &panel));
-    assert(panel.parent == 0 && eq(panel.id, "1") && panel.weight == 0.6);
-    assert(panel.kind == ANDAMENTO_PANEL_TABS && panel.tab_count == 3 && panel.selected == 1);
-    AndamentoTab tab; assert(andamento_arrangement_tab(a, 2, &tab));
-    assert(eq(tab.slot, "u:3") && tab.placed && !tab.gone);
-    andamento_arrangement_release(a);
-    /* Removing a slot keeps its tab, reported gone. */
+    a = andamento_arrangement_commit(h, ws, &(AndamentoArrangementDoc){NULL}, 0, &error);
+    assert(a && !error && a->status == ANDAMENTO_ARRANGEMENT_STALE && a->generation == generation);
+    andamento_arrangement_free(a);
+    /* So is a tab for a slot that doesn't exist, or a malformed panel. */
+    AndamentoText unknown = T("u:9");
+    AndamentoDocPanel lone = {T("1"), 1.0, ANDAMENTO_PANEL_TABS, 0, NULL, 0, &unknown, 1, T("")};
+    assert(!andamento_arrangement_commit(h, ws, &(AndamentoArrangementDoc){&lone}, generation, &error) && error);
+    andamento_string_free(error); error = NULL;
+    AndamentoDocPanel split_with_tabs = root;
+    split_with_tabs.tabs = tabs; split_with_tabs.tab_count = 2;
+    assert(!andamento_arrangement_commit(h, ws, &(AndamentoArrangementDoc){&split_with_tabs}, generation, &error) && error);
+    andamento_string_free(error); error = NULL;
+    /* Removing a slot keeps its tab, noted gone. */
     ok(andamento_slot_remove(h, ws, T("u:2"), &error));
-    a = andamento_arrangement_acquire(h, ws, &error);
-    assert(andamento_arrangement_tab(a, 1, &tab) && eq(tab.slot, "u:2") && tab.gone);
-    andamento_arrangement_release(a);
+    a = andamento_arrangement_get(h, ws, &error);
+    assert(a && !error && eq(a->doc.root->children[0].tabs[1], "u:2"));
+    int gone = 0;
+    for (size_t i = 0; i < a->note_count; i++) gone |= a->notes[i].kind == ANDAMENTO_NOTE_GONE && eq(a->notes[i].key, "u:2");
+    assert(gone);
+    andamento_arrangement_free(a);
     ok(andamento_snapshot_is_current(h, s, &error));
-    /* Both are in the workspace record. */
+    /* The workspace record is the host's to store, not to read. */
     AndamentoBytes record = {0};
-    ok(andamento_record_export(h, T("workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7d"), &record, &error));
-    assert(has(record, "version=6"));
-    assert(has(record, "slot \"u:1\" rebind=\"keep-previous\" presentation=\"terminal\""));
-    assert(has(record, "arrangement generation=1 owned=true"));
+    ok(andamento_record_get(h, T("workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7d"), &record, &error));
+    assert(record.len);
     andamento_bytes_free(record);
     andamento_slots_release(slots);
-    andamento_slots_release(NULL); andamento_arrangement_release(NULL); andamento_slot_plan_release(NULL);
+    andamento_slots_release(NULL); andamento_arrangement_free(NULL); andamento_slot_plan_release(NULL);
     andamento_snapshot_release(s);
     andamento_destroy(h);
 }
@@ -647,21 +647,35 @@ static size_t dashboard_notes(Andamento *h, uint32_t kind, const char *key) {
     andamento_dashboard_overlay_release(d);
     return found;
 }
-static void check_overlay(const char *config_path) {
-    Andamento *h = fixture(config_path, NULL);
-    const char *record =
-        "andamento-record \"workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7e\" version=5 {\n"
-        "    baseline version=\"1\" {\n"
-        "        slot \"a\" { shell \"top\"; }\n"
-        "        slot \"b\" rebind=\"keep-previous\" { shell \"make\"; }\n"
-        "        hint { split \"main\" axis=\"row\" { tabs \"left\" selected=\"a\" { tab \"a\"; }; "
-        "tabs \"right\" selected=\"b\" { tab \"b\"; }; }; }\n"
-        "    }\n"
-        "    arrangement generation=1 { split \"main\" axis=\"row\" { tabs \"left\" selected=\"a\" "
-        "{ tab \"a\"; }; tabs \"right\" selected=\"b\" { tab \"b\"; }; }; }\n"
-        "}";
-    ok(andamento_record_import(h, T("workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7e"),
-        (AndamentoText){(const uint8_t *)record, strlen(record)}, &error));
+static int arrangement_note(const AndamentoWorkspaceArrangement *a, uint32_t kind, const char *key) {
+    for (size_t i = 0; i < a->note_count; i++)
+        if (a->notes[i].kind == kind && eq(a->notes[i].key, key)) return 1;
+    return 0;
+}
+#define FACT(key, type, value) "\"" key "\":{\"value\":{\"type\":\"" type "\",\"value\":" value "}}"
+static void check_overlay(const char *config_path, const char *patches_path) {
+    Andamento *h = fixture(config_path, patches_path);
+    /* v's Suggested Layout: slots a and b, side by side. */
+    ok(andamento_apply_patch_json(h, 100, T("{\"target\":{\"kind\":\"entity\",\"value\":{\"kind\":\"vessel\",\"id\":\"v\"}},"
+        "\"source_id\":\"layout\",\"set\":{"
+        FACT("layout.version", "text", "\"1\"") "," FACT("layout.slots", "string-list", "[\"a\",\"b\"]") ","
+        FACT("layout.slot.a.kind", "text", "\"command\"") "," FACT("layout.slot.a.command", "text", "\"top\"") ","
+        FACT("layout.slot.b.kind", "text", "\"command\"") "," FACT("layout.slot.b.command", "text", "\"make\"") ","
+        FACT("layout.slot.b.rebind", "text", "\"keep-previous\"") "," FACT("layout.root", "text", "\"main\"") ","
+        FACT("layout.panel.main.axis", "text", "\"row\"") ","
+        FACT("layout.panel.main.children", "string-list", "[\"left\",\"right\"]") ","
+        FACT("layout.panel.left.slots", "string-list", "[\"a\"]") ","
+        FACT("layout.panel.right.slots", "string-list", "[\"b\"]") "}}"), &error));
+    /* A workspace opened for v. */
+    AndamentoSnapshot *s = snapshot(h);
+    ok(andamento_dispatch(h, s, find_node(s, "vessel").activate, &error));
+    andamento_snapshot_release(s);
+    AndamentoEffects *effects = take(h);
+    AndamentoEffect e; assert(andamento_effects_get(effects, 0, &e) && e.kind == ANDAMENTO_EFFECT_MATERIALIZE);
+    ok(andamento_complete3(h, e.request_id, ANDAMENTO_COMPLETE_MATERIALIZE, uuid(0x7e), T(""), &error));
+    andamento_effects_release(effects);
+    AndamentoWorkspace3 open = {uuid(0x7e), 0, T("Worker"), 1};
+    ok(andamento_observe3(h, &open, 1, NULL, 0, &error));
     AndamentoWorkspaceId ws = uuid(0x7e);
     /* Override b, change a's policy only: flags say which. */
     AndamentoViewSpec mine = {.content = ANDAMENTO_SLOT_COMMAND, .command = T("make check")};
@@ -675,33 +689,29 @@ static void check_overlay(const char *config_path) {
     assert(andamento_slots_flags(slots, 2) == 0 && andamento_slots_flags(NULL, 0) == 0);
     andamento_slots_release(slots);
     /* A divider resize is a soft override: not owned. */
-    AndamentoTab tabs[] = {{T("a"), 0, 0}, {T("b"), 0, 0}};
-    AndamentoPanel panels[] = {
-        {ANDAMENTO_NONE, T("main"), 1.0, ANDAMENTO_PANEL_SPLIT, ANDAMENTO_AXIS_ROW, 0, 0, ANDAMENTO_NONE},
-        {0, T("left"), 3.0, ANDAMENTO_PANEL_TABS, 0, 0, 1, 0},
-        {0, T("right"), 1.0, ANDAMENTO_PANEL_TABS, 0, 1, 1, 0},
-    };
-    uint64_t generation = 0;
-    AndamentoArrangement *a = andamento_arrangement_acquire(h, ws, &error);
-    AndamentoArrangementInfo info; assert(andamento_arrangement_info(a, &info));
-    andamento_arrangement_release(a);
-    assert(andamento_set_arrangement(h, ws, panels, 3, tabs, 2, info.generation, &generation, &error)
-        == ANDAMENTO_ARRANGEMENT_COMMITTED && !error);
-    a = andamento_arrangement_acquire(h, ws, &error);
-    assert(andamento_arrangement_info(a, &info) && !info.owned);
-    assert(andamento_arrangement_flags(a) == ANDAMENTO_ARRANGEMENT_FLAG_SOFT);
-    andamento_arrangement_release(a);
+    AndamentoWorkspaceArrangement *a = andamento_arrangement_get(h, ws, &error);
+    assert(a && !error && a->doc.root && a->doc.root->child_count == 2);
+    AndamentoDocPanel resized[2];
+    memcpy(resized, a->doc.root->children, sizeof resized);
+    resized[0].weight = 3.0;
+    AndamentoDocPanel root = *a->doc.root;
+    root.children = resized;
+    a = andamento_arrangement_commit(h, ws, &(AndamentoArrangementDoc){&root}, a->generation, &error);
+    assert(a && !error && a->status == ANDAMENTO_ARRANGEMENT_COMMITTED && !a->owned);
+    assert(a->flags == ANDAMENTO_ARRANGEMENT_FLAG_SOFT);
+    andamento_arrangement_free(a);
     /* Removing a baseline slot tombstones it; the derived arrangement drops its panel. */
     ok(andamento_slot_remove(h, ws, T("a"), &error));
     AndamentoOverlay *o = andamento_overlay_acquire(h, ws, &error);
     assert(o && !error && overlay_note(o, ANDAMENTO_OVERLAY_TOMBSTONED, "a"));
     andamento_overlay_release(o);
-    a = andamento_arrangement_acquire(h, ws, &error);
-    assert(andamento_arrangement_info(a, &info) && info.tab_count == 1);
+    a = andamento_arrangement_get(h, ws, &error);
     /* The soft override on the gone panel is kept and flagged. */
-    assert(andamento_arrangement_flags(a) == (ANDAMENTO_ARRANGEMENT_FLAG_SOFT | ANDAMENTO_ARRANGEMENT_FLAG_UNRESOLVED));
-    assert(note(a, ANDAMENTO_SECTION_UNRESOLVED, "left"));
-    andamento_arrangement_release(a);
+    assert(a->flags == (ANDAMENTO_ARRANGEMENT_FLAG_SOFT | ANDAMENTO_ARRANGEMENT_FLAG_UNRESOLVED));
+    assert(arrangement_note(a, ANDAMENTO_NOTE_UNRESOLVED, "left"));
+    uint64_t generation = 0;
+    AndamentoArrangementInfo info = {.generation = a->generation};
+    andamento_arrangement_free(a);
     /* Following the provider drops soft overrides. */
     assert(andamento_arrangement_resolve(h, ws, ANDAMENTO_ARRANGEMENT_FOLLOW, info.generation, &generation, &error)
         == ANDAMENTO_ARRANGEMENT_COMMITTED && !error && generation > info.generation);
@@ -813,7 +823,7 @@ static void check_sidebar_arrangement(void) {
     assert(note(a, ANDAMENTO_SECTION_UNRESOLVED, "b") && note(a, ANDAMENTO_SECTION_RESTORED, ".unplaced") == 0);
     andamento_arrangement_release(a);
     AndamentoBytes record = {0};
-    ok(andamento_record_export(h, T("dashboard"), &record, &error));
+    ok(andamento_record_get(h, T("dashboard"), &record, &error));
     assert(has(record, "sidebar generation=3 owned=true"));
     andamento_bytes_free(record);
     /* Reset places what is declared by its hints and forgets b. */
@@ -894,12 +904,9 @@ static void check_resolutions(const char *config_path) {
     /* It is in the workspace record, and another device reads it back. */
     AndamentoText name = T("workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7f");
     AndamentoBytes record = {0};
-    ok(andamento_record_export(h, name, &record, &error));
-    assert(has(record, "version=6"));
-    assert(has(record, "resolution \"u:1\" kind=\"cleat-session\" generation=1"));
-    assert(has(record, "field \"host\" \"feta\""));
+    ok(andamento_record_get(h, name, &record, &error));
     Andamento *other = fixture(config_path, NULL);
-    ok(andamento_record_import(other, name, (AndamentoText){record.data, record.len}, &error));
+    ok(andamento_record_put(other, name, (AndamentoText){record.data, record.len}, &error));
     saved = andamento_slot_resolution_acquire(other, ws, T("u:1"), &error);
     assert(saved && andamento_slot_resolution_get(saved, &r) && r.generation == 1);
     andamento_slot_resolution_release(saved);
@@ -935,7 +942,7 @@ int main(int argc, char **argv) {
     check_records(argv[1], argv[2]);
     check_slots(argv[1], argv[2]);
     check_sidebar_arrangement();
-    check_overlay(argv[1]);
+    check_overlay(argv[1], argv[2]);
     check_resolutions(argv[1]);
     check_typed_details(argv[3]);
     check_workdirs();

@@ -7,7 +7,7 @@ use andamento_core::managed::ContentState;
 use andamento_core::records::decode_proposal;
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::slots::{
-    flag, ArrangementDoc, ContentChange, Panel, PanelNode, Resolve, SlotInfo,
+    flag, ArrangementDoc, ArrangementError, ContentChange, Panel, PanelNode, Resolve, SlotInfo,
 };
 use andamento_core::suggested_layout::{
     Axis, BaselineVersion, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec,
@@ -278,13 +278,12 @@ fn an_untouched_slot_removed_goes_and_its_instance_follows_its_rebind_policy() {
         BTreeMap::from([("b".to_owned(), RebindPolicy::KeepPrevious)])
     );
     assert!(overlay.edits.slots.is_empty(), "nothing the user did");
-    let record = sidebar
-        .export_record(&format!("workspace/{WORKER}"))
+    let name = format!("workspace/{WORKER}");
+    let mut fresh = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
+    fresh
+        .import_record(&name, &sidebar.export_record(&name).unwrap())
         .unwrap();
-    assert!(
-        record.contains(r#"departed "b" rebind="keep-previous""#),
-        "{record}"
-    );
+    assert_eq!(fresh.overlay(worker()).unwrap().departed, overlay.departed);
     assert!(sidebar.release_slot_previous(worker(), "b").unwrap());
     assert!(!sidebar.release_slot_previous(worker(), "b").unwrap());
     assert!(sidebar.overlay(worker()).unwrap().departed.is_empty());
@@ -606,10 +605,12 @@ fn a_structural_edit_takes_ownership_and_a_provider_change_is_flagged() {
     assert_eq!(view.doc, moved);
     assert!(view.provider_changed);
     assert!(sidebar.content_revision() > content);
-    assert!(sidebar
-        .export_record(&format!("workspace/{WORKER}"))
-        .unwrap()
-        .contains("provider-changed=true"));
+    let name = format!("workspace/{WORKER}");
+    let mut fresh = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
+    fresh
+        .import_record(&name, &sidebar.export_record(&name).unwrap())
+        .unwrap();
+    assert!(fresh.arrangement(worker()).unwrap().provider_changed);
     // Keeping the user's arrangement settles it.
     sidebar
         .resolve_arrangement(worker(), Resolve::Keep, view.generation)
@@ -636,6 +637,90 @@ fn a_structural_edit_takes_ownership_and_a_provider_change_is_flagged() {
     assert!(!view.owned && !view.provider_changed);
     assert_eq!(panel_tabs(&view.doc, "top"), ["a", "b"]);
     assert_eq!(sidebar.overlay(worker()).unwrap().edits.arrangement, None);
+}
+
+/// The user owns the arrangement: `moved` puts every tab in one panel.
+fn owned_session() -> (Sidebar, ArrangementDoc) {
+    let mut sidebar = session(&V1);
+    let view = sidebar.arrangement(worker()).unwrap();
+    let moved = ArrangementDoc {
+        root: Some(Panel {
+            id: "main".into(),
+            weight: 1.0,
+            node: PanelNode::Tabs {
+                tabs: vec!["a".into(), "c".into(), "b".into()],
+                selected: Some("c".into()),
+            },
+        }),
+    };
+    assert!(
+        sidebar
+            .set_arrangement(worker(), moved.clone(), view.generation)
+            .unwrap()
+            .owned
+    );
+    (sidebar, moved)
+}
+
+#[test]
+fn a_provider_change_moves_the_generation_so_a_commit_cannot_erase_it() {
+    let (mut sidebar, moved) = owned_session();
+    // The host read the document before the provider changed its hint.
+    let read = sidebar.arrangement(worker()).unwrap().generation;
+    let v2 = Layout {
+        version: "2",
+        slots: V1.slots,
+        hint: &[("top", &["a"]), ("bottom", &["b", "c"])],
+    };
+    publish(&mut sidebar, 200, Some(&V1), &v2);
+    let flagged = sidebar.arrangement(worker()).unwrap();
+    assert!(flagged.provider_changed);
+    assert!(flagged.generation > read, "raising the flag is a change");
+    // A commit made against what the host read is stale, and the flag stays.
+    assert_eq!(
+        sidebar.set_arrangement(worker(), moved.clone(), read),
+        Err(ArrangementError::Stale {
+            current: flagged.generation
+        })
+    );
+    assert!(sidebar.arrangement(worker()).unwrap().provider_changed);
+    // Keeping the user's arrangement clears it, which is a change too.
+    let kept = sidebar
+        .resolve_arrangement(worker(), Resolve::Keep, flagged.generation)
+        .unwrap();
+    assert!(kept > flagged.generation);
+    assert!(sidebar
+        .set_arrangement(worker(), moved, flagged.generation)
+        .is_err());
+}
+
+#[test]
+fn an_imported_record_never_reuses_a_generation() {
+    // Two sidebars whose arrangements reached the same generation with
+    // different documents.
+    let (mut sidebar, _) = owned_session();
+    let mut other = session(&V1);
+    let mut doc = other.arrangement(worker()).unwrap().doc;
+    panel_mut(&mut doc, "right").weight = 3.0;
+    let generation = other.arrangement(worker()).unwrap().generation;
+    other.set_arrangement(worker(), doc, generation).unwrap();
+    let live = sidebar.arrangement(worker()).unwrap();
+    let theirs = other.arrangement(worker()).unwrap();
+    assert_ne!(live.doc, theirs.doc);
+    let read = live.generation;
+    // This sidebar imports the other's record. A commit the host prepared
+    // against the document it read is stale, not applied over the import.
+    let name = format!("workspace/{WORKER}");
+    sidebar
+        .import_record(&name, &other.export_record(&name).unwrap())
+        .unwrap();
+    let imported = sidebar.arrangement(worker()).unwrap();
+    assert_eq!(imported.doc, theirs.doc);
+    assert!(imported.generation > read);
+    assert!(matches!(
+        sidebar.set_arrangement(worker(), live.doc, read),
+        Err(ArrangementError::Stale { .. })
+    ));
 }
 
 #[test]
@@ -713,7 +798,14 @@ fn the_edit_set_exports_as_an_overlay_sync_proposal() {
     let mut fresh = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
     fresh.import_record(&name, &record).unwrap();
     assert_eq!(fresh.overlay(worker()), sidebar.overlay(worker()));
-    assert_eq!(fresh.arrangement(worker()), sidebar.arrangement(worker()));
+    // The same arrangement, at a generation of the fresh sidebar's own.
+    let (mut imported, live) = (
+        fresh.arrangement(worker()).unwrap(),
+        sidebar.arrangement(worker()).unwrap(),
+    );
+    assert_ne!(imported.generation, 0);
+    imported.generation = live.generation;
+    assert_eq!(imported, live);
     assert_eq!(fresh.export_record(&name).unwrap(), record);
 }
 

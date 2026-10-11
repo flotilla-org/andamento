@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 /// A portable Target Resolution as the host supplies it, for example kind
 /// `cleat-session` with fields `host=feta session=S daemon=D`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PortableResolution {
     /// The host's name for what kind of resolution this is.
     pub kind: String,
@@ -42,7 +42,7 @@ impl PortableResolution {
 }
 
 /// One slot's saved portable resolution.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SavedResolution {
     pub resolution: PortableResolution,
     /// The identity of the slot resolution this resolves: what the host
@@ -75,7 +75,7 @@ impl std::fmt::Display for ResolutionError {
 }
 
 /// A workspace's saved portable resolutions, by slot key.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SavedResolutions {
     pub by_slot: BTreeMap<String, SavedResolution>,
     /// The last generation given out, so a clear never lets a generation be

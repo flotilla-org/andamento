@@ -2,6 +2,7 @@
 //! exports it as versioned KDL, which a fresh sidebar imports before it has
 //! observed anything or received a fact.
 use andamento_core::presentation::{PlacementNode, PresentationState, SurfaceSnapshot};
+use andamento_core::records::WorkspaceRecord;
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::{
     DisplayVariableValue, EntityRef, MetadataPatch, MetadataTarget, MetadataValue,
@@ -244,29 +245,35 @@ fn export_all(sidebar: &mut Sidebar) -> Vec<(String, String)> {
 
 #[test]
 fn records_are_named_for_the_dashboard_and_registered_workspaces() {
-    let mut sidebar = arranged_session();
+    let sidebar = arranged_session();
     assert_eq!(
         sidebar.record_names(),
         vec!["dashboard".to_owned(), format!("workspace/{WORKER}")]
     );
-    let workspace = sidebar
-        .export_record(&format!("workspace/{WORKER}"))
-        .unwrap();
-    assert!(
-        workspace.contains("subject \"vessel\" \"v\" provider=\"local\""),
-        "{workspace}"
+    let workspace = WorkspaceRecord::decode(
+        &sidebar
+            .export_record(&format!("workspace/{WORKER}"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(workspace.subject, Some(entity("vessel", "v")));
+    let vessel = &workspace.retained[&entity("vessel", "v")];
+    assert_eq!(
+        (vessel.label.as_deref(), vessel.ended, vessel.last_seen_ms),
+        (Some("Vee"), true, Some(150))
     );
-    assert!(
-        workspace
-            .contains("retained \"vessel\" \"v\" provider=\"local\" label=\"Vee\" status=\"ended\" last-seen=150"),
-        "{workspace}"
+    let project = &workspace.retained[&entity("project", "p")];
+    assert_eq!(
+        (project.label.as_deref(), project.ended),
+        (Some("Project P"), false)
     );
-    assert!(workspace.contains(
-        "retained \"project\" \"p\" provider=\"local\" label=\"Project P\" status=\"retained\""
-    ));
-    assert!(workspace.contains("fact \"flotilla.project\" \"p\""));
     // Only facts placement reads are kept, not the full fact set.
-    assert!(!workspace.contains("action.primary.recipe"), "{workspace}");
+    for retained in workspace.retained.values() {
+        assert_eq!(
+            retained.facts.keys().collect::<Vec<_>>(),
+            ["flotilla.project"]
+        );
+    }
     let dashboard = sidebar.export_record("dashboard").unwrap();
     for wanted in [
         "display \"show-finished\" true",
@@ -379,8 +386,10 @@ fn closing_a_registered_workspace_keeps_its_record_and_forgetting_drops_it() {
 
 #[test]
 fn unknown_nodes_survive_export_import_export() {
-    let mut sidebar = arranged_session();
-    for name in sidebar.record_names() {
+    // Only the dashboard record: a workspace record is private to this
+    // Andamento, with no unknown nodes.
+    let sidebar = arranged_session();
+    for name in ["dashboard".to_owned()] {
         let text = sidebar.export_record(&name).unwrap();
         let extended = text.replacen(
             "{\n",
@@ -410,6 +419,14 @@ fn other_versions_and_bad_records_are_rejected_without_change() {
         .collect::<Vec<_>>();
     let revision = sidebar.revision();
     for (name, text) in &records {
+        if name != "dashboard" {
+            // A workspace record is what this Andamento wrote, or nothing.
+            assert!(sidebar.import_record(name, "{").is_err());
+            assert!(sidebar
+                .import_record(name, &text.replacen("{", "[", 1))
+                .is_err());
+            continue;
+        }
         let future = text.replacen("version=6", "version=7", 1);
         let error = sidebar.import_record(name, &future).unwrap_err();
         assert!(error.contains("version 7"), "{error}");
@@ -496,10 +513,11 @@ fn generations_change_only_with_content() {
     sidebar.apply(8_000, [vessel("v", "Renamed")]);
     let renamed = sidebar.record_generation(&name).unwrap();
     assert!(renamed > workspace);
-    assert!(sidebar
-        .export_record(&name)
-        .unwrap()
-        .contains("label=\"Renamed\""));
+    let record = WorkspaceRecord::decode(&sidebar.export_record(&name).unwrap()).unwrap();
+    assert_eq!(
+        record.retained[&entity("vessel", "v")].label.as_deref(),
+        Some("Renamed")
+    );
 
     // Importing what is already there is no change.
     let text = sidebar.export_record("dashboard").unwrap();

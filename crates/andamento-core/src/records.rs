@@ -1,6 +1,8 @@
-//! Named records: the logical sidebar state Andamento owns, as KDL inside a
-//! versioned envelope. The host decides where each record is stored and when
-//! it is written; Andamento never touches the filesystem.
+//! Named records: the logical sidebar state Andamento owns, as bytes the host
+//! stores without reading. The host decides where each record is stored and
+//! when it is written; Andamento never touches the filesystem. A workspace
+//! record is [`WorkspaceRecord`] serialised (private and unversioned); the
+//! dashboard record is still KDL inside a versioned envelope:
 //!
 //! ```kdl
 //! andamento-record "dashboard" version=2 {
@@ -45,17 +47,18 @@ use std::{
 };
 
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     sidebar_arrangement::{SidebarArrangement, SidebarDoc},
     slots::{
-        ArrangementDoc, Baseline, ContentChange, ContentEdit, EditSet, Panel, PanelNode, SlotDef,
-        SlotEdit, SoftOverride, StoredArrangement, WorkspaceSlots,
+        ArrangementDoc, ContentChange, ContentEdit, EditSet, Panel, PanelNode, SlotDef, SlotEdit,
+        SoftOverride, StoredArrangement, WorkspaceSlots,
     },
     suggested_layout::{
         Axis, BaselineVersion, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec,
     },
-    target_resolution::{PortableResolution, SavedResolution, SavedResolutions},
+    target_resolution::SavedResolutions,
     DisplayVariableValue, EntityRef, MetadataValue, PlacementKey, PlacementLoopKey,
     PlacementSegment, WorkspaceId,
 };
@@ -127,27 +130,27 @@ pub struct DashboardRecord {
     pub unknown: Vec<String>,
 }
 
-/// One workspace's logical state.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// One workspace's logical state. It is stored as private, unversioned
+/// bytes ([`WorkspaceRecord::encode`]); only this Andamento reads them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceRecord {
     /// The entity the workspace was opened for.
     pub subject: Option<EntityRef>,
     /// The subject and the entities on its path, as last seen, so the row can
     /// be drawn where it was when no producer publishes them.
+    #[serde(with = "pairs")]
     pub retained: BTreeMap<EntityRef, SubjectRecord>,
     /// Its slots: the cached baseline and the Workspace Overlay's edits of
     /// it, the user's own slots among them.
     pub slots: WorkspaceSlots,
-    /// Its arrangement document.
-    pub arrangement: Option<StoredArrangement>,
+    /// Its arrangement document. Its generation is not stored.
+    pub arrangement: StoredArrangement,
     /// Portable Target Resolutions saved for its slots.
     pub resolutions: SavedResolutions,
-    /// Nodes this version doesn't know, as KDL text.
-    pub unknown: Vec<String>,
 }
 
 /// The least needed to draw a row with no facts.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubjectRecord {
     pub label: Option<String>,
     /// Ended (`status="ended"`), else retained (`status="retained"`).
@@ -289,350 +292,52 @@ impl DashboardRecord {
 }
 
 impl WorkspaceRecord {
-    pub fn encode(&self, id: WorkspaceId) -> String {
-        let mut body = Vec::new();
-        if let Some(subject) = &self.subject {
-            body.push(entity_node("subject", subject));
-        }
-        for (entity, subject) in &self.retained {
-            let mut node = entity_node("retained", entity);
-            if let Some(label) = &subject.label {
-                node.insert("label", label.clone());
-            }
-            node.insert("status", if subject.ended { "ended" } else { "retained" });
-            if let Some(seen) = subject.last_seen_ms {
-                node.insert("last-seen", i64::try_from(seen).unwrap_or(i64::MAX));
-            }
-            push_facts(&mut node, &subject.facts);
-            body.push(node);
-        }
-        if let Some(baseline) = &self.slots.baseline {
-            let mut node = KdlNode::new("baseline");
-            match &baseline.version {
-                BaselineVersion::Published(version) => node.insert("version", version.clone()),
-                BaselineVersion::PrimaryOnly => node.insert("primary-only", true),
-            };
-            let children = node.ensure_children();
-            for slot in &baseline.slots {
-                children.nodes_mut().push(slot_node("slot", slot));
-            }
-            if let Some(hint) = &baseline.hint {
-                children.nodes_mut().push(doc_node("hint", hint));
-            }
-            body.push(node);
-        }
-        let edits = EditSet::new(&self.slots, self.arrangement.as_ref());
-        let mut overlay = KdlNode::new("overlay");
-        // The owned arrangement is the `arrangement` node below.
-        push_edits(
-            &mut overlay,
-            &EditSet {
-                arrangement: None,
-                ..edits
-            },
-        );
-        if overlay.children().is_some() {
-            body.push(overlay);
-        }
-        if let Some(arrangement) = &self.arrangement {
-            let mut node = doc_node("arrangement", &arrangement.doc);
-            node.insert(
-                "generation",
-                i64::try_from(arrangement.generation).unwrap_or(i64::MAX),
-            );
-            node.insert("owned", arrangement.owned);
-            if arrangement.provider_changed {
-                node.insert("provider-changed", true);
-            }
-            for tab in &arrangement.placed {
-                let mut placed = KdlNode::new("placed");
-                placed.push(KdlEntry::new(tab.clone()));
-                node.ensure_children().nodes_mut().push(placed);
-            }
-            body.push(node);
-        }
-        for (key, rebind) in &self.slots.departed {
-            let mut node = KdlNode::new("departed");
-            node.push(KdlEntry::new(key.clone()));
-            node.insert("rebind", rebind_name(*rebind));
-            body.push(node);
-        }
-        if !self.resolutions.is_empty() {
-            body.push(resolutions_node(&self.resolutions));
-        }
-        envelope(&RecordName::Workspace(id), body, &self.unknown)
+    pub fn encode(&self) -> String {
+        serde_json::to_string(self).expect("a workspace record serialises")
     }
 
-    /// Read a record. A version 1 record's entities get `default_provider`
-    /// (see the module documentation).
-    pub fn decode(text: &str, id: WorkspaceId, default_provider: &str) -> Result<Self, String> {
-        let mut record = Self::default();
-        let mut soft = BTreeMap::new();
-        let (version, nodes) = open_envelope(text, &RecordName::Workspace(id))?;
-        let read = Reader::new(version, default_provider);
-        for node in nodes {
-            match node.name().value() {
-                "subject" => record.subject = Some(read.entity(&node)?),
-                "retained" => {
-                    let ended = match node.get("status").map(|e| e.value().as_string()) {
-                        None | Some(Some("retained")) => false,
-                        Some(Some("ended")) => true,
-                        _ => return Err("retained status must be \"retained\" or \"ended\"".into()),
-                    };
-                    let label = match node.get("label") {
-                        None => None,
-                        Some(entry) => Some(
-                            entry
-                                .value()
-                                .as_string()
-                                .ok_or("retained label must be a string")?
-                                .to_owned(),
-                        ),
-                    };
-                    let last_seen_ms = match node.get("last-seen") {
-                        None => None,
-                        Some(entry) => Some(
-                            entry
-                                .value()
-                                .as_i64()
-                                .and_then(|n| u64::try_from(n).ok())
-                                .ok_or("last-seen must be a nonnegative integer")?,
-                        ),
-                    };
-                    record.retained.insert(
-                        read.entity(&node)?,
-                        SubjectRecord {
-                            label,
-                            ended,
-                            last_seen_ms,
-                            facts: read.facts(&node)?,
-                        },
-                    );
-                }
-                "baseline" if version >= 3 => {
-                    let version = match (node.get("version"), node.get("primary-only")) {
-                        (Some(entry), None) => BaselineVersion::Published(
-                            entry
-                                .value()
-                                .as_string()
-                                .ok_or("baseline version must be a string")?
-                                .to_owned(),
-                        ),
-                        (None, Some(_)) => BaselineVersion::PrimaryOnly,
-                        _ => return Err("a baseline has a version or is primary-only".into()),
-                    };
-                    let mut baseline = Baseline {
-                        version,
-                        slots: Vec::new(),
-                        hint: None,
-                    };
-                    for child in children(&node) {
-                        match child.name().value() {
-                            "slot" => baseline.slots.push(read.slot(child)?),
-                            "hint" => baseline.hint = Some(read_doc(child)?),
-                            other => return Err(format!("unexpected {other:?} in baseline")),
-                        }
-                    }
-                    record.slots.baseline = Some(baseline);
-                }
-                // Versions 3 and 4: an override set content and policy
-                // together, and user slots sat in the envelope.
-                "override" if (3..5).contains(&version) => {
-                    let slot = read.slot(&node)?;
-                    let against = children(&node)
-                        .iter()
-                        .find(|child| child.name().value() == "against")
-                        .ok_or("an override records what it was made against")?;
-                    record.slots.edits.insert(
-                        slot.key,
-                        SlotEdit {
-                            content: Some(ContentEdit {
-                                change: ContentChange::Override(slot.spec),
-                                against: read.spec(against)?,
-                            }),
-                            rebind: Some(slot.rebind),
-                        },
-                    );
-                }
-                "slot" if (3..5).contains(&version) => record.slots.user.push(read.slot(&node)?),
-                "overlay" if version >= 5 => {
-                    let edits = read.edits(&node)?;
-                    record.slots.edits = edits.slots;
-                    record.slots.user = edits.added;
-                    record.slots.name = edits.name;
-                    record.slots.mood = edits.mood;
-                    soft = edits.panels;
-                }
-                "resolutions" if version >= 6 => record.resolutions = read_resolutions(&node)?,
-                "departed" if version >= 5 => {
-                    record
-                        .slots
-                        .departed
-                        .insert(string_arg(&node, 0)?, read_rebind(&node)?);
-                }
-                "arrangement" if version >= 3 => {
-                    let generation = node
-                        .get("generation")
-                        .and_then(|e| e.value().as_i64())
-                        .and_then(|n| u64::try_from(n).ok())
-                        .filter(|n| *n > 0)
-                        .ok_or("an arrangement needs a positive generation")?;
-                    let owned = node
-                        .get("owned")
-                        .map(|e| e.value().as_bool().ok_or("owned must be a boolean"))
-                        .transpose()?
-                        .unwrap_or(false);
-                    let placed = children(&node)
-                        .iter()
-                        .filter(|child| child.name().value() == "placed")
-                        .map(|child| string_arg(child, 0))
-                        .collect::<Result<_, _>>()?;
-                    let provider_changed = node
-                        .get("provider-changed")
-                        .map(|e| {
-                            e.value()
-                                .as_bool()
-                                .ok_or("provider-changed must be a boolean")
-                        })
-                        .transpose()?
-                        .unwrap_or(false);
-                    record.arrangement = Some(StoredArrangement {
-                        generation,
-                        owned,
-                        doc: read_doc(&node)?,
-                        placed,
-                        soft: BTreeMap::new(),
-                        provider_changed,
-                    });
-                }
-                _ => record.unknown.push(canonical(node)),
-            }
-        }
-        if !soft.is_empty() {
-            let arrangement = record
-                .arrangement
-                .as_mut()
-                .ok_or("soft overrides need an arrangement")?;
-            if arrangement.owned {
+    /// Read bytes [`encode`](Self::encode) wrote. The documents in it have
+    /// no generation yet: the caller gives them new ones.
+    pub fn decode(text: &str) -> Result<Self, String> {
+        let record: Self = serde_json::from_str(text)
+            .map_err(|error| format!("not a workspace record: {error}"))?;
+        if let Some(arrangement) = record.arrangement.get() {
+            arrangement.doc.check()?;
+            if arrangement.owned && !arrangement.soft.is_empty() {
                 return Err("an owned arrangement has no soft overrides".into());
             }
-            arrangement.soft = soft;
         }
-        if version < 5 {
-            // Normalise migrated overrides: a policy that is the baseline's
-            // is no edit.
-            for (key, edit) in record.slots.edits.iter_mut() {
-                let slot = record.slots.baseline.as_ref().and_then(|b| b.slot(key));
-                if let Some(slot) = slot {
-                    if edit.rebind == Some(slot.rebind) {
-                        edit.rebind = None;
-                    }
-                }
-            }
+        for saved in record.resolutions.by_slot.values() {
+            saved.resolution.check()?;
         }
         Ok(record)
     }
 }
 
-/// A workspace's saved portable resolutions:
-///
-/// ```kdl
-/// resolutions last-generation=3 {
-///     resolution "reviewer" kind="cleat-session" generation=3 against="…" {
-///         field "daemon" "D"
-///         field "host" "feta"
-///     }
-/// }
-/// ```
-fn resolutions_node(resolutions: &SavedResolutions) -> KdlNode {
-    let mut node = KdlNode::new("resolutions");
-    node.insert(
-        "last-generation",
-        i64::try_from(resolutions.last_generation).unwrap_or(i64::MAX),
-    );
-    for (key, saved) in &resolutions.by_slot {
-        let mut child = KdlNode::new("resolution");
-        child.push(KdlEntry::new(key.clone()));
-        child.insert("kind", saved.resolution.kind.clone());
-        child.insert(
-            "generation",
-            i64::try_from(saved.generation).unwrap_or(i64::MAX),
-        );
-        child.insert("against", saved.against.clone());
-        for (name, value) in &saved.resolution.fields {
-            let mut field = KdlNode::new("field");
-            field.push(KdlEntry::new(name.clone()));
-            field.push(KdlEntry::new(value.clone()));
-            child.ensure_children().nodes_mut().push(field);
-        }
-        node.ensure_children().nodes_mut().push(child);
-    }
-    node
-}
+/// A map with structured keys as a list of pairs (JSON keys are strings).
+mod pairs {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
 
-fn read_resolutions(node: &KdlNode) -> Result<SavedResolutions, String> {
-    let positive = |node: &KdlNode, name: &str| {
-        node.get(name)
-            .and_then(|e| e.value().as_i64())
-            .and_then(|n| u64::try_from(n).ok())
-            .filter(|n| *n > 0)
-            .ok_or_else(|| format!("{} needs a positive {name}", node.name().value()))
-    };
-    let string = |node: &KdlNode, name: &str| {
-        node.get(name)
-            .and_then(|e| e.value().as_string())
-            .map(str::to_owned)
-            .ok_or_else(|| format!("{} needs a string {name}", node.name().value()))
-    };
-    let mut out = SavedResolutions {
-        last_generation: positive(node, "last-generation")?,
-        ..SavedResolutions::default()
-    };
-    for child in children(node) {
-        if child.name().value() != "resolution" {
-            return Err(format!(
-                "unexpected {:?} in resolutions",
-                child.name().value()
-            ));
-        }
-        let key = string_arg(child, 0)?;
-        let mut resolution = PortableResolution {
-            kind: string(child, "kind")?,
-            fields: BTreeMap::new(),
-        };
-        for field in children(child) {
-            if field.name().value() != "field" {
-                return Err(format!(
-                    "unexpected {:?} in resolution",
-                    field.name().value()
-                ));
-            }
-            let name = string_arg(field, 0)?;
-            if resolution
-                .fields
-                .insert(name.clone(), string_arg(field, 1)?)
-                .is_some()
-            {
-                return Err(format!("resolution field {name:?} is given twice"));
-            }
-        }
-        resolution.check()?;
-        let saved = SavedResolution {
-            resolution,
-            against: string(child, "against")?,
-            generation: positive(child, "generation")?,
-        };
-        if saved.against.is_empty() {
-            return Err("a saved resolution names the slot resolution it resolves".into());
-        }
-        if saved.generation > out.last_generation {
-            return Err("a saved resolution's generation is past last-generation".into());
-        }
-        if out.by_slot.insert(key.clone(), saved).is_some() {
-            return Err(format!("slot {key:?} has two saved resolutions"));
-        }
+    pub fn serialize<K: Serialize, V: Serialize, S: Serializer>(
+        map: &BTreeMap<K, V>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(map)
     }
-    Ok(out)
+
+    pub fn deserialize<
+        'de,
+        K: Ord + Deserialize<'de>,
+        V: Deserialize<'de>,
+        D: Deserializer<'de>,
+    >(
+        deserializer: D,
+    ) -> Result<BTreeMap<K, V>, D::Error> {
+        Ok(Vec::<(K, V)>::deserialize(deserializer)?
+            .into_iter()
+            .collect())
+    }
 }
 
 /// Whether a fact value can be written to a record. Lists of text and group
@@ -1458,6 +1163,11 @@ fn read_facts(read: &Reader, node: &KdlNode) -> Result<BTreeMap<String, Metadata
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        slots::{Arrangement, Baseline},
+        target_resolution::{PortableResolution, SavedResolution},
+        versioned::Versioned,
+    };
 
     fn entity(kind: &str, id: &str) -> EntityRef {
         EntityRef::local(kind, id)
@@ -1568,7 +1278,6 @@ mod tests {
 
     #[test]
     fn workspace_round_trips() {
-        let id: WorkspaceId = "01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b".parse().unwrap();
         let record = WorkspaceRecord {
             subject: Some(entity("vessel", "v")),
             retained: BTreeMap::from([
@@ -1586,22 +1295,9 @@ mod tests {
                 ),
                 (entity("project", "p"), SubjectRecord::default()),
             ]),
-            slots: WorkspaceSlots::default(),
-            arrangement: None,
-            resolutions: SavedResolutions::default(),
-            unknown: vec![],
+            ..WorkspaceRecord::default()
         };
-        let text = record.encode(id);
-        assert!(text.starts_with(
-            "andamento-record \"workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b\" version=6"
-        ));
-        assert_eq!(
-            WorkspaceRecord::decode(&text, id, "local").unwrap(),
-            record,
-            "{text}"
-        );
-        // A record for one workspace is not another's.
-        assert!(WorkspaceRecord::decode(&text, WorkspaceId::from(7), "local").is_err());
+        assert_eq!(WorkspaceRecord::decode(&record.encode()).unwrap(), record);
     }
 
     fn spec(content: Content, presentation: Option<&str>) -> ViewSpec {
@@ -1766,14 +1462,13 @@ mod tests {
                     },
                 ],
             },
-            arrangement: Some(StoredArrangement {
-                generation: 4,
+            arrangement: Versioned::from(Some(Arrangement {
                 owned: true,
                 doc: arrangement,
                 placed: BTreeSet::from(["u:2".into()]),
                 soft: BTreeMap::new(),
                 provider_changed: true,
-            }),
+            })),
             resolutions: SavedResolutions {
                 by_slot: BTreeMap::from([
                     (
@@ -1805,198 +1500,36 @@ mod tests {
                 ]),
                 last_generation: 6,
             },
-            unknown: vec![],
         }
     }
 
     #[test]
     fn workspace_slots_and_arrangement_round_trip() {
-        let id = WorkspaceId::from(7);
         let record = workspace_with_slots();
-        let text = record.encode(id);
-        assert_eq!(
-            WorkspaceRecord::decode(&text, id, "local").unwrap(),
-            record,
-            "{text}"
-        );
-        assert_eq!(
-            WorkspaceRecord::decode(&text, id, "local")
-                .unwrap()
-                .encode(id),
-            text
-        );
-        for expected in [
-            r#"baseline version="1" {"#,
-            r#"slot "reviewer" rebind="keep-previous" presentation="terminal" {"#,
-            r#"facet "terminal" "vessel" "reviewer" provider="sub-1""#,
-            r#"overlay {"#,
-            r#"name "Review \"two\"""#,
-            r#"mood "focused""#,
-            r#"edit "notes" {"#,
-            r#"tombstone"#,
-            r#"edit "primary" rebind="ask""#,
-            r#"edit "reviewer" rebind="replace" {"#,
-            r#"override {"#,
-            r#"argv "htop" "-d" cwd="/srv""#,
-            r#"against presentation="terminal" {"#,
-            r#"slot "u:2" {"#,
-            r#"arrangement generation=4 owned=true provider-changed=true {"#,
-            r#"departed "old" rebind="keep-previous""#,
-            r#"split "main" axis="column" weight=1.0 {"#,
-            r#"tabs "agents" weight=0.625 selected="reviewer" {"#,
-            r#"tab "gone""#,
-            r#"placed "u:2""#,
-            r#"resolutions last-generation=6 {"#,
-            r##"resolution "reviewer" kind="cleat-session" generation=5 against="4:r#12:shell" {"##,
-            r#"field "daemon" "D""#,
-            r#"field "session" "S \"1\"""#,
-            r#"resolution "u:3" kind="jackstay-endpoint" generation=2 against="0:8:jackstay""#,
-        ] {
-            assert!(text.contains(expected), "{expected}\n{text}");
-        }
-        // Every generation given out is remembered, even with none saved.
-        let mut cleared = WorkspaceRecord {
-            resolutions: SavedResolutions {
-                last_generation: 6,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let text = cleared.encode(id);
-        assert!(text.contains("resolutions last-generation=6"), "{text}");
-        assert_eq!(
-            WorkspaceRecord::decode(&text, id, "local").unwrap(),
-            cleared
-        );
-        cleared.resolutions.last_generation = 0;
-        assert!(!cleared.encode(id).contains("resolutions"));
-        // A primary-only baseline and an empty, uncommitted arrangement.
-        let mut record = WorkspaceRecord::default();
-        record.slots.baseline = Some(Baseline {
-            version: BaselineVersion::PrimaryOnly,
-            slots: vec![],
-            hint: None,
-        });
-        record.arrangement = Some(StoredArrangement {
-            generation: 1,
-            ..Default::default()
-        });
-        let text = record.encode(id);
-        assert!(!text.contains("overlay"), "{text}");
-        assert_eq!(WorkspaceRecord::decode(&text, id, "local").unwrap(), record);
-        // Soft overrides of an arrangement the overlay doesn't own.
-        record.arrangement = Some(StoredArrangement {
-            generation: 2,
+        assert_eq!(WorkspaceRecord::decode(&record.encode()).unwrap(), record);
+        // What isn't a record, or breaks a document's rules, is rejected.
+        assert!(WorkspaceRecord::decode("{").is_err());
+        let mut bad = record.clone();
+        bad.arrangement = Versioned::from(Some(Arrangement {
             doc: ArrangementDoc {
-                root: Some(tabs("p", 1.0, &["primary"], Some("primary"))),
+                root: Some(tabs("p", 0.0, &["primary"], None)),
             },
-            soft: BTreeMap::from([
-                (
-                    "p".into(),
-                    SoftOverride {
-                        weight: Some(0.25),
-                        selected: Some("primary".into()),
-                    },
-                ),
-                (
-                    "gone".into(),
-                    SoftOverride {
-                        weight: None,
-                        selected: Some("x".into()),
-                    },
-                ),
-            ]),
             ..Default::default()
-        });
-        let text = record.encode(id);
-        assert!(
-            text.contains(r#"panel "p" weight=0.25 selected="primary""#),
-            "{text}"
-        );
-        assert_eq!(WorkspaceRecord::decode(&text, id, "local").unwrap(), record);
-        // An owned arrangement has none; an edit says what it changes.
-        for body in [
-            r#"overlay { panel "p" weight=0.5; }; arrangement generation=1 owned=true { tabs "p"; }"#,
-            r#"overlay { panel "p"; }; arrangement generation=1 { tabs "p"; }"#,
-            r#"overlay { panel "p" weight=0.5; }"#,
-            r#"overlay { edit "a"; }"#,
-            r#"overlay { edit "a" { tombstone; }; }"#,
-            r#"overlay { edit "a" { against { url "x"; }; }; }"#,
-            r#"overlay { edit "a" { tombstone; override { url "y"; }; against { url "x"; }; }; }"#,
-            r#"overlay { nope; }"#,
-            r#"departed "a" rebind="never""#,
-            r#"resolutions"#,
-            r#"resolutions last-generation=0"#,
-            r#"resolutions last-generation=1 { nope; }"#,
-            r#"resolutions last-generation=1 { resolution "a" kind="k" against="x"; }"#,
-            r#"resolutions last-generation=1 { resolution "a" kind="k" generation=2 against="x"; }"#,
-            r#"resolutions last-generation=1 { resolution "a" kind="K" generation=1 against="x"; }"#,
-            r#"resolutions last-generation=1 { resolution "a" kind="k" generation=1; }"#,
-            r#"resolutions last-generation=1 { resolution "a" kind="k" generation=1 against=""; }"#,
-            r#"resolutions last-generation=1 { resolution "a" kind="k" generation=1 against="x" { field "h" "1"; field "h" "2"; }; }"#,
-            r#"resolutions last-generation=2 { resolution "a" kind="k" generation=1 against="x"; resolution "a" kind="k" generation=2 against="x"; }"#,
-        ] {
-            let text = format!("andamento-record \"workspace/7\" version=6 {{ {body}; }}");
-            assert!(
-                WorkspaceRecord::decode(&text, id, "local").is_err(),
-                "{text}"
-            );
-        }
-    }
-
-    #[test]
-    fn version_4_workspace_overrides_migrate_into_the_overlay() {
-        let id = WorkspaceId::from(7);
-        let v4 = r#"andamento-record "workspace/7" version=4 {
-    baseline version="1" {
-        slot "a" rebind="ask" { url "a"; }
-        slot "b" { url "b"; }
-    }
-    override "a" rebind="ask" {
-        url "mine"
-        against { url "a"; }
-    }
-    override "b" rebind="keep-previous" {
-        url "also mine"
-        against { url "b"; }
-    }
-    slot "u:1" { url "u"; }
-    arrangement generation=2 owned=true { tabs "1" { tab "a"; tab "b"; tab "u:1"; }; }
-}"#;
-        let record = WorkspaceRecord::decode(v4, id, "local").unwrap();
-        // a's policy is the baseline's, so only its content is an edit.
-        assert_eq!(record.slots.edits["a"].rebind, None);
-        assert_eq!(
-            record.slots.edits["b"].rebind,
-            Some(RebindPolicy::KeepPrevious)
-        );
-        assert_eq!(record.slots.user.len(), 1);
-        let slots = record.slots.slots();
-        assert!(slots[0].detached && slots[1].detached);
-        assert_eq!(slots[0].rebind, RebindPolicy::Ask);
-        let text = record.encode(id);
-        assert!(text.starts_with("andamento-record \"workspace/7\" version=6"));
-        assert!(text.contains("overlay {"), "{text}");
-        assert!(!text.contains("\n    override"), "{text}");
-        assert_eq!(WorkspaceRecord::decode(&text, id, "local").unwrap(), record);
-        // Version 5 records have no saved resolutions: a node of that name is
-        // unknown, and kept.
-        let v5 = r#"andamento-record "workspace/7" version=5 { resolutions last-generation=1; }"#;
-        let record = WorkspaceRecord::decode(v5, id, "local").unwrap();
-        assert!(record.resolutions.is_empty());
-        assert_eq!(record.unknown.len(), 1);
-        // In version 5, top-level override and slot nodes are unknown.
-        let v5 = r#"andamento-record "workspace/7" version=5 { slot "u:1" { url "u"; }; }"#;
-        let record = WorkspaceRecord::decode(v5, id, "local").unwrap();
-        assert!(record.slots.user.is_empty());
-        assert_eq!(record.unknown.len(), 1);
+        }));
+        assert!(WorkspaceRecord::decode(&bad.encode()).is_err());
+        bad.arrangement = Versioned::from(Some(Arrangement {
+            owned: true,
+            soft: BTreeMap::from([("p".into(), SoftOverride::default())]),
+            ..Default::default()
+        }));
+        assert!(WorkspaceRecord::decode(&bad.encode()).is_err());
     }
 
     #[test]
     fn proposals_carry_the_edit_set_and_its_baseline() {
         let id = WorkspaceId::from(7);
         let record = workspace_with_slots();
-        let edits = EditSet::new(&record.slots, record.arrangement.as_ref());
+        let edits = EditSet::new(&record.slots, record.arrangement.get().as_ref());
         let text = encode_proposal(id, record.subject.as_ref(), &edits);
         assert!(
             text.starts_with(r#"overlay-proposal workspace="7" baseline="1" {"#),
@@ -2057,46 +1590,6 @@ mod tests {
         ] {
             let text = format!("andamento-record \"dashboard\" version=4 {{ {body}; }}");
             assert!(DashboardRecord::decode(&text, "local").is_err(), "{text}");
-        }
-    }
-
-    #[test]
-    fn version_2_workspace_records_have_no_slots() {
-        let id = WorkspaceId::from(7);
-        // Version 2 knew no slots: nodes with these names were unknown to it
-        // and are kept as unknown, not read as slots.
-        let v2 = r#"andamento-record "workspace/7" version=2 {
-    subject "vessel" "b" provider="sub-1"
-    slot "u:1" {
-        url "https://example.com"
-    }
-}"#;
-        let record = WorkspaceRecord::decode(v2, id, "local").unwrap();
-        assert_eq!(record.subject, Some(EntityRef::new("sub-1", "vessel", "b")));
-        assert!(record.slots.is_empty());
-        assert_eq!(record.arrangement, None);
-        assert_eq!(record.unknown.len(), 1);
-        assert!(record
-            .encode(id)
-            .starts_with("andamento-record \"workspace/7\" version=6"));
-        // Malformed slots and arrangements are rejected in version 3.
-        for body in [
-            r#"slot "u:1""#,
-            r#"slot "u:1" rebind="sometimes" { url "x"; }"#,
-            r#"slot "u:1" { url "x"; file "y"; }"#,
-            r#"override "k" { url "x"; }"#,
-            r#"arrangement owned=true"#,
-            r#"arrangement generation=1 { tabs "a" { tab "x"; }; tabs "a"; }"#,
-            r#"arrangement generation=1 { tabs "a" selected="y" { tab "x"; }; }"#,
-            r#"arrangement generation=1 { split "a" axis="diagonal" { tabs "b"; }; }"#,
-            r#"arrangement generation=1 { split "a" axis="row" { tabs "b" weight=0; }; }"#,
-            r#"baseline { slot "p" { url "x"; }; }"#,
-        ] {
-            let text = format!("andamento-record \"workspace/7\" version=3 {{ {body}; }}");
-            assert!(
-                WorkspaceRecord::decode(&text, id, "local").is_err(),
-                "{text}"
-            );
         }
     }
 
@@ -2200,20 +1693,6 @@ mod tests {
             "{text}"
         );
         assert_eq!(DashboardRecord::decode(&text, "other").unwrap(), record);
-
-        let id = WorkspaceId::from(7);
-        let v1 = r#"andamento-record "workspace/7" version=1 {
-    subject "vessel" "b"
-    retained "vessel" "b" label="B" status="retained"
-}"#;
-        let record = WorkspaceRecord::decode(v1, id, "local").unwrap();
-        assert_eq!(record.subject, Some(EntityRef::local("vessel", "b")));
-        assert!(record
-            .retained
-            .contains_key(&EntityRef::local("vessel", "b")));
-        assert!(record
-            .encode(id)
-            .contains(r#"subject "vessel" "b" provider="local""#));
     }
 
     #[test]

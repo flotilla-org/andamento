@@ -263,50 +263,30 @@ typedef struct { AndamentoText provider, kind, id; } AndamentoEntity3;
 uint32_t andamento_set_sibling_order3(Andamento *, AndamentoText loop_key,
     const AndamentoEntity3 *entities, size_t count, char **error);
 
-/* ABI 3: named records. Andamento owns the sidebar's logical state and exports
- * it as records, KDL text in a versioned envelope; the host decides where each
- * is stored and when it is written. Andamento never touches the filesystem.
+/* ABI 3: named records. Andamento owns the sidebar's logical state and hands
+ * it to the host as records to store; the host decides where each is stored
+ * and when it is written. Andamento never touches the filesystem, and the
+ * host never reads a record: its bytes are private to Andamento and may
+ * change from one build to the next.
  *   "dashboard": persisted display variables, row collapse, sibling orders,
  *     placement variables, local sections, groups and refs, and the sidebar
  *     arrangement, with the template version they were made against.
  *   "workspace/<id>": one per registered workspace (<id> as Andamento prints
- *     it: decimal for an embedded ID, else a hyphenated UUID): its subject, and
- *     the subject and its path as last seen (label, ended or retained, when
- *     last seen, and the facts placement reads), so its row is drawn where it
- *     was with no facts; and its slots (the cached Suggested Layout baseline
- *     with its arrangement hint, and the Workspace Overlay's edit set), its
- *     arrangement document and its slots' saved portable Target
- *     Resolutions. A closed workspace keeps its record; forgetting
- *     the workspace drops it.
+ *     it: decimal for an embedded ID, else a hyphenated UUID): its subject,
+ *     and the subject and its path as last seen, so its row is drawn where
+ *     it was with no facts; its slots, arrangement document and saved
+ *     portable Target Resolutions. A closed workspace keeps its record;
+ *     forgetting the workspace drops it.
  * names: the record names, one per line (no trailing newline).
- * generation: nonzero; it changes when, and only when, the record's content
- *   changes, and is never reused. Write a record when its generation differs
- *   from the one last written; read it again after an import. Returns 0 with an
- *   error for an unknown record.
- * export: the record's KDL text (UTF-8), version 6: every entity names its
- *   provider, a workspace record holds its baseline, overlay edit set,
- *   arrangement and saved portable resolutions, and the dashboard record its
- *   sidebar arrangement and template version.
- * import: may come before the first observe and needs no facts. Importing
- *   "workspace/<id>" registers the workspace and binds it to its subject. A
- *   record that doesn't parse, has another version or names another record is
- *   rejected without change. Nodes this version doesn't know, directly inside
- *   the envelope, are kept and exported again. Version 1 records (before
- *   providers) still import: local sections, groups and refs get "local" and
- *   every other entity the default provider, so set the default first.
- *   Version 2 records import with no slots and no arrangement; version 3
- *   dashboard records with no sidebar arrangement, which the template's
- *   hints then place; version 3 and 4 workspace records' overrides and user
- *   slots migrate into the overlay edit set; workspace records before
- *   version 6 have no saved portable resolutions.
+ * record_get, record_put and record_generation are in andamento_documents.h.
+ * Store a record when its generation differs from the one last stored.
  * Bytes out-parameters are written only on success; free them with
  * andamento_bytes_free (a zeroed AndamentoBytes is harmless). */
 typedef struct { uint8_t *data; size_t len; } AndamentoBytes;
 uint32_t andamento_record_names(Andamento *, AndamentoBytes *out, char **error_out);
-uint64_t andamento_record_generation(Andamento *, AndamentoText name, char **error_out);
-uint32_t andamento_record_export(Andamento *, AndamentoText name, AndamentoBytes *out, char **error_out);
-uint32_t andamento_record_import(Andamento *, AndamentoText name, AndamentoText kdl, char **error_out);
 void andamento_bytes_free(AndamentoBytes);
+/* Documents as plain structs, and records, generated from Rust. */
+#include "andamento_documents.h"
 /* ABI 3: set a declared display variable without a snapshot action, so a host
  * can restore one before the first snapshot. value is "true"/"false" for a
  * boolean, or one of an enum's values; empty returns it to its default.
@@ -662,25 +642,25 @@ void andamento_slot_resolution_release(AndamentoSlotResolution *);
 uint32_t andamento_slot_plan_resolution(const AndamentoSlotPlan *, AndamentoResolution *out);
 
 /* ABI 3: a workspace's arrangement is one document the host commits whole at
- * the end of a gesture: a tree of panels with stable, unique, nonempty IDs.
- * Panels are a preorder array: the first is the root (parent NONE), every
- * other names an earlier SPLIT as its parent, and a split's children are the
- * panels naming it, in array order. A SPLIT lays its children out along axis
- * (ROW: left to right; COLUMN: top to bottom) and has no tabs. A TABS panel's
- * tabs are tabs[first_tab .. first_tab + tab_count), each naming a slot key;
- * selected indexes them, or is NONE. weight is relative to siblings, finite
- * and positive (the root's is kept but unused). No panels: an empty document.
+ * the end of a gesture: a tree of panels with stable, unique, nonempty IDs
+ * (AndamentoArrangementDoc, andamento_documents.h). A SPLIT lays its
+ * children out along axis (ROW: left to right; COLUMN: top to bottom) and has
+ * no tabs; a TABS panel's tabs are slot keys and selected is one of them, or
+ * empty. weight is relative to siblings, finite and positive (the root's is
+ * kept but unused). No root: an empty document.
  *
- * set_arrangement stores the document if expected_generation is the current
- * generation (0 before any): it returns COMMITTED, or STALE with no error and
- * no change (read the arrangement again), or INVALID (0) with an error and
- * no change. generation_out, when not NULL, receives the generation after
- * the call. The document is validated against the slot set: each slot has at
- * most one tab, and a tab names a slot, or a slot the stored document already
- * tabbed that has since gone. Then it is reconciled: each slot with no tab is
- * appended to the first TABS panel in preorder (selected there if that panel
- * selects nothing), and a tab whose slot has gone is kept and reported gone.
- * Committing the stored document again keeps its generation.
+ * arrangement_commit stores the document if expected_generation is the
+ * current generation (0 before any) and returns the arrangement after the
+ * call: COMMITTED, or STALE with no change. It returns NULL with an error,
+ * and no change, for an invalid document. The document is validated against
+ * the slot set: each slot has at most one tab, and a tab names a slot, or a
+ * slot the stored document already tabbed that has since gone. Then it is
+ * reconciled: each slot with no tab is appended to the first TABS panel in
+ * preorder (selected there if that panel selects nothing) and noted PLACED,
+ * and a tab whose slot has gone is kept and noted GONE. Committing the
+ * stored document again keeps its generation. Generations come from one
+ * clock and are never reused, not even by an imported record; they are not
+ * persisted, so don't keep one across sessions.
  *
  * Ownership. A commit is diffed against the stored document. While the user
  * doesn't own the arrangement, a commit that changes only weights and
@@ -699,14 +679,10 @@ uint32_t andamento_slot_plan_resolution(const AndamentoSlotPlan *, AndamentoReso
  * Neither committing an arrangement nor any slot call changes the sidebar's
  * revision: snapshots stay current (andamento_snapshot_is_current). They
  * change andamento_workspace_content_revision instead, as do resolution
- * changes; poll it to learn when to re-read slots, plans and arrangements.
- *
- * arrangement_acquire returns an owned copy in the same form: tabs carry
- * placed (Andamento placed it since the host last committed) and gone (its
- * slot has gone); both are ignored on input. Its text is valid until release. */
-enum { ANDAMENTO_PANEL_SPLIT, ANDAMENTO_PANEL_TABS };
-enum { ANDAMENTO_AXIS_ROW, ANDAMENTO_AXIS_COLUMN };
+ * changes; poll it to learn when to re-read slots, plans and arrangements. */
 enum { ANDAMENTO_ARRANGEMENT_INVALID, ANDAMENTO_ARRANGEMENT_COMMITTED, ANDAMENTO_ARRANGEMENT_STALE };
+/* The sidebar's arrangement (below) still crosses as a flat preorder panel
+ * array, each panel naming its parent's index, and a tab array. */
 typedef struct {
     size_t parent;
     AndamentoText id;
@@ -717,21 +693,13 @@ typedef struct {
 typedef struct { AndamentoText slot; uint32_t placed, gone; } AndamentoTab;
 typedef struct AndamentoArrangement AndamentoArrangement;
 typedef struct { uint64_t generation; uint32_t owned; size_t panel_count, tab_count; } AndamentoArrangementInfo;
-uint32_t andamento_set_arrangement(Andamento *, AndamentoWorkspaceId,
-    const AndamentoPanel *panels, size_t panel_count, const AndamentoTab *tabs, size_t tab_count,
-    uint64_t expected_generation, uint64_t *generation_out, char **error_out);
-AndamentoArrangement *andamento_arrangement_acquire(Andamento *, AndamentoWorkspaceId, char **error_out);
-/* owned: the host has committed it; until then it follows the baseline's hint. */
 uint32_t andamento_arrangement_info(const AndamentoArrangement *, AndamentoArrangementInfo *out);
 uint32_t andamento_arrangement_panel(const AndamentoArrangement *, size_t index, AndamentoPanel *out);
 uint32_t andamento_arrangement_tab(const AndamentoArrangement *, size_t index, AndamentoTab *out);
-/* arrangement_flags: PROVIDER_CHANGED (see Ownership), SOFT (soft overrides
- * apply), UNRESOLVED (a soft override names a panel, or a selected tab, no
- * longer there; it is kept, and each is an UNRESOLVED note with the panel
- * ID). 0 for the sidebar's. */
-enum { ANDAMENTO_ARRANGEMENT_FLAG_PROVIDER_CHANGED = 1, ANDAMENTO_ARRANGEMENT_FLAG_SOFT = 2,
-       ANDAMENTO_ARRANGEMENT_FLAG_UNRESOLVED = 4 };
-uint32_t andamento_arrangement_flags(const AndamentoArrangement *);
+/* An arrangement's flags: PROVIDER_CHANGED (see Ownership), SOFT (soft
+ * overrides apply), UNRESOLVED (a soft override names a panel, or a selected
+ * tab, no longer there; it is kept, and each is an UNRESOLVED note with the
+ * panel ID). */
 enum { ANDAMENTO_ARRANGEMENT_KEEP, ANDAMENTO_ARRANGEMENT_FOLLOW };
 uint32_t andamento_arrangement_resolve(Andamento *, AndamentoWorkspaceId, uint32_t choice,
     uint64_t expected_generation, uint64_t *generation_out, char **error_out);

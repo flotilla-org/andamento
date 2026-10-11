@@ -1,5 +1,5 @@
 //! Release C-ABI update-stream probe, using the same scripted stream for each run.
-use andamento_ffi::*;
+use andamento_ffi::{documents::*, *};
 use std::{ptr, time::Instant};
 fn text(s: &str) -> Text {
     Text {
@@ -171,48 +171,42 @@ fn main() {
             }
             let rendered = andamento_snapshot_acquire(h, ptr::null_mut());
             andamento_core::profile::take();
-            let tabs: Vec<TabView> = keys
-                .iter()
-                .map(|key| TabView {
-                    slot: text(key),
-                    placed: 0,
-                    gone: 0,
-                })
-                .collect();
+            let tabs: Vec<Text> = keys.iter().map(|key| text(key)).collect();
             let mut commits = vec![];
             let mut generation = 0;
             for iteration in 0..20 {
                 let left = 0.3 + 0.02 * iteration as f64;
-                let panel = |parent, id, weight, kind, first_tab, tab_count| PanelView {
-                    parent,
+                let panel = |id, weight, tabs: &[Text]| AndamentoDocPanel {
                     id: text(id),
                     weight,
-                    kind,
+                    kind: ANDAMENTO_PANEL_TABS,
                     axis: 0,
-                    first_tab,
-                    tab_count,
-                    selected: if tab_count > 0 { 0 } else { usize::MAX },
+                    children: ptr::null(),
+                    child_count: 0,
+                    tabs: tabs.as_ptr(),
+                    tab_count: tabs.len(),
+                    selected: tabs[0],
                 };
-                let panels = [
-                    panel(usize::MAX, "root", 1.0, 0, 0, 0),
-                    panel(0, "1", left, 1, 0, 4),
-                    panel(0, "2", 1.0 - left, 1, 4, 4),
+                let children = [
+                    panel("1", left, &tabs[..4]),
+                    panel("2", 1.0 - left, &tabs[4..]),
                 ];
+                let root = AndamentoDocPanel {
+                    kind: ANDAMENTO_PANEL_SPLIT,
+                    children: children.as_ptr(),
+                    child_count: children.len(),
+                    tabs: ptr::null(),
+                    tab_count: 0,
+                    selected: text(""),
+                    ..panel("root", 1.0, &tabs)
+                };
+                let doc = AndamentoArrangementDoc { root: &root };
                 let start = Instant::now();
-                assert_eq!(
-                    andamento_set_arrangement(
-                        h,
-                        ws,
-                        panels.as_ptr(),
-                        panels.len(),
-                        tabs.as_ptr(),
-                        tabs.len(),
-                        generation,
-                        &mut generation,
-                        ptr::null_mut()
-                    ),
-                    1
-                );
+                let committed =
+                    andamento_arrangement_commit(h, ws, &doc, generation, ptr::null_mut());
+                assert!(!committed.is_null() && (*committed).status == 1);
+                generation = (*committed).generation;
+                andamento_arrangement_free(committed);
                 assert_eq!(
                     andamento_snapshot_is_current(h, rendered, ptr::null_mut()),
                     1

@@ -186,9 +186,10 @@ pub struct Sidebar {
     local: BTreeMap<EntityRef, BTreeMap<String, crate::MetadataValue>>,
     /// Nodes of the imported dashboard record this version doesn't know.
     dashboard_unknown: Vec<String>,
-    /// Each record's generation and the text it was assigned for.
-    generations: BTreeMap<RecordName, (u64, String)>,
-    last_generation: u64,
+    /// Every document and record generation comes from this clock.
+    clock: crate::versioned::Clock,
+    /// The dashboard record's generation and the text it was assigned for.
+    dashboard_generation: Option<(u64, String)>,
     /// Fact keys the configured placement reads, kept in subject records.
     placement_keys: BTreeSet<String>,
     pub managed: crate::managed::ManagedContent,
@@ -209,6 +210,8 @@ pub struct Sidebar {
 #[derive(Default)]
 struct WorkspaceEntry {
     record: WorkspaceRecord,
+    /// The record's generation: a new one from the clock whenever it changes.
+    generation: u64,
     /// Retained subjects a producer published at the last refresh.
     observed: BTreeSet<EntityRef>,
 }
@@ -601,7 +604,16 @@ impl Sidebar {
     /// It does not change the snapshot or its revision. The workspace gets a
     /// record, `workspace/<id>`. Returns whether the ID was new.
     pub fn register_workspace(&mut self, id: WorkspaceId) -> bool {
-        self.workspaces.entry(id).or_default();
+        if !self.workspaces.contains_key(&id) {
+            let generation = self.clock.tick();
+            self.workspaces.insert(
+                id,
+                WorkspaceEntry {
+                    generation,
+                    ..WorkspaceEntry::default()
+                },
+            );
+        }
         let new = self.registered.insert(id);
         self.refresh_workspace_records();
         self.refresh_content();
@@ -612,7 +624,6 @@ impl Sidebar {
     /// it was registered.
     pub fn forget_workspace(&mut self, id: WorkspaceId) -> bool {
         self.workspaces.remove(&id);
-        self.generations.remove(&RecordName::Workspace(id));
         self.registered.remove(&id)
     }
 
@@ -850,8 +861,12 @@ impl Sidebar {
                 }
                 retained.insert(entity, record);
             }
-            entry.record.subject = subjects.get(&id).cloned();
-            entry.record.retained = retained;
+            let subject = subjects.get(&id).cloned();
+            if (&entry.record.subject, &entry.record.retained) != (&subject, &retained) {
+                entry.record.subject = subject;
+                entry.record.retained = retained;
+                entry.generation = self.clock.tick();
+            }
             entry.observed = observed;
         }
     }
@@ -865,56 +880,55 @@ impl Sidebar {
             .collect()
     }
 
-    fn record_text(&self, name: RecordName) -> Result<String, String> {
-        match name {
-            RecordName::Dashboard => Ok(DashboardRecord {
-                display: self.state.recorded_display_variables(),
-                collapsed: self.state.collapsed_placements().clone(),
-                orders: self.state.sibling_orders().clone(),
-                variables: self.state.placement_variables(),
-                local: self.local.clone(),
-                sidebar: Some(self.sidebar_arrangement.clone())
-                    .filter(|arrangement| arrangement.generation != 0),
-                template: Some(self.template_version.clone()),
-                unknown: self.dashboard_unknown.clone(),
-            }
-            .encode()),
-            RecordName::Workspace(id) => self
-                .workspaces
-                .get(&id)
-                .map(|entry| entry.record.encode(id))
-                .ok_or_else(|| format!("no record {name}: the workspace is not registered")),
+    /// A record as text to store. Its format is private: only this
+    /// Andamento reads it.
+    pub fn export_record(&self, name: &str) -> Result<String, String> {
+        match RecordName::parse(name)? {
+            RecordName::Dashboard => Ok(self.dashboard_text()),
+            RecordName::Workspace(id) => Ok(self.workspace_entry(id)?.record.encode()),
         }
     }
 
-    /// Export a record as KDL in a versioned envelope.
-    pub fn export_record(&mut self, name: &str) -> Result<String, String> {
-        let name = RecordName::parse(name)?;
-        let text = self.record_text(name)?;
-        self.note_generation(name, &text);
-        Ok(text)
+    fn dashboard_text(&self) -> String {
+        DashboardRecord {
+            display: self.state.recorded_display_variables(),
+            collapsed: self.state.collapsed_placements().clone(),
+            orders: self.state.sibling_orders().clone(),
+            variables: self.state.placement_variables(),
+            local: self.local.clone(),
+            sidebar: Some(self.sidebar_arrangement.clone())
+                .filter(|arrangement| arrangement.generation != 0),
+            template: Some(self.template_version.clone()),
+            unknown: self.dashboard_unknown.clone(),
+        }
+        .encode()
     }
 
-    /// A record's generation, nonzero. It changes when, and only when, the
-    /// record's content changes; generations are never reused, even by a
-    /// workspace forgotten and registered again. Write the record when it
-    /// differs from the one last written.
+    fn workspace_entry(&self, id: WorkspaceId) -> Result<&WorkspaceEntry, String> {
+        self.workspaces
+            .get(&id)
+            .ok_or_else(|| format!("no record workspace/{id}: the workspace is not registered"))
+    }
+
+    /// A record's generation, nonzero. It changes whenever the record does,
+    /// and is never reused. Store the record when it differs from the one
+    /// last stored.
     pub fn record_generation(&mut self, name: &str) -> Result<u64, String> {
-        let name = RecordName::parse(name)?;
-        let text = self.record_text(name)?;
-        Ok(self.note_generation(name, &text))
-    }
-
-    fn note_generation(&mut self, name: RecordName, text: &str) -> u64 {
-        if let Some((generation, known)) = self.generations.get(&name) {
-            if known == text {
-                return *generation;
+        match RecordName::parse(name)? {
+            RecordName::Dashboard => {
+                // Not yet a document: compared by its text.
+                let text = self.dashboard_text();
+                match &self.dashboard_generation {
+                    Some((generation, known)) if *known == text => Ok(*generation),
+                    _ => {
+                        let generation = self.clock.tick();
+                        self.dashboard_generation = Some((generation, text));
+                        Ok(generation)
+                    }
+                }
             }
+            RecordName::Workspace(id) => Ok(self.workspace_entry(id)?.generation),
         }
-        self.last_generation += 1;
-        self.generations
-            .insert(name, (self.last_generation, text.to_owned()));
-        self.last_generation
     }
 
     /// Import a record exported by this or an earlier Andamento. It may come
@@ -922,10 +936,10 @@ impl Sidebar {
     /// parse, has another version, or names another record is rejected
     /// without changing anything. Importing `workspace/<id>` registers the
     /// workspace and binds it to its recorded subject.
-    pub fn import_record(&mut self, name: &str, kdl: &str) -> Result<(), String> {
+    pub fn import_record(&mut self, name: &str, text: &str) -> Result<(), String> {
         match RecordName::parse(name)? {
             RecordName::Dashboard => {
-                let record = DashboardRecord::decode(kdl, self.state.default_provider())?;
+                let record = DashboardRecord::decode(text, self.state.default_provider())?;
                 if let Some(entity) = record
                     .local
                     .keys()
@@ -965,7 +979,12 @@ impl Sidebar {
                 self.import_sidebar_arrangement(record.sidebar.unwrap_or_default());
             }
             RecordName::Workspace(id) => {
-                let record = WorkspaceRecord::decode(kdl, id, self.state.default_provider())?;
+                let mut record = WorkspaceRecord::decode(text)?;
+                // New generations: no state the host saw before has these.
+                if record.arrangement.get().is_some() {
+                    record.arrangement.restamp(&mut self.clock);
+                }
+                let generation = self.clock.tick();
                 self.state
                     .bind_workspace_subject(id, record.subject.as_ref());
                 self.registered.insert(id);
@@ -975,6 +994,7 @@ impl Sidebar {
                     id,
                     WorkspaceEntry {
                         record,
+                        generation,
                         observed: BTreeSet::new(),
                     },
                 );
@@ -998,12 +1018,13 @@ impl Sidebar {
             .map(|tab| tab.tab_id)
             .collect();
         let state = &self.state;
+        let clock = &mut self.clock;
         for (id, entry) in self.workspaces.iter_mut() {
             if !open.contains(id) {
                 continue;
             }
             let record = &mut entry.record;
-            let mut slots_changed = false;
+            let mut entry_changed = false;
             if let Some(subject) = &record.subject {
                 if let Ok(Some(layout)) = state.suggested_layout(subject) {
                     let baseline = crate::slots::Baseline::from_layout(&layout);
@@ -1012,18 +1033,21 @@ impl Sidebar {
                         .baseline
                         .as_ref()
                         .is_some_and(|old| old.hint != baseline.hint);
-                    slots_changed = record.slots.set_baseline(baseline);
+                    entry_changed = record.slots.set_baseline(baseline);
                     if hint_changed {
-                        if let Some(arrangement) = &mut record.arrangement {
-                            changed |= arrangement.note_hint_change();
-                        }
+                        entry_changed |= record
+                            .arrangement
+                            .follow(clock, crate::slots::Arrangement::note_hint_change);
                     }
                 }
             }
-            if slots_changed || (record.arrangement.is_none() && !record.slots.is_empty()) {
-                changed |= follow_slots(record);
+            if entry_changed || (record.arrangement.get().is_none() && !record.slots.is_empty()) {
+                entry_changed |= follow_slots(record, clock);
             }
-            changed |= slots_changed;
+            if entry_changed {
+                entry.generation = clock.tick();
+                changed = true;
+            }
         }
         changed |= self.invalidate_resolutions();
         if changed {
@@ -1036,6 +1060,15 @@ impl Sidebar {
     /// [`revision`](Self::revision) does not change with them.
     pub fn content_revision(&self) -> u64 {
         self.content_revision
+    }
+
+    /// A workspace's record changed: it takes a new generation, and the
+    /// content revision moves.
+    fn workspace_changed(&mut self, id: WorkspaceId) {
+        if let Some(entry) = self.workspaces.get_mut(&id) {
+            entry.generation = self.clock.tick();
+        }
+        self.content_revision += 1;
     }
 
     fn workspace_record(&self, id: WorkspaceId) -> Result<&WorkspaceRecord, String> {
@@ -1074,17 +1107,21 @@ impl Sidebar {
         if let crate::suggested_layout::Content::ProviderFacet { entity, .. } = &mut spec.content {
             entity.fill_provider(self.state.default_provider());
         }
-        let record = self.workspace_record_mut(workspace)?;
+        let entry = self
+            .workspaces
+            .get_mut(&workspace)
+            .ok_or_else(|| format!("workspace {workspace} is not registered"))?;
+        let record = &mut entry.record;
         let hidden = record.slots.hidden();
         let before = record.slots.slot(key).map(|slot| slot.spec);
         let changed = record.slots.set(key, spec, rebind)?;
         // Setting a tombstoned slot shows it again.
         if record.slots.hidden() != hidden {
-            follow_unowned(record);
+            follow_unowned(record, &mut self.clock);
         }
         forget_resolution_if_edited(record, key, before);
         if changed {
-            self.content_revision += 1;
+            self.workspace_changed(workspace);
         }
         Ok(changed)
     }
@@ -1095,15 +1132,19 @@ impl Sidebar {
     /// an arrangement the user owns, its tab is reported gone until the host
     /// removes it; one derived from the provider's hint loses the tab.
     pub fn remove_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
-        let record = self.workspace_record_mut(workspace)?;
+        let entry = self
+            .workspaces
+            .get_mut(&workspace)
+            .ok_or_else(|| format!("workspace {workspace} is not registered"))?;
+        let record = &mut entry.record;
         let removed = record.slots.remove(key)?;
         if removed {
-            follow_unowned(record);
+            follow_unowned(record, &mut self.clock);
             if record.slots.slot(key).is_none() {
                 record.resolutions.forget(key);
             }
             self.managed.forget_slot(workspace, key);
-            self.content_revision += 1;
+            self.workspace_changed(workspace);
         }
         Ok(removed)
     }
@@ -1111,13 +1152,17 @@ impl Sidebar {
     /// Drop a baseline slot's override or tombstone, so it follows the
     /// provider again.
     pub fn reattach_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
-        let record = self.workspace_record_mut(workspace)?;
+        let entry = self
+            .workspaces
+            .get_mut(&workspace)
+            .ok_or_else(|| format!("workspace {workspace} is not registered"))?;
+        let record = &mut entry.record;
         let before = record.slots.slot(key).map(|slot| slot.spec);
         let reattached = record.slots.reattach(key);
         if reattached {
-            follow_unowned(record);
+            follow_unowned(record, &mut self.clock);
             forget_resolution_if_edited(record, key, before);
-            self.content_revision += 1;
+            self.workspace_changed(workspace);
         }
         Ok(reattached)
     }
@@ -1133,7 +1178,7 @@ impl Sidebar {
         let changed = slots.name != name;
         slots.name = name;
         if changed {
-            self.content_revision += 1;
+            self.workspace_changed(workspace);
         }
         Ok(changed)
     }
@@ -1149,7 +1194,7 @@ impl Sidebar {
         let changed = slots.mood != mood;
         slots.mood = mood;
         if changed {
-            self.content_revision += 1;
+            self.workspace_changed(workspace);
         }
         Ok(changed)
     }
@@ -1167,7 +1212,7 @@ impl Sidebar {
             .slots
             .release_departed(key);
         if released {
-            self.content_revision += 1;
+            self.workspace_changed(workspace);
         }
         Ok(self.managed.release_previous(workspace, key) || released)
     }
@@ -1178,7 +1223,7 @@ impl Sidebar {
         let record = self.workspace_record(workspace)?;
         Ok(crate::slots::OverlayView::new(
             &record.slots,
-            record.arrangement.as_ref(),
+            record.arrangement.get().as_ref(),
         ))
     }
 
@@ -1189,7 +1234,7 @@ impl Sidebar {
         Ok(crate::records::encode_proposal(
             workspace,
             record.subject.as_ref(),
-            &crate::slots::EditSet::new(&record.slots, record.arrangement.as_ref()),
+            &crate::slots::EditSet::new(&record.slots, record.arrangement.get().as_ref()),
         ))
     }
 
@@ -1265,7 +1310,7 @@ impl Sidebar {
         let before = record.resolutions.generation(key);
         let generation = record.resolutions.set(key, resolution, applied, expected)?;
         if generation != before {
-            self.content_revision += 1;
+            self.workspace_changed(workspace);
         }
         Ok(generation)
     }
@@ -1284,7 +1329,7 @@ impl Sidebar {
             .map_err(ResolutionError::Invalid)?;
         let cleared = record.resolutions.clear(key, expected)?;
         if cleared {
-            self.content_revision += 1;
+            self.workspace_changed(workspace);
         }
         Ok(cleared)
     }
@@ -1305,7 +1350,7 @@ impl Sidebar {
             }
             let slots = record.slots.slots();
             let subject = record.subject.as_ref();
-            changed |= record.resolutions.retain(|key, saved| {
+            if record.resolutions.retain(|key, saved| {
                 let Some(slot) = slots.iter().find(|slot| slot.key == key) else {
                     return false;
                 };
@@ -1313,7 +1358,10 @@ impl Sidebar {
                     Some(DesiredContent::Ready(desired)) => desired.id() == saved.against,
                     _ => true,
                 }
-            });
+            }) {
+                entry.generation = self.clock.tick();
+                changed = true;
+            }
         }
         changed
     }
@@ -1330,30 +1378,30 @@ impl Sidebar {
         doc: crate::slots::ArrangementDoc,
         expected: u64,
     ) -> Result<crate::slots::ArrangementCommit, crate::slots::ArrangementError> {
-        let record = self
-            .workspace_record_mut(workspace)
-            .map_err(crate::slots::ArrangementError::Invalid)?;
+        use crate::slots::{Arrangement, ArrangementCommit, ArrangementError};
+        let entry = self.workspaces.get_mut(&workspace).ok_or_else(|| {
+            ArrangementError::Invalid(format!("workspace {workspace} is not registered"))
+        })?;
+        let record = &mut entry.record;
         let slots = record.slots.slots();
-        let stored = record.arrangement.get_or_insert_with(Default::default);
-        let before = stored.generation;
-        let mut next = || before + 1;
-        let result = stored.commit(
-            doc,
-            expected,
-            record.slots.baseline.as_ref(),
-            &slots,
-            &mut next,
-        );
-        if stored.generation == 0 {
-            record.arrangement = None;
+        let before = record.arrangement.generation();
+        let (generation, placed) =
+            record
+                .arrangement
+                .update(Some(expected), &mut self.clock, |stored| {
+                    Arrangement::commit(stored, doc, record.slots.baseline.as_ref(), &slots)
+                })?;
+        let stored = record.arrangement.get().as_ref().expect("committed");
+        let commit = ArrangementCommit {
+            generation,
+            placed,
+            gone: stored.gone(&slots).into_iter().collect(),
+            owned: stored.owned,
+        };
+        if generation != before {
+            self.workspace_changed(workspace);
         }
-        if result
-            .as_ref()
-            .is_ok_and(|commit| commit.generation != before)
-        {
-            self.content_revision += 1;
-        }
-        result
+        Ok(commit)
     }
 
     /// Settle a provider change to an arrangement the user owns: keep the
@@ -1365,27 +1413,24 @@ impl Sidebar {
         choice: crate::slots::Resolve,
         expected: u64,
     ) -> Result<u64, crate::slots::ArrangementError> {
-        let record = self
-            .workspace_record_mut(workspace)
-            .map_err(crate::slots::ArrangementError::Invalid)?;
+        use crate::slots::{Arrangement, ArrangementError};
+        let entry = self.workspaces.get_mut(&workspace).ok_or_else(|| {
+            ArrangementError::Invalid(format!("workspace {workspace} is not registered"))
+        })?;
+        let record = &mut entry.record;
         let slots = record.slots.slots();
-        let stored = record.arrangement.get_or_insert_with(Default::default);
-        let before = stored.clone();
-        let mut next = || before.generation + 1;
-        let result = stored.resolve(
-            choice,
-            expected,
-            record.slots.baseline.as_ref(),
-            &slots,
-            &mut next,
-        );
-        if stored.generation == 0 {
-            record.arrangement = None;
+        let before = record.arrangement.generation();
+        let (generation, ()) =
+            record
+                .arrangement
+                .update(Some(expected), &mut self.clock, |stored| {
+                    Arrangement::resolve(stored, choice, record.slots.baseline.as_ref(), &slots);
+                    Ok(())
+                })?;
+        if generation != before {
+            self.workspace_changed(workspace);
         }
-        if record.arrangement.as_ref() != Some(&before) && before.generation != 0 {
-            self.content_revision += 1;
-        }
-        result
+        Ok(generation)
     }
 
     /// A registered workspace's arrangement. Before anything is stored it is
@@ -1396,7 +1441,7 @@ impl Sidebar {
     ) -> Result<crate::slots::ArrangementView, String> {
         let record = self.workspace_record(workspace)?;
         let slots = record.slots.slots();
-        Ok(record.arrangement.clone().unwrap_or_default().view(&slots))
+        Ok(crate::slots::Arrangement::view(&record.arrangement, &slots))
     }
 
     /// What the template and local sections declare, for the sidebar
@@ -1937,20 +1982,21 @@ fn forget_resolution_if_edited(
 
 /// Re-derive an arrangement the user doesn't own after a slot edit that
 /// hides or shows a baseline slot. An owned one is left to the host.
-fn follow_unowned(record: &mut WorkspaceRecord) -> bool {
-    if record.arrangement.as_ref().is_some_and(|a| !a.owned) {
-        return follow_slots(record);
+fn follow_unowned(record: &mut WorkspaceRecord, clock: &mut crate::versioned::Clock) -> bool {
+    if record.arrangement.get().as_ref().is_some_and(|a| !a.owned) {
+        return follow_slots(record, clock);
     }
     false
 }
 
 /// Bring a record's arrangement up to date with its slots. Returns whether
 /// it changed.
-fn follow_slots(record: &mut WorkspaceRecord) -> bool {
+fn follow_slots(record: &mut WorkspaceRecord, clock: &mut crate::versioned::Clock) -> bool {
     let slots = record.slots.slots();
-    let stored = record.arrangement.get_or_insert_with(Default::default);
-    let next = stored.generation + 1;
-    stored.follow(record.slots.baseline.as_ref(), &slots, &mut || next)
+    let baseline = record.slots.baseline.as_ref();
+    record.arrangement.follow(clock, |stored| {
+        crate::slots::Arrangement::follow(stored, baseline, &slots)
+    })
 }
 
 fn retained_workspace_expired(_state: &ControllerState, _subjects: &BTreeSet<EntityRef>) -> bool {

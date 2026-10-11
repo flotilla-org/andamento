@@ -2,6 +2,7 @@
 //! from: the same kind and ID under two providers are two entities; a
 //! provider's facts can be retracted at once or kept stale.
 use andamento_core::presentation::{PlacementNode, PresentationState, SurfaceSnapshot};
+use andamento_core::records::WorkspaceRecord;
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::{
     EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
@@ -173,11 +174,8 @@ fn the_same_kind_and_id_under_two_providers_are_two_entities() {
         }
     }
     // The workspace's subject keeps its provider in its record.
-    let record = sidebar.export_record("workspace/42").unwrap();
-    assert!(
-        record.contains(r#"subject "vessel" "v" provider="sub-1""#),
-        "{record}"
-    );
+    let record = WorkspaceRecord::decode(&sidebar.export_record("workspace/42").unwrap()).unwrap();
+    assert_eq!(record.subject, Some(EntityRef::new("sub-1", "vessel", "v")));
 }
 
 #[test]
@@ -284,11 +282,8 @@ fn a_workspace_bound_by_a_providers_own_facts_is_that_providers() {
             selected: true
         }
     );
-    let record = sidebar.export_record("workspace/42").unwrap();
-    assert!(
-        record.contains(r#"subject "vessel" "v" provider="sub-2""#),
-        "{record}"
-    );
+    let record = WorkspaceRecord::decode(&sidebar.export_record("workspace/42").unwrap()).unwrap();
+    assert_eq!(record.subject, Some(EntityRef::new("sub-2", "vessel", "v")));
 }
 
 #[test]
@@ -343,13 +338,10 @@ fn retracting_a_provider_removes_its_facts_and_retains_open_workspaces() {
         .unwrap();
     assert_eq!(two.children[0].label, "Vessel two");
     // The workspace record keeps the retained path, with providers.
-    let record = sidebar.export_record("workspace/42").unwrap();
-    assert!(
-        record.contains(
-            r#"retained "vessel" "v" provider="sub-1" label="Vessel one" status="retained""#
-        ),
-        "{record}"
-    );
+    let record = WorkspaceRecord::decode(&sidebar.export_record("workspace/42").unwrap()).unwrap();
+    let retained = &record.retained[&EntityRef::new("sub-1", "vessel", "v")];
+    assert_eq!(retained.label.as_deref(), Some("Vessel one"));
+    assert!(!retained.ended);
 
     // Closing the workspace lets the retained path go.
     sidebar.observe(vec![], vec![]);
@@ -569,15 +561,6 @@ fn version_1_records_import_under_the_default_provider() {
         )
         .unwrap();
     sidebar
-        .import_record(
-            "workspace/42",
-            r#"andamento-record "workspace/42" version=1 {
-    subject "vessel" "v"
-    retained "vessel" "v" label="Vessel one" status="retained"
-}"#,
-        )
-        .unwrap();
-    sidebar
         .apply_from(100, "sub-1", fleet("one", None))
         .unwrap();
     sidebar
@@ -585,21 +568,14 @@ fn version_1_records_import_under_the_default_provider() {
         .unwrap();
     sidebar.observe(vec![workspace(W42)], vec![]);
     for project in tree(&sidebar) {
-        // The migrated collapse is sub-1's, and so is the workspace.
+        // The migrated collapse is sub-1's.
         let one = project.entity.provider == "sub-1";
         assert_eq!(project.collapsed, one, "{project:?}");
-        let live = matches!(project.children[0].state, PresentationState::Live { .. });
-        assert_eq!(live, one);
     }
     let dashboard = sidebar.export_record("dashboard").unwrap();
     assert!(dashboard.starts_with(r#"andamento-record "dashboard" version=6"#));
     assert!(
         dashboard.contains(r#"at "project" "project" "p" provider="sub-1""#),
         "{dashboard}"
-    );
-    let workspace = sidebar.export_record("workspace/42").unwrap();
-    assert!(
-        workspace.contains(r#"subject "vessel" "v" provider="sub-1""#),
-        "{workspace}"
     );
 }

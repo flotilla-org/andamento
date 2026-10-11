@@ -16,6 +16,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+pub mod documents;
+use documents::{ANDAMENTO_PANEL_SPLIT, ANDAMENTO_PANEL_TABS};
+
 static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
 const NONE: usize = usize::MAX;
 
@@ -766,46 +769,6 @@ pub unsafe extern "C" fn andamento_record_names(
 ) -> u32 {
     run(h, error, |h| {
         write_bytes(out, h.sidebar.record_names().join("\n").into_bytes())
-    })
-    .is_some() as u32
-}
-/// ABI 3: a record's generation; 0 with an error for an unknown record.
-#[no_mangle]
-pub unsafe extern "C" fn andamento_record_generation(
-    h: *mut Andamento,
-    name: Text,
-    error: *mut *mut c_char,
-) -> u64 {
-    run(h, error, |h| h.sidebar.record_generation(&name.read()?)).unwrap_or(0)
-}
-/// ABI 3: a record as KDL text (UTF-8) in its versioned envelope.
-#[no_mangle]
-pub unsafe extern "C" fn andamento_record_export(
-    h: *mut Andamento,
-    name: Text,
-    out: *mut Bytes,
-    error: *mut *mut c_char,
-) -> u32 {
-    run(h, error, |h| {
-        if out.is_null() {
-            return Err("null output".into());
-        }
-        let text = h.sidebar.export_record(&name.read()?)?;
-        write_bytes(out, text.into_bytes())
-    })
-    .is_some() as u32
-}
-/// ABI 3: import a record; rejected without change if it doesn't parse, has
-/// another version or names another record.
-#[no_mangle]
-pub unsafe extern "C" fn andamento_record_import(
-    h: *mut Andamento,
-    name: Text,
-    kdl: Text,
-    error: *mut *mut c_char,
-) -> u32 {
-    run(h, error, |h| {
-        h.sidebar.import_record(&name.read()?, &kdl.read()?)
     })
     .is_some() as u32
 }
@@ -3001,9 +2964,6 @@ pub unsafe extern "C" fn andamento_slot_resolution_release(
     }
 }
 
-const PANEL_SPLIT: u32 = 0;
-const PANEL_TABS: u32 = 1;
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PanelView {
@@ -3025,24 +2985,6 @@ pub struct TabView {
     pub gone: u32,
 }
 
-/// A flat preorder panel array and tab array as a document.
-unsafe fn read_arrangement(
-    panels: &[PanelView],
-    tabs: &[TabView],
-) -> Result<andamento_core::slots::ArrangementDoc, String> {
-    for (index, view) in panels.iter().enumerate() {
-        match (index, view.parent) {
-            (0, NONE) => {}
-            (0, _) => return Err("the first panel is the root; its parent is NONE".into()),
-            (_, NONE) => return Err(format!("panel {index} has no parent; only one root")),
-            _ => {}
-        }
-    }
-    Ok(andamento_core::slots::ArrangementDoc {
-        root: read_trees(panels, tabs)?.into_iter().next(),
-    })
-}
-
 /// A flat preorder panel array as trees: each panel whose parent is NONE
 /// starts one, and every other names an earlier split as its parent.
 unsafe fn read_trees(
@@ -3058,13 +3000,13 @@ unsafe fn read_trees(
             parent if parent >= index => {
                 return Err(format!("panel {index}'s parent is not an earlier panel"))
             }
-            parent if panels[parent].kind != PANEL_SPLIT => {
+            parent if panels[parent].kind != ANDAMENTO_PANEL_SPLIT => {
                 return Err(format!("panel {index}'s parent is not a split"))
             }
             _ => {}
         }
         let node = match view.kind {
-            PANEL_SPLIT => {
+            ANDAMENTO_PANEL_SPLIT => {
                 if view.tab_count != 0 {
                     return Err(format!("split {index} has tabs"));
                 }
@@ -3077,7 +3019,7 @@ unsafe fn read_trees(
                     children: Vec::new(),
                 }
             }
-            PANEL_TABS => {
+            ANDAMENTO_PANEL_TABS => {
                 let end = view
                     .first_tab
                     .checked_add(view.tab_count)
@@ -3131,44 +3073,10 @@ const ARRANGEMENT_INVALID: u32 = 0;
 const ARRANGEMENT_COMMITTED: u32 = 1;
 const ARRANGEMENT_STALE: u32 = 2;
 
-#[allow(clippy::too_many_arguments)]
-#[no_mangle]
-pub unsafe extern "C" fn andamento_set_arrangement(
-    h: *mut Andamento,
-    workspace: WorkspaceIdView,
-    panels: *const PanelView,
-    panel_count: usize,
-    tabs: *const TabView,
-    tab_count: usize,
-    expected_generation: u64,
-    generation_out: *mut u64,
-    error: *mut *mut c_char,
-) -> u32 {
-    run(h, error, |h| {
-        let doc = read_arrangement(slice(panels, panel_count)?, slice(tabs, tab_count)?)?;
-        let workspace = workspace.into();
-        let result = h
-            .sidebar
-            .set_arrangement(workspace, doc, expected_generation);
-        let current = h.sidebar.arrangement(workspace).map(|v| v.generation);
-        if let (Some(out), Ok(current)) = (generation_out.as_mut(), current) {
-            *out = current;
-        }
-        match result {
-            Ok(_) => Ok(ARRANGEMENT_COMMITTED),
-            Err(andamento_core::slots::ArrangementError::Stale { .. }) => Ok(ARRANGEMENT_STALE),
-            Err(error) => Err(error.to_string()),
-        }
-    })
-    .unwrap_or(ARRANGEMENT_INVALID)
-}
-
-/// A workspace's or the sidebar's arrangement, owned until release.
+/// The sidebar's arrangement, owned until release.
 pub struct AndamentoArrangement {
     generation: u64,
     owned: bool,
-    /// ARRANGEMENT_FLAG_* bits; 0 for the sidebar's.
-    flags: u32,
     panels: Vec<FlatPanel>,
     tabs: Vec<(String, bool, bool)>,
     /// The first floating panel's index: panel_count for a workspace.
@@ -3218,7 +3126,7 @@ fn flatten_panel(
                 parent,
                 id: panel.id.clone(),
                 weight: panel.weight,
-                kind: PANEL_SPLIT,
+                kind: ANDAMENTO_PANEL_SPLIT,
                 axis,
                 first_tab: 0,
                 tab_count: 0,
@@ -3242,7 +3150,7 @@ fn flatten_panel(
                 parent,
                 id: panel.id.clone(),
                 weight: panel.weight,
-                kind: PANEL_TABS,
+                kind: ANDAMENTO_PANEL_TABS,
                 axis: 0,
                 first_tab: first,
                 tab_count: tabs.len(),
@@ -3250,46 +3158,6 @@ fn flatten_panel(
             });
         }
     }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn andamento_arrangement_acquire(
-    h: *mut Andamento,
-    workspace: WorkspaceIdView,
-    error: *mut *mut c_char,
-) -> *mut AndamentoArrangement {
-    run(h, error, |h| {
-        let view = h.sidebar.arrangement(workspace.into())?;
-        let mut flags = 0;
-        if view.provider_changed {
-            flags |= ARRANGEMENT_FLAG_PROVIDER_CHANGED;
-        }
-        if !view.soft.is_empty() {
-            flags |= ARRANGEMENT_FLAG_SOFT;
-        }
-        if !view.unresolved.is_empty() {
-            flags |= ARRANGEMENT_FLAG_UNRESOLVED;
-        }
-        let mut out = AndamentoArrangement {
-            generation: view.generation,
-            owned: view.owned,
-            flags,
-            panels: Vec::new(),
-            tabs: Vec::new(),
-            floating_first: 0,
-            notes: view
-                .unresolved
-                .iter()
-                .map(|id| (SECTION_UNRESOLVED, id.clone()))
-                .collect(),
-        };
-        if let Some(root) = &view.doc.root {
-            flatten_panel(root, NONE, &view.placed, &view.gone, &mut out);
-        }
-        out.floating_first = out.panels.len();
-        Ok(Box::into_raw(Box::new(out)))
-    })
-    .unwrap_or(ptr::null_mut())
 }
 
 #[no_mangle]
@@ -3359,18 +3227,6 @@ pub unsafe extern "C" fn andamento_arrangement_release(arrangement: *mut Andamen
     if !arrangement.is_null() {
         drop(Box::from_raw(arrangement));
     }
-}
-
-const ARRANGEMENT_FLAG_PROVIDER_CHANGED: u32 = 1;
-const ARRANGEMENT_FLAG_SOFT: u32 = 2;
-const ARRANGEMENT_FLAG_UNRESOLVED: u32 = 4;
-
-/// ABI 3: a workspace arrangement's ANDAMENTO_ARRANGEMENT_FLAG_* bits.
-#[no_mangle]
-pub unsafe extern "C" fn andamento_arrangement_flags(
-    arrangement: *const AndamentoArrangement,
-) -> u32 {
-    arrangement.as_ref().map_or(0, |a| a.flags)
 }
 
 const ARRANGEMENT_KEEP: u32 = 0;
@@ -3588,7 +3444,6 @@ pub unsafe extern "C" fn andamento_sidebar_arrangement_acquire(
         let mut out = AndamentoArrangement {
             generation: view.generation,
             owned: view.owned,
-            flags: 0,
             panels: Vec::new(),
             tabs: Vec::new(),
             floating_first: 0,

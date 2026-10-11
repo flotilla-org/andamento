@@ -64,11 +64,39 @@ fn doc(root: Panel) -> ArrangementDoc {
     ArrangementDoc { root: Some(root) }
 }
 
-fn counter() -> impl FnMut() -> u64 {
-    let mut n = 0;
-    move || {
-        n += 1;
-        n
+/// A workspace's stored arrangement as the Sidebar keeps it.
+#[derive(Default)]
+struct Store {
+    stored: StoredArrangement,
+    clock: crate::versioned::Clock,
+}
+
+impl Store {
+    fn commit(
+        &mut self,
+        doc: ArrangementDoc,
+        expected: u64,
+        baseline: Option<&Baseline>,
+        slots: &[SlotInfo],
+    ) -> Result<ArrangementCommit, ArrangementError> {
+        let (generation, placed) = self.stored.update(Some(expected), &mut self.clock, |s| {
+            Arrangement::commit(s, doc, baseline, slots)
+        })?;
+        Ok(ArrangementCommit {
+            generation,
+            placed,
+            gone: self.get().gone(slots).into_iter().collect(),
+            owned: self.get().owned,
+        })
+    }
+
+    fn follow(&mut self, baseline: Option<&Baseline>, slots: &[SlotInfo]) -> bool {
+        self.stored
+            .follow(&mut self.clock, |s| Arrangement::follow(s, baseline, slots))
+    }
+
+    fn get(&self) -> &Arrangement {
+        self.stored.get().as_ref().expect("stored")
     }
 }
 
@@ -166,44 +194,43 @@ fn stale_or_invalid_commits_change_nothing() {
         ..Default::default()
     };
     let infos = slots.slots();
-    let mut next = counter();
-    let mut stored = StoredArrangement::default();
+    let mut stored = Store::default();
     let first = doc(tabs("1", &["a", "b"], Some("a")));
     let commit = stored
-        .commit(first.clone(), 0, slots.baseline.as_ref(), &infos, &mut next)
+        .commit(first.clone(), 0, slots.baseline.as_ref(), &infos)
         .unwrap();
     assert_eq!(commit.generation, 1);
     assert!(commit.placed.is_empty() && commit.gone.is_empty());
-    let before = stored.clone();
+    let before = stored.stored.clone();
     // A commit made against generation 0 is now stale.
     let other = doc(tabs("1", &["b", "a"], Some("b")));
     assert_eq!(
-        stored.commit(other.clone(), 0, slots.baseline.as_ref(), &infos, &mut next),
+        stored.commit(other.clone(), 0, slots.baseline.as_ref(), &infos),
         Err(ArrangementError::Stale { current: 1 })
     );
-    assert_eq!(stored, before);
+    assert_eq!(stored.stored, before);
     // A tab for a slot that never existed, or a malformed document.
     for invalid in [
         doc(tabs("1", &["a", "b", "nope"], None)),
         doc(tabs("1", &["a", "a"], None)),
     ] {
         assert!(matches!(
-            stored.commit(invalid, 1, slots.baseline.as_ref(), &infos, &mut next),
+            stored.commit(invalid, 1, slots.baseline.as_ref(), &infos),
             Err(ArrangementError::Invalid(_))
         ));
-        assert_eq!(stored, before);
+        assert_eq!(stored.stored, before);
     }
     // Committing the same document again keeps its generation.
     assert_eq!(
         stored
-            .commit(first, 1, slots.baseline.as_ref(), &infos, &mut next)
+            .commit(first, 1, slots.baseline.as_ref(), &infos)
             .unwrap()
             .generation,
         1
     );
     assert_eq!(
         stored
-            .commit(other, 1, slots.baseline.as_ref(), &infos, &mut next)
+            .commit(other, 1, slots.baseline.as_ref(), &infos)
             .unwrap()
             .generation,
         2
@@ -216,8 +243,7 @@ fn reconciling_places_new_slots_and_reports_gone_ones() {
         baseline: Some(baseline(&["a", "b"])),
         ..Default::default()
     };
-    let mut next = counter();
-    let mut stored = StoredArrangement::default();
+    let mut stored = Store::default();
     // The host left b out: it is placed in the first tab panel.
     let host = doc(split(
         "1",
@@ -227,12 +253,12 @@ fn reconciling_places_new_slots_and_reports_gone_ones() {
         ],
     ));
     let commit = stored
-        .commit(host, 0, slots.baseline.as_ref(), &slots.slots(), &mut next)
+        .commit(host, 0, slots.baseline.as_ref(), &slots.slots())
         .unwrap();
     assert_eq!(commit.placed, ["b"]);
-    assert_eq!(stored.doc.tabs(), ["b", "a"]);
-    assert_eq!(stored.placed, BTreeSet::from(["b".to_owned()]));
-    let PanelNode::Tabs { selected, .. } = &stored.doc.panels()[2].node else {
+    assert_eq!(stored.get().doc.tabs(), ["b", "a"]);
+    assert_eq!(stored.get().placed, BTreeSet::from(["b".to_owned()]));
+    let PanelNode::Tabs { selected, .. } = &stored.get().doc.panels()[2].node else {
         panic!("expected tabs");
     };
     assert_eq!(selected.as_deref(), Some("b"));
@@ -241,25 +267,28 @@ fn reconciling_places_new_slots_and_reports_gone_ones() {
     // reported gone.
     slots.set_baseline(baseline(&["b", "c"]));
     let infos = slots.slots();
-    assert!(stored.follow(slots.baseline.as_ref(), &infos, &mut next));
-    assert_eq!(stored.generation, 2);
-    assert_eq!(stored.doc.tabs(), ["b", "c", "a"]);
-    assert_eq!(stored.gone(&infos), BTreeSet::from(["a".to_owned()]));
-    let view = stored.view(&infos);
+    assert!(stored.follow(slots.baseline.as_ref(), &infos));
+    assert_eq!(stored.stored.generation(), 2);
+    assert_eq!(stored.get().doc.tabs(), ["b", "c", "a"]);
+    assert_eq!(stored.get().gone(&infos), BTreeSet::from(["a".to_owned()]));
+    let view = Arrangement::view(&stored.stored, &infos);
     assert_eq!(
         view.placed,
         BTreeSet::from(["b".to_owned(), "c".to_owned()])
     );
     // Following an unchanged slot set changes nothing.
-    assert!(!stored.follow(slots.baseline.as_ref(), &infos, &mut next));
+    assert!(!stored.follow(slots.baseline.as_ref(), &infos));
     // The host may keep the gone tab in its commit; it may not add one.
     let host = doc(tabs("1", &["c", "b", "a"], Some("c")));
     let commit = stored
-        .commit(host, 2, slots.baseline.as_ref(), &infos, &mut next)
+        .commit(host, 2, slots.baseline.as_ref(), &infos)
         .unwrap();
     assert_eq!(commit.gone, ["a"]);
     assert!(commit.placed.is_empty());
-    assert!(stored.placed.is_empty(), "the host has seen every tab");
+    assert!(
+        stored.get().placed.is_empty(),
+        "the host has seen every tab"
+    );
 }
 
 #[test]
@@ -268,11 +297,10 @@ fn an_uncommitted_arrangement_follows_the_hint() {
     let mut hinted = baseline(&["a", "b"]);
     hinted.hint = Some(doc(tabs("main", &["a"], Some("a"))));
     slots.set_baseline(hinted);
-    let mut next = counter();
-    let mut stored = StoredArrangement::default();
-    assert!(stored.follow(slots.baseline.as_ref(), &slots.slots(), &mut next));
-    assert!(!stored.owned);
-    assert_eq!(stored.doc.tabs(), ["a", "b"]);
+    let mut stored = Store::default();
+    assert!(stored.follow(slots.baseline.as_ref(), &slots.slots()));
+    assert!(!stored.get().owned);
+    assert_eq!(stored.get().doc.tabs(), ["a", "b"]);
     // A new hint replaces it while the host hasn't committed.
     let mut hinted = baseline(&["a", "b"]);
     hinted.hint = Some(doc(split(
@@ -280,26 +308,25 @@ fn an_uncommitted_arrangement_follows_the_hint() {
         vec![tabs("x", &["b"], None), tabs("y", &["a"], None)],
     )));
     slots.set_baseline(hinted);
-    assert!(stored.follow(slots.baseline.as_ref(), &slots.slots(), &mut next));
-    assert_eq!(stored.doc.tabs(), ["b", "a"]);
-    assert!(stored.placed.is_empty());
+    assert!(stored.follow(slots.baseline.as_ref(), &slots.slots()));
+    assert_eq!(stored.get().doc.tabs(), ["b", "a"]);
+    assert!(stored.get().placed.is_empty());
     // Once committed, the host owns it: a new hint is not applied.
-    let generation = stored.generation;
+    let generation = stored.stored.generation();
     stored
         .commit(
             doc(tabs("1", &["a", "b"], None)),
             generation,
             slots.baseline.as_ref(),
             &slots.slots(),
-            &mut next,
         )
         .unwrap();
-    assert!(stored.owned);
+    assert!(stored.get().owned);
     let mut hinted = baseline(&["a", "b"]);
     hinted.hint = Some(doc(tabs("main", &["b", "a"], None)));
     slots.set_baseline(hinted);
-    assert!(!stored.follow(slots.baseline.as_ref(), &slots.slots(), &mut next));
-    assert_eq!(stored.doc.tabs(), ["a", "b"]);
+    assert!(!stored.follow(slots.baseline.as_ref(), &slots.slots()));
+    assert_eq!(stored.get().doc.tabs(), ["a", "b"]);
 }
 
 #[test]
