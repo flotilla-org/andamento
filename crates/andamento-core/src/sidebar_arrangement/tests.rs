@@ -3,8 +3,6 @@
 //! hints, reorder, restart, add, close, remove, reset, duplicates, closed
 //! restore, `.unplaced`, legacy adoption and host hints.
 use super::*;
-use crate::versioned::{Clock, CommitError, Versioned};
-use std::ops::Deref;
 
 const UNPLACED: &str = ".unplaced";
 
@@ -29,72 +27,6 @@ fn declared(regions: &[RegionHints]) -> Declared {
 /// `b` at 20 declared before `a` at 10, as Wheelhouse's diagnostics do.
 fn ab() -> Declared {
     declared(&[sidebar("b", 20), sidebar("a", 10)])
-}
-
-/// A stored arrangement as the sidebar keeps it: versioned on a clock.
-#[derive(Clone, Debug)]
-struct Stored {
-    clock: Clock,
-    value: Versioned<SidebarArrangement>,
-}
-
-impl PartialEq for Stored {
-    fn eq(&self, other: &Self) -> bool {
-        self.value == other.value
-    }
-}
-
-impl Deref for Stored {
-    type Target = SidebarArrangement;
-    fn deref(&self) -> &SidebarArrangement {
-        self.value.get()
-    }
-}
-
-impl Stored {
-    fn generation(&self) -> u64 {
-        self.value.generation()
-    }
-
-    fn follow(&mut self, declared: &Declared) -> Report {
-        let mut report = Report::default();
-        self.value
-            .follow(&mut self.clock, |stored| report = stored.follow(declared));
-        report
-    }
-
-    fn edit(
-        &mut self,
-        expected: u64,
-        edit: impl FnOnce(&mut SidebarArrangement) -> Result<Report, String>,
-    ) -> Result<Report, CommitError> {
-        let (_, report) = self
-            .value
-            .update(Some(expected), &mut self.clock, |stored| Ok(edit(stored)?))?;
-        Ok(report)
-    }
-
-    fn commit(
-        &mut self,
-        declared: &Declared,
-        doc: SidebarDoc,
-        expected: u64,
-    ) -> Result<Report, CommitError> {
-        self.edit(expected, |stored| stored.commit(declared, doc))
-    }
-
-    fn restore(
-        &mut self,
-        declared: &Declared,
-        key: &str,
-        expected: u64,
-    ) -> Result<Report, CommitError> {
-        self.edit(expected, |stored| stored.restore(declared, key))
-    }
-
-    fn reset(&mut self, declared: &Declared, expected: u64) -> Result<Report, CommitError> {
-        self.edit(expected, |stored| Ok(stored.reset(declared)))
-    }
 }
 
 fn tabs(id: &str, weight: f64, keys: &[&str]) -> Panel {
@@ -141,11 +73,8 @@ fn floating(arrangement: &SidebarArrangement) -> Vec<Vec<&str>> {
     arrangement.doc.floating.iter().map(Panel::tabs).collect()
 }
 
-fn fresh(declared: &Declared) -> Stored {
-    let mut arrangement = Stored {
-        clock: Clock::default(),
-        value: Versioned::default(),
-    };
+fn fresh(declared: &Declared) -> SidebarArrangement {
+    let mut arrangement = SidebarArrangement::default();
     arrangement.follow(declared);
     arrangement
 }
@@ -163,7 +92,7 @@ fn unrelated_panels_and_host_views_are_kept() {
         tabs("2", 1.0, &["b", "u:notes"]),
         tabs("3", 1.0, &[UNPLACED]),
     ]);
-    arrangement.commit(&ab(), doc.clone(), 1).unwrap();
+    arrangement.commit(&ab(), doc.clone()).unwrap();
     arrangement.follow(&ab());
     assert_eq!(arrangement.doc, doc);
     assert!(arrangement.view(0, &ab()).unresolved.is_empty());
@@ -187,7 +116,7 @@ fn duplicates_keep_the_first_copy_and_drop_panels_they_empty() {
         tabs("6", 0.5, &["a", "u:floating"]),
         tabs("7", 0.25, &["b"]),
     ];
-    let report = arrangement.commit(&ab(), doc, 1).unwrap();
+    let report = arrangement.commit(&ab(), doc).unwrap();
     assert_eq!(report.duplicates, ["a", "b"]);
     assert_eq!(
         docked(&arrangement),
@@ -225,14 +154,15 @@ fn closing_is_remembered_and_restore_gives_an_equal_share() {
         tabs("2", 1.0, &["b"]),
         tabs("3", 0.5, &[UNPLACED]),
     ]);
-    arrangement.commit(&abc, doc, 1).unwrap();
+    arrangement.commit(&abc, doc).unwrap();
     assert_eq!(arrangement.closed, set(&["c"]));
     // A known, closed section is not an unseen one: it stays closed.
+    let committed = arrangement.clone();
     assert!(arrangement.follow(&abc).placed.is_empty());
-    assert_eq!(arrangement.generation(), 2);
+    assert_eq!(arrangement, committed);
 
     // Restore: by its hint, an equal share, the others scaled to make room.
-    let report = arrangement.restore(&abc, "c", 2).unwrap();
+    let report = arrangement.restore(&abc, "c").unwrap();
     assert_eq!(report.restored, ["c"]);
     assert!(arrangement.closed.is_empty());
     assert_eq!(
@@ -250,23 +180,14 @@ fn closing_is_remembered_and_restore_gives_an_equal_share() {
         "relative shares kept"
     );
     assert!(weights.iter().all(|w| *w > 0.0));
-    let generation = arrangement.generation();
-    assert_eq!(generation, 3);
 
     // Restoring again, or an open section, changes nothing.
     let before = arrangement.clone();
-    let report = arrangement.restore(&abc, "c", 3).unwrap();
+    let report = arrangement.restore(&abc, "c").unwrap();
     assert!(report.restored.is_empty());
     assert_eq!(arrangement, before);
-    // An undeclared section can't be restored, and a stale restore is refused.
-    assert!(matches!(
-        arrangement.restore(&abc, "undeclared", 3),
-        Err(CommitError::Invalid(_))
-    ));
-    assert_eq!(
-        arrangement.restore(&abc, "c", 2),
-        Err(CommitError::Stale { current: 3 })
-    );
+    // An undeclared section can't be restored.
+    assert!(arrangement.restore(&abc, "undeclared").is_err());
     assert_eq!(arrangement, before);
 }
 
@@ -293,7 +214,6 @@ fn a_saved_split_stays_whole_when_a_neighbour_arrives_before_it() {
                 nested.clone(),
                 tabs("3", 1.0, &[UNPLACED]),
             ]),
-            1,
         )
         .unwrap();
     let abcd = declared(&[
@@ -319,8 +239,8 @@ fn restore_lifts_a_merged_leaf() {
         },
         floating: Vec::new(),
     };
-    arrangement.commit(&ab(), leaf, 1).unwrap();
-    arrangement.restore(&ab(), "b", 2).unwrap();
+    arrangement.commit(&ab(), leaf).unwrap();
+    arrangement.restore(&ab(), "b").unwrap();
     let panels = children(&arrangement.doc);
     assert_eq!(panels.len(), 2);
     assert_eq!(panels[0].id, "leaf");
@@ -430,7 +350,6 @@ fn a_local_section_with_no_container_resolves_but_is_not_placed() {
         .commit(
             &declared,
             dock(vec![tabs("1", 1.0, &["a", ".section:s1", UNPLACED])]),
-            1,
         )
         .unwrap();
     assert!(arrangement.view(0, &declared).unresolved.is_empty());
@@ -450,14 +369,9 @@ fn pinned_regions_sort_first() {
 }
 
 #[test]
-fn stale_and_invalid_commits_change_nothing() {
+fn invalid_commits_change_nothing() {
     let mut arrangement = fresh(&ab());
     let before = arrangement.clone();
-    let good = dock(vec![tabs("1", 1.0, &["a", "b", UNPLACED])]);
-    assert_eq!(
-        arrangement.commit(&ab(), good, 0),
-        Err(CommitError::Stale { current: 1 })
-    );
     let mut clash = dock(vec![tabs("1", 1.0, &["a"])]);
     clash.floating.push(tabs("1", 1.0, &["b"]));
     let invalid = [
@@ -479,10 +393,8 @@ fn stale_and_invalid_commits_change_nothing() {
         (clash, "panel ID \"1\" is used twice"),
     ];
     for (doc, reason) in invalid {
-        match arrangement.commit(&ab(), doc, 1) {
-            Err(CommitError::Invalid(error)) => assert!(error.contains(reason), "{error}"),
-            other => panic!("{reason}: {other:?}"),
-        }
+        let error = arrangement.commit(&ab(), doc).unwrap_err();
+        assert!(error.contains(reason), "{error}");
     }
     assert_eq!(arrangement, before);
 }
@@ -496,8 +408,7 @@ const F: Option<&str> = Some("floating");
 enum Step {
     /// Declare these regions (a template change).
     Declare(&'static [Region]),
-    /// The host commits a dock of tab panels (each a list of keys), at the
-    /// current generation.
+    /// The host commits a dock of tab panels (each a list of keys).
     Commit(&'static [&'static [&'static str]]),
     Restore(&'static str),
     Reset,
@@ -611,13 +522,9 @@ fn placement_scenarios() {
     };
     for (name, initial, steps, expected) in cases {
         let mut now = regions(initial);
-        let mut arrangement = Stored {
-            clock: Clock::default(),
-            value: Versioned::default(),
-        };
+        let mut arrangement = SidebarArrangement::default();
         let mut report = arrangement.follow(&now);
         for step in *steps {
-            let generation = arrangement.generation();
             report = match step {
                 Declare(next) => {
                     now = regions(next);
@@ -634,10 +541,10 @@ fn placement_scenarios() {
                                 .collect(),
                         );
                     }
-                    arrangement.commit(&now, doc, generation).unwrap()
+                    arrangement.commit(&now, doc).unwrap()
                 }
-                Restore(key) => arrangement.restore(&now, key, generation).unwrap(),
-                Reset => arrangement.reset(&now, generation).unwrap(),
+                Restore(key) => arrangement.restore(&now, key).unwrap(),
+                Reset => arrangement.reset(&now),
             };
         }
         assert_eq!(summary(&arrangement, &report), *expected, "{name}");
