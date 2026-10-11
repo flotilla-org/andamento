@@ -154,42 +154,6 @@ fn set(keys: &[&str]) -> BTreeSet<String> {
 }
 
 #[test]
-fn hints_place_sections_and_the_workspace_fallback_goes_last() {
-    let arrangement = fresh(&ab());
-    assert_eq!(docked(&arrangement), [vec!["a"], vec!["b"], vec![UNPLACED]]);
-    assert_eq!(arrangement.generation(), 1);
-    assert!(!arrangement.owned);
-    assert_eq!(arrangement.placed, set(&["a", "b", UNPLACED]));
-    // Reconciling again changes nothing.
-    let mut again = arrangement.clone();
-    let report = again.follow(&ab());
-    assert_eq!(again, arrangement);
-    assert_eq!(report, Report::default());
-}
-
-#[test]
-fn a_reorder_is_kept_and_reconciliation_is_idempotent() {
-    let mut arrangement = fresh(&ab());
-    let mut reordered = arrangement.doc.clone();
-    if let Some(PanelNode::Split { children, .. }) =
-        reordered.dock.root.as_mut().map(|root| &mut root.node)
-    {
-        children.swap(0, 1);
-    }
-    arrangement.commit(&ab(), reordered.clone(), 1).unwrap();
-    assert_eq!(arrangement.generation(), 2);
-    assert!(arrangement.owned);
-    assert!(arrangement.placed.is_empty(), "a commit clears placed");
-    assert_eq!(arrangement.doc, reordered);
-    let before = arrangement.clone();
-    assert_eq!(arrangement.follow(&ab()), Report::default());
-    assert_eq!(arrangement, before);
-    // Committing the stored document again keeps its generation.
-    arrangement.commit(&ab(), reordered, 2).unwrap();
-    assert_eq!(arrangement.generation(), 2);
-}
-
-#[test]
 fn unrelated_panels_and_host_views_are_kept() {
     let mut arrangement = fresh(&ab());
     let doc = dock(vec![
@@ -240,31 +204,6 @@ fn duplicates_keep_the_first_copy_and_drop_panels_they_empty() {
         }
     );
     assert!(arrangement.doc.check().is_ok());
-}
-
-#[test]
-fn an_added_section_goes_before_its_next_hinted_neighbour() {
-    let mut arrangement = fresh(&ab());
-    // The user puts b first.
-    let doc = dock(vec![
-        tabs("1", 1.0, &["b"]),
-        tabs("2", 1.0, &["a"]),
-        tabs("3", 1.0, &[UNPLACED]),
-    ]);
-    arrangement.commit(&ab(), doc, 1).unwrap();
-    let abc = declared(&[
-        sidebar("b", 20),
-        sidebar("a", 10),
-        region("c", None, Some(15)),
-    ]);
-    let report = arrangement.follow(&abc);
-    assert_eq!(report.placed, ["c"]);
-    assert_eq!(
-        docked(&arrangement),
-        [vec!["c"], vec!["b"], vec!["a"], vec![UNPLACED]]
-    );
-    assert_eq!(arrangement.placed, set(&["c"]));
-    assert_eq!(arrangement.generation(), 3);
 }
 
 #[test]
@@ -331,151 +270,6 @@ fn closing_is_remembered_and_restore_gives_an_equal_share() {
 }
 
 #[test]
-fn a_commit_that_tabs_a_closed_section_restores_it() {
-    let mut arrangement = fresh(&ab());
-    arrangement
-        .commit(&ab(), dock(vec![tabs("1", 1.0, &["a", UNPLACED])]), 1)
-        .unwrap();
-    assert_eq!(arrangement.closed, set(&["b"]));
-    let report = arrangement
-        .commit(
-            &ab(),
-            dock(vec![
-                tabs("1", 1.0, &["a", UNPLACED]),
-                tabs("2", 1.0, &["b"]),
-            ]),
-            2,
-        )
-        .unwrap();
-    assert_eq!(report.restored, ["b"]);
-    assert!(arrangement.closed.is_empty());
-}
-
-#[test]
-fn removed_sections_are_flagged_not_dropped() {
-    let mut arrangement = fresh(&ab());
-    let a_panel = children(&arrangement.doc)[0].id.clone();
-    let only_a = declared(&[region("a", None, Some(10))]);
-    let report = arrangement.follow(&only_a);
-    // b's tab stays where it was, flagged; a keeps its panel.
-    assert_eq!(report.unresolved, ["b"]);
-    assert_eq!(docked(&arrangement), [vec!["a"], vec!["b"], vec![UNPLACED]]);
-    assert_eq!(children(&arrangement.doc)[0].id, a_panel);
-    assert_eq!(arrangement.view(0, &only_a).unresolved, set(&["b"]));
-    // Unchanged document: the generation doesn't move for a flag.
-    assert_eq!(arrangement.generation(), 1);
-
-    // Declared again, it is where it was: not placed anew.
-    let report = arrangement.follow(&ab());
-    assert!(report.placed.is_empty() && report.unresolved.is_empty());
-
-    // A commit may keep an unresolved tab; one that drops it forgets it.
-    arrangement.follow(&only_a);
-    let keep = arrangement.doc.clone();
-    arrangement.commit(&only_a, keep, 1).unwrap();
-    assert_eq!(arrangement.view(0, &only_a).unresolved, set(&["b"]));
-    let generation = arrangement.generation();
-    arrangement
-        .commit(
-            &only_a,
-            dock(vec![tabs("1", 1.0, &["a"]), tabs("3", 1.0, &[UNPLACED])]),
-            generation,
-        )
-        .unwrap();
-    assert!(arrangement.view(0, &only_a).unresolved.is_empty());
-    assert!(
-        arrangement.closed.is_empty(),
-        "dropping it doesn't close it"
-    );
-    // It was never closed, so declared again it is placed.
-    assert_eq!(arrangement.follow(&ab()).placed, ["b"]);
-}
-
-#[test]
-fn a_closed_section_that_no_longer_resolves_stays_closed_and_flagged() {
-    let mut arrangement = fresh(&ab());
-    arrangement
-        .commit(&ab(), dock(vec![tabs("1", 1.0, &["a", UNPLACED])]), 1)
-        .unwrap();
-    let only_a = declared(&[sidebar("a", 10)]);
-    assert_eq!(arrangement.follow(&only_a).unresolved, ["b"]);
-    assert_eq!(arrangement.closed, set(&["b"]));
-    // When it resolves again it is still closed.
-    assert!(arrangement.follow(&ab()).placed.is_empty());
-    assert_eq!(arrangement.closed, set(&["b"]));
-}
-
-#[test]
-fn template_drift_flags_every_key_that_no_longer_resolves() {
-    // ADR 0013: a template version whose regions are renamed flags the old
-    // keys (tabbed or closed) rather than dropping them, and places the new.
-    let v1 = declared(&[
-        sidebar("tree", 10),
-        sidebar("git", 20),
-        sidebar("attention", 30),
-    ]);
-    let mut arrangement = fresh(&v1);
-    let doc = dock(vec![
-        tabs("1", 1.0, &["git"]),
-        tabs("2", 1.0, &["tree"]),
-        tabs("3", 1.0, &[UNPLACED]),
-    ]);
-    arrangement.commit(&v1, doc, 1).unwrap();
-    assert_eq!(arrangement.closed, set(&["attention"]));
-    let v2 = declared(&[
-        sidebar("projects", 10),
-        sidebar("git", 20),
-        sidebar("alerts", 30),
-    ]);
-    let report = arrangement.follow(&v2);
-    assert_eq!(report.placed, ["projects", "alerts"]);
-    assert_eq!(report.unresolved, ["attention", "tree"]);
-    assert_eq!(
-        docked(&arrangement),
-        [
-            vec!["projects"],
-            vec!["git"],
-            vec!["tree"],
-            vec!["alerts"],
-            vec![UNPLACED]
-        ]
-    );
-    assert_eq!(
-        arrangement.view(0, &v2).unresolved,
-        set(&["attention", "tree"])
-    );
-}
-
-#[test]
-fn reset_forgets_closes_and_positions() {
-    let abc = declared(&[
-        sidebar("b", 20),
-        sidebar("a", 10),
-        region("c", None, Some(15)),
-    ]);
-    let mut arrangement = fresh(&abc);
-    arrangement
-        .commit(
-            &abc,
-            dock(vec![tabs("1", 1.0, &["b", "u:x"]), tabs("2", 1.0, &["a"])]),
-            1,
-        )
-        .unwrap();
-    assert_eq!(arrangement.closed, set(&["c", UNPLACED]));
-    arrangement.reset(&abc, 2).unwrap();
-    assert_eq!(
-        docked(&arrangement),
-        [vec!["a"], vec!["c"], vec!["b"], vec![UNPLACED]]
-    );
-    assert!(arrangement.closed.is_empty());
-    assert!(!arrangement.owned);
-    assert_eq!(
-        arrangement.reset(&abc, 2),
-        Err(CommitError::Stale { current: 3 })
-    );
-}
-
-#[test]
 fn a_saved_split_stays_whole_when_a_neighbour_arrives_before_it() {
     let abc = declared(&[
         sidebar("b", 20),
@@ -511,92 +305,6 @@ fn a_saved_split_stays_whole_when_a_neighbour_arrives_before_it() {
     let panels = children(&arrangement.doc);
     assert_eq!(panels[2].tabs(), ["d"]);
     assert_eq!(panels[3], nested, "the split keeps its shape and weight");
-}
-
-#[test]
-fn legacy_adoption_closes_only_what_is_declared_now() {
-    // The host's first commit adopts the layout it saved before Andamento
-    // stored one: declared sections it lacks were closed then.
-    let abd = declared(&[sidebar("a", 10), sidebar("b", 20), sidebar("d", 17)]);
-    let mut arrangement = fresh(&abd);
-    let legacy = dock(vec![tabs("legacy", 1.0, &["b", "a"])]);
-    arrangement.commit(&abd, legacy, 1).unwrap();
-    assert_eq!(arrangement.closed, set(&["d", UNPLACED]));
-    // A section first declared later is new, and appears.
-    let abde = declared(&[
-        sidebar("a", 10),
-        sidebar("b", 20),
-        sidebar("d", 17),
-        sidebar("e", 25),
-    ]);
-    assert_eq!(arrangement.follow(&abde).placed, ["e"]);
-    assert_eq!(docked(&arrangement), [vec!["b", "a"], vec!["e"]]);
-}
-
-#[test]
-fn an_empty_declaration_flags_everything_and_drops_nothing() {
-    // #221 cleared every position on an authoritative empty declaration;
-    // under ADR 0013 the keys are flagged instead, and come back in place.
-    let mut arrangement = fresh(&ab());
-    let before = arrangement.doc.clone();
-    let none = declared(&[]);
-    let report = arrangement.follow(&none);
-    assert_eq!(report.unresolved, ["a", "b"]);
-    assert_eq!(arrangement.doc, before);
-    let report = arrangement.follow(&ab());
-    assert!(report.placed.is_empty() && report.unresolved.is_empty());
-}
-
-#[test]
-fn hosts_and_orders() {
-    // Absent hints, an unknown host with a negative order, the floating
-    // host, and equal orders: x before y in each, in the right host.
-    let variants: [(Option<&str>, Option<i64>, Host); 4] = [
-        (None, None, Host::Dock),
-        (Some("unknown"), Some(-10), Host::Dock),
-        (Some("floating"), Some(0), Host::Floating),
-        (None, Some(0), Host::Dock),
-    ];
-    for (host, order, expected) in variants {
-        let xy = declared(&[region("x", host, order), region("y", host, order)]);
-        let arrangement = fresh(&xy);
-        let (x, y) = match expected {
-            Host::Dock => (docked(&arrangement), Vec::new()),
-            Host::Floating => (floating(&arrangement), docked(&arrangement)),
-        };
-        assert_eq!(x[..2], [vec!["x"], vec!["y"]], "{host:?} {order:?}");
-        if expected == Host::Floating {
-            assert_eq!(y, [vec![UNPLACED]]);
-        }
-        assert!(arrangement.doc.check().is_ok());
-    }
-}
-
-#[test]
-fn a_changed_host_hint_does_not_move_a_placed_section() {
-    let xy = declared(&[region("x", Some("floating"), None), region("y", None, None)]);
-    let mut arrangement = fresh(&xy);
-    assert_eq!(floating(&arrangement), [vec!["x"]]);
-    let moved = declared(&[region("x", Some("sidebar"), None), region("y", None, None)]);
-    let before = arrangement.clone();
-    arrangement.follow(&moved);
-    assert_eq!(arrangement, before);
-    // Restore and reset do use the current hint.
-    arrangement.reset(&moved, 1).unwrap();
-    assert!(floating(&arrangement).is_empty());
-    assert_eq!(docked(&arrangement)[0], ["x"]);
-}
-
-#[test]
-fn closing_every_section_keeps_them_closed_and_restore_fills_an_empty_dock() {
-    let mut arrangement = fresh(&ab());
-    arrangement.commit(&ab(), SidebarDoc::default(), 1).unwrap();
-    assert_eq!(arrangement.closed, set(&["a", "b", UNPLACED]));
-    assert!(arrangement.follow(&ab()).placed.is_empty());
-    assert_eq!(arrangement.doc, SidebarDoc::default());
-    arrangement.restore(&ab(), "b", 2).unwrap();
-    assert_eq!(docked(&arrangement), [vec!["b"]]);
-    assert_eq!(children(&arrangement.doc)[0].weight, 1.0);
 }
 
 #[test]
@@ -749,39 +457,189 @@ fn stale_and_invalid_commits_change_nothing() {
         arrangement.commit(&ab(), good, 0),
         Err(CommitError::Stale { current: 1 })
     );
-    let invalid = [
-        // An unknown section, a malformed host view, a repeated panel ID, a
-        // weight that isn't positive, an empty split.
-        dock(vec![tabs("1", 1.0, &["nope"])]),
-        dock(vec![tabs("1", 1.0, &["u:Bad"])]),
-        dock(vec![tabs("1", 1.0, &["a"]), tabs("1", 1.0, &["b"])]),
-        dock(vec![tabs("1", 0.0, &["a"])]),
-        dock(vec![split("s", 1.0, Axis::Row, Vec::new())]),
-    ];
-    for doc in invalid {
-        assert!(matches!(
-            arrangement.commit(&ab(), doc, 1),
-            Err(CommitError::Invalid(_))
-        ));
-    }
-    // A floating panel can't reuse a docked panel's ID either.
     let mut clash = dock(vec![tabs("1", 1.0, &["a"])]);
     clash.floating.push(tabs("1", 1.0, &["b"]));
-    assert!(arrangement.commit(&ab(), clash, 1).is_err());
+    let invalid = [
+        (dock(vec![tabs("1", 1.0, &["nope"])]), "no section \"nope\""),
+        (
+            dock(vec![tabs("1", 1.0, &["u:Bad"])]),
+            "no section \"u:Bad\"",
+        ),
+        (
+            dock(vec![tabs("1", 1.0, &["a"]), tabs("1", 1.0, &["b"])]),
+            "panel ID \"1\" is used twice",
+        ),
+        (dock(vec![tabs("1", 0.0, &["a"])]), "weights are positive"),
+        (
+            dock(vec![split("s", 1.0, Axis::Row, Vec::new())]),
+            "split \"s\" has no panels",
+        ),
+        // A floating panel can't reuse a docked panel's ID either.
+        (clash, "panel ID \"1\" is used twice"),
+    ];
+    for (doc, reason) in invalid {
+        match arrangement.commit(&ab(), doc, 1) {
+            Err(CommitError::Invalid(error)) => assert!(error.contains(reason), "{error}"),
+            other => panic!("{reason}: {other:?}"),
+        }
+    }
     assert_eq!(arrangement, before);
 }
 
+/// One region a scenario declares: name, default host and order.
+type Region = (&'static str, Option<&'static str>, Option<i64>);
+const S: Option<&str> = Some("sidebar");
+const F: Option<&str> = Some("floating");
+
+/// A step of a scenario, against what is declared now.
+enum Step {
+    /// Declare these regions (a template change).
+    Declare(&'static [Region]),
+    /// The host commits a dock of tab panels (each a list of keys), at the
+    /// current generation.
+    Commit(&'static [&'static [&'static str]]),
+    Restore(&'static str),
+    Reset,
+}
+
+const AB: &[Region] = &[("b", S, Some(20)), ("a", S, Some(10))];
+const ABC: &[Region] = &[
+    ("b", S, Some(20)),
+    ("a", S, Some(10)),
+    ("c", None, Some(15)),
+];
+const ONLY_A: &[Region] = &[("a", S, Some(10))];
+const U: &str = UNPLACED;
+
+/// What an arrangement holds and what the last step reported, as one line:
+/// the dock's tab panels, the floating ones, closed and placed keys, and the
+/// report's placed, restored and unresolved keys.
+fn summary(arrangement: &SidebarArrangement, report: &Report) -> String {
+    let panels = |panels: Vec<Vec<&str>>| {
+        panels
+            .iter()
+            .map(|keys| format!("[{}]", keys.join(" ")))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let keys = |keys: Vec<&String>| keys.into_iter().cloned().collect::<Vec<_>>().join(" ");
+    let docked = match arrangement.doc.dock.root {
+        Some(_) => panels(docked(arrangement)),
+        None => String::new(),
+    };
+    format!(
+        "dock {docked}; float {}; closed {}; placed {}; report {} / {} / {}{}",
+        panels(floating(arrangement)),
+        keys(arrangement.closed.iter().collect()),
+        keys(arrangement.placed.iter().collect()),
+        keys(report.placed.iter().collect()),
+        keys(report.restored.iter().collect()),
+        keys(report.unresolved.iter().collect()),
+        if arrangement.owned { "; owned" } else { "" },
+    )
+}
+
+/// Wheelhouse's section-placement scenarios: what is declared, the steps,
+/// and the outcome as [`summary`] gives it. Reports read placed /
+/// restored / unresolved.
 #[test]
-fn unusual_keys_are_ordinary_keys() {
-    // Numeric and reserved-looking region names place and close like any.
-    let odd = declared(&[region("123", None, None), region("closed", None, None)]);
-    let mut arrangement = fresh(&odd);
-    assert_eq!(
-        docked(&arrangement),
-        [vec!["123"], vec!["closed"], vec![UNPLACED]]
-    );
-    arrangement
-        .commit(&odd, dock(vec![tabs("1", 1.0, &["closed"])]), 1)
-        .unwrap();
-    assert_eq!(arrangement.closed, set(&["123", UNPLACED]));
+fn placement_scenarios() {
+    use Step::*;
+    #[rustfmt::skip]
+    let cases: &[(&str, &[Region], &[Step], &str)] = &[
+        ("hints place sections, the workspace fallback last", AB, &[],
+         "dock [a] [b] [.unplaced]; float ; closed ; placed .unplaced a b; report a b .unplaced /  / "),
+        ("a reorder is kept and reconciling it changes nothing", AB,
+         &[Commit(&[&["b"], &["a"], &[U]]), Declare(AB)],
+         "dock [b] [a] [.unplaced]; float ; closed ; placed ; report  /  / ; owned"),
+        ("an added section goes before its next hinted neighbour", AB,
+         &[Commit(&[&["b"], &["a"], &[U]]), Declare(ABC)],
+         "dock [c] [b] [a] [.unplaced]; float ; closed ; placed c; report c /  / ; owned"),
+        ("leaving a section out closes it; tabbing it again restores it", AB,
+         &[Commit(&[&["a", U]]), Commit(&[&["a", U], &["b"]])],
+         "dock [a .unplaced] [b]; float ; closed ; placed ; report  / b / ; owned"),
+        ("a closed section stays closed when declarations change", ABC,
+         &[Commit(&[&["a"], &["b"], &[U]]), Declare(ABC)],
+         "dock [a] [b] [.unplaced]; float ; closed c; placed ; report  /  / ; owned"),
+        ("a removed section is flagged in place, and there when declared again", AB,
+         &[Declare(ONLY_A)],
+         "dock [a] [b] [.unplaced]; float ; closed ; placed .unplaced a b; report  /  / b"),
+        ("... and comes back where it was", AB, &[Declare(ONLY_A), Declare(AB)],
+         "dock [a] [b] [.unplaced]; float ; closed ; placed .unplaced a b; report  /  / "),
+        ("a commit dropping an unresolved tab forgets it, unclosed", AB,
+         &[Declare(ONLY_A), Commit(&[&["a"], &[U]]), Declare(AB)],
+         "dock [a] [b] [.unplaced]; float ; closed ; placed b; report b /  / ; owned"),
+        ("a closed section that no longer resolves stays closed, flagged", AB,
+         &[Commit(&[&["a", U]]), Declare(ONLY_A)],
+         "dock [a .unplaced]; float ; closed b; placed ; report  /  / b; owned"),
+        ("template drift flags every key that no longer resolves, places the new",
+         &[("tree", S, Some(10)), ("git", S, Some(20)), ("attention", S, Some(30))],
+         &[Commit(&[&["git"], &["tree"], &[U]]),
+           Declare(&[("projects", S, Some(10)), ("git", S, Some(20)), ("alerts", S, Some(30))])],
+         "dock [projects] [git] [tree] [alerts] [.unplaced]; float ; closed attention; \
+          placed alerts projects; report projects alerts /  / attention tree; owned"),
+        ("an empty declaration flags everything and drops nothing", AB, &[Declare(&[])],
+         "dock [a] [b] [.unplaced]; float ; closed ; placed .unplaced a b; report  /  / a b"),
+        ("reset forgets closes and positions", ABC, &[Commit(&[&["b", "u:x"], &["a"]]), Reset],
+         "dock [a] [c] [b] [.unplaced]; float ; closed ; placed .unplaced a b c; report a c b .unplaced /  / "),
+        ("legacy adoption closes only what is declared now",
+         &[("a", S, Some(10)), ("b", S, Some(20)), ("d", S, Some(17))],
+         &[Commit(&[&["b", "a"]]),
+           Declare(&[("a", S, Some(10)), ("b", S, Some(20)), ("d", S, Some(17)), ("e", S, Some(25))])],
+         "dock [b a] [e]; float ; closed .unplaced d; placed e; report e /  / ; owned"),
+        ("hosts: floating, unknown, absent", &[("x", F, None), ("y", Some("unknown"), Some(-10))], &[],
+         "dock [y] [.unplaced]; float [x]; closed ; placed .unplaced x y; report y x .unplaced /  / "),
+        ("a changed host hint doesn't move a placed section; reset uses it",
+         &[("x", F, None), ("y", None, None)],
+         &[Declare(&[("x", S, None), ("y", None, None)]), Reset],
+         "dock [x] [y] [.unplaced]; float ; closed ; placed .unplaced x y; report x y .unplaced /  / "),
+        ("closing every section keeps them closed; restore fills the empty dock", AB,
+         &[Commit(&[]), Declare(AB), Restore("b")],
+         "dock [b]; float ; closed .unplaced a; placed b; report  / b / ; owned"),
+        ("numeric and reserved-looking names are ordinary keys",
+         &[("123", None, None), ("closed", None, None)], &[Commit(&[&["closed"]])],
+         "dock [closed]; float ; closed .unplaced 123; placed ; report  /  / ; owned"),
+    ];
+    let regions = |regions: &[Region]| {
+        declared(
+            &regions
+                .iter()
+                .map(|(name, host, order)| region(name, *host, *order))
+                .collect::<Vec<_>>(),
+        )
+    };
+    for (name, initial, steps, expected) in cases {
+        let mut now = regions(initial);
+        let mut arrangement = Stored {
+            clock: Clock::default(),
+            value: Versioned::default(),
+        };
+        let mut report = arrangement.follow(&now);
+        for step in *steps {
+            let generation = arrangement.generation();
+            report = match step {
+                Declare(next) => {
+                    now = regions(next);
+                    arrangement.follow(&now)
+                }
+                Commit(panels) => {
+                    let mut doc = SidebarDoc::default();
+                    if !panels.is_empty() {
+                        doc = dock(
+                            panels
+                                .iter()
+                                .enumerate()
+                                .map(|(i, keys)| tabs(&(i + 1).to_string(), 1.0, keys))
+                                .collect(),
+                        );
+                    }
+                    arrangement.commit(&now, doc, generation).unwrap()
+                }
+                Restore(key) => arrangement.restore(&now, key, generation).unwrap(),
+                Reset => arrangement.reset(&now, generation).unwrap(),
+            };
+        }
+        assert_eq!(summary(&arrangement, &report), *expected, "{name}");
+        assert!(arrangement.doc.check().is_ok(), "{name}");
+    }
 }

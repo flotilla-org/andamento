@@ -2,12 +2,14 @@
 //! configuration and local sections, commits at an expected generation
 //! without invalidating the snapshot, and survives a restart as part of the
 //! dashboard record.
+mod common;
 use andamento_core::sidebar_arrangement::SidebarDoc;
 use andamento_core::slots::{ArrangementDoc, Panel, PanelNode};
 use andamento_core::suggested_layout::Axis;
 use andamento_core::versioned::CommitError;
 use andamento_core::{EntityRef, MetadataValue, Sidebar};
-use std::collections::{BTreeMap, BTreeSet};
+use common::set;
+use std::collections::BTreeMap;
 
 const TEMPLATE: &str = r#"
 template "t" slot="compact" node-kind="entity" {
@@ -87,10 +89,6 @@ fn keys(keys: &[&[&str]]) -> Vec<Vec<String>> {
     keys.iter()
         .map(|panel| panel.iter().map(|k| k.to_string()).collect())
         .collect()
-}
-
-fn set(keys: &[&str]) -> BTreeSet<String> {
-    keys.iter().map(|k| k.to_string()).collect()
 }
 
 fn section(id: &str, position: &str) -> (EntityRef, BTreeMap<String, MetadataValue>) {

@@ -12,45 +12,16 @@ use andamento_core::suggested_layout::{
 use andamento_core::target_resolution::PortableResolution;
 use andamento_core::versioned::CommitError;
 use andamento_core::workspace::WorkspaceRecord;
-use andamento_core::{
-    EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
-    WorkspaceId,
-};
-use common::{entity, PROVIDER};
-use std::collections::BTreeSet;
+use andamento_core::{EntityRef, MetadataPatch, MetadataValue, MetadataValueUpdate, Sidebar};
+use common::{entity, list, set, text, worker, Feed, CONFIG, WORKER};
 
-fn text(s: &str) -> MetadataValue {
-    MetadataValue::Text(s.into())
-}
-fn list(values: &[&str]) -> MetadataValue {
-    MetadataValue::StringList(values.iter().map(|v| v.to_string()).collect())
-}
+/// A patch setting `facts` on `subject` and unsetting `unset`.
 fn patch(subject: EntityRef, facts: &[(&str, MetadataValue)], unset: &[&str]) -> MetadataPatch {
-    MetadataPatch {
-        target: MetadataTarget::Entity(subject),
-        source_id: "fixture".into(),
-        set: facts
-            .iter()
-            .map(|(key, value)| {
-                (
-                    key.to_string(),
-                    MetadataValueUpdate {
-                        value: value.clone(),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                )
-            })
-            .collect(),
-        unset: unset.iter().map(|key| key.to_string()).collect(),
-    }
+    let mut patch = common::patch(subject, facts);
+    patch.unset = unset.iter().map(|key| key.to_string()).collect();
+    patch
 }
 
-const WORKER: &str = "01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c";
-fn worker() -> WorkspaceId {
-    WORKER.parse().unwrap()
-}
 fn subject() -> EntityRef {
     entity("vessel", "v")
 }
@@ -95,33 +66,30 @@ fn layout(version: &str, slots: Vec<Vec<(String, MetadataValue)>>, keys: &[&str]
 
 /// A sidebar with a workspace open for vessel v.
 fn session(layout_patch: MetadataPatch) -> Sidebar {
-    let mut sidebar = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
-    sidebar
-        .apply(
-            100,
-            PROVIDER,
-            [
-                patch(
-                    entity("project", "p"),
-                    &[
-                        ("flotilla.project", text("p")),
-                        ("display.label", text("P")),
-                    ],
-                    &[],
-                ),
-                patch(
-                    subject(),
-                    &[
-                        ("flotilla.project", text("p")),
-                        ("display.label", text("Vee")),
-                        ("action.primary.recipe", text("printf hello")),
-                    ],
-                    &[],
-                ),
-                layout_patch,
-            ],
-        )
-        .unwrap();
+    let mut sidebar = Sidebar::new(CONFIG).unwrap();
+    sidebar.feed(
+        100,
+        [
+            patch(
+                entity("project", "p"),
+                &[
+                    ("flotilla.project", text("p")),
+                    ("display.label", text("P")),
+                ],
+                &[],
+            ),
+            patch(
+                subject(),
+                &[
+                    ("flotilla.project", text("p")),
+                    ("display.label", text("Vee")),
+                    ("action.primary.recipe", text("printf hello")),
+                ],
+                &[],
+            ),
+            layout_patch,
+        ],
+    );
     let effects = sidebar
         .dispatch(Action::Activate { entity: subject() })
         .unwrap();
@@ -170,9 +138,6 @@ fn row(children: Vec<Panel>) -> ArrangementDoc {
             },
         }),
     }
-}
-fn set(keys: &[&str]) -> BTreeSet<String> {
-    keys.iter().map(|k| k.to_string()).collect()
 }
 
 #[test]
@@ -258,7 +223,7 @@ fn slots_follow_the_layout_and_arrangements_reconcile() {
         "layout.root".into(),
         "layout.panel.main.slots".into(),
     ];
-    sidebar.apply(200, PROVIDER, [second]).unwrap();
+    sidebar.feed(200, [second]);
     assert_eq!(keys(&sidebar), ["b", "c"]);
     assert!(sidebar.content_revision() > content);
     let view = sidebar.arrangement(worker()).unwrap();
@@ -309,7 +274,7 @@ fn slots_follow_the_layout_and_arrangements_reconcile() {
 
     let name = format!("workspace/{WORKER}");
     let record = sidebar.export_record(&name).unwrap();
-    let mut fresh = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
+    let mut fresh = Sidebar::new(CONFIG).unwrap();
     fresh.import_record(&name, &record).unwrap();
     assert_eq!(fresh.slots(worker()), sidebar.slots(worker()));
     let (mut imported, live) = (
@@ -391,21 +356,18 @@ fn rebind_policies_decide_what_happens_to_the_replaced_instance() {
     assert!(sidebar.plan_slot(worker(), "nope", "").is_err());
 
     // Every slot resolves to a new instance under the same baseline.
-    sidebar
-        .apply(
-            200,
-            PROVIDER,
-            [layout(
-                "1",
-                vec![
-                    facet_slot("r", "replace", "r#2"),
-                    facet_slot("k", "keep-previous", "k#2"),
-                    facet_slot("q", "ask", "q#2"),
-                ],
-                &["r", "k", "q"],
-            )],
-        )
-        .unwrap();
+    sidebar.feed(
+        200,
+        [layout(
+            "1",
+            vec![
+                facet_slot("r", "replace", "r#2"),
+                facet_slot("k", "keep-previous", "k#2"),
+                facet_slot("q", "ask", "q#2"),
+            ],
+            &["r", "k", "q"],
+        )],
+    );
     // replace: the old instance goes.
     let plan = sidebar.plan_slot(worker(), "r", &applied["r"]).unwrap();
     assert_eq!(
@@ -456,33 +418,27 @@ fn rebind_policies_decide_what_happens_to_the_replaced_instance() {
             .state,
         ContentState::Failed
     );
-    sidebar
-        .apply(
-            300,
-            PROVIDER,
-            [layout(
-                "1",
-                vec![facet_slot("q", "ask", "q#3")],
-                &["r", "k", "q"],
-            )],
-        )
-        .unwrap();
+    sidebar.feed(
+        300,
+        [layout(
+            "1",
+            vec![facet_slot("q", "ask", "q#3")],
+            &["r", "k", "q"],
+        )],
+    );
     let plan = sidebar.plan_slot(worker(), "q", &applied["q"]).unwrap();
     assert_eq!(plan.state, ContentState::Updating);
     assert_ne!(plan.update.unwrap().token, update.token);
 
     // A held resolution suspends the slot without touching its content.
-    sidebar
-        .apply(
-            400,
-            PROVIDER,
-            [patch(
-                subject(),
-                &[("layout.slot.q.state", text("held"))],
-                &[],
-            )],
-        )
-        .unwrap();
+    sidebar.feed(
+        400,
+        [patch(
+            subject(),
+            &[("layout.slot.q.state", text("held"))],
+            &[],
+        )],
+    );
     assert_eq!(
         sidebar
             .plan_slot(worker(), "q", &applied["q"])
@@ -605,7 +561,7 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     // plans Updating to the same resolution, with the saved one to try first.
     let name = format!("workspace/{WORKER}");
     let record = sidebar.export_record(&name).unwrap();
-    let mut other = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
+    let mut other = Sidebar::new(CONFIG).unwrap();
     other.import_record(&name, &record).unwrap();
     assert_eq!(other.export_record(&name).unwrap(), record);
     // No facts yet: Unavailable, and the saved resolution is kept, at a
@@ -618,13 +574,7 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     let plan = other.plan_slot(worker(), "r", "").unwrap();
     assert_eq!(plan.state, ContentState::Unavailable);
     assert!(same(&plan));
-    other
-        .apply(
-            100,
-            PROVIDER,
-            [layout("1", slots("r#1", "k#1"), &["r", "k"])],
-        )
-        .unwrap();
+    other.feed(100, [layout("1", slots("r#1", "k#1"), &["r", "k"])]);
     let plan = other.plan_slot(worker(), "r", "").unwrap();
     assert_eq!(plan.state, ContentState::Updating);
     assert!(same(&plan));
@@ -633,13 +583,7 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     // The provider resolves r to a new target: the saved resolution is
     // cleared, and the slot rebinds by its policy as for any change.
     let revision = sidebar.content_revision();
-    sidebar
-        .apply(
-            200,
-            PROVIDER,
-            [layout("1", slots("r#2", "k#1"), &["r", "k"])],
-        )
-        .unwrap();
+    sidebar.feed(200, [layout("1", slots("r#2", "k#1"), &["r", "k"])]);
     assert!(sidebar.content_revision() > revision);
     assert_eq!(sidebar.slot_resolution(worker(), "r").unwrap(), None);
     let record = sidebar.export_record(&name).unwrap();
@@ -665,13 +609,7 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     assert!(g2 > g1);
     // The same happens to a device that imports the old record later.
     other.import_record(&name, &record).unwrap();
-    other
-        .apply(
-            300,
-            PROVIDER,
-            [layout("1", slots("r#2", "k#1"), &["r", "k"])],
-        )
-        .unwrap();
+    other.feed(300, [layout("1", slots("r#2", "k#1"), &["r", "k"])]);
     assert_eq!(other.slot_resolution(worker(), "r").unwrap(), None);
 
     // Held (or expired) facts are silence, not a new target: kept.
@@ -686,17 +624,14 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
             .unwrap()
             > g2
     );
-    sidebar
-        .apply(
-            400,
-            PROVIDER,
-            [patch(
-                subject(),
-                &[("layout.slot.k.state", text("held"))],
-                &[],
-            )],
-        )
-        .unwrap();
+    sidebar.feed(
+        400,
+        [patch(
+            subject(),
+            &[("layout.slot.k.state", text("held"))],
+            &[],
+        )],
+    );
     assert_eq!(
         sidebar.plan_slot(worker(), "k", &k.id).unwrap().state,
         ContentState::Held
@@ -764,8 +699,8 @@ fn an_imported_resolution_never_reuses_a_generation() {
             .unwrap();
         (generation, applied)
     };
-    let mut here = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
-    let mut there = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
+    let mut here = Sidebar::new(CONFIG).unwrap();
+    let mut there = Sidebar::new(CONFIG).unwrap();
     let (read, applied) = saved_at(&mut here, "S1");
     saved_at(&mut there, "S2");
     here.import_record(&name, &there.export_record(&name).unwrap())

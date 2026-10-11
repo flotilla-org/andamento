@@ -2,15 +2,21 @@
 //! exports it as opaque records, which a fresh sidebar imports before it has
 //! observed anything or received a fact.
 mod common;
-use andamento_core::presentation::{PlacementNode, PresentationState, SurfaceSnapshot};
+use andamento_core::presentation::{PlacementNode, PresentationState};
 use andamento_core::records::{DashboardRecord, DashboardState};
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::workspace::WorkspaceRecord;
-use andamento_core::{
-    DisplayVariableValue, EntityRef, MetadataPatch, MetadataTarget, MetadataValue,
-    MetadataValueUpdate, Sidebar, WorkspaceId,
-};
-use common::{entity, PROVIDER};
+use andamento_core::{DisplayVariableValue, EntityRef, MetadataPatch, MetadataValue, Sidebar};
+use common::{entity, nodes, refs, text, worker, Feed, WORKER};
+
+/// A patch setting `facts` on `subject`, each with `ttl`.
+fn patch(subject: EntityRef, facts: &[(&str, MetadataValue)], ttl: Option<u64>) -> MetadataPatch {
+    let mut patch = common::patch(subject, facts);
+    for update in patch.set.values_mut() {
+        update.ttl_ms = ttl;
+    }
+    patch
+}
 use std::collections::BTreeMap;
 
 const LOCAL: &str = r#"
@@ -51,33 +57,6 @@ fn config() -> String {
     format!("{}\n{LOCAL}", include_str!("fixtures/sidebar.kdl"))
 }
 
-fn text(s: &str) -> MetadataValue {
-    MetadataValue::Text(s.into())
-}
-fn refs(entity: EntityRef) -> MetadataValue {
-    MetadataValue::EntityRefs(vec![entity])
-}
-fn patch(subject: EntityRef, facts: &[(&str, MetadataValue)], ttl: Option<u64>) -> MetadataPatch {
-    MetadataPatch {
-        target: MetadataTarget::Entity(subject),
-        source_id: "fixture".into(),
-        set: facts
-            .iter()
-            .map(|(key, value)| {
-                (
-                    key.to_string(),
-                    MetadataValueUpdate {
-                        value: value.clone(),
-                        ttl_ms: ttl,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                )
-            })
-            .collect(),
-        unset: vec![],
-    }
-}
 fn vessel(id: &str, label: &str) -> MetadataPatch {
     patch(
         entity("vessel", id),
@@ -103,10 +82,6 @@ fn project() -> MetadataPatch {
     )
 }
 
-const WORKER: &str = "01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c";
-fn worker() -> WorkspaceId {
-    WORKER.parse().unwrap()
-}
 fn workspace(selected: bool) -> Workspace {
     Workspace {
         id: worker(),
@@ -116,19 +91,6 @@ fn workspace(selected: bool) -> Workspace {
     }
 }
 
-fn nodes(surface: &SurfaceSnapshot) -> Vec<&PlacementNode> {
-    fn collect<'a>(nodes: &'a [PlacementNode], out: &mut Vec<&'a PlacementNode>) {
-        for node in nodes {
-            out.push(node);
-            collect(&node.children, out);
-        }
-    }
-    let mut out = vec![];
-    for section in &surface.sections {
-        collect(&section.nodes, &mut out);
-    }
-    out
-}
 fn tree(sidebar: &Sidebar) -> PlacementNode {
     sidebar
         .snapshot()
@@ -150,13 +112,7 @@ fn issues_checked(sidebar: &Sidebar) -> bool {
 /// a local section, group and pin, and sees v's producer remove it.
 fn arranged_session() -> Sidebar {
     let mut sidebar = Sidebar::new(&config()).unwrap();
-    sidebar
-        .apply(
-            100,
-            PROVIDER,
-            [project(), vessel("v", "Vee"), vessel("w", "Double")],
-        )
-        .unwrap();
+    sidebar.feed(100, [project(), vessel("v", "Vee"), vessel("w", "Double")]);
     let effects = sidebar
         .dispatch(Action::Activate {
             entity: entity("vessel", "v"),
@@ -228,7 +184,7 @@ fn arranged_session() -> Sidebar {
     ]
     .map(String::from)
     .to_vec();
-    sidebar.apply(150, PROVIDER, [removal]).unwrap();
+    sidebar.feed(150, [removal]);
     sidebar.snapshot();
     sidebar.tick(150);
     let v = nodes(&sidebar.snapshot().surface)
@@ -354,9 +310,7 @@ fn importing_before_the_first_observation_restores_the_sidebar_without_facts() {
     assert_eq!(sidebar.local_entities().len(), 3);
 
     // When w is published again, the saved sibling order applies.
-    sidebar
-        .apply(300, PROVIDER, [vessel("w", "Double")])
-        .unwrap();
+    sidebar.feed(300, [vessel("w", "Double")]);
     let order = tree(&sidebar)
         .children
         .iter()
@@ -447,9 +401,7 @@ fn generations_change_only_with_content() {
     assert_ne!(dashboard, 0);
     assert_eq!(sidebar.record_generation("dashboard").unwrap(), dashboard);
     // Facts, time and topology are not dashboard content.
-    sidebar
-        .apply(100, PROVIDER, [project(), vessel("v", "Vee")])
-        .unwrap();
+    sidebar.feed(100, [project(), vessel("v", "Vee")]);
     sidebar.tick(5_000);
     let effects = sidebar
         .dispatch(Action::Activate {
@@ -487,14 +439,10 @@ fn generations_change_only_with_content() {
     // heartbeat that repeats the same facts at a later time.
     let name = format!("workspace/{WORKER}");
     let workspace = sidebar.record_generation(&name).unwrap();
-    sidebar
-        .apply(6_000, PROVIDER, [project(), vessel("v", "Vee")])
-        .unwrap();
+    sidebar.feed(6_000, [project(), vessel("v", "Vee")]);
     sidebar.tick(7_000);
     assert_eq!(sidebar.record_generation(&name).unwrap(), workspace);
-    sidebar
-        .apply(8_000, PROVIDER, [vessel("v", "Renamed")])
-        .unwrap();
+    sidebar.feed(8_000, [vessel("v", "Renamed")]);
     let renamed = sidebar.record_generation(&name).unwrap();
     assert!(renamed > workspace);
     let record = WorkspaceRecord::decode(
@@ -519,15 +467,26 @@ fn generations_change_only_with_content() {
 fn display_variables_and_local_entities_are_set_directly() {
     let mut sidebar = Sidebar::new(&config()).unwrap();
     // No snapshot or retry is needed, and invalid values change nothing.
-    assert!(sidebar
-        .set_display_variable("missing", Some(DisplayVariableValue::Bool(true)))
-        .is_err());
-    assert!(sidebar
-        .set_display_variable("show-issues", Some(DisplayVariableValue::Enum("x".into())))
-        .is_err());
-    assert!(sidebar
-        .set_display_variable("mode", Some(DisplayVariableValue::Enum("tall".into())))
-        .is_err());
+    for (name, value, reason) in [
+        (
+            "missing",
+            DisplayVariableValue::Bool(true),
+            "unknown display variable",
+        ),
+        (
+            "show-issues",
+            DisplayVariableValue::Enum("x".into()),
+            "not allowed",
+        ),
+        (
+            "mode",
+            DisplayVariableValue::Enum("tall".into()),
+            "not allowed",
+        ),
+    ] {
+        let error = sidebar.set_display_variable(name, Some(value)).unwrap_err();
+        assert!(error.contains(reason), "{name}: {error}");
+    }
     sidebar
         .set_display_variable("show-issues", Some(DisplayVariableValue::Bool(false)))
         .unwrap();
@@ -535,15 +494,31 @@ fn display_variables_and_local_entities_are_set_directly() {
     sidebar.set_display_variable("show-issues", None).unwrap();
     assert!(issues_checked(&sidebar), "None returns to the default");
 
-    assert!(sidebar
-        .set_local(entity("vessel", "v"), BTreeMap::new())
-        .is_err());
-    assert!(sidebar
-        .set_local(
+    for (entity, facts, reason) in [
+        (
+            entity("vessel", "v"),
+            BTreeMap::new(),
+            "local entities have the \"local\" provider",
+        ),
+        (
+            EntityRef::local("vessel", "v"),
+            BTreeMap::new(),
+            "local entities are",
+        ),
+        (
             EntityRef::local(".group", "g"),
-            BTreeMap::from([("list".into(), MetadataValue::StringList(vec![]))])
-        )
-        .is_err());
+            BTreeMap::from([("list".into(), MetadataValue::StringList(vec![]))]),
+            "local facts are text",
+        ),
+        (
+            EntityRef::local(".group", "g"),
+            BTreeMap::from([(".section".into(), refs(EntityRef::new("", ".section", "s")))]),
+            "names no provider",
+        ),
+    ] {
+        let error = sidebar.set_local(entity, facts).unwrap_err();
+        assert!(error.contains(reason), "{error}");
+    }
     sidebar
         .set_local(
             EntityRef::local(".section", "s"),

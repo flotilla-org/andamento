@@ -1,24 +1,19 @@
 //! Entities carry the provider (Dashboard subscription) their facts come
 //! from: the same kind and ID under two providers are two entities; a
 //! provider's facts can be retracted at once or kept stale.
-use andamento_core::presentation::{PlacementNode, PresentationState, SurfaceSnapshot};
+mod common;
+use andamento_core::presentation::{PlacementNode, PresentationState};
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::workspace::WorkspaceRecord;
 use andamento_core::{
     EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
     WorkspaceId,
 };
+use common::{nodes, refs, text, CONFIG};
 use std::collections::BTreeMap;
 
-const CONFIG: &str = include_str!("fixtures/sidebar.kdl");
 const W42: WorkspaceId = andamento_core::tab_workspace_id(42);
 
-fn text(s: &str) -> MetadataValue {
-    MetadataValue::Text(s.into())
-}
-fn refs(entity: EntityRef) -> MetadataValue {
-    MetadataValue::EntityRefs(vec![entity])
-}
 /// A patch as a producer writes it: it names no provider.
 fn patch(
     kind: &str,
@@ -73,19 +68,6 @@ fn fleet(tag: &str, ttl_ms: Option<u64>) -> Vec<MetadataPatch> {
 }
 fn entity(provider: &str, kind: &str, id: &str) -> EntityRef {
     EntityRef::new(provider, kind, id)
-}
-fn nodes(surface: &SurfaceSnapshot) -> Vec<&PlacementNode> {
-    fn collect<'a>(nodes: &'a [PlacementNode], out: &mut Vec<&'a PlacementNode>) {
-        for node in nodes {
-            out.push(node);
-            collect(&node.children, out);
-        }
-    }
-    let mut out = vec![];
-    for section in &surface.sections {
-        collect(&section.nodes, &mut out);
-    }
-    out
 }
 fn tree(sidebar: &Sidebar) -> Vec<PlacementNode> {
     sidebar.snapshot().surface.sections[0].nodes.clone()

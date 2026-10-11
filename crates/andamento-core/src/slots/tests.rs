@@ -107,10 +107,15 @@ fn user_slots_overrides_and_reattachment() {
         ..Default::default()
     };
     // Provider keys can't be invented; user keys live in their namespace.
-    assert!(slots.set("c", shell("x"), RebindPolicy::Replace).is_err());
-    assert!(slots.set("u:", shell("x"), RebindPolicy::Replace).is_err());
-    assert!(slots.set("u:A", shell("x"), RebindPolicy::Replace).is_err());
-    assert!(slots.set("u:1", shell(""), RebindPolicy::Replace).is_err());
+    for (key, spec, reason) in [
+        ("c", shell("x"), "no slot \"c\""),
+        ("u:", shell("x"), "invalid user slot key"),
+        ("u:A", shell("x"), "invalid user slot key"),
+        ("u:1", shell(""), "a view spec needs a command"),
+    ] {
+        let error = slots.set(key, spec, RebindPolicy::Replace).unwrap_err();
+        assert!(error.contains(reason), "{key}: {error}");
+    }
     assert!(slots.set("u:1", shell("x"), RebindPolicy::Ask).unwrap());
     assert!(!slots.set("u:1", shell("x"), RebindPolicy::Ask).unwrap());
     // Overriding a baseline slot detaches it.
@@ -167,23 +172,33 @@ fn documents_are_checked_whole() {
     ));
     assert_eq!(ok.check(), Ok(()));
     let mut bad = vec![
-        doc(split("1", vec![tabs("1", &["a"], None)])),
-        doc(split("1", vec![])),
-        doc(split(
-            "1",
-            vec![tabs("2", &["a"], None), tabs("3", &["a"], None)],
-        )),
-        doc(tabs("1", &["a"], Some("b"))),
-        doc(tabs("", &["a"], None)),
-        doc(tabs("1", &[""], None)),
+        (
+            doc(split("1", vec![tabs("1", &["a"], None)])),
+            "panel ID \"1\" is used twice",
+        ),
+        (doc(split("1", vec![])), "split \"1\" has no panels"),
+        (
+            doc(split(
+                "1",
+                vec![tabs("2", &["a"], None), tabs("3", &["a"], None)],
+            )),
+            "slot \"a\" has two tabs",
+        ),
+        (
+            doc(tabs("1", &["a"], Some("b"))),
+            "selects \"b\", which is not one of its tabs",
+        ),
+        (doc(tabs("", &["a"], None)), "a panel needs an ID"),
+        (doc(tabs("1", &[""], None)), "has a tab with no slot"),
     ];
     for weight in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         let mut panel = tabs("1", &["a"], None);
         panel.weight = weight;
-        bad.push(doc(panel));
+        bad.push((doc(panel), "weights are positive"));
     }
-    for doc in bad {
-        assert!(doc.check().is_err(), "{doc:?}");
+    for (doc, reason) in bad {
+        let error = doc.check().unwrap_err();
+        assert!(error.contains(reason), "{doc:?}: {error}");
     }
 }
 
@@ -210,14 +225,19 @@ fn stale_or_invalid_commits_change_nothing() {
     );
     assert_eq!(stored.stored, before);
     // A tab for a slot that never existed, or a malformed document.
-    for invalid in [
-        doc(tabs("1", &["a", "b", "nope"], None)),
-        doc(tabs("1", &["a", "a"], None)),
+    for (invalid, reason) in [
+        (
+            doc(tabs("1", &["a", "b", "nope"], None)),
+            "no slot \"nope\"",
+        ),
+        (doc(tabs("1", &["a", "a"], None)), "slot \"a\" has two tabs"),
     ] {
-        assert!(matches!(
-            stored.commit(invalid, 1, slots.baseline.as_ref(), &infos),
-            Err(crate::versioned::CommitError::Invalid(_))
-        ));
+        match stored.commit(invalid, 1, slots.baseline.as_ref(), &infos) {
+            Err(crate::versioned::CommitError::Invalid(error)) => {
+                assert!(error.contains(reason), "{error}")
+            }
+            other => panic!("{reason}: {other:?}"),
+        }
         assert_eq!(stored.stored, before);
     }
     // Committing the same document again keeps its generation.

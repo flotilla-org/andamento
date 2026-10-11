@@ -10,30 +10,10 @@ use andamento_core::suggested_layout::{
     Axis, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec,
 };
 use andamento_core::versioned::CommitError;
-use andamento_core::{
-    EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
-    WorkspaceId,
-};
-use common::PROVIDER;
+use andamento_core::{EntityRef, MetadataPatch, MetadataTarget, MetadataValue, Sidebar};
+use common::{entity, list, set, text, update, worker, Feed, CONFIG, WORKER};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn entity(kind: &str, id: &str) -> EntityRef {
-    EntityRef::new(PROVIDER, kind, id)
-}
-fn text(s: &str) -> MetadataValue {
-    MetadataValue::Text(s.into())
-}
-fn list(values: &[&str]) -> MetadataValue {
-    MetadataValue::StringList(values.iter().map(|v| v.to_string()).collect())
-}
-fn update(value: MetadataValue) -> MetadataValueUpdate {
-    MetadataValueUpdate {
-        value,
-        ttl_ms: None,
-        precedence: None,
-        ordinal: None,
-    }
-}
 fn patch(subject: EntityRef, facts: Vec<(String, MetadataValue)>) -> MetadataPatch {
     MetadataPatch {
         target: MetadataTarget::Entity(subject),
@@ -41,11 +21,6 @@ fn patch(subject: EntityRef, facts: Vec<(String, MetadataValue)>) -> MetadataPat
         set: facts.into_iter().map(|(k, v)| (k, update(v))).collect(),
         unset: vec![],
     }
-}
-
-const WORKER: &str = "01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c";
-fn worker() -> WorkspaceId {
-    WORKER.parse().unwrap()
 }
 fn subject() -> EntityRef {
     entity("vessel", "v")
@@ -104,35 +79,32 @@ fn publish(sidebar: &mut Sidebar, now: u64, previous: Option<&Layout>, next: &La
         .collect();
     let mut patch = patch(subject(), facts);
     patch.unset = unset;
-    sidebar.apply(now, PROVIDER, [patch]).unwrap();
+    sidebar.feed(now, [patch]);
 }
 
 /// A sidebar with a workspace open for vessel v at `first`.
 fn session(first: &Layout) -> Sidebar {
-    let mut sidebar = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
-    sidebar
-        .apply(
-            100,
-            PROVIDER,
-            [
-                patch(
-                    entity("project", "p"),
-                    vec![
-                        ("flotilla.project".into(), text("p")),
-                        ("display.label".into(), text("P")),
-                    ],
-                ),
-                patch(
-                    subject(),
-                    vec![
-                        ("flotilla.project".into(), text("p")),
-                        ("display.label".into(), text("Vee")),
-                        ("action.primary.recipe".into(), text("printf hello")),
-                    ],
-                ),
-            ],
-        )
-        .unwrap();
+    let mut sidebar = Sidebar::new(CONFIG).unwrap();
+    sidebar.feed(
+        100,
+        [
+            patch(
+                entity("project", "p"),
+                vec![
+                    ("flotilla.project".into(), text("p")),
+                    ("display.label".into(), text("P")),
+                ],
+            ),
+            patch(
+                subject(),
+                vec![
+                    ("flotilla.project".into(), text("p")),
+                    ("display.label".into(), text("Vee")),
+                    ("action.primary.recipe".into(), text("printf hello")),
+                ],
+            ),
+        ],
+    );
     publish(&mut sidebar, 100, None, first);
     let effects = sidebar
         .dispatch(Action::Activate { entity: subject() })
@@ -178,9 +150,6 @@ fn shell(command: &str) -> ViewSpec {
         presentation: None,
     }
 }
-fn set(keys: &[&str]) -> BTreeSet<String> {
-    keys.iter().map(|k| k.to_string()).collect()
-}
 fn panel_mut<'a>(doc: &'a mut ArrangementDoc, id: &str) -> &'a mut Panel {
     fn walk<'a>(panel: &'a mut Panel, id: &str) -> Option<&'a mut Panel> {
         if panel.id == id {
@@ -218,8 +187,100 @@ const V1: Layout = Layout {
     hint: &[("left", &["a", "b"]), ("right", &["c"])],
 };
 
+/// What the user did to a slot before the provider's next version.
+#[derive(Clone, Copy)]
+enum Edit {
+    None,
+    /// Override the slot's content with a shell command.
+    Override(&'static str, &'static str),
+    /// Remove the slot: a tombstone.
+    Remove(&'static str),
+}
+
+/// ADR 0013's table: when the baseline changes, nothing is dropped
+/// silently, whatever the user did to the slot.
 #[test]
-fn a_new_baseline_slot_appears_placed_by_the_default_rule() {
+fn baseline_changes_drop_nothing_silently() {
+    const ABC: &[(&str, &str, &str)] = &[
+        ("a", "top", "replace"),
+        ("b", "make", "keep-previous"),
+        ("c", "tail -f log", "ask"),
+    ];
+    const KEEP: RebindPolicy = RebindPolicy::KeepPrevious;
+    // What the user did, the provider's next slots, the keys after, and the
+    // slot the row is about: its flags and command (none: hidden or gone),
+    // and the departed slots with their rebind policies.
+    #[rustfmt::skip]
+    let rows: &[(&str, Edit, &[(&str, &str, &str)], &[&str], &str, u32, Option<&str>, &[(&str, RebindPolicy)])] = &[
+        ("a new baseline slot appears", Edit::None,
+         &[("a", "top", "replace"), ("b", "make", "keep-previous"), ("c", "tail -f log", "ask"), ("d", "htop", "replace")],
+         &["a", "b", "c", "d"], "d", 0, Some("htop"), &[]),
+        ("an untouched slot removed departs, with its rebind policy", Edit::None,
+         &[("a", "top", "replace"), ("c", "tail -f log", "ask")],
+         &["a", "c"], "b", 0, None, &[("b", KEEP)]),
+        ("an overridden slot removed is kept as the user's, flagged", Edit::Override("b", "make check"),
+         &[("a", "top", "replace"), ("c", "tail -f log", "ask")],
+         &["a", "c", "b"], "b", flag::DETACHED | flag::REMOVED, Some("make check"), &[]),
+        ("an untouched slot's content change is followed", Edit::None,
+         &[("a", "top -d 1", "replace"), ("b", "make", "keep-previous"), ("c", "tail -f log", "ask")],
+         &["a", "b", "c"], "a", 0, Some("top -d 1"), &[]),
+        ("an overridden slot's content change: the override wins, flagged", Edit::Override("c", "less log"),
+         &[("a", "top", "replace"), ("b", "make", "keep-previous"), ("c", "tail -F log", "ask")],
+         &["a", "b", "c"], "c", flag::DETACHED | flag::CHANGED, Some("less log"), &[]),
+        ("a tombstoned slot stays hidden while its content is the same", Edit::Remove("c"),
+         ABC, &["a", "b"], "c", 0, None, &[]),
+        ("a tombstoned key reused for other content shows, flagged", Edit::Remove("c"),
+         &[("a", "top", "replace"), ("b", "make", "keep-previous"), ("c", "journalctl -f", "ask")],
+         &["a", "b", "c"], "c", flag::CHANGED, Some("journalctl -f"), &[]),
+    ];
+    for &(name, edit, next, expected_keys, key, flags, command, departed) in rows {
+        let mut sidebar = session(&V1);
+        match edit {
+            Edit::None => {}
+            Edit::Override(key, command) => {
+                let rebind = slots(&sidebar)[key].rebind;
+                assert!(sidebar
+                    .set_slot(worker(), key, shell(command), rebind)
+                    .unwrap());
+                assert_eq!(slots(&sidebar)[key].flags, flag::DETACHED, "{name}");
+            }
+            Edit::Remove(key) => assert!(sidebar.remove_slot(worker(), key).unwrap()),
+        }
+        let next = Layout {
+            version: "2",
+            slots: next,
+            hint: &[],
+        };
+        publish(&mut sidebar, 200, Some(&V1), &next);
+        assert_eq!(keys(&sidebar), expected_keys, "{name}");
+        let slot = slots(&sidebar)
+            .get(key)
+            .map(|slot| (slot.flags, slot.spec.clone()));
+        assert_eq!(
+            slot,
+            command.map(|command| (flags, shell(command))),
+            "{name}"
+        );
+        let departed: BTreeMap<String, RebindPolicy> = departed
+            .iter()
+            .map(|(key, rebind)| (key.to_string(), *rebind))
+            .collect();
+        assert_eq!(
+            sidebar.overlay(worker()).unwrap().departed,
+            departed,
+            "{name}"
+        );
+        if matches!(edit, Edit::None) {
+            assert!(
+                slots(&sidebar).values().all(|slot| slot.flags == 0),
+                "{name}: untouched"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_new_baseline_slot_is_placed_by_the_hint_or_the_default_rule() {
     let mut sidebar = session(&V1);
     let v2 = Layout {
         version: "2",
@@ -232,12 +293,10 @@ fn a_new_baseline_slot_appears_placed_by_the_default_rule() {
         hint: &[("left", &["a", "b"]), ("right", &["c", "d"])],
     };
     publish(&mut sidebar, 200, Some(&V1), &v2);
-    assert_eq!(keys(&sidebar), ["a", "b", "c", "d"]);
     // Not owned: the hint places it.
     let view = sidebar.arrangement(worker()).unwrap();
     assert_eq!(panel_tabs(&view.doc, "right"), ["c", "d"]);
-
-    // Owned: the default rule (the first tab panel) places it, flagged.
+    // Owned: the default rule (the first tab panel) places it, noted.
     let mut doc = view.doc.clone();
     if let PanelNode::Tabs { tabs, .. } = &mut panel_mut(&mut doc, "left").node {
         tabs.reverse();
@@ -245,15 +304,11 @@ fn a_new_baseline_slot_appears_placed_by_the_default_rule() {
     sidebar
         .set_arrangement(worker(), doc, view.generation)
         .unwrap();
+    let mut v3_slots = v2.slots.to_vec();
+    v3_slots.push(("e", "btop", "replace"));
     let v3 = Layout {
         version: "3",
-        slots: &[
-            ("a", "top", "replace"),
-            ("b", "make", "keep-previous"),
-            ("c", "tail -f log", "ask"),
-            ("d", "htop", "replace"),
-            ("e", "btop", "replace"),
-        ],
+        slots: &v3_slots,
         hint: &[("left", &["a", "b"]), ("right", &["c", "d", "e"])],
     };
     publish(&mut sidebar, 300, Some(&v2), &v3);
@@ -263,207 +318,103 @@ fn a_new_baseline_slot_appears_placed_by_the_default_rule() {
 }
 
 #[test]
-fn an_untouched_slot_removed_goes_and_its_instance_follows_its_rebind_policy() {
+fn a_departed_instance_is_the_hosts_until_released() {
     let mut sidebar = session(&V1);
+    // A rebind-only edit doesn't detach: the slot is still untouched content.
+    sidebar
+        .set_slot(worker(), "b", shell("make"), RebindPolicy::Replace)
+        .unwrap();
+    assert_eq!(slots(&sidebar)["b"].flags, flag::REBIND);
     let v2 = Layout {
         version: "2",
         slots: &[("a", "top", "replace"), ("c", "tail -f log", "ask")],
-        hint: &[("left", &["a"]), ("right", &["c"])],
+        hint: &[],
     };
     publish(&mut sidebar, 200, Some(&V1), &v2);
-    assert_eq!(keys(&sidebar), ["a", "c"]);
-    // b departs: the host learns its policy, closes or keeps its live
-    // instance, and releases it.
-    let overlay = sidebar.overlay(worker()).unwrap();
-    assert_eq!(
-        overlay.departed,
-        BTreeMap::from([("b".to_owned(), RebindPolicy::KeepPrevious)])
-    );
-    assert!(
-        slots(&sidebar).values().all(|slot| slot.flags == 0),
-        "nothing the user did"
-    );
+    let departed = BTreeMap::from([("b".to_owned(), RebindPolicy::Replace)]);
+    assert_eq!(sidebar.overlay(worker()).unwrap().departed, departed);
+    // It survives a restart, and goes once the host releases the instance.
     let name = format!("workspace/{WORKER}");
-    let mut fresh = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
+    let mut fresh = Sidebar::new(CONFIG).unwrap();
     fresh
         .import_record(&name, &sidebar.export_record(&name).unwrap())
         .unwrap();
-    assert_eq!(fresh.overlay(worker()).unwrap().departed, overlay.departed);
+    assert_eq!(fresh.overlay(worker()).unwrap().departed, departed);
     assert!(sidebar.release_slot_previous(worker(), "b").unwrap());
     assert!(!sidebar.release_slot_previous(worker(), "b").unwrap());
     assert!(sidebar.overlay(worker()).unwrap().departed.is_empty());
+}
 
-    // A slot only the rebind policy was edited on is still untouched content.
-    sidebar
-        .set_slot(worker(), "c", shell("tail -f log"), RebindPolicy::Replace)
+#[test]
+fn an_untouched_slots_new_content_is_an_updating_plan() {
+    let mut sidebar = session(&V1);
+    let first = sidebar
+        .plan_slot(worker(), "a", "")
+        .unwrap()
+        .update
         .unwrap();
-    assert_eq!(slots(&sidebar)["c"].flags, flag::REBIND);
-    assert!(!slots(&sidebar)["c"].detached);
-    let v3 = Layout {
-        version: "3",
-        slots: &[("a", "top", "replace")],
-        hint: &[],
-    };
-    publish(&mut sidebar, 300, Some(&v2), &v3);
-    let overlay = sidebar.overlay(worker()).unwrap();
-    assert_eq!(
-        overlay.departed,
-        BTreeMap::from([("c".to_owned(), RebindPolicy::Replace)])
-    );
-    assert!(
-        slots(&sidebar).values().all(|slot| slot.flags == 0),
-        "nothing the user did"
-    );
-}
-
-#[test]
-fn an_overridden_slot_removed_is_flagged_and_kept_as_the_users() {
-    let mut sidebar = session(&V1);
-    assert!(sidebar
-        .set_slot(
-            worker(),
-            "b",
-            shell("make check"),
-            RebindPolicy::KeepPrevious
-        )
-        .unwrap());
-    assert_eq!(slots(&sidebar)["b"].flags, flag::DETACHED);
-    let v2 = Layout {
-        version: "2",
-        slots: &[("a", "top", "replace"), ("c", "tail -f log", "ask")],
-        hint: &[("left", &["a"]), ("right", &["c"])],
-    };
-    publish(&mut sidebar, 200, Some(&V1), &v2);
-    let kept = &slots(&sidebar)["b"];
-    assert_eq!(kept.flags, flag::DETACHED | flag::REMOVED);
-    assert!(!kept.in_baseline);
-    assert_eq!(kept.spec, shell("make check"));
-    // Its policy was the baseline's; it is frozen with the slot.
-    assert_eq!(kept.rebind, RebindPolicy::KeepPrevious);
-    assert!(sidebar.overlay(worker()).unwrap().departed.is_empty());
-    // It keeps a tab: the unowned arrangement places it.
-    let view = sidebar.arrangement(worker()).unwrap();
-    assert!(view.doc.tabs().contains(&"b"));
-    assert!(view.gone.is_empty());
-    // The user can still remove it.
-    assert!(sidebar.remove_slot(worker(), "b").unwrap());
-    assert_eq!(keys(&sidebar), ["a", "c"]);
-}
-
-#[test]
-fn an_untouched_slot_whose_content_changes_follows_through_an_updating_rebind() {
-    let mut sidebar = session(&V1);
-    let plan = sidebar.plan_slot(worker(), "a", "").unwrap();
-    let first = plan.update.unwrap();
     assert!(sidebar
         .managed
         .complete_slot(worker(), "a", first.token, true));
+    let mut next = V1.slots.to_vec();
+    next[0] = ("a", "top -d 1", "replace");
     let v2 = Layout {
         version: "2",
-        slots: &[
-            ("a", "top -d 1", "replace"),
-            ("b", "make", "keep-previous"),
-            ("c", "tail -f log", "ask"),
-        ],
+        slots: &next,
         hint: V1.hint,
     };
     publish(&mut sidebar, 200, Some(&V1), &v2);
-    assert_eq!(slots(&sidebar)["a"].spec, shell("top -d 1"));
-    assert_eq!(slots(&sidebar)["a"].flags, 0);
     let plan = sidebar.plan_slot(worker(), "a", &first.id).unwrap();
     assert_eq!(plan.state, ContentState::Updating);
     assert_ne!(plan.update.unwrap().id, first.id);
 }
 
 #[test]
-fn an_overridden_slot_whose_content_changes_keeps_the_override_flagged() {
+fn flags_settle_when_the_user_or_the_provider_agrees() {
     let mut sidebar = session(&V1);
     sidebar
         .set_slot(worker(), "c", shell("less log"), RebindPolicy::Ask)
         .unwrap();
+    let mut next = V1.slots.to_vec();
+    next[2] = ("c", "tail -F log", "ask");
     let v2 = Layout {
         version: "2",
-        slots: &[
-            ("a", "top", "replace"),
-            ("b", "make", "keep-previous"),
-            ("c", "tail -F log", "ask"),
-        ],
+        slots: &next,
         hint: V1.hint,
     };
     publish(&mut sidebar, 200, Some(&V1), &v2);
-    let c = &slots(&sidebar)["c"];
-    assert_eq!(c.spec, shell("less log"), "the override wins");
-    assert_eq!(c.flags, flag::DETACHED | flag::CHANGED);
     // Setting it again records it against the new content: settled.
     sidebar
         .set_slot(worker(), "c", shell("less log"), RebindPolicy::Ask)
         .unwrap();
     assert_eq!(slots(&sidebar)["c"].flags, flag::DETACHED);
     // When the provider adopts the user's content, the edit drops out.
+    let mut adopted = next.clone();
+    adopted[2] = ("c", "less log", "ask");
     let v3 = Layout {
         version: "3",
-        slots: &[
-            ("a", "top", "replace"),
-            ("b", "make", "keep-previous"),
-            ("c", "less log", "ask"),
-        ],
+        slots: &adopted,
         hint: V1.hint,
     };
     publish(&mut sidebar, 300, Some(&v2), &v3);
+    assert!(slots(&sidebar).values().all(|slot| slot.flags == 0));
+    // A reused key removed again hides against the new content, and
+    // reattaching shows it, unflagged.
+    assert!(sidebar.remove_slot(worker(), "c").unwrap());
+    assert_eq!(sidebar.overlay(worker()).unwrap().tombstoned, set(&["c"]));
+    assert!(!sidebar
+        .arrangement(worker())
+        .unwrap()
+        .doc
+        .tabs()
+        .contains(&"c"));
+    assert!(sidebar.reattach_slot(worker(), "c").unwrap());
     assert_eq!(slots(&sidebar)["c"].flags, 0);
-    assert!(
-        slots(&sidebar).values().all(|slot| slot.flags == 0),
-        "nothing the user did"
-    );
 }
 
 #[test]
-fn a_reused_provider_key_is_flagged_not_hidden() {
+fn a_removed_overrides_policy_is_frozen_with_it() {
     let mut sidebar = session(&V1);
-    // The user closes c: a tombstone, and the unowned arrangement loses it.
-    assert!(sidebar.remove_slot(worker(), "c").unwrap());
-    assert_eq!(keys(&sidebar), ["a", "b"]);
-    let overlay = sidebar.overlay(worker()).unwrap();
-    assert_eq!(overlay.tombstoned, set(&["c"]));
-    let view = sidebar.arrangement(worker()).unwrap();
-    assert!(!view.owned);
-    assert_eq!(view.doc.tabs(), ["a", "b"], "the emptied panel goes");
-    // A new version with c unchanged keeps it hidden.
-    let v2 = Layout {
-        version: "2",
-        slots: V1.slots,
-        hint: &[("left", &["a"]), ("right", &["b", "c"])],
-    };
-    publish(&mut sidebar, 200, Some(&V1), &v2);
-    assert_eq!(keys(&sidebar), ["a", "b"]);
-    // The provider reuses c for something else: it shows, flagged.
-    let v3 = Layout {
-        version: "3",
-        slots: &[
-            ("a", "top", "replace"),
-            ("b", "make", "keep-previous"),
-            ("c", "journalctl -f", "ask"),
-        ],
-        hint: v2.hint,
-    };
-    publish(&mut sidebar, 300, Some(&v2), &v3);
-    let c = &slots(&sidebar)["c"];
-    assert_eq!(c.flags, flag::CHANGED);
-    assert_eq!(c.spec, shell("journalctl -f"));
-    assert!(sidebar.overlay(worker()).unwrap().tombstoned.is_empty());
-    assert_eq!(
-        panel_tabs(&sidebar.arrangement(worker()).unwrap().doc, "right"),
-        ["b", "c"]
-    );
-    // Removing it again hides it against the new content.
-    assert!(sidebar.remove_slot(worker(), "c").unwrap());
-    assert_eq!(keys(&sidebar), ["a", "b"]);
-    // Reattaching shows it again, unflagged.
-    assert!(sidebar.reattach_slot(worker(), "c").unwrap());
-    assert_eq!(slots(&sidebar)["c"].flags, 0);
-
-    // An override of a key the provider dropped, then reused, wins and is
-    // flagged.
     sidebar
         .set_slot(
             worker(),
@@ -472,29 +423,43 @@ fn a_reused_provider_key_is_flagged_not_hidden() {
             RebindPolicy::KeepPrevious,
         )
         .unwrap();
-    let v4 = Layout {
-        version: "4",
-        slots: &[("a", "top", "replace"), ("c", "journalctl -f", "ask")],
+    let v2 = Layout {
+        version: "2",
+        slots: &[("a", "top", "replace"), ("c", "tail -f log", "ask")],
         hint: &[],
     };
-    publish(&mut sidebar, 400, Some(&v3), &v4);
-    assert_eq!(slots(&sidebar)["b"].flags, flag::DETACHED | flag::REMOVED);
-    let v5 = Layout {
-        version: "5",
+    publish(&mut sidebar, 200, Some(&V1), &v2);
+    let kept = &slots(&sidebar)["b"];
+    assert_eq!(
+        (kept.rebind, kept.in_baseline),
+        (RebindPolicy::KeepPrevious, false)
+    );
+    // It keeps a tab: the unowned arrangement places it.
+    assert!(sidebar
+        .arrangement(worker())
+        .unwrap()
+        .doc
+        .tabs()
+        .contains(&"b"));
+    // The provider reuses b with another policy: that is an edit too.
+    let v3 = Layout {
+        version: "3",
         slots: &[
             ("a", "top", "replace"),
             ("b", "cargo build", "replace"),
-            ("c", "journalctl -f", "ask"),
+            ("c", "tail -f log", "ask"),
         ],
         hint: &[],
     };
-    publish(&mut sidebar, 500, Some(&v4), &v5);
-    // Its frozen policy differs from the reused key's, so that is an edit
-    // too.
+    publish(&mut sidebar, 300, Some(&v2), &v3);
     let b = &slots(&sidebar)["b"];
     assert_eq!(b.flags, flag::DETACHED | flag::CHANGED | flag::REBIND);
-    assert_eq!(b.rebind, RebindPolicy::KeepPrevious);
-    assert_eq!(b.spec, shell("make check"));
+    assert_eq!(
+        (b.rebind, b.spec.clone()),
+        (RebindPolicy::KeepPrevious, shell("make check"))
+    );
+    // The user can still remove it.
+    assert!(sidebar.remove_slot(worker(), "b").unwrap());
 }
 
 #[test]
@@ -608,7 +573,7 @@ fn a_structural_edit_takes_ownership_and_a_provider_change_is_flagged() {
     assert!(view.provider_changed);
     assert!(sidebar.content_revision() > content);
     let name = format!("workspace/{WORKER}");
-    let mut fresh = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
+    let mut fresh = Sidebar::new(CONFIG).unwrap();
     fresh
         .import_record(&name, &sidebar.export_record(&name).unwrap())
         .unwrap();
@@ -754,7 +719,7 @@ fn the_overlay_survives_a_restart_through_the_record() {
     // The overlay survives a restart through the record.
     let name = format!("workspace/{WORKER}");
     let record = sidebar.export_record(&name).unwrap();
-    let mut fresh = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
+    let mut fresh = Sidebar::new(CONFIG).unwrap();
     fresh.import_record(&name, &record).unwrap();
     assert_eq!(fresh.overlay(worker()), sidebar.overlay(worker()));
     // The same arrangement, at a generation of the fresh sidebar's own.

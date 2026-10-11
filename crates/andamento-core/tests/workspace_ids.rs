@@ -1,11 +1,12 @@
 //! Host-supplied 128-bit Workspace IDs, through the JSON requests a frontend
 //! or replay tool sends.
+mod common;
 use andamento_core::presentation::{PresentationState, UNPLACED_WORKSPACES_SECTION};
 use andamento_core::sidebar::{HostEffect, Request, Response};
 use andamento_core::{EntityRef, MetadataPatch, MetadataTarget, Sidebar, WorkspaceId};
+use common::CONFIG;
 use serde_json::{json, Value};
 
-const CONFIG: &str = include_str!("fixtures/sidebar.kdl");
 /// A user-created workspace and a materialized one, as a host would generate them.
 const NOTES: &str = "01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b";
 const WORKER: &str = "01920a6b-9e10-7abc-9def-0123456789ab";
