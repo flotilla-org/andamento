@@ -11,11 +11,26 @@ typedef struct AndamentoSnapshot AndamentoSnapshot;
 typedef struct AndamentoEffects AndamentoEffects;
 typedef struct { const uint8_t *data; size_t len; } AndamentoText;
 #define ANDAMENTO_NONE SIZE_MAX
+/* ABI 3: a host-supplied 128-bit Workspace ID, passed by value. */
+typedef struct { uint8_t bytes[16]; } AndamentoWorkspaceId;
 
 /* ABI 2 replaces the experimental JSON request ABI; no compatibility promise
  * with ABI 1. Additive symbols preserve ABI 2; statically linked hosts pin a
  * library revision, while dynamic hosts can use dlsym to probe optional symbols directly.
  * Tags have uint32_t storage; do not use C enum size assumptions.
+ *
+ * ABI 3 is additive: every ABI 2 call and struct is unchanged, and a host may
+ * accept either version. ABI 3 adds calls carrying 128-bit Workspace IDs
+ * (AndamentoWorkspaceId), marked "ABI 3" below. The host supplies every
+ * Workspace ID (UUIDv7 in practice); Andamento never generates one and treats
+ * the 16 bytes as opaque. An ABI 2 uint64_t ID n is the Workspace ID whose
+ * first 8 bytes are zero and whose last 8 bytes are n, big-endian. No UUIDv7
+ * has that form, so both kinds can be used side by side: a workspace observed
+ * through ABI 2 as 7 is the same workspace as that embedded ID in ABI 3 calls.
+ * ABI 2 uint64_t output fields report the embedded n, or 0 for a wider ID;
+ * read wider IDs through the ABI 3 getters. JSON patches name a workspace as
+ * {"kind":"tab","value":7} or {"kind":"tab","value":"<uuid>"} (hyphenated
+ * or 32 hex digits).
  *
  * Serialize calls on a sidebar. All input buffers/arrays are borrowed for the
  * call only; text is UTF-8, length-delimited, and may contain NUL. NULL input
@@ -60,6 +75,10 @@ typedef struct {
 } AndamentoFact;
 uint32_t andamento_apply_entity(Andamento *, uint64_t now_ms, AndamentoText kind,
     AndamentoText id, AndamentoText source, const AndamentoFact *, size_t count, char **error_out);
+/* ABI 3: the same scalar facts on a workspace (a tab target), e.g. the
+ * .host.kind/.host.id naming its host entity. */
+uint32_t andamento_apply_workspace(Andamento *, uint64_t now_ms, AndamentoWorkspaceId workspace,
+    AndamentoText source, const AndamentoFact *, size_t count, char **error_out);
 /* Monotonic milliseconds scoped to this client. Tick advances expiry without
  * facts. Drain facts/topology/completions before acquiring a render snapshot. */
 uint32_t andamento_tick(Andamento *, uint64_t now_ms, char **error_out);
@@ -73,7 +92,8 @@ typedef struct { uint64_t workspace_id; uint32_t pane_id, kind, selectable, focu
  * This never persists an opener identity or opts into managed replacement. */
 typedef struct { uint64_t workspace_id; AndamentoText cwd; } AndamentoWorkdir;
 uint32_t andamento_observe_workdirs(Andamento *, const AndamentoWorkdir *, size_t count, char **error);
-/* Full replacement of topology; workspace IDs are scoped to this client.
+/* Full replacement of topology. ABI 2 IDs may be scoped to this client;
+ * ABI 3 IDs are the host's Workspace IDs, the same in every client.
  * Pane observations currently retain Zellij's terminal/plugin u32 identity.
  * Native hosts with wider IDs or other view kinds must pass an empty pane list;
  * do not truncate IDs or classify arbitrary native views as plugins. */
@@ -85,6 +105,26 @@ enum { ANDAMENTO_COMPLETE_FOCUS, ANDAMENTO_COMPLETE_MATERIALIZE, ANDAMENTO_COMPL
  * Only MATERIALIZE uses workspace_id; only ERROR reads message. */
 uint32_t andamento_complete(Andamento *, uint64_t request_id, uint32_t outcome,
     uint64_t workspace_id, AndamentoText message, char **error_out);
+/* ABI 3 topology and completion: as above, with 128-bit IDs. Use either
+ * observe call; each replaces the full topology. */
+typedef struct { AndamentoWorkspaceId id; size_t position; AndamentoText name; uint32_t selected; } AndamentoWorkspace3;
+typedef struct { AndamentoWorkspaceId workspace_id; uint32_t pane_id, kind, selectable, focused; int64_t ordinal; } AndamentoPane3;
+typedef struct { AndamentoWorkspaceId workspace_id; AndamentoText cwd; } AndamentoWorkdir3;
+uint32_t andamento_observe3(Andamento *, const AndamentoWorkspace3 *, size_t count,
+    const AndamentoPane3 *, size_t pane_count, char **error_out);
+uint32_t andamento_observe_workdirs3(Andamento *, const AndamentoWorkdir3 *, size_t count, char **error);
+uint32_t andamento_complete3(Andamento *, uint64_t request_id, uint32_t outcome,
+    AndamentoWorkspaceId workspace_id, AndamentoText message, char **error_out);
+/* ABI 3: declare a workspace the host created itself, such as one the user
+ * made, which never went through MATERIALIZE. A successful MATERIALIZE
+ * completion registers its workspace too. Registration is independent of
+ * topology (either may come first; closing does not forget) and does not
+ * change the snapshot. Forget a workspace the host deleted rather than kept.
+ * Registering twice and forgetting an unknown ID are harmless.
+ * andamento_workspace_registered returns 1 if registered, else 0. */
+uint32_t andamento_workspace_register(Andamento *, AndamentoWorkspaceId, char **error_out);
+uint32_t andamento_workspace_forget(Andamento *, AndamentoWorkspaceId, char **error_out);
+uint32_t andamento_workspace_registered(Andamento *, AndamentoWorkspaceId, char **error_out);
 
 /* Snapshot owns all returned text. It survives sidebar mutation/destruction;
  * release only after rendering and all borrowed text use have finished.
@@ -126,6 +166,8 @@ typedef struct {
 } AndamentoControl;
 size_t andamento_snapshot_node_count(const AndamentoSnapshot *);
 uint32_t andamento_snapshot_node(const AndamentoSnapshot *, size_t index, AndamentoNode *out);
+/* ABI 3: a LIVE node's Workspace ID; returns 0 for other nodes. */
+uint32_t andamento_snapshot_node_workspace(const AndamentoSnapshot *, size_t index, AndamentoWorkspaceId *out);
 /* Snapshot-owned opaque loop invocation key. Compare for equality; do not parse.
  * Empty for section nodes. Additive ABI 2 API; AndamentoNode is unchanged. */
 uint32_t andamento_snapshot_node_loop_key(const AndamentoSnapshot *, size_t index, AndamentoText *out);
@@ -172,6 +214,60 @@ typedef struct { AndamentoText kind, id; } AndamentoEntity;
  * else first); entities that no longer match are ignored. Empty list clears. */
 uint32_t andamento_set_sibling_order(Andamento *, AndamentoText loop_key,
     const AndamentoEntity *entities, size_t count, char **error);
+
+/* ABI 3: named records. Andamento owns the sidebar's logical state and exports
+ * it as records, KDL text in a versioned envelope; the host decides where each
+ * is stored and when it is written. Andamento never touches the filesystem.
+ *   "dashboard": persisted display variables, row collapse, sibling orders,
+ *     placement variables, and local sections, groups and refs.
+ *   "workspace/<id>": one per registered workspace (<id> as Andamento prints
+ *     it: decimal for an embedded ID, else a hyphenated UUID): its subject, and
+ *     the subject and its path as last seen (label, ended or retained, when
+ *     last seen, and the facts placement reads), so its row is drawn where it
+ *     was with no facts. A closed workspace keeps its record; forgetting the
+ *     workspace drops it.
+ * names: the record names, one per line (no trailing newline).
+ * generation: nonzero; it changes when, and only when, the record's content
+ *   changes, and is never reused. Write a record when its generation differs
+ *   from the one last written; read it again after an import. Returns 0 with an
+ *   error for an unknown record.
+ * export: the record's KDL text (UTF-8).
+ * import: may come before the first observe and needs no facts. Importing
+ *   "workspace/<id>" registers the workspace and binds it to its subject. A
+ *   record that doesn't parse, has another version or names another record is
+ *   rejected without change. Nodes this version doesn't know, directly inside
+ *   the envelope, are kept and exported again.
+ * Bytes out-parameters are written only on success; free them with
+ * andamento_bytes_free (a zeroed AndamentoBytes is harmless). */
+typedef struct { uint8_t *data; size_t len; } AndamentoBytes;
+uint32_t andamento_record_names(Andamento *, AndamentoBytes *out, char **error_out);
+uint64_t andamento_record_generation(Andamento *, AndamentoText name, char **error_out);
+uint32_t andamento_record_export(Andamento *, AndamentoText name, AndamentoBytes *out, char **error_out);
+uint32_t andamento_record_import(Andamento *, AndamentoText name, AndamentoText kdl, char **error_out);
+void andamento_bytes_free(AndamentoBytes);
+/* ABI 3: set a declared display variable without a snapshot action, so a host
+ * can restore one before the first snapshot. value is "true"/"false" for a
+ * boolean, or one of an enum's values; empty returns it to its default.
+ * Unknown variables and values the declaration doesn't allow are rejected. */
+uint32_t andamento_set_display_variable(Andamento *, AndamentoText name, AndamentoText value, char **error_out);
+/* ABI 3: local entities: the sections (".section"), groups (".group") and refs
+ * (".ref", pins) people make. Andamento owns them and keeps them in the
+ * dashboard record; set replaces all of an entity's facts, and remove deletes
+ * it (removing an unknown one is harmless). They are placed exactly as the
+ * same entities published as facts. A fact's kind is TEXT, BOOL (integer 0/1)
+ * or INTEGER as for AndamentoFact, or ENTITY, one entity reference (such as
+ * .section, .group or .target). Keys must be unique. */
+enum { ANDAMENTO_FACT_ENTITY = 4 };
+typedef struct {
+    AndamentoText key;
+    uint32_t kind;
+    AndamentoText text;
+    int64_t integer;
+    AndamentoEntity entity;
+} AndamentoLocalFact;
+uint32_t andamento_local_set(Andamento *, AndamentoText kind, AndamentoText id,
+    const AndamentoLocalFact *facts, size_t count, char **error_out);
+uint32_t andamento_local_remove(Andamento *, AndamentoText kind, AndamentoText id, char **error_out);
 typedef struct {
     AndamentoEntity entity;
     AndamentoText label;
@@ -221,6 +317,8 @@ size_t andamento_snapshot_detail_request(Andamento *, AndamentoSnapshot *, Andam
 size_t andamento_snapshot_detail_count(const AndamentoSnapshot *);
 size_t andamento_snapshot_detail_find(const AndamentoSnapshot *, AndamentoText kind, AndamentoText id);
 uint32_t andamento_snapshot_detail(const AndamentoSnapshot *, size_t index, AndamentoDetail *out);
+/* ABI 3: the detail's Workspace ID; returns 0 when has_workspace is 0. */
+uint32_t andamento_snapshot_detail_workspace(const AndamentoSnapshot *, size_t index, AndamentoWorkspaceId *out);
 uint32_t andamento_snapshot_detail_field(const AndamentoSnapshot *, size_t detail, size_t field, AndamentoDetailField *out);
 uint32_t andamento_snapshot_detail_relation(const AndamentoSnapshot *, size_t detail, size_t field,
     size_t relation, const AndamentoEntity *path, size_t path_count, AndamentoDetailRelation *out);
@@ -251,6 +349,8 @@ typedef struct {
 } AndamentoEffect;
 size_t andamento_effects_count(const AndamentoEffects *);
 uint32_t andamento_effects_get(const AndamentoEffects *, size_t index, AndamentoEffect *out);
+/* ABI 3: a FOCUS effect's Workspace ID; returns 0 for other effects. */
+uint32_t andamento_effects_workspace(const AndamentoEffects *, size_t index, AndamentoWorkspaceId *out);
 /* URL effects carry the resolved URL in recipe; no completion is required.
  * Activation opens a subject URL. Copying is an additive ABI 2 action. */
 /* Subject rows also expose a copy action through their retained snapshot. */
@@ -288,6 +388,13 @@ uint32_t andamento_content_get(const AndamentoContentPlan *, AndamentoContent *o
 uint32_t andamento_content_valid(Andamento *, uint64_t workspace_id, uint64_t token, char **error_out);
 uint32_t andamento_content_complete(Andamento *, uint64_t workspace_id, uint64_t token, uint32_t success, char **error_out);
 uint32_t andamento_content_retry(Andamento *, uint64_t workspace_id, char **error_out);
+/* ABI 3: the same calls with 128-bit IDs; release and get are shared. */
+AndamentoContentPlan *andamento_content_plan3(Andamento *, AndamentoWorkspaceId workspace_id,
+    AndamentoText entity_kind, AndamentoText entity_id, AndamentoText applied_target,
+    AndamentoText applied_command, uint32_t has_cwd, AndamentoText applied_cwd, char **error_out);
+uint32_t andamento_content_valid3(Andamento *, AndamentoWorkspaceId workspace_id, uint64_t token, char **error_out);
+uint32_t andamento_content_complete3(Andamento *, AndamentoWorkspaceId workspace_id, uint64_t token, uint32_t success, char **error_out);
+uint32_t andamento_content_retry3(Andamento *, AndamentoWorkspaceId workspace_id, char **error_out);
 void andamento_content_release(AndamentoContentPlan *);
 
 #ifdef __cplusplus

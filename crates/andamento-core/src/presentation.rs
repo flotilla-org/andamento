@@ -105,7 +105,7 @@ pub enum PresentationState {
     },
     Opening,
     Live {
-        workspace_id: u64,
+        workspace_id: crate::WorkspaceId,
         selected: bool,
     },
 }
@@ -199,7 +199,7 @@ impl SurfaceSnapshot {
     pub(crate) fn cover_workspaces(
         &mut self,
         workspaces: &[crate::state::ControllerTab],
-        host_entities: &BTreeMap<u64, EntityRef>,
+        host_entities: &BTreeMap<crate::WorkspaceId, EntityRef>,
         default_groups: &[EntityRef],
     ) {
         let mut covered = std::collections::BTreeSet::new();

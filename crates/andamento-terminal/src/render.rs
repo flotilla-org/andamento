@@ -4,7 +4,7 @@ use andamento_core::template_config::{
 };
 use andamento_core::{
     ControllerViewModel, MaterializeLatentRequest, MetadataControls, NodeKey, PlacementKey,
-    Priority, StatusIcon,
+    Priority, StatusIcon, WorkspaceId,
 };
 use ansi_term::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -25,7 +25,7 @@ const DETAIL_PANEL_HEIGHT: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalTab {
-    pub tab_id: u64,
+    pub tab_id: WorkspaceId,
     pub position: usize,
     pub name: String,
     pub active: bool,
@@ -52,7 +52,7 @@ pub struct HitRegion {
     pub row_end: usize,
     pub col_start: usize,
     pub col_end: usize,
-    pub tab_id: u64,
+    pub tab_id: WorkspaceId,
     pub tab_position: usize,
     pub inspect_target: Option<NodeKey>,
     pub materialize_request: Option<MaterializeLatentRequest>,
@@ -83,7 +83,7 @@ impl RenderedRail {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisibleCard {
-    pub tab_id: u64,
+    pub tab_id: WorkspaceId,
     pub tab_position: usize,
     pub row_start: usize,
     pub status_row: Option<usize>,
@@ -550,7 +550,7 @@ fn resolve_placement_loop_fields(entities: &[PlacementNode], cols: usize) -> Vec
 fn node_hit(node: &PlacementNode, row: usize, cols: std::ops::Range<usize>) -> HitRegion {
     let (tab_id, action) = match node.state {
         PresentationState::Live { workspace_id, .. } => (workspace_id, HitAction::SwitchTab),
-        _ => (0, HitAction::ActivateEntity),
+        _ => (WorkspaceId::from(0), HitAction::ActivateEntity),
     };
     HitRegion {
         row_start: row,
@@ -630,7 +630,7 @@ fn control_line(
             row_end: 0,
             col_start: col,
             col_end: col,
-            tab_id: 0,
+            tab_id: WorkspaceId::from(0),
             tab_position: 0,
             inspect_target: (action == HitAction::InspectNode).then_some(NodeKey::Root),
             materialize_request: None,

@@ -8,7 +8,8 @@ use andamento_shared::{
     ConfigInspectRequest, ControllerViewModel, MetadataEntry, MetadataSourceEntry,
     MetadataTriState, MetadataValue, MetadataVisibilitySetRequest, NodeKey, NodeVariableSetRequest,
     PluginPaneKind, PluginPlacement, PluginRegistrationHello, PluginStatsSnapshot, RailConfig,
-    RailStructure, ResolvedMetadataTarget, TabCard, NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
+    RailStructure, ResolvedMetadataTarget, TabCard, WorkspaceId,
+    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -34,14 +35,14 @@ const CONFIG_RAIL_SCOPE: &str = "rail_scope";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ConfigLocalTab {
-    tab_id: u64,
+    tab_id: WorkspaceId,
     position: usize,
 }
 
 fn local_tabs_from_zellij(tabs: &[TabInfo]) -> Vec<ConfigLocalTab> {
     tabs.iter()
         .map(|tab| ConfigLocalTab {
-            tab_id: tab.tab_id as u64,
+            tab_id: WorkspaceId::from(tab.tab_id as u64),
             position: tab.position,
         })
         .collect()
@@ -1098,7 +1099,7 @@ fn push_inspect_variables_section(
     }
 }
 
-fn parse_tab_scope(scope: &str) -> Option<u64> {
+fn parse_tab_scope(scope: &str) -> Option<WorkspaceId> {
     scope.strip_prefix("tab:")?.parse().ok()
 }
 
@@ -1664,7 +1665,7 @@ fn display_width_slice(text: &str, start: usize, end: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn model_with_tab(tab_id: u64, name: &str) -> ControllerViewModel {
+    fn model_with_tab(tab_id: WorkspaceId, name: &str) -> ControllerViewModel {
         ControllerViewModel {
             unmatched_entities: vec![],
             sort_mode: SortMode::Position,
@@ -1700,7 +1701,7 @@ mod tests {
     fn placement_model_with_declarations(
         declarations: Vec<andamento_shared::template_config::NodeVariableDefinition>,
     ) -> ControllerViewModel {
-        let mut model = model_with_tab(1, "fixture");
+        let mut model = model_with_tab(WorkspaceId::from(1), "fixture");
         let key = andamento_shared::PlacementKey(vec![andamento_shared::PlacementSegment {
             loop_name: "project".into(),
             entity: andamento_shared::EntityRef {
@@ -1722,7 +1723,7 @@ mod tests {
 
     #[test]
     fn inspect_lists_unmatched_catalog_count_and_ids() {
-        let mut model = model_with_tab(7, "workspace");
+        let mut model = model_with_tab(WorkspaceId::from(7), "workspace");
         model.unmatched_entities = vec![
             andamento_shared::EntityRef {
                 kind: "novel".into(),
@@ -1935,7 +1936,7 @@ mod tests {
         assert_eq!(
             launch_config_placement(&configuration),
             Some(PluginPlacement::Tab {
-                tab_id: 7,
+                tab_id: WorkspaceId::from(7),
                 pane_kind: PluginPaneKind::Floating,
             })
         );
@@ -1945,8 +1946,8 @@ mod tests {
     fn config_inspect_request_updates_scope_and_page() {
         let request = ConfigInspectRequest {
             client_id: 4,
-            origin_tab_id: 7,
-            node_key: NodeKey::Tab(7),
+            origin_tab_id: WorkspaceId::from(7),
+            node_key: NodeKey::Tab(WorkspaceId::from(7)),
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
@@ -1973,14 +1974,14 @@ mod tests {
             )]),
         };
         let local_tabs = vec![ConfigLocalTab {
-            tab_id: 7,
+            tab_id: WorkspaceId::from(7),
             position: 2,
         }];
 
         assert_eq!(
             own_plugin_tab_placement(&pane_manifest, &local_tabs, 21),
             Some(PluginPlacement::Tab {
-                tab_id: 7,
+                tab_id: WorkspaceId::from(7),
                 pane_kind: PluginPaneKind::Tiled,
             })
         );
@@ -2000,14 +2001,14 @@ mod tests {
             )]),
         };
         let local_tabs = vec![ConfigLocalTab {
-            tab_id: 8,
+            tab_id: WorkspaceId::from(8),
             position: 3,
         }];
 
         assert_eq!(
             own_plugin_tab_placement(&pane_manifest, &local_tabs, 22),
             Some(PluginPlacement::Tab {
-                tab_id: 8,
+                tab_id: WorkspaceId::from(8),
                 pane_kind: PluginPaneKind::Floating,
             })
         );
@@ -2019,7 +2020,7 @@ mod tests {
             22,
             4,
             PluginPlacement::Tab {
-                tab_id: 8,
+                tab_id: WorkspaceId::from(8),
                 pane_kind: PluginPaneKind::Floating,
             },
         )
@@ -2034,7 +2035,7 @@ mod tests {
                     client_id: 4,
                 },
                 placement: PluginPlacement::Tab {
-                    tab_id: 8,
+                    tab_id: WorkspaceId::from(8),
                     pane_kind: PluginPaneKind::Floating,
                 },
             }
@@ -2043,12 +2044,12 @@ mod tests {
 
     #[test]
     fn inspect_target_resolves_selected_tab() {
-        let mut model = model_with_tab(7, "repo");
-        model.inspected_node = Some(NodeKey::Tab(7));
+        let mut model = model_with_tab(WorkspaceId::from(7), "repo");
+        model.inspected_node = Some(NodeKey::Tab(WorkspaceId::from(7)));
 
         let target = inspect_target_for(model.inspected_node.as_ref(), None, &model);
 
-        assert_eq!(target.node_key, NodeKey::Tab(7));
+        assert_eq!(target.node_key, NodeKey::Tab(WorkspaceId::from(7)));
         assert_eq!(target.kind, InspectTargetKind::Tab);
         assert_eq!(target.label, "Tab \"repo\" #7");
         assert_eq!(target.tab.map(|tab| tab.name.as_str()), Some("repo"));
@@ -2056,7 +2057,7 @@ mod tests {
 
     #[test]
     fn inspect_target_resolves_root() {
-        let mut model = model_with_tab(7, "repo");
+        let mut model = model_with_tab(WorkspaceId::from(7), "repo");
         model.inspected_node = Some(NodeKey::Root);
 
         let target = inspect_target_for(model.inspected_node.as_ref(), Some("tab:7"), &model);
@@ -2069,11 +2070,11 @@ mod tests {
 
     #[test]
     fn inspect_target_handles_missing_tab() {
-        let model = model_with_tab(7, "repo");
+        let model = model_with_tab(WorkspaceId::from(7), "repo");
 
-        let target = inspect_target_for(Some(&NodeKey::Tab(99)), None, &model);
+        let target = inspect_target_for(Some(&NodeKey::Tab(WorkspaceId::from(99))), None, &model);
 
-        assert_eq!(target.node_key, NodeKey::Tab(99));
+        assert_eq!(target.node_key, NodeKey::Tab(WorkspaceId::from(99)));
         assert_eq!(target.kind, InspectTargetKind::Missing);
         assert_eq!(target.label, "Missing tab #99");
         assert!(target.tab.is_none());
@@ -2081,13 +2082,13 @@ mod tests {
 
     #[test]
     fn inspect_target_falls_back_to_rail_scope() {
-        let model = model_with_tab(7, "repo");
+        let model = model_with_tab(WorkspaceId::from(7), "repo");
 
         let target = inspect_target_for(None, Some("tab:7"), &model);
 
-        assert_eq!(target.node_key, NodeKey::Tab(7));
+        assert_eq!(target.node_key, NodeKey::Tab(WorkspaceId::from(7)));
         assert_eq!(target.kind, InspectTargetKind::Tab);
-        assert_eq!(target.tab.map(|tab| tab.tab_id), Some(7));
+        assert_eq!(target.tab.map(|tab| tab.tab_id), Some(WorkspaceId::from(7)));
     }
 
     fn child_layout_declaration() -> andamento_shared::template_config::NodeVariableDefinition {
@@ -2258,7 +2259,7 @@ mod tests {
 
     #[test]
     fn inspect_root_options_expose_inheritable_child_layout_actions() {
-        let mut model = model_with_tab(7, "repo");
+        let mut model = model_with_tab(WorkspaceId::from(7), "repo");
         model.inspected_node = Some(NodeKey::Root);
         model.template_config.effective_variables = vec![
             andamento_shared::EffectiveNodeVariables {
@@ -2327,8 +2328,8 @@ mod tests {
 
     #[test]
     fn inspect_page_renders_metadata_and_sources_as_tables() {
-        let mut model = model_with_tab(7, "repo");
-        model.inspected_node = Some(NodeKey::Tab(7));
+        let mut model = model_with_tab(WorkspaceId::from(7), "repo");
+        model.inspected_node = Some(NodeKey::Tab(WorkspaceId::from(7)));
         let entry = MetadataEntry {
             value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
             updated_at: 150,
@@ -2337,7 +2338,7 @@ mod tests {
             ordinal: 2,
         };
         model.resolved_metadata = vec![andamento_shared::ResolvedMetadata {
-            target: ResolvedMetadataTarget::Tab(7),
+            target: ResolvedMetadataTarget::Tab(WorkspaceId::from(7)),
             values: BTreeMap::from([("git.repo".to_owned(), entry.clone())]),
             source_entries: BTreeMap::from([(
                 "git.repo".to_owned(),
@@ -2371,8 +2372,8 @@ mod tests {
 
     #[test]
     fn inspect_page_scrolls_body_content() {
-        let mut model = model_with_tab(7, "repo");
-        model.inspected_node = Some(NodeKey::Tab(7));
+        let mut model = model_with_tab(WorkspaceId::from(7), "repo");
+        model.inspected_node = Some(NodeKey::Tab(WorkspaceId::from(7)));
         let values = (0..16)
             .map(|index| {
                 (
@@ -2388,7 +2389,7 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         model.resolved_metadata = vec![andamento_shared::ResolvedMetadata {
-            target: ResolvedMetadataTarget::Tab(7),
+            target: ResolvedMetadataTarget::Tab(WorkspaceId::from(7)),
             values,
             source_entries: BTreeMap::new(),
             reachable_identities: vec![],

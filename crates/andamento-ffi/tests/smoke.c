@@ -235,8 +235,199 @@ static void check_region_hints(void) {
     andamento_snapshot_release(s); andamento_destroy(h);
 }
 
+/* ABI 3: host-supplied 128-bit Workspace IDs through every call that takes or
+ * returns one. ABI 2 fields read 0 for wide IDs and the embedded n otherwise. */
+static AndamentoWorkspaceId uuid(uint8_t tail) {
+    AndamentoWorkspaceId id = {{0x01, 0x92, 0x0a, 0x6b, 0x7c, 0x3d, 0x7e, 0x4f,
+                                0x8a, 0x1b, 0x2c, 0x3d, 0x4e, 0x5f, 0x6a, tail}};
+    return id;
+}
+static int same(AndamentoWorkspaceId a, AndamentoWorkspaceId b) {
+    return memcmp(a.bytes, b.bytes, sizeof a.bytes) == 0;
+}
+static size_t node_index(AndamentoSnapshot *s, const char *kind) {
+    AndamentoNode n;
+    for (size_t i = 0; i < andamento_snapshot_node_count(s); ++i) {
+        assert(andamento_snapshot_node(s, i, &n));
+        if (!n.is_section && eq(n.entity_kind, kind)) return i;
+    }
+    assert(!"missing node"); return ANDAMENTO_NONE;
+}
+static void check_abi3(const char *config_path, const char *patches_path) {
+    char *config = read_file(config_path);
+    Andamento *h = andamento_create((const uint8_t *)config, strlen(config), &error);
+    assert(h && !error); free(config);
+    char *patches = read_file(patches_path);
+    for (char *line = strtok(patches, "\n"); line; line = strtok(NULL, "\n"))
+        ok(andamento_apply_patch_json(h, 100, (AndamentoText){(uint8_t *)line, strlen(line)}, &error));
+    free(patches);
+    AndamentoWorkspaceId notes = uuid(0x7b), worker = uuid(0x7c), out;
+    AndamentoWorkspaceId legacy = {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 42}};
+    /* A workspace the user made: registered by the host, named by both patch forms. */
+    ok(andamento_workspace_register(h, notes, &error));
+    assert(andamento_workspace_registered(h, notes, &error) && !error);
+    AndamentoWorkspace3 ws[] = {{notes, 0, T("Notes"), 1}, {legacy, 1, T("Legacy"), 0}};
+    ok(andamento_observe3(h, ws, 2, NULL, 0, &error));
+    ok(andamento_apply_patch_json(h, 100, T("{\"target\":{\"kind\":\"tab\",\"value\":\"01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b\"},"
+        "\"source_id\":\"host\",\"set\":{\".host.kind\":{\"value\":{\"type\":\"text\",\"value\":\".workspace\"}}}}"), &error));
+    AndamentoFact host_id = {.key=T(".host.id"), .kind=ANDAMENTO_FACT_TEXT, .text=T("notes")};
+    ok(andamento_apply_workspace(h, 100, notes, T("host"), &host_id, 1, &error));
+    AndamentoSnapshot *s = snapshot(h);
+    size_t i = node_index(s, ".workspace");
+    AndamentoNode n; assert(andamento_snapshot_node(s, i, &n));
+    assert(eq(n.entity_id, "notes") && n.state == ANDAMENTO_LIVE && n.workspace_id == 0);
+    assert(andamento_snapshot_node_workspace(s, i, &out) && same(out, notes));
+    assert(!andamento_snapshot_node_workspace(s, 0, &out)); /* a section */
+    /* The embedded ID is ABI 2's 42. */
+    assert(andamento_snapshot_node(s, i + 1, &n) && eq(n.entity_id, "42") && n.workspace_id == 42);
+    /* Materialize, completing with the ID the host generated. */
+    ok(andamento_dispatch(h, s, find_node(s, "vessel").activate, &error));
+    andamento_snapshot_release(s);
+    AndamentoEffects *effects = take(h);
+    AndamentoEffect e; assert(andamento_effects_get(effects, 0, &e) && e.kind == ANDAMENTO_EFFECT_MATERIALIZE);
+    assert(!andamento_effects_workspace(effects, 0, &out));
+    ok(andamento_complete3(h, e.request_id, ANDAMENTO_COMPLETE_MATERIALIZE, worker, T(""), &error));
+    andamento_effects_release(effects);
+    assert(andamento_workspace_registered(h, worker, &error));
+    AndamentoWorkspace3 all[] = {{notes, 0, T("Notes"), 0}, {worker, 1, T("Worker"), 1}};
+    AndamentoPane3 pane = {worker, 7, ANDAMENTO_PANE_TERMINAL, 1, 1, 0};
+    ok(andamento_observe3(h, all, 2, &pane, 1, &error));
+    AndamentoWorkdir3 dir = {worker, T("/repo")};
+    ok(andamento_observe_workdirs3(h, &dir, 1, &error));
+    s = andamento_snapshot_acquire_details(h, &error); assert(s && !error);
+    i = node_index(s, "vessel");
+    assert(andamento_snapshot_node(s, i, &n) && n.state == ANDAMENTO_LIVE && n.workspace_id == 0);
+    assert(andamento_snapshot_node_workspace(s, i, &out) && same(out, worker));
+    size_t detail = andamento_snapshot_detail_find(s, T("vessel"), T("v"));
+    AndamentoDetail card; assert(andamento_snapshot_detail(s, detail, &card));
+    assert(card.has_workspace && card.workspace_id == 0);
+    assert(andamento_snapshot_detail_workspace(s, detail, &out) && same(out, worker));
+    ok(andamento_dispatch(h, s, n.activate, &error));
+    andamento_snapshot_release(s);
+    effects = take(h);
+    assert(andamento_effects_get(effects, 0, &e) && e.kind == ANDAMENTO_EFFECT_FOCUS && e.workspace_id == 0);
+    assert(andamento_effects_workspace(effects, 0, &out) && same(out, worker));
+    ok(andamento_complete3(h, e.request_id, ANDAMENTO_COMPLETE_FOCUS, out, T(""), &error));
+    andamento_effects_release(effects);
+    /* Content reconciliation is keyed by the same IDs. */
+    AndamentoContentPlan *plan = andamento_content_plan3(h, worker, T("vessel"), T("v"),
+        T("target"), T("printf hello"), 0, T(""), &error);
+    assert(plan && !error);
+    AndamentoContent content; assert(andamento_content_get(plan, &content));
+    assert(!andamento_content_valid3(h, worker, content.token + 1, &error) && !error);
+    assert(!andamento_content_complete3(h, worker, content.token + 1, 1, &error) && !error);
+    ok(andamento_content_retry3(h, worker, &error));
+    andamento_content_release(plan);
+    /* Deleting a workspace forgets it; forgetting twice is harmless. */
+    ok(andamento_workspace_forget(h, notes, &error));
+    ok(andamento_workspace_forget(h, notes, &error));
+    assert(!andamento_workspace_registered(h, notes, &error) && !error);
+    andamento_destroy(h);
+}
+
+/* ABI 3 records: export a sidebar's state and import it into a fresh one
+ * before it observes anything, with direct display and local-entity setters. */
+static int has(AndamentoBytes b, const char *needle) {
+    size_t n = strlen(needle);
+    for (size_t i = 0; i + n <= b.len; ++i)
+        if (memcmp(b.data + i, needle, n) == 0) return 1;
+    return 0;
+}
+static Andamento *fixture(const char *config_path, const char *patches_path) {
+    char *config = read_file(config_path);
+    Andamento *h = andamento_create((const uint8_t *)config, strlen(config), &error);
+    assert(h && !error); free(config);
+    if (patches_path) {
+        char *patches = read_file(patches_path);
+        for (char *line = strtok(patches, "\n"); line; line = strtok(NULL, "\n"))
+            ok(andamento_apply_patch_json(h, 100, (AndamentoText){(uint8_t *)line, strlen(line)}, &error));
+        free(patches);
+    }
+    return h;
+}
+static void check_records(const char *config_path, const char *patches_path) {
+    Andamento *h = fixture(config_path, patches_path);
+    AndamentoSnapshot *s = snapshot(h);
+    assert(find_control(s).checked);
+    andamento_snapshot_release(s);
+    /* Display variables are set directly: no snapshot, no retry. */
+    ok(andamento_set_display_variable(h, T("show-issues"), T("false"), &error));
+    expected_error(andamento_set_display_variable(h, T("show-issues"), T("maybe"), &error));
+    expected_error(andamento_set_display_variable(h, T("missing"), T("true"), &error));
+    s = snapshot(h);
+    assert(!find_control(s).checked);
+    andamento_snapshot_release(s);
+    /* Local sections, groups and pins are Andamento's. */
+    AndamentoLocalFact label = {.key=T("display.label"), .kind=ANDAMENTO_FACT_TEXT, .text=T("Mine")};
+    ok(andamento_local_set(h, T(".section"), T("s1"), &label, 1, &error));
+    AndamentoLocalFact group[] = {
+        {.key=T("display.label"), .kind=ANDAMENTO_FACT_TEXT, .text=T("Pinned")},
+        {.key=T(".section"), .kind=ANDAMENTO_FACT_ENTITY, .entity={T(".section"), T("s1")}},
+        {.key=T(".position"), .kind=ANDAMENTO_FACT_INTEGER, .integer=2},
+    };
+    ok(andamento_local_set(h, T(".group"), T("g1"), group, 3, &error));
+    ok(andamento_local_set(h, T(".group"), T("gone"), NULL, 0, &error));
+    ok(andamento_local_remove(h, T(".group"), T("gone"), &error));
+    ok(andamento_local_remove(h, T(".group"), T("never"), &error));
+    expected_error(andamento_local_set(h, T("vessel"), T("v"), &label, 1, &error));
+    AndamentoLocalFact twice[] = {label, label};
+    expected_error(andamento_local_set(h, T(".group"), T("g2"), twice, 2, &error));
+    /* A workspace the user made gets a record. */
+    AndamentoWorkspaceId notes = uuid(0x7b);
+    ok(andamento_workspace_register(h, notes, &error));
+    AndamentoWorkspace3 ws = {notes, 0, T("Notes"), 1};
+    ok(andamento_observe3(h, &ws, 1, NULL, 0, &error));
+    AndamentoBytes names = {0};
+    ok(andamento_record_names(h, &names, &error));
+    assert(names.len == strlen("dashboard\nworkspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b"));
+    assert(memcmp(names.data, "dashboard\nworkspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b", names.len) == 0);
+    andamento_bytes_free(names);
+    AndamentoText workspace_name = T("workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7b");
+    uint64_t generation = andamento_record_generation(h, T("dashboard"), &error);
+    assert(generation && !error);
+    assert(andamento_record_generation(h, T("dashboard"), &error) == generation);
+    ok(andamento_tick(h, 200, &error));
+    assert(andamento_record_generation(h, T("dashboard"), &error) == generation);
+    assert(andamento_record_generation(h, workspace_name, &error) && !error);
+    assert(andamento_record_generation(h, T("workspace/9"), &error) == 0 && error);
+    andamento_string_free(error); error = NULL;
+    AndamentoBytes dashboard = {0}, workspace = {0}, again = {0};
+    ok(andamento_record_export(h, T("dashboard"), &dashboard, &error));
+    ok(andamento_record_export(h, workspace_name, &workspace, &error));
+    assert(has(dashboard, "andamento-record \"dashboard\" version=1"));
+    assert(has(dashboard, "display \"show-issues\" false"));
+    assert(has(dashboard, "local \".group\" \"g1\""));
+    assert(!has(dashboard, "\"gone\""));
+    expected_error(andamento_record_export(h, T("nonsense"), &again, &error));
+    expected_error(andamento_record_export(h, T("dashboard"), NULL, &error));
+    assert(again.data == NULL);
+    /* A fresh sidebar imports before observing anything or receiving a fact. */
+    Andamento *fresh = fixture(config_path, NULL);
+    ok(andamento_record_import(fresh, T("dashboard"), (AndamentoText){dashboard.data, dashboard.len}, &error));
+    ok(andamento_record_import(fresh, workspace_name, (AndamentoText){workspace.data, workspace.len}, &error));
+    assert(andamento_workspace_registered(fresh, notes, &error) && !error);
+    ok(andamento_record_export(fresh, T("dashboard"), &again, &error));
+    assert(again.len == dashboard.len && memcmp(again.data, dashboard.data, again.len) == 0);
+    andamento_bytes_free(again);
+    s = snapshot(fresh);
+    assert(!find_control(s).checked);
+    andamento_snapshot_release(s);
+    /* Another version, or another record's name, changes nothing. */
+    uint64_t imported = andamento_record_generation(fresh, T("dashboard"), &error);
+    expected_error(andamento_record_import(fresh, T("dashboard"),
+        T("andamento-record \"dashboard\" version=2"), &error));
+    expected_error(andamento_record_import(fresh, T("dashboard"), (AndamentoText){workspace.data, workspace.len}, &error));
+    assert(andamento_record_generation(fresh, T("dashboard"), &error) == imported);
+    andamento_bytes_free(dashboard); andamento_bytes_free(workspace);
+    andamento_bytes_free((AndamentoBytes){0});
+    andamento_destroy(fresh); andamento_destroy(h);
+}
+
 int main(int argc, char **argv) {
-    assert(argc == 4 && andamento_abi_version() == 2);
+    /* Everything but check_abi3 is an ABI 2 host, which ABI 3 keeps working. */
+    assert(argc == 4 && andamento_abi_version() == 3);
+    check_abi3(argv[1], argv[2]);
+    check_records(argv[1], argv[2]);
     check_typed_details(argv[3]);
     check_workdirs();
     check_sibling_order();

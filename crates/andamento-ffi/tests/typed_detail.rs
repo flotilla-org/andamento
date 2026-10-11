@@ -55,7 +55,7 @@ fn six_kind_native_detail_contract() {
         );
         andamento_snapshot_release(legacy);
         let s = andamento_snapshot_acquire_details(h, ptr::null_mut());
-        assert_eq!(andamento_abi_version(), 2);
+        assert_eq!(andamento_abi_version(), 3);
         assert_eq!(andamento_snapshot_detail_count(s), 6);
         for kind in [
             "change_request",

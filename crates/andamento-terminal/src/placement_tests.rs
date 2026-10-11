@@ -1,5 +1,7 @@
 use super::render::*;
-use andamento_core::{state::ControllerState, MetadataControls, NodeKey, RailUiAction};
+use andamento_core::{
+    state::ControllerState, MetadataControls, NodeKey, RailUiAction, WorkspaceId,
+};
 use unicode_width::UnicodeWidthStr;
 
 fn state() -> ControllerState {
@@ -140,13 +142,17 @@ fn detail_panel_is_reserved_and_controls_remain_clickable_below_it() {
 fn plain_observed_workspaces_remain_reachable_without_catalog_entities() {
     let mut state = ControllerState::default();
     state.observe_workspaces(vec![andamento_core::state::ControllerTab {
-        tab_id: 42,
+        tab_id: WorkspaceId::from(42),
         position: 3,
         name: "Scratch".into(),
         active: true,
     }]);
     let frame = frame(&state, 40);
-    let hit = frame.hit_regions.iter().find(|h| h.tab_id == 42).unwrap();
+    let hit = frame
+        .hit_regions
+        .iter()
+        .find(|h| h.tab_id == WorkspaceId::from(42))
+        .unwrap();
     assert_eq!(hit.action, HitAction::SwitchTab);
     assert_eq!(hit.tab_position, 3);
     assert!(frame.lines.iter().any(|line| line.contains("Scratch")));
@@ -212,7 +218,7 @@ fn collapsed_ancestor_is_revealed_for_a_selected_descendant() {
     let project = &mut surface.sections[1].nodes[0];
     project.collapsed = true;
     project.children[2].children[0].children[0].state = PresentationState::Live {
-        workspace_id: 42,
+        workspace_id: WorkspaceId::from(42),
         selected: true,
     };
     let frame = render_lines_with_rail_viewport(
@@ -239,7 +245,7 @@ fn visible_live_workspaces_keep_pin_controls_and_status_graphics() {
     use andamento_core::{PaneTarget, Priority, StatusIcon, TabStatusSummary};
     let mut state = ControllerState::default();
     state.observe_workspaces(vec![andamento_core::state::ControllerTab {
-        tab_id: 42,
+        tab_id: WorkspaceId::from(42),
         position: 3,
         name: "Scratch".into(),
         active: false,
@@ -259,9 +265,13 @@ fn visible_live_workspaces_keep_pin_controls_and_status_graphics() {
         .iter()
         .find(|h| h.action == HitAction::TogglePin)
         .unwrap();
-    assert_eq!((pin.tab_id, pin.tab_position), (42, 3));
+    assert_eq!((pin.tab_id, pin.tab_position), (WorkspaceId::from(42), 3));
     assert!(frame.lines[pin.row_start].contains("◆"));
-    let card = frame.visible_cards.iter().find(|c| c.tab_id == 42).unwrap();
+    let card = frame
+        .visible_cards
+        .iter()
+        .find(|c| c.tab_id == WorkspaceId::from(42))
+        .unwrap();
     assert_eq!(
         card.status_icon,
         model.tabs[0].status.as_ref().unwrap().icon

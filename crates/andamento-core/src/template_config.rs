@@ -774,6 +774,37 @@ impl TemplateConfigCatalog {
         &self.display_variables
     }
 
+    /// Every fact key placement reads: loop matches, `in` lists, order keys
+    /// and visibility rules, in placements and templates. Entity kind and ID
+    /// come from the entity itself and are not included.
+    pub fn placement_fact_keys(&self) -> BTreeSet<String> {
+        fn walk(loops: &[PlacementLoop], keys: &mut BTreeSet<String>) {
+            for item in loops {
+                keys.extend(item.predicates.iter().map(|p| p.key.clone()));
+                keys.extend(item.in_key.iter().cloned());
+                keys.extend(item.order.iter().map(|o| o.key.clone()));
+                walk(&item.loops, keys);
+            }
+        }
+        let mut keys = BTreeSet::new();
+        for placement in &self.placements {
+            walk(&placement.loops, &mut keys);
+        }
+        for layer in &self.layers {
+            for template in &layer.config.templates {
+                walk(&template.loops, &mut keys);
+            }
+        }
+        for policy in &self.visibility {
+            for rule in &policy.rules {
+                keys.extend(rule.predicates.iter().map(|p| p.key.clone()));
+            }
+        }
+        keys.remove("entity.kind");
+        keys.remove("entity.id");
+        keys
+    }
+
     pub fn variables(
         &self,
         metadata: &BTreeMap<String, MetadataValue>,
