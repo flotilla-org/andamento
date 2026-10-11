@@ -622,9 +622,12 @@ impl MetadataValue {
     fn set_providers(&mut self, provider: &str, stamp: bool) {
         if let MetadataValue::EntityRefs(refs) = self {
             for entity in refs {
-                if stamp {
+                // A reference to Andamento's own entities (a section, group
+                // or ref) stays local: a producer can file its entity under
+                // a local group without claiming that group.
+                if stamp && entity.provider != LOCAL_PROVIDER {
                     entity.provider = provider.to_owned();
-                } else {
+                } else if !stamp {
                     entity.fill_provider(provider);
                 }
             }
@@ -654,7 +657,8 @@ impl MetadataPatch {
     }
 
     /// Stamp `provider` over every entity the patch names: its target and
-    /// any entity references among its values. A patch never names its own
+    /// any entity references among its values, except references to
+    /// Andamento's own (local) entities. A patch never names its own
     /// provider; the host supplies the subscription it came from.
     pub fn stamp_provider(&mut self, provider: &str) {
         self.set_providers(provider, true);

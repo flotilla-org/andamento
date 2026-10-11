@@ -196,6 +196,31 @@ fn a_patch_never_names_its_own_provider() {
 }
 
 #[test]
+fn a_reference_to_a_local_entity_stays_local() {
+    // A producer may file its entity under one of Andamento's own groups;
+    // stamping its provider must not claim the group.
+    let mut sidebar = Sidebar::new(CONFIG).unwrap();
+    let mut patches = fleet("one", None);
+    patches[1].set.insert(
+        ".group".into(),
+        MetadataValueUpdate {
+            value: refs(entity(andamento_core::LOCAL_PROVIDER, ".group", "g")),
+            ttl_ms: None,
+            precedence: None,
+            ordinal: None,
+        },
+    );
+    sidebar.apply(100, "sub-1", patches).unwrap();
+    let snapshot = sidebar.snapshot();
+    let all = nodes(&snapshot.surface);
+    let vessel = all.iter().find(|n| n.entity.kind == "vessel").unwrap();
+    assert_eq!(
+        vessel.facts[".group"],
+        refs(entity(andamento_core::LOCAL_PROVIDER, ".group", "g"))
+    );
+}
+
+#[test]
 fn a_workspace_bound_by_a_providers_own_facts_is_that_providers() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
     sidebar.apply(100, "sub-1", fleet("one", None)).unwrap();
