@@ -58,6 +58,8 @@ pub mod system {
     /// Tab metadata naming the host entity published for that workspace.
     pub const HOST_KIND: &str = ".host.kind";
     pub const HOST_ID: &str = ".host.id";
+    /// The host entity's provider; stamped by the core, never set by a patch.
+    pub const HOST_PROVIDER: &str = ".host.provider";
     /// The section covering tabs nothing places, when no default group does.
     pub const UNPLACED: &str = ".unplaced";
 }
@@ -91,6 +93,10 @@ pub struct PlacementNode {
     pub facts: BTreeMap<String, MetadataValue>,
     pub variables: Option<EffectiveNodeVariables>,
     pub collapsed: bool,
+    /// The provider of the entity this node presents (a ref's target) is
+    /// stale: its facts are kept from when its connection dropped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
     /// Retained even when collapsed, for inspection and native input handling.
     pub children: Vec<PlacementNode>,
 }
@@ -221,9 +227,8 @@ impl SurfaceSnapshot {
                 .get(&workspace.tab_id)
                 .filter(|host| hosts_used.insert((*host).clone()))
                 .cloned()
-                .unwrap_or_else(|| EntityRef {
-                    kind: system::WORKSPACE.into(),
-                    id: workspace.tab_id.to_string(),
+                .unwrap_or_else(|| {
+                    EntityRef::local(system::WORKSPACE, workspace.tab_id.to_string())
                 });
             let key = PlacementKey(vec![crate::PlacementSegment {
                 loop_name: UNPLACED_WORKSPACES_SECTION.into(),
@@ -255,6 +260,7 @@ impl SurfaceSnapshot {
                 facts: BTreeMap::new(),
                 variables: None,
                 collapsed: false,
+                stale: false,
                 children: Vec::new(),
             });
         }
@@ -513,6 +519,7 @@ fn resolve_node(
         facts,
         variables,
         collapsed,
+        stale: false,
         children: apply_sibling_orders(
             entity
                 .children

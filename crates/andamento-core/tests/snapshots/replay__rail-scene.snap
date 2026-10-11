@@ -9,6 +9,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/andamento@fleet"),
                 "kind": String("project"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.key": Object {
@@ -110,6 +111,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/cleat@fleet"),
                 "kind": String("project"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.key": Object {
@@ -211,6 +213,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/flotilla@fleet"),
                 "kind": String("project"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.key": Object {
@@ -314,6 +317,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/adhoc-triage@fleet"),
                 "kind": String("convoy"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "count.checkouts": Object {
@@ -403,6 +407,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/daemon-socket-identity@fleet"),
                 "kind": String("convoy"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.direct.reason": Object {
@@ -528,6 +533,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/grouping-live-session@fleet"),
                 "kind": String("convoy"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.direct.reason": Object {
@@ -653,6 +659,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/interactive-phase-setup@fleet"),
                 "kind": String("convoy"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.direct.reason": Object {
@@ -778,6 +785,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/manifest-extraction@fleet"),
                 "kind": String("convoy"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "count.checkouts": Object {
@@ -879,6 +887,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/scoping-regression@fleet"),
                 "kind": String("convoy"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.direct.reason": Object {
@@ -1004,6 +1013,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/session-recording@fleet"),
                 "kind": String("convoy"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.direct.reason": Object {
@@ -1131,6 +1141,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/adhoc-triage/worker@lab"),
                 "kind": String("vessel"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.direct.reason": Object {
@@ -1232,6 +1243,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/daemon-socket-identity/worker@lab"),
                 "kind": String("vessel"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.direct.reason": Object {
@@ -1333,6 +1345,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/grouping-live-session/worker@lab"),
                 "kind": String("vessel"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.direct.reason": Object {
@@ -1434,6 +1447,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/interactive-phase-setup/worker@lab"),
                 "kind": String("vessel"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.direct.reason": Object {
@@ -1539,6 +1553,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/manifest-extraction/coder@lab"),
                 "kind": String("vessel"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.direct.reason": Object {
@@ -1640,6 +1655,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/manifest-extraction/reviewer@fleet"),
                 "kind": String("vessel"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.direct.reason": Object {
@@ -1745,6 +1761,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/scoping-regression/worker@lab"),
                 "kind": String("vessel"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.direct.reason": Object {
@@ -1846,6 +1863,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/session-recording/worker@lab"),
                 "kind": String("vessel"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "action.primary.direct.reason": Object {
@@ -1954,6 +1972,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("https://github.com/flotilla-org/andamento#61"),
                 "kind": String("issue"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "display.label": Object {
@@ -2007,6 +2026,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("https://github.com/flotilla-org/andamento#62"),
                 "kind": String("issue"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "display.label": Object {
@@ -2060,6 +2080,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("https://github.com/flotilla-org/flotilla#1456"),
                 "kind": String("issue"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "display.label": Object {

@@ -6,10 +6,7 @@ use andamento_core::{
 use std::io::Cursor;
 
 fn reference(kind: &str, id: &str) -> EntityRef {
-    EntityRef {
-        kind: kind.into(),
-        id: id.into(),
-    }
+    EntityRef::local(kind, id)
 }
 fn replay() -> Replay {
     Replay::new(
@@ -38,7 +35,8 @@ fn connector_decodes_refs_and_ignores_unknown_values() {
         assert_eq!(patch.set.len(), 2);
         assert_eq!(
             patch.set["refs"].value,
-            MetadataValue::EntityRefs(vec![reference("convoy", "build")])
+            // The wire names no provider; applying the patch stamps one.
+            MetadataValue::EntityRefs(vec![EntityRef::new("", "convoy", "build")])
         );
         assert_eq!(
             serde_json::from_value::<MetadataPatch>(serde_json::to_value(&patch).unwrap()).unwrap(),

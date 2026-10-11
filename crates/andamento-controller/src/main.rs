@@ -1683,10 +1683,10 @@ mod tests {
 
     #[test]
     fn parses_activate_entity_request() {
-        let entity = andamento_shared::EntityRef {
-            kind: "vessel".to_owned(),
-            id: "dev/focus/worker@lab".to_owned(),
-        };
+        let entity = andamento_shared::EntityRef::local(
+            "vessel".to_owned(),
+            "dev/focus/worker@lab".to_owned(),
+        );
         let entity = andamento_shared::EntityActivationRequest {
             entity: entity.clone(),
             inspect_fallback: ConfigInspectRequest {

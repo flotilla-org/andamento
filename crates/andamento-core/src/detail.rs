@@ -180,10 +180,7 @@ mod tests {
                 sidebar.apply(
                     0,
                     [MetadataPatch {
-                        target: MetadataTarget::Entity(crate::EntityRef {
-                            kind: "item".into(),
-                            id: "id".into(),
-                        }),
+                        target: MetadataTarget::Entity(crate::EntityRef::local("item", "id")),
                         source_id: "producer".into(),
                         set,
                         unset: vec![],
@@ -235,16 +232,7 @@ mod edge_tests {
                 field "relations" role="relation" key="refs"
             }
         "#).unwrap();
-        let targets = [
-            EntityRef {
-                kind: "item".into(),
-                id: "a".into(),
-            },
-            EntityRef {
-                kind: "item".into(),
-                id: "b".into(),
-            },
-        ];
+        let targets = [EntityRef::local("item", "a"), EntityRef::local("item", "b")];
         let metadata = BTreeMap::from([(
             "refs".into(),
             MetadataValue::EntityRefs(vec![

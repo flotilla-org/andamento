@@ -10,6 +10,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/scoping-regression@fleet"),
                 "kind": String("convoy"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "display.label": Object {
@@ -55,6 +56,7 @@ expression: "sidebar.snapshot().surface.sections.iter().map(|s|\ncatalog(&s.node
             "entity": Object {
                 "id": String("flotilla/second-convoy@fleet"),
                 "kind": String("convoy"),
+                "provider": String("local"),
             },
             "facts": Object {
                 "display.label": Object {

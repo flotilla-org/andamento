@@ -229,8 +229,5 @@ fn abi_2_ids_are_the_embedded_wide_ids() {
 }
 
 fn entity(kind: &str, id: &str) -> EntityRef {
-    EntityRef {
-        kind: kind.into(),
-        id: id.into(),
-    }
+    EntityRef::local(kind, id)
 }

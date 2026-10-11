@@ -28,10 +28,7 @@ fn outline(nodes: &[PlacementNode], depth: usize, out: &mut String) {
 }
 fn patch(kind: &str, id: &str, key: &str, value: MetadataValue) -> MetadataPatch {
     MetadataPatch {
-        target: MetadataTarget::Entity(EntityRef {
-            kind: kind.into(),
-            id: id.into(),
-        }),
+        target: MetadataTarget::Entity(EntityRef::local(kind, id)),
         source_id: "fixture".into(),
         set: BTreeMap::from([(
             key.into(),
