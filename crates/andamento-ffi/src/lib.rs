@@ -12,6 +12,7 @@ use andamento_core::{
     Sidebar, WorkspaceId,
 };
 use std::{
+    collections::{BTreeMap, BTreeSet},
     ffi::{c_char, CString},
     panic::{catch_unwind, AssertUnwindSafe},
     ptr,
@@ -429,7 +430,7 @@ unsafe fn scalar_patch(
         set: Default::default(),
         unset: vec![],
     };
-    let mut keys = std::collections::BTreeSet::new();
+    let mut keys = BTreeSet::new();
     for f in slice(facts, count)? {
         let key = f.key.read()?;
         if !keys.insert(key.clone()) {
@@ -740,7 +741,7 @@ pub(crate) struct Detail {
 pub struct AndamentoSnapshot {
     pub(crate) now_ms: u64,
     pub(crate) details: Vec<Detail>,
-    pub(crate) detail_index: std::collections::BTreeMap<EntityRef, usize>,
+    pub(crate) detail_index: BTreeMap<EntityRef, usize>,
     pub(crate) client: u64,
     pub(crate) generation: u64,
     pub(crate) nodes: Vec<Node>,

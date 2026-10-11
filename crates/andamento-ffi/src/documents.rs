@@ -558,6 +558,8 @@ pub unsafe extern "C" fn andamento_workspace_content_revision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use andamento_core::tab_workspace_id;
+    use std::ffi::CStr;
 
     fn text(s: &str) -> Text {
         Text::borrowed(s)
@@ -613,7 +615,7 @@ mod tests {
         unsafe {
             let config = include_str!("../../andamento-core/tests/fixtures/abbreviation.kdl");
             let h = andamento_create(config.as_ptr(), config.len(), ptr::null_mut());
-            let ws: WorkspaceIdView = andamento_core::tab_workspace_id(7).into();
+            let ws: WorkspaceIdView = tab_workspace_id(7).into();
             assert_eq!(andamento_workspace_register(h, ws, ptr::null_mut()), 1);
             for key in ["u:1", "u:2", "u:3"] {
                 let mut spec: ViewSpecView = std::mem::zeroed();
@@ -669,7 +671,7 @@ mod tests {
                 let result =
                     andamento_arrangement_commit(h, ws, &doc(panels), c.generation, &mut error);
                 assert!(result.is_null());
-                let message = std::ffi::CStr::from_ptr(error).to_str().unwrap();
+                let message = CStr::from_ptr(error).to_str().unwrap();
                 assert!(message.contains(reason), "{message}");
                 andamento_string_free(error);
             }

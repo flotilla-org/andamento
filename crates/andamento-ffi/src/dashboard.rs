@@ -1,6 +1,7 @@
 //! The Dashboard: its records, display variables, local sections, groups
 //! and refs, and sibling orders.
 use super::*;
+use andamento_core::PlacementLoopKey;
 
 /// The names of the records Andamento holds, one per line (no trailing
 /// newline): "dashboard", then "workspace/<id>" for each registered
@@ -110,7 +111,7 @@ pub unsafe extern "C" fn andamento_set_sibling_order(
 ) -> u32 {
     run(h, error_out, |h| {
         let key = loop_key.read()?;
-        let key = andamento_core::PlacementLoopKey::decode(&key).ok_or("invalid loop key")?;
+        let key = PlacementLoopKey::decode(&key).ok_or("invalid loop key")?;
         let order = slice(entities, count)?
             .iter()
             .map(|e| e.read())
@@ -145,7 +146,7 @@ pub unsafe extern "C" fn andamento_local_set(
 ) -> u32 {
     run(h, error_out, |h| {
         let entity = EntityRef::local(kind.read()?, id.read()?);
-        let mut values = std::collections::BTreeMap::new();
+        let mut values = BTreeMap::new();
         for f in slice(facts, count)? {
             let value = match f.kind {
                 ANDAMENTO_FACT_ENTITY => MetadataValue::EntityRefs(vec![f.entity.read()?]),

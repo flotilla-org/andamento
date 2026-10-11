@@ -5,6 +5,7 @@
 //! Missing facts suspend updates; they never mean delete the existing content.
 use crate::{
     suggested_layout::{CommandLine, LocalRecipe, RebindPolicy},
+    target_resolution::SavedResolution,
     EntityRef, WorkspaceId,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -156,7 +157,7 @@ pub struct SlotPlan {
     /// no instance), try connecting through it before resolving the target
     /// afresh. A saved resolution the slot no longer resolves to is cleared,
     /// so it is never one for other content.
-    pub saved: Option<crate::target_resolution::SavedResolution>,
+    pub saved: Option<SavedResolution>,
 }
 
 struct Binding {

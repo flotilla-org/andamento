@@ -1,6 +1,8 @@
 //! Marshalling the core can't see: what C reads from snapshots and effects.
 use super::*;
+use andamento_core::tab_workspace_id;
 use std::ffi::CStr;
+use std::mem::MaybeUninit;
 
 const PROVIDER: &str = "sub-1";
 
@@ -16,7 +18,7 @@ unsafe fn create(config: &str) -> *mut Andamento {
 }
 
 unsafe fn node(s: *const AndamentoSnapshot, index: usize) -> NodeView {
-    let mut node = std::mem::MaybeUninit::uninit();
+    let mut node = MaybeUninit::uninit();
     assert_eq!(andamento_snapshot_node(s, index, node.as_mut_ptr()), 1);
     node.assume_init()
 }
@@ -34,7 +36,7 @@ fn section_nodes_carry_their_region_hints() {
             );
             let h = create(&config);
             let workspace = WorkspaceInput {
-                id: andamento_core::tab_workspace_id(42).into(),
+                id: tab_workspace_id(42).into(),
                 position: 0,
                 name: text("unplaced"),
                 selected: 1,
@@ -54,10 +56,7 @@ fn section_nodes_carry_their_region_hints() {
                 let other = node(s, i);
                 assert_eq!((other.default_host.len, other.has_order), (0, 0));
                 if other.is_section == 0 {
-                    assert_eq!(
-                        other.workspace_id.bytes,
-                        andamento_core::tab_workspace_id(42).to_bytes()
-                    );
+                    assert_eq!(other.workspace_id.bytes, tab_workspace_id(42).to_bytes());
                 }
             }
             andamento_snapshot_release(s);
@@ -89,7 +88,7 @@ fn declared_abbreviation_reaches_c_fields_but_keeps_full_details() {
             let node = node(snapshot, 1);
             assert_eq!(node.label.read().unwrap(), "a very long worker name");
             assert_eq!(node.entity.provider.read().unwrap(), PROVIDER);
-            let mut field = std::mem::MaybeUninit::<FieldView>::uninit();
+            let mut field = MaybeUninit::<FieldView>::uninit();
             assert_eq!(
                 andamento_snapshot_field(snapshot, node.first_field, field.as_mut_ptr()),
                 1
@@ -131,7 +130,7 @@ fn display_controls_name_their_variable_and_persistence() {
         let mut error = ptr::null_mut();
         let snapshot = andamento_snapshot_acquire(h, &mut error);
         let control = |index| {
-            let mut control = std::mem::MaybeUninit::<ControlView>::uninit();
+            let mut control = MaybeUninit::<ControlView>::uninit();
             assert_eq!(
                 andamento_snapshot_control(snapshot, index, control.as_mut_ptr()),
                 1
@@ -224,7 +223,7 @@ fn subject_rows_expose_open_and_copy_url_actions() {
             assert_eq!(andamento_dispatch(h, snapshot, action, &mut error), 1);
             let effects = andamento_effects_take(h, &mut error);
             assert_eq!(andamento_effects_count(effects), 1);
-            let mut effect = std::mem::MaybeUninit::<EffectView>::uninit();
+            let mut effect = MaybeUninit::<EffectView>::uninit();
             assert_eq!(andamento_effects_get(effects, 0, effect.as_mut_ptr()), 1);
             let effect = effect.assume_init();
             assert_eq!(effect.kind, kind);

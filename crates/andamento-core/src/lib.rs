@@ -1211,8 +1211,8 @@ mod tests {
     fn config_inspect_request_round_trips_json() {
         let request = ConfigInspectRequest {
             client_id: 4,
-            origin_tab_id: crate::tab_workspace_id(7),
-            node_key: NodeKey::Tab(crate::tab_workspace_id(7)),
+            origin_tab_id: tab_workspace_id(7),
+            node_key: NodeKey::Tab(tab_workspace_id(7)),
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
@@ -1231,7 +1231,7 @@ mod tests {
                 client_id: 4,
             },
             placement: PluginPlacement::Tab {
-                tab_id: crate::tab_workspace_id(7),
+                tab_id: tab_workspace_id(7),
                 pane_kind: PluginPaneKind::Floating,
             },
         };
@@ -1322,11 +1322,11 @@ mod tests {
         let key = PlacementKey(vec![
             PlacementSegment {
                 loop_name: "project".to_owned(),
-                entity: EntityRef::local("project".to_owned(), "andamento".to_owned()),
+                entity: EntityRef::local("project", "andamento"),
             },
             PlacementSegment {
                 loop_name: "vessel".to_owned(),
-                entity: EntityRef::local("vessel".to_owned(), "andamento/work".to_owned()),
+                entity: EntityRef::local("vessel", "andamento/work"),
             },
         ]);
         let encoded = serde_json::to_string(&key).unwrap();
@@ -1336,10 +1336,7 @@ mod tests {
 
     #[test]
     fn metadata_target_entity_round_trips_json() {
-        let target = MetadataTarget::Entity(EntityRef::local(
-            "convoy".to_owned(),
-            "dev/cutover@kiwi".to_owned(),
-        ));
+        let target = MetadataTarget::Entity(EntityRef::local("convoy", "dev/cutover@kiwi"));
 
         let encoded = serde_json::to_string(&target).unwrap();
         let decoded: MetadataTarget = serde_json::from_str(&encoded).unwrap();
@@ -1404,10 +1401,7 @@ mod tests {
     #[test]
     fn metadata_patch_round_trips_json() {
         let patch = MetadataPatch {
-            target: MetadataTarget::Entity(EntityRef::local(
-                "project".to_owned(),
-                "dev/zellij@fleet".to_owned(),
-            )),
+            target: MetadataTarget::Entity(EntityRef::local("project", "dev/zellij@fleet")),
             source_id: "flotilla".to_owned(),
             set: std::collections::BTreeMap::from([(
                 "summary.local_llm".to_owned(),
@@ -1430,7 +1424,7 @@ mod tests {
     #[test]
     fn external_metadata_patch_message_round_trips_json() {
         let patch = MetadataPatch {
-            target: MetadataTarget::Tab(crate::tab_workspace_id(7)),
+            target: MetadataTarget::Tab(tab_workspace_id(7)),
             source_id: "flotilla".to_owned(),
             set: std::collections::BTreeMap::from([(
                 "tab.subject".to_owned(),

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     managed::{DesiredContent, ManagedContent, SlotSource},
+    records,
     records::SubjectRecord,
     slots::{
         Arrangement, ArrangementCommit, ArrangementDoc, ArrangementView, Baseline, OverlayView,
@@ -58,13 +59,13 @@ impl WorkspaceRecord {
     }
 
     pub fn encode(&self) -> String {
-        crate::records::encode(self)
+        records::encode(self)
     }
 
     /// Read a record [`encode`](Self::encode) wrote, giving its parts
     /// generations no earlier state had (an arrangement only once stored).
     pub fn decode(text: &str, clock: &mut Clock) -> Result<Self, String> {
-        let mut workspace: Self = crate::records::decode(text, "workspace")?;
+        let mut workspace: Self = records::decode(text, "workspace")?;
         if let Some(arrangement) = workspace.arrangement.get() {
             arrangement.doc.check()?;
             if arrangement.owned && !arrangement.soft.is_empty() {

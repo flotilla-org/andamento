@@ -9,16 +9,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     host::PaneObservation,
-    presentation::SurfaceSnapshot,
-    records::{DashboardRecord, DashboardState, RecordName, SubjectRecord},
-    sidebar_arrangement::{Declared, Report, SidebarArrangement, SidebarDoc, SidebarView},
-    slots::{ArrangementCommit, ArrangementDoc, ArrangementView, OverlayView, Resolve, SlotInfo},
+    managed::{ManagedContent, SlotPlan},
+    presentation::{system, SurfaceSnapshot, UNPLACED_WORKSPACES_SECTION},
+    records::{recordable, DashboardRecord, DashboardState, RecordName, SubjectRecord},
+    sidebar_arrangement::{
+        self, Declared, LocalSection, Report, SidebarArrangement, SidebarDoc, SidebarView,
+    },
+    slots::{
+        ArrangementCommit, ArrangementDoc, ArrangementView, Baseline, OverlayView, Resolve,
+        SlotInfo,
+    },
     state::{ControllerState, ControllerTab, EntityActivation},
+    suggested_layout::{RebindPolicy, ViewSpec},
     target_resolution::{PortableResolution, SavedResolution},
     versioned::{Clock, CommitError, Versioned},
     workspace::{Subject, WorkspaceRecord},
-    EntityRef, MaterializeLatentRequest, MetadataPatch, NodeKey, PlacementKey, RailUiAction,
-    WorkspaceId,
+    DisplayVariableValue, EntityRef, MaterializeLatentRequest, MetadataPatch, MetadataTarget,
+    MetadataValue, MetadataValueUpdate, NodeKey, PlacementKey, PlacementLoopKey, RailUiAction,
+    WorkspaceId, LOCAL_PROVIDER,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,11 +107,11 @@ pub enum Request {
     },
     SetDisplayVariable {
         name: String,
-        value: Option<crate::DisplayVariableValue>,
+        value: Option<DisplayVariableValue>,
     },
     SetLocal {
         entity: EntityRef,
-        facts: BTreeMap<String, crate::MetadataValue>,
+        facts: BTreeMap<String, MetadataValue>,
     },
     RemoveLocal {
         entity: EntityRef,
@@ -185,7 +193,7 @@ pub struct Sidebar {
     /// Each registered workspace's record (`workspace/<id>`).
     workspaces: BTreeMap<WorkspaceId, WorkspaceEntry>,
     /// Local sections, groups and refs, with their facts.
-    local: BTreeMap<EntityRef, BTreeMap<String, crate::MetadataValue>>,
+    local: BTreeMap<EntityRef, BTreeMap<String, MetadataValue>>,
     /// Every revision and generation comes from this clock.
     clock: Clock,
     /// The Dashboard's state as of the last change (see
@@ -212,11 +220,7 @@ struct WorkspaceEntry {
 
 /// The kinds of local entities: sections, groups and refs people make, which
 /// Andamento owns and keeps in the dashboard record.
-pub const LOCAL_KINDS: [&str; 3] = [
-    crate::presentation::system::SECTION,
-    crate::presentation::system::GROUP,
-    crate::presentation::system::REF,
-];
+pub const LOCAL_KINDS: [&str; 3] = [system::SECTION, system::GROUP, system::REF];
 const SOURCE_LOCAL: &str = "andamento-local";
 
 impl Sidebar {
@@ -326,10 +330,10 @@ impl Sidebar {
         provider: &str,
         patches: impl IntoIterator<Item = MetadataPatch>,
     ) -> Result<(), String> {
-        if provider.is_empty() || provider == crate::LOCAL_PROVIDER {
+        if provider.is_empty() || provider == LOCAL_PROVIDER {
             return Err(format!(
                 "a provider needs a name other than {:?}",
-                crate::LOCAL_PROVIDER
+                LOCAL_PROVIDER
             ));
         }
         self.apply_patches(now_ms, Some(provider), patches);
@@ -491,14 +495,11 @@ impl Sidebar {
     /// subjects on open workspace paths, so a ref keeps presenting its target
     /// when the target's facts go away.
     fn ref_targets(&self) -> impl Iterator<Item = EntityRef> + '_ {
-        use crate::presentation::system;
         self.local
             .iter()
             .filter(|(entity, _)| entity.kind == system::REF)
             .filter_map(|(_, facts)| match facts.get(system::TARGET) {
-                Some(crate::MetadataValue::EntityRefs(refs)) if refs.len() == 1 => {
-                    Some(refs[0].clone())
-                }
+                Some(MetadataValue::EntityRefs(refs)) if refs.len() == 1 => Some(refs[0].clone()),
                 _ => None,
             })
             .filter(|target| !system::is_system(&target.kind))
@@ -619,7 +620,7 @@ impl Sidebar {
     /// every node in it carries. An empty order returns the run to data order.
     pub fn set_sibling_order(
         &mut self,
-        loop_key: crate::PlacementLoopKey,
+        loop_key: PlacementLoopKey,
         order: Vec<EntityRef>,
     ) -> Result<(), String> {
         for entity in &order {
@@ -637,7 +638,7 @@ impl Sidebar {
     pub fn set_display_variable(
         &mut self,
         name: &str,
-        value: Option<crate::DisplayVariableValue>,
+        value: Option<DisplayVariableValue>,
     ) -> Result<(), String> {
         if self.state.set_display_variable(name, value)? {
             self.invalidate();
@@ -653,13 +654,12 @@ impl Sidebar {
     pub fn set_local(
         &mut self,
         entity: EntityRef,
-        facts: BTreeMap<String, crate::MetadataValue>,
+        facts: BTreeMap<String, MetadataValue>,
     ) -> Result<(), String> {
-        if entity.provider != crate::LOCAL_PROVIDER {
+        if entity.provider != LOCAL_PROVIDER {
             return Err(format!(
                 "local entities have the {:?} provider, not {:?}",
-                crate::LOCAL_PROVIDER,
-                entity.provider
+                LOCAL_PROVIDER, entity.provider
             ));
         }
         for value in facts.values() {
@@ -678,11 +678,11 @@ impl Sidebar {
         if facts.keys().any(String::is_empty) {
             return Err("a fact needs a key".into());
         }
-        if !facts.values().all(crate::records::recordable) {
+        if !facts.values().all(recordable) {
             return Err("local facts are text, booleans, integers or entity references".into());
         }
         let patch = self.local_patch(&entity, Some(&facts));
-        let section = entity.kind != crate::presentation::system::REF;
+        let section = entity.kind != system::REF;
         let changed = self.local.get(&entity) != Some(&facts);
         self.local.insert(entity, facts);
         self.apply_local([patch], changed);
@@ -700,19 +700,19 @@ impl Sidebar {
         let patch = self.local_patch(entity, None);
         self.local.remove(entity);
         self.apply_local([patch], true);
-        if entity.kind != crate::presentation::system::REF {
+        if entity.kind != system::REF {
             self.follow_sidebar_declarations();
         }
         true
     }
 
     /// Saved sibling orders, by the loop key of the run each orders.
-    pub fn sibling_orders(&self) -> &BTreeMap<crate::PlacementLoopKey, Vec<EntityRef>> {
+    pub fn sibling_orders(&self) -> &BTreeMap<PlacementLoopKey, Vec<EntityRef>> {
         self.state.sibling_orders()
     }
 
     /// Local entities, with their facts.
-    pub fn local_entities(&self) -> &BTreeMap<EntityRef, BTreeMap<String, crate::MetadataValue>> {
+    pub fn local_entities(&self) -> &BTreeMap<EntityRef, BTreeMap<String, MetadataValue>> {
         &self.local
     }
 
@@ -721,19 +721,19 @@ impl Sidebar {
     fn local_patch(
         &self,
         entity: &EntityRef,
-        facts: Option<&BTreeMap<String, crate::MetadataValue>>,
+        facts: Option<&BTreeMap<String, MetadataValue>>,
     ) -> MetadataPatch {
         let empty = BTreeMap::new();
         let facts = facts.unwrap_or(&empty);
         MetadataPatch {
-            target: crate::MetadataTarget::Entity(entity.clone()),
+            target: MetadataTarget::Entity(entity.clone()),
             source_id: SOURCE_LOCAL.into(),
             set: facts
                 .iter()
                 .map(|(key, value)| {
                     (
                         key.clone(),
-                        crate::MetadataValueUpdate {
+                        MetadataValueUpdate {
                             value: value.clone(),
                             ttl_ms: None,
                             precedence: None,
@@ -907,7 +907,7 @@ impl Sidebar {
                 if let Some(entity) = state
                     .local
                     .keys()
-                    .find(|entity| entity.provider != crate::LOCAL_PROVIDER)
+                    .find(|entity| entity.provider != LOCAL_PROVIDER)
                 {
                     return Err(format!(
                         "local entity {:?} has provider {:?}",
@@ -972,7 +972,7 @@ impl Sidebar {
                 let baseline = record
                     .subject()
                     .and_then(|subject| self.state.suggested_layout(subject).ok().flatten())
-                    .map(|layout| crate::slots::Baseline::from_layout(&layout));
+                    .map(|layout| Baseline::from_layout(&layout));
                 record.follow_baseline(&mut self.clock, baseline);
             }
             record.invalidate_resolutions(&mut self.clock, &self.managed);
@@ -1001,11 +1001,7 @@ impl Sidebar {
     fn with_workspace<R, E: From<String>>(
         &mut self,
         id: WorkspaceId,
-        edit: impl FnOnce(
-            &mut WorkspaceRecord,
-            &mut Clock,
-            &crate::managed::ManagedContent,
-        ) -> Result<R, E>,
+        edit: impl FnOnce(&mut WorkspaceRecord, &mut Clock, &ManagedContent) -> Result<R, E>,
     ) -> Result<R, E> {
         let entry = self
             .workspaces
@@ -1028,8 +1024,8 @@ impl Sidebar {
         &mut self,
         workspace: WorkspaceId,
         key: &str,
-        spec: crate::suggested_layout::ViewSpec,
-        rebind: crate::suggested_layout::RebindPolicy,
+        spec: ViewSpec,
+        rebind: RebindPolicy,
     ) -> Result<bool, String> {
         self.with_workspace(workspace, |record, clock, _| {
             record.set_slot(clock, key, spec, rebind)
@@ -1107,7 +1103,7 @@ impl Sidebar {
         workspace: WorkspaceId,
         key: &str,
         applied: &str,
-    ) -> Result<crate::managed::SlotPlan, String> {
+    ) -> Result<SlotPlan, String> {
         let record = self.workspace(workspace)?;
         let slot = record.slot(key)?;
         let source = record.slot_source(&slot);
@@ -1200,40 +1196,36 @@ impl Sidebar {
 
     /// What the template and local sections declare, for the sidebar
     /// arrangement.
-    fn sidebar_declared(&self) -> crate::sidebar_arrangement::Declared {
-        use crate::presentation::system;
+    fn sidebar_declared(&self) -> Declared {
         let sections_with_default: BTreeSet<&str> = self
             .local
             .iter()
             .filter(|(entity, facts)| {
                 entity.kind == system::GROUP
-                    && matches!(
-                        facts.get(system::DEFAULT),
-                        Some(crate::MetadataValue::Bool(true))
-                    )
+                    && matches!(facts.get(system::DEFAULT), Some(MetadataValue::Bool(true)))
             })
             .filter_map(|(_, facts)| match facts.get(system::SECTION) {
-                Some(crate::MetadataValue::EntityRefs(refs)) if refs.len() == 1 => {
+                Some(MetadataValue::EntityRefs(refs)) if refs.len() == 1 => {
                     Some(refs[0].id.as_str())
                 }
                 _ => None,
             })
             .collect();
-        let local: Vec<crate::sidebar_arrangement::LocalSection> = self
+        let local: Vec<LocalSection> = self
             .local
             .iter()
             .filter(|(entity, _)| entity.kind == system::SECTION)
-            .map(|(entity, facts)| crate::sidebar_arrangement::LocalSection {
+            .map(|(entity, facts)| LocalSection {
                 id: entity.id.clone(),
                 position: match facts.get(".position") {
-                    Some(crate::MetadataValue::Integer(n)) => Some(*n),
-                    Some(crate::MetadataValue::Text(text)) => text.trim().parse().ok(),
+                    Some(MetadataValue::Integer(n)) => Some(*n),
+                    Some(MetadataValue::Text(text)) => text.trim().parse().ok(),
                     _ => None,
                 },
                 default: sections_with_default.contains(entity.id.as_str()),
             })
             .collect();
-        crate::sidebar_arrangement::Declared::new(&self.state.sidebar_regions(), &local)
+        Declared::new(&self.state.sidebar_regions(), &local)
     }
 
     /// Reconcile the sidebar arrangement after the declarations may have
@@ -1248,8 +1240,7 @@ impl Sidebar {
 
     /// Adopt an imported arrangement, reconciled, at a new generation.
     fn import_sidebar_arrangement(&mut self, imported: SidebarArrangement) {
-        let (next, report) =
-            crate::sidebar_arrangement::reconcile(&self.sidebar_declared(), &imported);
+        let (next, report) = sidebar_arrangement::reconcile(&self.sidebar_declared(), &imported);
         self.sidebar_arrangement
             .follow(&mut self.clock, |stored| *stored = next);
         self.sidebar_report = report;
@@ -1274,17 +1265,12 @@ impl Sidebar {
     /// `display:<name>`, `collapse:<key>`, `order:<loop key>` and
     /// `variable:<key>`. They are kept, never dropped, and resolve again if
     /// the template brings their names back.
-    fn unresolved_dashboard_keys(
-        &self,
-        declared: &crate::sidebar_arrangement::Declared,
-    ) -> Vec<String> {
+    fn unresolved_dashboard_keys(&self, declared: &Declared) -> Vec<String> {
         let (loops, display) = self.state.template_names();
-        let loop_resolves = |name: &str| {
-            loops.contains(name) || name == crate::presentation::UNPLACED_WORKSPACES_SECTION
-        };
-        let key_resolves =
-            |key: &crate::PlacementKey| key.0.iter().all(|s| loop_resolves(&s.loop_name));
-        let key_text = |key: &crate::PlacementKey| {
+        let loop_resolves =
+            |name: &str| loops.contains(name) || name == UNPLACED_WORKSPACES_SECTION;
+        let key_resolves = |key: &PlacementKey| key.0.iter().all(|s| loop_resolves(&s.loop_name));
+        let key_text = |key: &PlacementKey| {
             key.0
                 .iter()
                 .map(|s| format!("{}={}", s.loop_name, s.entity.action_target()))
@@ -1661,7 +1647,7 @@ fn retained_workspace_expired(_state: &ControllerState, _subjects: &BTreeSet<Ent
 mod evaluation_tests {
     const PROVIDER: &str = "test";
     use super::*;
-    use crate::{MetadataTarget, MetadataValue, MetadataValueUpdate};
+    use crate::{tab_workspace_id, SortMode};
 
     const CONFIG: &str = include_str!("../tests/fixtures/sidebar.kdl");
     fn entity() -> EntityRef {
@@ -1796,7 +1782,7 @@ mod evaluation_tests {
                         .unwrap(),
                     5 => sidebar.observe(
                         vec![Workspace {
-                            id: crate::tab_workspace_id(1),
+                            id: tab_workspace_id(1),
                             position: 0,
                             name: "vessel:v".into(),
                             selected: step % 2 == 0,
@@ -1867,13 +1853,13 @@ mod evaluation_tests {
             sidebar.observe(
                 vec![
                     Workspace {
-                        id: crate::tab_workspace_id(1),
+                        id: tab_workspace_id(1),
                         position: 1,
                         name: "vessel:v".into(),
                         selected: true,
                     },
                     Workspace {
-                        id: crate::tab_workspace_id(2),
+                        id: tab_workspace_id(2),
                         position: 0,
                         name: "Other".into(),
                         selected: false,
@@ -1882,17 +1868,13 @@ mod evaluation_tests {
                 vec![],
             );
             sidebar.state.set_sort_mode(mode);
-            sidebar.state.toggle_pin(crate::tab_workspace_id(1));
+            sidebar.state.toggle_pin(tab_workspace_id(1));
             sidebar.invalidate();
             check(&sidebar);
             let tabs = sidebar.state.view_model().tabs;
             assert_eq!(
                 tabs[0].tab_id,
-                crate::tab_workspace_id(if mode == crate::SortMode::PinnedFirst {
-                    1
-                } else {
-                    2
-                })
+                tab_workspace_id(if mode == SortMode::PinnedFirst { 1 } else { 2 })
             );
         }
     }

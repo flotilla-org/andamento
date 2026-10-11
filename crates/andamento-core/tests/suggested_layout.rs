@@ -1,13 +1,14 @@
 //! Replays producer facts and reads the Suggested Layout each entity publishes.
 use andamento_core::{
-    replay::{read, Replay},
+    replay::{self, read, Replay},
     suggested_layout::{
         parse, Axis, BaselineVersion, CommandLine, Content, LocalRecipe, PanelNode, RebindPolicy,
         SlotResolution, SuggestedLayout,
     },
-    EntityRef, Sidebar,
+    EntityRef, Sidebar, LOCAL_PROVIDER,
 };
 use std::io::Cursor;
+use std::path::Path;
 
 const CONFIG: &str = r#"
 region "convoys" root-template="heading" form="compact" placement="convoys"
@@ -23,7 +24,7 @@ template "line" { field "label" key="display.label"; }
 "#;
 
 fn replay(name: &str) -> Replay {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures")
         .join(name);
     Replay::new(read(Cursor::new(std::fs::read(path).unwrap())).unwrap()).unwrap()
@@ -52,9 +53,9 @@ fn keys(layout: &SuggestedLayout) -> Vec<&str> {
 
 fn entity(kind: &str, id: &str) -> EntityRef {
     let provider = if kind.starts_with('.') {
-        andamento_core::LOCAL_PROVIDER
+        LOCAL_PROVIDER
     } else {
-        andamento_core::replay::PROVIDER
+        replay::PROVIDER
     };
     EntityRef::new(provider, kind, id)
 }

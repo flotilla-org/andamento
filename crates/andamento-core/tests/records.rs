@@ -6,7 +6,9 @@ use andamento_core::presentation::{PlacementNode, PresentationState};
 use andamento_core::records::{DashboardRecord, DashboardState};
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::workspace::WorkspaceRecord;
-use andamento_core::{DisplayVariableValue, EntityRef, MetadataPatch, MetadataValue, Sidebar};
+use andamento_core::{
+    tab_workspace_id, DisplayVariableValue, EntityRef, MetadataPatch, MetadataValue, Sidebar,
+};
 use common::{entity, nodes, refs, text, worker, Feed, WORKER};
 
 /// A patch setting `facts` on `subject`, each with `ttl`.
@@ -254,7 +256,7 @@ fn records_are_named_for_the_dashboard_and_registered_workspaces() {
         .state
         .local
         .contains_key(&EntityRef::local(".ref", "r1")));
-    let unknown = format!("workspace/{}", andamento_core::tab_workspace_id(7));
+    let unknown = format!("workspace/{}", tab_workspace_id(7));
     assert!(sidebar.export_record(&unknown).is_err());
     assert!(sidebar.export_record("nonsense").is_err());
 }

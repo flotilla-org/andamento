@@ -4,6 +4,7 @@
 //! restore, `.unplaced`, legacy adoption and host hints.
 use super::*;
 use crate::versioned::{Clock, CommitError, Versioned};
+use std::ops::Deref;
 
 const UNPLACED: &str = ".unplaced";
 
@@ -43,7 +44,7 @@ impl PartialEq for Stored {
     }
 }
 
-impl std::ops::Deref for Stored {
+impl Deref for Stored {
     type Target = SidebarArrangement;
     fn deref(&self) -> &SidebarArrangement {
         self.value.get()

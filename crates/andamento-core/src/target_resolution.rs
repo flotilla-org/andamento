@@ -17,6 +17,7 @@
 //! [`Resolved::id`]: crate::managed::Resolved::id
 use std::collections::BTreeMap;
 
+use crate::slots;
 use crate::versioned::CommitError;
 
 /// A portable Target Resolution as the host supplies it, for example kind
@@ -33,10 +34,10 @@ impl PortableResolution {
     /// A kind and field names are 1 to 64 of `[a-z0-9_-]`, starting with a
     /// letter or digit; field values are any text.
     pub fn check(&self) -> Result<(), String> {
-        crate::slots::check_key(&self.kind)
+        slots::check_key(&self.kind)
             .map_err(|_| format!("invalid resolution kind {:?}", self.kind))?;
         for name in self.fields.keys() {
-            crate::slots::check_key(name)
+            slots::check_key(name)
                 .map_err(|_| format!("invalid resolution field name {name:?}"))?;
         }
         Ok(())

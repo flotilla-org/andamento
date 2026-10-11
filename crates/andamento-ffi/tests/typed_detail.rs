@@ -1,4 +1,5 @@
 #![cfg(feature = "json")]
+use andamento_core::tab_workspace_id;
 use andamento_ffi::*;
 use std::{mem::MaybeUninit, ptr};
 fn text(s: &str) -> Text {
@@ -249,7 +250,7 @@ fn native_controls_renewals_and_retained_expiry() {
                 h,
                 effect.request_id,
                 ANDAMENTO_COMPLETE_MATERIALIZE,
-                andamento_core::tab_workspace_id(7).into(),
+                tab_workspace_id(7).into(),
                 text(""),
                 ptr::null_mut()
             ),
@@ -257,7 +258,7 @@ fn native_controls_renewals_and_retained_expiry() {
         );
         andamento_effects_release(effects);
         let workspace = WorkspaceInput {
-            id: andamento_core::tab_workspace_id(7).into(),
+            id: tab_workspace_id(7).into(),
             position: 0,
             name: text("Worker"),
             selected: 1,
@@ -288,10 +289,7 @@ fn native_controls_renewals_and_retained_expiry() {
         let d = d.assume_init();
         assert!(!d.error.data.is_null());
         assert_eq!(d.has_workspace, 1);
-        assert_eq!(
-            d.workspace_id.bytes,
-            andamento_core::tab_workspace_id(7).to_bytes()
-        );
+        assert_eq!(d.workspace_id.bytes, tab_workspace_id(7).to_bytes());
         for s in [expired, boundary, fresh, s] {
             andamento_snapshot_release(s);
         }

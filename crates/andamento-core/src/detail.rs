@@ -1,5 +1,5 @@
 //! Structured detail content keyed by catalog identity, independent of placements.
-use crate::{template_config::DetailRole, EntityRef, MetadataEntry};
+use crate::{template_config::DetailRole, EntityRef, MetadataEntry, WorkspaceId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailField {
@@ -48,7 +48,7 @@ pub struct DetailCard {
     pub label: String,
     pub fields: Vec<DetailField>,
     /// Preview identity is independent of the semantic fields.
-    pub workspace_id: Option<crate::WorkspaceId>,
+    pub workspace_id: Option<WorkspaceId>,
     pub primary_label: String,
     pub primary_intent: DetailIntent,
     pub error: Option<String>,
@@ -112,8 +112,8 @@ pub(crate) fn resolve_field(
 mod tests {
     const PROVIDER: &str = "test";
     use crate::{
-        template_config::*, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate,
-        Sidebar,
+        template_config::*, EntityRef, MetadataPatch, MetadataTarget, MetadataValue,
+        MetadataValueUpdate, Sidebar,
     };
     use std::collections::BTreeMap;
 
@@ -183,7 +183,7 @@ mod tests {
                         0,
                         PROVIDER,
                         [MetadataPatch {
-                            target: MetadataTarget::Entity(crate::EntityRef::local("item", "id")),
+                            target: MetadataTarget::Entity(EntityRef::local("item", "id")),
                             source_id: "producer".into(),
                             set,
                             unset: vec![],

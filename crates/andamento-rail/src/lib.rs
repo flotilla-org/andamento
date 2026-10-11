@@ -46,7 +46,7 @@ fn graphics_signature_needs_sync(
 fn local_tabs_from_zellij(tabs: &[TabInfo]) -> Vec<LocalTab> {
     tabs.iter()
         .map(|tab| LocalTab {
-            tab_id: andamento_shared::tab_workspace_id(tab.tab_id as u64),
+            tab_id: tab_workspace_id(tab.tab_id as u64),
             position: tab.position,
             name: if tab.name.is_empty() {
                 format!("Tab {}", tab.position + 1)
@@ -241,9 +241,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 use andamento_shared::{
-    ConfigInspectRequest, ControllerViewModel, NodeKey, PluginPaneKind, PluginPlacement,
-    PluginRegistrationHello, PluginStatsRecorder, RailSizeObserved, RailUiAction, RailUiState,
-    RendererHello, StatsCollectRequest, MSG_CONFIG_INSPECT, MSG_RAIL_SIZE_OBSERVED,
+    tab_workspace_id, ConfigInspectRequest, ControllerViewModel, NodeKey, PluginPaneKind,
+    PluginPlacement, PluginRegistrationHello, PluginStatsRecorder, RailSizeObserved, RailUiAction,
+    RailUiState, RendererHello, StatsCollectRequest, MSG_CONFIG_INSPECT, MSG_RAIL_SIZE_OBSERVED,
     MSG_RAIL_SIZE_TARGET, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO,
     MSG_REQUEST_RAIL_UI_STATE, MSG_REQUEST_STATE, MSG_STATS_REPORT, MSG_STATS_REQUEST,
     MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
@@ -607,6 +607,7 @@ impl ZellijPlugin for PluginState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use andamento_shared::EntityRef;
     use render::{VisibleCard, VisibleIconRect};
     use std::cell::Cell;
 
@@ -654,7 +655,7 @@ mod tests {
     #[test]
     fn unchanged_graphics_signature_does_not_need_sync() {
         let visible_cards = vec![VisibleCard {
-            tab_id: andamento_shared::tab_workspace_id(1),
+            tab_id: tab_workspace_id(1),
             tab_position: 0,
             row_start: 0,
             status_row: Some(1),
@@ -678,7 +679,7 @@ mod tests {
     #[test]
     fn unchanged_local_tab_projection_does_not_need_render() {
         let current = vec![LocalTab {
-            tab_id: andamento_shared::tab_workspace_id(1),
+            tab_id: tab_workspace_id(1),
             position: 0,
             name: "work".to_owned(),
             active: true,
@@ -721,7 +722,7 @@ mod tests {
                 row_end: 2,
                 col_start: 0,
                 col_end: 19,
-                tab_id: andamento_shared::tab_workspace_id(2),
+                tab_id: tab_workspace_id(2),
                 tab_position: 1,
                 inspect_target: None,
                 materialize_request: None,
@@ -742,10 +743,7 @@ mod tests {
 
     #[test]
     fn detail_hover_updates_live_and_click_remains_as_selection_fallback() {
-        let entity = andamento_shared::EntityRef::local(
-            "issue".to_owned(),
-            "github/flotilla-org/andamento#27".to_owned(),
-        );
+        let entity = EntityRef::local("issue", "github/flotilla-org/andamento#27");
         let target = NodeKey::Entity(entity);
         let mut state = PluginState {
             hit_regions: vec![HitRegion {
@@ -753,7 +751,7 @@ mod tests {
                 row_end: 1,
                 col_start: 2,
                 col_end: 8,
-                tab_id: andamento_shared::tab_workspace_id(0),
+                tab_id: tab_workspace_id(0),
                 tab_position: 0,
                 inspect_target: Some(target.clone()),
                 materialize_request: None,
@@ -776,10 +774,7 @@ mod tests {
         let target = NodeKey::Placement(andamento_shared::PlacementKey(vec![
             andamento_shared::PlacementSegment {
                 loop_name: "attention".to_owned(),
-                entity: andamento_shared::EntityRef::local(
-                    "vessel".to_owned(),
-                    "worker".to_owned(),
-                ),
+                entity: EntityRef::local("vessel", "worker"),
             },
         ]));
         let mut state = PluginState {
@@ -788,7 +783,7 @@ mod tests {
                 row_end: 1,
                 col_start: 2,
                 col_end: 8,
-                tab_id: andamento_shared::tab_workspace_id(0),
+                tab_id: tab_workspace_id(0),
                 tab_position: 0,
                 inspect_target: Some(target.clone()),
                 materialize_request: None,
@@ -803,20 +798,14 @@ mod tests {
 
     #[test]
     fn detail_hover_does_not_clear_between_compact_chips() {
-        let first = NodeKey::Entity(andamento_shared::EntityRef::local(
-            "action".to_owned(),
-            "tui".to_owned(),
-        ));
-        let second = NodeKey::Entity(andamento_shared::EntityRef::local(
-            "action".to_owned(),
-            "governor".to_owned(),
-        ));
+        let first = NodeKey::Entity(EntityRef::local("action", "tui"));
+        let second = NodeKey::Entity(EntityRef::local("action", "governor"));
         let detail_hit = |col_start, col_end, target| HitRegion {
             row_start: 1,
             row_end: 1,
             col_start,
             col_end,
-            tab_id: andamento_shared::tab_workspace_id(0),
+            tab_id: tab_workspace_id(0),
             tab_position: 0,
             inspect_target: Some(target),
             materialize_request: None,
@@ -839,14 +828,8 @@ mod tests {
 
     #[test]
     fn detail_hover_clears_in_a_different_compact_row_gap() {
-        let first = NodeKey::Entity(andamento_shared::EntityRef::local(
-            "action".to_owned(),
-            "tui".to_owned(),
-        ));
-        let second_row_target = NodeKey::Entity(andamento_shared::EntityRef::local(
-            "action".to_owned(),
-            "filesystem".to_owned(),
-        ));
+        let first = NodeKey::Entity(EntityRef::local("action", "tui"));
+        let second_row_target = NodeKey::Entity(EntityRef::local("action", "filesystem"));
         let mut state = PluginState {
             hit_regions: vec![
                 HitRegion {
@@ -854,7 +837,7 @@ mod tests {
                     row_end: 1,
                     col_start: 2,
                     col_end: 6,
-                    tab_id: andamento_shared::tab_workspace_id(0),
+                    tab_id: tab_workspace_id(0),
                     tab_position: 0,
                     inspect_target: Some(first.clone()),
                     materialize_request: None,
@@ -865,7 +848,7 @@ mod tests {
                     row_end: 2,
                     col_start: 8,
                     col_end: 15,
-                    tab_id: andamento_shared::tab_workspace_id(0),
+                    tab_id: tab_workspace_id(0),
                     tab_position: 0,
                     inspect_target: Some(second_row_target),
                     materialize_request: None,
@@ -884,13 +867,13 @@ mod tests {
     fn ensure_visible_latch_survives_until_controller_render_can_resolve_target() {
         let mut state = PluginState {
             local_tabs: vec![LocalTab {
-                tab_id: andamento_shared::tab_workspace_id(1),
+                tab_id: tab_workspace_id(1),
                 position: 0,
                 name: "work".to_owned(),
                 active: true,
             }],
             own_plugin_placement: Some(PluginPlacement::Tab {
-                tab_id: andamento_shared::tab_workspace_id(1),
+                tab_id: tab_workspace_id(1),
                 pane_kind: PluginPaneKind::Tiled,
             }),
             ensure_active_visible: true,
@@ -932,13 +915,13 @@ mod tests {
         let mut state = PluginState {
             local_tabs: vec![
                 LocalTab {
-                    tab_id: andamento_shared::tab_workspace_id(1),
+                    tab_id: tab_workspace_id(1),
                     position: 0,
                     name: "one".to_owned(),
                     active: true,
                 },
                 LocalTab {
-                    tab_id: andamento_shared::tab_workspace_id(2),
+                    tab_id: tab_workspace_id(2),
                     position: 1,
                     name: "two".to_owned(),
                     active: false,
@@ -1095,8 +1078,8 @@ mod tests {
             "andamento-controller",
             "andamento-config",
             4,
-            andamento_shared::tab_workspace_id(7),
-            NodeKey::Tab(andamento_shared::tab_workspace_id(7)),
+            tab_workspace_id(7),
+            NodeKey::Tab(tab_workspace_id(7)),
         )
         .unwrap();
 
@@ -1109,27 +1092,21 @@ mod tests {
         let payload: ConfigInspectRequest =
             serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
         assert_eq!(payload.client_id, 4);
-        assert_eq!(payload.origin_tab_id, andamento_shared::tab_workspace_id(7));
-        assert_eq!(
-            payload.node_key,
-            NodeKey::Tab(andamento_shared::tab_workspace_id(7))
-        );
+        assert_eq!(payload.origin_tab_id, tab_workspace_id(7));
+        assert_eq!(payload.node_key, NodeKey::Tab(tab_workspace_id(7)));
         assert_eq!(payload.config_plugin_url, "andamento-config");
         assert_eq!(payload.controller_plugin_url, "andamento-controller");
     }
 
     #[test]
     fn attention_activation_builds_an_entity_only_controller_request() {
-        let entity = andamento_shared::EntityRef::local(
-            "vessel".to_owned(),
-            "dev/focus/worker@lab".to_owned(),
-        );
+        let entity = EntityRef::local("vessel", "dev/focus/worker@lab");
 
         let message = build_activate_entity_message(
             "andamento-controller",
             "andamento-config",
             4,
-            andamento_shared::tab_workspace_id(7),
+            tab_workspace_id(7),
             &entity,
         )
         .unwrap();
@@ -1145,10 +1122,7 @@ mod tests {
             NodeKey::Entity(entity.clone()),
             "a row that cannot be activated must still reach its inspector"
         );
-        assert_eq!(
-            payload.inspect_fallback.origin_tab_id,
-            andamento_shared::tab_workspace_id(7)
-        );
+        assert_eq!(payload.inspect_fallback.origin_tab_id, tab_workspace_id(7));
     }
 
     #[test]
@@ -1166,36 +1140,30 @@ mod tests {
         let state = PluginState {
             local_tabs: vec![
                 LocalTab {
-                    tab_id: andamento_shared::tab_workspace_id(1),
+                    tab_id: tab_workspace_id(1),
                     position: 0,
                     name: "main".to_owned(),
                     active: true,
                 },
                 LocalTab {
-                    tab_id: andamento_shared::tab_workspace_id(7),
+                    tab_id: tab_workspace_id(7),
                     position: 1,
                     name: "work".to_owned(),
                     active: false,
                 },
             ],
             own_plugin_placement: Some(PluginPlacement::Tab {
-                tab_id: andamento_shared::tab_workspace_id(7),
+                tab_id: tab_workspace_id(7),
                 pane_kind: PluginPaneKind::Tiled,
             }),
             ..Default::default()
         };
 
-        assert_eq!(
-            state.active_tab_id(),
-            Some(andamento_shared::tab_workspace_id(1))
-        );
-        assert_eq!(
-            state.own_tab_id(),
-            Some(andamento_shared::tab_workspace_id(7))
-        );
+        assert_eq!(state.active_tab_id(), Some(tab_workspace_id(1)));
+        assert_eq!(state.own_tab_id(), Some(tab_workspace_id(7)));
         assert_eq!(
             state.active_inspect_node(),
-            Some(NodeKey::Tab(andamento_shared::tab_workspace_id(7)))
+            Some(NodeKey::Tab(tab_workspace_id(7)))
         );
     }
 
@@ -1206,17 +1174,14 @@ mod tests {
             row_end: 0,
             col_start: 0,
             col_end: 0,
-            tab_id: andamento_shared::tab_workspace_id(0),
+            tab_id: tab_workspace_id(0),
             tab_position: 0,
-            inspect_target: Some(NodeKey::Tab(andamento_shared::tab_workspace_id(0))),
+            inspect_target: Some(NodeKey::Tab(tab_workspace_id(0))),
             materialize_request: None,
             action: HitAction::InspectNode,
         };
 
-        assert_eq!(
-            hit.inspect_target,
-            Some(NodeKey::Tab(andamento_shared::tab_workspace_id(0)))
-        );
+        assert_eq!(hit.inspect_target, Some(NodeKey::Tab(tab_workspace_id(0))));
     }
 
     #[test]
@@ -1233,7 +1198,7 @@ mod tests {
             )]),
         };
         let local_tabs = vec![LocalTab {
-            tab_id: andamento_shared::tab_workspace_id(70),
+            tab_id: tab_workspace_id(70),
             position: 2,
             name: "work".to_owned(),
             active: true,
@@ -1242,7 +1207,7 @@ mod tests {
         assert_eq!(
             own_plugin_tab_placement(&pane_manifest, &local_tabs, 42),
             Some(PluginPlacement::Tab {
-                tab_id: andamento_shared::tab_workspace_id(70),
+                tab_id: tab_workspace_id(70),
                 pane_kind: PluginPaneKind::Tiled,
             })
         );
@@ -1262,7 +1227,7 @@ mod tests {
             )]),
         };
         let local_tabs = vec![LocalTab {
-            tab_id: andamento_shared::tab_workspace_id(15),
+            tab_id: tab_workspace_id(15),
             position: 1,
             name: "settings".to_owned(),
             active: false,
@@ -1271,7 +1236,7 @@ mod tests {
         assert_eq!(
             own_plugin_tab_placement(&pane_manifest, &local_tabs, 9),
             Some(PluginPlacement::Tab {
-                tab_id: andamento_shared::tab_workspace_id(15),
+                tab_id: tab_workspace_id(15),
                 pane_kind: PluginPaneKind::Floating,
             })
         );
@@ -1283,7 +1248,7 @@ mod tests {
             42,
             3,
             PluginPlacement::Tab {
-                tab_id: andamento_shared::tab_workspace_id(70),
+                tab_id: tab_workspace_id(70),
                 pane_kind: PluginPaneKind::Tiled,
             },
         )
@@ -1298,7 +1263,7 @@ mod tests {
                     client_id: 3,
                 },
                 placement: PluginPlacement::Tab {
-                    tab_id: andamento_shared::tab_workspace_id(70),
+                    tab_id: tab_workspace_id(70),
                     pane_kind: PluginPaneKind::Tiled,
                 },
             }
@@ -1557,7 +1522,7 @@ impl PluginState {
                                 client_id,
                                 self.own_tab_id()
                                     .or_else(|| self.active_tab_id())
-                                    .unwrap_or(andamento_shared::tab_workspace_id(0)),
+                                    .unwrap_or(tab_workspace_id(0)),
                                 entity,
                             ) {
                                 pipe_message_to_plugin(message);
@@ -1749,7 +1714,7 @@ impl PluginState {
             client_id,
             self.own_tab_id()
                 .or_else(|| self.active_tab_id())
-                .unwrap_or(andamento_shared::tab_workspace_id(0)),
+                .unwrap_or(tab_workspace_id(0)),
             node_key,
         ) else {
             return;

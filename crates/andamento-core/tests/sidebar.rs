@@ -3,18 +3,19 @@ use andamento_core::presentation::UNPLACED_WORKSPACES_SECTION;
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::suggested_layout::PRIMARY_SLOT;
 use andamento_core::{
-    EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
-    WorkspaceId,
+    managed::{Resolved, SlotPlan},
+    tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate,
+    Sidebar, WorkspaceId,
 };
 use common::{entity, patch, refs, text, Feed, CONFIG};
 use std::collections::BTreeMap;
 
 // Workspace IDs, named for use in patterns.
-const W7: WorkspaceId = andamento_core::tab_workspace_id(7);
-const W8: WorkspaceId = andamento_core::tab_workspace_id(8);
-const W42: WorkspaceId = andamento_core::tab_workspace_id(42);
-const W43: WorkspaceId = andamento_core::tab_workspace_id(43);
-const W80: WorkspaceId = andamento_core::tab_workspace_id(80);
+const W7: WorkspaceId = tab_workspace_id(7);
+const W8: WorkspaceId = tab_workspace_id(8);
+const W42: WorkspaceId = tab_workspace_id(42);
+const W43: WorkspaceId = tab_workspace_id(43);
+const W80: WorkspaceId = tab_workspace_id(80);
 fn sidebar() -> Sidebar {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
     sidebar.feed(
@@ -138,7 +139,7 @@ fn open(sidebar: &mut Sidebar) -> u64 {
 }
 fn workspace() -> Workspace {
     Workspace {
-        id: andamento_core::tab_workspace_id(42),
+        id: W42,
         position: 0,
         name: "Tab 1".into(),
         selected: true,
@@ -164,7 +165,7 @@ fn host_results_preserve_identity_and_closing_returns_to_latent() {
         })
         .unwrap()
         .is_empty());
-    assert!(sidebar.complete(request, Ok(Some(andamento_core::tab_workspace_id(42)))));
+    assert!(sidebar.complete(request, Ok(Some(W42))));
     // Acknowledgement can precede the topology observation.
     assert!(sidebar
         .dispatch(Action::Activate {
@@ -176,7 +177,7 @@ fn host_results_preserve_identity_and_closing_returns_to_latent() {
     assert_eq!(
         sidebar.snapshot().surface.sections[0].nodes[0].children[0].state,
         PresentationState::Live {
-            workspace_id: andamento_core::tab_workspace_id(42),
+            workspace_id: W42,
             selected: true
         }
     );
@@ -227,7 +228,7 @@ fn topology_can_precede_acknowledgement_and_stale_results_are_ignored() {
     let mut sidebar = sidebar();
     let request = open(&mut sidebar);
     sidebar.observe(vec![workspace()], vec![]);
-    assert!(sidebar.complete(request, Ok(Some(andamento_core::tab_workspace_id(42)))));
+    assert!(sidebar.complete(request, Ok(Some(W42))));
     assert!(!sidebar.complete(request, Err("late failure".into())));
     assert!(matches!(
         sidebar
@@ -462,7 +463,7 @@ fn recipe_only_changes_invalidate_snapshot_and_activation() {
 fn identical_topology_is_unchanged_but_selection_invalidates() {
     let mut sidebar = sidebar();
     let mut workspaces = vec![Workspace {
-        id: andamento_core::tab_workspace_id(7),
+        id: W7,
         position: 0,
         name: "Workspace".into(),
         selected: true,
@@ -516,7 +517,7 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
     let mut sidebar = sidebar();
     let mut first = workspace();
     let mut second = first.clone();
-    second.id = andamento_core::tab_workspace_id(43);
+    second.id = W43;
     second.position = 1;
     second.selected = false;
     sidebar.observe(vec![first.clone(), second.clone()], vec![]);
@@ -546,7 +547,7 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
     assert_eq!(
         nodes[1].state,
         andamento_core::presentation::PresentationState::Live {
-            workspace_id: andamento_core::tab_workspace_id(43),
+            workspace_id: W43,
             selected: true,
         }
     );
@@ -570,7 +571,7 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
 fn placements_cover_aliases_and_collapsed_children_but_filtered_workspaces_fall_back() {
     let mut sidebar = sidebar();
     let request = open(&mut sidebar);
-    sidebar.complete(request, Ok(Some(andamento_core::tab_workspace_id(42))));
+    sidebar.complete(request, Ok(Some(W42)));
     sidebar.observe(vec![workspace()], vec![]);
     assert!(fallback(&sidebar).is_empty());
     let parent = sidebar.snapshot().surface.sections[0].nodes[0].key.clone();
@@ -605,7 +606,7 @@ fn placements_cover_aliases_and_collapsed_children_but_filtered_workspaces_fall_
 fn removed_provider_facts_do_not_remove_open_workspaces() {
     let mut sidebar = sidebar();
     let request = open(&mut sidebar);
-    sidebar.complete(request, Ok(Some(andamento_core::tab_workspace_id(42))));
+    sidebar.complete(request, Ok(Some(W42)));
     sidebar.observe(vec![workspace()], vec![]);
     let mut remove = patch(entity("vessel", "v"), &[]);
     remove.unset = vec![
@@ -675,7 +676,7 @@ fn compact_placement_template_preserves_independent_detail_template() {
 fn live_placement_focus_is_deduplicated_until_completion_and_can_retry() {
     let mut sidebar = sidebar();
     let request = open(&mut sidebar);
-    sidebar.complete(request, Ok(Some(andamento_core::tab_workspace_id(42))));
+    sidebar.complete(request, Ok(Some(W42)));
     sidebar.observe(vec![workspace()], vec![]);
     let key = sidebar.snapshot().surface.sections[0].nodes[0].children[0]
         .key
@@ -710,8 +711,8 @@ fn plan_primary(
     sidebar: &mut Sidebar,
     workspace: WorkspaceId,
     subject: &EntityRef,
-    applied: andamento_core::managed::Resolved,
-) -> andamento_core::managed::SlotPlan {
+    applied: Resolved,
+) -> SlotPlan {
     use andamento_core::{managed::SlotSource, suggested_layout::RebindPolicy};
     let source = SlotSource::Provider {
         entity: subject.clone(),
@@ -728,7 +729,7 @@ fn plan_primary(
 
 #[test]
 fn managed_primary_reconciles_resolution_not_global_revision() {
-    use andamento_core::managed::{ContentState, Resolved, TerminalContent};
+    use andamento_core::managed::{ContentState, TerminalContent};
     let mut sidebar = sidebar();
     let subject = entity("vessel", "v");
     let original = Resolved::from(TerminalContent {
@@ -751,14 +752,9 @@ fn managed_primary_reconciles_resolution_not_global_revision() {
     };
     sidebar.observe(vec![workspace()], vec![]);
     publish(&mut sidebar, 101, "two");
-    let first = plan_primary(
-        &mut sidebar,
-        andamento_core::tab_workspace_id(42),
-        &subject,
-        original.clone(),
-    )
-    .update
-    .unwrap();
+    let first = plan_primary(&mut sidebar, W42, &subject, original.clone())
+        .update
+        .unwrap();
     sidebar.feed(
         102,
         [patch(
@@ -767,76 +763,33 @@ fn managed_primary_reconciles_resolution_not_global_revision() {
         )],
     );
     assert_eq!(
-        plan_primary(
-            &mut sidebar,
-            andamento_core::tab_workspace_id(42),
-            &subject,
-            original.clone()
-        )
-        .update,
+        plan_primary(&mut sidebar, W42, &subject, original.clone()).update,
         Some(first.clone())
     );
     publish(&mut sidebar, 103, "three");
-    assert!(!sidebar.managed.slot_valid(
-        andamento_core::tab_workspace_id(42),
-        PRIMARY_SLOT,
-        first.token
-    ));
-    assert!(!sidebar.managed.complete_slot(
-        andamento_core::tab_workspace_id(42),
-        PRIMARY_SLOT,
-        first.token,
-        true
-    ));
-    let second = plan_primary(
-        &mut sidebar,
-        andamento_core::tab_workspace_id(42),
-        &subject,
-        original.clone(),
-    )
-    .update
-    .unwrap();
-    assert!(sidebar.managed.complete_slot(
-        andamento_core::tab_workspace_id(42),
-        PRIMARY_SLOT,
-        second.token,
-        false
-    ));
+    assert!(!sidebar.managed.slot_valid(W42, PRIMARY_SLOT, first.token));
+    assert!(!sidebar
+        .managed
+        .complete_slot(W42, PRIMARY_SLOT, first.token, true));
+    let second = plan_primary(&mut sidebar, W42, &subject, original.clone())
+        .update
+        .unwrap();
+    assert!(sidebar
+        .managed
+        .complete_slot(W42, PRIMARY_SLOT, second.token, false));
     assert_eq!(
-        plan_primary(
-            &mut sidebar,
-            andamento_core::tab_workspace_id(42),
-            &subject,
-            original.clone()
-        )
-        .state,
+        plan_primary(&mut sidebar, W42, &subject, original.clone()).state,
         ContentState::Failed
     );
-    sidebar
+    sidebar.managed.retry_slot(W42, PRIMARY_SLOT);
+    let third = plan_primary(&mut sidebar, W42, &subject, original.clone())
+        .update
+        .unwrap();
+    assert!(sidebar
         .managed
-        .retry_slot(andamento_core::tab_workspace_id(42), PRIMARY_SLOT);
-    let third = plan_primary(
-        &mut sidebar,
-        andamento_core::tab_workspace_id(42),
-        &subject,
-        original.clone(),
-    )
-    .update
-    .unwrap();
-    assert!(sidebar.managed.complete_slot(
-        andamento_core::tab_workspace_id(42),
-        PRIMARY_SLOT,
-        third.token,
-        true
-    ));
+        .complete_slot(W42, PRIMARY_SLOT, third.token, true));
     assert_eq!(
-        plan_primary(
-            &mut sidebar,
-            andamento_core::tab_workspace_id(42),
-            &subject,
-            third.resolution.clone()
-        )
-        .state,
+        plan_primary(&mut sidebar, W42, &subject, third.resolution.clone()).state,
         ContentState::Current
     );
     sidebar.feed(
@@ -847,71 +800,38 @@ fn managed_primary_reconciles_resolution_not_global_revision() {
         )],
     );
     assert_eq!(
-        plan_primary(
-            &mut sidebar,
-            andamento_core::tab_workspace_id(42),
-            &subject,
-            third.resolution.clone()
-        )
-        .state,
+        plan_primary(&mut sidebar, W42, &subject, third.resolution.clone()).state,
         ContentState::Held
     );
     publish(&mut sidebar, 105, "four");
-    let fourth = plan_primary(
-        &mut sidebar,
-        andamento_core::tab_workspace_id(42),
-        &subject,
-        third.resolution.clone(),
-    )
-    .update
-    .unwrap();
+    let fourth = plan_primary(&mut sidebar, W42, &subject, third.resolution.clone())
+        .update
+        .unwrap();
     let mut expired = patch(subject.clone(), &[]);
     expired.unset = vec!["workspace.primary.state".into()];
     sidebar.feed(106, [expired]);
-    assert!(!sidebar.managed.slot_valid(
-        andamento_core::tab_workspace_id(42),
-        PRIMARY_SLOT,
-        fourth.token
-    ));
+    assert!(!sidebar.managed.slot_valid(W42, PRIMARY_SLOT, fourth.token));
     assert_eq!(
-        plan_primary(
-            &mut sidebar,
-            andamento_core::tab_workspace_id(42),
-            &subject,
-            third.resolution.clone()
-        )
-        .state,
+        plan_primary(&mut sidebar, W42, &subject, third.resolution.clone()).state,
         ContentState::Unavailable
     );
     publish(&mut sidebar, 107, "four");
-    let reconnected = plan_primary(
-        &mut sidebar,
-        andamento_core::tab_workspace_id(42),
-        &subject,
-        third.resolution.clone(),
-    )
-    .update
-    .unwrap();
+    let reconnected = plan_primary(&mut sidebar, W42, &subject, third.resolution.clone())
+        .update
+        .unwrap();
     sidebar.observe(vec![], vec![]);
-    assert!(!sidebar.managed.slot_valid(
-        andamento_core::tab_workspace_id(42),
-        PRIMARY_SLOT,
-        reconnected.token
-    ));
-    let reopened = plan_primary(
-        &mut sidebar,
-        andamento_core::tab_workspace_id(42),
-        &subject,
-        original,
-    )
-    .update
-    .unwrap();
+    assert!(!sidebar
+        .managed
+        .slot_valid(W42, PRIMARY_SLOT, reconnected.token));
+    let reopened = plan_primary(&mut sidebar, W42, &subject, original)
+        .update
+        .unwrap();
     assert_ne!(reconnected.token, reopened.token);
 }
 
 #[test]
 fn managed_content_is_independent_of_placement_and_expires_without_removal() {
-    use andamento_core::managed::{ContentState, Resolved, TerminalContent};
+    use andamento_core::managed::{ContentState, TerminalContent};
     let mut sidebar = Sidebar::new("").unwrap();
     let subject = entity("project-role", "p/governor");
     let applied = Resolved::from(TerminalContent {
@@ -931,45 +851,25 @@ fn managed_content_is_independent_of_placement_and_expires_without_removal() {
         value.ttl_ms = Some(10);
     }
     sidebar.feed(100, [desired.clone()]);
-    let update = plan_primary(
-        &mut sidebar,
-        andamento_core::tab_workspace_id(42),
-        &subject,
-        applied.clone(),
-    )
-    .update
-    .unwrap();
+    let update = plan_primary(&mut sidebar, W42, &subject, applied.clone())
+        .update
+        .unwrap();
     sidebar.tick(111);
-    assert!(!sidebar.managed.slot_valid(
-        andamento_core::tab_workspace_id(42),
-        PRIMARY_SLOT,
-        update.token
-    ));
+    assert!(!sidebar.managed.slot_valid(W42, PRIMARY_SLOT, update.token));
     assert_eq!(
-        plan_primary(
-            &mut sidebar,
-            andamento_core::tab_workspace_id(42),
-            &subject,
-            applied.clone()
-        )
-        .state,
+        plan_primary(&mut sidebar, W42, &subject, applied.clone()).state,
         ContentState::Unavailable
     );
     sidebar.feed(112, [desired]);
-    let new = plan_primary(
-        &mut sidebar,
-        andamento_core::tab_workspace_id(42),
-        &subject,
-        applied,
-    )
-    .update
-    .unwrap();
+    let new = plan_primary(&mut sidebar, W42, &subject, applied)
+        .update
+        .unwrap();
     assert_ne!(new.token, update.token);
 }
 
 #[test]
 fn materializing_the_current_resolution_records_its_managed_target() {
-    use andamento_core::managed::{ContentState, Resolved, TerminalContent};
+    use andamento_core::managed::{ContentState, TerminalContent};
     let mut sidebar = sidebar();
     let subject = entity("vessel", "v");
     sidebar.observe(vec![], vec![]);
@@ -1014,13 +914,7 @@ fn materializing_the_current_resolution_records_its_managed_target() {
         cwd: None,
     });
     assert_eq!(
-        plan_primary(
-            &mut sidebar,
-            andamento_core::tab_workspace_id(7),
-            &subject,
-            applied
-        )
-        .state,
+        plan_primary(&mut sidebar, W7, &subject, applied).state,
         ContentState::Current
     );
 }
@@ -1110,7 +1004,7 @@ template "project/detail" slot="detail" node-kind="entity" {
 
 #[test]
 fn materialized_target_is_recorded_when_the_resolution_has_a_working_directory() {
-    use andamento_core::managed::{ContentState, Resolved, TerminalContent};
+    use andamento_core::managed::{ContentState, TerminalContent};
     let mut sidebar = sidebar();
     let subject = entity("vessel", "v");
     sidebar.observe(vec![], vec![]);
@@ -1146,13 +1040,7 @@ fn materialized_target_is_recorded_when_the_resolution_has_a_working_directory()
         cwd: Some("/work/repo".into()),
     });
     assert_eq!(
-        plan_primary(
-            &mut sidebar,
-            andamento_core::tab_workspace_id(7),
-            &subject,
-            applied
-        )
-        .state,
+        plan_primary(&mut sidebar, W7, &subject, applied).state,
         ContentState::Current
     );
 }
@@ -1238,7 +1126,7 @@ fn directory_state(
 }
 fn directory_workspace(id: u64) -> Workspace {
     Workspace {
-        id: andamento_core::tab_workspace_id(id),
+        id: tab_workspace_id(id),
         position: id as usize,
         name: "user terminal".into(),
         selected: true,
@@ -1255,9 +1143,9 @@ fn directory_observations_focus_any_entity_kind_without_persisting_identity() {
     );
     sidebar.observe(vec![directory_workspace(7)], vec![]);
     sidebar.observe_workdirs(vec![
-        (andamento_core::tab_workspace_id(7), "/repo".into()),
-        (andamento_core::tab_workspace_id(7), "/other".into()),
-        (andamento_core::tab_workspace_id(99), "/repo".into()),
+        (W7, "/repo".into()),
+        (W7, "/other".into()),
+        (tab_workspace_id(99), "/repo".into()),
     ]);
     assert!(matches!(
         directory_state(&sidebar, &subject),
@@ -1267,10 +1155,7 @@ fn directory_observations_focus_any_entity_kind_without_persisting_identity() {
         }
     ));
     let revision = sidebar.revision();
-    sidebar.observe_workdirs(vec![
-        (andamento_core::tab_workspace_id(7), "/other".into()),
-        (andamento_core::tab_workspace_id(7), "/repo".into()),
-    ]);
+    sidebar.observe_workdirs(vec![(W7, "/other".into()), (W7, "/repo".into())]);
     assert_eq!(sidebar.revision(), revision);
     let effects = sidebar
         .dispatch(Action::Activate {
@@ -1286,15 +1171,12 @@ fn directory_observations_focus_any_entity_kind_without_persisting_identity() {
     };
     sidebar.complete(request_id, Ok(None));
     // Exact matching: a subdirectory is not a host-normalized repository root.
-    sidebar.observe_workdirs(vec![(
-        andamento_core::tab_workspace_id(7),
-        "/repo/subdir".into(),
-    )]);
+    sidebar.observe_workdirs(vec![(W7, "/repo/subdir".into())]);
     assert!(matches!(
         directory_state(&sidebar, &subject),
         PresentationState::Latent { openable: true }
     ));
-    sidebar.observe_workdirs(vec![(andamento_core::tab_workspace_id(7), "/repo".into())]);
+    sidebar.observe_workdirs(vec![(W7, "/repo".into())]);
     sidebar.observe(vec![], vec![]);
     sidebar.observe(vec![directory_workspace(7)], vec![]);
     assert!(matches!(
@@ -1312,12 +1194,12 @@ fn explicit_binding_wins_and_directory_association_tracks_fact_updates() {
         [patch(subject.clone(), &[("git.root", text("/repo"))])],
     );
     sidebar.observe(vec![directory_workspace(7), directory_workspace(8)], vec![]);
-    sidebar.observe_workdirs(vec![(andamento_core::tab_workspace_id(7), "/repo".into())]);
+    sidebar.observe_workdirs(vec![(W7, "/repo".into())]);
     let mut binding = patch(
         subject.clone(),
         &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
     );
-    binding.target = MetadataTarget::Tab(andamento_core::tab_workspace_id(8));
+    binding.target = MetadataTarget::Tab(W8);
     sidebar.feed(100, [binding]);
     assert!(matches!(
         directory_state(&sidebar, &subject),
@@ -1342,10 +1224,7 @@ fn explicit_binding_wins_and_directory_association_tracks_fact_updates() {
         directory_state(&sidebar, &subject),
         PresentationState::Latent { .. }
     ));
-    sidebar.observe_workdirs(vec![(
-        andamento_core::tab_workspace_id(7),
-        "/changed".into(),
-    )]);
+    sidebar.observe_workdirs(vec![(W7, "/changed".into())]);
     assert!(matches!(
         directory_state(&sidebar, &subject),
         PresentationState::Live { .. }
@@ -1377,10 +1256,7 @@ fn multiple_directories_associate_multiple_entities_but_not_explicit_workspace()
         ],
     );
     sidebar.observe(vec![directory_workspace(7)], vec![]);
-    sidebar.observe_workdirs(vec![
-        (andamento_core::tab_workspace_id(7), "/one".into()),
-        (andamento_core::tab_workspace_id(7), "/two".into()),
-    ]);
+    sidebar.observe_workdirs(vec![(W7, "/one".into()), (W7, "/two".into())]);
     for subject in [&first, &second] {
         assert!(matches!(
             directory_state(&sidebar, subject),
@@ -1397,7 +1273,7 @@ fn multiple_directories_associate_multiple_entities_but_not_explicit_workspace()
             ("entity.id", text("explicit")),
         ],
     );
-    binding.target = MetadataTarget::Tab(andamento_core::tab_workspace_id(7));
+    binding.target = MetadataTarget::Tab(W7);
     sidebar.feed(101, [binding]);
     for subject in [&first, &second] {
         assert!(matches!(
@@ -1411,7 +1287,7 @@ fn retained_sidebar() -> Sidebar {
     let mut sidebar = sidebar();
     sidebar.configure(&format!("{CONFIG}\ndisplay-variable \"show-finished\" type=\"bool\" default=false label=\"Show finished\" icon=\"F\"\n")).unwrap();
     let request = open(&mut sidebar);
-    sidebar.complete(request, Ok(Some(andamento_core::tab_workspace_id(42))));
+    sidebar.complete(request, Ok(Some(W42)));
     sidebar.observe(vec![workspace()], vec![]);
     sidebar
 }
@@ -1593,7 +1469,7 @@ fn unrelated_source_removal_and_subjectless_workspaces_are_unaffected() {
         vec![
             workspace(),
             Workspace {
-                id: andamento_core::tab_workspace_id(99),
+                id: tab_workspace_id(99),
                 position: 1,
                 name: "Unsaved notes".into(),
                 selected: false,
@@ -1672,7 +1548,7 @@ fn standing_role_outlives_terminal_attempt_phase() {
     let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
         panic!("{effects:?}")
     };
-    sidebar.complete(*request_id, Ok(Some(andamento_core::tab_workspace_id(42))));
+    sidebar.complete(*request_id, Ok(Some(W42)));
     sidebar.observe(vec![workspace()], vec![]);
     sidebar.tick(101);
     let snapshot = sidebar.snapshot();
@@ -1815,7 +1691,7 @@ fn closing_many_removed_workspaces_releases_retained_catalog_history() {
         let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
             panic!("{effects:?}")
         };
-        sidebar.complete(*request_id, Ok(Some(andamento_core::tab_workspace_id(42))));
+        sidebar.complete(*request_id, Ok(Some(W42)));
         sidebar.observe(vec![workspace()], vec![]);
         let mut removal = patch(subject.clone(), &[("source", text("flotilla"))]);
         removal.unset = publication.set.keys().cloned().collect();
@@ -1882,9 +1758,9 @@ fn shared_ancestor_survives_one_child_end_and_close() {
     let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
         panic!("{effects:?}")
     };
-    sidebar.complete(*request_id, Ok(Some(andamento_core::tab_workspace_id(80))));
+    sidebar.complete(*request_id, Ok(Some(W80)));
     let sibling = Workspace {
-        id: andamento_core::tab_workspace_id(80),
+        id: W80,
         position: 1,
         name: "Sibling".into(),
         selected: false,
@@ -1997,7 +1873,7 @@ fn removal_after_first_topology_needs_no_intervening_snapshot() {
         )],
     );
     let request = open(&mut sidebar);
-    sidebar.complete(request, Ok(Some(andamento_core::tab_workspace_id(42))));
+    sidebar.complete(request, Ok(Some(W42)));
     sidebar.observe(vec![workspace()], vec![]);
     let mut removal = patch(entity("vessel", "v"), &[]);
     removal.unset = vec![
@@ -2040,20 +1916,20 @@ fn shared_action_targets_do_not_steal_subject_workspace_or_selection() {
             ("entity.id", text("other")),
         ],
     );
-    binding.target = MetadataTarget::Tab(andamento_core::tab_workspace_id(43));
+    binding.target = MetadataTarget::Tab(W43);
     sidebar.feed(102, [binding]);
     for selected in [42, 43] {
         for collapsed in [false, true] {
             sidebar.observe(
                 vec![
                     Workspace {
-                        id: andamento_core::tab_workspace_id(42),
+                        id: W42,
                         position: 0,
                         name: "Vessel".into(),
                         selected: selected == 42,
                     },
                     Workspace {
-                        id: andamento_core::tab_workspace_id(43),
+                        id: W43,
                         position: 1,
                         name: "Other".into(),
                         selected: selected == 43,
@@ -2081,7 +1957,7 @@ fn shared_action_targets_do_not_steal_subject_workspace_or_selection() {
                 assert_eq!(
                     node.state,
                     PresentationState::Live {
-                        workspace_id: andamento_core::tab_workspace_id(id),
+                        workspace_id: tab_workspace_id(id),
                         selected: selected == id
                     }
                 );
@@ -2100,7 +1976,7 @@ fn duplicate_subject_bindings_prefer_selection_then_inventory_order() {
         entity("vessel", "v"),
         &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
     );
-    binding.target = MetadataTarget::Tab(andamento_core::tab_workspace_id(43));
+    binding.target = MetadataTarget::Tab(W43);
     sidebar.feed(101, [binding]);
     for order in [[42, 43], [43, 42]] {
         for selected in [None, Some(42), Some(43)] {
@@ -2109,7 +1985,7 @@ fn duplicate_subject_bindings_prefer_selection_then_inventory_order() {
                     .iter()
                     .enumerate()
                     .map(|(position, id)| Workspace {
-                        id: andamento_core::tab_workspace_id(*id),
+                        id: tab_workspace_id(*id),
                         position,
                         name: "Duplicate".into(),
                         selected: selected == Some(*id),
@@ -2122,7 +1998,7 @@ fn duplicate_subject_bindings_prefer_selection_then_inventory_order() {
             assert_eq!(
                 node.state,
                 PresentationState::Live {
-                    workspace_id: andamento_core::tab_workspace_id(selected.unwrap_or(order[0])),
+                    workspace_id: tab_workspace_id(selected.unwrap_or(order[0])),
                     selected: selected.is_some()
                 }
             );
@@ -2140,13 +2016,13 @@ fn unbound_action_target_keeps_selection_on_its_alias() {
         entity("vessel", "v"),
         &[("action.primary.target", text("vessel:v"))],
     );
-    binding.target = MetadataTarget::Tab(andamento_core::tab_workspace_id(42));
+    binding.target = MetadataTarget::Tab(W42);
     sidebar.feed(101, [binding]);
     sidebar.observe(vec![workspace()], vec![]);
     assert_eq!(
         sidebar.snapshot().surface.sections[0].nodes[0].children[0].state,
         PresentationState::Live {
-            workspace_id: andamento_core::tab_workspace_id(42),
+            workspace_id: W42,
             selected: true
         }
     );
@@ -2330,7 +2206,7 @@ template ".workspace/line" {
 
 fn tab_patch(tab: u64, facts: &[(&str, MetadataValue)]) -> MetadataPatch {
     let mut patch = patch(entity("unused", "unused"), facts);
-    patch.target = MetadataTarget::Tab(andamento_core::tab_workspace_id(tab));
+    patch.target = MetadataTarget::Tab(tab_workspace_id(tab));
     patch
 }
 
@@ -2378,7 +2254,7 @@ fn host_entities_place_and_cover_their_workspace_without_subject_lifecycle() {
     );
     sidebar.observe(vec![workspace()], vec![]);
     let live = andamento_core::presentation::PresentationState::Live {
-        workspace_id: andamento_core::tab_workspace_id(42),
+        workspace_id: W42,
         selected: true,
     };
     // Homed with its project: placed there, live, and so not left over.
@@ -2390,10 +2266,7 @@ fn host_entities_place_and_cover_their_workspace_without_subject_lifecycle() {
     let card = sidebar
         .detail_card(&local)
         .expect("a host entity has details");
-    assert_eq!(
-        card.workspace_id,
-        Some(andamento_core::tab_workspace_id(42))
-    );
+    assert_eq!(card.workspace_id, Some(W42));
 
     // Unhomed: left over, under its own identity rather than a synthetic one.
     let mut unhome = patch(local.clone(), &[]);
@@ -2433,11 +2306,11 @@ fn shared_or_incomplete_host_entities_keep_every_workspace_covered() {
         ],
     );
     let mut second = workspace();
-    second.id = andamento_core::tab_workspace_id(43);
+    second.id = W43;
     second.position = 1;
     second.selected = false;
     let mut third = second.clone();
-    third.id = andamento_core::tab_workspace_id(44);
+    third.id = tab_workspace_id(44);
     third.position = 2;
     sidebar.observe(vec![workspace(), second, third], vec![]);
     let nodes = fallback(&sidebar);
@@ -2488,7 +2361,7 @@ fn a_tab_with_a_subject_and_a_host_entity_makes_both_live() {
     );
     sidebar.observe(vec![workspace()], vec![]);
     let live = andamento_core::presentation::PresentationState::Live {
-        workspace_id: andamento_core::tab_workspace_id(42),
+        workspace_id: W42,
         selected: true,
     };
     let children = project_children(&sidebar);
@@ -2630,7 +2503,7 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
         ],
     );
     let mut leftover = workspace();
-    leftover.id = andamento_core::tab_workspace_id(43);
+    leftover.id = W43;
     leftover.position = 1;
     leftover.selected = false;
     sidebar.observe(vec![workspace(), leftover], vec![]);
@@ -2673,7 +2546,7 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
     assert_eq!(
         items[0].state,
         andamento_core::presentation::PresentationState::Live {
-            workspace_id: andamento_core::tab_workspace_id(42),
+            workspace_id: W42,
             selected: true
         }
     );
@@ -2719,13 +2592,13 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
         )],
     );
     let mut opened = workspace();
-    opened.id = andamento_core::tab_workspace_id(44);
+    opened.id = tab_workspace_id(44);
     opened.position = 2;
     opened.selected = false;
     let mut first = workspace();
     first.selected = true;
     let mut second = first.clone();
-    second.id = andamento_core::tab_workspace_id(43);
+    second.id = W43;
     second.position = 1;
     second.selected = false;
     sidebar.observe(vec![first, second, opened], vec![]);
@@ -2744,7 +2617,7 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
     assert_eq!(
         ghost.state,
         andamento_core::presentation::PresentationState::Live {
-            workspace_id: andamento_core::tab_workspace_id(44),
+            workspace_id: tab_workspace_id(44),
             selected: false
         }
     );
@@ -3060,7 +2933,7 @@ fn a_retracted_ref_leaves_its_group() {
         }] if subject == &vessel => *request_id,
         other => panic!("expected the target to open, got {other:?}"),
     };
-    sidebar.complete(request_id, Ok(Some(andamento_core::tab_workspace_id(42))));
+    sidebar.complete(request_id, Ok(Some(W42)));
     // The host names the opened workspace's subject, as Wheelhouse does.
     sidebar.feed(
         150,

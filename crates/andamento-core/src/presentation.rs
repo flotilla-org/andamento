@@ -10,7 +10,7 @@ use crate::template_config::{
 };
 use crate::{
     ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EntityRef, MetadataValue,
-    NodeKey, PlacementKey, ResolvedTemplateSlot,
+    NodeKey, PlacementKey, ResolvedTemplateSlot, WorkspaceId,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,7 +111,7 @@ pub enum PresentationState {
     },
     Opening,
     Live {
-        workspace_id: crate::WorkspaceId,
+        workspace_id: WorkspaceId,
         selected: bool,
     },
 }
@@ -205,7 +205,7 @@ impl SurfaceSnapshot {
     pub(crate) fn cover_workspaces(
         &mut self,
         workspaces: &[crate::state::ControllerTab],
-        host_entities: &BTreeMap<crate::WorkspaceId, EntityRef>,
+        host_entities: &BTreeMap<WorkspaceId, EntityRef>,
         default_groups: &[EntityRef],
     ) {
         let mut covered = std::collections::BTreeSet::new();

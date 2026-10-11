@@ -10,6 +10,8 @@
 //! A [`Versioned`] value can only change through [`Versioned::update`] (or
 //! [`follow`](Versioned::follow), which calls it), so it can't change
 //! without moving its generation.
+use std::fmt;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// The sidebar's generation counter. It only moves forward.
@@ -38,8 +40,8 @@ pub enum CommitError {
     Invalid(String),
 }
 
-impl std::fmt::Display for CommitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for CommitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Stale { current } => {
                 write!(f, "it changed: its generation is {current}; read it again")

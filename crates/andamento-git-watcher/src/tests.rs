@@ -374,7 +374,7 @@ fi
     );
     for tab in [0, 42, u64::MAX] {
         assert_eq!(
-            crate::transport::tab_workspace_id(tab),
+            transport::tab_workspace_id(tab),
             andamento_core::tab_workspace_id(tab).to_string()
         );
     }

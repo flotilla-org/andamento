@@ -1,12 +1,12 @@
 use andamento_core::{
-    replay::{read, Replay},
+    replay::{self, read, Replay},
     sidebar::{Action, HostEffect},
     EntityRef, MetadataPatch, MetadataValue, Sidebar,
 };
 use std::io::Cursor;
 
 fn reference(kind: &str, id: &str) -> EntityRef {
-    EntityRef::new(andamento_core::replay::PROVIDER, kind, id)
+    EntityRef::new(replay::PROVIDER, kind, id)
 }
 fn replay() -> Replay {
     Replay::new(
@@ -203,7 +203,7 @@ fn subject_urls_follow_updates_and_reject_incomplete_forges() {
         sidebar
             .apply(
                 0,
-                andamento_core::replay::PROVIDER,
+                replay::PROVIDER,
                 [serde_json::from_value::<MetadataPatch>(patch).unwrap()],
             )
             .unwrap();
@@ -226,7 +226,7 @@ fn subject_urls_follow_updates_and_reject_incomplete_forges() {
         sidebar
             .apply(
                 0,
-                andamento_core::replay::PROVIDER,
+                replay::PROVIDER,
                 [serde_json::from_value::<MetadataPatch>(patch).unwrap()],
             )
             .unwrap();
@@ -236,7 +236,7 @@ fn subject_urls_follow_updates_and_reject_incomplete_forges() {
     sidebar
         .apply(
             0,
-            andamento_core::replay::PROVIDER,
+            replay::PROVIDER,
             [serde_json::from_value::<MetadataPatch>(patch).unwrap()],
         )
         .unwrap();
@@ -244,7 +244,7 @@ fn subject_urls_follow_updates_and_reject_incomplete_forges() {
     sidebar
         .apply(
             0,
-            andamento_core::replay::PROVIDER,
+            replay::PROVIDER,
             [serde_json::from_value::<MetadataPatch>(patch).unwrap()],
         )
         .unwrap();

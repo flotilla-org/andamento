@@ -11,6 +11,7 @@
 //! section collapse are the host's Presentation State.
 use std::collections::BTreeSet;
 
+use crate::presentation::UNPLACED_WORKSPACES_SECTION;
 use crate::slots::{self, ArrangementDoc, Panel, PanelNode};
 use crate::suggested_layout::Axis;
 
@@ -125,11 +126,7 @@ impl Declared {
                 push(region.name.clone(), Some(region), false);
             }
         }
-        push(
-            crate::presentation::UNPLACED_WORKSPACES_SECTION.to_owned(),
-            None,
-            true,
-        );
+        push(UNPLACED_WORKSPACES_SECTION.to_owned(), None, true);
         // Stable: equal keys keep declaration order.
         sections.sort_by_key(|section| (!section.pinned, section.order));
         Self {

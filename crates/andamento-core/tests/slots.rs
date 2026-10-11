@@ -3,7 +3,7 @@
 //! expected generation, and neither invalidates the sidebar's snapshot.
 //! Portable Target Resolutions (#158) are saved per slot in the record.
 mod common;
-use andamento_core::managed::{ContentState, Resolved, TerminalContent};
+use andamento_core::managed::{ContentState, Resolved, SlotPlan, TerminalContent};
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::slots::{ArrangementDoc, Panel, PanelNode};
 use andamento_core::suggested_layout::{
@@ -14,6 +14,7 @@ use andamento_core::versioned::CommitError;
 use andamento_core::workspace::WorkspaceRecord;
 use andamento_core::{EntityRef, MetadataPatch, MetadataValue, MetadataValueUpdate, Sidebar};
 use common::{entity, list, set, text, worker, Feed, CONFIG, WORKER};
+use std::collections::BTreeMap;
 
 /// A patch setting `facts` on `subject` and unsetting `unset`.
 fn patch(subject: EntityRef, facts: &[(&str, MetadataValue)], unset: &[&str]) -> MetadataPatch {
@@ -339,7 +340,7 @@ fn rebind_policies_decide_what_happens_to_the_replaced_instance() {
     };
     let mut sidebar = session(layout("1", slots(), &["r", "k", "q"]));
     // Apply each slot's first resolution.
-    let mut applied = std::collections::BTreeMap::new();
+    let mut applied = BTreeMap::new();
     for key in ["r", "k", "q"] {
         let plan = sidebar.plan_slot(worker(), key, "").unwrap();
         assert_eq!(plan.state, ContentState::Updating);
@@ -566,7 +567,7 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     assert_eq!(other.export_record(&name).unwrap(), record);
     // No facts yet: Unavailable, and the saved resolution is kept, at a
     // generation of the other sidebar's own.
-    let same = |plan: &andamento_core::managed::SlotPlan| {
+    let same = |plan: &SlotPlan| {
         plan.saved
             .as_ref()
             .is_some_and(|s| (&s.resolution, &s.against) == (&saved.resolution, &saved.against))

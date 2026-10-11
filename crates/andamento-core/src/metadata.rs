@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::{
-    MetadataEntry, MetadataPatch, MetadataSourceEntry, MetadataTarget, MetadataValue,
+    EntityRef, MetadataEntry, MetadataPatch, MetadataSourceEntry, MetadataTarget, MetadataValue,
     MetadataValueUpdate, ResolvedMetadataTarget,
 };
 
@@ -287,7 +287,7 @@ impl MetadataStore {
 
     /// Remove every fact `provider` contributed. Returns whether any was
     /// removed, and the entities that lost facts.
-    pub fn retract(&mut self, provider: &str) -> (bool, BTreeSet<crate::EntityRef>) {
+    pub fn retract(&mut self, provider: &str) -> (bool, BTreeSet<EntityRef>) {
         let Some(ix) = self.provider_ixs.get(provider).copied() else {
             return (false, BTreeSet::new());
         };
@@ -653,9 +653,9 @@ mod tests {
     #[test]
     fn stale_providers_leave_the_expiry_index_and_rejoin_it_renewed() {
         let mut store = MetadataStore::default();
-        let target = EntityId::Entity(crate::EntityRef::new("p", "vessel", "v"));
+        let target = EntityId::Entity(EntityRef::new("p", "vessel", "v"));
         let patch = MetadataPatch {
-            target: MetadataTarget::Entity(crate::EntityRef::new("p", "vessel", "v")),
+            target: MetadataTarget::Entity(EntityRef::new("p", "vessel", "v")),
             source_id: "flotilla".into(),
             set: BTreeMap::from([(
                 "status".to_owned(),
@@ -785,7 +785,7 @@ mod tests {
     #[test]
     fn metadata_patch_sets_values_with_controller_timestamp() {
         let mut store = MetadataStore::default();
-        let entity = crate::EntityRef::local("project".to_owned(), "zellij".to_owned());
+        let entity = EntityRef::local("project", "zellij");
         let target = EntityId::Entity(entity.clone());
         store.apply_patch(
             MetadataPatch {
@@ -818,10 +818,7 @@ mod tests {
     #[test]
     fn target_ordinal_comes_from_the_patch_without_an_identity_value() {
         let mut store = MetadataStore::default();
-        let entity = crate::EntityRef::local(
-            "issue".to_owned(),
-            "github/flotilla-org/andamento#37".to_owned(),
-        );
+        let entity = EntityRef::local("issue", "github/flotilla-org/andamento#37");
         let target = EntityId::Entity(entity.clone());
 
         store.apply_patch(

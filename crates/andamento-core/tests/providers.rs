@@ -6,13 +6,13 @@ use andamento_core::presentation::{PlacementNode, PresentationState};
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::workspace::WorkspaceRecord;
 use andamento_core::{
-    EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
-    WorkspaceId,
+    records::DashboardRecord, tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget,
+    MetadataValue, MetadataValueUpdate, Sidebar, WorkspaceId, LOCAL_PROVIDER,
 };
 use common::{nodes, refs, text, CONFIG};
 use std::collections::BTreeMap;
 
-const W42: WorkspaceId = andamento_core::tab_workspace_id(42);
+const W42: WorkspaceId = tab_workspace_id(42);
 
 /// A patch as a producer writes it: it names no provider.
 fn patch(
@@ -204,7 +204,7 @@ fn a_reference_to_a_local_entity_stays_local() {
     patches[1].set.insert(
         ".group".into(),
         MetadataValueUpdate {
-            value: refs(entity(andamento_core::LOCAL_PROVIDER, ".group", "g")),
+            value: refs(entity(LOCAL_PROVIDER, ".group", "g")),
             ttl_ms: None,
             precedence: None,
             ordinal: None,
@@ -216,7 +216,7 @@ fn a_reference_to_a_local_entity_stays_local() {
     let vessel = all.iter().find(|n| n.entity.kind == "vessel").unwrap();
     assert_eq!(
         vessel.facts[".group"],
-        refs(entity(andamento_core::LOCAL_PROVIDER, ".group", "g"))
+        refs(entity(LOCAL_PROVIDER, ".group", "g"))
     );
 }
 
@@ -408,7 +408,7 @@ fn refs_keep_presenting_a_retracted_target() {
     assert_eq!(labels(&sidebar), presented);
     // The pinned target is kept in the dashboard record with its provider.
     let dashboard = sidebar.export_record("dashboard").unwrap();
-    let dashboard = andamento_core::records::DashboardRecord::decode(&dashboard).unwrap();
+    let dashboard = DashboardRecord::decode(&dashboard).unwrap();
     let pin = &dashboard.state.local[&EntityRef::local(".ref", "sub-1")];
     assert_eq!(pin[".target"], refs(entity("sub-1", "vessel", "v")));
 }

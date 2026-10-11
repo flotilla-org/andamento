@@ -11,8 +11,7 @@ mod native {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use andamento_core::sidebar::{HostEffect, Request, Sidebar, Workspace};
-    use andamento_core::MetadataPatch;
-    use andamento_core::WorkspaceId;
+    use andamento_core::{tab_workspace_id, MetadataPatch, WorkspaceId};
     use andamento_terminal::surface;
     use crossterm::{cursor, event, execute, terminal};
 
@@ -104,7 +103,7 @@ mod native {
 
     /// A tmux window's Workspace ID, from its numeric window ID.
     fn window_workspace_id(window: u64) -> WorkspaceId {
-        andamento_core::tab_workspace_id(window)
+        tab_workspace_id(window)
     }
 
     /// The provider (subscription ID) the facts command's patches come from.
@@ -322,7 +321,7 @@ mod native {
                     workspaces[0].position,
                     workspaces[0].selected
                 ),
-                (andamento_core::tab_workspace_id(7), 2, true)
+                (tab_workspace_id(7), 2, true)
             );
             assert_eq!(workspaces[1].name, "docs");
         }

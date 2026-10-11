@@ -2,7 +2,8 @@
 #![allow(dead_code)]
 use andamento_core::presentation::{PlacementNode, SurfaceSnapshot};
 use andamento_core::{
-    EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, WorkspaceId,
+    tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate,
+    Sidebar, WorkspaceId,
 };
 use std::collections::BTreeSet;
 
@@ -24,7 +25,7 @@ pub fn entity(kind: &str, id: &str) -> EntityRef {
 
 /// The `.workspace` entity Andamento presents for an unplaced workspace.
 pub fn fallback(tab: u64) -> EntityRef {
-    let id = andamento_core::tab_workspace_id(tab).to_string();
+    let id = tab_workspace_id(tab).to_string();
     EntityRef::local(".workspace", id)
 }
 
@@ -86,7 +87,7 @@ pub trait Feed {
     fn feed(&mut self, now_ms: u64, patches: impl IntoIterator<Item = MetadataPatch>);
 }
 
-impl Feed for andamento_core::Sidebar {
+impl Feed for Sidebar {
     fn feed(&mut self, now_ms: u64, patches: impl IntoIterator<Item = MetadataPatch>) {
         self.apply(now_ms, PROVIDER, patches).unwrap();
     }

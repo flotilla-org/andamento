@@ -1,6 +1,9 @@
 use super::*;
 use crate::suggested_layout::{CommandLine, LocalRecipe};
-use crate::EntityRef;
+use crate::{
+    versioned::{Clock, CommitError},
+    EntityRef,
+};
 
 fn shell(command: &str) -> ViewSpec {
     ViewSpec {
@@ -68,7 +71,7 @@ fn doc(root: Panel) -> ArrangementDoc {
 #[derive(Default)]
 struct Store {
     stored: StoredArrangement,
-    clock: crate::versioned::Clock,
+    clock: Clock,
 }
 
 impl Store {
@@ -78,7 +81,7 @@ impl Store {
         expected: u64,
         baseline: Option<&Baseline>,
         slots: &[SlotInfo],
-    ) -> Result<ArrangementCommit, crate::versioned::CommitError> {
+    ) -> Result<ArrangementCommit, CommitError> {
         let (generation, placed) = self.stored.update(Some(expected), &mut self.clock, |s| {
             Ok(Arrangement::commit(s, doc, baseline, slots)?)
         })?;
@@ -221,7 +224,7 @@ fn stale_or_invalid_commits_change_nothing() {
     let other = doc(tabs("1", &["b", "a"], Some("b")));
     assert_eq!(
         stored.commit(other.clone(), 0, slots.baseline.as_ref(), &infos),
-        Err(crate::versioned::CommitError::Stale { current: 1 })
+        Err(CommitError::Stale { current: 1 })
     );
     assert_eq!(stored.stored, before);
     // A tab for a slot that never existed, or a malformed document.
@@ -233,7 +236,7 @@ fn stale_or_invalid_commits_change_nothing() {
         (doc(tabs("1", &["a", "a"], None)), "slot \"a\" has two tabs"),
     ] {
         match stored.commit(invalid, 1, slots.baseline.as_ref(), &infos) {
-            Err(crate::versioned::CommitError::Invalid(error)) => {
+            Err(CommitError::Invalid(error)) => {
                 assert!(error.contains(reason), "{error}")
             }
             other => panic!("{reason}: {other:?}"),

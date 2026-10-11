@@ -1,6 +1,10 @@
 //! A workspace's slots, their plans, portable Target Resolutions and its
 //! Workspace Overlay. Every call names a registered workspace.
 use super::*;
+use andamento_core::managed::SlotPlan;
+use andamento_core::slots::SlotInfo;
+use andamento_core::suggested_layout::{CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec};
+use andamento_core::target_resolution::SavedResolution;
 
 /// A View Spec's content: a local command (argv when argc is nonzero, else
 /// the shell line in command; optional cwd).
@@ -84,8 +88,7 @@ impl ViewSpecView {
         }
     }
 
-    unsafe fn read(&self) -> Result<andamento_core::suggested_layout::ViewSpec, String> {
-        use andamento_core::suggested_layout::{CommandLine, Content, LocalRecipe, ViewSpec};
+    unsafe fn read(&self) -> Result<ViewSpec, String> {
         let content = match self.content {
             ANDAMENTO_SLOT_FACET => Content::ProviderFacet {
                 entity: self.entity.read()?,
@@ -137,11 +140,7 @@ struct SpecStorage {
     argv: Vec<Text>,
 }
 
-fn recipe_view(
-    recipe: &andamento_core::suggested_layout::LocalRecipe,
-    out: &mut ViewSpecView,
-) -> SpecStorage {
-    use andamento_core::suggested_layout::{CommandLine, LocalRecipe};
+fn recipe_view(recipe: &LocalRecipe, out: &mut ViewSpecView) -> SpecStorage {
     let mut storage = SpecStorage { argv: Vec::new() };
     match recipe {
         LocalRecipe::Command { line, cwd } => {
@@ -172,8 +171,7 @@ fn recipe_view(
     storage
 }
 
-fn spec_view(spec: &andamento_core::suggested_layout::ViewSpec) -> (ViewSpecView, SpecStorage) {
-    use andamento_core::suggested_layout::Content;
+fn spec_view(spec: &ViewSpec) -> (ViewSpecView, SpecStorage) {
     let mut out = ViewSpecView::empty();
     let storage = match &spec.content {
         Content::ProviderFacet { entity, facet } => {
@@ -189,8 +187,7 @@ fn spec_view(spec: &andamento_core::suggested_layout::ViewSpec) -> (ViewSpecView
     (out, storage)
 }
 
-fn rebind_code(rebind: andamento_core::suggested_layout::RebindPolicy) -> u32 {
-    use andamento_core::suggested_layout::RebindPolicy;
+fn rebind_code(rebind: RebindPolicy) -> u32 {
     match rebind {
         RebindPolicy::Replace => ANDAMENTO_REBIND_REPLACE,
         RebindPolicy::KeepPrevious => ANDAMENTO_REBIND_KEEP_PREVIOUS,
@@ -198,8 +195,7 @@ fn rebind_code(rebind: andamento_core::suggested_layout::RebindPolicy) -> u32 {
     }
 }
 
-fn rebind_policy(code: u32) -> Result<andamento_core::suggested_layout::RebindPolicy, String> {
-    use andamento_core::suggested_layout::RebindPolicy;
+fn rebind_policy(code: u32) -> Result<RebindPolicy, String> {
     Ok(match code {
         ANDAMENTO_REBIND_REPLACE => RebindPolicy::Replace,
         ANDAMENTO_REBIND_KEEP_PREVIOUS => RebindPolicy::KeepPrevious,
@@ -237,8 +233,8 @@ pub struct SlotListView {
 }
 
 type SlotsKeep = (
-    Vec<andamento_core::slots::SlotInfo>,
-    Vec<Option<andamento_core::target_resolution::SavedResolution>>,
+    Vec<SlotInfo>,
+    Vec<Option<SavedResolution>>,
     Vec<Vec<Text>>,
     Vec<Vec<ResolutionFieldView>>,
     Vec<SlotView>,
@@ -452,11 +448,7 @@ pub unsafe extern "C" fn andamento_slot_plan(
     })
     .unwrap_or(ptr::null_mut())
 }
-type PlanKeep = (
-    andamento_core::managed::SlotPlan,
-    Vec<ResolutionFieldView>,
-    Vec<Text>,
-);
+type PlanKeep = (SlotPlan, Vec<ResolutionFieldView>, Vec<Text>);
 
 #[no_mangle]
 pub unsafe extern "C" fn andamento_slot_plan_free(plan: *mut SlotContentView) {
@@ -557,9 +549,7 @@ pub struct ResolutionView {
 
 /// Views of a saved resolution's fields, borrowing its text: the owner keeps
 /// both, and never changes the resolution while the views live.
-fn field_views(
-    saved: &andamento_core::target_resolution::SavedResolution,
-) -> Vec<ResolutionFieldView> {
+fn field_views(saved: &SavedResolution) -> Vec<ResolutionFieldView> {
     saved
         .resolution
         .fields
@@ -573,7 +563,7 @@ fn field_views(
 
 /// A saved resolution as C reads it; all empty for none.
 fn resolution_view(
-    saved: Option<&andamento_core::target_resolution::SavedResolution>,
+    saved: Option<&SavedResolution>,
     fields: &[ResolutionFieldView],
 ) -> ResolutionView {
     ResolutionView {
