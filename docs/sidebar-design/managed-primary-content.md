@@ -7,7 +7,7 @@ and action.primary.target remain stable across backing convoy attempts.
 This supports one command terminal in a host-owned primary slot. Managed
 primary content is now the `primary` slot of a workspace's
 [slots](slots-and-arrangements.md), which generalise it to any number of slots
-with View Specs and rebind policies; the calls below are wrappers over that
+with View Specs and rebind policies; the calls below are that
 slot's. It does not implement arbitrary content graphs or daemon attachment
 replacement. Flotilla publishes standing project roles through these facts;
 see [Flotilla standing roles](#flotilla-standing-roles).
@@ -42,11 +42,12 @@ not remove the producer's intent.
 
 ## Host interface
 
-Sidebar.managed owns desired/applied state and monotonically allocated tokens.
-Its plan operation takes workspace ID, intent entity and the host's actual
-persisted descriptor. It returns Unavailable, Held, Current, Updating or Failed.
-An Updating plan includes an owned descriptor and token. Repeated plans return
-the same pending update until the binding or desired resolution changes.
+Sidebar.managed owns desired/applied state and monotonically allocated tokens
+for each workspace's slots. Planning the `primary` slot takes the workspace ID,
+the slot key `primary` and the identity of the resolution the host last
+applied. It returns Unavailable, Held, Current, Updating or Failed. An Updating
+plan includes an owned descriptor and token. Repeated plans return the same
+pending update until the binding or desired resolution changes.
 
 Prepare the host resource without modifying existing content, validate the token
 immediately before mutation, commit on the same owner thread as publication,
@@ -62,10 +63,12 @@ it as the applied target of the new slot, so the first plan reports Current
 instead of replacing content that was just created. Without it, a host would
 restart a fresh attachment once.
 
-The additive C interface is andamento_content_plan/get/valid/complete/retry/
-release, plus andamento_effects_primary_target for materialize effects. Plans own their borrowed strings and can outlive subsequent mutations,
-but their token must still validate before committing. Topology observation
-forgets closed workspace bindings. No existing ABI-2 structure changed.
+The C interface is the slot calls with the key `primary`:
+`andamento_slot_plan`/`_plan_free`/`_valid`/`_complete`/`_retry`, and
+`AndamentoEffect.primary_target` (with `has_primary_target`) for materialize
+effects. A plan owns its strings and can outlive later mutations, but its
+token must still validate before committing. Topology observation forgets
+closed workspace bindings.
 
 Workspace presence and attachment currency are separate: a Live workspace can
 have held, unavailable, failed or updating content. The existing snapshot Live

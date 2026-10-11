@@ -12,8 +12,8 @@ arrangements](slots-and-arrangements.md)).
 The Rust interface is `Sidebar::sidebar_arrangement`,
 `set_sidebar_arrangement`, `restore_sidebar_section`,
 `reset_sidebar_arrangement` and `sidebar_arrangement_generation`, over the
-pure functions in `andamento_core::sidebar_arrangement`. The C interface is
-the ABI 3 block "the Dashboard's sidebar arrangement" in `andamento.h`.
+functions in `andamento_core::sidebar_arrangement`. The C calls are listed
+in [The host interface](host-interface.md#arrangements).
 
 ## What is stored, and what isn't
 
@@ -32,19 +32,15 @@ A tab holds a **section key**:
 | `.unplaced` | the workspace fallback. Andamento always declares it; a host without workspace creation on its header hides it while it has no rows |
 | `u:<id>` | a View of the host's own (`<id>` is 1 to 64 of `[a-z0-9_-]`). Andamento stores it and never places or flags it |
 
-## Why a parallel call
+## Why calls of its own
 
-The sidebar arrangement reuses the workspace arrangement's document types
-(`ArrangementDoc`, `Panel`; `AndamentoPanel`, `AndamentoTab`) and the
-acquired-arrangement getters (`andamento_arrangement_info`, `_panel`, `_tab`,
-`_release`), but has calls of its own (`andamento_set_sidebar_arrangement`,
-`andamento_sidebar_arrangement_acquire`) rather than a target parameter on
-`set_arrangement`:
+The sidebar arrangement crosses the C ABI as the same flat panel array as a
+workspace's arrangement (`AndamentoDocPanel`), but has calls of its own
+rather than a target parameter on a workspace's:
 
-- A workspace call names a workspace ID; the Dashboard has none, and adding a
-  target to the existing call would change its signature.
+- A workspace call names a workspace ID; the Dashboard has none.
 - The sidebar document has floating panels and a closed set, which a
-  workspace's doesn't.
+  workspace's doesn't (`AndamentoSidebarDoc {dock, floating}`).
 - The rules differ. A workspace places a new slot in the first tab panel; the
   sidebar places a section by its region's hints. A workspace commit with a
   slot tabbed twice is invalid; a sidebar commit repairs it, because the
@@ -59,7 +55,7 @@ sizes need pixels. At the end of a gesture it commits the whole document with
 `set_sidebar_arrangement(doc, expected_generation)`:
 
 1. **Generation.** A commit at any generation but the stored one is **stale**
-   and changes nothing (`ANDAMENTO_ARRANGEMENT_STALE`, no error).
+   and changes nothing (`ANDAMENTO_STALE`, no error).
 2. **Validation.** The shape rules of an arrangement document across the dock
    and the floating panels (panel IDs nonempty and unique across both,
    weights finite and positive, splits nonempty, a selected tab one of its
@@ -84,7 +80,7 @@ sections declared after that are new.
 ## Reconciling
 
 Andamento reconciles the stored document whenever what is declared may have
-changed: on configure (a new template or template version), when a local
+changed: on configure (a new template), when a local
 section or group is set or removed (refs don't matter), and when a dashboard
 record is imported. Reconciling never invalidates the sidebar's snapshot;
 each change it makes moves the generation.
@@ -165,62 +161,35 @@ owned.
 
 ## Reading it
 
-`sidebar_arrangement()` (`andamento_sidebar_arrangement_acquire`) returns the
+`sidebar_arrangement()` (`andamento_sidebar_arrangement_get`) returns the
 document, its generation, whether the host owns it, the closed set, the
-placed and unresolved keys, and the last reconciliation's report. In C the
-panels are a preorder array, the dock first: `andamento_arrangement_floating_first`
-is the first floating panel's index (equal to the panel count for a
-workspace's arrangement). A tab's `placed` and `gone` flags are as for a
-workspace (`gone`: its key no longer resolves). Notes
-(`andamento_arrangement_note`) list every CLOSED section and UNRESOLVED key,
-and what the last reconciliation or call did: PLACED, RESTORED and DUPLICATE.
-The Sections menu lists the CLOSED notes.
+placed and unresolved keys, and the last reconciliation's report. Commit,
+restore and reset return the same `AndamentoSidebarArrangement`, with their
+status. In C the dock and each floating panel are flat panel arrays
+(`AndamentoArrangementDoc`), each panel naming its parent by index. A tab is
+`placed` if Andamento placed it since the host's last commit, and `gone` if
+its key no longer resolves. The notes list every CLOSED section and
+UNRESOLVED key, and what the last reconciliation or call did: PLACED,
+RESTORED and DUPLICATE. The Sections menu lists the CLOSED notes.
 
 Poll `andamento_sidebar_arrangement_generation` to learn when to read it
 again; it is cheap and builds no snapshot.
 
-The unresolved keys are also the `Section` entries of the Dashboard's
-template drift report (`dashboard_overlay`, see [Workspace
-Overlay](workspace-overlay.md#the-dashboard-over-its-template)), beside its
-display, collapse, order, variable and pin keys.
+The UNRESOLVED notes also report the Dashboard's other saved keys the
+template no longer resolves, prefixed by their kind: `display:<variable>`,
+`collapse:<row>`, `order:<loop key>` and `variable:<row>`, where a row is its
+placement path (`<loop>=<target>` segments joined by `/`). These
+are the template drift of display variables, row collapse, sibling orders and
+placement variables; they are kept, and apply again if the template declares
+them again.
 
 ## The record
 
-The `dashboard` record (version 4 and later) holds the arrangement once anything is
-stored:
-
-```kdl
-andamento-record "dashboard" version=4 {
-    sidebar generation=3 owned=true {
-        dock {
-            split "1" axis="column" weight=1.0 {
-                tabs "2" weight=0.25 selected="tree" {
-                    tab "tree"
-                    tab "u:notes"
-                }
-                tabs "3" weight=0.75 selected=".section:pins" {
-                    tab ".section:pins"
-                }
-            }
-        }
-        floating {
-            tabs "4" weight=1.0 selected="git" {
-                tab "git"
-            }
-        }
-        closed "attention"
-        placed "git"
-    }
-}
-```
-
-Version 3 dashboard records import with no sidebar arrangement, which
-reconciling then places by the template's hints; in them, a `sidebar` node is
-an unknown node and is kept as such. A stored document with duplicate tabs
-imports, and reconciling repairs it. An imported arrangement keeps its
-generation if reconciling changed nothing and it is newer than the stored
-one; otherwise a changed arrangement moves past both, so a commit the host
-prepared before the import is stale.
+The `dashboard` record holds the arrangement once anything is stored: the
+dock, the floating panels, whether the host owns it, the closed set and the
+placed keys. A stored document with duplicate tabs imports, and reconciling
+repairs it. Importing gives the arrangement a generation it never had, so a
+commit the host prepared before the import is stale.
 
 ## Measured
 
@@ -258,5 +227,5 @@ nested split, legacy adoption, an empty declaration, host and order variants,
 a changed host hint, closing everything, lifting a merged leaf, and unusual
 keys; plus template drift, local sections and pinned regions.
 `tests/sidebar_arrangement.rs` runs them through the sidebar and its record
-(restart, migration, a repaired import), and `smoke.c`
-(`check_sidebar_arrangement`) through the C ABI.
+(restart, a repaired import), and `smoke.c`
+(`check_workspace`) through the C ABI.

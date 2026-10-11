@@ -1,11 +1,10 @@
-# Structured detail extension for ABI 2
+# Structured details
 
-This is the Andamento contract for Wheelhouse #177. `andamento_abi_version()`
-continues to return **2**. Existing C structs, exports, flat text formatting and
-workspace actions retain their contracts. The authoritative C layouts and pointer
-lifetimes are in `crates/andamento-ffi/include/andamento.h`. Dynamic consumers can
-probe the new exports with `dlsym`; static consumers pin a revision as before.
-No `ANDAMENTO_REV` workflow change is included here.
+This is the Andamento contract for Wheelhouse #177, part of ABI 4 ([The host
+interface](sidebar-design/host-interface.md)). The authoritative C layouts and
+pointer lifetimes are in `crates/andamento-ffi/include/andamento.h`. Every
+identity here is an `AndamentoEntity`, `{provider, kind, id}`; kind and ID
+alone name nothing.
 
 ## Template declarations
 
@@ -57,23 +56,23 @@ Detail identity lookup and relation target lookup use a snapshot-owned index.
 
 All output buffers are borrowed from an acquired `AndamentoSnapshot`;
 release it only after finishing all reads. Indices are snapshot-local. Reacquire
-and find by exact kind/id after draining facts, time, configuration, topology or
+and find by exact entity after draining facts, time, configuration, topology or
 completion changes. Old snapshots remain readable. Action dispatch uses the
 existing snapshot generation/client validation, including for these new actions.
 
 | Export | Result |
 | --- | --- |
-| `andamento_snapshot_detail_request` | Append one exact kind/id card to a current snapshot; returns its index or `ANDAMENTO_NONE` |
+| `andamento_snapshot_detail_request` | Append one exact entity's card to a current snapshot; returns its index or `ANDAMENTO_NONE` |
 | `andamento_snapshot_acquire_details` | Opt-in enriched snapshot acquisition |
 | `andamento_snapshot_detail_count` | Number of catalog cards |
-| `andamento_snapshot_detail_find` | Exact kind/id lookup; `ANDAMENTO_NONE` when unavailable |
-| `andamento_snapshot_detail` | Card identity, label, field count, action IDs, clock, error, optional workspace ID |
+| `andamento_snapshot_detail_find` | Exact entity lookup; `ANDAMENTO_NONE` when unavailable |
+| `andamento_snapshot_detail` | Card entity, label, field count, action IDs, clock, error, optional Workspace ID |
 | `andamento_snapshot_detail_field` | Name, section, role, label, unadorned text, presence, source and observation metadata, relation count |
 | `andamento_snapshot_detail_relation` | Exact target identity, display label and detail index, filtered by navigation path |
 | `andamento_snapshot_detail_action` | Semantic intent, label, stable target identity and dispatch action ID |
 
 For interactive hosts, acquire a plain snapshot and call
-`andamento_snapshot_detail_request(core, snapshot, kind, id, &error)` only for
+`andamento_snapshot_detail_request(core, snapshot, entity, &error)` only for
 identities needed by cards. This includes hidden relation targets and retained
 ended subjects. A miss returns `ANDAMENTO_NONE` without an error. A request for
 new details on a stale or foreign snapshot fails; already materialized details
@@ -91,7 +90,6 @@ Relation lookup returns the target identity even before its detail is requested;
 the label falls back to its ID and the detail index is `ANDAMENTO_NONE`. Request
 the target, then read the relation again to obtain its label/index. Navigation
 paths still filter cycles before demand, and absent entities remain unavailable.
-The additive export leaves the eager detail interface and ABI version unchanged.
 
 Lookup is over the complete resolved catalog, including entities absent from all
 placements or hidden by presentation filters. A configuration resolution failure
@@ -118,7 +116,7 @@ Ordinary expired facts become missing; retained workspace facts can remain stale
 Frontends own relative-age formatting and stale colors.
 
 Relations come directly from typed entity references. Self references are omitted; duplicate references retain only their first occurrence.
-Iterate `relation_count`, passing the exact kind/id navigation path to each
+Iterate `relation_count`, passing the exact entity navigation path to each
 relation lookup; return 0 means skip that index. Path filtering does not renumber
 indices. The display text is the target's current label (its ID if unavailable).
 A target with no placement still has a detail index; a target absent from the
@@ -133,7 +131,7 @@ and producing the existing effects/completions. Primary activation retains the
 existing precedence: a subject URL opens in the browser before workspace focus.
 
 Preview identity is separate from all field roles: `has_workspace` and
-`workspace_id` identify a live workspace even for a card without a placement.
+`workspace_id` (16 bytes) identify a live workspace even for a card without a placement.
 For a card anchored to a specific visible alias, the existing node workspace
 identity remains available. Both peek and engaged cards may draw the same live
 preview; #89 owns attachment policy, #166 owns detaching, and Wheelhouse owns
@@ -150,4 +148,4 @@ literals, invalid roles and preservation of flat output. Native Rust tests cover
 path omission, exact targets, observation provenance, expiry boundaries, action
 identity and immutable snapshot lifetimes. The independent C fixture links the
 real library and checks the actual C layouts, hidden navigation and live preview
-identity, along with the existing ABI 2 scenarios.
+identity, along with the other ABI scenarios.

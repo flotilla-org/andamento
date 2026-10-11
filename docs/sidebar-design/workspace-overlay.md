@@ -4,18 +4,17 @@ A provider suggests a workspace's Views and their arrangement (a
 [Suggested Layout](suggested-layouts.md)), and the user edits it. The
 **Workspace Overlay** holds the user's edits apart from the provider's
 baseline, so the provider's changes keep arriving, the user's edits survive
-them, and the edits can be proposed back later. This document describes how
+them, and the edits could later be proposed back. This document describes how
 Andamento implements Wheelhouse ADR 0013 ("A Workspace Overlay is an addressed
 edit set against a cached baseline") on top of [Slots and
 arrangements](slots-and-arrangements.md). The vocabulary is Wheelhouse's
 `CONTEXT.md`.
 
-The Rust interface is `Sidebar::overlay`, `export_overlay`, `set_slot`,
-`remove_slot`, `reattach_slot`, `set_workspace_name`, `set_workspace_mood`,
-`set_arrangement`, `resolve_arrangement`, `release_slot_previous` and
-`dashboard_overlay`. The C interface is the ABI 3 blocks "Workspace Overlay"
-and "the Dashboard over its template" in `andamento.h`, plus
-`andamento_slots_flags` and `andamento_arrangement_flags`.
+The Rust interface is `Sidebar::overlay`, `set_slot`, `remove_slot`,
+`reattach_slot`, `set_workspace_name`, `set_workspace_mood`,
+`set_arrangement`, `resolve_arrangement` and `release_slot_previous`. The C
+calls are listed in [The host interface](host-interface.md#workspaces); the
+flags are `AndamentoSlot.flags` and `AndamentoWorkspaceArrangement.flags`.
 
 ## The edit set
 
@@ -35,45 +34,18 @@ control of the saved records.
 | Split weight, selected tab | panel ID | A **soft override**. |
 | The whole arrangement | the workspace | Once a **structural** edit has taken ownership. |
 
-`EditSet` is the Rust shape. In the `workspace/<id>` record (version 5 and later) the
-edits are an `overlay` node, and an owned arrangement is the `arrangement`
-node with `owned=true`:
-
-```kdl
-andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=5 {
-    subject "vessel" "v" provider="sub-1"
-    baseline version="2" {
-        slot "a" { shell "top"; }
-        slot "b" rebind="keep-previous" { shell "make"; }
-        slot "c" rebind="ask" { shell "tail -f log"; }
-        hint { split "main" axis="row" { tabs "left" selected="a" { tab "a"; tab "b"; }; tabs "right" selected="c" { tab "c"; }; }; }
-    }
-    overlay {
-        name "Build"
-        mood "calm"
-        edit "a" rebind="ask"
-        edit "b" {
-            override { shell "make check"; }
-            against { shell "make"; }
-        }
-        edit "c" {
-            tombstone
-            against { shell "tail -f log"; }
-        }
-        slot "u:1" { shell "lazygit"; }
-        panel "left" weight=3.0 selected="b"
-    }
-    arrangement generation=7 owned=false { split "main" axis="row" { ... }; }
-    departed "d" rebind="keep-previous"
-}
-```
+`WorkspaceSlots` is the Rust shape: the cached baseline, `edits` by slot key
+(`SlotEdit`: an override or tombstone with the content it was made against,
+and a rebind policy), the user's own slots, name and mood, and the departed
+slots below. It is part of the `workspace/<id>` record, beside the
+arrangement, which holds the soft overrides and whether it is owned.
 
 A workspace with no Suggested Layout uses the same model with an empty
 baseline.
 
 ## Slots and flags
 
-A slot's flags (`SlotInfo::flags`, `andamento_slots_flags`) say how it
+A slot's flags (`SlotInfo::flags`, `AndamentoSlot.flags`) say how it
 relates to the baseline:
 
 - `DETACHED`: its content is overridden. Reattaching drops the override. This
@@ -136,37 +108,11 @@ UNRESOLVED note naming the panel).
 
 An owned arrangement only has new slots placed. A provider change to its
 hint is neither applied nor ignored: the arrangement is flagged
-`provider_changed` (`ANDAMENTO_ARRANGEMENT_FLAG_PROVIDER_CHANGED`, stored as
-`provider-changed=true`) until the host calls `resolve_arrangement`
+`provider_changed` (`ANDAMENTO_ARRANGEMENT_FLAG_PROVIDER_CHANGED`) until the host calls `resolve_arrangement`
 (`andamento_arrangement_resolve`) with `Keep`, keeping the user's
 arrangement, or `Follow`, dropping ownership and soft overrides so the
 provider's arrangement applies again. Both take an expected generation and
 return STALE like a commit.
-
-## The proposal
-
-`export_overlay` (`andamento_overlay_export`) writes the edit set in the
-**Overlay Sync** proposal shape, the edits and the baseline version they
-apply to. It is read-only, and no sync protocol reads it yet:
-
-```kdl
-overlay-proposal workspace="01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" baseline="2" {
-    subject "vessel" "v" provider="sub-1"
-    name "Build"
-    edit "b" {
-        override { shell "make check"; }
-        against { shell "make"; }
-    }
-    panel "left" weight=3.0
-}
-```
-
-`baseline` is the layout's `layout.version`; a baseline of only the primary
-facts is `primary-only=true`, and no baseline has neither. An owned
-arrangement is an `arrangement { ... }` child. Departed slots and flags are
-not part of it: they are the receiver's view, not the user's edits.
-`records::decode_proposal` reads it back. Once a provider accepts edits,
-publishing them in its baseline, they drop out of the next proposal.
 
 ## The Dashboard over its template
 
@@ -175,32 +121,12 @@ Suggested Layout. Its record's keys are per-key overrides of what the
 template declares: display variables name declared variables; collapse,
 sibling order and placement-variable keys embed the template's region and
 loop names; and the [sidebar arrangement](sidebar-arrangement.md) names
-sections. The `dashboard` record (version 5) records the template version it
-was made against, `template version="<digest>"`: a 64-bit FNV-1a digest of
-the configuration text.
-
-`dashboard_overlay()` (`andamento_dashboard_overlay_acquire`) returns the
-configured template version, the one the last imported record named, and
-every key that no longer resolves: `Display`, `Collapse`, `Order`,
-`Variable`, and `Section`, which is the sidebar arrangement's own
-unresolved set, not a second computation. Unresolved keys are kept in the
-record and resolve again if the template brings their names back.
-
-A loop name resolves if any placement or template declares that binding;
-this does not check that the whole path of loops still nests.
-
-## Pins to Views
-
-A local ref can pin a View: its `.view` fact is
-`"<workspace-id>/<slot-key>"`, checked when the ref is set. When the View
-goes away (its workspace is forgotten, or its slot removed) the pin is kept
-and listed as `Pin` with the ref's ID. Andamento never removes it; the host
-offers removal with `remove_local` (`andamento_local_remove`). It resolves
-again if the slot comes back. A closed workspace keeps its record and slots,
-so its pins still resolve.
-
-This is the minimal version: the snapshot doesn't present the pinned View
-yet, and activating a pin is the host's.
+sections. A key that no longer resolves is kept, and reported among the
+sidebar arrangement's UNRESOLVED notes
+([Template key drift](sidebar-arrangement.md#reading-it)); it applies again
+if the template brings its names back. A loop name resolves if any placement
+or template declares that binding; this does not check that the whole path
+of loops still nests.
 
 ## Tests
 
@@ -214,20 +140,17 @@ workspace:
 - a divider resize and tab switch that leave the provider's restructuring
   flowing, and a soft override whose panel goes;
 - a structural edit taking ownership, then a flagged provider change,
-  kept and then followed;
-- the proposal export, accepted edits dropping out, and a restart through
-  the record;
-- template key drift in the dashboard record;
-- a pin to a View that goes away.
+  kept and then followed, with generations that a stale commit can't erase,
+  even across an import;
+- a restart through the record;
+- template key drift in the dashboard record.
 
-`records.rs` covers the version 5 record, the migration of version 3 and 4
-overrides into the overlay, and the proposal round trip. `smoke.c`
-(`check_overlay`) drives the C calls.
+`smoke.c` drives the C calls.
 
 ## Limits
 
-- The user's name and mood are stored and exported but not yet shown in
+- The user's name and mood are stored and recorded but not yet shown in
   the snapshot; the baseline's still come from display facts.
-- A pin is flagged, not presented: the snapshot has no row for a pinned View.
+- Nothing exports the edits for a provider yet (Overlay Sync).
 - Flags are not acknowledged separately: the host settles one by editing
   again, reattaching, releasing or resolving.

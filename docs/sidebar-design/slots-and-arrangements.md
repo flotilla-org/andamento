@@ -12,9 +12,8 @@ Wheelhouse ADR 0013.
 The Rust interface is `Sidebar::slots`, `set_slot`, `remove_slot`,
 `reattach_slot`, `plan_slot`, `set_arrangement`, `arrangement`,
 `slot_resolution`, `set_slot_resolution`, `clear_slot_resolution` and
-`content_revision`, with the token calls on `Sidebar::managed`. The C
-interface is the ABI 3 blocks "Slots and arrangement documents" and
-"portable Target Resolutions" in `andamento.h`.
+`content_revision`, with the token calls on `Sidebar::managed`. The C calls
+are listed in [The host interface](host-interface.md#workspaces).
 
 ## Slots
 
@@ -66,9 +65,7 @@ A resolution is a recipe (command, file, URL or Jackstay launcher) and,
 optionally, the target naming the backing instance. Its **identity**
 (`Resolved::id`, `AndamentoSlotContent.resolution`) is opaque text: the host
 records it once applied and passes it back to plan, which reports Current when
-it matches. The `primary` slot's ABI 2 calls compute it from the target,
-command and cwd they already pass, so the two kinds of call share one binding
-and its tokens.
+it matches.
 
 Where a slot's resolution comes from:
 
@@ -117,13 +114,13 @@ resolves (what the host applied, as it passes it to plan), and a
   it if `expected` is the slot's saved generation (0 for none); otherwise it
   is stale and changes nothing, like an arrangement commit. When the slot is
   known to resolve to something other than `applied`, the save is invalid:
-  plan again. Saving what is saved keeps the generation. Generations are
-  never reused within a workspace, even after a clear, so a host holding an
-  old one can't overwrite a newer save.
+  plan again. Saving what is saved keeps the generation. Generations come
+  from the sidebar's one clock, so a host holding an old one can't
+  overwrite a newer save, even after a clear or an import.
 - `clear_slot_resolution(workspace, key, expected)` drops it the same way.
-- `slot_resolution(workspace, key)` reads it.
+- `slot_resolution(workspace, key)` reads it (`AndamentoSlot.saved`).
 - Every **slot plan** carries the slot's saved resolution (`SlotPlan::saved`,
-  `andamento_slot_plan_resolution`), in any state. A host that starts with no
+  `AndamentoSlotContent.saved`), in any state. A host that starts with no
   instance, on a restart or another device, plans with an empty applied
   identity. The plan is Updating to the resolution the saved one is
   `against`, so the host tries connecting through the saved resolution
@@ -167,7 +164,7 @@ sizes need pixels. When a gesture ends it commits the whole document with
 1. **Generation.** If `expected_generation` isn't the stored generation (0
    before anything is stored), the commit is **stale** and changes nothing;
    the host reads the arrangement again. The C call returns
-   `ANDAMENTO_ARRANGEMENT_STALE` with no error.
+   `ANDAMENTO_STALE` with no error.
 2. **Validation.** Panel IDs are nonempty and unique, weights finite and
    positive, splits nonempty, each slot has at most one tab, and a selected
    tab is one of its panel's. Each tab names a current slot, or a slot the
@@ -204,11 +201,10 @@ places it.
 
 ## Revisions per concern
 
-Before this change one counter, `Sidebar::revision`, invalidated the
-snapshot, the shared revision evaluation and the detail cache on every
-mutation. Wheelhouse commits an arrangement at every gesture end, and
-evaluation costs 8 to 90 ms depending on entity count, so arrangements must
-not share it.
+`Sidebar::revision` invalidates the snapshot, the shared revision evaluation
+and the detail cache. Wheelhouse commits an arrangement at every gesture end,
+and evaluation costs 8 to 90 ms depending on entity count, so arrangements
+must not share it.
 
 Slots, their resolutions and arrangements now have their own revision,
 `content_revision` (`andamento_workspace_content_revision`). Slot edits,
@@ -216,7 +212,7 @@ arrangement commits and baseline changes bump it and never call
 `invalidate()`, so a rendered snapshot stays current
 (`andamento_snapshot_is_current`) and its actions stay dispatchable. Fact
 changes still invalidate the sidebar as before, and bump the content revision
-too when they change a slot resolution. Records change with both: export a
+too when they change a slot resolution. Records change with both: store a
 record when its generation changes.
 
 Measured with `crates/andamento-ffi/examples/snapshot-profile.rs` (release
@@ -233,84 +229,17 @@ each checking the rendered snapshot.
 The last column is what each commit would have cost had it invalidated the
 sidebar: the snapshot rebuild after a one-fact update in the same run.
 `tests/slots.rs` (`arrangement_commits_and_slot_edits_leave_the_snapshot_current`)
-and `smoke.c` (`check_slots`) assert the snapshot stays current.
+asserts the snapshot stays current.
 
 ## Records
 
-The `workspace/<id>` record holds the slots and the arrangement. This is
-version 4; version 5 moves the overrides and user slots into an `overlay`
-edit set, described in [Workspace Overlay](workspace-overlay.md), and
-imports version 3 and 4 records by migrating them. Version 6 adds the saved
-portable resolutions (below):
-
-```kdl
-andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=4 {
-    subject "convoy" "c" provider="sub-1"
-    baseline version="1" {
-        slot "primary" {
-            facet "primary" "convoy" "c" provider="sub-1"
-        }
-        slot "reviewer" rebind="keep-previous" presentation="terminal" {
-            facet "terminal" "vessel" "reviewer" provider="sub-1"
-        }
-        hint {
-            tabs "agents" weight=1.0 selected="reviewer" {
-                tab "primary"
-                tab "reviewer"
-            }
-        }
-    }
-    override "reviewer" {
-        argv "htop" "-d" cwd="/srv"
-        against presentation="terminal" {
-            facet "terminal" "vessel" "reviewer" provider="sub-1"
-        }
-    }
-    slot "u:1" presentation="web" {
-        url "https://example.com"
-    }
-    arrangement generation=4 owned=true {
-        split "main" axis="row" weight=1.0 {
-            tabs "1" weight=0.6 selected="reviewer" {
-                tab "primary"
-                tab "reviewer"
-            }
-            tabs "2" weight=0.4 {
-                tab "u:1"
-            }
-        }
-        placed "u:1"
-    }
-}
-```
-
-Version 6 adds a `resolutions` node, written once any resolution has been
-saved. `last-generation` is the last generation given out, kept even when
-none is saved so generations are never reused; each `resolution` names its
-slot, kind, generation and `against`, with its fields in name order:
-
-```kdl
-    resolutions last-generation=3 {
-        resolution "reviewer" kind="cleat-session" generation=3 against="…" {
-            field "daemon" "D"
-            field "host" "feta"
-            field "session" "S"
-        }
-    }
-```
-
-Records before version 6 import with no saved resolutions; in them a
-`resolutions` node is unknown and kept as such. The migration of the
-resolutions Wheelhouse keeps on each device today is Wheelhouse's: it saves
-the portable ones through `set_slot_resolution`.
-
-A View Spec's content is one child: `facet "<facet>" "<kind>" "<id>"
-provider=".."`, `shell "<command>"` or `argv "<arg>" ...` (each with an
-optional `cwd`), `file "<path>"`, `url "<url>"` or `jackstay "<launcher>"
-"<endpoint>"`. A baseline is `primary-only=true` instead of a `version` when
-only the primary facts define it. Version 2 records import with no slots and
-no arrangement; in them, nodes named like the new ones are unknown nodes and
-kept as such.
+The `workspace/<id>` record holds the slots (the cached baseline with its
+arrangement hint, and the overlay's edits), the arrangement document and the
+saved portable resolutions. Like every record it is opaque to the host
+([Records](core-interface.md#records)); generations are not part of it. The
+migration of the resolutions Wheelhouse keeps on each device today is
+Wheelhouse's: it saves the portable ones through
+`andamento_slot_resolution_set`.
 
 ## Limits and next steps
 
