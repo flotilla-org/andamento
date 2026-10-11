@@ -9,11 +9,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     host::PaneObservation,
-    presentation::SurfaceSnapshot,
-    records::{DashboardRecord, RecordName, SubjectRecord, WorkspaceRecord},
+    managed::{ManagedContent, SlotPlan},
+    presentation::{system, SurfaceSnapshot, UNPLACED_WORKSPACES_SECTION},
+    records::{recordable, DashboardRecord, DashboardState, RecordName, SubjectRecord},
+    sidebar_arrangement::{
+        self, Declared, LocalSection, Report, SidebarArrangement, SidebarDoc, SidebarView,
+    },
+    slots::{
+        ArrangementCommit, ArrangementDoc, ArrangementView, Baseline, OverlayView, Resolve,
+        SlotInfo,
+    },
     state::{ControllerState, ControllerTab, EntityActivation},
-    EntityRef, MaterializeLatentRequest, MetadataPatch, NodeKey, PlacementKey, RailUiAction,
-    WorkspaceId,
+    suggested_layout::{RebindPolicy, ViewSpec},
+    target_resolution::{PortableResolution, SavedResolution},
+    versioned::{Clock, CommitError, Versioned},
+    workspace::{Subject, WorkspaceRecord},
+    DisplayVariableValue, EntityRef, MaterializeLatentRequest, MetadataPatch, MetadataTarget,
+    MetadataValue, MetadataValueUpdate, NodeKey, PlacementKey, PlacementLoopKey, RailUiAction,
+    WorkspaceId, LOCAL_PROVIDER,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,16 +71,14 @@ pub enum Request {
     Configure {
         kdl: String,
     },
-    /// Apply patches from `provider` (a subscription ID), or from the
-    /// default provider when it is absent.
+    /// Apply patches from `provider` (a subscription ID).
     Apply {
         now_ms: u64,
-        patches: Vec<MetadataPatch>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider: Option<String>,
-    },
-    SetDefaultProvider {
         provider: String,
+        patches: Vec<MetadataPatch>,
+    },
+    Tick {
+        now_ms: u64,
     },
     RetractProvider {
         provider: String,
@@ -96,18 +107,18 @@ pub enum Request {
     },
     SetDisplayVariable {
         name: String,
-        value: Option<crate::DisplayVariableValue>,
+        value: Option<DisplayVariableValue>,
     },
     SetLocal {
         entity: EntityRef,
-        facts: BTreeMap<String, crate::MetadataValue>,
+        facts: BTreeMap<String, MetadataValue>,
     },
     RemoveLocal {
         entity: EntityRef,
     },
     ImportRecord {
         name: String,
-        kdl: String,
+        record: String,
     },
     Snapshot,
 }
@@ -179,23 +190,25 @@ pub struct Sidebar {
     errors: BTreeMap<EntityRef, String>,
     retained_paths: BTreeMap<WorkspaceId, BTreeSet<EntityRef>>,
     retained_paths_revision: Option<u64>,
-    registered: BTreeSet<WorkspaceId>,
     /// Each registered workspace's record (`workspace/<id>`).
     workspaces: BTreeMap<WorkspaceId, WorkspaceEntry>,
     /// Local sections, groups and refs, with their facts.
-    local: BTreeMap<EntityRef, BTreeMap<String, crate::MetadataValue>>,
-    /// Nodes of the imported dashboard record this version doesn't know.
-    dashboard_unknown: Vec<String>,
-    /// Each record's generation and the text it was assigned for.
-    generations: BTreeMap<RecordName, (u64, String)>,
-    last_generation: u64,
+    local: BTreeMap<EntityRef, BTreeMap<String, MetadataValue>>,
+    /// Every revision and generation comes from this clock.
+    clock: Clock,
+    /// The Dashboard's state as of the last change (see
+    /// [`invalidate`](Self::invalidate)), for the dashboard record.
+    dashboard: Versioned<DashboardState>,
     /// Fact keys the configured placement reads, kept in subject records.
     placement_keys: BTreeSet<String>,
     pub managed: crate::managed::ManagedContent,
-    /// Revision of workspace content: slots, their resolutions and
-    /// arrangements. Separate from `revision`, so committing an arrangement
-    /// leaves the sidebar's snapshot and evaluation current.
-    content_revision: u64,
+    /// When workspace content outside the records last changed: managed
+    /// content's resolutions, or a workspace forgotten.
+    content_changed: u64,
+    /// The Dashboard's sidebar arrangement, and what its last
+    /// reconciliation did.
+    sidebar_arrangement: Versioned<SidebarArrangement>,
+    sidebar_report: Report,
 }
 
 #[derive(Default)]
@@ -207,11 +220,7 @@ struct WorkspaceEntry {
 
 /// The kinds of local entities: sections, groups and refs people make, which
 /// Andamento owns and keeps in the dashboard record.
-pub const LOCAL_KINDS: [&str; 3] = [
-    crate::presentation::system::SECTION,
-    crate::presentation::system::GROUP,
-    crate::presentation::system::REF,
-];
+pub const LOCAL_KINDS: [&str; 3] = [system::SECTION, system::GROUP, system::REF];
 const SOURCE_LOCAL: &str = "andamento-local";
 
 impl Sidebar {
@@ -223,17 +232,14 @@ impl Sidebar {
             }
             Request::Apply {
                 now_ms,
-                patches,
                 provider,
+                patches,
             } => {
-                match provider {
-                    Some(provider) => self.apply_from(now_ms, &provider, patches)?,
-                    None => self.apply(now_ms, patches),
-                }
+                self.apply(now_ms, &provider, patches)?;
                 vec![]
             }
-            Request::SetDefaultProvider { provider } => {
-                self.set_default_provider(&provider)?;
+            Request::Tick { now_ms } => {
+                self.tick(now_ms);
                 vec![]
             }
             Request::RetractProvider { provider } => {
@@ -283,8 +289,8 @@ impl Sidebar {
                 self.remove_local(&entity);
                 vec![]
             }
-            Request::ImportRecord { name, kdl } => {
-                self.import_record(&name, &kdl)?;
+            Request::ImportRecord { name, record } => {
+                self.import_record(&name, &record)?;
                 vec![]
             }
             Request::Snapshot => vec![],
@@ -310,46 +316,33 @@ impl Sidebar {
         ));
         self.placement_keys = self.state.placement_fact_keys();
         self.invalidate();
+        self.follow_sidebar_declarations();
         Ok(())
-    }
-
-    /// The provider of entities that name none: the one [`apply`](Self::apply)
-    /// stamps, and the one entities named by kind and ID alone belong to.
-    /// It is [`LOCAL_PROVIDER`](crate::LOCAL_PROVIDER) until the host sets it.
-    pub fn default_provider(&self) -> &str {
-        self.state.default_provider()
-    }
-
-    /// Set the default provider, so a host can move to providers gradually.
-    /// Set it before applying facts or importing records.
-    pub fn set_default_provider(&mut self, provider: &str) -> Result<(), String> {
-        self.state.set_default_provider(provider)?;
-        self.invalidate();
-        Ok(())
-    }
-
-    /// Apply a drained batch before requesting a snapshot. Time is monotonic
-    /// milliseconds in this instance, supplied by the host; an empty batch is a tick.
-    /// The patches come from the default provider.
-    pub fn apply(&mut self, now_ms: u64, patches: impl IntoIterator<Item = MetadataPatch>) {
-        let provider = self.state.default_provider().to_owned();
-        self.apply_patches(now_ms, &provider, patches);
     }
 
     /// Apply a drained batch from `provider`, the subscription ID the host
-    /// received it on. The provider is stamped over every entity the patches
-    /// name; a patch never names its own.
-    pub fn apply_from(
+    /// received it on, before requesting a snapshot. The provider is stamped
+    /// over every entity the patches name; a patch never names its own. Time
+    /// is monotonic milliseconds in this instance, supplied by the host.
+    pub fn apply(
         &mut self,
         now_ms: u64,
         provider: &str,
         patches: impl IntoIterator<Item = MetadataPatch>,
     ) -> Result<(), String> {
-        if provider.is_empty() {
-            return Err("a provider needs a name".into());
+        if provider.is_empty() || provider == LOCAL_PROVIDER {
+            return Err(format!(
+                "a provider needs a name other than {:?}",
+                LOCAL_PROVIDER
+            ));
         }
-        self.apply_patches(now_ms, provider, patches);
+        self.apply_patches(now_ms, Some(provider), patches);
         Ok(())
+    }
+
+    /// Advance time without facts, expiring what has lapsed.
+    pub fn tick(&mut self, now_ms: u64) {
+        self.apply_patches(now_ms, None, []);
     }
 
     /// Remove all of a provider's facts at once, as when its subscription is
@@ -398,7 +391,7 @@ impl Sidebar {
     fn apply_patches(
         &mut self,
         now_ms: u64,
-        provider: &str,
+        provider: Option<&str>,
         patches: impl IntoIterator<Item = MetadataPatch>,
     ) {
         let _phase = crate::profile::span("apply");
@@ -408,8 +401,10 @@ impl Sidebar {
         drop(maintenance);
         changed |= self.state.advance_time(now_ms);
         let patch_phase = crate::profile::span("patch-application");
-        for patch in patches {
-            changed |= self.state.apply_provider_patch(provider, patch);
+        if let Some(provider) = provider {
+            for patch in patches {
+                changed |= self.state.apply_provider_patch(provider, patch);
+            }
         }
         drop(patch_phase);
         let maintenance = crate::profile::span("workspace-maintenance");
@@ -476,14 +471,14 @@ impl Sidebar {
         // was before any producer publishes it. A path from a snapshot
         // replaces it.
         for (id, entry) in &self.workspaces {
-            let record = &entry.record;
-            if record.subject.is_some()
-                && subjects.get(id) == record.subject.as_ref()
-                && !record.retained.is_empty()
+            let subject = entry.record.subject.get();
+            if subject.entity.is_some()
+                && subjects.get(id) == subject.entity.as_ref()
+                && !subject.retained.is_empty()
                 && !self.retained_paths.contains_key(id)
             {
                 self.retained_paths
-                    .insert(*id, record.retained.keys().cloned().collect());
+                    .insert(*id, subject.retained.keys().cloned().collect());
             }
         }
         self.retained_paths.retain(|id, subjects_on_path| {
@@ -500,14 +495,11 @@ impl Sidebar {
     /// subjects on open workspace paths, so a ref keeps presenting its target
     /// when the target's facts go away.
     fn ref_targets(&self) -> impl Iterator<Item = EntityRef> + '_ {
-        use crate::presentation::system;
         self.local
             .iter()
             .filter(|(entity, _)| entity.kind == system::REF)
             .filter_map(|(_, facts)| match facts.get(system::TARGET) {
-                Some(crate::MetadataValue::EntityRefs(refs)) if refs.len() == 1 => {
-                    Some(refs[0].clone())
-                }
+                Some(MetadataValue::EntityRefs(refs)) if refs.len() == 1 => Some(refs[0].clone()),
                 _ => None,
             })
             .filter(|target| !system::is_system(&target.kind))
@@ -518,7 +510,7 @@ impl Sidebar {
     fn saved_subjects(&self) -> BTreeMap<EntityRef, SubjectRecord> {
         let mut saved = BTreeMap::<EntityRef, SubjectRecord>::new();
         for entry in self.workspaces.values() {
-            for (entity, record) in &entry.record.retained {
+            for (entity, record) in &entry.record.subject.get().retained {
                 let newer = saved.get(entity).is_none_or(|current| {
                     (record.ended, record.last_seen_ms) > (current.ended, current.last_seen_ms)
                 });
@@ -591,41 +583,53 @@ impl Sidebar {
     /// It does not change the snapshot or its revision. The workspace gets a
     /// record, `workspace/<id>`. Returns whether the ID was new.
     pub fn register_workspace(&mut self, id: WorkspaceId) -> bool {
-        self.workspaces.entry(id).or_default();
-        let new = self.registered.insert(id);
+        let new = self.ensure_workspace(id);
         self.refresh_workspace_records();
         self.refresh_content();
         new
     }
 
+    /// Give a workspace a record if it has none. Returns whether it was new.
+    fn ensure_workspace(&mut self, id: WorkspaceId) -> bool {
+        if self.workspaces.contains_key(&id) {
+            return false;
+        }
+        let mut entry = WorkspaceEntry::default();
+        // A record's generation is nonzero from the start.
+        entry.record.subject.restamp(&mut self.clock);
+        self.workspaces.insert(id, entry);
+        true
+    }
+
     /// The host deleted the workspace rather than keeping it. Returns whether
     /// it was registered.
     pub fn forget_workspace(&mut self, id: WorkspaceId) -> bool {
-        self.workspaces.remove(&id);
-        self.generations.remove(&RecordName::Workspace(id));
-        self.registered.remove(&id)
+        let forgotten = self.workspaces.remove(&id).is_some();
+        if forgotten {
+            self.content_changed = self.clock.tick();
+        }
+        forgotten
     }
 
     /// Workspaces the host registered or materialized and has not forgotten.
-    pub fn registered_workspaces(&self) -> &BTreeSet<WorkspaceId> {
-        &self.registered
+    pub fn registered_workspaces(&self) -> BTreeSet<WorkspaceId> {
+        self.workspaces.keys().copied().collect()
     }
 
     /// Set the host-owned order of one sibling run, identified by the loop key
     /// every node in it carries. An empty order returns the run to data order.
     pub fn set_sibling_order(
         &mut self,
-        mut loop_key: crate::PlacementLoopKey,
-        mut order: Vec<EntityRef>,
-    ) {
-        let provider = self.state.default_provider().to_owned();
-        loop_key.fill_provider(&provider);
-        for entity in &mut order {
-            entity.fill_provider(&provider);
+        loop_key: PlacementLoopKey,
+        order: Vec<EntityRef>,
+    ) -> Result<(), String> {
+        for entity in &order {
+            entity.check_provider()?;
         }
         self.state
             .apply_rail_ui_action(RailUiAction::SetSiblingOrder { loop_key, order });
         self.invalidate();
+        Ok(())
     }
 
     /// Set a declared display variable, or return it to its default with
@@ -634,7 +638,7 @@ impl Sidebar {
     pub fn set_display_variable(
         &mut self,
         name: &str,
-        value: Option<crate::DisplayVariableValue>,
+        value: Option<DisplayVariableValue>,
     ) -> Result<(), String> {
         if self.state.set_display_variable(name, value)? {
             self.invalidate();
@@ -645,23 +649,21 @@ impl Sidebar {
     /// Set a local section, group or ref (see [`LOCAL_KINDS`]), replacing all
     /// its facts. Andamento owns local entities and keeps them in the
     /// dashboard record; their provider is [`LOCAL_PROVIDER`](crate::LOCAL_PROVIDER).
-    /// Lists of text and group paths are not allowed. Entity references that
-    /// name no provider get the default provider.
+    /// Lists of text and group paths are not allowed; entity references name
+    /// their providers.
     pub fn set_local(
         &mut self,
-        mut entity: EntityRef,
-        mut facts: BTreeMap<String, crate::MetadataValue>,
+        entity: EntityRef,
+        facts: BTreeMap<String, MetadataValue>,
     ) -> Result<(), String> {
-        entity.fill_provider(crate::LOCAL_PROVIDER);
-        if entity.provider != crate::LOCAL_PROVIDER {
+        if entity.provider != LOCAL_PROVIDER {
             return Err(format!(
                 "local entities have the {:?} provider, not {:?}",
-                crate::LOCAL_PROVIDER,
-                entity.provider
+                LOCAL_PROVIDER, entity.provider
             ));
         }
-        for value in facts.values_mut() {
-            value.fill_provider(self.state.default_provider());
+        for value in facts.values() {
+            value.check_providers()?;
         }
         if !LOCAL_KINDS.contains(&entity.kind.as_str()) {
             return Err(format!(
@@ -676,31 +678,41 @@ impl Sidebar {
         if facts.keys().any(String::is_empty) {
             return Err("a fact needs a key".into());
         }
-        if !facts.values().all(crate::records::recordable) {
+        if !facts.values().all(recordable) {
             return Err("local facts are text, booleans, integers or entity references".into());
         }
         let patch = self.local_patch(&entity, Some(&facts));
+        let section = entity.kind != system::REF;
+        let changed = self.local.get(&entity) != Some(&facts);
         self.local.insert(entity, facts);
-        self.apply_local([patch]);
+        self.apply_local([patch], changed);
+        if section {
+            self.follow_sidebar_declarations();
+        }
         Ok(())
     }
 
     /// Remove a local entity. Returns whether there was one.
     pub fn remove_local(&mut self, entity: &EntityRef) -> bool {
-        let mut entity = entity.clone();
-        entity.fill_provider(crate::LOCAL_PROVIDER);
-        let entity = &entity;
         if !self.local.contains_key(entity) {
             return false;
         }
         let patch = self.local_patch(entity, None);
         self.local.remove(entity);
-        self.apply_local([patch]);
+        self.apply_local([patch], true);
+        if entity.kind != system::REF {
+            self.follow_sidebar_declarations();
+        }
         true
     }
 
+    /// Saved sibling orders, by the loop key of the run each orders.
+    pub fn sibling_orders(&self) -> &BTreeMap<PlacementLoopKey, Vec<EntityRef>> {
+        self.state.sibling_orders()
+    }
+
     /// Local entities, with their facts.
-    pub fn local_entities(&self) -> &BTreeMap<EntityRef, BTreeMap<String, crate::MetadataValue>> {
+    pub fn local_entities(&self) -> &BTreeMap<EntityRef, BTreeMap<String, MetadataValue>> {
         &self.local
     }
 
@@ -709,19 +721,19 @@ impl Sidebar {
     fn local_patch(
         &self,
         entity: &EntityRef,
-        facts: Option<&BTreeMap<String, crate::MetadataValue>>,
+        facts: Option<&BTreeMap<String, MetadataValue>>,
     ) -> MetadataPatch {
         let empty = BTreeMap::new();
         let facts = facts.unwrap_or(&empty);
         MetadataPatch {
-            target: crate::MetadataTarget::Entity(entity.clone()),
+            target: MetadataTarget::Entity(entity.clone()),
             source_id: SOURCE_LOCAL.into(),
             set: facts
                 .iter()
                 .map(|(key, value)| {
                     (
                         key.clone(),
-                        crate::MetadataValueUpdate {
+                        MetadataValueUpdate {
                             value: value.clone(),
                             ttl_ms: None,
                             precedence: None,
@@ -742,8 +754,8 @@ impl Sidebar {
     }
 
     /// Apply local patches at the current time, without advancing it.
-    fn apply_local(&mut self, patches: impl IntoIterator<Item = MetadataPatch>) {
-        let mut changed = false;
+    /// `changed`: the local entities changed, whatever their facts did.
+    fn apply_local(&mut self, patches: impl IntoIterator<Item = MetadataPatch>, mut changed: bool) {
         for patch in patches {
             changed |= self.state.apply_metadata_patch(patch);
         }
@@ -796,12 +808,12 @@ impl Sidebar {
             for entity in path {
                 let Some((mut record, seen)) = self.state.retained_subject_record(&entity, keys)
                 else {
-                    if let Some(old) = entry.record.retained.get(&entity) {
+                    if let Some(old) = entry.record.subject.get().retained.get(&entity) {
                         retained.insert(entity, old.clone());
                     }
                     continue;
                 };
-                let old = entry.record.retained.get(&entity);
+                let old = entry.record.subject.get().retained.get(&entity);
                 // Last seen moves when the subject appears, changes or goes
                 // away, not on every heartbeat.
                 record.last_seen_ms = match old {
@@ -819,8 +831,11 @@ impl Sidebar {
                 }
                 retained.insert(entity, record);
             }
-            entry.record.subject = subjects.get(&id).cloned();
-            entry.record.retained = retained;
+            let subject = Subject {
+                entity: subjects.get(&id).cloned(),
+                retained,
+            };
+            entry.record.follow_subject(&mut self.clock, subject);
             entry.observed = observed;
         }
     }
@@ -829,110 +844,98 @@ impl Sidebar {
     /// `workspace/<id>` for each registered workspace.
     pub fn record_names(&self) -> Vec<String> {
         std::iter::once(RecordName::Dashboard)
-            .chain(self.registered.iter().copied().map(RecordName::Workspace))
+            .chain(self.workspaces.keys().copied().map(RecordName::Workspace))
             .map(|name| name.to_string())
             .collect()
     }
 
-    fn record_text(&self, name: RecordName) -> Result<String, String> {
-        match name {
+    /// A record as text to store. Its format is private: only this
+    /// Andamento reads it.
+    pub fn export_record(&self, name: &str) -> Result<String, String> {
+        match RecordName::parse(name)? {
             RecordName::Dashboard => Ok(DashboardRecord {
-                display: self.state.recorded_display_variables(),
-                collapsed: self.state.collapsed_placements().clone(),
-                orders: self.state.sibling_orders().clone(),
-                variables: self.state.placement_variables(),
-                local: self.local.clone(),
-                unknown: self.dashboard_unknown.clone(),
+                state: self.dashboard.get().clone(),
+                sidebar: (self.sidebar_arrangement.generation() != 0)
+                    .then(|| self.sidebar_arrangement.get().clone()),
             }
             .encode()),
-            RecordName::Workspace(id) => self
-                .workspaces
-                .get(&id)
-                .map(|entry| entry.record.encode(id))
-                .ok_or_else(|| format!("no record {name}: the workspace is not registered")),
+            RecordName::Workspace(id) => Ok(self.workspace(id)?.encode()),
         }
     }
 
-    /// Export a record as KDL in a versioned envelope.
-    pub fn export_record(&mut self, name: &str) -> Result<String, String> {
-        let name = RecordName::parse(name)?;
-        let text = self.record_text(name)?;
-        self.note_generation(name, &text);
-        Ok(text)
-    }
-
-    /// A record's generation, nonzero. It changes when, and only when, the
-    /// record's content changes; generations are never reused, even by a
-    /// workspace forgotten and registered again. Write the record when it
-    /// differs from the one last written.
-    pub fn record_generation(&mut self, name: &str) -> Result<u64, String> {
-        let name = RecordName::parse(name)?;
-        let text = self.record_text(name)?;
-        Ok(self.note_generation(name, &text))
-    }
-
-    fn note_generation(&mut self, name: RecordName, text: &str) -> u64 {
-        if let Some((generation, known)) = self.generations.get(&name) {
-            if known == text {
-                return *generation;
-            }
+    /// A record's generation, nonzero. It changes whenever the record does,
+    /// and is never reused. Store the record when it differs from the one
+    /// last stored.
+    pub fn record_generation(&self, name: &str) -> Result<u64, String> {
+        match RecordName::parse(name)? {
+            RecordName::Dashboard => Ok(self
+                .dashboard
+                .generation()
+                .max(self.sidebar_arrangement.generation())),
+            RecordName::Workspace(id) => Ok(self.workspace(id)?.generation()),
         }
-        self.last_generation += 1;
-        self.generations
-            .insert(name, (self.last_generation, text.to_owned()));
-        self.last_generation
     }
 
-    /// Import a record exported by this or an earlier Andamento. It may come
-    /// before the first observation and needs no facts. A record that doesn't
-    /// parse, has another version, or names another record is rejected
-    /// without changing anything. Importing `workspace/<id>` registers the
-    /// workspace and binds it to its recorded subject.
-    pub fn import_record(&mut self, name: &str, kdl: &str) -> Result<(), String> {
+    /// The Dashboard's state other than its sidebar arrangement, as it is
+    /// now.
+    fn dashboard_state(&self) -> DashboardState {
+        DashboardState {
+            display: self.state.recorded_display_variables(),
+            collapsed: self.state.collapsed_placements().clone(),
+            orders: self.state.sibling_orders().clone(),
+            variables: self.state.placement_variables(),
+            local: self.local.clone(),
+        }
+    }
+
+    /// Import a record exported by this Andamento. It may come before the
+    /// first observation and needs no facts. A record that doesn't read, or
+    /// names another record, is rejected without changing anything.
+    /// Importing `workspace/<id>` registers the workspace and binds it to
+    /// its recorded subject.
+    pub fn import_record(&mut self, name: &str, text: &str) -> Result<(), String> {
         match RecordName::parse(name)? {
             RecordName::Dashboard => {
-                let record = DashboardRecord::decode(kdl, self.state.default_provider())?;
-                if let Some(entity) = record
+                let DashboardRecord { state, sidebar } = DashboardRecord::decode(text)?;
+                if let Some(entity) = state
                     .local
                     .keys()
                     .find(|entity| !LOCAL_KINDS.contains(&entity.kind.as_str()))
                 {
                     return Err(format!("{:?} is not a local entity kind", entity.kind));
                 }
-                if let Some(entity) = record
+                if let Some(entity) = state
                     .local
                     .keys()
-                    .find(|entity| entity.provider != crate::LOCAL_PROVIDER)
+                    .find(|entity| entity.provider != LOCAL_PROVIDER)
                 {
                     return Err(format!(
                         "local entity {:?} has provider {:?}",
                         entity.id, entity.provider
                     ));
                 }
-                self.state.restore_dashboard(&record);
+                self.state.restore_dashboard(&state);
                 let mut patches = Vec::new();
                 for entity in self.local.keys() {
-                    if !record.local.contains_key(entity) {
+                    if !state.local.contains_key(entity) {
                         patches.push(self.local_patch(entity, None));
                     }
                 }
-                for (entity, facts) in &record.local {
+                for (entity, facts) in &state.local {
                     if self.local.get(entity) != Some(facts) {
                         patches.push(self.local_patch(entity, Some(facts)));
                     }
                 }
-                self.local = record.local;
-                self.dashboard_unknown = record.unknown;
+                self.local = state.local;
                 for patch in patches {
                     self.state.apply_metadata_patch(patch);
                 }
                 self.maintain(true);
+                self.import_sidebar_arrangement(sidebar.unwrap_or_default());
             }
             RecordName::Workspace(id) => {
-                let record = WorkspaceRecord::decode(kdl, id, self.state.default_provider())?;
-                self.state
-                    .bind_workspace_subject(id, record.subject.as_ref());
-                self.registered.insert(id);
+                let record = WorkspaceRecord::decode(text, &mut self.clock)?;
+                self.state.bind_workspace_subject(id, record.subject());
                 // A path from this session is no longer the recorded one.
                 self.retained_paths.remove(&id);
                 self.workspaces.insert(
@@ -952,107 +955,145 @@ impl Sidebar {
     /// workspaces' baselines and arrangements up to date with their
     /// subjects' Suggested Layouts. A layout that is malformed or gone keeps
     /// the cached baseline: expiry is silence, not removal. This never
-    /// invalidates the sidebar's snapshot; it bumps the content revision.
+    /// invalidates the sidebar's snapshot; it moves the content revision.
     fn refresh_content(&mut self) {
-        let mut changed = self.managed.publish(self.state.slot_resolutions());
+        if self.managed.publish(self.state.slot_resolutions()) {
+            self.content_changed = self.clock.tick();
+        }
         let open: BTreeSet<WorkspaceId> = self
             .state
             .workspaces()
             .iter()
             .map(|tab| tab.tab_id)
             .collect();
-        let state = &self.state;
         for (id, entry) in self.workspaces.iter_mut() {
-            if !open.contains(id) {
-                continue;
-            }
             let record = &mut entry.record;
-            let mut slots_changed = false;
-            if let Some(subject) = &record.subject {
-                if let Ok(Some(layout)) = state.suggested_layout(subject) {
-                    slots_changed = record
-                        .slots
-                        .set_baseline(crate::slots::Baseline::from_layout(&layout));
-                }
+            if open.contains(id) {
+                let baseline = record
+                    .subject()
+                    .and_then(|subject| self.state.suggested_layout(subject).ok().flatten())
+                    .map(|layout| Baseline::from_layout(&layout));
+                record.follow_baseline(&mut self.clock, baseline);
             }
-            if slots_changed || (record.arrangement.is_none() && !record.slots.is_empty()) {
-                changed |= follow_slots(record);
-            }
-            changed |= slots_changed;
-        }
-        if changed {
-            self.content_revision += 1;
+            record.invalidate_resolutions(&mut self.clock, &self.managed);
         }
     }
 
-    /// Revision of workspace content: slots, their resolutions and
-    /// arrangements. It changes when any of them may have; the sidebar's
-    /// [`revision`](Self::revision) does not change with them.
+    /// Revision of workspace content: slots, their resolutions and plans,
+    /// and arrangements. It changes when any of them may have; the
+    /// sidebar's [`revision`](Self::revision) does not change with them.
     pub fn content_revision(&self) -> u64 {
-        self.content_revision
+        self.workspaces
+            .values()
+            .map(|entry| entry.record.content_generation())
+            .fold(self.content_changed, u64::max)
     }
 
-    fn workspace_record(&self, id: WorkspaceId) -> Result<&WorkspaceRecord, String> {
+    fn workspace(&self, id: WorkspaceId) -> Result<&WorkspaceRecord, String> {
         self.workspaces
             .get(&id)
             .map(|entry| &entry.record)
             .ok_or_else(|| format!("workspace {id} is not registered"))
     }
 
-    fn workspace_record_mut(&mut self, id: WorkspaceId) -> Result<&mut WorkspaceRecord, String> {
-        self.workspaces
+    /// Edit a registered workspace's record, with the clock its parts take
+    /// their generations from.
+    fn with_workspace<R, E: From<String>>(
+        &mut self,
+        id: WorkspaceId,
+        edit: impl FnOnce(&mut WorkspaceRecord, &mut Clock, &ManagedContent) -> Result<R, E>,
+    ) -> Result<R, E> {
+        let entry = self
+            .workspaces
             .get_mut(&id)
-            .map(|entry| &mut entry.record)
-            .ok_or_else(|| format!("workspace {id} is not registered"))
+            .ok_or_else(|| E::from(format!("workspace {id} is not registered")))?;
+        edit(&mut entry.record, &mut self.clock, &self.managed)
     }
 
     /// A registered workspace's slots, in default placement order.
-    pub fn slots(&self, workspace: WorkspaceId) -> Result<Vec<crate::slots::SlotInfo>, String> {
-        Ok(self.workspace_record(workspace)?.slots.slots())
+    pub fn slots(&self, workspace: WorkspaceId) -> Result<Vec<SlotInfo>, String> {
+        Ok(self.workspace(workspace)?.slots.get().slots())
     }
 
-    /// Add the user's own slot (`u:<id>`), or override a baseline slot,
-    /// detaching it. The arrangement is unchanged: the host gives the slot
-    /// a tab in its next commit, which otherwise places it. Entity
-    /// references that name no provider get the default provider.
+    /// Add the user's own slot (`u:<id>`), or edit a baseline slot: other
+    /// content overrides it, detaching it, and another policy is a rebind
+    /// edit (see [`WorkspaceSlots::set`](crate::slots::WorkspaceSlots::set)).
+    /// The host gives a new slot a tab in its next commit, which otherwise
+    /// places it. A facet's entity names its provider.
     pub fn set_slot(
         &mut self,
         workspace: WorkspaceId,
         key: &str,
-        mut spec: crate::suggested_layout::ViewSpec,
-        rebind: crate::suggested_layout::RebindPolicy,
+        spec: ViewSpec,
+        rebind: RebindPolicy,
     ) -> Result<bool, String> {
-        if let crate::suggested_layout::Content::ProviderFacet { entity, .. } = &mut spec.content {
-            entity.fill_provider(self.state.default_provider());
-        }
-        let changed = self
-            .workspace_record_mut(workspace)?
-            .slots
-            .set(key, spec, rebind)?;
-        if changed {
-            self.content_revision += 1;
-        }
-        Ok(changed)
+        self.with_workspace(workspace, |record, clock, _| {
+            record.set_slot(clock, key, spec, rebind)
+        })
     }
 
-    /// Remove the user's own slot, or a detached slot its baseline dropped.
-    /// Its tab, if any, is reported gone until the host removes it.
+    /// Remove a slot: the user's own slot or a detached slot its baseline
+    /// dropped goes; a baseline slot gets a tombstone (see
+    /// [`WorkspaceSlots::remove`](crate::slots::WorkspaceSlots::remove)).
     pub fn remove_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
-        let removed = self.workspace_record_mut(workspace)?.slots.remove(key)?;
+        let removed =
+            self.with_workspace(workspace, |record, clock, _| record.remove_slot(clock, key))?;
         if removed {
             self.managed.forget_slot(workspace, key);
-            self.content_revision += 1;
         }
         Ok(removed)
     }
 
-    /// Drop a baseline slot's override, so it follows the provider again.
+    /// Drop a baseline slot's override or tombstone, so it follows the
+    /// provider again.
     pub fn reattach_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
-        let reattached = self.workspace_record_mut(workspace)?.slots.reattach(key);
-        if reattached {
-            self.content_revision += 1;
-        }
-        Ok(reattached)
+        self.with_workspace(workspace, |record, clock, _| {
+            Ok(record.reattach_slot(clock, key))
+        })
+    }
+
+    /// Set the user's name for a workspace over the provider's, or drop it
+    /// with `None`. Returns whether it changed.
+    pub fn set_workspace_name(
+        &mut self,
+        workspace: WorkspaceId,
+        name: Option<String>,
+    ) -> Result<bool, String> {
+        self.with_workspace(workspace, |record, clock, _| {
+            Ok(record.set_name(clock, name))
+        })
+    }
+
+    /// Set the user's mood for a workspace over the provider's, or drop it
+    /// with `None`. Returns whether it changed.
+    pub fn set_workspace_mood(
+        &mut self,
+        workspace: WorkspaceId,
+        mood: Option<String>,
+    ) -> Result<bool, String> {
+        self.with_workspace(workspace, |record, clock, _| {
+            Ok(record.set_mood(clock, mood))
+        })
+    }
+
+    /// The host has dealt with the live instance a rebind replaced: a
+    /// `keep-previous` slot's previous instance, or the instance of a slot
+    /// the provider removed. Returns whether there was one.
+    pub fn release_slot_previous(
+        &mut self,
+        workspace: WorkspaceId,
+        key: &str,
+    ) -> Result<bool, String> {
+        let released = self.with_workspace(workspace, |record, clock, _| {
+            Ok::<_, String>(record.release_departed(clock, key))
+        })?;
+        Ok(self.managed.release_previous(workspace, key) || released)
+    }
+
+    /// A workspace's overlay: its baseline version, name and mood, and what
+    /// the host should know about it (removed slots, departed instances).
+    pub fn overlay(&self, workspace: WorkspaceId) -> Result<OverlayView, String> {
+        Ok(self.workspace(workspace)?.overlay())
     }
 
     /// Plan one slot, given the identity of the resolution the host applied
@@ -1062,16 +1103,58 @@ impl Sidebar {
         workspace: WorkspaceId,
         key: &str,
         applied: &str,
-    ) -> Result<crate::managed::SlotPlan, String> {
-        let record = self.workspace_record(workspace)?;
-        let slot = record
-            .slots
-            .slot(key)
-            .ok_or_else(|| format!("workspace {workspace} has no slot {key:?}"))?;
-        let source = slot_source(record.subject.as_ref(), &slot);
-        Ok(self
+    ) -> Result<SlotPlan, String> {
+        let record = self.workspace(workspace)?;
+        let slot = record.slot(key)?;
+        let source = record.slot_source(&slot);
+        let saved = record.resolutions.get().get(key).cloned();
+        let mut plan = self
             .managed
-            .plan_slot(workspace, key, source, slot.rebind, applied))
+            .plan_slot(workspace, key, source, slot.rebind, applied);
+        plan.saved = saved;
+        Ok(plan)
+    }
+
+    /// The portable Target Resolution saved for a slot, if any (see
+    /// [`crate::target_resolution`]).
+    pub fn slot_resolution(
+        &self,
+        workspace: WorkspaceId,
+        key: &str,
+    ) -> Result<Option<SavedResolution>, String> {
+        self.workspace(workspace)?.resolution(key)
+    }
+
+    /// Save a slot's portable Target Resolution in the workspace record, if
+    /// `expected` is the slot's saved generation (0 for none). `applied` is
+    /// the identity of the slot resolution it resolves, as the host passes
+    /// it to plan: when the slot's resolution is known to be another, the
+    /// save is invalid. Returns the generation after; saving what is saved
+    /// keeps it. Only the record and the content revision change.
+    pub fn set_slot_resolution(
+        &mut self,
+        workspace: WorkspaceId,
+        key: &str,
+        resolution: PortableResolution,
+        applied: &str,
+        expected: u64,
+    ) -> Result<u64, CommitError> {
+        self.with_workspace(workspace, |record, clock, managed| {
+            record.set_resolution(clock, managed, key, resolution, applied, expected)
+        })
+    }
+
+    /// Clear a slot's saved portable Target Resolution, if `expected` is its
+    /// saved generation. Returns whether there was one.
+    pub fn clear_slot_resolution(
+        &mut self,
+        workspace: WorkspaceId,
+        key: &str,
+        expected: u64,
+    ) -> Result<bool, CommitError> {
+        self.with_workspace(workspace, |record, clock, _| {
+            record.clear_resolution(clock, key, expected)
+        })
     }
 
     /// Commit a workspace's whole arrangement, if `expected` is its current
@@ -1083,38 +1166,191 @@ impl Sidebar {
     pub fn set_arrangement(
         &mut self,
         workspace: WorkspaceId,
-        doc: crate::slots::ArrangementDoc,
+        doc: ArrangementDoc,
         expected: u64,
-    ) -> Result<crate::slots::ArrangementCommit, crate::slots::ArrangementError> {
-        let record = self
-            .workspace_record_mut(workspace)
-            .map_err(crate::slots::ArrangementError::Invalid)?;
-        let slots = record.slots.slots();
-        let stored = record.arrangement.get_or_insert_with(Default::default);
-        let before = stored.generation;
-        let mut next = || before + 1;
-        let result = stored.commit(doc, expected, &slots, &mut next);
-        if stored.generation == 0 {
-            record.arrangement = None;
-        }
-        if result
-            .as_ref()
-            .is_ok_and(|commit| commit.generation != before)
-        {
-            self.content_revision += 1;
-        }
-        result
+    ) -> Result<ArrangementCommit, CommitError> {
+        self.with_workspace(workspace, |record, clock, _| {
+            record.commit_arrangement(clock, doc, expected)
+        })
+    }
+
+    /// Settle a provider change to an arrangement the user owns: keep the
+    /// user's, or follow the provider's again (which also drops soft
+    /// overrides). Returns the generation after the call.
+    pub fn resolve_arrangement(
+        &mut self,
+        workspace: WorkspaceId,
+        choice: Resolve,
+        expected: u64,
+    ) -> Result<u64, CommitError> {
+        self.with_workspace(workspace, |record, clock, _| {
+            record.resolve_arrangement(clock, choice, expected)
+        })
     }
 
     /// A registered workspace's arrangement. Before anything is stored it is
     /// empty, at generation 0.
-    pub fn arrangement(
-        &self,
-        workspace: WorkspaceId,
-    ) -> Result<crate::slots::ArrangementView, String> {
-        let record = self.workspace_record(workspace)?;
-        let slots = record.slots.slots();
-        Ok(record.arrangement.clone().unwrap_or_default().view(&slots))
+    pub fn arrangement(&self, workspace: WorkspaceId) -> Result<ArrangementView, String> {
+        Ok(self.workspace(workspace)?.arrangement_view())
+    }
+
+    /// What the template and local sections declare, for the sidebar
+    /// arrangement.
+    fn sidebar_declared(&self) -> Declared {
+        let sections_with_default: BTreeSet<&str> = self
+            .local
+            .iter()
+            .filter(|(entity, facts)| {
+                entity.kind == system::GROUP
+                    && matches!(facts.get(system::DEFAULT), Some(MetadataValue::Bool(true)))
+            })
+            .filter_map(|(_, facts)| match facts.get(system::SECTION) {
+                Some(MetadataValue::EntityRefs(refs)) if refs.len() == 1 => {
+                    Some(refs[0].id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        let local: Vec<LocalSection> = self
+            .local
+            .iter()
+            .filter(|(entity, _)| entity.kind == system::SECTION)
+            .map(|(entity, facts)| LocalSection {
+                id: entity.id.clone(),
+                position: match facts.get(".position") {
+                    Some(MetadataValue::Integer(n)) => Some(*n),
+                    Some(MetadataValue::Text(text)) => text.trim().parse().ok(),
+                    _ => None,
+                },
+                default: sections_with_default.contains(entity.id.as_str()),
+            })
+            .collect();
+        Declared::new(&self.state.sidebar_regions(), &local)
+    }
+
+    /// Reconcile the sidebar arrangement after the declarations may have
+    /// changed: on configure, and when local sections or groups change.
+    fn follow_sidebar_declarations(&mut self) {
+        let declared = self.sidebar_declared();
+        let mut report = Report::default();
+        self.sidebar_arrangement
+            .follow(&mut self.clock, |stored| report = stored.follow(&declared));
+        self.sidebar_report = report;
+    }
+
+    /// Adopt an imported arrangement, reconciled, at a new generation.
+    fn import_sidebar_arrangement(&mut self, imported: SidebarArrangement) {
+        let (next, report) = sidebar_arrangement::reconcile(&self.sidebar_declared(), &imported);
+        self.sidebar_arrangement
+            .follow(&mut self.clock, |stored| *stored = next);
+        self.sidebar_report = report;
+    }
+
+    /// The Dashboard's sidebar arrangement: the dock and floating panels,
+    /// closed sections, flags, and what its last reconciliation did. Its
+    /// unresolved keys include saved dashboard keys the template no longer
+    /// resolves.
+    pub fn sidebar_arrangement(&self) -> (SidebarView, &Report) {
+        let declared = self.sidebar_declared();
+        let mut view = self
+            .sidebar_arrangement
+            .get()
+            .view(self.sidebar_arrangement.generation(), &declared);
+        view.unresolved
+            .extend(self.unresolved_dashboard_keys(&declared));
+        (view, &self.sidebar_report)
+    }
+
+    /// Saved dashboard keys the template no longer resolves, as
+    /// `display:<name>`, `collapse:<key>`, `order:<loop key>` and
+    /// `variable:<key>`. They are kept, never dropped, and resolve again if
+    /// the template brings their names back.
+    fn unresolved_dashboard_keys(&self, declared: &Declared) -> Vec<String> {
+        let (loops, display) = self.state.template_names();
+        let loop_resolves =
+            |name: &str| loops.contains(name) || name == UNPLACED_WORKSPACES_SECTION;
+        let key_resolves = |key: &PlacementKey| key.0.iter().all(|s| loop_resolves(&s.loop_name));
+        let key_text = |key: &PlacementKey| {
+            key.0
+                .iter()
+                .map(|s| format!("{}={}", s.loop_name, s.entity.action_target()))
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let mut unresolved = Vec::new();
+        for name in self.state.recorded_display_variables().keys() {
+            if !display.contains(name) {
+                unresolved.push(format!("display:{name}"));
+            }
+        }
+        for key in self.state.collapsed_placements() {
+            if !key_resolves(key) {
+                unresolved.push(format!("collapse:{}", key_text(key)));
+            }
+        }
+        for key in self.state.sibling_orders().keys() {
+            if !(declared.resolves(&key.region)
+                && loop_resolves(&key.binding)
+                && key_resolves(&key.parent))
+            {
+                unresolved.push(format!("order:{}", key.encode()));
+            }
+        }
+        for key in self.state.placement_variables().keys() {
+            if !key_resolves(key) {
+                unresolved.push(format!("variable:{}", key_text(key)));
+            }
+        }
+        unresolved
+    }
+
+    /// The sidebar arrangement's generation: 0 before anything is stored,
+    /// and changed whenever it is. Cheap enough to poll.
+    pub fn sidebar_arrangement_generation(&self) -> u64 {
+        self.sidebar_arrangement.generation()
+    }
+
+    /// Commit the host's whole sidebar arrangement, if `expected` is its
+    /// generation. Declared sections it leaves out are closed. A stale or
+    /// invalid commit changes nothing; neither invalidates the snapshot.
+    pub fn set_sidebar_arrangement(
+        &mut self,
+        doc: SidebarDoc,
+        expected: u64,
+    ) -> Result<Report, CommitError> {
+        self.edit_sidebar_arrangement(expected, |stored, declared| stored.commit(declared, doc))
+    }
+
+    /// Reopen a closed section by its hints, with an equal share of its host.
+    pub fn restore_sidebar_section(
+        &mut self,
+        key: &str,
+        expected: u64,
+    ) -> Result<Report, CommitError> {
+        self.edit_sidebar_arrangement(expected, |stored, declared| stored.restore(declared, key))
+    }
+
+    /// Return the sidebar to its default arrangement: every declared section
+    /// placed by its hints, nothing closed.
+    pub fn reset_sidebar_arrangement(&mut self, expected: u64) -> Result<Report, CommitError> {
+        self.edit_sidebar_arrangement(expected, |stored, declared| Ok(stored.reset(declared)))
+    }
+
+    /// A host's edit of the sidebar arrangement at `expected`, reconciled
+    /// against what is declared.
+    fn edit_sidebar_arrangement(
+        &mut self,
+        expected: u64,
+        edit: impl FnOnce(&mut SidebarArrangement, &Declared) -> Result<Report, String>,
+    ) -> Result<Report, CommitError> {
+        let declared = self.sidebar_declared();
+        let (_, report) =
+            self.sidebar_arrangement
+                .update(Some(expected), &mut self.clock, |stored| {
+                    Ok(edit(stored, &declared)?)
+                })?;
+        self.sidebar_report = report.clone();
+        Ok(report)
     }
 
     /// Conservative revision of presentation and action dependencies. Unchanged
@@ -1124,11 +1360,17 @@ impl Sidebar {
         self.revision
     }
 
+    /// Every change to what the sidebar presents comes through here, the
+    /// Dashboard's state among it, so this is also where the dashboard
+    /// record takes a new generation when its state changed.
     fn invalidate(&mut self) {
-        self.revision += 1;
+        self.revision = self.clock.tick();
         self.snapshot.take();
         self.evaluation.take();
         self.details.get_mut().clear();
+        let state = self.dashboard_state();
+        self.dashboard
+            .follow(&mut self.clock, |current| *current = state);
     }
 
     fn evaluation(&self) -> &crate::state::RevisionEvaluation {
@@ -1166,7 +1408,6 @@ impl Sidebar {
     /// Exact catalog identity, including hidden and retained ended subjects.
     /// Cache at most 64 cards (including misses), and discard on revision change.
     pub fn detail_card(&self, entity: &EntityRef) -> Option<crate::detail::DetailCard> {
-        let entity = &self.with_provider(entity);
         if let Some(card) = self.details.borrow().get(entity) {
             return card.clone();
         }
@@ -1190,27 +1431,10 @@ impl Sidebar {
     }
 
     pub fn subject_url(&self, entity: &EntityRef) -> Option<String> {
-        self.state.subject_url(&self.with_provider(entity))
+        self.state.subject_url(entity)
     }
 
-    /// `entity`, with the default provider if it names none.
-    fn with_provider(&self, entity: &EntityRef) -> EntityRef {
-        let mut entity = entity.clone();
-        entity.fill_provider(self.state.default_provider());
-        entity
-    }
-
-    pub fn dispatch(&mut self, mut action: Action) -> Result<Vec<HostEffect>, String> {
-        let provider = self.state.default_provider().to_owned();
-        match &mut action {
-            Action::CopySubjectUrl { entity } | Action::Activate { entity } => {
-                entity.fill_provider(&provider)
-            }
-            Action::ActivatePlacement { key }
-            | Action::TogglePlacement { key }
-            | Action::SetVariable { key, .. } => key.fill_provider(&provider),
-            Action::ToggleDisplayVariable { .. } => {}
-        }
+    pub fn dispatch(&mut self, action: Action) -> Result<Vec<HostEffect>, String> {
         match action {
             Action::CopySubjectUrl { entity } => {
                 let url = self
@@ -1376,8 +1600,7 @@ impl Sidebar {
             }
             Pending::Materialize(entity, request) => match result {
                 Ok(Some(id)) => {
-                    self.registered.insert(id);
-                    self.workspaces.entry(id).or_default();
+                    self.ensure_workspace(id);
                     self.state
                         .bind_materializing_subject(&request, id, entity.clone());
                     // If observation arrived before acknowledgement, claim now.
@@ -1416,53 +1639,19 @@ impl Sidebar {
 /// Ended presentation expiry policy is intentionally undecided. Keep the seam
 /// shared by all retained workspace paths; user close is the only expiry today.
 // TODO: apply the policy decided in flotilla-org/wheelhouse#159 here.
-/// Where a slot's resolution comes from: a baseline slot that follows its
-/// provider resolves from the subject's layout; any other slot from its spec,
-/// as a local recipe or a provider facet (`facet` of the entity's own layout,
-/// `primary` for the `workspace.primary.*` facts).
-fn slot_source(
-    subject: Option<&EntityRef>,
-    slot: &crate::slots::SlotInfo,
-) -> crate::managed::SlotSource {
-    use crate::{managed::SlotSource, suggested_layout::Content};
-    match (
-        subject,
-        slot.in_baseline && !slot.detached,
-        &slot.spec.content,
-    ) {
-        (Some(subject), true, _) => SlotSource::Provider {
-            entity: subject.clone(),
-            slot: slot.key.clone(),
-        },
-        (_, _, Content::ProviderFacet { entity, facet }) => SlotSource::Provider {
-            entity: entity.clone(),
-            slot: facet.clone(),
-        },
-        (_, _, Content::Local(recipe)) => SlotSource::Local(recipe.clone()),
-    }
-}
-
-/// Bring a record's arrangement up to date with its slots. Returns whether
-/// it changed.
-fn follow_slots(record: &mut WorkspaceRecord) -> bool {
-    let slots = record.slots.slots();
-    let stored = record.arrangement.get_or_insert_with(Default::default);
-    let next = stored.generation + 1;
-    stored.follow(record.slots.baseline.as_ref(), &slots, &mut || next)
-}
-
 fn retained_workspace_expired(_state: &ControllerState, _subjects: &BTreeSet<EntityRef>) -> bool {
     false
 }
 
 #[cfg(test)]
 mod evaluation_tests {
+    const PROVIDER: &str = "test";
     use super::*;
-    use crate::{MetadataTarget, MetadataValue, MetadataValueUpdate};
+    use crate::{tab_workspace_id, SortMode};
 
     const CONFIG: &str = include_str!("../tests/fixtures/sidebar.kdl");
     fn entity() -> EntityRef {
-        EntityRef::local("vessel", "v")
+        EntityRef::new(PROVIDER, "vessel", "v")
     }
     fn patch(source: &str, label: &str, ttl: Option<u64>, precedence: i64) -> MetadataPatch {
         MetadataPatch {
@@ -1492,24 +1681,27 @@ mod evaluation_tests {
         }
     }
     fn add_project(sidebar: &mut Sidebar) {
-        sidebar.apply(
-            100,
-            [MetadataPatch {
-                target: MetadataTarget::Entity(EntityRef::local("project", "p")),
-                source_id: "base".into(),
-                unset: vec![],
-                set: [(
-                    "flotilla.project".into(),
-                    MetadataValueUpdate {
-                        value: MetadataValue::Text("p".into()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                )]
-                .into(),
-            }],
-        );
+        sidebar
+            .apply(
+                100,
+                PROVIDER,
+                [MetadataPatch {
+                    target: MetadataTarget::Entity(EntityRef::new(PROVIDER, "project", "p")),
+                    source_id: "base".into(),
+                    unset: vec![],
+                    set: [(
+                        "flotilla.project".into(),
+                        MetadataValueUpdate {
+                            value: MetadataValue::Text("p".into()),
+                            ttl_ms: None,
+                            precedence: None,
+                            ordinal: None,
+                        },
+                    )]
+                    .into(),
+                }],
+            )
+            .unwrap();
     }
     fn check(sidebar: &Sidebar) {
         // Issue #96: cached presentation and exact details must equal an uncached
@@ -1528,7 +1720,9 @@ mod evaluation_tests {
     #[test]
     fn revision_queries_share_evaluation_and_validation() {
         let mut sidebar = Sidebar::new(CONFIG).unwrap();
-        sidebar.apply(100, [patch("a", "first", None, 0)]);
+        sidebar
+            .apply(100, PROVIDER, [patch("a", "first", None, 0)])
+            .unwrap();
         add_project(&mut sidebar);
         crate::profile::start();
         let snapshot = sidebar.snapshot();
@@ -1554,36 +1748,41 @@ mod evaluation_tests {
         // dispatch and completions. Real controller/store/template collaborators.
         for seed in 0..24u64 {
             let mut sidebar = Sidebar::new(CONFIG).unwrap();
-            sidebar.apply(100, [patch("base", "original", None, 0)]);
+            sidebar
+                .apply(100, PROVIDER, [patch("base", "original", None, 0)])
+                .unwrap();
             add_project(&mut sidebar);
             let held = sidebar.snapshot();
             let mut now = 100;
             for step in 0..18 {
                 match (seed + step * 7) % 9 {
-                    0 => sidebar.apply(
-                        now,
-                        [patch("update", &format!("{seed}/{step}"), Some(5), 10)],
-                    ),
+                    0 => sidebar
+                        .apply(
+                            now,
+                            PROVIDER,
+                            [patch("update", &format!("{seed}/{step}"), Some(5), 10)],
+                        )
+                        .unwrap(),
                     1 => {
                         now += 5;
-                        sidebar.apply(now, []);
+                        sidebar.tick(now);
                     }
                     2 => {
                         now += 1;
-                        sidebar.apply(now, []);
+                        sidebar.tick(now);
                     }
                     3 => {
                         let mut p = patch("update", "", None, 0);
                         p.set.clear();
                         p.unset = vec!["display.label".into()];
-                        sidebar.apply(now, [p]);
+                        sidebar.apply(now, PROVIDER, [p]).unwrap();
                     }
                     4 => sidebar
                         .configure(&CONFIG.replace("default=\"roomy\"", "default=\"compact\""))
                         .unwrap(),
                     5 => sidebar.observe(
                         vec![Workspace {
-                            id: WorkspaceId::from(1),
+                            id: tab_workspace_id(1),
                             position: 0,
                             name: "vessel:v".into(),
                             selected: step % 2 == 0,
@@ -1647,18 +1846,20 @@ mod evaluation_tests {
             crate::SortMode::LatestStatus,
         ] {
             let mut sidebar = Sidebar::new(CONFIG).unwrap();
-            sidebar.apply(100, [patch("base", "original", None, 0)]);
+            sidebar
+                .apply(100, PROVIDER, [patch("base", "original", None, 0)])
+                .unwrap();
             add_project(&mut sidebar);
             sidebar.observe(
                 vec![
                     Workspace {
-                        id: WorkspaceId::from(1),
+                        id: tab_workspace_id(1),
                         position: 1,
                         name: "vessel:v".into(),
                         selected: true,
                     },
                     Workspace {
-                        id: WorkspaceId::from(2),
+                        id: tab_workspace_id(2),
                         position: 0,
                         name: "Other".into(),
                         selected: false,
@@ -1667,17 +1868,13 @@ mod evaluation_tests {
                 vec![],
             );
             sidebar.state.set_sort_mode(mode);
-            sidebar.state.toggle_pin(WorkspaceId::from(1));
+            sidebar.state.toggle_pin(tab_workspace_id(1));
             sidebar.invalidate();
             check(&sidebar);
             let tabs = sidebar.state.view_model().tabs;
             assert_eq!(
                 tabs[0].tab_id,
-                WorkspaceId::from(if mode == crate::SortMode::PinnedFirst {
-                    1
-                } else {
-                    2
-                })
+                tab_workspace_id(if mode == SortMode::PinnedFirst { 1 } else { 2 })
             );
         }
     }
@@ -1688,12 +1885,14 @@ mod evaluation_tests {
         // Missing, empty and invalid identities are cached without growing forever.
         for i in 0..200 {
             assert!(sidebar
-                .detail_card(&EntityRef::local("missing", i.to_string()))
+                .detail_card(&EntityRef::new(PROVIDER, "missing", i.to_string()))
                 .is_none());
             assert!(sidebar.details.borrow().len() <= 64);
         }
         assert!(sidebar.detail_card(&entity()).is_none());
-        sidebar.apply(100, [patch("base", "appeared", None, 0)]);
+        sidebar
+            .apply(100, PROVIDER, [patch("base", "appeared", None, 0)])
+            .unwrap();
         assert_eq!(sidebar.detail_card(&entity()).unwrap().label, "appeared");
     }
 }

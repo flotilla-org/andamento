@@ -39,7 +39,7 @@ impl SuggestedLayout {
 }
 
 /// What a Workspace Overlay records its edits against.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BaselineVersion {
     /// The opaque `layout.version` fact; compared only for equality.
     Published(String),
@@ -56,7 +56,7 @@ pub struct Slot {
 }
 
 /// The logical definition of a View: its content and preferred presentation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ViewSpec {
     pub content: Content,
     /// Open vocabulary (`terminal`, `web`, `markdown`, ...); frontends pick a
@@ -64,7 +64,7 @@ pub struct ViewSpec {
     pub presentation: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Content {
     /// An aspect of a provider entity; the provider publishes its resolution.
     ProviderFacet { entity: EntityRef, facet: String },
@@ -72,7 +72,7 @@ pub enum Content {
     Local(LocalRecipe),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LocalRecipe {
     Command {
         line: CommandLine,
@@ -90,7 +90,7 @@ pub enum LocalRecipe {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CommandLine {
     /// Structured `argv.<n>` facts (andamento#134). Preferred when present.
     Argv(Vec<String>),
@@ -98,7 +98,7 @@ pub enum CommandLine {
     Shell(String),
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RebindPolicy {
     #[default]
     Replace,
@@ -146,7 +146,7 @@ pub enum PanelNode {
 }
 
 /// `Row` lays children left to right, `Column` top to bottom.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Axis {
     Row,
     Column,

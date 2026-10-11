@@ -1,53 +1,28 @@
 //! Slots and arrangement documents (#144): a workspace's slots follow its
 //! subject's Suggested Layout, the host commits whole arrangements at an
 //! expected generation, and neither invalidates the sidebar's snapshot.
-use andamento_core::managed::{ContentState, TerminalContent};
+//! Portable Target Resolutions (#158) are saved per slot in the record.
+mod common;
+use andamento_core::managed::{ContentState, Resolved, SlotPlan, TerminalContent};
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
-use andamento_core::slots::{ArrangementDoc, ArrangementError, Panel, PanelNode};
+use andamento_core::slots::{ArrangementDoc, Panel, PanelNode};
 use andamento_core::suggested_layout::{
     Axis, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec,
 };
-use andamento_core::{
-    EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
-    WorkspaceId,
-};
-use std::collections::BTreeSet;
+use andamento_core::target_resolution::PortableResolution;
+use andamento_core::versioned::CommitError;
+use andamento_core::workspace::WorkspaceRecord;
+use andamento_core::{EntityRef, MetadataPatch, MetadataValue, MetadataValueUpdate, Sidebar};
+use common::{entity, list, set, text, worker, Feed, CONFIG, WORKER};
+use std::collections::BTreeMap;
 
-fn entity(kind: &str, id: &str) -> EntityRef {
-    EntityRef::local(kind, id)
-}
-fn text(s: &str) -> MetadataValue {
-    MetadataValue::Text(s.into())
-}
-fn list(values: &[&str]) -> MetadataValue {
-    MetadataValue::StringList(values.iter().map(|v| v.to_string()).collect())
-}
+/// A patch setting `facts` on `subject` and unsetting `unset`.
 fn patch(subject: EntityRef, facts: &[(&str, MetadataValue)], unset: &[&str]) -> MetadataPatch {
-    MetadataPatch {
-        target: MetadataTarget::Entity(subject),
-        source_id: "fixture".into(),
-        set: facts
-            .iter()
-            .map(|(key, value)| {
-                (
-                    key.to_string(),
-                    MetadataValueUpdate {
-                        value: value.clone(),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                )
-            })
-            .collect(),
-        unset: unset.iter().map(|key| key.to_string()).collect(),
-    }
+    let mut patch = common::patch(subject, facts);
+    patch.unset = unset.iter().map(|key| key.to_string()).collect();
+    patch
 }
 
-const WORKER: &str = "01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c";
-fn worker() -> WorkspaceId {
-    WORKER.parse().unwrap()
-}
 fn subject() -> EntityRef {
     entity("vessel", "v")
 }
@@ -92,8 +67,8 @@ fn layout(version: &str, slots: Vec<Vec<(String, MetadataValue)>>, keys: &[&str]
 
 /// A sidebar with a workspace open for vessel v.
 fn session(layout_patch: MetadataPatch) -> Sidebar {
-    let mut sidebar = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
-    sidebar.apply(
+    let mut sidebar = Sidebar::new(CONFIG).unwrap();
+    sidebar.feed(
         100,
         [
             patch(
@@ -165,9 +140,6 @@ fn row(children: Vec<Panel>) -> ArrangementDoc {
         }),
     }
 }
-fn set(keys: &[&str]) -> BTreeSet<String> {
-    keys.iter().map(|k| k.to_string()).collect()
-}
 
 #[test]
 fn slots_follow_the_layout_and_arrangements_reconcile() {
@@ -218,7 +190,7 @@ fn slots_follow_the_layout_and_arrangements_reconcile() {
     let stale = sidebar.set_arrangement(worker(), row(vec![tabs("1", &["b", "a"])]), 1);
     assert_eq!(
         stale,
-        Err(ArrangementError::Stale {
+        Err(CommitError::Stale {
             current: commit.generation
         })
     );
@@ -236,7 +208,7 @@ fn slots_follow_the_layout_and_arrangements_reconcile() {
             row(vec![tabs("1", &["a", "zz"]), tabs("2", &["b"])]),
             commit.generation,
         ),
-        Err(ArrangementError::Invalid(_))
+        Err(CommitError::Invalid(_))
     ));
 
     // Baseline 2 drops a and adds c: c is placed in the first tab panel,
@@ -252,7 +224,7 @@ fn slots_follow_the_layout_and_arrangements_reconcile() {
         "layout.root".into(),
         "layout.panel.main.slots".into(),
     ];
-    sidebar.apply(200, [second]);
+    sidebar.feed(200, [second]);
     assert_eq!(keys(&sidebar), ["b", "c"]);
     assert!(sidebar.content_revision() > content);
     let view = sidebar.arrangement(worker()).unwrap();
@@ -303,14 +275,15 @@ fn slots_follow_the_layout_and_arrangements_reconcile() {
 
     let name = format!("workspace/{WORKER}");
     let record = sidebar.export_record(&name).unwrap();
-    assert!(
-        record.contains(r#"slot "u:1" rebind="ask" presentation="terminal""#),
-        "{record}"
-    );
-    let mut fresh = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
+    let mut fresh = Sidebar::new(CONFIG).unwrap();
     fresh.import_record(&name, &record).unwrap();
     assert_eq!(fresh.slots(worker()), sidebar.slots(worker()));
-    assert_eq!(fresh.arrangement(worker()), sidebar.arrangement(worker()));
+    let (mut imported, live) = (
+        fresh.arrangement(worker()).unwrap(),
+        sidebar.arrangement(worker()).unwrap(),
+    );
+    imported.generation = live.generation;
+    assert_eq!(imported, live);
     assert_eq!(fresh.export_record(&name).unwrap(), record);
 }
 
@@ -367,7 +340,7 @@ fn rebind_policies_decide_what_happens_to_the_replaced_instance() {
     };
     let mut sidebar = session(layout("1", slots(), &["r", "k", "q"]));
     // Apply each slot's first resolution.
-    let mut applied = std::collections::BTreeMap::new();
+    let mut applied = BTreeMap::new();
     for key in ["r", "k", "q"] {
         let plan = sidebar.plan_slot(worker(), key, "").unwrap();
         assert_eq!(plan.state, ContentState::Updating);
@@ -384,7 +357,7 @@ fn rebind_policies_decide_what_happens_to_the_replaced_instance() {
     assert!(sidebar.plan_slot(worker(), "nope", "").is_err());
 
     // Every slot resolves to a new instance under the same baseline.
-    sidebar.apply(
+    sidebar.feed(
         200,
         [layout(
             "1",
@@ -446,7 +419,7 @@ fn rebind_policies_decide_what_happens_to_the_replaced_instance() {
             .state,
         ContentState::Failed
     );
-    sidebar.apply(
+    sidebar.feed(
         300,
         [layout(
             "1",
@@ -459,7 +432,7 @@ fn rebind_policies_decide_what_happens_to_the_replaced_instance() {
     assert_ne!(plan.update.unwrap().token, update.token);
 
     // A held resolution suspends the slot without touching its content.
-    sidebar.apply(
+    sidebar.feed(
         400,
         [patch(
             subject(),
@@ -492,34 +465,254 @@ fn primary_content_is_the_primary_slot() {
         sidebar.arrangement(worker()).unwrap().doc.tabs(),
         ["primary"]
     );
-    let applied = TerminalContent {
+    let applied = Resolved::from(TerminalContent {
         target: "attempt-0".into(),
         command: "old".into(),
         cwd: None,
-    };
-    // The ABI 2 plan and the slot plan share one binding and token.
-    let legacy = sidebar
-        .managed
-        .plan(worker(), subject(), applied.clone())
-        .update
+    });
+    let slot = sidebar
+        .plan_slot(worker(), "primary", &applied.id())
         .unwrap();
-    let applied_id = andamento_core::managed::Resolved::from(applied).id();
-    let slot = sidebar.plan_slot(worker(), "primary", &applied_id).unwrap();
     let update = slot.update.unwrap();
-    assert_eq!(update.token, legacy.token);
     assert_eq!(
         update.resolution.as_terminal(),
         Some(("attempt-1", "printf hello", None))
     );
-    assert!(sidebar.managed.valid(worker(), legacy.token));
+    assert!(sidebar
+        .managed
+        .slot_valid(worker(), "primary", update.token));
     assert!(sidebar
         .managed
         .complete_slot(worker(), "primary", update.token, true));
     assert_eq!(
         sidebar
-            .managed
-            .plan(worker(), subject(), legacy.content)
+            .plan_slot(worker(), "primary", &update.resolution.id())
+            .unwrap()
             .state,
         ContentState::Current
+    );
+}
+
+fn cleat(session: &str) -> PortableResolution {
+    PortableResolution {
+        kind: "cleat-session".into(),
+        fields: [("host", "feta"), ("session", session), ("daemon", "D")]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect(),
+    }
+}
+
+#[test]
+fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
+    let slots = |r: &str, k: &str| {
+        vec![
+            facet_slot("r", "keep-previous", r),
+            facet_slot("k", "replace", k),
+        ]
+    };
+    let mut sidebar = session(layout("1", slots("r#1", "k#1"), &["r", "k"]));
+    let plan = sidebar.plan_slot(worker(), "r", "").unwrap();
+    assert_eq!(plan.saved, None);
+    let first = plan.update.unwrap();
+    assert!(sidebar
+        .managed
+        .complete_slot(worker(), "r", first.token, true));
+
+    // The host saves what it resolved r#1 to, for the resolution it applied.
+    let revision = sidebar.content_revision();
+    assert!(matches!(
+        sidebar.set_slot_resolution(worker(), "r", cleat("S1"), "other", 0),
+        Err(CommitError::Invalid(_))
+    ));
+    assert_eq!(
+        sidebar.set_slot_resolution(worker(), "r", cleat("S1"), &first.id, 1),
+        Err(CommitError::Stale { current: 0 })
+    );
+    assert!(sidebar
+        .set_slot_resolution(worker(), "nope", cleat("S1"), &first.id, 0)
+        .is_err());
+    assert_eq!(sidebar.content_revision(), revision);
+    let g1 = sidebar
+        .set_slot_resolution(worker(), "r", cleat("S1"), &first.id, 0)
+        .unwrap();
+    assert!(g1 > 0 && sidebar.content_revision() > revision);
+    let saved = sidebar.slot_resolution(worker(), "r").unwrap().unwrap();
+    assert_eq!(
+        (
+            saved.resolution.clone(),
+            saved.against.as_str(),
+            saved.generation
+        ),
+        (cleat("S1"), first.id.as_str(), g1)
+    );
+    // Saving it again changes nothing.
+    let revision = sidebar.content_revision();
+    assert_eq!(
+        sidebar.set_slot_resolution(worker(), "r", cleat("S1"), &first.id, g1),
+        Ok(g1)
+    );
+    assert_eq!(sidebar.content_revision(), revision);
+    // The plan reports it whatever the state.
+    let plan = sidebar.plan_slot(worker(), "r", &first.id).unwrap();
+    assert_eq!(plan.state, ContentState::Current);
+    assert_eq!(plan.saved.as_ref(), Some(&saved));
+
+    // It round-trips through the record. Another device with no instance
+    // plans Updating to the same resolution, with the saved one to try first.
+    let name = format!("workspace/{WORKER}");
+    let record = sidebar.export_record(&name).unwrap();
+    let mut other = Sidebar::new(CONFIG).unwrap();
+    other.import_record(&name, &record).unwrap();
+    assert_eq!(other.export_record(&name).unwrap(), record);
+    // No facts yet: Unavailable, and the saved resolution is kept, at a
+    // generation of the other sidebar's own.
+    let same = |plan: &SlotPlan| {
+        plan.saved
+            .as_ref()
+            .is_some_and(|s| (&s.resolution, &s.against) == (&saved.resolution, &saved.against))
+    };
+    let plan = other.plan_slot(worker(), "r", "").unwrap();
+    assert_eq!(plan.state, ContentState::Unavailable);
+    assert!(same(&plan));
+    other.feed(100, [layout("1", slots("r#1", "k#1"), &["r", "k"])]);
+    let plan = other.plan_slot(worker(), "r", "").unwrap();
+    assert_eq!(plan.state, ContentState::Updating);
+    assert!(same(&plan));
+    assert_eq!(plan.update.unwrap().id, saved.against);
+
+    // The provider resolves r to a new target: the saved resolution is
+    // cleared, and the slot rebinds by its policy as for any change.
+    let revision = sidebar.content_revision();
+    sidebar.feed(200, [layout("1", slots("r#2", "k#1"), &["r", "k"])]);
+    assert!(sidebar.content_revision() > revision);
+    assert_eq!(sidebar.slot_resolution(worker(), "r").unwrap(), None);
+    let record = sidebar.export_record(&name).unwrap();
+    let resolutions = WorkspaceRecord::decode(&record, &mut Default::default())
+        .unwrap()
+        .resolutions;
+    assert!(resolutions.get().get("r").is_none());
+    let plan = sidebar.plan_slot(worker(), "r", &first.id).unwrap();
+    assert_eq!(
+        (plan.state, plan.rebind, plan.saved),
+        (ContentState::Updating, RebindPolicy::KeepPrevious, None)
+    );
+    let second = plan.update.unwrap();
+    assert!(sidebar
+        .managed
+        .complete_slot(worker(), "r", second.token, true));
+    let plan = sidebar.plan_slot(worker(), "r", &second.id).unwrap();
+    assert_eq!(plan.previous.as_ref(), Some(&first.id));
+    // A generation is never given out twice.
+    let g2 = sidebar
+        .set_slot_resolution(worker(), "r", cleat("S2"), &second.id, 0)
+        .unwrap();
+    assert!(g2 > g1);
+    // The same happens to a device that imports the old record later.
+    other.import_record(&name, &record).unwrap();
+    other.feed(300, [layout("1", slots("r#2", "k#1"), &["r", "k"])]);
+    assert_eq!(other.slot_resolution(worker(), "r").unwrap(), None);
+
+    // Held (or expired) facts are silence, not a new target: kept.
+    let k = sidebar
+        .plan_slot(worker(), "k", "")
+        .unwrap()
+        .update
+        .unwrap();
+    assert!(
+        sidebar
+            .set_slot_resolution(worker(), "k", cleat("K1"), &k.id, 0)
+            .unwrap()
+            > g2
+    );
+    sidebar.feed(
+        400,
+        [patch(
+            subject(),
+            &[("layout.slot.k.state", text("held"))],
+            &[],
+        )],
+    );
+    assert_eq!(
+        sidebar.plan_slot(worker(), "k", &k.id).unwrap().state,
+        ContentState::Held
+    );
+    assert!(sidebar.slot_resolution(worker(), "k").unwrap().is_some());
+    // The user overriding the slot's content clears it too.
+    let spec = ViewSpec {
+        content: Content::Local(LocalRecipe::Command {
+            line: CommandLine::Shell("htop".into()),
+            cwd: None,
+        }),
+        presentation: None,
+    };
+    assert!(sidebar
+        .set_slot(worker(), "k", spec, RebindPolicy::Replace)
+        .unwrap());
+    assert_eq!(sidebar.slot_resolution(worker(), "k").unwrap(), None);
+
+    // Clearing compares generations.
+    assert_eq!(
+        sidebar.clear_slot_resolution(worker(), "r", g1),
+        Err(CommitError::Stale { current: g2 })
+    );
+    assert_eq!(sidebar.clear_slot_resolution(worker(), "r", g2), Ok(true));
+    assert_eq!(sidebar.clear_slot_resolution(worker(), "r", 0), Ok(false));
+    // Removing a slot drops what was saved for it.
+    let r = sidebar.plan_slot(worker(), "r", "").unwrap();
+    let id = r.update.map_or(second.id.clone(), |u| u.id);
+    sidebar
+        .set_slot_resolution(worker(), "r", cleat("S3"), &id, 0)
+        .unwrap();
+    assert!(sidebar.remove_slot(worker(), "r").unwrap());
+    assert!(sidebar.slot_resolution(worker(), "r").is_err());
+    let record = WorkspaceRecord::decode(
+        &sidebar.export_record(&name).unwrap(),
+        &mut Default::default(),
+    )
+    .unwrap();
+    assert!(record.resolutions.get().get("r").is_none());
+}
+
+/// Regression: an imported record's saved resolutions take generations no
+/// earlier state had, so a save prepared against the resolution an import
+/// replaced is stale (as for an arrangement), not applied over the import.
+#[test]
+fn an_imported_resolution_never_reuses_a_generation() {
+    let url = |url: &str| ViewSpec {
+        content: Content::Local(LocalRecipe::Url { url: url.into() }),
+        presentation: None,
+    };
+    let name = format!("workspace/{WORKER}");
+    let saved_at = |sidebar: &mut Sidebar, session: &str| {
+        sidebar.register_workspace(worker());
+        sidebar
+            .set_slot(worker(), "u:1", url("https://a"), RebindPolicy::Replace)
+            .unwrap();
+        let applied = sidebar
+            .plan_slot(worker(), "u:1", "")
+            .unwrap()
+            .update
+            .unwrap()
+            .id;
+        let generation = sidebar
+            .set_slot_resolution(worker(), "u:1", cleat(session), &applied, 0)
+            .unwrap();
+        (generation, applied)
+    };
+    let mut here = Sidebar::new(CONFIG).unwrap();
+    let mut there = Sidebar::new(CONFIG).unwrap();
+    let (read, applied) = saved_at(&mut here, "S1");
+    saved_at(&mut there, "S2");
+    here.import_record(&name, &there.export_record(&name).unwrap())
+        .unwrap();
+    let imported = here.slot_resolution(worker(), "u:1").unwrap().unwrap();
+    assert_eq!(imported.resolution, cleat("S2"));
+    assert!(imported.generation > read);
+    assert_eq!(
+        here.set_slot_resolution(worker(), "u:1", cleat("S3"), &applied, read),
+        Err(CommitError::Stale {
+            current: imported.generation
+        })
     );
 }

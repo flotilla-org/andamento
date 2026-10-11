@@ -1,23 +1,19 @@
 //! Entities carry the provider (Dashboard subscription) their facts come
 //! from: the same kind and ID under two providers are two entities; a
 //! provider's facts can be retracted at once or kept stale.
-use andamento_core::presentation::{PlacementNode, PresentationState, SurfaceSnapshot};
+mod common;
+use andamento_core::presentation::{PlacementNode, PresentationState};
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
+use andamento_core::workspace::WorkspaceRecord;
 use andamento_core::{
-    EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
-    WorkspaceId,
+    records::DashboardRecord, tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget,
+    MetadataValue, MetadataValueUpdate, Sidebar, WorkspaceId, LOCAL_PROVIDER,
 };
+use common::{nodes, refs, text, CONFIG};
 use std::collections::BTreeMap;
 
-const CONFIG: &str = include_str!("fixtures/sidebar.kdl");
-const W42: WorkspaceId = WorkspaceId::from_u64(42);
+const W42: WorkspaceId = tab_workspace_id(42);
 
-fn text(s: &str) -> MetadataValue {
-    MetadataValue::Text(s.into())
-}
-fn refs(entity: EntityRef) -> MetadataValue {
-    MetadataValue::EntityRefs(vec![entity])
-}
 /// A patch as a producer writes it: it names no provider.
 fn patch(
     kind: &str,
@@ -73,19 +69,6 @@ fn fleet(tag: &str, ttl_ms: Option<u64>) -> Vec<MetadataPatch> {
 fn entity(provider: &str, kind: &str, id: &str) -> EntityRef {
     EntityRef::new(provider, kind, id)
 }
-fn nodes(surface: &SurfaceSnapshot) -> Vec<&PlacementNode> {
-    fn collect<'a>(nodes: &'a [PlacementNode], out: &mut Vec<&'a PlacementNode>) {
-        for node in nodes {
-            out.push(node);
-            collect(&node.children, out);
-        }
-    }
-    let mut out = vec![];
-    for section in &surface.sections {
-        collect(&section.nodes, &mut out);
-    }
-    out
-}
 fn tree(sidebar: &Sidebar) -> Vec<PlacementNode> {
     sidebar.snapshot().surface.sections[0].nodes.clone()
 }
@@ -118,12 +101,8 @@ fn open(sidebar: &mut Sidebar, subject: EntityRef) {
 #[test]
 fn the_same_kind_and_id_under_two_providers_are_two_entities() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    sidebar
-        .apply_from(100, "sub-1", fleet("one", None))
-        .unwrap();
-    sidebar
-        .apply_from(100, "sub-2", fleet("two", None))
-        .unwrap();
+    sidebar.apply(100, "sub-1", fleet("one", None)).unwrap();
+    sidebar.apply(100, "sub-2", fleet("two", None)).unwrap();
     let projects = tree(&sidebar);
     assert_eq!(projects.len(), 2);
     for project in &projects {
@@ -173,10 +152,14 @@ fn the_same_kind_and_id_under_two_providers_are_two_entities() {
         }
     }
     // The workspace's subject keeps its provider in its record.
-    let record = sidebar.export_record("workspace/42").unwrap();
-    assert!(
-        record.contains(r#"subject "vessel" "v" provider="sub-1""#),
-        "{record}"
+    let record = WorkspaceRecord::decode(
+        &sidebar.export_record(&format!("workspace/{W42}")).unwrap(),
+        &mut Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        record.subject(),
+        Some(&EntityRef::new("sub-1", "vessel", "v"))
     );
 }
 
@@ -200,8 +183,8 @@ fn a_patch_never_names_its_own_provider() {
             ordinal: None,
         },
     );
-    sidebar.apply_from(100, "sub-1", forged).unwrap();
-    assert!(sidebar.apply_from(100, "", fleet("x", None)).is_err());
+    sidebar.apply(100, "sub-1", forged).unwrap();
+    assert!(sidebar.apply(100, "", fleet("x", None)).is_err());
     let snapshot = sidebar.snapshot();
     let all = nodes(&snapshot.surface);
     assert!(all.iter().all(|n| n.entity.provider == "sub-1"), "{all:?}");
@@ -213,48 +196,35 @@ fn a_patch_never_names_its_own_provider() {
 }
 
 #[test]
-fn abi_2_callers_get_the_default_provider() {
+fn a_reference_to_a_local_entity_stays_local() {
+    // A producer may file its entity under one of Andamento's own groups;
+    // stamping its provider must not claim the group.
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    assert_eq!(sidebar.default_provider(), "local");
-    sidebar.apply(100, fleet("local", None));
-    let projects = tree(&sidebar);
-    assert_eq!(projects.len(), 1);
-    assert_eq!(projects[0].entity, EntityRef::local("project", "p"));
-    // Unnamed entities in actions and lookups mean the default provider.
-    assert!(sidebar
-        .detail_card(&entity("", "vessel", "v"))
-        .is_some_and(|card| card.entity == EntityRef::local("vessel", "v")));
-    let effects = sidebar
-        .dispatch(Action::Activate {
-            entity: entity("", "vessel", "v"),
-        })
-        .unwrap();
-    assert!(matches!(
-        &effects[..],
-        [HostEffect::Materialize { entity, .. }] if entity == &EntityRef::local("vessel", "v")
-    ));
-
-    // A host moving to providers changes the default for later patches.
-    assert!(sidebar.set_default_provider("").is_err());
-    sidebar.set_default_provider("sub-1").unwrap();
-    sidebar.apply(101, fleet("one", None));
-    let providers = tree(&sidebar)
-        .iter()
-        .map(|n| n.entity.provider.clone())
-        .collect::<Vec<_>>();
-    assert_eq!(providers.len(), 2);
-    assert!(providers.contains(&"local".to_owned()) && providers.contains(&"sub-1".to_owned()));
+    let mut patches = fleet("one", None);
+    patches[1].set.insert(
+        ".group".into(),
+        MetadataValueUpdate {
+            value: refs(entity(LOCAL_PROVIDER, ".group", "g")),
+            ttl_ms: None,
+            precedence: None,
+            ordinal: None,
+        },
+    );
+    sidebar.apply(100, "sub-1", patches).unwrap();
+    let snapshot = sidebar.snapshot();
+    let all = nodes(&snapshot.surface);
+    let vessel = all.iter().find(|n| n.entity.kind == "vessel").unwrap();
+    assert_eq!(
+        vessel.facts[".group"],
+        refs(entity(LOCAL_PROVIDER, ".group", "g"))
+    );
 }
 
 #[test]
 fn a_workspace_bound_by_a_providers_own_facts_is_that_providers() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    sidebar
-        .apply_from(100, "sub-1", fleet("one", None))
-        .unwrap();
-    sidebar
-        .apply_from(100, "sub-2", fleet("two", None))
-        .unwrap();
+    sidebar.apply(100, "sub-1", fleet("one", None)).unwrap();
+    sidebar.apply(100, "sub-2", fleet("two", None)).unwrap();
     let mut binding = patch(
         "vessel",
         "v",
@@ -262,7 +232,7 @@ fn a_workspace_bound_by_a_providers_own_facts_is_that_providers() {
         &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
     );
     binding.target = MetadataTarget::Tab(W42);
-    sidebar.apply_from(100, "sub-2", [binding]).unwrap();
+    sidebar.apply(100, "sub-2", [binding]).unwrap();
     sidebar.observe(vec![workspace(W42)], vec![]);
     sidebar.register_workspace(W42);
     for project in tree(&sidebar) {
@@ -284,19 +254,21 @@ fn a_workspace_bound_by_a_providers_own_facts_is_that_providers() {
             selected: true
         }
     );
-    let record = sidebar.export_record("workspace/42").unwrap();
-    assert!(
-        record.contains(r#"subject "vessel" "v" provider="sub-2""#),
-        "{record}"
+    let record = WorkspaceRecord::decode(
+        &sidebar.export_record(&format!("workspace/{W42}")).unwrap(),
+        &mut Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        record.subject(),
+        Some(&EntityRef::new("sub-2", "vessel", "v"))
     );
 }
 
 #[test]
 fn retracting_a_provider_removes_its_facts_and_retains_open_workspaces() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    sidebar
-        .apply_from(100, "sub-1", fleet("one", None))
-        .unwrap();
+    sidebar.apply(100, "sub-1", fleet("one", None)).unwrap();
     let mut other = fleet("one", None);
     other.push(patch(
         "vessel",
@@ -307,10 +279,8 @@ fn retracting_a_provider_removes_its_facts_and_retains_open_workspaces() {
             ("display.label", text("Unopened")),
         ],
     ));
-    sidebar.apply_from(100, "sub-1", other).unwrap();
-    sidebar
-        .apply_from(100, "sub-2", fleet("two", None))
-        .unwrap();
+    sidebar.apply(100, "sub-1", other).unwrap();
+    sidebar.apply(100, "sub-2", fleet("two", None)).unwrap();
     open(&mut sidebar, entity("sub-1", "vessel", "v"));
     let revision = sidebar.revision();
 
@@ -343,13 +313,14 @@ fn retracting_a_provider_removes_its_facts_and_retains_open_workspaces() {
         .unwrap();
     assert_eq!(two.children[0].label, "Vessel two");
     // The workspace record keeps the retained path, with providers.
-    let record = sidebar.export_record("workspace/42").unwrap();
-    assert!(
-        record.contains(
-            r#"retained "vessel" "v" provider="sub-1" label="Vessel one" status="retained""#
-        ),
-        "{record}"
-    );
+    let record = WorkspaceRecord::decode(
+        &sidebar.export_record(&format!("workspace/{W42}")).unwrap(),
+        &mut Default::default(),
+    )
+    .unwrap();
+    let retained = &record.subject.get().retained[&EntityRef::new("sub-1", "vessel", "v")];
+    assert_eq!(retained.label.as_deref(), Some("Vessel one"));
+    assert!(!retained.ended);
 
     // Closing the workspace lets the retained path go.
     sidebar.observe(vec![], vec![]);
@@ -418,12 +389,8 @@ fn refs_keep_presenting_a_retracted_target() {
     assert!(sidebar
         .set_local(entity("sub-1", ".group", "g2"), BTreeMap::new())
         .is_err());
-    sidebar
-        .apply_from(100, "sub-1", fleet("one", None))
-        .unwrap();
-    sidebar
-        .apply_from(100, "sub-2", fleet("two", None))
-        .unwrap();
+    sidebar.apply(100, "sub-1", fleet("one", None)).unwrap();
+    sidebar.apply(100, "sub-2", fleet("two", None)).unwrap();
     let labels = |sidebar: &Sidebar| {
         let snapshot = sidebar.snapshot();
         nodes(&snapshot.surface)
@@ -441,24 +408,23 @@ fn refs_keep_presenting_a_retracted_target() {
     assert_eq!(labels(&sidebar), presented);
     // The pinned target is kept in the dashboard record with its provider.
     let dashboard = sidebar.export_record("dashboard").unwrap();
-    assert!(
-        dashboard.contains(r#"entity "vessel" "v" provider="sub-1""#),
-        "{dashboard}"
-    );
+    let dashboard = DashboardRecord::decode(&dashboard).unwrap();
+    let pin = &dashboard.state.local[&EntityRef::local(".ref", "sub-1")];
+    assert_eq!(pin[".target"], refs(entity("sub-1", "vessel", "v")));
 }
 
 #[test]
 fn a_stale_providers_facts_do_not_expire_and_are_flagged() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
     sidebar
-        .apply_from(100, "sub-1", fleet("one", Some(1_000)))
+        .apply(100, "sub-1", fleet("one", Some(1_000)))
         .unwrap();
     sidebar
-        .apply_from(100, "sub-2", fleet("two", Some(1_000)))
+        .apply(100, "sub-2", fleet("two", Some(1_000)))
         .unwrap();
     // Facts that expired before the provider went stale stay expired.
     sidebar
-        .apply_from(
+        .apply(
             100,
             "sub-1",
             [patch(
@@ -472,7 +438,7 @@ fn a_stale_providers_facts_do_not_expire_and_are_flagged() {
             )],
         )
         .unwrap();
-    sidebar.apply(200, []);
+    sidebar.tick(200);
     let stale_of = |sidebar: &Sidebar| {
         let snapshot = sidebar.snapshot();
         nodes(&snapshot.surface)
@@ -488,7 +454,7 @@ fn a_stale_providers_facts_do_not_expire_and_are_flagged() {
     assert_ne!(sidebar.revision(), revision);
 
     // Long past the TTL: sub-2's facts expired, sub-1's are kept and stale.
-    sidebar.apply(5_000, []);
+    sidebar.tick(5_000);
     let state = stale_of(&sidebar);
     assert!(!state.is_empty());
     assert!(
@@ -504,13 +470,13 @@ fn a_stale_providers_facts_do_not_expire_and_are_flagged() {
     // Fresh again, each lease restarts now, so the facts live one more TTL.
     assert!(sidebar.set_provider_stale("sub-1", false));
     assert!(!sidebar.provider_is_stale("sub-1"));
-    sidebar.apply(5_900, []);
+    sidebar.tick(5_900);
     let state = stale_of(&sidebar);
     assert!(!state.is_empty() && state.iter().all(|(_, _, stale)| !stale));
     assert!(!serde_json::to_string(&sidebar.snapshot())
         .unwrap()
         .contains("\"stale\""));
-    sidebar.apply(6_001, []);
+    sidebar.tick(6_001);
     assert!(tree(&sidebar).is_empty());
 }
 
@@ -540,9 +506,7 @@ fn a_stale_ref_target_marks_the_ref_stale() {
             ]),
         )
         .unwrap();
-    sidebar
-        .apply_from(100, "sub-1", fleet("one", None))
-        .unwrap();
+    sidebar.apply(100, "sub-1", fleet("one", None)).unwrap();
     sidebar.set_provider_stale("sub-1", true);
     let snapshot = sidebar.snapshot();
     let all = nodes(&snapshot.surface);
@@ -554,52 +518,32 @@ fn a_stale_ref_target_marks_the_ref_stale() {
         .all(|n| !n.stale));
 }
 
+/// An entity that names its own action target is live in the workspace
+/// materialized for it, whatever its provider: the tab is bound by the
+/// entity's identity, and matched by the entity's target.
 #[test]
-fn version_1_records_import_under_the_default_provider() {
+fn an_entity_naming_its_own_action_target_goes_live_for_any_provider() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    sidebar.set_default_provider("sub-1").unwrap();
-    sidebar
-        .import_record(
-            "dashboard",
-            r#"andamento-record "dashboard" version=1 {
-    collapsed {
-        at "project" "project" "p"
-    }
-}"#,
-        )
-        .unwrap();
-    sidebar
-        .import_record(
-            "workspace/42",
-            r#"andamento-record "workspace/42" version=1 {
-    subject "vessel" "v"
-    retained "vessel" "v" label="Vessel one" status="retained"
-}"#,
-        )
-        .unwrap();
-    sidebar
-        .apply_from(100, "sub-1", fleet("one", None))
-        .unwrap();
-    sidebar
-        .apply_from(100, "sub-2", fleet("two", None))
-        .unwrap();
-    sidebar.observe(vec![workspace(W42)], vec![]);
-    for project in tree(&sidebar) {
-        // The migrated collapse is sub-1's, and so is the workspace.
-        let one = project.entity.provider == "sub-1";
-        assert_eq!(project.collapsed, one, "{project:?}");
-        let live = matches!(project.children[0].state, PresentationState::Live { .. });
-        assert_eq!(live, one);
-    }
-    let dashboard = sidebar.export_record("dashboard").unwrap();
-    assert!(dashboard.starts_with(r#"andamento-record "dashboard" version=3"#));
-    assert!(
-        dashboard.contains(r#"at "project" "project" "p" provider="sub-1""#),
-        "{dashboard}"
+    let mut patches = fleet("one", None);
+    patches[1].set.insert(
+        "action.primary.target".into(),
+        MetadataValueUpdate {
+            value: text("vessel:v"),
+            ttl_ms: None,
+            precedence: None,
+            ordinal: None,
+        },
     );
-    let workspace = sidebar.export_record("workspace/42").unwrap();
+    sidebar.apply(100, "sub-1", patches).unwrap();
+    open(&mut sidebar, entity("sub-1", "vessel", "v"));
+    let snapshot = sidebar.snapshot();
+    let vessel = nodes(&snapshot.surface)
+        .into_iter()
+        .find(|n| n.entity.kind == "vessel")
+        .unwrap();
     assert!(
-        workspace.contains(r#"subject "vessel" "v" provider="sub-1""#),
-        "{workspace}"
+        matches!(vessel.state, PresentationState::Live { workspace_id, .. } if workspace_id == W42),
+        "{:?}",
+        vessel.state
     );
 }

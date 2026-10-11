@@ -239,7 +239,7 @@ the same typed core later. Typed scalar entity ingestion already permits
 native facts without encoding. Implementing another wire encoding, snapshot
 diffs, and a complete C mirror of the Rust model are deferred. The compiled C
 fixture consumer verifies the first native slice; Wheelhouse call sites will
-guide further projection fields. See the embedding guide for ABI 2 details.
+guide further projection fields. See [The host interface](host-interface.md) for the C details.
 
 ## Region placement hints
 
@@ -258,14 +258,17 @@ hosts can share this policy through
 as `a order=10`, `b` (no order), and `c order=0` have keys `(10, 0)`,
 `(1, 1)`, and `(0, 2)`, so the default order is `c, b, a`. A saved user
 arrangement takes precedence over all three hints. Andamento keeps the
-declared region sequence; Zellij may ignore these hints.
+declared region sequence; Zellij may ignore these hints. Andamento itself
+places sections by these hints in the Dashboard's sidebar arrangement, which
+also puts pinned regions first: see [The sidebar
+arrangement](sidebar-arrangement.md).
 
 An unhinted region at index 2 sorts before a region with `order=10`. Authors
 can specify order on all regions, or omit it on all regions, to avoid mixing
 these scales.
 
 Rust consumers read `SurfaceRegionDefinition` or the resolved `Section`.
-Native consumers call `andamento_snapshot_region_hints` with a section node
-index. This additive ABI 2 extension leaves `AndamentoNode` unchanged. Its text
-borrows the immutable snapshot; `has_order` distinguishes absent order from zero.
+Native consumers read a section node's `default_host`, `has_order` and
+`order` fields. The text borrows the immutable snapshot; `has_order`
+distinguishes absent order from zero.
 User moves belong to the frontend's saved layout and never update shared KDL.

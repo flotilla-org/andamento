@@ -1,11 +1,11 @@
 //! Reconciliation of each Slot's content: Andamento plans changes with
 //! tokens, and the host prepares the runtime instance, validates the token,
 //! commits and acknowledges. Bindings are keyed by workspace and slot key;
-//! managed primary content is the `primary` slot, and its ABI 2 calls
-//! ([`ManagedContent::plan`] and friends) are wrappers over the slot calls.
+//! managed primary content is the `primary` slot.
 //! Missing facts suspend updates; they never mean delete the existing content.
 use crate::{
-    suggested_layout::{CommandLine, LocalRecipe, RebindPolicy, PRIMARY_SLOT},
+    suggested_layout::{CommandLine, LocalRecipe, RebindPolicy},
+    target_resolution::SavedResolution,
     EntityRef, WorkspaceId,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -123,12 +123,6 @@ pub enum SlotSource {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContentUpdate {
-    pub token: u64,
-    pub content: TerminalContent,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SlotUpdate {
     pub token: u64,
     pub resolution: Resolved,
@@ -145,12 +139,6 @@ pub enum ContentState {
     Failed,
 }
 
-#[derive(Clone, Debug)]
-pub struct ContentPlan {
-    pub state: ContentState,
-    pub update: Option<ContentUpdate>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SlotPlan {
     pub state: ContentState,
@@ -163,6 +151,13 @@ pub struct SlotPlan {
     /// Under `KeepPrevious`, the identity of the resolution a committed
     /// rebind replaced, until the host releases that instance.
     pub previous: Option<String>,
+    /// The portable Target Resolution saved with the workspace for this
+    /// slot, if any. It was made for the resolution whose identity is its
+    /// `against`: while Updating to that resolution (a host starting with
+    /// no instance), try connecting through it before resolving the target
+    /// afresh. A saved resolution the slot no longer resolves to is cleared,
+    /// so it is never one for other content.
+    pub saved: Option<SavedResolution>,
 }
 
 struct Binding {
@@ -292,6 +287,7 @@ impl ManagedContent {
                 .filter(|_| state == ContentState::Updating),
             rebind: binding.rebind,
             previous: binding.previous.clone(),
+            saved: None,
         }
     }
 
@@ -347,52 +343,5 @@ impl ManagedContent {
             .get_mut(&(workspace, slot.to_owned()))
             .and_then(|binding| binding.previous.take())
             .is_some()
-    }
-
-    /// ABI 2: plan the `primary` slot, whose resolution `entity` publishes.
-    pub fn plan(
-        &mut self,
-        workspace: WorkspaceId,
-        entity: EntityRef,
-        applied: TerminalContent,
-    ) -> ContentPlan {
-        let source = SlotSource::Provider {
-            entity,
-            slot: PRIMARY_SLOT.to_owned(),
-        };
-        let applied = Resolved::from(applied).id();
-        let plan = self.plan_slot(
-            workspace,
-            PRIMARY_SLOT,
-            source,
-            RebindPolicy::Replace,
-            &applied,
-        );
-        ContentPlan {
-            state: plan.state,
-            update: plan.update.and_then(|update| {
-                let (target, command, cwd) = update.resolution.as_terminal()?;
-                Some(ContentUpdate {
-                    token: update.token,
-                    content: TerminalContent {
-                        target: target.to_owned(),
-                        command: command.to_owned(),
-                        cwd: cwd.map(str::to_owned),
-                    },
-                })
-            }),
-        }
-    }
-
-    pub fn valid(&self, workspace: WorkspaceId, token: u64) -> bool {
-        self.slot_valid(workspace, PRIMARY_SLOT, token)
-    }
-
-    pub fn complete(&mut self, workspace: WorkspaceId, token: u64, success: bool) -> bool {
-        self.complete_slot(workspace, PRIMARY_SLOT, token, success)
-    }
-
-    pub fn retry(&mut self, workspace: WorkspaceId) {
-        self.retry_slot(workspace, PRIMARY_SLOT)
     }
 }

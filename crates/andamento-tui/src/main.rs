@@ -11,8 +11,7 @@ mod native {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use andamento_core::sidebar::{HostEffect, Request, Sidebar, Workspace};
-    use andamento_core::MetadataPatch;
-    use andamento_core::WorkspaceId;
+    use andamento_core::{tab_workspace_id, MetadataPatch, WorkspaceId};
     use andamento_terminal::surface;
     use crossterm::{cursor, event, execute, terminal};
 
@@ -77,13 +76,12 @@ mod native {
                     if !output.status.success() {
                         return Err(io::Error::other("tmux new-window failed"));
                     }
-                    // tmux window IDs are numeric: the ABI 2-style embedding.
                     let id: u64 = String::from_utf8_lossy(&output.stdout)
                         .trim()
                         .trim_start_matches('@')
                         .parse()
                         .map_err(|_| io::Error::other("tmux returned an invalid window id"))?;
-                    Ok(Some(id.into()))
+                    Ok(Some(window_workspace_id(id)))
                 }
                 HostEffect::OpenUrl { url } => {
                     let opener = if cfg!(target_os = "macos") {
@@ -103,18 +101,21 @@ mod native {
         }
     }
 
+    /// A tmux window's Workspace ID, from its numeric window ID.
+    fn window_workspace_id(window: u64) -> WorkspaceId {
+        tab_workspace_id(window)
+    }
+
+    /// The provider (subscription ID) the facts command's patches come from.
+    const PROVIDER: &str = "facts";
+
     fn parse_workspaces(output: &str) -> Vec<Workspace> {
         output
             .lines()
             .filter_map(|line| {
                 let mut fields = line.split('\t');
                 Some(Workspace {
-                    id: fields
-                        .next()?
-                        .trim_start_matches('@')
-                        .parse::<u64>()
-                        .ok()?
-                        .into(),
+                    id: window_workspace_id(fields.next()?.trim_start_matches('@').parse().ok()?),
                     position: fields.next()?.parse().ok()?,
                     name: fields.next()?.to_owned(),
                     selected: fields.next()? == "1",
@@ -211,7 +212,9 @@ mod native {
         let mut selected = 0usize;
         loop {
             let patches = facts.try_iter().collect::<Vec<_>>();
-            sidebar.apply(now_ms(), patches);
+            sidebar
+                .apply(now_ms(), PROVIDER, patches)
+                .map_err(io::Error::other)?;
             let workspaces = match host.observe() {
                 Ok(workspaces) => workspaces,
                 Err(error) => {
@@ -318,7 +321,7 @@ mod native {
                     workspaces[0].position,
                     workspaces[0].selected
                 ),
-                (WorkspaceId::from(7), 2, true)
+                (tab_workspace_id(7), 2, true)
             );
             assert_eq!(workspaces[1].name, "docs");
         }

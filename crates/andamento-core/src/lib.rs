@@ -14,12 +14,17 @@ pub mod profile;
 pub mod records;
 pub mod replay;
 pub mod sidebar;
+pub mod sidebar_arrangement;
 pub mod slots;
 pub mod state;
 pub mod suggested_layout;
 pub use sidebar::Sidebar;
+pub mod target_resolution;
 pub mod template_config;
+pub mod versioned;
+pub mod workspace;
 mod workspace_id;
+pub use host::tab_workspace_id;
 pub use workspace_id::WorkspaceId;
 
 pub const MSG_RENDERER_HELLO: &str = "andamento-renderer-hello";
@@ -455,9 +460,9 @@ pub struct MetadataIdentity {
     pub value: MetadataValue,
 }
 
-/// The provider of Andamento's own entities and of anything a host publishes
-/// without naming a subscription: local sections, groups and refs, one-off
-/// local scripts, and every fact while no other default is configured.
+/// The provider of Andamento's own entities: local sections, groups and refs,
+/// and the facts Andamento itself (or a Zellij controller patch) asserts. A
+/// host's subscription is never called this.
 pub const LOCAL_PROVIDER: &str = "local";
 
 /// An entity: `{provider, kind, id}`. The provider is the Dashboard's
@@ -466,8 +471,8 @@ pub const LOCAL_PROVIDER: &str = "local";
 /// key. The same kind and ID under two providers are distinct entities.
 ///
 /// In JSON a missing `provider` is empty, which means "not named": patch
-/// application stamps the patch's provider over it, and other entry points
-/// fill in the configured default provider. A stored entity always has one.
+/// application stamps the patch's provider over it. Every other entry point
+/// rejects an entity that names none.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EntityRef {
     #[serde(default)]
@@ -509,50 +514,28 @@ impl PlacementKey {
     }
 }
 
-impl PlacementKey {
-    /// Fill in `provider` wherever a segment's entity names none.
-    pub fn fill_provider(&mut self, provider: &str) {
-        for segment in &mut self.0 {
-            segment.entity.fill_provider(provider);
-        }
-    }
-}
-
-/// Marks the loop-key encoding that carries providers (see
-/// [`PlacementLoopKey::encode`]). The earlier encoding starts with a digit.
-const LOOP_KEY_V2: &str = "v2;";
-
 impl PlacementLoopKey {
-    /// Stable text for hosts: `v2;`, then each part length-prefixed
-    /// (`len:text`), in the order region, then each parent segment's loop
-    /// name, entity provider, kind and id, then the loop binding. Hosts treat
-    /// it as opaque and compare it for equality; only Andamento decodes it.
+    /// Stable text for hosts: each part length-prefixed (`len:text`), in the
+    /// order region, then each parent segment's loop name, entity provider,
+    /// kind and id, then the loop binding. Hosts treat it as opaque and
+    /// compare it for equality; only Andamento decodes it.
     pub fn encode(&self) -> String {
-        std::iter::once(LOOP_KEY_V2.to_owned())
-            .chain(
-                std::iter::once(&self.region)
-                    .chain(self.parent.0.iter().flat_map(|s| {
-                        [
-                            &s.loop_name,
-                            &s.entity.provider,
-                            &s.entity.kind,
-                            &s.entity.id,
-                        ]
-                    }))
-                    .chain(std::iter::once(&self.binding))
-                    .map(|s| format!("{}:{}", s.len(), s)),
-            )
+        std::iter::once(&self.region)
+            .chain(self.parent.0.iter().flat_map(|s| {
+                [
+                    &s.loop_name,
+                    &s.entity.provider,
+                    &s.entity.kind,
+                    &s.entity.id,
+                ]
+            }))
+            .chain(std::iter::once(&self.binding))
+            .map(|s| format!("{}:{}", s.len(), s))
             .collect()
     }
 
-    /// Inverse of [`encode`](Self::encode), for keys a host hands back. Keys
-    /// in the earlier encoding, without `v2;` and providers, still decode;
-    /// their entities name no provider, so the sidebar gives them its default.
+    /// Inverse of [`encode`](Self::encode), for keys a host hands back.
     pub fn decode(text: &str) -> Option<Self> {
-        let (text, width) = match text.strip_prefix(LOOP_KEY_V2) {
-            Some(rest) => (rest, 4),
-            None => (text, 3),
-        };
         let mut parts = Vec::new();
         let mut rest = text;
         while !rest.is_empty() {
@@ -564,20 +547,16 @@ impl PlacementLoopKey {
             parts.push(tail[..len].to_owned());
             rest = &tail[len..];
         }
-        if parts.len() < 2 || (parts.len() - 2) % width != 0 {
+        if parts.len() < 2 || (parts.len() - 2) % 4 != 0 {
             return None;
         }
         let binding = parts.pop()?;
         let region = parts.remove(0);
         let parent = parts
-            .chunks(width)
+            .chunks(4)
             .map(|c| PlacementSegment {
                 loop_name: c[0].clone(),
-                entity: match c {
-                    [_, provider, kind, id] => EntityRef::new(provider, kind, id),
-                    [_, kind, id] => EntityRef::new("", kind, id),
-                    _ => unreachable!("chunks have the encoding's width"),
-                },
+                entity: EntityRef::new(&c[1], &c[2], &c[3]),
             })
             .collect();
         Some(Self {
@@ -585,13 +564,6 @@ impl PlacementLoopKey {
             parent: PlacementKey(parent),
             binding,
         })
-    }
-}
-
-impl PlacementLoopKey {
-    /// Fill in `provider` wherever a parent segment's entity names none.
-    pub fn fill_provider(&mut self, provider: &str) {
-        self.parent.fill_provider(provider);
     }
 }
 
@@ -626,10 +598,21 @@ impl EntityRef {
     }
 
     /// Give the entity `provider` if it names none.
-    pub fn fill_provider(&mut self, provider: &str) {
+    fn fill_provider(&mut self, provider: &str) {
         if self.provider.is_empty() {
             self.provider = provider.to_owned();
         }
+    }
+
+    /// An entity a host names must name its provider.
+    pub fn check_provider(&self) -> Result<(), String> {
+        if self.provider.is_empty() {
+            return Err(format!(
+                "entity {}:{} names no provider",
+                self.kind, self.id
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -639,18 +622,24 @@ impl MetadataValue {
     fn set_providers(&mut self, provider: &str, stamp: bool) {
         if let MetadataValue::EntityRefs(refs) = self {
             for entity in refs {
-                if stamp {
+                // A reference to Andamento's own entities (a section, group
+                // or ref) stays local: a producer can file its entity under
+                // a local group without claiming that group.
+                if stamp && entity.provider != LOCAL_PROVIDER {
                     entity.provider = provider.to_owned();
-                } else {
+                } else if !stamp {
                     entity.fill_provider(provider);
                 }
             }
         }
     }
 
-    /// Give every entity this value refers to `provider` if it names none.
-    pub fn fill_provider(&mut self, provider: &str) {
-        self.set_providers(provider, false);
+    /// Every entity this value refers to names its provider.
+    pub fn check_providers(&self) -> Result<(), String> {
+        match self {
+            MetadataValue::EntityRefs(refs) => refs.iter().try_for_each(EntityRef::check_provider),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -668,14 +657,15 @@ impl MetadataPatch {
     }
 
     /// Stamp `provider` over every entity the patch names: its target and
-    /// any entity references among its values. A patch never names its own
+    /// any entity references among its values, except references to
+    /// Andamento's own (local) entities. A patch never names its own
     /// provider; the host supplies the subscription it came from.
     pub fn stamp_provider(&mut self, provider: &str) {
         self.set_providers(provider, true);
     }
 
     /// Give every entity the patch names `provider` if it names none.
-    pub fn fill_provider(&mut self, provider: &str) {
+    pub(crate) fn fill_provider(&mut self, provider: &str) {
         self.set_providers(provider, false);
     }
 }
@@ -1221,8 +1211,8 @@ mod tests {
     fn config_inspect_request_round_trips_json() {
         let request = ConfigInspectRequest {
             client_id: 4,
-            origin_tab_id: WorkspaceId::from(7),
-            node_key: NodeKey::Tab(WorkspaceId::from(7)),
+            origin_tab_id: tab_workspace_id(7),
+            node_key: NodeKey::Tab(tab_workspace_id(7)),
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
@@ -1241,7 +1231,7 @@ mod tests {
                 client_id: 4,
             },
             placement: PluginPlacement::Tab {
-                tab_id: WorkspaceId::from(7),
+                tab_id: tab_workspace_id(7),
                 pane_kind: PluginPaneKind::Floating,
             },
         };
@@ -1332,11 +1322,11 @@ mod tests {
         let key = PlacementKey(vec![
             PlacementSegment {
                 loop_name: "project".to_owned(),
-                entity: EntityRef::local("project".to_owned(), "andamento".to_owned()),
+                entity: EntityRef::local("project", "andamento"),
             },
             PlacementSegment {
                 loop_name: "vessel".to_owned(),
-                entity: EntityRef::local("vessel".to_owned(), "andamento/work".to_owned()),
+                entity: EntityRef::local("vessel", "andamento/work"),
             },
         ]);
         let encoded = serde_json::to_string(&key).unwrap();
@@ -1346,10 +1336,7 @@ mod tests {
 
     #[test]
     fn metadata_target_entity_round_trips_json() {
-        let target = MetadataTarget::Entity(EntityRef::local(
-            "convoy".to_owned(),
-            "dev/cutover@kiwi".to_owned(),
-        ));
+        let target = MetadataTarget::Entity(EntityRef::local("convoy", "dev/cutover@kiwi"));
 
         let encoded = serde_json::to_string(&target).unwrap();
         let decoded: MetadataTarget = serde_json::from_str(&encoded).unwrap();
@@ -1372,7 +1359,7 @@ mod tests {
     }
 
     #[test]
-    fn loop_keys_carry_providers_and_old_keys_still_decode() {
+    fn loop_keys_carry_providers() {
         let key = PlacementLoopKey {
             region: "tree".into(),
             parent: PlacementKey(vec![PlacementSegment {
@@ -1382,18 +1369,20 @@ mod tests {
             binding: "vessel".into(),
         };
         let text = key.encode();
-        assert_eq!(text, "v2;4:tree7:project5:sub-17:project1:p6:vessel");
+        assert_eq!(text, "4:tree7:project5:sub-17:project1:p6:vessel");
         assert_eq!(PlacementLoopKey::decode(&text), Some(key.clone()));
         // The same kind and ID under another provider is another key.
         let mut other = key.clone();
         other.parent.0[0].entity.provider = "sub-2".into();
         assert_ne!(other.encode(), text);
-        // A key encoded before providers names none; the sidebar fills in its
-        // default.
-        let mut old = PlacementLoopKey::decode("4:tree7:project7:project1:p6:vessel").unwrap();
-        assert_eq!(old.parent.0[0].entity, EntityRef::new("", "project", "p"));
-        old.fill_provider("sub-1");
-        assert_eq!(old, key);
+        for bad in [
+            "",
+            "4:tree",
+            "4:tree7:project7:project1:p6:vessel",
+            "9:tree",
+        ] {
+            assert_eq!(PlacementLoopKey::decode(bad), None, "{bad}");
+        }
     }
 
     #[test]
@@ -1412,10 +1401,7 @@ mod tests {
     #[test]
     fn metadata_patch_round_trips_json() {
         let patch = MetadataPatch {
-            target: MetadataTarget::Entity(EntityRef::local(
-                "project".to_owned(),
-                "dev/zellij@fleet".to_owned(),
-            )),
+            target: MetadataTarget::Entity(EntityRef::local("project", "dev/zellij@fleet")),
             source_id: "flotilla".to_owned(),
             set: std::collections::BTreeMap::from([(
                 "summary.local_llm".to_owned(),
@@ -1438,7 +1424,7 @@ mod tests {
     #[test]
     fn external_metadata_patch_message_round_trips_json() {
         let patch = MetadataPatch {
-            target: MetadataTarget::Tab(WorkspaceId::from(7)),
+            target: MetadataTarget::Tab(tab_workspace_id(7)),
             source_id: "flotilla".to_owned(),
             set: std::collections::BTreeMap::from([(
                 "tab.subject".to_owned(),

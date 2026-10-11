@@ -26,7 +26,7 @@ this extraction; adopting a wall-clock expiry scheduler there is separate work.
 
 `observe(workspaces, panes)` supplies a full local topology snapshot, including
 the selected workspace. Workspace IDs are `WorkspaceId`s: 128-bit IDs the host
-supplies (see [Workspace IDs](#workspace-ids-abi-3)); positions retain the
+supplies (see [Workspace IDs](#workspace-ids)); positions retain the
 existing navigation order. A host
 without pane observations can start with an empty pane list. Pane observations
 currently retain Zellij's terminal/plugin `u32` identity through the core's
@@ -51,10 +51,9 @@ results produce no URL. Open/copy effects need no completion.
 The C ABI retains its existing effect structure: `ANDAMENTO_EFFECT_OPEN_URL`
 and `ANDAMENTO_EFFECT_COPY_URL` carry the URL in `recipe`. A subject row with
 a resolvable URL sets `openable`; dispatch its normal activation to open it.
-`andamento_snapshot_copy_url_action(snapshot, node_index)` returns a
-snapshot-scoped copy action, or `ANDAMENTO_NONE`; dispatch it through the
-usual retained-snapshot validation. `andamento_copy_subject_url` also accepts
-an entity identity directly. Hosts execute browser and clipboard operations.
+`AndamentoNode.copy_url` is a snapshot-scoped copy action, or
+`ANDAMENTO_NONE`; dispatch it through the usual retained-snapshot validation.
+`andamento_copy_subject_url` also accepts an entity directly. Hosts execute browser and clipboard operations.
 
 These facts require a fleet generation carrying the projection from
 [flotilla#2448](https://github.com/flotilla-org/flotilla/pull/2448), merge commit
@@ -112,54 +111,20 @@ cargo build -p andamento-ffi --target aarch64-apple-darwin
 ```
 
 It produces `libandamento_ffi.a` and a dynamic library in the native target's
-debug directory. ABI version **2** replaced the experimental JSON request
-interface from version 1. ABI version **3** adds 128-bit Workspace IDs beside
-ABI 2's calls, which are unchanged; a host may accept either version. It is not
-yet a frozen embedding contract.
+debug directory. The C interface is ABI version **4**, which
+[The host interface](host-interface.md) maps, with what changed from ABI 3.
+Each call has one form and no earlier version is accepted. It is not yet a
+frozen embedding contract.
 
-### Workspace IDs (ABI 3)
+### Workspace IDs
 
 A Workspace ID is 16 opaque bytes (`AndamentoWorkspaceId`, `WorkspaceId` in
 Rust). The host generates it, a UUIDv7 in practice, when it first saves a
-workspace. Andamento only compares, orders and prints IDs and never generates
-one, so the core stays deterministic for replay.
-
-ABI 2's `uint64_t` ID `n` is the Workspace ID whose first eight bytes are zero
-and whose last eight are `n`, big-endian. A UUIDv7 never has that form (its
-version nibble is in byte 6), so the two kinds never collide and a host can use
-both while it moves: a workspace observed through ABI 2 as 7 is the embedded ID
-in ABI 3 calls. Embedded IDs print as their decimal `n`, so fallback keys and
-`.workspace` entity IDs are unchanged; wider IDs print as hyphenated UUIDs.
-ABI 2 `uint64_t` output fields report `n`, or 0 for a wider ID, which only an
-ABI 3 host can have supplied and which it reads through the ABI 3 getters.
-
-| ABI 2 | ABI 3 |
-|---|---|
-| `andamento_observe`, `AndamentoWorkspace`, `AndamentoPane` | `andamento_observe3`, `AndamentoWorkspace3`, `AndamentoPane3` |
-| `andamento_observe_workdirs`, `AndamentoWorkdir` | `andamento_observe_workdirs3`, `AndamentoWorkdir3` |
-| `andamento_complete` | `andamento_complete3` |
-| `AndamentoNode.workspace_id` | `andamento_snapshot_node_workspace` |
-| `AndamentoDetail.workspace_id` | `andamento_snapshot_detail_workspace` |
-| `AndamentoEffect.workspace_id` | `andamento_effects_workspace` |
-| `andamento_content_plan`/`valid`/`complete`/`retry` | `andamento_content_plan3`/`valid3`/`complete3`/`retry3` |
-| JSON `{"kind":"tab","value":7}` | JSON `{"kind":"tab","value":"<uuid>"}` |
-| none | `andamento_apply_workspace` (scalar facts on a workspace) |
-| none | `andamento_workspace_register`/`forget`/`registered` |
-| none | `andamento_record_names`/`generation`/`export`/`import`, `andamento_bytes_free` |
-| none | `andamento_set_display_variable`, `andamento_local_set`/`remove` |
-| `andamento_apply_patch_json`, `andamento_apply_entity`, `andamento_apply_workspace` (default provider) | `andamento_apply_patch_json_from`, `andamento_apply_entity_from`, `andamento_apply_workspace_from` |
-| `AndamentoEntity` (kind, id; default provider) | `AndamentoEntity3` (provider, kind, id) |
-| `andamento_set_sibling_order`, `andamento_local_set`, `andamento_copy_subject_url` | `andamento_set_sibling_order3`, `andamento_local_set3`, `andamento_copy_subject_url3` |
-| `andamento_snapshot_detail_find`/`request` | `andamento_snapshot_detail_find3`/`request3`, `andamento_snapshot_detail_provider` |
-| `andamento_content_plan3` | `andamento_content_plan_entity` |
-| `AndamentoNode.entity_kind`/`entity_id` | `andamento_snapshot_node_provider` (with stale) |
-| `AndamentoEffect.entity_kind`/`entity_id` | `andamento_effects_provider` |
-| none | `andamento_set_default_provider`, `andamento_provider_retract`, `andamento_provider_set_stale` |
-| `andamento_content_*` (the `primary` slot) | `andamento_slot_*`, `andamento_slots_*`, `andamento_set_arrangement`, `andamento_arrangement_*`, `andamento_workspace_content_revision` ([Slots and arrangements](slots-and-arrangements.md)) |
-
-JSON tab targets accept a number, a hyphenated UUID or 32 hex digits, in either
-case; embedded IDs serialize as numbers, as before. The replay `Request`s carry
-IDs in the same forms.
+workspace. Andamento only compares, orders and prints IDs (as hyphenated
+UUIDs, which is also their JSON form) and never generates one, so the core
+stays deterministic for replay. Hosts whose workspaces are numbered tabs (the
+Zellij and tmux hosts) use `tab_workspace_id(tab)`, which puts the tab number
+in a UUID.
 
 Users create workspaces that never go through MATERIALIZE. The host declares
 them with `andamento_workspace_register` (`Sidebar::register_workspace`); a
@@ -167,9 +132,9 @@ successful MATERIALIZE completion registers its workspace too. Registration is
 independent of topology: either may come first, and closing a workspace does
 not forget it. Forget a workspace the host deleted rather than kept.
 Registration changes neither the snapshot nor its revision; it gives the
-workspace a record (see Named records below).
+workspace a record (see Records below).
 
-### Providers (ABI 3)
+### Providers
 
 An entity is `{provider, kind, id}` (`EntityRef` in Rust). The provider is the
 Dashboard's **subscription ID** (wheelhouse ADR 0012), stable and owned by the
@@ -177,21 +142,18 @@ Dashboard; the host supplies it per patch source. A producer never names it,
 and the identity a provider reports is an attribute of the subscription, not
 part of any key. The same kind and ID under two providers are two entities:
 two rows, two placement keys, two records, two activation targets. Andamento's
-own sections, groups and refs, and anything a one-off local script publishes,
-have the provider `local` (`LOCAL_PROVIDER`).
+own sections, groups and refs have the provider `local` (`LOCAL_PROVIDER`),
+which no host subscription may use.
 
-- **Stamping.** `apply_from(now_ms, provider, patches)`
-  (`andamento_apply_patch_json_from`, `andamento_apply_entity_from`,
-  `andamento_apply_workspace_from`) stamps `provider` over every entity a patch
-  names: its target, entity references among its values, and the entity a
-  workspace's `entity.kind`/`entity.id` (or `.host.kind`/`.host.id`) facts
-  name, recorded as `entity.provider` (`.host.provider`). Any provider the
-  patch itself names is overwritten.
-- **Default provider.** `apply` and every ABI 2 call use the default provider,
-  `local` until `set_default_provider` (`andamento_set_default_provider`)
-  changes it, so Wheelhouse can move one source at a time. Entities named by
-  kind and ID alone (ABI 2 entity arguments, JSON entities without
-  `"provider"`, loop keys encoded before providers) get the default provider.
+- **Stamping.** `apply(now_ms, provider, patches)`
+  (`andamento_apply_patch_json`, `andamento_apply_entity`,
+  `andamento_apply_workspace`) requires a provider and stamps it over every
+  entity a patch names: its target, entity references among its values, and
+  the entity a workspace's `entity.kind`/`entity.id` (or
+  `.host.kind`/`.host.id`) facts name, recorded as `entity.provider`
+  (`.host.provider`). Any provider the patch itself names is overwritten.
+  Every entity a host passes otherwise (to `andamento_local_set`, sibling
+  orders, detail lookups) names its provider.
 - **Joins stay within a provider.** A placement loop that matches on a bound
   entity (`match "<key>" of="<loop>"`) only matches that entity's provider's
   entities when it is not `local`, so two subscriptions' projects named `p`
@@ -213,52 +175,33 @@ have the provider `local` (`LOCAL_PROVIDER`).
   waiting for TTLs. A stale provider's facts are kept as they were when it
   became stale: those live then stay live, and no TTL expires them while it
   stays stale; facts that had already expired stay expired. Snapshot nodes
-  presenting its entities (a ref presenting its target included) set `stale`
-  (`andamento_snapshot_node_provider`). Marked fresh again, each TTL fact that
-  was live renews its lease from that moment, as though the provider had
-  reasserted it, so the reconnected stream has one TTL to reassert it before
-  it expires. Facts without a TTL are unaffected either way. Retraction clears
-  staleness.
+  presenting its entities (a ref presenting its target included) set
+  `AndamentoNode.stale`. Marked fresh again, each TTL fact that was live
+  renews its lease from that moment, as though the provider had reasserted
+  it, so the reconnected stream has one TTL to reassert it before it expires.
+  Facts without a TTL are unaffected either way. Retraction clears staleness.
 
-Placement keys carry the provider. `PlacementLoopKey::encode` (the text from
-`andamento_snapshot_node_loop_key`) is now `v2;` followed by length-prefixed
-parts with each parent segment's loop name, provider, kind and ID; keys in the
-earlier encoding still decode, and their entities get the default provider.
-The opaque node key (`AndamentoNode.key`) includes each segment's provider.
+Placement keys carry the provider. `PlacementLoopKey::encode`
+(`AndamentoNode.loop_key`) is length-prefixed parts with each parent
+segment's loop name, provider, kind and ID. The opaque node key
+(`AndamentoNode.key`) includes each segment's provider.
 
-### Named records (ABI 3)
+### Records
 
-Andamento owns the sidebar's logical state (wheelhouse ADR 0012) and exports it
-as **named records**: KDL text inside a versioned envelope. The host maps each
-record to a file and decides when to write it; Andamento never touches the
-filesystem, so this works in Zellij's sandbox and under WASM too.
+Andamento owns the sidebar's logical state (wheelhouse ADR 0012) and hands it
+to the host as **records**: opaque bytes (serde JSON today) that the host
+stores as they are and gives back on the next start. Their form is private to
+Andamento and is not versioned or migrated. The host decides where and when to
+store them; Andamento never touches a filesystem, so this works in Zellij's
+sandbox and under WASM too.
 
 | Record | Holds |
 |---|---|
-| `dashboard` | display variables that persist, row (placement) collapse, sibling orders, placement variables set on rows, and local sections, groups and refs |
-| `workspace/<id>` | for each registered workspace: its subject, the subject and the entities on its path as last seen, its slots (the cached Suggested Layout baseline, the user's overrides and own slots) and its arrangement document ([Slots and arrangements](slots-and-arrangements.md)) |
+| `dashboard` | display variables that persist, row (placement) collapse, sibling orders, placement variables set on rows, local sections, groups and refs, and the sidebar arrangement ([The sidebar arrangement](sidebar-arrangement.md)) |
+| `workspace/<id>` | for each registered workspace: its subject and the entities on its path as last seen, its slots (the cached Suggested Layout baseline, the user's slots, name and mood, and what the provider removed), its arrangement document, and its slots' saved portable Target Resolutions ([Slots and arrangements](slots-and-arrangements.md), [Workspace Overlay](workspace-overlay.md)) |
 
 Scroll offset, display variables declared `persist=false`, and section collapse
 are presentation state and are not recorded.
-
-```kdl
-andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=3 {
-    subject "vessel" "v" provider="sub-1"
-    retained "project" "p" provider="sub-1" label="Project P" status="retained" last-seen=100 {
-        fact "flotilla.project" "p"
-    }
-    retained "vessel" "v" provider="sub-1" label="Vee" status="ended" last-seen=150 {
-        fact "flotilla.project" "p"
-    }
-}
-```
-
-A dashboard record lists `display "<name>" <value>`, `collapsed { at … }`,
-`order "<region>" "<binding>" { parent { at … }; entity "<kind>" "<id>" provider="<provider>" … }`,
-`variable "<name>" "<value>" { at … }` and `local "<kind>" "<id>" provider="local" { fact … }`
-nodes; a placement key is its `at "<loop>" "<kind>" "<id>" provider="<provider>"`
-segments, outermost first. Every entity names its provider. `records.rs` has a
-full sample.
 
 - **Retained and ended subjects** are recorded with the least needed to draw
   their rows with no facts: identity, label, whether they ended, when they were
@@ -268,28 +211,21 @@ full sample.
   The full fact set is not saved: producers republish it.
 - A workspace's record follows it while it is open; a closed workspace keeps
   the record it had, and forgetting the workspace drops it.
-- **Generations.** `record_generation` (`andamento_record_generation`) is
-  nonzero and changes when, and only when, the record's content changes;
-  generations are never reused. Write a record when its generation differs from
-  the one last written, and read the generation again after importing.
-- **Import** (`import_record`, `andamento_record_import`) may come before the
+- **Generations.** `record_generation` (`andamento_record_generation`) is a
+  nonzero counter that changes whenever the record does, and is cheap to poll.
+  Store a record when its generation differs from the one last stored. All
+  generations come from one clock per sidebar, so none is reused, not even by
+  an import; they are never persisted.
+- **Import** (`import_record`, `andamento_record_put`) may come before the
   first observation and needs no facts. Importing a workspace record registers
   the workspace and binds it to its subject, as a materialize completion does;
   when the workspace is observed, its recorded path is drawn until a producer
-  publishes the subject again. A record that doesn't parse, has another
-  version, or names another record is rejected without changing anything.
-- **Versions.** Andamento writes version 3, where every entity names its
-  provider and a workspace record holds its slots and arrangement. Version 2
-  records import with no slots and no arrangement; the dashboard record is
-  the same in both. Version 1 records, from before providers, still import: their
-  sections, groups and refs (`.section`, `.group`, `.ref`) get `local`, and
-  every other entity gets the default provider at import, which is the
-  provider ABI 2 calls stamp, so migrated keys match the facts a host still
-  publishes the old way. A host that sets a default provider sets it before
-  importing. Export always writes version 3.
-- **Unknown nodes** directly inside the envelope are kept and exported again,
-  after the known ones. Unknown properties or children of known nodes are not
-  kept, so a later version adds nodes, or raises the version.
+  publishes the subject again. A record that doesn't read, or names another
+  record, is rejected without changing anything.
+
+A host that shows the Dashboard's own state reads it with
+`andamento_dashboard_get` rather than from the record: its local entities with
+their facts, and its sibling orders by loop key.
 
 Display variables are set directly with `set_display_variable`
 (`andamento_set_display_variable`): no snapshot action, so restoring one needs
@@ -438,9 +374,9 @@ binding of the loop invocation that produced it. Sibling items share this key;
 repeated invocations under different parents do not. Sibling loop bindings must
 be distinct and duplicate declarations are rejected during configuration.
 
-C consumers can call `andamento_snapshot_node_loop_key(snapshot, index, &text)`.
-This additive ABI 2 function leaves `AndamentoNode` unchanged. The returned text
-is opaque, snapshot-owned and empty for a section; compare it for equality only.
+C consumers read `AndamentoNode.loop_key`. The text is opaque, snapshot-owned
+and empty for a section; compare it for equality only. It is also the key
+`andamento_set_sibling_order` and `andamento_dashboard_get` use.
 Group adjacent nodes by loop key and use the existing layout intent to choose
 native geometry. Keep each node's activation/collapse reference and state when
 presenting several items on one line. Width measurement stays in the frontend.

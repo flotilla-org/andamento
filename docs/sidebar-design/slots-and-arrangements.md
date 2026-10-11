@@ -10,10 +10,10 @@ facts. The vocabulary is Wheelhouse's `CONTEXT.md`; the overlay rules are
 Wheelhouse ADR 0013.
 
 The Rust interface is `Sidebar::slots`, `set_slot`, `remove_slot`,
-`reattach_slot`, `plan_slot`, `set_arrangement`, `arrangement` and
-`content_revision`, with the token calls on `Sidebar::managed`. The C
-interface is the ABI 3 block "Slots and arrangement documents" in
-`andamento.h`.
+`reattach_slot`, `plan_slot`, `set_arrangement`, `arrangement`,
+`slot_resolution`, `set_slot_resolution`, `clear_slot_resolution` and
+`content_revision`, with the token calls on `Sidebar::managed`. The C calls
+are listed in [The host interface](host-interface.md#workspaces).
 
 ## Slots
 
@@ -35,13 +35,16 @@ A workspace's slots come from two places:
   `:`, so the two never collide. The host chooses the ID; Andamento never
   generates one.
 
-Setting a baseline slot's key **overrides** it: the slot shows the override's
-spec and policy and is **detached**, so it no longer follows the provider.
-The override records the baseline spec it was made against. Setting the
-baseline's own spec and policy, or reattaching, drops the override. A
-detached slot the baseline later drops is kept as the user's own (reported
-with `in_baseline` false) until the host removes it. A baseline slot can't be
-removed by the host: the provider removes it.
+Setting a baseline slot's key with other content **overrides** it: the slot
+shows the override's spec and is **detached**, so it no longer follows the
+provider. The override records the baseline spec it was made against. A
+different policy alone is a rebind edit, which doesn't detach the slot.
+Setting the baseline's own spec and policy, or reattaching, drops the
+override. A detached slot the baseline later drops is kept as the user's own
+(reported with `in_baseline` false) until the host removes it. Removing a
+baseline slot gives it a tombstone, which hides it. These are edits in the
+[Workspace Overlay](workspace-overlay.md), which describes the rules and the
+flags that report them.
 
 Slots are listed, and placed by default, in this order: the baseline's, then
 detached slots the baseline dropped, then the user's in the order they were
@@ -62,9 +65,7 @@ A resolution is a recipe (command, file, URL or Jackstay launcher) and,
 optionally, the target naming the backing instance. Its **identity**
 (`Resolved::id`, `AndamentoSlotContent.resolution`) is opaque text: the host
 records it once applied and passes it back to plan, which reports Current when
-it matches. The `primary` slot's ABI 2 calls compute it from the target,
-command and cwd they already pass, so the two kinds of call share one binding
-and its tokens.
+it matches.
 
 Where a slot's resolution comes from:
 
@@ -91,6 +92,62 @@ how to show the change.
   the update unsuccessfully: the slot is Failed and stays on its current
   content until the resolution changes again or the host retries.
 
+### Portable Target Resolutions
+
+Resolving a slot's content yields a **Target Resolution**, a way of
+connecting such as a Cleat session on a host or a Jackstay endpoint
+(Wheelhouse `CONTEXT.md`; decisions wheelhouse#294 and #297). A
+**portable** resolution works from any device that can reach it (a remote
+session and its host, a remote endpoint), so Andamento saves it per slot in
+the workspace record. A **machine-local** one (a local socket, an attach
+token) stays with the device, in the host's Presentation State. The host
+decides which is which; Andamento never interprets either.
+
+A saved resolution is an opaque typed value: a **kind** and named text
+**fields**, for example kind `cleat-session` with `host=feta session=S
+daemon=D`. Kind and field names are 1 to 64 of `[a-z0-9_-]`; values are any
+text. Each also records **against**, the identity of the slot resolution it
+resolves (what the host applied, as it passes it to plan), and a
+**generation**:
+
+- `set_slot_resolution(workspace, key, resolution, applied, expected)` saves
+  it if `expected` is the slot's saved generation (0 for none); otherwise it
+  is stale and changes nothing, like an arrangement commit. When the slot is
+  known to resolve to something other than `applied`, the save is invalid:
+  plan again. Saving what is saved keeps the generation. Generations come
+  from the sidebar's one clock, so a host holding an old one can't
+  overwrite a newer save, even after a clear or an import.
+- `clear_slot_resolution(workspace, key, expected)` drops it the same way.
+- `slot_resolution(workspace, key)` reads it (`AndamentoSlot.saved`).
+- Every **slot plan** carries the slot's saved resolution (`SlotPlan::saved`,
+  `AndamentoSlotContent.saved`), in any state. A host that starts with no
+  instance, on a restart or another device, plans with an empty applied
+  identity. The plan is Updating to the resolution the saved one is
+  `against`, so the host tries connecting through the saved resolution
+  before resolving the target afresh, then validates the token and
+  completes as usual. If it no longer works, the host resolves again and
+  saves the new one: it is always disposable.
+
+**Invalidation: cleared, not marked stale.** A saved resolution is only
+useful for the slot resolution it was made for, so Andamento clears it as
+soon as the slot resolves to something else:
+
+- the slot's resolution is known (Ready: not Unavailable or Held) and its
+  identity differs from `against`, as when the provider names a new target.
+  This is checked whenever resolutions are published and after a record is
+  imported, so a record saved before the change is cleared on another device
+  too. Expired or held facts are silence, not a new target: the saved
+  resolution stays and the plan still reports it;
+- the user edits the slot's content (set or reattach);
+- the slot goes (removed, tombstoned, or dropped by its provider).
+
+Clearing keeps the record and the plan simple: a reported resolution is
+always one for the slot's current content, and nothing is left to sweep. The
+slot then rebinds by its rebind policy as for any resolution change; the
+instance a `keep-previous` rebind keeps reachable is the host's to reach
+through its own handle until it releases it. Saving, clearing and
+invalidation bump the content revision, never the sidebar's revision.
+
 ## Arrangement documents
 
 A workspace's **arrangement** is one typed document: a tree of panels with
@@ -107,7 +164,7 @@ sizes need pixels. When a gesture ends it commits the whole document with
 1. **Generation.** If `expected_generation` isn't the stored generation (0
    before anything is stored), the commit is **stale** and changes nothing;
    the host reads the arrangement again. The C call returns
-   `ANDAMENTO_ARRANGEMENT_STALE` with no error.
+   `ANDAMENTO_STALE` with no error.
 2. **Validation.** Panel IDs are nonempty and unique, weights finite and
    positive, splits nonempty, each slot has at most one tab, and a selected
    tab is one of its panel's. Each tab names a current slot, or a slot the
@@ -117,8 +174,11 @@ sizes need pixels. When a gesture ends it commits the whole document with
    panel in preorder, and selected there if that panel selects nothing. With
    no panels, a tab panel is made for them. A tab whose slot has gone is kept
    and reported gone; nothing is dropped silently.
-4. **Storage.** The document becomes the stored one and the host owns it.
-   Its generation changes unless the stored document is unchanged.
+4. **Storage.** The document becomes the stored one. Its generation changes
+   unless the stored document is unchanged. A commit that changes only
+   weights and selected tabs is recorded as soft overrides and leaves the
+   document following the provider; any structural change makes the overlay
+   own it ([Workspace Overlay](workspace-overlay.md)).
 
 Reading the arrangement returns the document, its generation, whether the
 host owns it, and two tab flags: **placed** (Andamento placed it since the
@@ -127,10 +187,12 @@ host last committed) and **gone** (its slot has gone).
 Andamento changes the document itself only when the slot set changes from the
 provider's side:
 
-- Until the host first commits, the document is the baseline's arrangement
-  hint (or empty), reconciled. A new hint replaces it.
-- Once the host owns it, a baseline change only reconciles it: new baseline
-  slots are placed, and dropped ones are reported gone.
+- Until the overlay owns it, the document is the baseline's arrangement hint
+  (or empty), less removed slots, reconciled, with soft overrides reapplied.
+  A new hint replaces it.
+- Once the overlay owns it, a baseline change only reconciles it: new
+  baseline slots are placed, and dropped ones are reported gone. A changed
+  hint is flagged, not applied.
 
 Either changes the generation, so a commit the host prepared against the old
 one is stale. A slot the host adds with `set_slot` does not change the
@@ -139,11 +201,10 @@ places it.
 
 ## Revisions per concern
 
-Before this change one counter, `Sidebar::revision`, invalidated the
-snapshot, the shared revision evaluation and the detail cache on every
-mutation. Wheelhouse commits an arrangement at every gesture end, and
-evaluation costs 8 to 90 ms depending on entity count, so arrangements must
-not share it.
+`Sidebar::revision` invalidates the snapshot, the shared revision evaluation
+and the detail cache. Wheelhouse commits an arrangement at every gesture end,
+and evaluation costs 8 to 90 ms depending on entity count, so arrangements
+must not share it.
 
 Slots, their resolutions and arrangements now have their own revision,
 `content_revision` (`andamento_workspace_content_revision`). Slot edits,
@@ -151,7 +212,7 @@ arrangement commits and baseline changes bump it and never call
 `invalidate()`, so a rendered snapshot stays current
 (`andamento_snapshot_is_current`) and its actions stay dispatchable. Fact
 changes still invalidate the sidebar as before, and bump the content revision
-too when they change a slot resolution. Records change with both: export a
+too when they change a slot resolution. Records change with both: store a
 record when its generation changes.
 
 Measured with `crates/andamento-ffi/examples/snapshot-profile.rs` (release
@@ -168,71 +229,26 @@ each checking the rendered snapshot.
 The last column is what each commit would have cost had it invalidated the
 sidebar: the snapshot rebuild after a one-fact update in the same run.
 `tests/slots.rs` (`arrangement_commits_and_slot_edits_leave_the_snapshot_current`)
-and `smoke.c` (`check_slots`) assert the snapshot stays current.
+asserts the snapshot stays current.
 
 ## Records
 
-The `workspace/<id>` record, version 3, holds the slots and the arrangement:
-
-```kdl
-andamento-record "workspace/01920a6b-7c3d-7e4f-8a1b-2c3d4e5f6a7c" version=3 {
-    subject "convoy" "c" provider="sub-1"
-    baseline version="1" {
-        slot "primary" {
-            facet "primary" "convoy" "c" provider="sub-1"
-        }
-        slot "reviewer" rebind="keep-previous" presentation="terminal" {
-            facet "terminal" "vessel" "reviewer" provider="sub-1"
-        }
-        hint {
-            tabs "agents" weight=1.0 selected="reviewer" {
-                tab "primary"
-                tab "reviewer"
-            }
-        }
-    }
-    override "reviewer" {
-        argv "htop" "-d" cwd="/srv"
-        against presentation="terminal" {
-            facet "terminal" "vessel" "reviewer" provider="sub-1"
-        }
-    }
-    slot "u:1" presentation="web" {
-        url "https://example.com"
-    }
-    arrangement generation=4 owned=true {
-        split "main" axis="row" weight=1.0 {
-            tabs "1" weight=0.6 selected="reviewer" {
-                tab "primary"
-                tab "reviewer"
-            }
-            tabs "2" weight=0.4 {
-                tab "u:1"
-            }
-        }
-        placed "u:1"
-    }
-}
-```
-
-A View Spec's content is one child: `facet "<facet>" "<kind>" "<id>"
-provider=".."`, `shell "<command>"` or `argv "<arg>" ...` (each with an
-optional `cwd`), `file "<path>"`, `url "<url>"` or `jackstay "<launcher>"
-"<endpoint>"`. A baseline is `primary-only=true` instead of a `version` when
-only the primary facts define it. Version 2 records import with no slots and
-no arrangement; in them, nodes named like the new ones are unknown nodes and
-kept as such.
+The `workspace/<id>` record holds the slots (the cached baseline with its
+arrangement hint, and the overlay's edits), the arrangement document and the
+saved portable resolutions. Like every record it is opaque to the host
+([Records](core-interface.md#records)); generations are not part of it. The
+migration of the resolutions Wheelhouse keeps on each device today is
+Wheelhouse's: it saves the portable ones through
+`andamento_slot_resolution_set`.
 
 ## Limits and next steps
 
-- **Overlay rules not yet built** (ADR 0013): tombstones for removed baseline
-  slots, flagging a key the provider reuses for different content, soft
-  overrides (split weights and the selected tab that don't take ownership),
-  ownership only on a *structural* edit, and flagging a provider change to an
-  owned arrangement. Today any host commit takes ownership.
-- **Target Resolutions** (`session`, `daemon_name`, `attach_token`) are not
-  stored; Wheelhouse moves them in its step 7b.
-- **The Dashboard's sidebar arrangement** uses the same document shape but is
-  not stored yet.
+- **Overlay rules** (ADR 0013) are in [Workspace Overlay](workspace-overlay.md).
+- **Machine-local Target Resolutions** (a local socket, `attach_token`) are
+  not stored: they stay in the host's device-local state. Portable ones are
+  above.
+- **The Dashboard's sidebar arrangement** uses the same document shape, with
+  floating panels, a closed set and hint-based placement: see [The sidebar
+  arrangement](sidebar-arrangement.md).
 - Closed workspaces keep the slots and arrangement they had; baselines follow
   only open workspaces' subjects.

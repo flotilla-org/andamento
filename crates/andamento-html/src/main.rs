@@ -1,4 +1,4 @@
-use andamento_core::{sidebar::Request, MetadataPatch, Sidebar};
+use andamento_core::{replay, sidebar::Request, MetadataPatch, Sidebar};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|l| !l.trim().is_empty())
         .map(serde_json::from_str::<MetadataPatch>)
         .collect::<Result<Vec<_>, _>>()?;
-    sidebar.apply(0, patches);
+    sidebar.apply(0, replay::PROVIDER, patches)?;
     if let Some(path) = args.get(2) {
         for line in std::fs::read_to_string(path)?
             .lines()

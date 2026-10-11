@@ -1,6 +1,6 @@
 use andamento_core::{
     presentation::PlacementNode,
-    replay::{read, Frame, Recorder, Replay},
+    replay::{self, read, Frame, Recorder, Replay},
     MetadataValue, Sidebar,
 };
 use std::io::Cursor;
@@ -67,7 +67,9 @@ fn legacy_and_generated_catalog_snapshots() {
         let mut sidebar = Sidebar::new(CONFIG).unwrap();
         replay.advance_to(&mut sidebar, 0).unwrap();
         let mut direct = Sidebar::new(CONFIG).unwrap();
-        direct.apply(0, frames.into_iter().map(|f| f.patch));
+        direct
+            .apply(0, replay::PROVIDER, frames.into_iter().map(|f| f.patch))
+            .unwrap();
         assert_eq!(sidebar.snapshot().surface, direct.snapshot().surface);
         insta::assert_debug_snapshot!(
             name,
@@ -173,7 +175,7 @@ fn advancing_over_a_gap_does_not_refresh_old_facts() {
     late.offset_ms = 40_000;
     // The replayed patch names no provider; the sidebar stamps its default.
     let mut stamped = late.patch.clone();
-    stamped.stamp_provider(andamento_core::LOCAL_PROVIDER);
+    stamped.stamp_provider(replay::PROVIDER);
     let target = stamped.target;
     input.push(late);
     let mut replay = Replay::new(input).unwrap();
@@ -215,7 +217,9 @@ fn equal_offsets_are_one_ordered_observation() {
         .value = MetadataValue::Text("last writer".into());
     input.push(replacement);
     let mut direct = Sidebar::new(CONFIG).unwrap();
-    direct.apply(0, input.iter().map(|f| f.patch.clone()));
+    direct
+        .apply(0, replay::PROVIDER, input.iter().map(|f| f.patch.clone()))
+        .unwrap();
     let mut replay = Replay::new(input).unwrap();
     let mut stepped = Sidebar::new(CONFIG).unwrap();
     assert_eq!(replay.step(&mut stepped).unwrap(), Some(0));

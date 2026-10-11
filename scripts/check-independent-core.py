@@ -48,6 +48,6 @@ with tempfile.TemporaryDirectory(prefix="andamento-independent-") as directory:
     subprocess.run([str(smoke),
                     str(isolated / "crates/andamento-core/tests/fixtures/sidebar.kdl"),
                     str(isolated / "crates/andamento-core/tests/fixtures/sidebar.jsonl"),
-                    str(isolated / "fixtures/typed-detail.jsonl")], env=dict(env, LD_LIBRARY_PATH=str(library),
+                    ], env=dict(env, LD_LIBRARY_PATH=str(library),
                                         DYLD_LIBRARY_PATH=str(library)), check=True)
     print("Independent core/frontends and C ABI verified without a Zellij or Flotilla dependency.")

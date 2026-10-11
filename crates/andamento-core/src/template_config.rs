@@ -774,6 +774,27 @@ impl TemplateConfigCatalog {
         &self.display_variables
     }
 
+    /// Every loop binding declared in placements and templates: the names a
+    /// placement key's segments use.
+    pub fn loop_bindings(&self) -> BTreeSet<String> {
+        fn walk(loops: &[PlacementLoop], names: &mut BTreeSet<String>) {
+            for item in loops {
+                names.insert(item.binding.clone());
+                walk(&item.loops, names);
+            }
+        }
+        let mut names = BTreeSet::new();
+        for placement in &self.placements {
+            walk(&placement.loops, &mut names);
+        }
+        for layer in &self.layers {
+            for template in &layer.config.templates {
+                walk(&template.loops, &mut names);
+            }
+        }
+        names
+    }
+
     /// Every fact key placement reads: loop matches, `in` lists, order keys
     /// and visibility rules, in placements and templates. Entity kind and ID
     /// come from the entity itself and are not included.
