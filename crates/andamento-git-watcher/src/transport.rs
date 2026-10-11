@@ -258,7 +258,7 @@ impl Transport for Zellij {
                         }
                         for id in ids {
                             let mut p = patch(
-                                json!({"kind":"tab","value":id}),
+                                json!({"kind":"tab","value":tab_workspace_id(id)}),
                                 BTreeMap::from([
                                     ("entity.kind".into(), json!("repo")),
                                     ("entity.id".into(), json!(tree.repo)),
@@ -288,4 +288,15 @@ impl Transport for Zellij {
             Err(io::Error::other(errors.join("; ")))
         }
     }
+}
+
+/// Zellij tab `tab`'s Workspace ID, as the controller gives it
+/// (`andamento_core::tab_workspace_id`): the tab number in the last eight
+/// bytes, printed as a UUID.
+pub(crate) fn tab_workspace_id(tab: u64) -> String {
+    format!(
+        "00000000-0000-0000-{:04x}-{:012x}",
+        tab >> 48,
+        tab & 0xffff_ffff_ffff
+    )
 }

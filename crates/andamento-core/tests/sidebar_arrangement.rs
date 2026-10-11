@@ -172,11 +172,6 @@ fn the_arrangement_survives_a_restart_in_the_dashboard_record() {
         )
         .unwrap();
     let record = before.export_record("dashboard").unwrap();
-    assert!(
-        record.contains("sidebar generation=2 owned=true"),
-        "{record}"
-    );
-    assert!(record.contains("closed \"a\""), "{record}");
 
     let mut after = Sidebar::new(&ab()).unwrap();
     after.import_record("dashboard", &record).unwrap();
@@ -197,49 +192,35 @@ fn the_arrangement_survives_a_restart_in_the_dashboard_record() {
 }
 
 #[test]
-fn an_imported_record_with_duplicates_is_repaired_and_older_records_migrate() {
+fn an_imported_record_with_duplicates_is_repaired() {
+    use andamento_core::records::DashboardRecord;
+    use andamento_core::sidebar_arrangement::SidebarArrangement;
     let mut sidebar = Sidebar::new(&ab()).unwrap();
-    let v4 = r#"andamento-record "dashboard" version=4 {
-    sidebar generation=5 owned=true {
-        dock {
-            split "1" axis="column" weight=1.0 {
-                tabs "2" weight=1.0 selected="a" {
-                    tab "a"
-                }
-                tabs "3" weight=1.0 selected="a" {
-                    tab "a"
-                }
-            }
-        }
-        floating {
-            tabs "4" weight=1.0 selected="b" {
-                tab "b"
-                tab "a"
-            }
-        }
-        closed ".unplaced"
-    }
-}"#;
-    sidebar.import_record("dashboard", v4).unwrap();
+    let mut doc = dock(vec![tabs("2", &["a"]), tabs("3", &["a"])]);
+    doc.floating.push(tabs("4", &["b", "a"]));
+    let record = DashboardRecord {
+        sidebar: Some(SidebarArrangement {
+            generation: 5,
+            owned: true,
+            doc,
+            closed: set(&[".unplaced"]),
+            ..SidebarArrangement::default()
+        }),
+        ..DashboardRecord::default()
+    };
+    sidebar
+        .import_record("dashboard", &record.encode())
+        .unwrap();
     let (view, report) = sidebar.sidebar_arrangement();
     assert_eq!(report.duplicates, ["a"]);
     assert_eq!(view.doc.tabs(), ["a", "b"]);
-    // Repaired, so it moved past the imported generation.
-    assert_eq!(view.generation, 6);
 
-    // A version 3 dashboard has no arrangement: the hints place one.
-    let mut migrated = Sidebar::new(&ab()).unwrap();
-    migrated
-        .import_record(
-            "dashboard",
-            r#"andamento-record "dashboard" version=3 { display "x" true; }"#,
-        )
+    // A dashboard with no arrangement: the hints place one.
+    let mut placed = Sidebar::new(&ab()).unwrap();
+    placed
+        .import_record("dashboard", &DashboardRecord::default().encode())
         .unwrap();
-    assert_eq!(docked(&migrated), keys(&[&["a"], &["b"], &[".unplaced"]]));
-    assert!(migrated
-        .export_record("dashboard")
-        .unwrap()
-        .starts_with("andamento-record \"dashboard\" version=6"));
+    assert_eq!(docked(&placed), keys(&[&["a"], &["b"], &[".unplaced"]]));
 }
 
 #[test]

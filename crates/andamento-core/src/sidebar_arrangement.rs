@@ -161,7 +161,7 @@ fn is_host_view(key: &str) -> bool {
 
 /// The sidebar's panels: the dock's tree, and the floating panels, each a
 /// tree of its own. Tabs hold section keys (or the host's `u:<id>` views).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SidebarDoc {
     pub dock: ArrangementDoc,
     pub floating: Vec<Panel>,
@@ -194,7 +194,7 @@ impl SidebarDoc {
 }
 
 /// The Dashboard's stored sidebar arrangement.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SidebarArrangement {
     /// Nonzero once stored; it changes whenever anything here does.
     pub generation: u64,

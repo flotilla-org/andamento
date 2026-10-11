@@ -51,7 +51,12 @@ fn keys(layout: &SuggestedLayout) -> Vec<&str> {
 }
 
 fn entity(kind: &str, id: &str) -> EntityRef {
-    EntityRef::local(kind, id)
+    let provider = if kind.starts_with('.') {
+        andamento_core::LOCAL_PROVIDER
+    } else {
+        andamento_core::replay::PROVIDER
+    };
+    EntityRef::new(provider, kind, id)
 }
 
 // fixtures/suggested-layout-review.jsonl: an in-crew review convoy. At 0 ms

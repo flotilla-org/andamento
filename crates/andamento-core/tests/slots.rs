@@ -2,7 +2,8 @@
 //! subject's Suggested Layout, the host commits whole arrangements at an
 //! expected generation, and neither invalidates the sidebar's snapshot.
 //! Portable Target Resolutions (#158) are saved per slot in the record.
-use andamento_core::managed::{ContentState, TerminalContent};
+mod common;
+use andamento_core::managed::{ContentState, Resolved, TerminalContent};
 use andamento_core::records::WorkspaceRecord;
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::slots::{ArrangementDoc, ArrangementError, Panel, PanelNode};
@@ -14,11 +15,9 @@ use andamento_core::{
     EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
     WorkspaceId,
 };
+use common::{entity, PROVIDER};
 use std::collections::BTreeSet;
 
-fn entity(kind: &str, id: &str) -> EntityRef {
-    EntityRef::local(kind, id)
-}
 fn text(s: &str) -> MetadataValue {
     MetadataValue::Text(s.into())
 }
@@ -96,29 +95,32 @@ fn layout(version: &str, slots: Vec<Vec<(String, MetadataValue)>>, keys: &[&str]
 /// A sidebar with a workspace open for vessel v.
 fn session(layout_patch: MetadataPatch) -> Sidebar {
     let mut sidebar = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
-    sidebar.apply(
-        100,
-        [
-            patch(
-                entity("project", "p"),
-                &[
-                    ("flotilla.project", text("p")),
-                    ("display.label", text("P")),
-                ],
-                &[],
-            ),
-            patch(
-                subject(),
-                &[
-                    ("flotilla.project", text("p")),
-                    ("display.label", text("Vee")),
-                    ("action.primary.recipe", text("printf hello")),
-                ],
-                &[],
-            ),
-            layout_patch,
-        ],
-    );
+    sidebar
+        .apply(
+            100,
+            PROVIDER,
+            [
+                patch(
+                    entity("project", "p"),
+                    &[
+                        ("flotilla.project", text("p")),
+                        ("display.label", text("P")),
+                    ],
+                    &[],
+                ),
+                patch(
+                    subject(),
+                    &[
+                        ("flotilla.project", text("p")),
+                        ("display.label", text("Vee")),
+                        ("action.primary.recipe", text("printf hello")),
+                    ],
+                    &[],
+                ),
+                layout_patch,
+            ],
+        )
+        .unwrap();
     let effects = sidebar
         .dispatch(Action::Activate { entity: subject() })
         .unwrap();
@@ -255,7 +257,7 @@ fn slots_follow_the_layout_and_arrangements_reconcile() {
         "layout.root".into(),
         "layout.panel.main.slots".into(),
     ];
-    sidebar.apply(200, [second]);
+    sidebar.apply(200, PROVIDER, [second]).unwrap();
     assert_eq!(keys(&sidebar), ["b", "c"]);
     assert!(sidebar.content_revision() > content);
     let view = sidebar.arrangement(worker()).unwrap();
@@ -388,18 +390,21 @@ fn rebind_policies_decide_what_happens_to_the_replaced_instance() {
     assert!(sidebar.plan_slot(worker(), "nope", "").is_err());
 
     // Every slot resolves to a new instance under the same baseline.
-    sidebar.apply(
-        200,
-        [layout(
-            "1",
-            vec![
-                facet_slot("r", "replace", "r#2"),
-                facet_slot("k", "keep-previous", "k#2"),
-                facet_slot("q", "ask", "q#2"),
-            ],
-            &["r", "k", "q"],
-        )],
-    );
+    sidebar
+        .apply(
+            200,
+            PROVIDER,
+            [layout(
+                "1",
+                vec![
+                    facet_slot("r", "replace", "r#2"),
+                    facet_slot("k", "keep-previous", "k#2"),
+                    facet_slot("q", "ask", "q#2"),
+                ],
+                &["r", "k", "q"],
+            )],
+        )
+        .unwrap();
     // replace: the old instance goes.
     let plan = sidebar.plan_slot(worker(), "r", &applied["r"]).unwrap();
     assert_eq!(
@@ -450,27 +455,33 @@ fn rebind_policies_decide_what_happens_to_the_replaced_instance() {
             .state,
         ContentState::Failed
     );
-    sidebar.apply(
-        300,
-        [layout(
-            "1",
-            vec![facet_slot("q", "ask", "q#3")],
-            &["r", "k", "q"],
-        )],
-    );
+    sidebar
+        .apply(
+            300,
+            PROVIDER,
+            [layout(
+                "1",
+                vec![facet_slot("q", "ask", "q#3")],
+                &["r", "k", "q"],
+            )],
+        )
+        .unwrap();
     let plan = sidebar.plan_slot(worker(), "q", &applied["q"]).unwrap();
     assert_eq!(plan.state, ContentState::Updating);
     assert_ne!(plan.update.unwrap().token, update.token);
 
     // A held resolution suspends the slot without touching its content.
-    sidebar.apply(
-        400,
-        [patch(
-            subject(),
-            &[("layout.slot.q.state", text("held"))],
-            &[],
-        )],
-    );
+    sidebar
+        .apply(
+            400,
+            PROVIDER,
+            [patch(
+                subject(),
+                &[("layout.slot.q.state", text("held"))],
+                &[],
+            )],
+        )
+        .unwrap();
     assert_eq!(
         sidebar
             .plan_slot(worker(), "q", &applied["q"])
@@ -496,33 +507,29 @@ fn primary_content_is_the_primary_slot() {
         sidebar.arrangement(worker()).unwrap().doc.tabs(),
         ["primary"]
     );
-    let applied = TerminalContent {
+    let applied = Resolved::from(TerminalContent {
         target: "attempt-0".into(),
         command: "old".into(),
         cwd: None,
-    };
-    // The ABI 2 plan and the slot plan share one binding and token.
-    let legacy = sidebar
-        .managed
-        .plan(worker(), subject(), applied.clone())
-        .update
+    });
+    let slot = sidebar
+        .plan_slot(worker(), "primary", &applied.id())
         .unwrap();
-    let applied_id = andamento_core::managed::Resolved::from(applied).id();
-    let slot = sidebar.plan_slot(worker(), "primary", &applied_id).unwrap();
     let update = slot.update.unwrap();
-    assert_eq!(update.token, legacy.token);
     assert_eq!(
         update.resolution.as_terminal(),
         Some(("attempt-1", "printf hello", None))
     );
-    assert!(sidebar.managed.valid(worker(), legacy.token));
+    assert!(sidebar
+        .managed
+        .slot_valid(worker(), "primary", update.token));
     assert!(sidebar
         .managed
         .complete_slot(worker(), "primary", update.token, true));
     assert_eq!(
         sidebar
-            .managed
-            .plan(worker(), subject(), legacy.content)
+            .plan_slot(worker(), "primary", &update.resolution.id())
+            .unwrap()
             .state,
         ContentState::Current
     );
@@ -605,7 +612,13 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     let plan = other.plan_slot(worker(), "r", "").unwrap();
     assert_eq!(plan.state, ContentState::Unavailable);
     assert_eq!(plan.saved.as_ref(), Some(&saved));
-    other.apply(100, [layout("1", slots("r#1", "k#1"), &["r", "k"])]);
+    other
+        .apply(
+            100,
+            PROVIDER,
+            [layout("1", slots("r#1", "k#1"), &["r", "k"])],
+        )
+        .unwrap();
     let plan = other.plan_slot(worker(), "r", "").unwrap();
     assert_eq!(plan.state, ContentState::Updating);
     assert_eq!(plan.update.unwrap().id, saved.against);
@@ -614,7 +627,13 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     // The provider resolves r to a new target: the saved resolution is
     // cleared, and the slot rebinds by its policy as for any change.
     let revision = sidebar.content_revision();
-    sidebar.apply(200, [layout("1", slots("r#2", "k#1"), &["r", "k"])]);
+    sidebar
+        .apply(
+            200,
+            PROVIDER,
+            [layout("1", slots("r#2", "k#1"), &["r", "k"])],
+        )
+        .unwrap();
     assert!(sidebar.content_revision() > revision);
     assert_eq!(sidebar.slot_resolution(worker(), "r").unwrap(), None);
     let record = sidebar.export_record(&name).unwrap();
@@ -639,7 +658,13 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     );
     // The same happens to a device that imports the old record later.
     other.import_record(&name, &record).unwrap();
-    other.apply(300, [layout("1", slots("r#2", "k#1"), &["r", "k"])]);
+    other
+        .apply(
+            300,
+            PROVIDER,
+            [layout("1", slots("r#2", "k#1"), &["r", "k"])],
+        )
+        .unwrap();
     assert_eq!(other.slot_resolution(worker(), "r").unwrap(), None);
 
     // Held (or expired) facts are silence, not a new target: kept.
@@ -652,14 +677,17 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
         sidebar.set_slot_resolution(worker(), "k", cleat("K1"), &k.id, 0),
         Ok(3)
     );
-    sidebar.apply(
-        400,
-        [patch(
-            subject(),
-            &[("layout.slot.k.state", text("held"))],
-            &[],
-        )],
-    );
+    sidebar
+        .apply(
+            400,
+            PROVIDER,
+            [patch(
+                subject(),
+                &[("layout.slot.k.state", text("held"))],
+                &[],
+            )],
+        )
+        .unwrap();
     assert_eq!(
         sidebar.plan_slot(worker(), "k", &k.id).unwrap().state,
         ContentState::Held

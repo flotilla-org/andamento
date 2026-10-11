@@ -1,14 +1,21 @@
 #!/bin/sh
-# Regenerate crates/andamento-ffi/include/andamento_documents.h from
-# src/documents.rs with cbindgen (`cargo install cbindgen`). With --check,
-# fail if the committed header is stale instead.
+# Regenerate crates/andamento-ffi/include/andamento.h from the crate's
+# source with cbindgen (`cargo install cbindgen`). With --check, fail if
+# the committed header is stale instead.
 set -e
 ffi="$(dirname "$0")/../crates/andamento-ffi"
-out="$ffi/include/andamento_documents.h"
+out="$ffi/include/andamento.h"
+generate() {
+  cbindgen --quiet --config "$ffi/cbindgen.toml" --output "$1" "$ffi/src/lib.rs"
+}
 if [ "$1" = "--check" ]; then
   tmp=$(mktemp)
-  cbindgen --quiet --config "$ffi/cbindgen.toml" --output "$tmp" "$ffi/src/documents.rs"
-  diff -u "$out" "$tmp" && rm "$tmp"
+  trap 'rm -f "$tmp"' EXIT
+  generate "$tmp"
+  if ! diff -u "$out" "$tmp"; then
+    echo "andamento.h is stale: run scripts/generate-header.sh" >&2
+    exit 1
+  fi
 else
-  cbindgen --quiet --config "$ffi/cbindgen.toml" --output "$out" "$ffi/src/documents.rs"
+  generate "$out"
 fi

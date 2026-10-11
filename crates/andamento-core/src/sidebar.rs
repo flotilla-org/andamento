@@ -58,16 +58,14 @@ pub enum Request {
     Configure {
         kdl: String,
     },
-    /// Apply patches from `provider` (a subscription ID), or from the
-    /// default provider when it is absent.
+    /// Apply patches from `provider` (a subscription ID).
     Apply {
         now_ms: u64,
-        patches: Vec<MetadataPatch>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider: Option<String>,
-    },
-    SetDefaultProvider {
         provider: String,
+        patches: Vec<MetadataPatch>,
+    },
+    Tick {
+        now_ms: u64,
     },
     RetractProvider {
         provider: String,
@@ -184,8 +182,6 @@ pub struct Sidebar {
     workspaces: BTreeMap<WorkspaceId, WorkspaceEntry>,
     /// Local sections, groups and refs, with their facts.
     local: BTreeMap<EntityRef, BTreeMap<String, crate::MetadataValue>>,
-    /// Nodes of the imported dashboard record this version doesn't know.
-    dashboard_unknown: Vec<String>,
     /// Every document and record generation comes from this clock.
     clock: crate::versioned::Clock,
     /// The dashboard record's generation and the text it was assigned for.
@@ -201,10 +197,6 @@ pub struct Sidebar {
     /// reconciliation did.
     sidebar_arrangement: crate::sidebar_arrangement::SidebarArrangement,
     sidebar_report: crate::sidebar_arrangement::Report,
-    /// The configured template's version, and the one the last imported
-    /// dashboard record was made against.
-    template_version: String,
-    template_recorded: Option<String>,
 }
 
 #[derive(Default)]
@@ -234,17 +226,14 @@ impl Sidebar {
             }
             Request::Apply {
                 now_ms,
-                patches,
                 provider,
+                patches,
             } => {
-                match provider {
-                    Some(provider) => self.apply_from(now_ms, &provider, patches)?,
-                    None => self.apply(now_ms, patches),
-                }
+                self.apply(now_ms, &provider, patches)?;
                 vec![]
             }
-            Request::SetDefaultProvider { provider } => {
-                self.set_default_provider(&provider)?;
+            Request::Tick { now_ms } => {
+                self.tick(now_ms);
                 vec![]
             }
             Request::RetractProvider { provider } => {
@@ -320,49 +309,34 @@ impl Sidebar {
             crate::template_config::TemplateConfigCatalog::with_bundled_defaults(templates),
         ));
         self.placement_keys = self.state.placement_fact_keys();
-        self.template_version = crate::dashboard_overlay::template_version(config_kdl);
         self.invalidate();
         self.follow_sidebar_declarations();
         Ok(())
     }
 
-    /// The provider of entities that name none: the one [`apply`](Self::apply)
-    /// stamps, and the one entities named by kind and ID alone belong to.
-    /// It is [`LOCAL_PROVIDER`](crate::LOCAL_PROVIDER) until the host sets it.
-    pub fn default_provider(&self) -> &str {
-        self.state.default_provider()
-    }
-
-    /// Set the default provider, so a host can move to providers gradually.
-    /// Set it before applying facts or importing records.
-    pub fn set_default_provider(&mut self, provider: &str) -> Result<(), String> {
-        self.state.set_default_provider(provider)?;
-        self.invalidate();
-        Ok(())
-    }
-
-    /// Apply a drained batch before requesting a snapshot. Time is monotonic
-    /// milliseconds in this instance, supplied by the host; an empty batch is a tick.
-    /// The patches come from the default provider.
-    pub fn apply(&mut self, now_ms: u64, patches: impl IntoIterator<Item = MetadataPatch>) {
-        let provider = self.state.default_provider().to_owned();
-        self.apply_patches(now_ms, &provider, patches);
-    }
-
     /// Apply a drained batch from `provider`, the subscription ID the host
-    /// received it on. The provider is stamped over every entity the patches
-    /// name; a patch never names its own.
-    pub fn apply_from(
+    /// received it on, before requesting a snapshot. The provider is stamped
+    /// over every entity the patches name; a patch never names its own. Time
+    /// is monotonic milliseconds in this instance, supplied by the host.
+    pub fn apply(
         &mut self,
         now_ms: u64,
         provider: &str,
         patches: impl IntoIterator<Item = MetadataPatch>,
     ) -> Result<(), String> {
-        if provider.is_empty() {
-            return Err("a provider needs a name".into());
+        if provider.is_empty() || provider == crate::LOCAL_PROVIDER {
+            return Err(format!(
+                "a provider needs a name other than {:?}",
+                crate::LOCAL_PROVIDER
+            ));
         }
-        self.apply_patches(now_ms, provider, patches);
+        self.apply_patches(now_ms, Some(provider), patches);
         Ok(())
+    }
+
+    /// Advance time without facts, expiring what has lapsed.
+    pub fn tick(&mut self, now_ms: u64) {
+        self.apply_patches(now_ms, None, []);
     }
 
     /// Remove all of a provider's facts at once, as when its subscription is
@@ -411,7 +385,7 @@ impl Sidebar {
     fn apply_patches(
         &mut self,
         now_ms: u64,
-        provider: &str,
+        provider: Option<&str>,
         patches: impl IntoIterator<Item = MetadataPatch>,
     ) {
         let _phase = crate::profile::span("apply");
@@ -421,8 +395,10 @@ impl Sidebar {
         drop(maintenance);
         changed |= self.state.advance_time(now_ms);
         let patch_phase = crate::profile::span("patch-application");
-        for patch in patches {
-            changed |= self.state.apply_provider_patch(provider, patch);
+        if let Some(provider) = provider {
+            for patch in patches {
+                changed |= self.state.apply_provider_patch(provider, patch);
+            }
         }
         drop(patch_phase);
         let maintenance = crate::profile::span("workspace-maintenance");
@@ -636,17 +612,16 @@ impl Sidebar {
     /// every node in it carries. An empty order returns the run to data order.
     pub fn set_sibling_order(
         &mut self,
-        mut loop_key: crate::PlacementLoopKey,
-        mut order: Vec<EntityRef>,
-    ) {
-        let provider = self.state.default_provider().to_owned();
-        loop_key.fill_provider(&provider);
-        for entity in &mut order {
-            entity.fill_provider(&provider);
+        loop_key: crate::PlacementLoopKey,
+        order: Vec<EntityRef>,
+    ) -> Result<(), String> {
+        for entity in &order {
+            entity.check_provider()?;
         }
         self.state
             .apply_rail_ui_action(RailUiAction::SetSiblingOrder { loop_key, order });
         self.invalidate();
+        Ok(())
     }
 
     /// Set a declared display variable, or return it to its default with
@@ -666,14 +641,13 @@ impl Sidebar {
     /// Set a local section, group or ref (see [`LOCAL_KINDS`]), replacing all
     /// its facts. Andamento owns local entities and keeps them in the
     /// dashboard record; their provider is [`LOCAL_PROVIDER`](crate::LOCAL_PROVIDER).
-    /// Lists of text and group paths are not allowed. Entity references that
-    /// name no provider get the default provider.
+    /// Lists of text and group paths are not allowed; entity references name
+    /// their providers.
     pub fn set_local(
         &mut self,
-        mut entity: EntityRef,
-        mut facts: BTreeMap<String, crate::MetadataValue>,
+        entity: EntityRef,
+        facts: BTreeMap<String, crate::MetadataValue>,
     ) -> Result<(), String> {
-        entity.fill_provider(crate::LOCAL_PROVIDER);
         if entity.provider != crate::LOCAL_PROVIDER {
             return Err(format!(
                 "local entities have the {:?} provider, not {:?}",
@@ -681,8 +655,8 @@ impl Sidebar {
                 entity.provider
             ));
         }
-        for value in facts.values_mut() {
-            value.fill_provider(self.state.default_provider());
+        for value in facts.values() {
+            value.check_providers()?;
         }
         if !LOCAL_KINDS.contains(&entity.kind.as_str()) {
             return Err(format!(
@@ -700,20 +674,6 @@ impl Sidebar {
         if !facts.values().all(crate::records::recordable) {
             return Err("local facts are text, booleans, integers or entity references".into());
         }
-        if let Some(view) = facts.get(crate::dashboard_overlay::VIEW) {
-            if entity.kind != crate::presentation::system::REF {
-                return Err(format!(
-                    "only a ref pins a view ({})",
-                    crate::dashboard_overlay::VIEW
-                ));
-            }
-            match view {
-                crate::MetadataValue::Text(text) => {
-                    crate::dashboard_overlay::parse_view(text)?;
-                }
-                _ => return Err(format!("{} is text", crate::dashboard_overlay::VIEW)),
-            }
-        }
         let patch = self.local_patch(&entity, Some(&facts));
         let section = entity.kind != crate::presentation::system::REF;
         self.local.insert(entity, facts);
@@ -726,9 +686,6 @@ impl Sidebar {
 
     /// Remove a local entity. Returns whether there was one.
     pub fn remove_local(&mut self, entity: &EntityRef) -> bool {
-        let mut entity = entity.clone();
-        entity.fill_provider(crate::LOCAL_PROVIDER);
-        let entity = &entity;
         if !self.local.contains_key(entity) {
             return false;
         }
@@ -898,8 +855,6 @@ impl Sidebar {
             local: self.local.clone(),
             sidebar: Some(self.sidebar_arrangement.clone())
                 .filter(|arrangement| arrangement.generation != 0),
-            template: Some(self.template_version.clone()),
-            unknown: self.dashboard_unknown.clone(),
         }
         .encode()
     }
@@ -939,7 +894,7 @@ impl Sidebar {
     pub fn import_record(&mut self, name: &str, text: &str) -> Result<(), String> {
         match RecordName::parse(name)? {
             RecordName::Dashboard => {
-                let record = DashboardRecord::decode(text, self.state.default_provider())?;
+                let record = DashboardRecord::decode(text)?;
                 if let Some(entity) = record
                     .local
                     .keys()
@@ -970,8 +925,6 @@ impl Sidebar {
                     }
                 }
                 self.local = record.local;
-                self.dashboard_unknown = record.unknown;
-                self.template_recorded = record.template;
                 for patch in patches {
                     self.state.apply_metadata_patch(patch);
                 }
@@ -1095,17 +1048,17 @@ impl Sidebar {
     /// edit (see [`WorkspaceSlots::set`](crate::slots::WorkspaceSlots::set)).
     /// The arrangement is unchanged, except that an unowned one shows a
     /// tombstoned slot this restores: the host gives a new slot a tab in its
-    /// next commit, which otherwise places it. Entity references that name
-    /// no provider get the default provider.
+    /// next commit, which otherwise places it. A facet's entity names its
+    /// provider.
     pub fn set_slot(
         &mut self,
         workspace: WorkspaceId,
         key: &str,
-        mut spec: crate::suggested_layout::ViewSpec,
+        spec: crate::suggested_layout::ViewSpec,
         rebind: crate::suggested_layout::RebindPolicy,
     ) -> Result<bool, String> {
-        if let crate::suggested_layout::Content::ProviderFacet { entity, .. } = &mut spec.content {
-            entity.fill_provider(self.state.default_provider());
+        if let crate::suggested_layout::Content::ProviderFacet { entity, .. } = &spec.content {
+            entity.check_provider()?;
         }
         let entry = self
             .workspaces
@@ -1224,17 +1177,6 @@ impl Sidebar {
         Ok(crate::slots::OverlayView::new(
             &record.slots,
             record.arrangement.get().as_ref(),
-        ))
-    }
-
-    /// The workspace's edit set as an Overlay Sync proposal: the edits and
-    /// the baseline version they apply to, as KDL. Read-only.
-    pub fn export_overlay(&self, workspace: WorkspaceId) -> Result<String, String> {
-        let record = self.workspace_record(workspace)?;
-        Ok(crate::records::encode_proposal(
-            workspace,
-            record.subject.as_ref(),
-            &crate::slots::EditSet::new(&record.slots, record.arrangement.get().as_ref()),
         ))
     }
 
@@ -1527,34 +1469,43 @@ impl Sidebar {
         crate::sidebar_arrangement::SidebarView,
         &crate::sidebar_arrangement::Report,
     ) {
-        (
-            self.sidebar_arrangement.view(&self.sidebar_declared()),
-            &self.sidebar_report,
-        )
+        let declared = self.sidebar_declared();
+        let mut view = self.sidebar_arrangement.view(&declared);
+        view.unresolved
+            .extend(self.unresolved_dashboard_keys(&declared));
+        (view, &self.sidebar_report)
     }
 
-    /// The Dashboard's relation to its template: the template version, the
-    /// one the imported record was made against, and every saved key that no
-    /// longer resolves (kept, never dropped), including pinned Views that
-    /// have gone.
-    pub fn dashboard_overlay(&self) -> crate::dashboard_overlay::DashboardOverlay {
-        use crate::dashboard_overlay::{self as overlay, KeyKind};
+    /// Saved dashboard keys the template no longer resolves, as
+    /// `display:<name>`, `collapse:<key>`, `order:<loop key>` and
+    /// `variable:<key>`. They are kept, never dropped, and resolve again if
+    /// the template brings their names back.
+    fn unresolved_dashboard_keys(
+        &self,
+        declared: &crate::sidebar_arrangement::Declared,
+    ) -> Vec<String> {
         let (loops, display) = self.state.template_names();
-        let declared = self.sidebar_declared();
         let loop_resolves = |name: &str| {
             loops.contains(name) || name == crate::presentation::UNPLACED_WORKSPACES_SECTION
         };
         let key_resolves =
             |key: &crate::PlacementKey| key.0.iter().all(|s| loop_resolves(&s.loop_name));
+        let key_text = |key: &crate::PlacementKey| {
+            key.0
+                .iter()
+                .map(|s| format!("{}={}", s.loop_name, s.entity.action_target()))
+                .collect::<Vec<_>>()
+                .join("/")
+        };
         let mut unresolved = Vec::new();
         for name in self.state.recorded_display_variables().keys() {
             if !display.contains(name) {
-                unresolved.push((KeyKind::Display, name.clone()));
+                unresolved.push(format!("display:{name}"));
             }
         }
         for key in self.state.collapsed_placements() {
             if !key_resolves(key) {
-                unresolved.push((KeyKind::Collapse, overlay::placement_key_text(key)));
+                unresolved.push(format!("collapse:{}", key_text(key)));
             }
         }
         for key in self.state.sibling_orders().keys() {
@@ -1562,35 +1513,15 @@ impl Sidebar {
                 && loop_resolves(&key.binding)
                 && key_resolves(&key.parent))
             {
-                unresolved.push((KeyKind::Order, overlay::loop_key_text(key)));
+                unresolved.push(format!("order:{}", key.encode()));
             }
         }
         for key in self.state.placement_variables().keys() {
             if !key_resolves(key) {
-                unresolved.push((KeyKind::Variable, overlay::placement_key_text(key)));
+                unresolved.push(format!("variable:{}", key_text(key)));
             }
         }
-        for key in crate::sidebar_arrangement::unresolved(&declared, &self.sidebar_arrangement) {
-            unresolved.push((KeyKind::Section, key));
-        }
-        for (entity, facts) in &self.local {
-            let Some(crate::MetadataValue::Text(view)) = facts.get(overlay::VIEW) else {
-                continue;
-            };
-            let resolves = overlay::parse_view(view).is_ok_and(|(workspace, key)| {
-                self.workspaces
-                    .get(&workspace)
-                    .is_some_and(|entry| entry.record.slots.keys().contains(&key))
-            });
-            if !resolves {
-                unresolved.push((KeyKind::Pin, entity.id.clone()));
-            }
-        }
-        overlay::DashboardOverlay {
-            template: self.template_version.clone(),
-            recorded: self.template_recorded.clone(),
-            unresolved,
-        }
+        unresolved
     }
 
     /// The sidebar arrangement's generation: 0 before anything is stored,
@@ -1692,7 +1623,6 @@ impl Sidebar {
     /// Exact catalog identity, including hidden and retained ended subjects.
     /// Cache at most 64 cards (including misses), and discard on revision change.
     pub fn detail_card(&self, entity: &EntityRef) -> Option<crate::detail::DetailCard> {
-        let entity = &self.with_provider(entity);
         if let Some(card) = self.details.borrow().get(entity) {
             return card.clone();
         }
@@ -1716,27 +1646,10 @@ impl Sidebar {
     }
 
     pub fn subject_url(&self, entity: &EntityRef) -> Option<String> {
-        self.state.subject_url(&self.with_provider(entity))
+        self.state.subject_url(entity)
     }
 
-    /// `entity`, with the default provider if it names none.
-    fn with_provider(&self, entity: &EntityRef) -> EntityRef {
-        let mut entity = entity.clone();
-        entity.fill_provider(self.state.default_provider());
-        entity
-    }
-
-    pub fn dispatch(&mut self, mut action: Action) -> Result<Vec<HostEffect>, String> {
-        let provider = self.state.default_provider().to_owned();
-        match &mut action {
-            Action::CopySubjectUrl { entity } | Action::Activate { entity } => {
-                entity.fill_provider(&provider)
-            }
-            Action::ActivatePlacement { key }
-            | Action::TogglePlacement { key }
-            | Action::SetVariable { key, .. } => key.fill_provider(&provider),
-            Action::ToggleDisplayVariable { .. } => {}
-        }
+    pub fn dispatch(&mut self, action: Action) -> Result<Vec<HostEffect>, String> {
         match action {
             Action::CopySubjectUrl { entity } => {
                 let url = self
@@ -2005,12 +1918,13 @@ fn retained_workspace_expired(_state: &ControllerState, _subjects: &BTreeSet<Ent
 
 #[cfg(test)]
 mod evaluation_tests {
+    const PROVIDER: &str = "test";
     use super::*;
     use crate::{MetadataTarget, MetadataValue, MetadataValueUpdate};
 
     const CONFIG: &str = include_str!("../tests/fixtures/sidebar.kdl");
     fn entity() -> EntityRef {
-        EntityRef::local("vessel", "v")
+        EntityRef::new(PROVIDER, "vessel", "v")
     }
     fn patch(source: &str, label: &str, ttl: Option<u64>, precedence: i64) -> MetadataPatch {
         MetadataPatch {
@@ -2040,24 +1954,27 @@ mod evaluation_tests {
         }
     }
     fn add_project(sidebar: &mut Sidebar) {
-        sidebar.apply(
-            100,
-            [MetadataPatch {
-                target: MetadataTarget::Entity(EntityRef::local("project", "p")),
-                source_id: "base".into(),
-                unset: vec![],
-                set: [(
-                    "flotilla.project".into(),
-                    MetadataValueUpdate {
-                        value: MetadataValue::Text("p".into()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                )]
-                .into(),
-            }],
-        );
+        sidebar
+            .apply(
+                100,
+                PROVIDER,
+                [MetadataPatch {
+                    target: MetadataTarget::Entity(EntityRef::new(PROVIDER, "project", "p")),
+                    source_id: "base".into(),
+                    unset: vec![],
+                    set: [(
+                        "flotilla.project".into(),
+                        MetadataValueUpdate {
+                            value: MetadataValue::Text("p".into()),
+                            ttl_ms: None,
+                            precedence: None,
+                            ordinal: None,
+                        },
+                    )]
+                    .into(),
+                }],
+            )
+            .unwrap();
     }
     fn check(sidebar: &Sidebar) {
         // Issue #96: cached presentation and exact details must equal an uncached
@@ -2076,7 +1993,9 @@ mod evaluation_tests {
     #[test]
     fn revision_queries_share_evaluation_and_validation() {
         let mut sidebar = Sidebar::new(CONFIG).unwrap();
-        sidebar.apply(100, [patch("a", "first", None, 0)]);
+        sidebar
+            .apply(100, PROVIDER, [patch("a", "first", None, 0)])
+            .unwrap();
         add_project(&mut sidebar);
         crate::profile::start();
         let snapshot = sidebar.snapshot();
@@ -2102,36 +2021,41 @@ mod evaluation_tests {
         // dispatch and completions. Real controller/store/template collaborators.
         for seed in 0..24u64 {
             let mut sidebar = Sidebar::new(CONFIG).unwrap();
-            sidebar.apply(100, [patch("base", "original", None, 0)]);
+            sidebar
+                .apply(100, PROVIDER, [patch("base", "original", None, 0)])
+                .unwrap();
             add_project(&mut sidebar);
             let held = sidebar.snapshot();
             let mut now = 100;
             for step in 0..18 {
                 match (seed + step * 7) % 9 {
-                    0 => sidebar.apply(
-                        now,
-                        [patch("update", &format!("{seed}/{step}"), Some(5), 10)],
-                    ),
+                    0 => sidebar
+                        .apply(
+                            now,
+                            PROVIDER,
+                            [patch("update", &format!("{seed}/{step}"), Some(5), 10)],
+                        )
+                        .unwrap(),
                     1 => {
                         now += 5;
-                        sidebar.apply(now, []);
+                        sidebar.tick(now);
                     }
                     2 => {
                         now += 1;
-                        sidebar.apply(now, []);
+                        sidebar.tick(now);
                     }
                     3 => {
                         let mut p = patch("update", "", None, 0);
                         p.set.clear();
                         p.unset = vec!["display.label".into()];
-                        sidebar.apply(now, [p]);
+                        sidebar.apply(now, PROVIDER, [p]).unwrap();
                     }
                     4 => sidebar
                         .configure(&CONFIG.replace("default=\"roomy\"", "default=\"compact\""))
                         .unwrap(),
                     5 => sidebar.observe(
                         vec![Workspace {
-                            id: WorkspaceId::from(1),
+                            id: crate::tab_workspace_id(1),
                             position: 0,
                             name: "vessel:v".into(),
                             selected: step % 2 == 0,
@@ -2195,18 +2119,20 @@ mod evaluation_tests {
             crate::SortMode::LatestStatus,
         ] {
             let mut sidebar = Sidebar::new(CONFIG).unwrap();
-            sidebar.apply(100, [patch("base", "original", None, 0)]);
+            sidebar
+                .apply(100, PROVIDER, [patch("base", "original", None, 0)])
+                .unwrap();
             add_project(&mut sidebar);
             sidebar.observe(
                 vec![
                     Workspace {
-                        id: WorkspaceId::from(1),
+                        id: crate::tab_workspace_id(1),
                         position: 1,
                         name: "vessel:v".into(),
                         selected: true,
                     },
                     Workspace {
-                        id: WorkspaceId::from(2),
+                        id: crate::tab_workspace_id(2),
                         position: 0,
                         name: "Other".into(),
                         selected: false,
@@ -2215,13 +2141,13 @@ mod evaluation_tests {
                 vec![],
             );
             sidebar.state.set_sort_mode(mode);
-            sidebar.state.toggle_pin(WorkspaceId::from(1));
+            sidebar.state.toggle_pin(crate::tab_workspace_id(1));
             sidebar.invalidate();
             check(&sidebar);
             let tabs = sidebar.state.view_model().tabs;
             assert_eq!(
                 tabs[0].tab_id,
-                WorkspaceId::from(if mode == crate::SortMode::PinnedFirst {
+                crate::tab_workspace_id(if mode == crate::SortMode::PinnedFirst {
                     1
                 } else {
                     2
@@ -2236,12 +2162,14 @@ mod evaluation_tests {
         // Missing, empty and invalid identities are cached without growing forever.
         for i in 0..200 {
             assert!(sidebar
-                .detail_card(&EntityRef::local("missing", i.to_string()))
+                .detail_card(&EntityRef::new(PROVIDER, "missing", i.to_string()))
                 .is_none());
             assert!(sidebar.details.borrow().len() <= 64);
         }
         assert!(sidebar.detail_card(&entity()).is_none());
-        sidebar.apply(100, [patch("base", "appeared", None, 0)]);
+        sidebar
+            .apply(100, PROVIDER, [patch("base", "appeared", None, 0)])
+            .unwrap();
         assert_eq!(sidebar.detail_card(&entity()).unwrap().label, "appeared");
     }
 }

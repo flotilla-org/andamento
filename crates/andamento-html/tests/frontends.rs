@@ -10,7 +10,9 @@ fn native_and_terminal_geometry_share_actions_and_placement_state() {
         .lines()
         .map(|l| serde_json::from_str::<MetadataPatch>(l).unwrap())
         .collect::<Vec<_>>();
-    sidebar.apply(0, patches);
+    sidebar
+        .apply(0, andamento_core::replay::PROVIDER, patches)
+        .unwrap();
     let before = sidebar.snapshot();
     let terminal = andamento_terminal::surface::render(&before.surface, 32);
     let html = andamento_html::render(&before);

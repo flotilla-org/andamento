@@ -3,6 +3,7 @@ use andamento_core::{
     EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
 };
 use std::{collections::BTreeMap, hint::black_box, time::Instant};
+const PROVIDER: &str = "bench";
 fn main() {
     let config_path = std::env::args()
         .nth(1)
@@ -37,27 +38,30 @@ fn main() {
                 .collect::<BTreeMap<_, _>>(),
             })
             .collect::<Vec<_>>();
-        sidebar.apply(100, patches);
+        sidebar.apply(100, PROVIDER, patches).unwrap();
         black_box(sidebar.snapshot());
         let t = Instant::now();
         for update in 0..3 {
-            sidebar.apply(
-                100,
-                [MetadataPatch {
-                    target: MetadataTarget::Entity(EntityRef::local("vessel", "v0")),
-                    source_id: "bench".into(),
-                    unset: vec![],
-                    set: BTreeMap::from([(
-                        "status.state".into(),
-                        MetadataValueUpdate {
-                            value: MetadataValue::Text(format!("update-{update}")),
-                            ttl_ms: None,
-                            precedence: None,
-                            ordinal: Some(0),
-                        },
-                    )]),
-                }],
-            );
+            sidebar
+                .apply(
+                    100,
+                    PROVIDER,
+                    [MetadataPatch {
+                        target: MetadataTarget::Entity(EntityRef::local("vessel", "v0")),
+                        source_id: "bench".into(),
+                        unset: vec![],
+                        set: BTreeMap::from([(
+                            "status.state".into(),
+                            MetadataValueUpdate {
+                                value: MetadataValue::Text(format!("update-{update}")),
+                                ttl_ms: None,
+                                precedence: None,
+                                ordinal: Some(0),
+                            },
+                        )]),
+                    }],
+                )
+                .unwrap();
             black_box(sidebar.snapshot_shared());
         }
         println!(
@@ -66,7 +70,7 @@ fn main() {
         );
         let t = Instant::now();
         for _ in 0..1000 {
-            sidebar.apply(100, []);
+            sidebar.tick(100);
             black_box(sidebar.snapshot_shared());
         }
         println!(

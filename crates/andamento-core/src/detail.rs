@@ -110,6 +110,7 @@ pub(crate) fn resolve_field(
 
 #[cfg(test)]
 mod tests {
+    const PROVIDER: &str = "test";
     use crate::{
         template_config::*, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate,
         Sidebar,
@@ -177,15 +178,18 @@ mod tests {
                         },
                     );
                 }
-                sidebar.apply(
-                    0,
-                    [MetadataPatch {
-                        target: MetadataTarget::Entity(crate::EntityRef::local("item", "id")),
-                        source_id: "producer".into(),
-                        set,
-                        unset: vec![],
-                    }],
-                );
+                sidebar
+                    .apply(
+                        0,
+                        PROVIDER,
+                        [MetadataPatch {
+                            target: MetadataTarget::Entity(crate::EntityRef::local("item", "id")),
+                            source_id: "producer".into(),
+                            set,
+                            unset: vec![],
+                        }],
+                    )
+                    .unwrap();
                 let (_, cards) = sidebar.detail_cards();
                 let f = &cards[0].fields[0];
                 assert_eq!(f.role.as_str(), role);

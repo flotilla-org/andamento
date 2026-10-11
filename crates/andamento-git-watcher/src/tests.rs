@@ -368,7 +368,16 @@ fi
         .iter()
         .find(|p| p["target"]["kind"] == "tab")
         .unwrap();
-    assert_eq!(tab["target"]["value"], 42);
+    assert_eq!(
+        tab["target"]["value"],
+        andamento_core::tab_workspace_id(42).to_string()
+    );
+    for tab in [0, 42, u64::MAX] {
+        assert_eq!(
+            crate::transport::tab_workspace_id(tab),
+            andamento_core::tab_workspace_id(tab).to_string()
+        );
+    }
     assert!(tab["set"]["entity.id"]["ttl_ms"].is_null());
     fs::remove_file(&state).unwrap();
     host.reconcile(&trees, &observed, 10_000).unwrap();
@@ -610,7 +619,7 @@ set -eu
 printf '%s\n' "$*" >> {}
 if [ "$1" = pipe ]; then
   if [ ! -f {} ]; then touch {}; echo 'first pane failed' >&2; exit 1; fi
-  case "$5" in *'"kind":"tab","value":42'*) echo 'tab failed' >&2; exit 1;; esac
+  case "$5" in *'"kind":"tab","value":"00000000-0000-0000-0000-00000000002a"'*) echo 'tab failed' >&2; exit 1;; esac
 elif [ "$2" = list-tabs ]; then
   if [ -f {} ]; then echo 'inventory unavailable' >&2; exit 1; fi
   printf '[]\n'
@@ -650,8 +659,8 @@ fi
             .count(),
         3
     );
-    assert!(calls.contains("\"kind\":\"tab\",\"value\":43"));
-    assert!(calls.contains("\"kind\":\"tab\",\"value\":44"));
+    assert!(calls.contains("\"kind\":\"tab\",\"value\":\"00000000-0000-0000-0000-00000000002b\""));
+    assert!(calls.contains("\"kind\":\"tab\",\"value\":\"00000000-0000-0000-0000-00000000002c\""));
     // A failed global inventory must not create blindly, but all panes refresh.
     fs::write(&log, "").unwrap();
     fs::write(&fail_inventory, "").unwrap();

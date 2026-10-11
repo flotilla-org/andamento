@@ -49,7 +49,7 @@ const KEY_ENTITY_ID: &str = "entity.id";
 /// The provider of the entity `entity.kind`/`entity.id` name, on a target
 /// that isn't that entity (such as a workspace). The core stamps it from the
 /// provider of the patch that names the entity; a patch never sets it. Where
-/// it is missing, the entity has the default provider.
+/// it is missing (a core-owned patch), the entity is local.
 const KEY_ENTITY_PROVIDER: &str = "entity.provider";
 /// A host-owned entity published for one workspace, such as a local workspace
 /// the host gives its own identity. Its rows are live for the tab, as a
@@ -482,9 +482,6 @@ pub struct ControllerState {
     rail_ui: ControllerRailUiState,
     rail_ui_writer_client_id: u16,
     node_variable_overrides: BTreeMap<NodeKey, BTreeMap<String, String>>,
-    /// The provider of entities that name none: those from patches applied
-    /// without a provider, and those hosts name by kind and ID alone.
-    default_provider: String,
 }
 impl Default for ControllerState {
     fn default() -> Self {
@@ -510,7 +507,6 @@ impl Default for ControllerState {
             rail_ui: Default::default(),
             rail_ui_writer_client_id: Default::default(),
             node_variable_overrides: Default::default(),
-            default_provider: crate::LOCAL_PROVIDER.to_owned(),
         }
     }
 }
@@ -935,27 +931,12 @@ impl ControllerState {
         &self.template_config
     }
 
-    /// The provider of entities that name none.
-    pub fn default_provider(&self) -> &str {
-        &self.default_provider
-    }
-
-    /// Set the provider of entities that name none, before applying facts:
-    /// workspace subjects stamped without a provider resolve to the default
-    /// current when they are read.
-    pub fn set_default_provider(&mut self, provider: &str) -> Result<(), String> {
-        if provider.is_empty() {
-            return Err("a provider needs a name".into());
-        }
-        self.default_provider = provider.to_owned();
-        Ok(())
-    }
-
-    /// Apply a patch the core or host owns, as written: entities keep the
-    /// providers they name, and those naming none get the default. Its facts
-    /// belong to no provider, so no retraction or staleness touches them.
+    /// Apply a patch the core (or the Zellij controller) owns, as written:
+    /// entities keep the providers they name, and those naming none are
+    /// [`LOCAL_PROVIDER`](crate::LOCAL_PROVIDER)'s. Its facts belong to no
+    /// subscription, so no retraction or staleness touches them.
     pub fn apply_metadata_patch(&mut self, mut patch: crate::MetadataPatch) -> bool {
-        patch.fill_provider(&self.default_provider);
+        patch.fill_provider(crate::LOCAL_PROVIDER);
         self.apply_patch_from(None, patch)
     }
 
@@ -1788,15 +1769,20 @@ impl ControllerState {
         let mut live = BTreeMap::new();
         for workspace in &self.tabs {
             if let Some(values) = tab_metadata.get(&workspace.tab_id) {
+                // An entity is matched by its own action target, if it
+                // publishes one, else one made from its identity.
+                let target_of = |entity: EntityRef| {
+                    catalog
+                        .entity(&entity)
+                        .and_then(|e| metadata_entry_text(&e.values, KEY_ACTION_TARGET))
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| entity.action_target())
+                };
                 let target = metadata_entry_text(values, KEY_ACTION_TARGET)
                     .map(str::to_owned)
-                    .or_else(|| {
-                        entity_ref_from_entries(values, &self.default_provider)
-                            .map(|e| e.action_target())
-                    });
+                    .or_else(|| entity_ref_from_entries(values).map(target_of));
                 // A tab's host entity is live there too, alongside any subject.
-                let host = host_entity_ref_from_entries(values, &self.default_provider)
-                    .map(|e| e.action_target());
+                let host = host_entity_ref_from_entries(values).map(target_of);
                 for target in [target, host].into_iter().flatten() {
                     live.entry(target).or_insert(PresentationState::Live {
                         workspace_id: workspace.tab_id,
@@ -2903,10 +2889,10 @@ impl ControllerState {
                 &EntityId::Tab(tab.tab_id),
                 seeds.get(&tab.tab_id).cloned().unwrap_or_default(),
             );
-            if let Some(subject) = entity_ref_from_entries(&values, &self.default_provider) {
+            if let Some(subject) = entity_ref_from_entries(&values) {
                 identities.subjects.insert(tab.tab_id, subject);
             }
-            if let Some(host) = host_entity_ref_from_entries(&values, &self.default_provider) {
+            if let Some(host) = host_entity_ref_from_entries(&values) {
                 identities.hosts.insert(tab.tab_id, host);
             }
         }
@@ -3117,7 +3103,7 @@ impl ControllerState {
                     &EntityId::Tab(tab.tab_id),
                     seeds.get(&tab.tab_id).cloned().unwrap_or_default(),
                 );
-                entity_ref_from_entries(&values, &self.default_provider).is_none()
+                entity_ref_from_entries(&values).is_none()
                     && metadata_entry_text(&values, KEY_ACTION_TARGET).is_none()
             })
             .collect();
@@ -3160,7 +3146,7 @@ impl ControllerState {
         let target = EntityId::Tab(tab_id);
         let seed_values = tab_seed_metadata.get(&tab_id).cloned().unwrap_or_default();
         let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
-        entity_ref_from_entries(&values, &self.default_provider)
+        entity_ref_from_entries(&values)
     }
 
     pub fn can_materialize_latent(&self, request: &crate::MaterializeLatentRequest) -> bool {
@@ -3262,6 +3248,17 @@ impl ControllerState {
         self.materialized_tab_position_for_action_target(&request.action_target)
     }
 
+    /// The action target an entity is matched by: its own
+    /// `action.primary.target`, else one made from its identity.
+    fn action_target_of(&self, entity: &EntityRef) -> String {
+        let values = self
+            .metadata
+            .resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
+        metadata_entry_text(&values, KEY_ACTION_TARGET)
+            .map(str::to_owned)
+            .unwrap_or_else(|| entity.action_target())
+    }
+
     fn materialized_tab_position_for_action_target(&self, action_target: &str) -> Option<usize> {
         let tab_seed_metadata = self.tab_seed_metadata_entries();
         self.tabs
@@ -3273,15 +3270,15 @@ impl ControllerState {
                     .cloned()
                     .unwrap_or_default();
                 let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
-                let entity_target = entity_ref_from_entries(&values, &self.default_provider)
-                    .map(|entity| entity.action_target());
+                let entity_target =
+                    entity_ref_from_entries(&values).map(|entity| self.action_target_of(&entity));
                 let resolved_action_target = metadata_entry_text(&values, KEY_ACTION_TARGET)
                     .map(str::to_owned)
                     .or(entity_target);
                 // A tab's host entity is live there too (live_presentation_states),
                 // so activating it focuses the tab.
-                let host_target = host_entity_ref_from_entries(&values, &self.default_provider)
-                    .map(|entity| entity.action_target());
+                let host_target = host_entity_ref_from_entries(&values)
+                    .map(|entity| self.action_target_of(&entity));
                 (resolved_action_target.as_deref() == Some(action_target)
                     || host_target.as_deref() == Some(action_target))
                 .then_some(tab.position)
@@ -3628,10 +3625,6 @@ impl ControllerState {
                 current_values
             };
             // An entity restating its own identity names itself.
-            let provider = match &current {
-                EntityId::Entity(entity) => entity.provider.as_str(),
-                _ => self.default_provider.as_str(),
-            };
             let current_values = match &current {
                 EntityId::Entity(entity)
                     if !current_values.contains_key(KEY_ENTITY_PROVIDER)
@@ -3647,7 +3640,7 @@ impl ControllerState {
                 }
                 _ => current_values,
             };
-            if let Some(entity) = entity_ref_from_entries(&current_values, provider) {
+            if let Some(entity) = entity_ref_from_entries(&current_values) {
                 let entity_target = EntityId::Entity(entity);
                 if !visited.contains(&entity_target) {
                     queue.push_back((entity_target, distance + 1));
@@ -3886,12 +3879,9 @@ fn ref_target(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
     }
 }
 
-fn host_entity_ref_from_entries(
-    entries: &BTreeMap<String, MetadataEntry>,
-    default_provider: &str,
-) -> Option<EntityRef> {
+fn host_entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
     Some(EntityRef::new(
-        metadata_entry_text(entries, KEY_HOST_ENTITY_PROVIDER).unwrap_or(default_provider),
+        metadata_entry_text(entries, KEY_HOST_ENTITY_PROVIDER).unwrap_or(crate::LOCAL_PROVIDER),
         metadata_entry_text(entries, KEY_HOST_ENTITY_KIND)?,
         metadata_entry_text(entries, KEY_HOST_ENTITY_ID)?,
     ))
@@ -3965,12 +3955,9 @@ fn saved_catalog_entity(
     }
 }
 
-fn entity_ref_from_entries(
-    entries: &BTreeMap<String, MetadataEntry>,
-    default_provider: &str,
-) -> Option<EntityRef> {
+fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
     Some(EntityRef::new(
-        metadata_entry_text(entries, KEY_ENTITY_PROVIDER).unwrap_or(default_provider),
+        metadata_entry_text(entries, KEY_ENTITY_PROVIDER).unwrap_or(crate::LOCAL_PROVIDER),
         metadata_entry_text(entries, KEY_ENTITY_KIND)?,
         metadata_entry_text(entries, KEY_ENTITY_ID)?,
     ))
@@ -4133,7 +4120,7 @@ mod tests {
 
     fn tab_info(tab_id: usize, position: usize, name: &str, active: bool) -> ControllerTab {
         ControllerTab {
-            tab_id: WorkspaceId::from(tab_id as u64),
+            tab_id: crate::tab_workspace_id(tab_id as u64),
             position,
             name: name.into(),
             active,
@@ -4976,14 +4963,14 @@ placement "identity-descending" {
     fn setting_same_pane_cwd_is_not_a_metadata_change() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: WorkspaceId::from(1),
+            tab_id: crate::tab_workspace_id(1),
             position: 0,
             name: "work".into(),
             active: true,
         }]);
         state.set_test_pane(
             PaneTarget::Terminal(10),
-            WorkspaceId::from(1),
+            crate::tab_workspace_id(1),
             true,
             false,
             0,
@@ -5000,7 +4987,7 @@ placement "identity-descending" {
     fn duplicate_metadata_patch_is_not_a_model_change() {
         let mut state = ControllerState::default();
         let patch = crate::MetadataPatch {
-            target: crate::MetadataTarget::Tab(WorkspaceId::from(1)),
+            target: crate::MetadataTarget::Tab(crate::tab_workspace_id(1)),
             source_id: "watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
@@ -5024,7 +5011,7 @@ placement "identity-descending" {
     fn duplicate_ttl_metadata_patch_refreshes_without_model_change() {
         let mut state = ControllerState::default();
         let patch = crate::MetadataPatch {
-            target: crate::MetadataTarget::Tab(WorkspaceId::from(1)),
+            target: crate::MetadataTarget::Tab(crate::tab_workspace_id(1)),
             source_id: "watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
@@ -5048,13 +5035,13 @@ placement "identity-descending" {
     fn unchanged_pane_manifest_is_not_a_controller_change() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: WorkspaceId::from(1),
+            tab_id: crate::tab_workspace_id(1),
             position: 0,
             name: "work".into(),
             active: true,
         }]);
         let manifest = vec![PaneObservation {
-            workspace_id: WorkspaceId::from(1),
+            workspace_id: crate::tab_workspace_id(1),
             pane_id: PaneTarget::Terminal(10),
             is_selectable: true,
             is_focused: false,
@@ -5074,26 +5061,32 @@ placement "identity-descending" {
         let mut state = ControllerState::default();
         state.set_test_pane(
             PaneTarget::Terminal(10),
-            WorkspaceId::from(1),
+            crate::tab_workspace_id(1),
             true,
             false,
             0,
         );
         state.set_test_pane(
             PaneTarget::Terminal(11),
-            WorkspaceId::from(1),
+            crate::tab_workspace_id(1),
             true,
             false,
             1,
         );
         state.set_test_pane(
             PaneTarget::Terminal(12),
-            WorkspaceId::from(1),
+            crate::tab_workspace_id(1),
             false,
             false,
             2,
         );
-        state.set_test_pane(PaneTarget::Plugin(20), WorkspaceId::from(1), true, false, 3);
+        state.set_test_pane(
+            PaneTarget::Plugin(20),
+            crate::tab_workspace_id(1),
+            true,
+            false,
+            3,
+        );
         state.set_pane_cwd(PaneTarget::Terminal(11), "/repo/known".into());
 
         assert_eq!(state.terminal_panes_for_cwd_refresh(), vec![10]);
@@ -5103,13 +5096,13 @@ placement "identity-descending" {
     fn cwd_refresh_requests_each_pane_at_most_once() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: WorkspaceId::from(1),
+            tab_id: crate::tab_workspace_id(1),
             position: 0,
             name: "work".into(),
             active: true,
         }]);
         let manifest = vec![PaneObservation {
-            workspace_id: WorkspaceId::from(1),
+            workspace_id: crate::tab_workspace_id(1),
             pane_id: PaneTarget::Terminal(10),
             is_selectable: true,
             is_focused: false,
@@ -5134,13 +5127,13 @@ placement "identity-descending" {
     fn resolved_tab_metadata_follows_transitive_identity_facts() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: WorkspaceId::from(1),
+            tab_id: crate::tab_workspace_id(1),
             position: 0,
             name: "repo".into(),
             active: true,
         }]);
         state.apply_metadata_patch(crate::MetadataPatch {
-            target: EntityId::Tab(WorkspaceId::from(1)),
+            target: EntityId::Tab(crate::tab_workspace_id(1)),
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
@@ -5193,7 +5186,7 @@ placement "identity-descending" {
             .resolved_metadata
             .iter()
             .find(|metadata| {
-                metadata.target == crate::ResolvedMetadataTarget::Tab(WorkspaceId::from(1))
+                metadata.target == crate::ResolvedMetadataTarget::Tab(crate::tab_workspace_id(1))
             })
             .expect("tab metadata");
 
@@ -5247,12 +5240,18 @@ placement "identity-descending" {
     fn resolved_tab_metadata_follows_selected_cwd_identity_facts() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: WorkspaceId::from(1),
+            tab_id: crate::tab_workspace_id(1),
             position: 0,
             name: "repo".into(),
             active: true,
         }]);
-        state.set_test_pane(PaneTarget::Terminal(1), WorkspaceId::from(1), true, true, 0);
+        state.set_test_pane(
+            PaneTarget::Terminal(1),
+            crate::tab_workspace_id(1),
+            true,
+            true,
+            0,
+        );
         state.set_pane_cwd(
             PaneTarget::Terminal(1),
             "/Users/robert/dev/katzensteg".to_owned(),
@@ -5280,7 +5279,7 @@ placement "identity-descending" {
             .resolved_metadata
             .iter()
             .find(|metadata| {
-                metadata.target == crate::ResolvedMetadataTarget::Tab(WorkspaceId::from(1))
+                metadata.target == crate::ResolvedMetadataTarget::Tab(crate::tab_workspace_id(1))
             })
             .expect("tab metadata");
 
@@ -5307,12 +5306,18 @@ placement "identity-descending" {
         let mut state = ControllerState::default();
         state.set_rail_config(RailConfig::default());
         state.update_tabs(vec![ControllerTab {
-            tab_id: WorkspaceId::from(1),
+            tab_id: crate::tab_workspace_id(1),
             position: 0,
             name: "repo".into(),
             active: true,
         }]);
-        state.set_test_pane(PaneTarget::Terminal(1), WorkspaceId::from(1), true, true, 0);
+        state.set_test_pane(
+            PaneTarget::Terminal(1),
+            crate::tab_workspace_id(1),
+            true,
+            true,
+            0,
+        );
         let cwd = "/Users/robert/dev/katzensteg".to_owned();
         state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
         state.apply_metadata_patch(crate::MetadataPatch {
@@ -5359,13 +5364,13 @@ placement "identity-descending" {
     fn highest_priority_status_wins_for_tab() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: WorkspaceId::from(1),
+            tab_id: crate::tab_workspace_id(1),
             position: 0,
             name: "main".into(),
             active: true,
         }]);
-        state.set_pane_tab(PaneTarget::Terminal(10), WorkspaceId::from(1));
-        state.set_pane_tab(PaneTarget::Terminal(11), WorkspaceId::from(1));
+        state.set_pane_tab(PaneTarget::Terminal(10), crate::tab_workspace_id(1));
+        state.set_pane_tab(PaneTarget::Terminal(11), crate::tab_workspace_id(1));
         state.set_status(SetPaneStatus {
             pane_id: PaneTarget::Terminal(10),
             priority: Priority::Info,
@@ -5393,12 +5398,12 @@ placement "identity-descending" {
     fn status_icon_is_carried_to_tab_summary() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: WorkspaceId::from(1),
+            tab_id: crate::tab_workspace_id(1),
             position: 0,
             name: "main".into(),
             active: true,
         }]);
-        state.set_pane_tab(PaneTarget::Terminal(10), WorkspaceId::from(1));
+        state.set_pane_tab(PaneTarget::Terminal(10), crate::tab_workspace_id(1));
         let mut status = status(PaneTarget::Terminal(10), Priority::Waiting, "waiting", 10);
         status.icon = Some(StatusIcon::Builtin("waiting".to_owned()));
         state.set_status(status);
@@ -5422,7 +5427,7 @@ placement "identity-descending" {
             structure: RailStructure::BoxPerTab,
             segment_between_color: None,
         });
-        source.toggle_pin(WorkspaceId::from(7));
+        source.toggle_pin(crate::tab_workspace_id(7));
         source.set_status(status(
             PaneTarget::Terminal(10),
             Priority::Waiting,
@@ -5443,7 +5448,10 @@ placement "identity-descending" {
         let target_snapshot = target.bootstrap_snapshot();
         assert_eq!(target_snapshot.sort_mode, SortMode::PinnedFirst);
         assert_eq!(target_snapshot.config.structure, RailStructure::BoxPerTab);
-        assert_eq!(target_snapshot.pinned_tabs, vec![WorkspaceId::from(7)]);
+        assert_eq!(
+            target_snapshot.pinned_tabs,
+            vec![crate::tab_workspace_id(7)]
+        );
         assert_eq!(target_snapshot.pane_statuses.len(), 1);
         assert_eq!(target_snapshot.pane_statuses[0].title, "waiting");
         assert_eq!(
@@ -5559,7 +5567,7 @@ placement "identity-descending" {
         const KEY: &str = "tab.subject";
         let mut source = ControllerState::default();
         source.apply_metadata_patch(crate::MetadataPatch {
-            target: EntityId::Tab(WorkspaceId::from(7)),
+            target: EntityId::Tab(crate::tab_workspace_id(7)),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 KEY.to_owned(),
@@ -5577,7 +5585,7 @@ placement "identity-descending" {
         let mut target = ControllerState::default();
         target.apply_bootstrap_snapshot(snapshot);
         target.update_tabs(vec![ControllerTab {
-            tab_id: WorkspaceId::from(7),
+            tab_id: crate::tab_workspace_id(7),
             position: 0,
             name: "overview".into(),
             active: true,
@@ -5588,7 +5596,7 @@ placement "identity-descending" {
             .resolved_metadata
             .iter()
             .find(|metadata| {
-                metadata.target == crate::ResolvedMetadataTarget::Tab(WorkspaceId::from(7))
+                metadata.target == crate::ResolvedMetadataTarget::Tab(crate::tab_workspace_id(7))
             })
             .expect("tab metadata");
 
@@ -5614,7 +5622,7 @@ placement "identity-descending" {
         let mut target = ControllerState::default();
         target.apply_bootstrap_snapshot(source.bootstrap_snapshot());
         target.observe_workspaces(vec![tab_info(1, 0, "main", true)]);
-        target.set_pane_tab(PaneTarget::Terminal(10), WorkspaceId::from(1));
+        target.set_pane_tab(PaneTarget::Terminal(10), crate::tab_workspace_id(1));
 
         let model = target.view_model();
         assert_eq!(model.tabs[0].status.as_ref().unwrap().title, "waiting");
@@ -5624,13 +5632,13 @@ placement "identity-descending" {
     fn recency_breaks_priority_ties() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab {
-            tab_id: WorkspaceId::from(1),
+            tab_id: crate::tab_workspace_id(1),
             position: 0,
             name: "main".into(),
             active: true,
         }]);
-        state.set_pane_tab(PaneTarget::Terminal(10), WorkspaceId::from(1));
-        state.set_pane_tab(PaneTarget::Terminal(11), WorkspaceId::from(1));
+        state.set_pane_tab(PaneTarget::Terminal(10), crate::tab_workspace_id(1));
+        state.set_pane_tab(PaneTarget::Terminal(11), crate::tab_workspace_id(1));
         state.set_status(status(
             PaneTarget::Terminal(10),
             Priority::Waiting,
@@ -5651,7 +5659,7 @@ placement "identity-descending" {
     #[test]
     fn cleanup_removes_status_for_missing_panes() {
         let mut state = ControllerState::default();
-        state.set_pane_tab(PaneTarget::Terminal(10), WorkspaceId::from(1));
+        state.set_pane_tab(PaneTarget::Terminal(10), crate::tab_workspace_id(1));
         state.set_status(status(
             PaneTarget::Terminal(10),
             Priority::Error,
@@ -5673,7 +5681,7 @@ placement "identity-descending" {
                 client_id: 1,
             },
             placement: PluginPlacement::Tab {
-                tab_id: WorkspaceId::from(1),
+                tab_id: crate::tab_workspace_id(1),
                 pane_kind: PluginPaneKind::Tiled,
             },
         });
@@ -5683,7 +5691,7 @@ placement "identity-descending" {
                 client_id: 1,
             },
             placement: PluginPlacement::Tab {
-                tab_id: WorkspaceId::from(1),
+                tab_id: crate::tab_workspace_id(1),
                 pane_kind: PluginPaneKind::Tiled,
             },
         });
@@ -5704,7 +5712,7 @@ placement "identity-descending" {
                 client_id: 1,
             },
             placement: PluginPlacement::Tab {
-                tab_id: WorkspaceId::from(1),
+                tab_id: crate::tab_workspace_id(1),
                 pane_kind: PluginPaneKind::Floating,
             },
         });
@@ -5714,7 +5722,7 @@ placement "identity-descending" {
                 client_id: 2,
             },
             placement: PluginPlacement::Tab {
-                tab_id: WorkspaceId::from(2),
+                tab_id: crate::tab_workspace_id(2),
                 pane_kind: PluginPaneKind::Floating,
             },
         });
@@ -5724,27 +5732,27 @@ placement "identity-descending" {
                 client_id: 2,
             },
             placement: PluginPlacement::Tab {
-                tab_id: WorkspaceId::from(1),
+                tab_id: crate::tab_workspace_id(1),
                 pane_kind: PluginPaneKind::Floating,
             },
         });
 
         assert_eq!(
-            state.config_editor_target_for_client_tab(2, WorkspaceId::from(1)),
+            state.config_editor_target_for_client_tab(2, crate::tab_workspace_id(1)),
             Some(RendererHello {
                 plugin_id: 32,
                 client_id: 2
             })
         );
         assert_eq!(
-            state.config_editor_target_for_client_tab(2, WorkspaceId::from(2)),
+            state.config_editor_target_for_client_tab(2, crate::tab_workspace_id(2)),
             Some(RendererHello {
                 plugin_id: 31,
                 client_id: 2
             })
         );
         assert_eq!(
-            state.config_editor_target_for_client_tab(2, WorkspaceId::from(3)),
+            state.config_editor_target_for_client_tab(2, crate::tab_workspace_id(3)),
             None
         );
     }
@@ -5758,7 +5766,7 @@ placement "identity-descending" {
                 client_id: 1,
             },
             placement: PluginPlacement::Tab {
-                tab_id: WorkspaceId::from(1),
+                tab_id: crate::tab_workspace_id(1),
                 pane_kind: PluginPaneKind::Floating,
             },
         });
@@ -5768,13 +5776,13 @@ placement "identity-descending" {
                 client_id: 2,
             },
             placement: PluginPlacement::Tab {
-                tab_id: WorkspaceId::from(9),
+                tab_id: crate::tab_workspace_id(9),
                 pane_kind: PluginPaneKind::Floating,
             },
         });
 
         assert_eq!(
-            state.config_editor_target_for_client_tab(2, WorkspaceId::from(3)),
+            state.config_editor_target_for_client_tab(2, crate::tab_workspace_id(3)),
             None
         );
     }
@@ -5788,13 +5796,13 @@ placement "identity-descending" {
                 client_id: 2,
             },
             placement: PluginPlacement::Tab {
-                tab_id: WorkspaceId::from(9),
+                tab_id: crate::tab_workspace_id(9),
                 pane_kind: PluginPaneKind::Tiled,
             },
         });
 
         assert_eq!(
-            state.config_editor_target_for_client_tab(2, WorkspaceId::from(3)),
+            state.config_editor_target_for_client_tab(2, crate::tab_workspace_id(3)),
             None
         );
     }
@@ -5818,7 +5826,7 @@ placement "identity-descending" {
         });
 
         assert_eq!(
-            state.config_editor_target_for_client_tab(2, WorkspaceId::from(3)),
+            state.config_editor_target_for_client_tab(2, crate::tab_workspace_id(3)),
             None
         );
     }
@@ -5826,12 +5834,12 @@ placement "identity-descending" {
     #[test]
     fn view_model_for_client_uses_that_clients_inspected_node() {
         let mut state = ControllerState::default();
-        state.set_inspected_node(4, NodeKey::Tab(WorkspaceId::from(7)));
+        state.set_inspected_node(4, NodeKey::Tab(crate::tab_workspace_id(7)));
         state.set_inspected_node(5, NodeKey::Root);
 
         assert_eq!(
             state.view_model_for_client(4).inspected_node,
-            Some(NodeKey::Tab(WorkspaceId::from(7)))
+            Some(NodeKey::Tab(crate::tab_workspace_id(7)))
         );
         assert_eq!(
             state.view_model_for_client(5).inspected_node,
@@ -5848,7 +5856,7 @@ placement "identity-descending" {
                 client_id: 4,
             },
             placement: PluginPlacement::Tab {
-                tab_id: WorkspaceId::from(7),
+                tab_id: crate::tab_workspace_id(7),
                 pane_kind: PluginPaneKind::Tiled,
             },
         };
@@ -5857,7 +5865,7 @@ placement "identity-descending" {
         assert_eq!(
             state
                 .client(4)
-                .and_then(|client| client.tabs.get(&WorkspaceId::from(7)))
+                .and_then(|client| client.tabs.get(&crate::tab_workspace_id(7)))
                 .map(|tab| tab.rails.contains_key(&10)),
             Some(true)
         );
@@ -5872,7 +5880,7 @@ placement "identity-descending" {
                 client_id: 4,
             },
             placement: PluginPlacement::Tab {
-                tab_id: WorkspaceId::from(7),
+                tab_id: crate::tab_workspace_id(7),
                 pane_kind: PluginPaneKind::Floating,
             },
         };
@@ -5881,7 +5889,7 @@ placement "identity-descending" {
         assert_eq!(
             state
                 .client(4)
-                .and_then(|client| client.tabs.get(&WorkspaceId::from(7)))
+                .and_then(|client| client.tabs.get(&crate::tab_workspace_id(7)))
                 .map(|tab| tab.config_editors.contains_key(&11)),
             Some(true)
         );
@@ -5896,7 +5904,7 @@ placement "identity-descending" {
                 client_id: 4,
             },
             placement: PluginPlacement::Tab {
-                tab_id: WorkspaceId::from(7),
+                tab_id: crate::tab_workspace_id(7),
                 pane_kind: PluginPaneKind::Tiled,
             },
         });
@@ -5906,7 +5914,7 @@ placement "identity-descending" {
                 client_id: 4,
             },
             placement: PluginPlacement::Tab {
-                tab_id: WorkspaceId::from(7),
+                tab_id: crate::tab_workspace_id(7),
                 pane_kind: PluginPaneKind::Floating,
             },
         });

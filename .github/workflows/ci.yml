@@ -131,6 +131,16 @@ jobs:
             ${{ runner.os }}-cargo-wasm-
       - run: cargo build --workspace --target wasm32-wasip1 --release --locked -j1
 
+  header:
+    name: C header is generated
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen@0.29.4
+      - run: scripts/generate-header.sh --check
+
   independent:
     name: Core and frontends without Zellij
     runs-on: ubuntu-latest

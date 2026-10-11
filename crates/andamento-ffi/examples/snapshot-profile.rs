@@ -1,5 +1,5 @@
 //! Release C-ABI update-stream probe, using the same scripted stream for each run.
-use andamento_ffi::{documents::*, *};
+use andamento_ffi::*;
 use std::{ptr, time::Instant};
 fn text(s: &str) -> Text {
     Text {
@@ -22,7 +22,7 @@ fn main() {
             andamento_core::profile::start();
             for line in fixture.lines().filter(|l| !l.trim().is_empty()) {
                 assert_eq!(
-                    andamento_apply_patch_json(h, 100, text(line), ptr::null_mut()),
+                    andamento_apply_patch_json(h, 100, text("bench"), text(line), ptr::null_mut()),
                     1
                 );
             }
@@ -31,7 +31,13 @@ fn main() {
                     r#"{{"target":{{"kind":"entity","value":{{"kind":"issue","id":"bench-{i}"}}}},"source_id":"bench","set":{{"flotilla.project":{{"value":{{"type":"text","value":"p"}}}},"display.label":{{"value":{{"type":"text","value":"Issue {i}"}}}},"flotilla.issue.state":{{"value":{{"type":"text","value":"open"}}}}}},"unset":[]}}"#
                 );
                 assert_eq!(
-                    andamento_apply_patch_json(h, 100, text(&patch), ptr::null_mut()),
+                    andamento_apply_patch_json(
+                        h,
+                        100,
+                        text("bench"),
+                        text(&patch),
+                        ptr::null_mut()
+                    ),
                     1
                 );
             }
@@ -51,7 +57,13 @@ fn main() {
                     r#"{{"target":{{"kind":"entity","value":{{"kind":"issue","id":"bench-0"}}}},"source_id":"bench","set":{{"bench.tick":{{"value":{{"type":"text","value":"{iteration}"}}}}}},"unset":[]}}"#
                 );
                 assert_eq!(
-                    andamento_apply_patch_json(h, 100 + iteration, text(&patch), ptr::null_mut()),
+                    andamento_apply_patch_json(
+                        h,
+                        100 + iteration,
+                        text("bench"),
+                        text(&patch),
+                        ptr::null_mut()
+                    ),
                     1
                 );
                 let start = Instant::now();
@@ -78,7 +90,13 @@ fn main() {
                     r#"{{"target":{{"kind":"entity","value":{{"kind":"issue","id":"bench-0"}}}},"source_id":"bench","set":{{"bench.tick":{{"value":{{"type":"text","value":"{iteration}"}}}}}},"unset":[]}}"#
                 );
                 assert_eq!(
-                    andamento_apply_patch_json(h, 100 + iteration, text(&patch), ptr::null_mut()),
+                    andamento_apply_patch_json(
+                        h,
+                        100 + iteration,
+                        text("bench"),
+                        text(&patch),
+                        ptr::null_mut()
+                    ),
                     1
                 );
                 let start = Instant::now();
@@ -88,8 +106,11 @@ fn main() {
                         andamento_snapshot_detail_request(
                             h,
                             s,
-                            text("issue"),
-                            text(id),
+                            EntityView {
+                                provider: text("bench"),
+                                kind: text("issue"),
+                                id: text(id)
+                            },
                             ptr::null_mut()
                         ),
                         usize::MAX
@@ -101,8 +122,11 @@ fn main() {
                     andamento_snapshot_detail_request(
                         h,
                         s,
-                        text("issue"),
-                        text("bench-0"),
+                        EntityView {
+                            provider: text("bench"),
+                            kind: text("issue"),
+                            id: text("bench-0"),
+                        },
                         ptr::null_mut(),
                     );
                 }
@@ -149,20 +173,20 @@ fn main() {
             // snapshot stays current and no evaluation runs.
             let ws = WorkspaceIdView { bytes: [7; 16] };
             assert_eq!(andamento_workspace_register(h, ws, ptr::null_mut()), 1);
-            let open = WorkspaceInput3 {
+            let open = WorkspaceInput {
                 id: ws,
                 position: 0,
                 name: text("Bench"),
                 selected: 1,
             };
             assert_eq!(
-                andamento_observe3(h, &open, 1, ptr::null(), 0, ptr::null_mut()),
+                andamento_observe(h, &open, 1, ptr::null(), 0, ptr::null_mut()),
                 1
             );
             let keys: Vec<String> = (0..8).map(|i| format!("u:{i}")).collect();
             for key in &keys {
                 let mut spec: ViewSpecView = std::mem::zeroed();
-                spec.content = 2; // URL
+                spec.content = ANDAMENTO_SLOT_URL;
                 spec.url = text("https://example.com");
                 assert_eq!(
                     andamento_slot_set(h, ws, text(key), &spec, 0, ptr::null_mut()),

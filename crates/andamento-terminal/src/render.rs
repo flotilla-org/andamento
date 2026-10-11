@@ -550,7 +550,10 @@ fn resolve_placement_loop_fields(entities: &[PlacementNode], cols: usize) -> Vec
 fn node_hit(node: &PlacementNode, row: usize, cols: std::ops::Range<usize>) -> HitRegion {
     let (tab_id, action) = match node.state {
         PresentationState::Live { workspace_id, .. } => (workspace_id, HitAction::SwitchTab),
-        _ => (WorkspaceId::from(0), HitAction::ActivateEntity),
+        _ => (
+            andamento_core::tab_workspace_id(0),
+            HitAction::ActivateEntity,
+        ),
     };
     HitRegion {
         row_start: row,
@@ -630,7 +633,7 @@ fn control_line(
             row_end: 0,
             col_start: col,
             col_end: col,
-            tab_id: WorkspaceId::from(0),
+            tab_id: andamento_core::tab_workspace_id(0),
             tab_position: 0,
             inspect_target: (action == HitAction::InspectNode).then_some(NodeKey::Root),
             materialize_request: None,

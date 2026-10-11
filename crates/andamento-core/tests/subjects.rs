@@ -6,7 +6,7 @@ use andamento_core::{
 use std::io::Cursor;
 
 fn reference(kind: &str, id: &str) -> EntityRef {
-    EntityRef::local(kind, id)
+    EntityRef::new(andamento_core::replay::PROVIDER, kind, id)
 }
 fn replay() -> Replay {
     Replay::new(
@@ -200,7 +200,13 @@ fn subject_urls_follow_updates_and_reject_incomplete_forges() {
             "target":{"kind":"entity","value":{"kind":"forge","id":"github"}},"source_id":"flotilla",
             "set":{"flotilla.forge.change_request_url_template":{"value":{"type":"text","value":template}}}
         });
-        sidebar.apply(0, [serde_json::from_value::<MetadataPatch>(patch).unwrap()]);
+        sidebar
+            .apply(
+                0,
+                andamento_core::replay::PROVIDER,
+                [serde_json::from_value::<MetadataPatch>(patch).unwrap()],
+            )
+            .unwrap();
         assert_eq!(sidebar.subject_url(&entity).as_deref(), expected);
         assert_eq!(
             sidebar
@@ -217,16 +223,34 @@ fn subject_urls_follow_updates_and_reject_incomplete_forges() {
         serde_json::json!([{"kind":"vessel","id":"github"}]),
     ] {
         let patch = serde_json::json!({"target":{"kind":"entity","value":entity},"source_id":"flotilla","set":{"flotilla.forge":{"value":{"type":"entity-refs","value":refs}}}});
-        sidebar.apply(0, [serde_json::from_value::<MetadataPatch>(patch).unwrap()]);
+        sidebar
+            .apply(
+                0,
+                andamento_core::replay::PROVIDER,
+                [serde_json::from_value::<MetadataPatch>(patch).unwrap()],
+            )
+            .unwrap();
         assert!(sidebar.subject_url(&entity).is_none());
     }
     let patch = serde_json::json!({"target":{"kind":"entity","value":entity},"source_id":"flotilla","set":{"flotilla.forge":{"value":{"type":"entity-refs","value":[{"kind":"forge","id":"github"}]}}}});
-    sidebar.apply(0, [serde_json::from_value::<MetadataPatch>(patch).unwrap()]);
+    sidebar
+        .apply(
+            0,
+            andamento_core::replay::PROVIDER,
+            [serde_json::from_value::<MetadataPatch>(patch).unwrap()],
+        )
+        .unwrap();
     let patch = serde_json::json!({"target":{"kind":"entity","value":{"kind":"forge","id":"github"}},"source_id":"flotilla","set":{"flotilla.forge.change_request_url_template":{"value":{"type":"text","value":"{web_url}/{scope}/pull/{number}"},"ttl_ms":10}}});
-    sidebar.apply(0, [serde_json::from_value::<MetadataPatch>(patch).unwrap()]);
+    sidebar
+        .apply(
+            0,
+            andamento_core::replay::PROVIDER,
+            [serde_json::from_value::<MetadataPatch>(patch).unwrap()],
+        )
+        .unwrap();
     assert!(sidebar.subject_url(&entity).is_some());
-    sidebar.apply(10, []);
+    sidebar.tick(10);
     assert!(sidebar.subject_url(&entity).is_some());
-    sidebar.apply(11, []);
+    sidebar.tick(11);
     assert!(sidebar.subject_url(&entity).is_none());
 }

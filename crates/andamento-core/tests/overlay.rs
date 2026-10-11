@@ -2,24 +2,24 @@
 //! 0013). Each test replays a provider's Suggested Layout through its
 //! versions against a workspace the user has edited, and checks that the
 //! edits survive and that nothing is dropped silently.
-use andamento_core::dashboard_overlay::KeyKind;
+mod common;
 use andamento_core::managed::ContentState;
-use andamento_core::records::decode_proposal;
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::slots::{
-    flag, ArrangementDoc, ArrangementError, ContentChange, Panel, PanelNode, Resolve, SlotInfo,
+    flag, ArrangementDoc, ArrangementError, Panel, PanelNode, Resolve, SlotInfo,
 };
 use andamento_core::suggested_layout::{
-    Axis, BaselineVersion, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec,
+    Axis, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec,
 };
 use andamento_core::{
     EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
     WorkspaceId,
 };
+use common::PROVIDER;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn entity(kind: &str, id: &str) -> EntityRef {
-    EntityRef::local(kind, id)
+    EntityRef::new(PROVIDER, kind, id)
 }
 fn text(s: &str) -> MetadataValue {
     MetadataValue::Text(s.into())
@@ -105,32 +105,35 @@ fn publish(sidebar: &mut Sidebar, now: u64, previous: Option<&Layout>, next: &La
         .collect();
     let mut patch = patch(subject(), facts);
     patch.unset = unset;
-    sidebar.apply(now, [patch]);
+    sidebar.apply(now, PROVIDER, [patch]).unwrap();
 }
 
 /// A sidebar with a workspace open for vessel v at `first`.
 fn session(first: &Layout) -> Sidebar {
     let mut sidebar = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
-    sidebar.apply(
-        100,
-        [
-            patch(
-                entity("project", "p"),
-                vec![
-                    ("flotilla.project".into(), text("p")),
-                    ("display.label".into(), text("P")),
-                ],
-            ),
-            patch(
-                subject(),
-                vec![
-                    ("flotilla.project".into(), text("p")),
-                    ("display.label".into(), text("Vee")),
-                    ("action.primary.recipe".into(), text("printf hello")),
-                ],
-            ),
-        ],
-    );
+    sidebar
+        .apply(
+            100,
+            PROVIDER,
+            [
+                patch(
+                    entity("project", "p"),
+                    vec![
+                        ("flotilla.project".into(), text("p")),
+                        ("display.label".into(), text("P")),
+                    ],
+                ),
+                patch(
+                    subject(),
+                    vec![
+                        ("flotilla.project".into(), text("p")),
+                        ("display.label".into(), text("Vee")),
+                        ("action.primary.recipe".into(), text("printf hello")),
+                    ],
+                ),
+            ],
+        )
+        .unwrap();
     publish(&mut sidebar, 100, None, first);
     let effects = sidebar
         .dispatch(Action::Activate { entity: subject() })
@@ -277,7 +280,10 @@ fn an_untouched_slot_removed_goes_and_its_instance_follows_its_rebind_policy() {
         overlay.departed,
         BTreeMap::from([("b".to_owned(), RebindPolicy::KeepPrevious)])
     );
-    assert!(overlay.edits.slots.is_empty(), "nothing the user did");
+    assert!(
+        slots(&sidebar).values().all(|slot| slot.flags == 0),
+        "nothing the user did"
+    );
     let name = format!("workspace/{WORKER}");
     let mut fresh = Sidebar::new(include_str!("fixtures/sidebar.kdl")).unwrap();
     fresh
@@ -305,7 +311,10 @@ fn an_untouched_slot_removed_goes_and_its_instance_follows_its_rebind_policy() {
         overlay.departed,
         BTreeMap::from([("c".to_owned(), RebindPolicy::Replace)])
     );
-    assert!(overlay.edits.slots.is_empty());
+    assert!(
+        slots(&sidebar).values().all(|slot| slot.flags == 0),
+        "nothing the user did"
+    );
 }
 
 #[test]
@@ -403,7 +412,10 @@ fn an_overridden_slot_whose_content_changes_keeps_the_override_flagged() {
     };
     publish(&mut sidebar, 300, Some(&v2), &v3);
     assert_eq!(slots(&sidebar)["c"].flags, 0);
-    assert!(sidebar.overlay(worker()).unwrap().edits.slots.is_empty());
+    assert!(
+        slots(&sidebar).values().all(|slot| slot.flags == 0),
+        "nothing the user did"
+    );
 }
 
 #[test]
@@ -414,10 +426,6 @@ fn a_reused_provider_key_is_flagged_not_hidden() {
     assert_eq!(keys(&sidebar), ["a", "b"]);
     let overlay = sidebar.overlay(worker()).unwrap();
     assert_eq!(overlay.tombstoned, set(&["c"]));
-    assert!(matches!(
-        overlay.edits.slots["c"].content.as_ref().unwrap().change,
-        ContentChange::Tombstone
-    ));
     let view = sidebar.arrangement(worker()).unwrap();
     assert!(!view.owned);
     assert_eq!(view.doc.tabs(), ["a", "b"], "the emptied panel goes");
@@ -509,9 +517,7 @@ fn a_divider_resize_does_not_stop_provider_structure_flowing() {
     assert_eq!(view.doc, doc);
     assert_eq!(view.soft["left"].weight, Some(3.0));
     assert_eq!(view.soft["left"].selected.as_deref(), Some("b"));
-    let edits = sidebar.overlay(worker()).unwrap().edits;
-    assert_eq!(edits.arrangement, None);
-    assert_eq!(edits.panels.len(), 1);
+    assert_eq!(view.soft.len(), 1);
 
     // The provider restructures: a new panel splits c off, and d arrives.
     let v2 = Layout {
@@ -588,10 +594,7 @@ fn a_structural_edit_takes_ownership_and_a_provider_change_is_flagged() {
     assert!(commit.owned);
     let view = sidebar.arrangement(worker()).unwrap();
     assert!(view.owned && view.soft.is_empty() && !view.provider_changed);
-    assert_eq!(
-        sidebar.overlay(worker()).unwrap().edits.arrangement,
-        Some(moved.clone())
-    );
+    assert!(sidebar.overlay(worker()).unwrap().owned);
 
     // The provider changes its hint: flagged, neither applied nor ignored.
     let content = sidebar.content_revision();
@@ -636,7 +639,7 @@ fn a_structural_edit_takes_ownership_and_a_provider_change_is_flagged() {
     assert!(generation > 0 && view.generation == generation);
     assert!(!view.owned && !view.provider_changed);
     assert_eq!(panel_tabs(&view.doc, "top"), ["a", "b"]);
-    assert_eq!(sidebar.overlay(worker()).unwrap().edits.arrangement, None);
+    assert!(!sidebar.overlay(worker()).unwrap().owned);
 }
 
 /// The user owns the arrangement: `moved` puts every tab in one panel.
@@ -724,7 +727,7 @@ fn an_imported_record_never_reuses_a_generation() {
 }
 
 #[test]
-fn the_edit_set_exports_as_an_overlay_sync_proposal() {
+fn the_overlay_survives_a_restart_through_the_record() {
     let mut sidebar = session(&V1);
     sidebar
         .set_slot(worker(), "a", shell("btop"), RebindPolicy::Replace)
@@ -748,49 +751,6 @@ fn the_edit_set_exports_as_an_overlay_sync_proposal() {
     sidebar
         .set_arrangement(worker(), doc, view.generation)
         .unwrap();
-
-    let text = sidebar.export_overlay(worker()).unwrap();
-    assert!(
-        text.starts_with(&format!(
-            r#"overlay-proposal workspace="{WORKER}" baseline="1" {{"#
-        )),
-        "{text}"
-    );
-    for expected in [
-        r#"subject "vessel" "v" provider="local""#,
-        r#"name "Build""#,
-        r#"mood "calm""#,
-        r#"edit "a" {"#,
-        r#"edit "b" rebind="ask""#,
-        r#"edit "c" {"#,
-        "tombstone",
-        r#"slot "u:1" {"#,
-        r#"panel "left" weight=0.4"#,
-    ] {
-        assert!(text.contains(expected), "{expected}\n{text}");
-    }
-    let (workspace, edits) = decode_proposal(&text).unwrap();
-    assert_eq!(workspace, worker());
-    assert_eq!(edits, sidebar.overlay(worker()).unwrap().edits);
-    assert_eq!(edits.baseline, Some(BaselineVersion::Published("1".into())));
-    // Exporting changes nothing.
-    assert_eq!(sidebar.export_overlay(worker()).unwrap(), text);
-
-    // The provider accepts a's override and b's policy: those edits drop
-    // out of the next proposal, which applies to version 2.
-    let v2 = Layout {
-        version: "2",
-        slots: &[
-            ("a", "btop", "replace"),
-            ("b", "make", "ask"),
-            ("c", "tail -f log", "ask"),
-        ],
-        hint: V1.hint,
-    };
-    publish(&mut sidebar, 200, Some(&V1), &v2);
-    let (_, edits) = decode_proposal(&sidebar.export_overlay(worker()).unwrap()).unwrap();
-    assert_eq!(edits.baseline, Some(BaselineVersion::Published("2".into())));
-    assert_eq!(edits.slots.keys().collect::<Vec<_>>(), ["c"]);
 
     // The overlay survives a restart through the record.
     let name = format!("workspace/{WORKER}");
@@ -820,8 +780,7 @@ fn a_workspace_with_no_suggested_layout_has_an_empty_baseline() {
     sidebar
         .set_slot(worker(), "u:1", shell("bash"), RebindPolicy::Replace)
         .unwrap();
-    let edits = sidebar.overlay(worker()).unwrap().edits;
-    assert_eq!(edits.added.len(), 1);
+    assert_eq!(keys(&sidebar), ["u:1"]);
     assert!(sidebar
         .remove_slot(worker(), "nope")
         .is_ok_and(|removed| !removed));
@@ -838,32 +797,41 @@ fn template_a() -> String {
 
 #[test]
 fn dashboard_keys_that_no_longer_resolve_are_flagged_and_kept() {
+    use andamento_core::records::DashboardRecord;
+    use andamento_core::{DisplayVariableValue, PlacementKey, PlacementLoopKey, PlacementSegment};
     let template_a = template_a();
     let mut sidebar = Sidebar::new(&template_a).unwrap();
-    let version_a = sidebar.dashboard_overlay().template;
-    let record = format!(
-        r#"andamento-record "dashboard" version=5 {{
-    template version="{version_a}"
-    display "show-issues" false
-    collapsed {{
-        at "board" "project" "p" provider="local"
-    }}
-    order "tree" "board" {{
-        entity "project" "q" provider="local"
-        entity "project" "p" provider="local"
-    }}
-    order "attention" "attention" {{
-        entity "vessel" "v" provider="local"
-    }}
-    variable "density" "compact" {{
-        at "board" "project" "p" provider="local"
-    }}
-}}"#
+    let board = PlacementKey(vec![PlacementSegment {
+        loop_name: "board".into(),
+        entity: entity("project", "p"),
+    }]);
+    let order = |region: &str, binding: &str| PlacementLoopKey {
+        region: region.into(),
+        parent: PlacementKey::default(),
+        binding: binding.into(),
+    };
+    let record = DashboardRecord {
+        display: BTreeMap::from([("show-issues".into(), DisplayVariableValue::Bool(false))]),
+        collapsed: BTreeSet::from([board.clone()]),
+        orders: BTreeMap::from([
+            (order("tree", "board"), vec![entity("project", "q")]),
+            (order("attention", "attention"), vec![subject()]),
+        ]),
+        variables: BTreeMap::from([(
+            board,
+            BTreeMap::from([("density".into(), "compact".into())]),
+        )]),
+        ..DashboardRecord::default()
+    };
+    sidebar
+        .import_record("dashboard", &record.encode())
+        .unwrap();
+    let unresolved = |sidebar: &Sidebar| sidebar.sidebar_arrangement().0.unresolved;
+    assert!(
+        unresolved(&sidebar).is_empty(),
+        "{:?}",
+        unresolved(&sidebar)
     );
-    sidebar.import_record("dashboard", &record).unwrap();
-    let overlay = sidebar.dashboard_overlay();
-    assert_eq!(overlay.recorded.as_deref(), Some(version_a.as_str()));
-    assert!(overlay.unresolved.is_empty(), "{:?}", overlay.unresolved);
 
     // Template B renames the project loop, drops the attention region and
     // the show-issues variable.
@@ -882,77 +850,35 @@ fn dashboard_keys_that_no_longer_resolve_are_flagged_and_kept() {
             r#"  field "label" source="literal" value="Controls""#,
         );
     sidebar.configure(&template_b).unwrap();
-    let overlay = sidebar.dashboard_overlay();
-    assert_ne!(overlay.template, version_a);
-    let kinds: Vec<(KeyKind, &str)> = overlay
-        .unresolved
-        .iter()
-        .map(|(kind, key)| (*kind, key.as_str()))
-        .collect();
     assert_eq!(
-        kinds,
-        [
-            (KeyKind::Display, "show-issues"),
-            (KeyKind::Collapse, "board=local:project:p"),
-            (KeyKind::Order, "attention/attention"),
-            (KeyKind::Order, "tree/board"),
-            (KeyKind::Variable, "board=local:project:p"),
-            // The sidebar arrangement's own unresolved key.
-            (KeyKind::Section, "attention"),
-        ]
+        unresolved(&sidebar),
+        set(&[
+            // The sidebar arrangement's own unresolved section.
+            "attention",
+            "display:show-issues",
+            "collapse:board=project:p@test",
+            &format!("order:{}", order("attention", "attention").encode()),
+            &format!("order:{}", order("tree", "board").encode()),
+            "variable:board=project:p@test",
+        ])
     );
-    // Nothing is dropped: the keys are still in the record, which now
-    // names template B.
-    let exported = sidebar.export_record("dashboard").unwrap();
-    for kept in [
-        r#"display "show-issues" false"#,
-        r#"order "attention" "attention""#,
-        r#"variable "density" "compact""#,
-        r#"at "board" "project" "p" provider="local""#,
-    ] {
-        assert!(exported.contains(kept), "{kept}\n{exported}");
-    }
-    assert!(exported.contains(&format!(r#"template version="{}""#, overlay.template)));
+    // Nothing is dropped: the keys are still in the record.
+    let exported = DashboardRecord::decode(&sidebar.export_record("dashboard").unwrap()).unwrap();
+    assert_eq!(
+        (
+            exported.display,
+            exported.collapsed,
+            exported.orders,
+            exported.variables
+        ),
+        (
+            record.display,
+            record.collapsed,
+            record.orders,
+            record.variables
+        )
+    );
     // Back on template A, they resolve again.
     sidebar.configure(&template_a).unwrap();
-    assert!(sidebar.dashboard_overlay().unresolved.is_empty());
-}
-
-#[test]
-fn a_pinned_view_that_goes_away_is_flagged_and_kept() {
-    let mut sidebar = session(&V1);
-    let pin = entity(".ref", "pin");
-    let facts = |view: &str| {
-        BTreeMap::from([(
-            andamento_core::dashboard_overlay::VIEW.to_owned(),
-            text(view),
-        )])
-    };
-    // A malformed pin, or a pin on something other than a ref, is refused.
-    assert!(sidebar.set_local(pin.clone(), facts("nope")).is_err());
-    assert!(sidebar
-        .set_local(entity(".group", "g"), facts(&format!("{WORKER}/a")))
-        .is_err());
-    sidebar
-        .set_local(pin.clone(), facts(&format!("{WORKER}/c")))
-        .unwrap();
-    assert!(sidebar.dashboard_overlay().unresolved.is_empty());
-    // The slot is removed: the pin stays, flagged.
-    sidebar.remove_slot(worker(), "c").unwrap();
-    assert_eq!(
-        sidebar.dashboard_overlay().unresolved,
-        [(KeyKind::Pin, "pin".to_owned())]
-    );
-    assert!(sidebar.local_entities().contains_key(&pin));
-    // It resolves again when the slot comes back.
-    sidebar.reattach_slot(worker(), "c").unwrap();
-    assert!(sidebar.dashboard_overlay().unresolved.is_empty());
-    // The workspace is forgotten: flagged again; the host offers removal.
-    sidebar.forget_workspace(worker());
-    assert_eq!(
-        sidebar.dashboard_overlay().unresolved,
-        [(KeyKind::Pin, "pin".to_owned())]
-    );
-    assert!(sidebar.remove_local(&pin));
-    assert!(sidebar.dashboard_overlay().unresolved.is_empty());
+    assert!(unresolved(&sidebar).is_empty());
 }

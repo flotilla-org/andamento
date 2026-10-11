@@ -1,6 +1,6 @@
 //! Timestamped connector JSONL shared by tests and native replay tools.
 //! Offsets are monotonic milliseconds from capture start; equal offsets retain
-//! file order. Legacy bare patches are accepted at offset zero.
+//! file order. Bare patches are accepted at offset zero.
 use crate::{MetadataPatch, Sidebar};
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
@@ -65,6 +65,9 @@ pub fn read(reader: impl BufRead) -> io::Result<Vec<Frame>> {
     Ok(frames)
 }
 
+/// The provider (subscription ID) replayed patches are applied from.
+pub const PROVIDER: &str = "replay";
+
 /// Applies all patches through a requested instant, preserving arrival time for
 /// TTL calculation. Advancing beyond the last patch also expires stale facts.
 pub struct Replay {
@@ -103,9 +106,11 @@ impl Replay {
             while self.next_offset() == Some(at) {
                 patches.push(self.frames.next().unwrap().patch);
             }
-            sidebar.apply(at, patches);
+            sidebar
+                .apply(at, PROVIDER, patches)
+                .map_err(io::Error::other)?;
         }
-        sidebar.apply(offset_ms, []);
+        sidebar.tick(offset_ms);
         self.now_ms = offset_ms;
         Ok(())
     }

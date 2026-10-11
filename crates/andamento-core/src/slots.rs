@@ -74,8 +74,8 @@ pub mod flag {
     pub const REBIND: u32 = 1 << 3;
 }
 
-/// The user's edit of one provider slot, keyed by slot key in the
-/// [`EditSet`]. Empty edits are never stored.
+/// The user's edit of one provider slot, keyed by slot key in
+/// [`WorkspaceSlots::edits`]. Empty edits are never stored.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotEdit {
     /// An override or a tombstone, with the baseline content it was made
@@ -1047,45 +1047,16 @@ impl Arrangement {
     }
 }
 
-/// A workspace's edit set in the Overlay Sync proposal shape: the user's
-/// edits, keyed by slot key and panel ID, and the baseline version they
-/// apply to. It is normalised: an edit that equals the baseline is not in it.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct EditSet {
+/// A workspace's overlay as the host reads it, beyond each slot's
+/// [`flag`]s.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverlayView {
     /// The Suggested Layout version the edits were made against; `None`
     /// for a workspace with no Suggested Layout (an empty baseline).
     pub baseline: Option<BaselineVersion>,
+    /// The user's name and mood for the workspace, over the provider's.
     pub name: Option<String>,
     pub mood: Option<String>,
-    /// Edits of provider slots: overrides, tombstones and rebind policies.
-    pub slots: BTreeMap<String, SlotEdit>,
-    /// The user's own slots, in the order they were added.
-    pub added: Vec<SlotDef>,
-    /// Soft overrides by panel ID.
-    pub panels: BTreeMap<String, SoftOverride>,
-    /// The whole arrangement, once a structural edit made the overlay own it.
-    pub arrangement: Option<ArrangementDoc>,
-}
-
-impl EditSet {
-    pub fn new(slots: &WorkspaceSlots, arrangement: Option<&Arrangement>) -> Self {
-        Self {
-            baseline: slots.baseline.as_ref().map(|b| b.version.clone()),
-            name: slots.name.clone(),
-            mood: slots.mood.clone(),
-            slots: slots.edits.clone(),
-            added: slots.user.clone(),
-            panels: arrangement.map(|a| a.soft.clone()).unwrap_or_default(),
-            arrangement: arrangement.filter(|a| a.owned).map(|a| a.doc.clone()),
-        }
-    }
-}
-
-/// A workspace's overlay as the host reads it: the edit set and what it
-/// should know about it beyond each slot's [`flag`]s.
-#[derive(Clone, Debug, PartialEq)]
-pub struct OverlayView {
-    pub edits: EditSet,
     /// The overlay owns the arrangement.
     pub owned: bool,
     /// Baseline slots the user removed, hidden while the provider's content
@@ -1099,7 +1070,9 @@ pub struct OverlayView {
 impl OverlayView {
     pub fn new(slots: &WorkspaceSlots, arrangement: Option<&Arrangement>) -> Self {
         Self {
-            edits: EditSet::new(slots, arrangement),
+            baseline: slots.baseline.as_ref().map(|b| b.version.clone()),
+            name: slots.name.clone(),
+            mood: slots.mood.clone(),
             owned: arrangement.is_some_and(|a| a.owned),
             tombstoned: slots.hidden(),
             departed: slots.departed.clone(),
