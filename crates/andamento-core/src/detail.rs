@@ -1,5 +1,8 @@
 //! Structured detail content keyed by catalog identity, independent of placements.
-use crate::{template_config::DetailRole, EntityRef, MetadataEntry, WorkspaceId};
+use std::collections::BTreeMap;
+
+use crate::template_config::{DetailRole, TemplateConfigFieldSpec, TemplateConfigMatchContext};
+use crate::{EntityRef, MetadataEntry, MetadataValue, WorkspaceId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailField {
@@ -57,9 +60,9 @@ pub struct DetailCard {
 /// Resolve semantic content directly from typed sources. Prefix/suffix remain
 /// exclusively in the legacy flat rendering; missing declarations stay visible.
 pub(crate) fn resolve_field(
-    spec: &crate::template_config::TemplateConfigFieldSpec,
-    context: crate::template_config::TemplateConfigMatchContext<'_>,
-    entries: &std::collections::BTreeMap<String, MetadataEntry>,
+    spec: &TemplateConfigFieldSpec,
+    context: TemplateConfigMatchContext<'_>,
+    entries: &BTreeMap<String, MetadataEntry>,
 ) -> Option<DetailField> {
     use crate::template_config::{TemplateConfigResolvedValue, TemplateConfigValueSource as Source};
     let role = spec.role?;
@@ -78,7 +81,7 @@ pub(crate) fn resolve_field(
     let observation = source.and_then(|source| entries.get(&source.key)).cloned();
     let relations = if role == DetailRole::Relation {
         match source.map(|source| &source.value) {
-            Some(crate::MetadataValue::EntityRefs(refs)) => {
+            Some(MetadataValue::EntityRefs(refs)) => {
                 let mut seen = std::collections::BTreeSet::new();
                 refs.iter().filter(|entity| seen.insert((*entity).clone())).cloned().collect()
             }

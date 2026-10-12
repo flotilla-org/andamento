@@ -1,4 +1,5 @@
 use andamento_core::{replay, sidebar::Request, MetadataPatch, Sidebar};
+use andamento_html::render;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -17,6 +18,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sidebar.handle(serde_json::from_str::<Request>(line)?)?;
         }
     }
-    println!("{}", andamento_html::render(&sidebar.snapshot()));
+    println!("{}", render(&sidebar.snapshot()));
     Ok(())
 }

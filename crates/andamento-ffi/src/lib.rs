@@ -4,11 +4,13 @@
 //! docs/sidebar-design/host-interface.md describes the interface as a whole.
 #![allow(clippy::missing_safety_doc)] // The header specifies pointer safety for every call.
 use andamento_core::{
+    detail::DetailCard,
     host::PaneObservation,
     presentation::{Content, PlacementNode, PresentationState},
+    profile,
     sidebar::{Action, HostEffect, Workspace},
     template_config::{TemplateConfigFieldClass, TemplateControlKind},
-    EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, PaneTarget, Sidebar, WorkspaceId,
+    DisplayVariableValue, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, PaneTarget, Sidebar, WorkspaceId,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -638,7 +640,7 @@ pub(crate) struct Node {
 }
 /// Immutable catalog card and existing dispatch references, owned by a detail snapshot.
 pub(crate) struct Detail {
-    card: andamento_core::detail::DetailCard,
+    card: DetailCard,
     activate: usize,
     copy_url: usize,
 }
@@ -658,7 +660,7 @@ impl AndamentoSnapshot {
     // Exported text borrows String/Vec heap buffers, never inline Detail/Action
     // storage. Appending may move structs but must not move those buffers or
     // renumber existing actions; small inline-string representations would break it.
-    fn add_detail(&mut self, card: andamento_core::detail::DetailCard, sidebar: &Sidebar) -> usize {
+    fn add_detail(&mut self, card: DetailCard, sidebar: &Sidebar) -> usize {
         let activate = self.action(Action::Activate { entity: card.entity.clone() });
         let copy_url = if sidebar.subject_url(&card.entity).is_some() {
             self.action(Action::CopySubjectUrl { entity: card.entity.clone() })
@@ -806,9 +808,9 @@ pub unsafe extern "C" fn andamento_snapshot_acquire_details(h: *mut Andamento, e
 }
 unsafe fn acquire_snapshot(h: *mut Andamento, error_out: *mut *mut c_char, include_details: bool) -> *mut AndamentoSnapshot {
     run(h, error_out, |h| {
-        let _phase = andamento_core::profile::span("abi-acquire");
+        let _phase = profile::span("abi-acquire");
         let snapshot = h.sidebar.snapshot();
-        let _flatten = andamento_core::profile::span("abi-flatten");
+        let _flatten = profile::span("abi-flatten");
         let mut out = AndamentoSnapshot {
             now_ms: h.sidebar.now_ms(),
             details: vec![],
@@ -865,11 +867,11 @@ unsafe fn acquire_snapshot(h: *mut Andamento, error_out: *mut *mut c_char, inclu
             }
             if let Some(value) = snapshot.surface.display_values.get(&control.variable) {
                 match value {
-                    andamento_core::DisplayVariableValue::Bool(value) => {
+                    DisplayVariableValue::Bool(value) => {
                         control.value_kind = ANDAMENTO_VALUE_BOOL;
                         control.checked = *value;
                     }
-                    andamento_core::DisplayVariableValue::Enum(value) => {
+                    DisplayVariableValue::Enum(value) => {
                         control.value_kind = ANDAMENTO_VALUE_ENUM;
                         control.value = value.clone();
                     }

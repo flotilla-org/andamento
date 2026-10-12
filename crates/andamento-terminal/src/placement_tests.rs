@@ -1,5 +1,8 @@
 use super::render::*;
-use andamento_core::{state::ControllerState, tab_workspace_id, MetadataControls, NodeKey, RailUiAction};
+use andamento_core::{
+    state::{ControllerState, ControllerTab},
+    tab_workspace_id, MetadataControls, NodeKey, RailUiAction,
+};
 use unicode_width::UnicodeWidthStr;
 
 fn state() -> ControllerState {
@@ -100,12 +103,7 @@ fn detail_panel_is_reserved_and_controls_remain_clickable_below_it() {
 #[test]
 fn plain_observed_workspaces_remain_reachable_without_catalog_entities() {
     let mut state = ControllerState::default();
-    state.observe_workspaces(vec![andamento_core::state::ControllerTab {
-        tab_id: tab_workspace_id(42),
-        position: 3,
-        name: "Scratch".into(),
-        active: true,
-    }]);
+    state.observe_workspaces(vec![ControllerTab { tab_id: tab_workspace_id(42), position: 3, name: "Scratch".into(), active: true }]);
     let frame = frame(&state, 40);
     let hit = frame.hit_regions.iter().find(|h| h.tab_id == tab_workspace_id(42)).unwrap();
     assert_eq!(hit.action, HitAction::SwitchTab);
@@ -155,12 +153,7 @@ fn collapsed_ancestor_is_revealed_for_a_selected_descendant() {
 fn visible_live_workspaces_keep_pin_controls_and_status_graphics() {
     use andamento_core::{PaneTarget, Priority, StatusIcon, TabStatusSummary};
     let mut state = ControllerState::default();
-    state.observe_workspaces(vec![andamento_core::state::ControllerTab {
-        tab_id: tab_workspace_id(42),
-        position: 3,
-        name: "Scratch".into(),
-        active: false,
-    }]);
+    state.observe_workspaces(vec![ControllerTab { tab_id: tab_workspace_id(42), position: 3, name: "Scratch".into(), active: false }]);
     let mut model = state.view_model();
     model.tabs[0].pinned = true;
     model.tabs[0].status = Some(TabStatusSummary {

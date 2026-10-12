@@ -8,15 +8,18 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    detail::DetailCard,
     host::PaneObservation,
     managed::{ManagedContent, SlotPlan},
-    presentation::{system, SurfaceSnapshot, UNPLACED_WORKSPACES_SECTION},
+    presentation::{system, PlacementNode, PresentationState, SurfaceSnapshot, UNPLACED_WORKSPACES_SECTION},
+    profile,
     records::{recordable, DashboardRecord, DashboardState, RecordName, SubjectRecord},
     sidebar_arrangement::{self, Declared, LocalSection, Report, SidebarArrangement, SidebarDoc, SidebarView},
     slots::{ArrangementCommit, ArrangementDoc, ArrangementView, Baseline, OverlayView, Resolve, SlotInfo},
-    state::{ControllerState, ControllerTab, EntityActivation},
+    state::{ControllerState, ControllerTab, EntityActivation, RevisionEvaluation},
     suggested_layout::{RebindPolicy, ViewSpec},
     target_resolution::{PortableResolution, SavedResolution},
+    template_config::{parse_template_config_kdl, TemplateConfigCatalog},
     versioned::{Clock, CommitError, Versioned},
     workspace::{Subject, WorkspaceRecord},
     DisplayVariableValue, EntityRef, MaterializeLatentRequest, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, NodeKey,
@@ -177,8 +180,8 @@ pub struct Sidebar {
     state: ControllerState,
     revision: u64,
     snapshot: OnceCell<Snapshot>,
-    evaluation: OnceCell<crate::state::RevisionEvaluation>,
-    details: RefCell<BTreeMap<EntityRef, Option<crate::detail::DetailCard>>>,
+    evaluation: OnceCell<RevisionEvaluation>,
+    details: RefCell<BTreeMap<EntityRef, Option<DetailCard>>>,
     next_request: u64,
     pending: BTreeMap<u64, Pending>,
     errors: BTreeMap<EntityRef, String>,
@@ -195,7 +198,7 @@ pub struct Sidebar {
     dashboard: Versioned<DashboardState>,
     /// Fact keys the configured placement reads, kept in subject records.
     placement_keys: BTreeSet<String>,
-    pub managed: crate::managed::ManagedContent,
+    pub managed: ManagedContent,
     /// When workspace content outside the records last changed: managed
     /// content's resolutions, or a workspace forgotten.
     content_changed: u64,
@@ -292,8 +295,8 @@ impl Sidebar {
 
     /// Validate the template catalog before replacing the active configuration.
     pub fn configure(&mut self, config_kdl: &str) -> Result<(), String> {
-        let templates = crate::template_config::parse_template_config_kdl(config_kdl).map_err(|e| e.to_string())?;
-        self.state.set_template_catalog(Some(crate::template_config::TemplateConfigCatalog::with_bundled_defaults(templates)));
+        let templates = parse_template_config_kdl(config_kdl).map_err(|e| e.to_string())?;
+        self.state.set_template_catalog(Some(TemplateConfigCatalog::with_bundled_defaults(templates)));
         self.placement_keys = self.state.placement_fact_keys();
         self.invalidate();
         self.follow_sidebar_declarations();
@@ -361,20 +364,20 @@ impl Sidebar {
     }
 
     fn apply_patches(&mut self, now_ms: u64, provider: Option<&str>, patches: impl IntoIterator<Item = MetadataPatch>) {
-        let _phase = crate::profile::span("apply");
-        let maintenance = crate::profile::span("workspace-maintenance");
+        let _phase = profile::span("apply");
+        let maintenance = profile::span("workspace-maintenance");
         let subjects = self.state.workspace_subjects();
         let mut changed = self.retain_workspace_paths(&subjects);
         drop(maintenance);
         changed |= self.state.advance_time(now_ms);
-        let patch_phase = crate::profile::span("patch-application");
+        let patch_phase = profile::span("patch-application");
         if let Some(provider) = provider {
             for patch in patches {
                 changed |= self.state.apply_provider_patch(provider, patch);
             }
         }
         drop(patch_phase);
-        let maintenance = crate::profile::span("workspace-maintenance");
+        let maintenance = profile::span("workspace-maintenance");
         changed |= self.state.refresh_retained_subjects();
         changed |= self.state.mark_ended_workspace_paths(&self.retained_paths, &subjects);
         drop(maintenance);
@@ -388,21 +391,17 @@ impl Sidebar {
     }
 
     fn retain_workspace_paths(&mut self, subjects: &BTreeMap<WorkspaceId, EntityRef>) -> bool {
-        fn collect(
-            nodes: &[crate::presentation::PlacementNode],
-            ancestors: &mut Vec<EntityRef>,
-            paths: &mut BTreeMap<WorkspaceId, BTreeSet<EntityRef>>,
-        ) {
+        fn collect(nodes: &[PlacementNode], ancestors: &mut Vec<EntityRef>, paths: &mut BTreeMap<WorkspaceId, BTreeSet<EntityRef>>) {
             for node in nodes {
                 // Andamento's own kinds (`.`-prefixed: workspaces, sections,
                 // groups, refs) are never retained: the host retracts them, and
                 // a ghost must not outlive its removal because its target is
                 // open.
-                let subject = !crate::presentation::system::is_system(&node.entity.kind);
+                let subject = !system::is_system(&node.entity.kind);
                 if subject {
                     ancestors.push(node.entity.clone());
                 }
-                if let crate::presentation::PresentationState::Live { workspace_id, .. } = node.state {
+                if let PresentationState::Live { workspace_id, .. } = node.state {
                     paths.entry(workspace_id).or_default().extend(ancestors.iter().cloned());
                 }
                 collect(&node.children, ancestors, paths);
@@ -1137,7 +1136,7 @@ impl Sidebar {
         self.dashboard.follow(&mut self.clock, |current| *current = state);
     }
 
-    fn evaluation(&self) -> &crate::state::RevisionEvaluation {
+    fn evaluation(&self) -> &RevisionEvaluation {
         self.evaluation.get_or_init(|| self.state.evaluate_revision())
     }
 
@@ -1158,13 +1157,13 @@ impl Sidebar {
         })
     }
 
-    pub fn detail_cards(&self) -> (u64, Vec<crate::detail::DetailCard>) {
+    pub fn detail_cards(&self) -> (u64, Vec<DetailCard>) {
         (self.state.evaluation_time(), self.state.detail_cards_in(self.evaluation(), None))
     }
 
     /// Exact catalog identity, including hidden and retained ended subjects.
     /// Cache at most 64 cards (including misses), and discard on revision change.
-    pub fn detail_card(&self, entity: &EntityRef) -> Option<crate::detail::DetailCard> {
+    pub fn detail_card(&self, entity: &EntityRef) -> Option<DetailCard> {
         if let Some(card) = self.details.borrow().get(entity) {
             return card.clone();
         }
@@ -1204,7 +1203,7 @@ impl Sidebar {
                 if self.entity_is_pending(&entity) {
                     return Ok(vec![]);
                 }
-                if let crate::presentation::PresentationState::Live { workspace_id, .. } = node.state {
+                if let PresentationState::Live { workspace_id, .. } = node.state {
                     if !self.state.workspaces().iter().any(|w| w.tab_id == workspace_id) {
                         return Err("workspace disappeared".into());
                     }
@@ -1417,18 +1416,18 @@ mod evaluation_tests {
         let mut sidebar = Sidebar::new(CONFIG).unwrap();
         sidebar.apply(100, PROVIDER, [patch("a", "first", None, 0)]).unwrap();
         add_project(&mut sidebar);
-        crate::profile::start();
+        profile::start();
         let snapshot = sidebar.snapshot();
         let key = snapshot.surface.sections[0].nodes[0].children[0].key.clone();
         sidebar.detail_card(&entity()).unwrap();
         sidebar.detail_cards();
         sidebar.detail_card(&entity()).unwrap();
-        assert_eq!(crate::profile::take()["catalog"].calls, 1);
+        assert_eq!(profile::take()["catalog"].calls, 1);
         sidebar.dispatch(Action::TogglePlacement { key }).unwrap();
         // Validation used the rendered snapshot; only the new output evaluates.
-        assert!(!crate::profile::take().contains_key("catalog"));
+        assert!(!profile::take().contains_key("catalog"));
         assert_ne!(sidebar.snapshot().revision, snapshot.revision);
-        assert_eq!(crate::profile::take()["catalog"].calls, 1);
+        assert_eq!(profile::take()["catalog"].calls, 1);
         check(&sidebar);
     }
 
@@ -1502,7 +1501,7 @@ mod evaluation_tests {
     // inventory or controller sort order, including a pin-driven reorder.
     #[test]
     fn presentation_matches_controller_for_every_sort_mode() {
-        for mode in [crate::SortMode::Controller, crate::SortMode::Position, crate::SortMode::PinnedFirst, crate::SortMode::LatestStatus] {
+        for mode in [SortMode::Controller, SortMode::Position, SortMode::PinnedFirst, SortMode::LatestStatus] {
             let mut sidebar = Sidebar::new(CONFIG).unwrap();
             sidebar.apply(100, PROVIDER, [patch("base", "original", None, 0)]).unwrap();
             add_project(&mut sidebar);
