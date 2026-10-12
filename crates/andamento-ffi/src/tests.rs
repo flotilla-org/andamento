@@ -35,23 +35,12 @@ fn section_nodes_carry_their_region_hints() {
                 order.map(|o| format!(" order={o}")).unwrap_or_default()
             );
             let h = create(&config);
-            let workspace = WorkspaceInput {
-                id: tab_workspace_id(42).into(),
-                position: 0,
-                name: text("unplaced"),
-                selected: 1,
-            };
-            assert_eq!(
-                andamento_observe(h, &workspace, 1, ptr::null(), 0, ptr::null_mut()),
-                1
-            );
+            let workspace = WorkspaceInput { id: tab_workspace_id(42).into(), position: 0, name: text("unplaced"), selected: 1 };
+            assert_eq!(andamento_observe(h, &workspace, 1, ptr::null(), 0, ptr::null_mut()), 1);
             let s = andamento_snapshot_acquire(h, ptr::null_mut());
             let section = node(s, 0);
             assert_eq!(section.default_host.read().unwrap(), "sidebar");
-            assert_eq!(
-                (section.has_order, section.order),
-                (order.is_some() as u32, order.unwrap_or_default())
-            );
+            assert_eq!((section.has_order, section.order), (order.is_some() as u32, order.unwrap_or_default()));
             for i in 1..andamento_snapshot_node_count(s) {
                 let other = node(s, i);
                 assert_eq!((other.default_host.len, other.has_order), (0, 0));
@@ -72,36 +61,19 @@ fn declared_abbreviation_reaches_c_fields_but_keeps_full_details() {
         let mut error = ptr::null_mut();
         let h = create(config);
         let patch = r#"{"type":"metadata-patch","target":{"kind":"entity","value":{"kind":"vessel","id":"worker"}},"source_id":"test","set":{"flotilla.vessel":{"value":{"type":"text","value":"worker"}},"display.label":{"value":{"type":"text","value":"a very long worker name"}},"display.label.medium":{"value":{"type":"text","value":"worker medium"}},"display.label.short":{"value":{"type":"text","value":"w"}}},"unset":[]}"#;
-        assert_eq!(
-            andamento_apply_patch_json(h, 0, text(PROVIDER), text(patch), &mut error),
-            1
-        );
-        for (declaration, expected) in [
-            ("", "worker medium"),
-            ("tier=\"short\"", "w"),
-            ("tier=\"full\"", "a very long worker name"),
-        ] {
-            let config =
-                config.replace("kind=\"vessel\"", &format!("kind=\"vessel\" {declaration}"));
+        assert_eq!(andamento_apply_patch_json(h, 0, text(PROVIDER), text(patch), &mut error), 1);
+        for (declaration, expected) in [("", "worker medium"), ("tier=\"short\"", "w"), ("tier=\"full\"", "a very long worker name")] {
+            let config = config.replace("kind=\"vessel\"", &format!("kind=\"vessel\" {declaration}"));
             assert_eq!(andamento_configure(h, text(&config), &mut error), 1);
             let snapshot = andamento_snapshot_acquire(h, &mut error);
             let node = node(snapshot, 1);
             assert_eq!(node.label.read().unwrap(), "a very long worker name");
             assert_eq!(node.entity.provider.read().unwrap(), PROVIDER);
             let mut field = MaybeUninit::<FieldView>::uninit();
-            assert_eq!(
-                andamento_snapshot_field(snapshot, node.first_field, field.as_mut_ptr()),
-                1
-            );
+            assert_eq!(andamento_snapshot_field(snapshot, node.first_field, field.as_mut_ptr()), 1);
             assert_eq!(field.assume_init_ref().text.read().unwrap(), expected);
-            assert_eq!(
-                andamento_snapshot_field(snapshot, node.first_detail, field.as_mut_ptr()),
-                1
-            );
-            assert_eq!(
-                field.assume_init_ref().text.read().unwrap(),
-                "a very long worker name"
-            );
+            assert_eq!(andamento_snapshot_field(snapshot, node.first_detail, field.as_mut_ptr()), 1);
+            assert_eq!(field.assume_init_ref().text.read().unwrap(), "a very long worker name");
             andamento_snapshot_release(snapshot);
         }
         andamento_destroy(h);
@@ -131,23 +103,11 @@ fn display_controls_name_their_variable_and_persistence() {
         let snapshot = andamento_snapshot_acquire(h, &mut error);
         let control = |index| {
             let mut control = MaybeUninit::<ControlView>::uninit();
-            assert_eq!(
-                andamento_snapshot_control(snapshot, index, control.as_mut_ptr()),
-                1
-            );
+            assert_eq!(andamento_snapshot_control(snapshot, index, control.as_mut_ptr()), 1);
             control.assume_init()
         };
         let controls: Vec<_> = (0..4).map(control).collect();
-        let named: Vec<_> = controls
-            .iter()
-            .map(|c| {
-                (
-                    c.variable.read().unwrap(),
-                    c.persist,
-                    c.label.read().unwrap(),
-                )
-            })
-            .collect();
+        let named: Vec<_> = controls.iter().map(|c| (c.variable.read().unwrap(), c.persist, c.label.read().unwrap())).collect();
         assert_eq!(
             named,
             [
@@ -157,10 +117,7 @@ fn display_controls_name_their_variable_and_persistence() {
                 (String::new(), 0, String::new()),
             ]
         );
-        assert_eq!(
-            andamento_dispatch(h, snapshot, controls[0].action, &mut error),
-            1
-        );
+        assert_eq!(andamento_dispatch(h, snapshot, controls[0].action, &mut error), 1);
         let next = andamento_snapshot_acquire(h, &mut error);
         assert!((&(*next).controls)[0].checked && !(&(*snapshot).controls)[0].checked);
         andamento_destroy(h);
@@ -205,17 +162,10 @@ fn subject_rows_expose_open_and_copy_url_actions() {
                 continue;
             }
             let patch = serde_json::to_string(&frame["patch"]).unwrap();
-            assert_eq!(
-                andamento_apply_patch_json(h, 0, text(PROVIDER), text(&patch), &mut error),
-                1
-            );
+            assert_eq!(andamento_apply_patch_json(h, 0, text(PROVIDER), text(&patch), &mut error), 1);
         }
         let snapshot = andamento_snapshot_acquire(h, &mut error);
-        let index = (*snapshot)
-            .nodes
-            .iter()
-            .position(|n| n.entity.id == "github/org/b!281")
-            .unwrap();
+        let index = (*snapshot).nodes.iter().position(|n| n.entity.id == "github/org/b!281").unwrap();
         let row = node(snapshot, index);
         assert_eq!(row.openable, 1);
         assert_ne!(row.copy_url, NONE);
@@ -227,26 +177,16 @@ fn subject_rows_expose_open_and_copy_url_actions() {
             assert_eq!(andamento_effects_get(effects, 0, effect.as_mut_ptr()), 1);
             let effect = effect.assume_init();
             assert_eq!(effect.kind, kind);
-            assert_eq!(
-                effect.recipe.read().unwrap(),
-                "https://github.com/org/b/pull/281"
-            );
+            assert_eq!(effect.recipe.read().unwrap(), "https://github.com/org/b/pull/281");
             andamento_effects_release(effects);
         }
-        let issue = EntityView {
-            provider: text(PROVIDER),
-            kind: text("issue"),
-            id: text("github/org/a#115"),
-        };
+        let issue = EntityView { provider: text(PROVIDER), kind: text("issue"), id: text("github/org/a#115") };
         assert_eq!(andamento_copy_subject_url(h, issue, &mut error), 1);
         let effects = andamento_effects_take(h, &mut error);
         assert_eq!(andamento_effects_count(effects), 1);
         andamento_effects_release(effects);
         // An entity names its provider.
-        let unnamed = EntityView {
-            provider: text(""),
-            ..issue
-        };
+        let unnamed = EntityView { provider: text(""), ..issue };
         assert_eq!(andamento_copy_subject_url(h, unnamed, &mut error), 0);
         assert!(CStr::from_ptr(error).to_str().unwrap().contains("provider"));
         andamento_string_free(error);

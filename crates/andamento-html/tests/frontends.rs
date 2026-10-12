@@ -2,10 +2,7 @@ use andamento_core::{replay, sidebar::Action, MetadataPatch, Sidebar};
 
 #[test]
 fn native_and_terminal_geometry_share_actions_and_placement_state() {
-    let mut sidebar = Sidebar::new(include_str!(
-        "../../andamento-core/tests/fixtures/sidebar.kdl"
-    ))
-    .unwrap();
+    let mut sidebar = Sidebar::new(include_str!("../../andamento-core/tests/fixtures/sidebar.kdl")).unwrap();
     let patches = include_str!("../../andamento-core/tests/fixtures/sidebar.jsonl")
         .lines()
         .map(|l| serde_json::from_str::<MetadataPatch>(l).unwrap())
@@ -20,33 +17,15 @@ fn native_and_terminal_geometry_share_actions_and_placement_state() {
     assert!(!html.contains('\u{1b}'));
     // The workspace fallback is emitted while empty, but these frontends have
     // no affordance on its header, so neither shows it.
-    assert!(before
-        .surface
-        .sections
-        .iter()
-        .any(|s| s.is_empty_workspace_fallback()));
+    assert!(before.surface.sections.iter().any(|s| s.is_empty_workspace_fallback()));
     assert!(!html.contains("Other workspaces"));
-    assert!(!terminal
-        .lines
-        .iter()
-        .any(|l| l.contains("Other workspaces")));
-    let action = terminal
-        .hits
-        .iter()
-        .map(|hit| &hit.action)
-        .find(|a| matches!(a, Action::TogglePlacement { .. }))
-        .unwrap()
-        .clone();
-    assert!(html.contains(&andamento_html::escape(
-        &serde_json::to_string(&action).unwrap()
-    )));
+    assert!(!terminal.lines.iter().any(|l| l.contains("Other workspaces")));
+    let action = terminal.hits.iter().map(|hit| &hit.action).find(|a| matches!(a, Action::TogglePlacement { .. })).unwrap().clone();
+    assert!(html.contains(&andamento_html::escape(&serde_json::to_string(&action).unwrap())));
     sidebar.dispatch(action).unwrap();
     let after = sidebar.snapshot();
     let collapsed = andamento_terminal::surface::render(&after.surface, 32);
     assert!(collapsed.lines.len() < terminal.lines.len());
-    assert_eq!(
-        after.surface.sections[1].nodes,
-        before.surface.sections[1].nodes
-    );
+    assert_eq!(after.surface.sections[1].nodes, before.surface.sections[1].nodes);
     assert!(andamento_html::render(&after).contains("<details  data-toggle="));
 }

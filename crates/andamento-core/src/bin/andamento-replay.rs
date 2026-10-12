@@ -18,14 +18,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut recorder = Recorder::new(out);
             for line in io::stdin().lock().lines() {
                 let line = line?;
-                if !line.trim().is_empty() { recorder.record(serde_json::from_str(&line)?)?; }
+                if !line.trim().is_empty() {
+                    recorder.record(serde_json::from_str(&line)?)?;
+                }
             }
         }
         [mode, path] if mode == "play" || mode == "emit" => {
             let frames = replay::read(BufReader::new(File::open(path)?))?;
             let start = Instant::now();
             for frame in frames {
-                if mode == "play" { std::thread::sleep(Duration::from_millis(frame.offset_ms).saturating_sub(start.elapsed())); }
+                if mode == "play" {
+                    std::thread::sleep(Duration::from_millis(frame.offset_ms).saturating_sub(start.elapsed()));
+                }
                 serde_json::to_writer(&mut out, &replay::wire_patch(&frame.patch))?;
                 writeln!(out)?;
                 out.flush()?;
@@ -38,7 +42,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             serde_json::to_writer(&mut out, &sidebar.snapshot())?;
             writeln!(out)?;
         }
-        _ => return Err("usage: andamento-replay record < patches.jsonl | play|emit CAPTURE | snapshot CAPTURE CONFIG_KDL OFFSET_MS".into()),
+        _ => {
+            return Err("usage: andamento-replay record < patches.jsonl | play|emit CAPTURE | snapshot CAPTURE CONFIG_KDL OFFSET_MS".into())
+        }
     }
     Ok(())
 }

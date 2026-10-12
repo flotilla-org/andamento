@@ -38,9 +38,7 @@ template "project" {
 template "line" { field "label" key="display.label"; }
 "#;
 fn frames(name: &str) -> Vec<Frame> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures")
-        .join(name);
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures").join(name);
     read(Cursor::new(std::fs::read(path).unwrap())).unwrap()
 }
 fn catalog(nodes: &[PlacementNode]) -> serde_json::Value {
@@ -57,30 +55,15 @@ fn catalog(nodes: &[PlacementNode]) -> serde_json::Value {
 }
 #[test]
 fn legacy_and_generated_catalog_snapshots() {
-    for name in [
-        "flotilla-connector-patches",
-        "rail-scene-legacy",
-        "rail-scene",
-    ] {
+    for name in ["flotilla-connector-patches", "rail-scene-legacy", "rail-scene"] {
         let frames = frames(&format!("{name}.jsonl"));
         let mut replay = Replay::new(frames.clone()).unwrap();
         let mut sidebar = Sidebar::new(CONFIG).unwrap();
         replay.advance_to(&mut sidebar, 0).unwrap();
         let mut direct = Sidebar::new(CONFIG).unwrap();
-        direct
-            .apply(0, replay::PROVIDER, frames.into_iter().map(|f| f.patch))
-            .unwrap();
+        direct.apply(0, replay::PROVIDER, frames.into_iter().map(|f| f.patch)).unwrap();
         assert_eq!(sidebar.snapshot().surface, direct.snapshot().surface);
-        insta::assert_debug_snapshot!(
-            name,
-            sidebar
-                .snapshot()
-                .surface
-                .sections
-                .iter()
-                .map(|s| catalog(&s.nodes))
-                .collect::<Vec<_>>()
-        );
+        insta::assert_debug_snapshot!(name, sidebar.snapshot().surface.sections.iter().map(|s| catalog(&s.nodes)).collect::<Vec<_>>());
     }
 }
 #[test]
@@ -88,18 +71,10 @@ fn scripted_roll_keeps_role_under_project_through_hold_handover_and_expiry() {
     let mut replay = Replay::new(frames("scripted-roll.jsonl")).unwrap();
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
     let mut key = None;
-    for (at, desired, target) in [
-        (0, "ready", Some("coder-1")),
-        (1000, "held", None),
-        (2000, "ready", Some("coder-2")),
-    ] {
+    for (at, desired, target) in [(0, "ready", Some("coder-1")), (1000, "held", None), (2000, "ready", Some("coder-2"))] {
         assert_eq!(replay.step(&mut sidebar).unwrap(), Some(at));
         let snapshot = sidebar.snapshot();
-        let project = snapshot.surface.sections[0]
-            .nodes
-            .iter()
-            .find(|n| n.entity.kind == "project")
-            .unwrap();
+        let project = snapshot.surface.sections[0].nodes.iter().find(|n| n.entity.kind == "project").unwrap();
         assert_eq!(project.entity.id, "flotilla/andamento@fleet");
         assert_eq!(project.children.len(), 1);
         let role = &project.children[0];
@@ -109,10 +84,7 @@ fn scripted_roll_keeps_role_under_project_through_hold_handover_and_expiry() {
         } else {
             key = Some(role.key.clone());
         }
-        assert_eq!(
-            role.facts.get("workspace.primary.state"),
-            Some(&MetadataValue::Text(desired.into()))
-        );
+        assert_eq!(role.facts.get("workspace.primary.state"), Some(&MetadataValue::Text(desired.into())));
         let actual = role.facts.get("workspace.primary.target");
         if let Some(target) = target {
             assert!(matches!(actual, Some(MetadataValue::Text(s)) if s.contains(target)));
@@ -127,20 +99,13 @@ fn scripted_roll_keeps_role_under_project_through_hold_handover_and_expiry() {
 }
 #[test]
 fn malformed_decreasing_and_truncated_streams_are_rejected() {
-    assert!(read(Cursor::new("{\n"))
-        .unwrap_err()
-        .to_string()
-        .contains("line 1"));
+    assert!(read(Cursor::new("{\n")).unwrap_err().to_string().contains("line 1"));
     let frame = frames("flotilla-connector-patches.jsonl").remove(0);
     let mut a = frame.clone();
     a.offset_ms = 10;
     let mut b = frame;
     b.offset_ms = 9;
-    let raw = format!(
-        "{}\n{}\n",
-        serde_json::to_string(&a).unwrap(),
-        serde_json::to_string(&b).unwrap()
-    );
+    let raw = format!("{}\n{}\n", serde_json::to_string(&a).unwrap(), serde_json::to_string(&b).unwrap());
     assert!(read(Cursor::new(raw)).is_err());
     assert!(Replay::new(vec![a, b]).is_err());
 }
@@ -151,8 +116,7 @@ fn recorder_round_trips_wire_values() {
     let mut recorder = Recorder::new(&mut bytes);
     recorder.record(patch.clone()).unwrap();
     recorder.record(patch.clone()).unwrap();
-    let first: serde_json::Value =
-        serde_json::from_slice(bytes.split(|b| *b == b'\n').next().unwrap()).unwrap();
+    let first: serde_json::Value = serde_json::from_slice(bytes.split(|b| *b == b'\n').next().unwrap()).unwrap();
     assert_eq!(first["patch"]["type"], "metadata-patch");
     let recorded = read(Cursor::new(bytes)).unwrap();
     assert_eq!(recorded.len(), 2);
@@ -181,45 +145,25 @@ fn advancing_over_a_gap_does_not_refresh_old_facts() {
     let mut replay = Replay::new(input).unwrap();
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
     replay.advance_to(&mut sidebar, 0).unwrap();
-    assert_eq!(
-        sidebar.snapshot().surface.sections[1].nodes[0].entity.id,
-        "flotilla/adhoc-triage@fleet"
-    ); // Explicit -100 ordinal wins.
+    assert_eq!(sidebar.snapshot().surface.sections[1].nodes[0].entity.id, "flotilla/adhoc-triage@fleet"); // Explicit -100 ordinal wins.
     replay.advance_to(&mut sidebar, 40_000).unwrap();
     let snapshot = sidebar.snapshot();
     let nodes = &snapshot.surface.sections[0].nodes;
     assert_eq!(nodes.len(), 1);
-    assert_eq!(
-        andamento_core::MetadataTarget::Entity(nodes[0].entity.clone()),
-        target
-    );
-    assert!(snapshot.surface.sections[1..]
-        .iter()
-        .all(|s| s.nodes.is_empty()));
+    assert_eq!(andamento_core::MetadataTarget::Entity(nodes[0].entity.clone()), target);
+    assert!(snapshot.surface.sections[1..].iter().all(|s| s.nodes.is_empty()));
     replay.advance_to(&mut sidebar, 70_001).unwrap();
-    assert!(sidebar
-        .snapshot()
-        .surface
-        .sections
-        .iter()
-        .all(|s| s.nodes.is_empty()));
+    assert!(sidebar.snapshot().surface.sections.iter().all(|s| s.nodes.is_empty()));
 }
 
 #[test]
 fn equal_offsets_are_one_ordered_observation() {
     let mut input = frames("rail-scene-legacy.jsonl");
     let mut replacement = input[0].clone();
-    replacement
-        .patch
-        .set
-        .get_mut("display.label")
-        .unwrap()
-        .value = MetadataValue::Text("last writer".into());
+    replacement.patch.set.get_mut("display.label").unwrap().value = MetadataValue::Text("last writer".into());
     input.push(replacement);
     let mut direct = Sidebar::new(CONFIG).unwrap();
-    direct
-        .apply(0, replay::PROVIDER, input.iter().map(|f| f.patch.clone()))
-        .unwrap();
+    direct.apply(0, replay::PROVIDER, input.iter().map(|f| f.patch.clone())).unwrap();
     let mut replay = Replay::new(input).unwrap();
     let mut stepped = Sidebar::new(CONFIG).unwrap();
     assert_eq!(replay.step(&mut stepped).unwrap(), Some(0));
@@ -246,11 +190,7 @@ fn cli_emit_snapshot_and_usage() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let binary = env!("CARGO_BIN_EXE_andamento-replay");
     let capture = root.join("fixtures/scripted-roll.jsonl");
-    let emitted = Command::new(binary)
-        .arg("emit")
-        .arg(&capture)
-        .output()
-        .unwrap();
+    let emitted = Command::new(binary).arg("emit").arg(&capture).output().unwrap();
     assert!(emitted.status.success());
     let parsed = read(Cursor::new(emitted.stdout)).unwrap();
     let expected = frames("scripted-roll.jsonl");
@@ -267,8 +207,7 @@ fn cli_emit_snapshot_and_usage() {
         .output()
         .unwrap();
     assert!(snapshot.status.success());
-    let snapshot: andamento_core::sidebar::Snapshot =
-        serde_json::from_slice(&snapshot.stdout).unwrap();
+    let snapshot: andamento_core::sidebar::Snapshot = serde_json::from_slice(&snapshot.stdout).unwrap();
     assert!(snapshot.surface.sections.iter().all(|s| s.nodes.is_empty()));
     let invalid = Command::new(binary).arg("unknown").output().unwrap();
     assert!(!invalid.status.success());
@@ -280,10 +219,7 @@ fn cli_emit_snapshot_and_usage() {
 // Keep scripts/check-standing-role.py in sync with these placement assertions.
 fn assert_standing_role_placement(input: Vec<Frame>) {
     let offsets: std::collections::BTreeSet<_> = input.iter().map(|f| f.offset_ms).collect();
-    assert!(
-        !offsets.is_empty(),
-        "regression stream must contain observations"
-    );
+    assert!(!offsets.is_empty(), "regression stream must contain observations");
     let mut replay = Replay::new(input).unwrap();
     let mut sidebar = Sidebar::new(include_str!("../../../fixtures/standing-role.kdl")).unwrap();
     let mut role_key = None;
@@ -339,17 +275,9 @@ fn declared_role_parent_retained_control_stays_on_project() {
         !(frame.offset_ms == 1000
             && matches!(&frame.patch.target,
                 andamento_core::MetadataTarget::Entity(entity) if entity.kind == "project")
-            && frame
-                .patch
-                .unset
-                .iter()
-                .any(|key| key == "flotilla.project")
+            && frame.patch.unset.iter().any(|key| key == "flotilla.project")
             && !frame.patch.set.contains_key("flotilla.project"))
     });
-    assert_eq!(
-        before - input.len(),
-        1,
-        "known-broken connector pin must withdraw exactly one parent join"
-    );
+    assert_eq!(before - input.len(), 1, "known-broken connector pin must withdraw exactly one parent join");
     assert_standing_role_placement(input);
 }

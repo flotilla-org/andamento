@@ -106,10 +106,7 @@ pub struct PluginRegistrationHello {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum PluginPlacement {
-    Tab {
-        tab_id: WorkspaceId,
-        pane_kind: PluginPaneKind,
-    },
+    Tab { tab_id: WorkspaceId, pane_kind: PluginPaneKind },
     Background,
     Unknown,
 }
@@ -506,11 +503,7 @@ pub struct PlacementLoopKey {
 impl PlacementKey {
     pub fn loop_key(&self, region: &str) -> Option<PlacementLoopKey> {
         let (last, parent) = self.0.split_last()?;
-        Some(PlacementLoopKey {
-            region: region.to_owned(),
-            parent: PlacementKey(parent.to_vec()),
-            binding: last.loop_name.clone(),
-        })
+        Some(PlacementLoopKey { region: region.to_owned(), parent: PlacementKey(parent.to_vec()), binding: last.loop_name.clone() })
     }
 }
 
@@ -521,14 +514,7 @@ impl PlacementLoopKey {
     /// compare it for equality; only Andamento decodes it.
     pub fn encode(&self) -> String {
         std::iter::once(&self.region)
-            .chain(self.parent.0.iter().flat_map(|s| {
-                [
-                    &s.loop_name,
-                    &s.entity.provider,
-                    &s.entity.kind,
-                    &s.entity.id,
-                ]
-            }))
+            .chain(self.parent.0.iter().flat_map(|s| [&s.loop_name, &s.entity.provider, &s.entity.kind, &s.entity.id]))
             .chain(std::iter::once(&self.binding))
             .map(|s| format!("{}:{}", s.len(), s))
             .collect()
@@ -552,32 +538,15 @@ impl PlacementLoopKey {
         }
         let binding = parts.pop()?;
         let region = parts.remove(0);
-        let parent = parts
-            .chunks(4)
-            .map(|c| PlacementSegment {
-                loop_name: c[0].clone(),
-                entity: EntityRef::new(&c[1], &c[2], &c[3]),
-            })
-            .collect();
-        Some(Self {
-            region,
-            parent: PlacementKey(parent),
-            binding,
-        })
+        let parent =
+            parts.chunks(4).map(|c| PlacementSegment { loop_name: c[0].clone(), entity: EntityRef::new(&c[1], &c[2], &c[3]) }).collect();
+        Some(Self { region, parent: PlacementKey(parent), binding })
     }
 }
 
 impl EntityRef {
-    pub fn new(
-        provider: impl Into<String>,
-        kind: impl Into<String>,
-        id: impl Into<String>,
-    ) -> Self {
-        Self {
-            provider: provider.into(),
-            kind: kind.into(),
-            id: id.into(),
-        }
+    pub fn new(provider: impl Into<String>, kind: impl Into<String>, id: impl Into<String>) -> Self {
+        Self { provider: provider.into(), kind: kind.into(), id: id.into() }
     }
 
     /// An entity of the [`LOCAL_PROVIDER`].
@@ -607,10 +576,7 @@ impl EntityRef {
     /// An entity a host names must name its provider.
     pub fn check_provider(&self) -> Result<(), String> {
         if self.provider.is_empty() {
-            return Err(format!(
-                "entity {}:{} names no provider",
-                self.kind, self.id
-            ));
+            return Err(format!("entity {}:{} names no provider", self.kind, self.id));
         }
         Ok(())
     }
@@ -726,26 +692,16 @@ pub struct MetadataPatch {
 }
 
 // Future value kinds must not discard the known facts in the same connector patch.
-fn decode_metadata_updates<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<BTreeMap<String, MetadataValueUpdate>, D::Error> {
+fn decode_metadata_updates<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<BTreeMap<String, MetadataValueUpdate>, D::Error> {
     let updates = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
     updates
         .into_iter()
         .filter_map(|(key, update)| {
-            let kind = update
-                .get("value")
-                .and_then(|v| v.get("type"))
-                .and_then(|v| v.as_str());
+            let kind = update.get("value").and_then(|v| v.get("type")).and_then(|v| v.as_str());
             match kind {
-                Some(
-                    "text" | "bool" | "integer" | "string-list" | "group-path" | "entity-refs",
-                )
-                | None => Some(
-                    serde_json::from_value(update)
-                        .map(|update| (key, update))
-                        .map_err(serde::de::Error::custom),
-                ),
+                Some("text" | "bool" | "integer" | "string-list" | "group-path" | "entity-refs") | None => {
+                    Some(serde_json::from_value(update).map(|update| (key, update)).map_err(serde::de::Error::custom))
+                }
                 Some(_) => None,
             }
         })
@@ -887,10 +843,7 @@ pub struct RailConfig {
 
 impl Default for RailConfig {
     fn default() -> Self {
-        Self {
-            structure: RailStructure::default(),
-            segment_between_color: None,
-        }
+        Self { structure: RailStructure::default(), segment_between_color: None }
     }
 }
 
@@ -978,18 +931,11 @@ pub struct MetadataControls {
     /// Sparse storage: an entry exists only when the user has explicitly set
     /// a state on that node. Absence = inherit from above (defaults hidden).
     /// We use HashMap rather than BTreeMap because NodeKey is not Ord.
-    #[serde(
-        default,
-        serialize_with = "serialize_node_map",
-        deserialize_with = "deserialize_node_map"
-    )]
+    #[serde(default, serialize_with = "serialize_node_map", deserialize_with = "deserialize_node_map")]
     pub per_node: HashMap<NodeKey, MetadataTriState>,
 }
 
-fn serialize_node_map<S>(
-    map: &HashMap<NodeKey, MetadataTriState>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+fn serialize_node_map<S>(map: &HashMap<NodeKey, MetadataTriState>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -997,9 +943,7 @@ where
     entries.serialize(serializer)
 }
 
-fn deserialize_node_map<'de, D>(
-    deserializer: D,
-) -> Result<HashMap<NodeKey, MetadataTriState>, D::Error>
+fn deserialize_node_map<'de, D>(deserializer: D) -> Result<HashMap<NodeKey, MetadataTriState>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -1110,23 +1054,13 @@ impl PluginStatsRecorder {
 
     pub fn record_span_us(&mut self, name: impl Into<String>, elapsed_us: u64) {
         let name = name.into();
-        let entry = self.spans.entry(name.clone()).or_insert(PluginStatsSpan {
-            name,
-            count: 0,
-            total_us: 0,
-            max_us: 0,
-        });
+        let entry = self.spans.entry(name.clone()).or_insert(PluginStatsSpan { name, count: 0, total_us: 0, max_us: 0 });
         entry.count = entry.count.saturating_add(1);
         entry.total_us = entry.total_us.saturating_add(elapsed_us);
         entry.max_us = entry.max_us.max(elapsed_us);
     }
 
-    pub fn snapshot(
-        &self,
-        collection_id: u64,
-        identity: RendererHello,
-        plugin_kind: impl Into<String>,
-    ) -> PluginStatsSnapshot {
+    pub fn snapshot(&self, collection_id: u64, identity: RendererHello, plugin_kind: impl Into<String>) -> PluginStatsSnapshot {
         PluginStatsSnapshot {
             collection_id,
             plugin_id: identity.plugin_id,
@@ -1172,14 +1106,8 @@ mod tests {
         let old_prefix = ["ta", "bs-"].concat();
 
         for message_name in message_names {
-            assert!(
-                message_name.starts_with("andamento-"),
-                "{message_name} should use the andamento namespace"
-            );
-            assert!(
-                !message_name.starts_with(&old_prefix),
-                "{message_name} should not use the old tabs namespace"
-            );
+            assert!(message_name.starts_with("andamento-"), "{message_name} should use the andamento namespace");
+            assert!(!message_name.starts_with(&old_prefix), "{message_name} should not use the old tabs namespace");
         }
     }
 
@@ -1226,14 +1154,8 @@ mod tests {
     #[test]
     fn plugin_registration_hello_round_trips_json() {
         let hello = PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 11,
-                client_id: 4,
-            },
-            placement: PluginPlacement::Tab {
-                tab_id: tab_workspace_id(7),
-                pane_kind: PluginPaneKind::Floating,
-            },
+            identity: RendererHello { plugin_id: 11, client_id: 4 },
+            placement: PluginPlacement::Tab { tab_id: tab_workspace_id(7), pane_kind: PluginPaneKind::Floating },
         };
 
         let encoded = serde_json::to_string(&hello).unwrap();
@@ -1259,12 +1181,7 @@ mod tests {
             client_id: 2,
             plugin_kind: "rail".to_owned(),
             counters,
-            spans: vec![PluginStatsSpan {
-                name: "decode.view-model".to_owned(),
-                count: 3,
-                total_us: 120,
-                max_us: 70,
-            }],
+            spans: vec![PluginStatsSpan { name: "decode.view-model".to_owned(), count: 3, total_us: 120, max_us: 70 }],
         };
 
         let encoded = serde_json::to_string(&snapshot).unwrap();
@@ -1275,13 +1192,7 @@ mod tests {
 
     #[test]
     fn stats_collect_request_round_trips_json() {
-        let request = StatsCollectRequest {
-            requester: RendererHello {
-                plugin_id: 10,
-                client_id: 1,
-            },
-            collection_id: 11,
-        };
+        let request = StatsCollectRequest { requester: RendererHello { plugin_id: 10, client_id: 1 }, collection_id: 11 };
 
         let encoded = serde_json::to_string(&request).unwrap();
         let decoded: StatsCollectRequest = serde_json::from_str(&encoded).unwrap();
@@ -1300,14 +1211,7 @@ mod tests {
         recorder.record_span_us("decode.view-model", 10);
         recorder.record_span_us("decode.view-model", 25);
 
-        let snapshot = recorder.snapshot(
-            1,
-            RendererHello {
-                plugin_id: 2,
-                client_id: 3,
-            },
-            "rail",
-        );
+        let snapshot = recorder.snapshot(1, RendererHello { plugin_id: 2, client_id: 3 }, "rail");
 
         assert_eq!(snapshot.counters["pipe.view-model"], 2);
         assert_eq!(snapshot.counters["view-model.payload-bytes"], 350);
@@ -1320,14 +1224,8 @@ mod tests {
     #[test]
     fn placement_key_round_trips_as_an_ordered_loop_entity_path() {
         let key = PlacementKey(vec![
-            PlacementSegment {
-                loop_name: "project".to_owned(),
-                entity: EntityRef::local("project", "andamento"),
-            },
-            PlacementSegment {
-                loop_name: "vessel".to_owned(),
-                entity: EntityRef::local("vessel", "andamento/work"),
-            },
+            PlacementSegment { loop_name: "project".to_owned(), entity: EntityRef::local("project", "andamento") },
+            PlacementSegment { loop_name: "vessel".to_owned(), entity: EntityRef::local("vessel", "andamento/work") },
         ]);
         let encoded = serde_json::to_string(&key).unwrap();
         let decoded: PlacementKey = serde_json::from_str(&encoded).unwrap();
@@ -1342,30 +1240,19 @@ mod tests {
         let decoded: MetadataTarget = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, target);
-        assert_eq!(
-            encoded,
-            r#"{"kind":"entity","value":{"provider":"local","kind":"convoy","id":"dev/cutover@kiwi"}}"#
-        );
+        assert_eq!(encoded, r#"{"kind":"entity","value":{"provider":"local","kind":"convoy","id":"dev/cutover@kiwi"}}"#);
         // Producers don't name a provider; the entity names none until the
         // host's provider is stamped over it.
-        let unnamed: MetadataTarget = serde_json::from_str(
-            r#"{"kind":"entity","value":{"kind":"convoy","id":"dev/cutover@kiwi"}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            unnamed,
-            MetadataTarget::Entity(EntityRef::new("", "convoy", "dev/cutover@kiwi"))
-        );
+        let unnamed: MetadataTarget =
+            serde_json::from_str(r#"{"kind":"entity","value":{"kind":"convoy","id":"dev/cutover@kiwi"}}"#).unwrap();
+        assert_eq!(unnamed, MetadataTarget::Entity(EntityRef::new("", "convoy", "dev/cutover@kiwi")));
     }
 
     #[test]
     fn loop_keys_carry_providers() {
         let key = PlacementLoopKey {
             region: "tree".into(),
-            parent: PlacementKey(vec![PlacementSegment {
-                loop_name: "project".into(),
-                entity: EntityRef::new("sub-1", "project", "p"),
-            }]),
+            parent: PlacementKey(vec![PlacementSegment { loop_name: "project".into(), entity: EntityRef::new("sub-1", "project", "p") }]),
             binding: "vessel".into(),
         };
         let text = key.encode();
@@ -1375,12 +1262,7 @@ mod tests {
         let mut other = key.clone();
         other.parent.0[0].entity.provider = "sub-2".into();
         assert_ne!(other.encode(), text);
-        for bad in [
-            "",
-            "4:tree",
-            "4:tree7:project7:project1:p6:vessel",
-            "9:tree",
-        ] {
+        for bad in ["", "4:tree", "4:tree7:project7:project1:p6:vessel", "9:tree"] {
             assert_eq!(PlacementLoopKey::decode(bad), None, "{bad}");
         }
     }
@@ -1428,12 +1310,7 @@ mod tests {
             source_id: "flotilla".to_owned(),
             set: std::collections::BTreeMap::from([(
                 "tab.subject".to_owned(),
-                MetadataValueUpdate {
-                    value: MetadataValue::Text("checkout".to_owned()),
-                    ttl_ms: None,
-                    precedence: Some(1),
-                    ordinal: None,
-                },
+                MetadataValueUpdate { value: MetadataValue::Text("checkout".to_owned()), ttl_ms: None, precedence: Some(1), ordinal: None },
             )]),
             unset: vec![],
         };
@@ -1447,14 +1324,8 @@ mod tests {
 
     #[test]
     fn rail_config_round_trips_json() {
-        let config = RailConfig {
-            structure: RailStructure::BoxPerTab,
-            segment_between_color: Some(RailRgbColor {
-                red: 1,
-                green: 2,
-                blue: 3,
-            }),
-        };
+        let config =
+            RailConfig { structure: RailStructure::BoxPerTab, segment_between_color: Some(RailRgbColor { red: 1, green: 2, blue: 3 }) };
 
         let encoded = serde_json::to_string(&config).unwrap();
         let decoded: RailConfig = serde_json::from_str(&encoded).unwrap();

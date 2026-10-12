@@ -15,22 +15,14 @@ pub fn start() {
 }
 /// Read and reset counters without disabling them.
 pub fn take() -> BTreeMap<&'static str, Phase> {
-    STATS.with(|s| {
-        s.borrow_mut()
-            .as_mut()
-            .map(std::mem::take)
-            .unwrap_or_default()
-    })
+    STATS.with(|s| s.borrow_mut().as_mut().map(std::mem::take).unwrap_or_default())
 }
 pub struct Span {
     phase: &'static str,
     start: Option<Instant>,
 }
 pub fn span(phase: &'static str) -> Span {
-    Span {
-        phase,
-        start: STATS.with(|s| s.borrow().is_some().then(Instant::now)),
-    }
+    Span { phase, start: STATS.with(|s| s.borrow().is_some().then(Instant::now)) }
 }
 impl Drop for Span {
     fn drop(&mut self) {

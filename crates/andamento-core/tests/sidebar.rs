@@ -4,8 +4,7 @@ use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::suggested_layout::PRIMARY_SLOT;
 use andamento_core::{
     managed::{Resolved, SlotPlan},
-    tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate,
-    Sidebar, WorkspaceId,
+    tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar, WorkspaceId,
 };
 use common::{entity, patch, refs, text, Feed, CONFIG};
 use std::collections::BTreeMap;
@@ -21,13 +20,7 @@ fn sidebar() -> Sidebar {
     sidebar.feed(
         100,
         [
-            patch(
-                entity("project", "p"),
-                &[
-                    ("flotilla.project", text("p")),
-                    ("display.label", text("Project P")),
-                ],
-            ),
+            patch(entity("project", "p"), &[("flotilla.project", text("p")), ("display.label", text("Project P"))]),
             patch(
                 entity("vessel", "v"),
                 &[
@@ -49,55 +42,23 @@ fn sidebar() -> Sidebar {
 fn snapshots_carry_typed_content_layout_and_independent_placement_state() {
     let mut sidebar = sidebar();
     let before = sidebar.snapshot();
-    assert!(
-        before.surface.diagnostics.is_empty(),
-        "{:?}",
-        before.surface.diagnostics
-    );
+    assert!(before.surface.diagnostics.is_empty(), "{:?}", before.surface.diagnostics);
     let project = &before.surface.sections[0].nodes[0];
     let vessel = &project.children[0];
     let attention = &before.surface.sections[1].nodes[0];
     assert_eq!(vessel.entity, attention.entity);
     assert_ne!(vessel.key, attention.key);
     assert_eq!(vessel.layout.as_deref(), Some("inline"));
-    assert_eq!(
-        vessel.content.fields[0].source.as_ref().unwrap().value,
-        text("Worker <one>")
-    );
-    sidebar
-        .dispatch(Action::SetVariable {
-            key: vessel.key.clone(),
-            name: "density".into(),
-            value: Some("compact".into()),
-        })
-        .unwrap();
+    assert_eq!(vessel.content.fields[0].source.as_ref().unwrap().value, text("Worker <one>"));
+    sidebar.dispatch(Action::SetVariable { key: vessel.key.clone(), name: "density".into(), value: Some("compact".into()) }).unwrap();
     let updated = sidebar.snapshot();
-    assert!(updated
-        .surface
-        .node(&vessel.key)
-        .unwrap()
-        .content
-        .text()
-        .contains("compact"));
-    assert!(updated
-        .surface
-        .node(&attention.key)
-        .unwrap()
-        .content
-        .text()
-        .contains("roomy"));
-    sidebar
-        .dispatch(Action::TogglePlacement {
-            key: project.key.clone(),
-        })
-        .unwrap();
+    assert!(updated.surface.node(&vessel.key).unwrap().content.text().contains("compact"));
+    assert!(updated.surface.node(&attention.key).unwrap().content.text().contains("roomy"));
+    sidebar.dispatch(Action::TogglePlacement { key: project.key.clone() }).unwrap();
     let collapsed = sidebar.snapshot();
     assert!(collapsed.surface.node(&project.key).unwrap().collapsed);
     assert!(!collapsed.surface.node(&attention.key).unwrap().collapsed);
-    assert_eq!(
-        collapsed.surface.node(&project.key).unwrap().children.len(),
-        1
-    );
+    assert_eq!(collapsed.surface.node(&project.key).unwrap().children.len(), 1);
     assert!(serde_json::to_string(&collapsed).is_ok());
 }
 
@@ -106,30 +67,15 @@ fn invalid_variable_and_config_updates_leave_the_surface_unchanged() {
     let mut sidebar = sidebar();
     let before = sidebar.snapshot();
     let key = before.surface.sections[0].nodes[0].key.clone();
-    assert!(sidebar
-        .dispatch(Action::SetVariable {
-            key,
-            name: "density".into(),
-            value: Some("nonsense".into())
-        })
-        .is_err());
+    assert!(sidebar.dispatch(Action::SetVariable { key, name: "density".into(), value: Some("nonsense".into()) }).is_err());
     assert!(sidebar.configure("not { valid").is_err());
     assert_eq!(before, sidebar.snapshot());
 }
 
 fn open(sidebar: &mut Sidebar) -> u64 {
-    let effects = sidebar
-        .dispatch(Action::Activate {
-            entity: entity("vessel", "v"),
-        })
-        .unwrap();
+    let effects = sidebar.dispatch(Action::Activate { entity: entity("vessel", "v") }).unwrap();
     match &effects[..] {
-        [HostEffect::Materialize {
-            request_id,
-            recipe,
-            entity: subject,
-            ..
-        }] => {
+        [HostEffect::Materialize { request_id, recipe, entity: subject, .. }] => {
             assert_eq!(recipe, "printf hello");
             assert_eq!(subject, &entity("vessel", "v"));
             *request_id
@@ -138,67 +84,33 @@ fn open(sidebar: &mut Sidebar) -> u64 {
     }
 }
 fn workspace() -> Workspace {
-    Workspace {
-        id: W42,
-        position: 0,
-        name: "Tab 1".into(),
-        selected: true,
-    }
+    Workspace { id: W42, position: 0, name: "Tab 1".into(), selected: true }
 }
 
 #[test]
 fn host_results_preserve_identity_and_closing_returns_to_latent() {
     use andamento_core::presentation::PresentationState;
     let mut sidebar = sidebar();
-    assert_eq!(
-        sidebar.snapshot().surface.sections[0].nodes[0].children[0].state,
-        PresentationState::Latent { openable: true }
-    );
+    assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].children[0].state, PresentationState::Latent { openable: true });
     let request = open(&mut sidebar);
-    assert_eq!(
-        sidebar.snapshot().surface.sections[0].nodes[0].children[0].state,
-        PresentationState::Opening
-    );
-    assert!(sidebar
-        .dispatch(Action::Activate {
-            entity: entity("vessel", "v")
-        })
-        .unwrap()
-        .is_empty());
+    assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].children[0].state, PresentationState::Opening);
+    assert!(sidebar.dispatch(Action::Activate { entity: entity("vessel", "v") }).unwrap().is_empty());
     assert!(sidebar.complete(request, Ok(Some(W42))));
     // Acknowledgement can precede the topology observation.
-    assert!(sidebar
-        .dispatch(Action::Activate {
-            entity: entity("vessel", "v")
-        })
-        .unwrap()
-        .is_empty());
+    assert!(sidebar.dispatch(Action::Activate { entity: entity("vessel", "v") }).unwrap().is_empty());
     sidebar.observe(vec![workspace()], vec![]);
     assert_eq!(
         sidebar.snapshot().surface.sections[0].nodes[0].children[0].state,
-        PresentationState::Live {
-            workspace_id: W42,
-            selected: true
-        }
+        PresentationState::Live { workspace_id: W42, selected: true }
     );
-    let effects = sidebar
-        .dispatch(Action::Activate {
-            entity: entity("vessel", "v"),
-        })
-        .unwrap();
+    let effects = sidebar.dispatch(Action::Activate { entity: entity("vessel", "v") }).unwrap();
     let id = match effects[0] {
-        HostEffect::Focus {
-            request_id,
-            workspace_id: W42,
-        } => request_id,
+        HostEffect::Focus { request_id, workspace_id: W42 } => request_id,
         ref other => panic!("{other:?}"),
     };
     sidebar.complete(id, Ok(None));
     sidebar.observe(vec![], vec![]);
-    assert_eq!(
-        sidebar.snapshot().surface.sections[0].nodes[0].children[0].state,
-        PresentationState::Latent { openable: true }
-    );
+    assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].children[0].state, PresentationState::Latent { openable: true });
     assert!(open(&mut sidebar) > request);
 }
 
@@ -207,20 +119,11 @@ fn separate_clients_keep_independent_ui_state() {
     let mut first = sidebar();
     let second = sidebar();
     let key = first.snapshot().surface.sections[0].nodes[0].key.clone();
-    first
-        .dispatch(Action::TogglePlacement { key: key.clone() })
-        .unwrap();
-    first
-        .dispatch(Action::ToggleDisplayVariable {
-            name: "show-issues".into(),
-        })
-        .unwrap();
+    first.dispatch(Action::TogglePlacement { key: key.clone() }).unwrap();
+    first.dispatch(Action::ToggleDisplayVariable { name: "show-issues".into() }).unwrap();
     assert!(first.snapshot().surface.node(&key).unwrap().collapsed);
     assert!(!second.snapshot().surface.node(&key).unwrap().collapsed);
-    assert_ne!(
-        first.snapshot().surface.display_values,
-        second.snapshot().surface.display_values
-    );
+    assert_ne!(first.snapshot().surface.display_values, second.snapshot().surface.display_values);
 }
 
 #[test]
@@ -231,15 +134,8 @@ fn topology_can_precede_acknowledgement_and_stale_results_are_ignored() {
     assert!(sidebar.complete(request, Ok(Some(W42))));
     assert!(!sidebar.complete(request, Err("late failure".into())));
     assert!(matches!(
-        sidebar
-            .dispatch(Action::Activate {
-                entity: entity("vessel", "v")
-            })
-            .unwrap()[0],
-        HostEffect::Focus {
-            workspace_id: W42,
-            ..
-        }
+        sidebar.dispatch(Action::Activate { entity: entity("vessel", "v") }).unwrap()[0],
+        HostEffect::Focus { workspace_id: W42, .. }
     ));
 }
 
@@ -250,10 +146,7 @@ fn failed_materialization_is_visible_serializable_and_retryable() {
     sidebar.complete(request, Err("host unavailable".into()));
     let snapshot = sidebar.snapshot();
     assert_eq!(snapshot.errors[0].message, "host unavailable");
-    assert_eq!(
-        snapshot.surface.sections[0].nodes[0].children[0].entity,
-        entity("vessel", "v")
-    );
+    assert_eq!(snapshot.surface.sections[0].nodes[0].children[0].entity, entity("vessel", "v"));
     serde_json::to_string(&snapshot).unwrap();
     assert!(open(&mut sidebar) > request);
     assert!(sidebar.snapshot().errors.is_empty());
@@ -267,32 +160,18 @@ fn host_time_expires_overrides_without_further_facts_and_retries_refresh_ttl() {
         source_id: "temporary".into(),
         set: BTreeMap::from([(
             "display.label".into(),
-            MetadataValueUpdate {
-                value: text("Temporary"),
-                ttl_ms: Some(10),
-                precedence: Some(100),
-                ordinal: None,
-            },
+            MetadataValueUpdate { value: text("Temporary"), ttl_ms: Some(10), precedence: Some(100), ordinal: None },
         )]),
         unset: vec![],
     };
     sidebar.feed(1000, [override_patch.clone()]);
     sidebar.feed(1005, [override_patch]);
     sidebar.tick(1011);
-    assert_eq!(
-        sidebar.snapshot().surface.sections[0].nodes[0].children[0].label,
-        "Temporary"
-    );
+    assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].children[0].label, "Temporary");
     sidebar.tick(1016);
-    assert_eq!(
-        sidebar.snapshot().surface.sections[0].nodes[0].children[0].label,
-        "Worker <one>"
-    );
+    assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].children[0].label, "Worker <one>");
     sidebar.tick(1); // A host clock regression does not revive expired facts.
-    assert_eq!(
-        sidebar.snapshot().surface.sections[0].nodes[0].children[0].label,
-        "Worker <one>"
-    );
+    assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].children[0].label, "Worker <one>");
 }
 
 #[test]
@@ -302,11 +181,7 @@ fn loop_keys_distinguish_invocations_and_survive_collapse() {
         101,
         [patch(
             entity("vessel", "v2"),
-            &[
-                ("flotilla.project", text("p")),
-                ("flotilla.vessel", text("v2")),
-                ("display.label", text("Second worker")),
-            ],
+            &[("flotilla.project", text("p")), ("flotilla.vessel", text("v2")), ("display.label", text("Second worker"))],
         )],
     );
     let before = sidebar.snapshot();
@@ -314,35 +189,17 @@ fn loop_keys_distinguish_invocations_and_survive_collapse() {
     assert_eq!(project.children.len(), 2);
     assert_eq!(project.children[0].loop_key, project.children[1].loop_key);
     assert_ne!(project.loop_key, project.children[0].loop_key);
-    assert_ne!(
-        before.surface.sections[1].nodes[0].loop_key,
-        project.children[0].loop_key
-    );
-    sidebar
-        .dispatch(Action::TogglePlacement {
-            key: project.key.clone(),
-        })
-        .unwrap();
+    assert_ne!(before.surface.sections[1].nodes[0].loop_key, project.children[0].loop_key);
+    sidebar.dispatch(Action::TogglePlacement { key: project.key.clone() }).unwrap();
     let after = sidebar.snapshot();
-    assert_eq!(
-        after.surface.sections[0].nodes[0].children[0].loop_key,
-        project.children[0].loop_key
-    );
+    assert_eq!(after.surface.sections[0].nodes[0].children[0].loop_key, project.children[0].loop_key);
 }
 
 #[test]
 fn sibling_loop_bindings_must_be_distinct() {
-    let config = CONFIG.replace(
-        "template \"project/line\" {",
-        "template \"project/line\" {\n  for \"vessel\" kind=\"issue\" {}\n",
-    );
-    let error = Sidebar::new(&config)
-        .err()
-        .expect("duplicate sibling binding must fail");
-    assert!(
-        error.contains("duplicate sibling loop binding vessel"),
-        "{error}"
-    );
+    let config = CONFIG.replace("template \"project/line\" {", "template \"project/line\" {\n  for \"vessel\" kind=\"issue\" {}\n");
+    let error = Sidebar::new(&config).err().expect("duplicate sibling binding must fail");
+    assert!(error.contains("duplicate sibling loop binding vessel"), "{error}");
 }
 
 #[test]
@@ -354,9 +211,7 @@ fn native_content_retains_declared_empty_columns() {
     let mut sidebar = sidebar();
     sidebar.configure(&config).unwrap();
     let snapshot = sidebar.snapshot();
-    let fields = &snapshot.surface.sections[0].nodes[0].children[0]
-        .content
-        .fields;
+    let fields = &snapshot.surface.sections[0].nodes[0].children[0].content.fields;
     assert_eq!(fields[0].value, "Worker <one>");
     assert_eq!(fields[1].value, "");
     assert_eq!(fields[2].value, "waiting");
@@ -369,11 +224,7 @@ fn abbreviation_uses_placement_variable_and_preserves_full_fallback() {
         0,
         [patch(
             entity("vessel", "v"),
-            &[
-                ("display.label", text("Full worker label")),
-                ("flotilla.vessel", text("v")),
-                ("display.label.medium", text("Worker")),
-            ],
+            &[("display.label", text("Full worker label")), ("flotilla.vessel", text("v")), ("display.label.medium", text("Worker"))],
         )],
     );
     let before = sidebar.snapshot();
@@ -381,19 +232,8 @@ fn abbreviation_uses_placement_variable_and_preserves_full_fallback() {
     assert_eq!(node.content.text(), "Worker", "{node:#?}");
     assert_eq!(node.label, "Full worker label");
     assert_eq!(node.detail.text(), "Full worker label");
-    sidebar
-        .dispatch(Action::SetVariable {
-            key: node.key.clone(),
-            name: "item.tier".into(),
-            value: Some("short".into()),
-        })
-        .unwrap();
-    assert_eq!(
-        sidebar.snapshot().surface.sections[0].nodes[0]
-            .content
-            .text(),
-        "Worker"
-    );
+    sidebar.dispatch(Action::SetVariable { key: node.key.clone(), name: "item.tier".into(), value: Some("short".into()) }).unwrap();
+    assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].content.text(), "Worker");
     sidebar.feed(
         1,
         [MetadataPatch {
@@ -404,10 +244,7 @@ fn abbreviation_uses_placement_variable_and_preserves_full_fallback() {
         }],
     );
     let after = sidebar.snapshot();
-    assert_eq!(
-        after.surface.sections[0].nodes[0].content.text(),
-        "Full worker label"
-    );
+    assert_eq!(after.surface.sections[0].nodes[0].content.text(), "Full worker label");
     assert_eq!(after.surface.sections[0].nodes[0].key, node.key);
 }
 
@@ -437,37 +274,20 @@ fn recipe_only_changes_invalidate_snapshot_and_activation() {
     let mut sidebar = sidebar();
     let revision = sidebar.revision();
     let before = sidebar.snapshot();
-    sidebar.feed(
-        100,
-        [patch(
-            entity("vessel", "v"),
-            &[("action.primary.recipe", text("printf changed"))],
-        )],
-    );
+    sidebar.feed(100, [patch(entity("vessel", "v"), &[("action.primary.recipe", text("printf changed"))])]);
     assert_ne!(sidebar.revision(), revision);
     assert_eq!(
         before.surface.sections[0].nodes[0].children[0].content,
         sidebar.snapshot().surface.sections[0].nodes[0].children[0].content
     );
-    let effects = sidebar
-        .dispatch(Action::Activate {
-            entity: entity("vessel", "v"),
-        })
-        .unwrap();
-    assert!(
-        matches!(&effects[0], HostEffect::Materialize { recipe, .. } if recipe == "printf changed")
-    );
+    let effects = sidebar.dispatch(Action::Activate { entity: entity("vessel", "v") }).unwrap();
+    assert!(matches!(&effects[0], HostEffect::Materialize { recipe, .. } if recipe == "printf changed"));
 }
 
 #[test]
 fn identical_topology_is_unchanged_but_selection_invalidates() {
     let mut sidebar = sidebar();
-    let mut workspaces = vec![Workspace {
-        id: W7,
-        position: 0,
-        name: "Workspace".into(),
-        selected: true,
-    }];
+    let mut workspaces = vec![Workspace { id: W7, position: 0, name: "Workspace".into(), selected: true }];
     sidebar.observe(workspaces.clone(), vec![]);
     let before = sidebar.snapshot();
     sidebar.observe(workspaces.clone(), vec![]);
@@ -480,10 +300,7 @@ fn identical_topology_is_unchanged_but_selection_invalidates() {
 #[test]
 fn removing_last_expired_fact_invalidates_entity_membership() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    let mut fact = patch(
-        entity("project", "p"),
-        &[("display.label", text("Project"))],
-    );
+    let mut fact = patch(entity("project", "p"), &[("display.label", text("Project"))]);
     fact.set.get_mut("display.label").unwrap().ttl_ms = Some(10);
     sidebar.feed(100, [fact]);
     sidebar.tick(111);
@@ -502,14 +319,7 @@ fn removing_last_expired_fact_invalidates_entity_membership() {
 }
 
 fn fallback(sidebar: &Sidebar) -> Vec<andamento_core::presentation::PlacementNode> {
-    sidebar
-        .snapshot()
-        .surface
-        .sections
-        .into_iter()
-        .find(|s| s.name == UNPLACED_WORKSPACES_SECTION)
-        .map(|s| s.nodes)
-        .unwrap_or_default()
+    sidebar.snapshot().surface.sections.into_iter().find(|s| s.name == UNPLACED_WORKSPACES_SECTION).map(|s| s.nodes).unwrap_or_default()
 }
 
 #[test]
@@ -526,14 +336,9 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
     assert_eq!(nodes[0].label, nodes[1].label);
     assert_ne!(nodes[0].key, nodes[1].key);
     let key = nodes[1].key.clone();
-    let effects = sidebar
-        .dispatch(Action::ActivatePlacement { key: key.clone() })
-        .unwrap();
+    let effects = sidebar.dispatch(Action::ActivatePlacement { key: key.clone() }).unwrap();
     let request_id = match effects[0] {
-        HostEffect::Focus {
-            workspace_id: W43,
-            request_id,
-        } => request_id,
+        HostEffect::Focus { workspace_id: W43, request_id } => request_id,
         ref effect => panic!("{effect:?}"),
     };
     sidebar.complete(request_id, Ok(None));
@@ -544,13 +349,7 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
     let nodes = fallback(&sidebar);
     assert_eq!(nodes[1].key, key);
     assert_eq!(nodes[1].label, "Renamed");
-    assert_eq!(
-        nodes[1].state,
-        andamento_core::presentation::PresentationState::Live {
-            workspace_id: W43,
-            selected: true,
-        }
-    );
+    assert_eq!(nodes[1].state, andamento_core::presentation::PresentationState::Live { workspace_id: W43, selected: true });
     sidebar.observe(vec![first], vec![]);
     assert_eq!(fallback(&sidebar).len(), 1);
     assert!(sidebar.dispatch(Action::ActivatePlacement { key }).is_err());
@@ -575,28 +374,16 @@ fn placements_cover_aliases_and_collapsed_children_but_filtered_workspaces_fall_
     sidebar.observe(vec![workspace()], vec![]);
     assert!(fallback(&sidebar).is_empty());
     let parent = sidebar.snapshot().surface.sections[0].nodes[0].key.clone();
-    sidebar
-        .dispatch(Action::TogglePlacement { key: parent })
-        .unwrap();
+    sidebar.dispatch(Action::TogglePlacement { key: parent }).unwrap();
     assert!(fallback(&sidebar).is_empty());
     // Hide every provider placement while retaining the observed workspace and
     // its binding. Reconfiguring back restores both aliases without a fallback.
-    sidebar
-        .configure(&CONFIG.replace("kind=\"vessel\"", "kind=\"unselected-kind\""))
-        .unwrap();
+    sidebar.configure(&CONFIG.replace("kind=\"vessel\"", "kind=\"unselected-kind\"")).unwrap();
     let nodes = fallback(&sidebar);
     assert_eq!(nodes.len(), 1);
     assert!(matches!(
-        sidebar
-            .dispatch(Action::ActivatePlacement {
-                key: nodes[0].key.clone()
-            })
-            .unwrap()
-            .as_slice(),
-        [HostEffect::Focus {
-            workspace_id: W42,
-            ..
-        }]
+        sidebar.dispatch(Action::ActivatePlacement { key: nodes[0].key.clone() }).unwrap().as_slice(),
+        [HostEffect::Focus { workspace_id: W42, .. }]
     ));
     sidebar.configure(CONFIG).unwrap();
     assert!(fallback(&sidebar).is_empty());
@@ -627,19 +414,11 @@ fn removed_provider_facts_do_not_remove_open_workspaces() {
     let nodes = workspace_nodes(&snapshot.surface);
     assert!(!nodes.is_empty());
     assert!(fallback(&sidebar).is_empty());
-    assert!(nodes
-        .iter()
-        .all(|node| node.entity == entity("vessel", "v")));
+    assert!(nodes.iter().all(|node| node.entity == entity("vessel", "v")));
     let key = nodes[0].key.clone();
     assert!(matches!(
-        sidebar
-            .dispatch(Action::ActivatePlacement { key })
-            .unwrap()
-            .as_slice(),
-        [HostEffect::Focus {
-            workspace_id: W42,
-            ..
-        }]
+        sidebar.dispatch(Action::ActivatePlacement { key }).unwrap().as_slice(),
+        [HostEffect::Focus { workspace_id: W42, .. }]
     ));
 }
 
@@ -655,21 +434,12 @@ fn compact_placement_template_preserves_independent_detail_template() {
     "#
         ))
         .unwrap();
-    sidebar.feed(
-        101,
-        [patch(
-            entity("vessel", "v"),
-            &[("flotilla.vessel.host", text("remote"))],
-        )],
-    );
+    sidebar.feed(101, [patch(entity("vessel", "v"), &[("flotilla.vessel.host", text("remote"))])]);
     let snapshot = sidebar.snapshot();
     let vessel = &snapshot.surface.sections[0].nodes[0].children[0];
     assert!(vessel.content.text().contains("Worker <one>"));
     assert_eq!(vessel.detail.text(), "Host: remote");
-    assert_eq!(
-        snapshot.surface.sections[1].nodes[0].detail.text(),
-        "Host: remote"
-    );
+    assert_eq!(snapshot.surface.sections[1].nodes[0].detail.text(), "Host: remote");
 }
 
 #[test]
@@ -678,27 +448,17 @@ fn live_placement_focus_is_deduplicated_until_completion_and_can_retry() {
     let request = open(&mut sidebar);
     sidebar.complete(request, Ok(Some(W42)));
     sidebar.observe(vec![workspace()], vec![]);
-    let key = sidebar.snapshot().surface.sections[0].nodes[0].children[0]
-        .key
-        .clone();
+    let key = sidebar.snapshot().surface.sections[0].nodes[0].children[0].key.clone();
     let action = Action::ActivatePlacement { key };
     for outcome in [Err("focus failed".into()), Ok(None)] {
         let effects = sidebar.dispatch(action.clone()).unwrap();
         let request_id = match effects.as_slice() {
-            [HostEffect::Focus {
-                request_id,
-                workspace_id: W42,
-            }] => *request_id,
+            [HostEffect::Focus { request_id, workspace_id: W42 }] => *request_id,
             other => panic!("expected one focus, got {other:?}"),
         };
         let revision = sidebar.snapshot_shared().revision;
         assert!(sidebar.dispatch(action.clone()).unwrap().is_empty());
-        assert!(sidebar
-            .dispatch(Action::Activate {
-                entity: entity("vessel", "v")
-            })
-            .unwrap()
-            .is_empty());
+        assert!(sidebar.dispatch(Action::Activate { entity: entity("vessel", "v") }).unwrap().is_empty());
         assert_eq!(sidebar.snapshot_shared().revision, revision);
         assert!(sidebar.complete(request_id, outcome));
         assert!(!sidebar.complete(request_id, Ok(None)));
@@ -707,24 +467,10 @@ fn live_placement_focus_is_deduplicated_until_completion_and_can_retry() {
 
 /// Plan the `primary` slot of `subject`'s workspace `workspace`, as a host
 /// that applied `applied` would.
-fn plan_primary(
-    sidebar: &mut Sidebar,
-    workspace: WorkspaceId,
-    subject: &EntityRef,
-    applied: Resolved,
-) -> SlotPlan {
+fn plan_primary(sidebar: &mut Sidebar, workspace: WorkspaceId, subject: &EntityRef, applied: Resolved) -> SlotPlan {
     use andamento_core::{managed::SlotSource, suggested_layout::RebindPolicy};
-    let source = SlotSource::Provider {
-        entity: subject.clone(),
-        slot: PRIMARY_SLOT.into(),
-    };
-    sidebar.managed.plan_slot(
-        workspace,
-        PRIMARY_SLOT,
-        source,
-        RebindPolicy::Replace,
-        &applied.id(),
-    )
+    let source = SlotSource::Provider { entity: subject.clone(), slot: PRIMARY_SLOT.into() };
+    sidebar.managed.plan_slot(workspace, PRIMARY_SLOT, source, RebindPolicy::Replace, &applied.id())
 }
 
 #[test]
@@ -732,11 +478,7 @@ fn managed_primary_reconciles_resolution_not_global_revision() {
     use andamento_core::managed::{ContentState, TerminalContent};
     let mut sidebar = sidebar();
     let subject = entity("vessel", "v");
-    let original = Resolved::from(TerminalContent {
-        target: "one".into(),
-        command: "printf hello".into(),
-        cwd: None,
-    });
+    let original = Resolved::from(TerminalContent { target: "one".into(), command: "printf hello".into(), cwd: None });
     let publish = |sidebar: &mut Sidebar, time, target: &str| {
         sidebar.feed(
             time,
@@ -752,80 +494,33 @@ fn managed_primary_reconciles_resolution_not_global_revision() {
     };
     sidebar.observe(vec![workspace()], vec![]);
     publish(&mut sidebar, 101, "two");
-    let first = plan_primary(&mut sidebar, W42, &subject, original.clone())
-        .update
-        .unwrap();
-    sidebar.feed(
-        102,
-        [patch(
-            subject.clone(),
-            &[("display.label", text("Renamed"))],
-        )],
-    );
-    assert_eq!(
-        plan_primary(&mut sidebar, W42, &subject, original.clone()).update,
-        Some(first.clone())
-    );
+    let first = plan_primary(&mut sidebar, W42, &subject, original.clone()).update.unwrap();
+    sidebar.feed(102, [patch(subject.clone(), &[("display.label", text("Renamed"))])]);
+    assert_eq!(plan_primary(&mut sidebar, W42, &subject, original.clone()).update, Some(first.clone()));
     publish(&mut sidebar, 103, "three");
     assert!(!sidebar.managed.slot_valid(W42, PRIMARY_SLOT, first.token));
-    assert!(!sidebar
-        .managed
-        .complete_slot(W42, PRIMARY_SLOT, first.token, true));
-    let second = plan_primary(&mut sidebar, W42, &subject, original.clone())
-        .update
-        .unwrap();
-    assert!(sidebar
-        .managed
-        .complete_slot(W42, PRIMARY_SLOT, second.token, false));
-    assert_eq!(
-        plan_primary(&mut sidebar, W42, &subject, original.clone()).state,
-        ContentState::Failed
-    );
+    assert!(!sidebar.managed.complete_slot(W42, PRIMARY_SLOT, first.token, true));
+    let second = plan_primary(&mut sidebar, W42, &subject, original.clone()).update.unwrap();
+    assert!(sidebar.managed.complete_slot(W42, PRIMARY_SLOT, second.token, false));
+    assert_eq!(plan_primary(&mut sidebar, W42, &subject, original.clone()).state, ContentState::Failed);
     sidebar.managed.retry_slot(W42, PRIMARY_SLOT);
-    let third = plan_primary(&mut sidebar, W42, &subject, original.clone())
-        .update
-        .unwrap();
-    assert!(sidebar
-        .managed
-        .complete_slot(W42, PRIMARY_SLOT, third.token, true));
-    assert_eq!(
-        plan_primary(&mut sidebar, W42, &subject, third.resolution.clone()).state,
-        ContentState::Current
-    );
-    sidebar.feed(
-        104,
-        [patch(
-            subject.clone(),
-            &[("workspace.primary.state", text("held"))],
-        )],
-    );
-    assert_eq!(
-        plan_primary(&mut sidebar, W42, &subject, third.resolution.clone()).state,
-        ContentState::Held
-    );
+    let third = plan_primary(&mut sidebar, W42, &subject, original.clone()).update.unwrap();
+    assert!(sidebar.managed.complete_slot(W42, PRIMARY_SLOT, third.token, true));
+    assert_eq!(plan_primary(&mut sidebar, W42, &subject, third.resolution.clone()).state, ContentState::Current);
+    sidebar.feed(104, [patch(subject.clone(), &[("workspace.primary.state", text("held"))])]);
+    assert_eq!(plan_primary(&mut sidebar, W42, &subject, third.resolution.clone()).state, ContentState::Held);
     publish(&mut sidebar, 105, "four");
-    let fourth = plan_primary(&mut sidebar, W42, &subject, third.resolution.clone())
-        .update
-        .unwrap();
+    let fourth = plan_primary(&mut sidebar, W42, &subject, third.resolution.clone()).update.unwrap();
     let mut expired = patch(subject.clone(), &[]);
     expired.unset = vec!["workspace.primary.state".into()];
     sidebar.feed(106, [expired]);
     assert!(!sidebar.managed.slot_valid(W42, PRIMARY_SLOT, fourth.token));
-    assert_eq!(
-        plan_primary(&mut sidebar, W42, &subject, third.resolution.clone()).state,
-        ContentState::Unavailable
-    );
+    assert_eq!(plan_primary(&mut sidebar, W42, &subject, third.resolution.clone()).state, ContentState::Unavailable);
     publish(&mut sidebar, 107, "four");
-    let reconnected = plan_primary(&mut sidebar, W42, &subject, third.resolution.clone())
-        .update
-        .unwrap();
+    let reconnected = plan_primary(&mut sidebar, W42, &subject, third.resolution.clone()).update.unwrap();
     sidebar.observe(vec![], vec![]);
-    assert!(!sidebar
-        .managed
-        .slot_valid(W42, PRIMARY_SLOT, reconnected.token));
-    let reopened = plan_primary(&mut sidebar, W42, &subject, original)
-        .update
-        .unwrap();
+    assert!(!sidebar.managed.slot_valid(W42, PRIMARY_SLOT, reconnected.token));
+    let reopened = plan_primary(&mut sidebar, W42, &subject, original).update.unwrap();
     assert_ne!(reconnected.token, reopened.token);
 }
 
@@ -834,11 +529,7 @@ fn managed_content_is_independent_of_placement_and_expires_without_removal() {
     use andamento_core::managed::{ContentState, TerminalContent};
     let mut sidebar = Sidebar::new("").unwrap();
     let subject = entity("project-role", "p/governor");
-    let applied = Resolved::from(TerminalContent {
-        target: "old".into(),
-        command: "old".into(),
-        cwd: None,
-    });
+    let applied = Resolved::from(TerminalContent { target: "old".into(), command: "old".into(), cwd: None });
     let mut desired = patch(
         subject.clone(),
         &[
@@ -851,19 +542,12 @@ fn managed_content_is_independent_of_placement_and_expires_without_removal() {
         value.ttl_ms = Some(10);
     }
     sidebar.feed(100, [desired.clone()]);
-    let update = plan_primary(&mut sidebar, W42, &subject, applied.clone())
-        .update
-        .unwrap();
+    let update = plan_primary(&mut sidebar, W42, &subject, applied.clone()).update.unwrap();
     sidebar.tick(111);
     assert!(!sidebar.managed.slot_valid(W42, PRIMARY_SLOT, update.token));
-    assert_eq!(
-        plan_primary(&mut sidebar, W42, &subject, applied.clone()).state,
-        ContentState::Unavailable
-    );
+    assert_eq!(plan_primary(&mut sidebar, W42, &subject, applied.clone()).state, ContentState::Unavailable);
     sidebar.feed(112, [desired]);
-    let new = plan_primary(&mut sidebar, W42, &subject, applied)
-        .update
-        .unwrap();
+    let new = plan_primary(&mut sidebar, W42, &subject, applied).update.unwrap();
     assert_ne!(new.token, update.token);
 }
 
@@ -874,17 +558,9 @@ fn materializing_the_current_resolution_records_its_managed_target() {
     let subject = entity("vessel", "v");
     sidebar.observe(vec![], vec![]);
     let materialize = |sidebar: &mut Sidebar| {
-        let effects = sidebar
-            .dispatch(Action::Activate {
-                entity: subject.clone(),
-            })
-            .unwrap();
+        let effects = sidebar.dispatch(Action::Activate { entity: subject.clone() }).unwrap();
         match &effects[..] {
-            [HostEffect::Materialize {
-                request_id,
-                primary_target,
-                ..
-            }] => (*request_id, primary_target.clone()),
+            [HostEffect::Materialize { request_id, primary_target, .. }] => (*request_id, primary_target.clone()),
             other => panic!("expected materialize, got {other:?}"),
         }
     };
@@ -896,27 +572,14 @@ fn materializing_the_current_resolution_records_its_managed_target() {
 
     sidebar.feed(
         101,
-        [patch(
-            subject.clone(),
-            &[
-                ("workspace.primary.state", text("ready")),
-                ("workspace.primary.target", text("attempt-2")),
-            ],
-        )],
+        [patch(subject.clone(), &[("workspace.primary.state", text("ready")), ("workspace.primary.target", text("attempt-2"))])],
     );
     let (_, target) = materialize(&mut sidebar);
     assert_eq!(target.as_deref(), Some("attempt-2"));
 
     // A host that records the target sees its fresh content as current.
-    let applied = Resolved::from(TerminalContent {
-        target: "attempt-2".into(),
-        command: "printf hello".into(),
-        cwd: None,
-    });
-    assert_eq!(
-        plan_primary(&mut sidebar, W7, &subject, applied).state,
-        ContentState::Current
-    );
+    let applied = Resolved::from(TerminalContent { target: "attempt-2".into(), command: "printf hello".into(), cwd: None });
+    assert_eq!(plan_primary(&mut sidebar, W7, &subject, applied).state, ContentState::Current);
 }
 
 #[test]
@@ -946,17 +609,9 @@ template "project/detail" slot="detail" node-kind="entity" {
 }
 "#;
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    let project = |id: &str| {
-        patch(
-            entity("project", id),
-            &[("flotilla.project", text(id)), ("display.label", text(id))],
-        )
-    };
+    let project = |id: &str| patch(entity("project", id), &[("flotilla.project", text(id)), ("display.label", text(id))]);
     let membership = |id: &str, project: &str, label: &str, subpath: Option<&str>| {
-        let mut facts = vec![
-            ("flotilla.project", text(project)),
-            ("display.label", text(label)),
-        ];
+        let mut facts = vec![("flotilla.project", text(project)), ("display.label", text(label))];
         if let Some(subpath) = subpath {
             facts.push(("flotilla.membership.subpath", text(subpath)));
         }
@@ -974,32 +629,13 @@ template "project/detail" slot="detail" node-kind="entity" {
     );
     let snapshot = sidebar.snapshot();
     let details = |id: &str| {
-        let node = snapshot.surface.sections[0]
-            .nodes
-            .iter()
-            .find(|node| node.entity.id == id)
-            .unwrap();
-        node.detail
-            .fields
-            .iter()
-            .map(|field| field.value.clone())
-            .collect::<Vec<_>>()
+        let node = snapshot.surface.sections[0].nodes.iter().find(|node| node.entity.id == id).unwrap();
+        node.detail.fields.iter().map(|field| field.value.clone()).collect::<Vec<_>>()
     };
-    assert_eq!(
-        details("alpha"),
-        [
-            "alpha",
-            "Repository: shared",
-            "Path: docs",
-            "Repository: zeta"
-        ]
-    );
+    assert_eq!(details("alpha"), ["alpha", "Repository: shared", "Path: docs", "Repository: zeta"]);
     assert_eq!(details("beta"), ["beta", "Repository: shared"]);
     // Related entities contribute detail only; they are not placed as rows.
-    assert!(snapshot.surface.sections[0]
-        .nodes
-        .iter()
-        .all(|node| node.children.is_empty()));
+    assert!(snapshot.surface.sections[0].nodes.iter().all(|node| node.children.is_empty()));
 }
 
 #[test]
@@ -1019,30 +655,15 @@ fn materialized_target_is_recorded_when_the_resolution_has_a_working_directory()
             ],
         )],
     );
-    let effects = sidebar
-        .dispatch(Action::Activate {
-            entity: subject.clone(),
-        })
-        .unwrap();
-    let [HostEffect::Materialize {
-        cwd,
-        primary_target,
-        ..
-    }] = &effects[..]
-    else {
+    let effects = sidebar.dispatch(Action::Activate { entity: subject.clone() }).unwrap();
+    let [HostEffect::Materialize { cwd, primary_target, .. }] = &effects[..] else {
         panic!("expected materialize, got {effects:?}");
     };
     assert_eq!(cwd.as_deref(), Some("/work/repo"));
     assert_eq!(primary_target.as_deref(), Some("attempt-2"));
-    let applied = Resolved::from(TerminalContent {
-        target: "attempt-2".into(),
-        command: "printf hello".into(),
-        cwd: Some("/work/repo".into()),
-    });
-    assert_eq!(
-        plan_primary(&mut sidebar, W7, &subject, applied).state,
-        ContentState::Current
-    );
+    let applied =
+        Resolved::from(TerminalContent { target: "attempt-2".into(), command: "printf hello".into(), cwd: Some("/work/repo".into()) });
+    assert_eq!(plan_primary(&mut sidebar, W7, &subject, applied).state, ContentState::Current);
 }
 
 #[test]
@@ -1050,12 +671,7 @@ fn retracted_and_expired_entities_leave_the_catalog() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
     let placed = |sidebar: &mut Sidebar, id: &str| {
         let snapshot = sidebar.snapshot();
-        let mut stack = snapshot
-            .surface
-            .sections
-            .iter()
-            .flat_map(|section| section.nodes.iter())
-            .collect::<Vec<_>>();
+        let mut stack = snapshot.surface.sections.iter().flat_map(|section| section.nodes.iter()).collect::<Vec<_>>();
         while let Some(node) = stack.pop() {
             if node.entity.id == id {
                 return true;
@@ -1064,176 +680,79 @@ fn retracted_and_expired_entities_leave_the_catalog() {
         }
         false
     };
-    let mut retracted = patch(
-        entity("project", "gone"),
-        &[
-            ("flotilla.project", text("gone")),
-            ("display.label", text("Gone")),
-        ],
-    );
+    let mut retracted = patch(entity("project", "gone"), &[("flotilla.project", text("gone")), ("display.label", text("Gone"))]);
     sidebar.feed(101, [retracted.clone()]);
     assert!(placed(&mut sidebar, "gone"));
     retracted.set.clear();
     retracted.unset = vec!["flotilla.project".into(), "display.label".into()];
     sidebar.feed(102, [retracted]);
-    assert!(
-        !placed(&mut sidebar, "gone"),
-        "an entity with no remaining facts is not a catalog entry"
-    );
+    assert!(!placed(&mut sidebar, "gone"), "an entity with no remaining facts is not a catalog entry");
 
-    let mut expiring = patch(
-        entity("project", "stale"),
-        &[
-            ("flotilla.project", text("stale")),
-            ("display.label", text("Stale")),
-        ],
-    );
+    let mut expiring = patch(entity("project", "stale"), &[("flotilla.project", text("stale")), ("display.label", text("Stale"))]);
     for update in expiring.set.values_mut() {
         update.ttl_ms = Some(1_000);
     }
     sidebar.feed(200, [expiring]);
     assert!(placed(&mut sidebar, "stale"));
     sidebar.tick(1_300);
-    assert!(
-        !placed(&mut sidebar, "stale"),
-        "expired facts retract the entity"
-    );
+    assert!(!placed(&mut sidebar, "stale"), "expired facts retract the entity");
 }
 
-fn directory_state(
-    sidebar: &Sidebar,
-    subject: &EntityRef,
-) -> andamento_core::presentation::PresentationState {
+fn directory_state(sidebar: &Sidebar, subject: &EntityRef) -> andamento_core::presentation::PresentationState {
     fn find(
         nodes: &[andamento_core::presentation::PlacementNode],
         subject: &EntityRef,
     ) -> Option<andamento_core::presentation::PresentationState> {
-        nodes.iter().find_map(|n| {
-            if &n.entity == subject {
-                Some(n.state.clone())
-            } else {
-                find(&n.children, subject)
-            }
-        })
+        nodes.iter().find_map(|n| if &n.entity == subject { Some(n.state.clone()) } else { find(&n.children, subject) })
     }
-    sidebar
-        .snapshot()
-        .surface
-        .sections
-        .iter()
-        .find_map(|s| find(&s.nodes, subject))
-        .unwrap()
+    sidebar.snapshot().surface.sections.iter().find_map(|s| find(&s.nodes, subject)).unwrap()
 }
 fn directory_workspace(id: u64) -> Workspace {
-    Workspace {
-        id: tab_workspace_id(id),
-        position: id as usize,
-        name: "user terminal".into(),
-        selected: true,
-    }
+    Workspace { id: tab_workspace_id(id), position: id as usize, name: "user terminal".into(), selected: true }
 }
 #[test]
 fn directory_observations_focus_any_entity_kind_without_persisting_identity() {
     use andamento_core::presentation::PresentationState;
     let mut sidebar = sidebar();
     let subject = entity("vessel", "v");
-    sidebar.feed(
-        100,
-        [patch(subject.clone(), &[("git.root", text("/repo"))])],
-    );
+    sidebar.feed(100, [patch(subject.clone(), &[("git.root", text("/repo"))])]);
     sidebar.observe(vec![directory_workspace(7)], vec![]);
-    sidebar.observe_workdirs(vec![
-        (W7, "/repo".into()),
-        (W7, "/other".into()),
-        (tab_workspace_id(99), "/repo".into()),
-    ]);
-    assert!(matches!(
-        directory_state(&sidebar, &subject),
-        PresentationState::Live {
-            workspace_id: W7,
-            ..
-        }
-    ));
+    sidebar.observe_workdirs(vec![(W7, "/repo".into()), (W7, "/other".into()), (tab_workspace_id(99), "/repo".into())]);
+    assert!(matches!(directory_state(&sidebar, &subject), PresentationState::Live { workspace_id: W7, .. }));
     let revision = sidebar.revision();
     sidebar.observe_workdirs(vec![(W7, "/other".into()), (W7, "/repo".into())]);
     assert_eq!(sidebar.revision(), revision);
-    let effects = sidebar
-        .dispatch(Action::Activate {
-            entity: subject.clone(),
-        })
-        .unwrap();
-    let HostEffect::Focus {
-        request_id,
-        workspace_id: W7,
-    } = effects[0]
-    else {
-        panic!("expected focus")
-    };
+    let effects = sidebar.dispatch(Action::Activate { entity: subject.clone() }).unwrap();
+    let HostEffect::Focus { request_id, workspace_id: W7 } = effects[0] else { panic!("expected focus") };
     sidebar.complete(request_id, Ok(None));
     // Exact matching: a subdirectory is not a host-normalized repository root.
     sidebar.observe_workdirs(vec![(W7, "/repo/subdir".into())]);
-    assert!(matches!(
-        directory_state(&sidebar, &subject),
-        PresentationState::Latent { openable: true }
-    ));
+    assert!(matches!(directory_state(&sidebar, &subject), PresentationState::Latent { openable: true }));
     sidebar.observe_workdirs(vec![(W7, "/repo".into())]);
     sidebar.observe(vec![], vec![]);
     sidebar.observe(vec![directory_workspace(7)], vec![]);
-    assert!(matches!(
-        directory_state(&sidebar, &subject),
-        PresentationState::Latent { openable: true }
-    ));
+    assert!(matches!(directory_state(&sidebar, &subject), PresentationState::Latent { openable: true }));
 }
 #[test]
 fn explicit_binding_wins_and_directory_association_tracks_fact_updates() {
     use andamento_core::presentation::PresentationState;
     let mut sidebar = sidebar();
     let subject = entity("vessel", "v");
-    sidebar.feed(
-        100,
-        [patch(subject.clone(), &[("git.root", text("/repo"))])],
-    );
+    sidebar.feed(100, [patch(subject.clone(), &[("git.root", text("/repo"))])]);
     sidebar.observe(vec![directory_workspace(7), directory_workspace(8)], vec![]);
     sidebar.observe_workdirs(vec![(W7, "/repo".into())]);
-    let mut binding = patch(
-        subject.clone(),
-        &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
-    );
+    let mut binding = patch(subject.clone(), &[("entity.kind", text("vessel")), ("entity.id", text("v"))]);
     binding.target = MetadataTarget::Tab(W8);
     sidebar.feed(100, [binding]);
-    assert!(matches!(
-        directory_state(&sidebar, &subject),
-        PresentationState::Live {
-            workspace_id: W8,
-            ..
-        }
-    ));
+    assert!(matches!(directory_state(&sidebar, &subject), PresentationState::Live { workspace_id: W8, .. }));
     sidebar.observe(vec![directory_workspace(7)], vec![]);
-    assert!(matches!(
-        directory_state(&sidebar, &subject),
-        PresentationState::Live {
-            workspace_id: W7,
-            ..
-        }
-    ));
-    sidebar.feed(
-        101,
-        [patch(subject.clone(), &[("git.root", text("/changed"))])],
-    );
-    assert!(matches!(
-        directory_state(&sidebar, &subject),
-        PresentationState::Latent { .. }
-    ));
+    assert!(matches!(directory_state(&sidebar, &subject), PresentationState::Live { workspace_id: W7, .. }));
+    sidebar.feed(101, [patch(subject.clone(), &[("git.root", text("/changed"))])]);
+    assert!(matches!(directory_state(&sidebar, &subject), PresentationState::Latent { .. }));
     sidebar.observe_workdirs(vec![(W7, "/changed".into())]);
-    assert!(matches!(
-        directory_state(&sidebar, &subject),
-        PresentationState::Live { .. }
-    ));
+    assert!(matches!(directory_state(&sidebar, &subject), PresentationState::Live { .. }));
     sidebar.observe_workdirs(vec![]);
-    assert!(matches!(
-        directory_state(&sidebar, &subject),
-        PresentationState::Latent { .. }
-    ));
+    assert!(matches!(directory_state(&sidebar, &subject), PresentationState::Latent { .. }));
 }
 #[test]
 fn multiple_directories_associate_multiple_entities_but_not_explicit_workspace() {
@@ -1247,66 +766,43 @@ fn multiple_directories_associate_multiple_entities_but_not_explicit_workspace()
             patch(first.clone(), &[("git.root", text("/one"))]),
             patch(
                 second.clone(),
-                &[
-                    ("git.root", text("/two")),
-                    ("flotilla.project", text("p")),
-                    ("action.primary.recipe", text("exec sh")),
-                ],
+                &[("git.root", text("/two")), ("flotilla.project", text("p")), ("action.primary.recipe", text("exec sh"))],
             ),
         ],
     );
     sidebar.observe(vec![directory_workspace(7)], vec![]);
     sidebar.observe_workdirs(vec![(W7, "/one".into()), (W7, "/two".into())]);
     for subject in [&first, &second] {
-        assert!(matches!(
-            directory_state(&sidebar, subject),
-            PresentationState::Live {
-                workspace_id: W7,
-                ..
-            }
-        ));
+        assert!(matches!(directory_state(&sidebar, subject), PresentationState::Live { workspace_id: W7, .. }));
     }
-    let mut binding = patch(
-        first.clone(),
-        &[
-            ("entity.kind", text("unrelated")),
-            ("entity.id", text("explicit")),
-        ],
-    );
+    let mut binding = patch(first.clone(), &[("entity.kind", text("unrelated")), ("entity.id", text("explicit"))]);
     binding.target = MetadataTarget::Tab(W7);
     sidebar.feed(101, [binding]);
     for subject in [&first, &second] {
-        assert!(matches!(
-            directory_state(&sidebar, subject),
-            PresentationState::Latent { .. }
-        ));
+        assert!(matches!(directory_state(&sidebar, subject), PresentationState::Latent { .. }));
     }
 }
 
 fn retained_sidebar() -> Sidebar {
     let mut sidebar = sidebar();
-    sidebar.configure(&format!("{CONFIG}\ndisplay-variable \"show-finished\" type=\"bool\" default=false label=\"Show finished\" icon=\"F\"\n")).unwrap();
+    sidebar
+        .configure(&format!(
+            "{CONFIG}\ndisplay-variable \"show-finished\" type=\"bool\" default=false label=\"Show finished\" icon=\"F\"\n"
+        ))
+        .unwrap();
     let request = open(&mut sidebar);
     sidebar.complete(request, Ok(Some(W42)));
     sidebar.observe(vec![workspace()], vec![]);
     sidebar
 }
 
-fn workspace_nodes(
-    surface: &andamento_core::presentation::SurfaceSnapshot,
-) -> Vec<&andamento_core::presentation::PlacementNode> {
+fn workspace_nodes(surface: &andamento_core::presentation::SurfaceSnapshot) -> Vec<&andamento_core::presentation::PlacementNode> {
     fn collect<'a>(
         nodes: &'a [andamento_core::presentation::PlacementNode],
         result: &mut Vec<&'a andamento_core::presentation::PlacementNode>,
     ) {
         for node in nodes {
-            if matches!(
-                node.state,
-                andamento_core::presentation::PresentationState::Live {
-                    workspace_id: W42,
-                    ..
-                }
-            ) {
+            if matches!(node.state, andamento_core::presentation::PresentationState::Live { workspace_id: W42, .. }) {
                 result.push(node);
             }
             collect(&node.children, result);
@@ -1325,18 +821,9 @@ fn ended_workspace_lifecycle_scenarios() {
     // a long empty tick, and user close. Retention has no timeout yet (#123).
     for signal in ["landed", "abandoned", "cancelled", "superseded", "removed"] {
         let mut sidebar = retained_sidebar();
-        sidebar.feed(
-            101,
-            [patch(
-                entity("vessel", "v"),
-                &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
-            )],
-        );
+        sidebar.feed(101, [patch(entity("vessel", "v"), &[("entity.kind", text("vessel")), ("entity.id", text("v"))])]);
         let end = if signal == "superseded" {
-            patch(
-                entity("vessel", "v"),
-                &[("flotilla.convoy.superseded", MetadataValue::Bool(true))],
-            )
+            patch(entity("vessel", "v"), &[("flotilla.convoy.superseded", MetadataValue::Bool(true))])
         } else if signal == "removed" {
             let mut removal = patch(entity("vessel", "v"), &[("source", text("flotilla"))]);
             removal.unset = vec![
@@ -1352,10 +839,7 @@ fn ended_workspace_lifecycle_scenarios() {
             ];
             removal
         } else {
-            patch(
-                entity("vessel", "v"),
-                &[("flotilla.convoy.phase", text(signal))],
-            )
+            patch(entity("vessel", "v"), &[("flotilla.convoy.phase", text(signal))])
         };
         for time in [102, 103] {
             sidebar.feed(time, [end.clone()]);
@@ -1365,44 +849,30 @@ fn ended_workspace_lifecycle_scenarios() {
             let nodes = workspace_nodes(&snapshot.surface);
             assert!(!nodes.is_empty(), "{signal} at {time}");
             assert!(
-                nodes.iter().all(|node| node.entity == entity("vessel", "v")
-                    && node.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))),
+                nodes
+                    .iter()
+                    .all(|node| node.entity == entity("vessel", "v")
+                        && node.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))),
                 "{signal} at {time}: {nodes:?}"
             );
         }
-        sidebar
-            .dispatch(Action::ToggleDisplayVariable {
-                name: "show-finished".into(),
-            })
-            .unwrap();
+        sidebar.dispatch(Action::ToggleDisplayVariable { name: "show-finished".into() }).unwrap();
         sidebar.tick(u64::MAX - 1);
         let snapshot = sidebar.snapshot();
         // Show finished exposes the original subject and its project path, marked ended.
         let nodes = workspace_nodes(&snapshot.surface);
         assert!(!nodes.is_empty(), "{signal}");
         assert!(
-            nodes.iter().all(|node| node.entity == entity("vessel", "v")
-                && node.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))),
+            nodes.iter().all(
+                |node| node.entity == entity("vessel", "v") && node.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))
+            ),
             "{signal}: {nodes:?}"
         );
-        assert!(snapshot.surface.sections[0].nodes[0]
-            .children
-            .iter()
-            .any(|n| n.entity == entity("vessel", "v")));
+        assert!(snapshot.surface.sections[0].nodes[0].children.iter().any(|n| n.entity == entity("vessel", "v")));
         assert!(fallback(&sidebar).is_empty());
         // Reopening a hidden ended row focuses the same workspace, preserving host panels.
-        let effects = sidebar
-            .dispatch(Action::ActivatePlacement {
-                key: nodes[0].key.clone(),
-            })
-            .unwrap();
-        assert!(matches!(
-            effects.as_slice(),
-            [HostEffect::Focus {
-                workspace_id: W42,
-                ..
-            }]
-        ));
+        let effects = sidebar.dispatch(Action::ActivatePlacement { key: nodes[0].key.clone() }).unwrap();
+        assert!(matches!(effects.as_slice(), [HostEffect::Focus { workspace_id: W42, .. }]));
         sidebar.observe(vec![], vec![]);
         // Closing is the only retention expiry; there is no phantom live workspace.
         assert!(workspace_nodes(&sidebar.snapshot().surface).is_empty());
@@ -1436,16 +906,10 @@ fn disconnect_expiry_and_reconnect_preserve_subject_path_without_ending() {
         assert!(!nodes.is_empty());
         // The original project path must survive, even if Attention remains.
         assert!(
-            snapshot.surface.sections[0].nodes[0]
-                .children
-                .iter()
-                .any(|n| n.entity == entity("vessel", "v")),
+            snapshot.surface.sections[0].nodes[0].children.iter().any(|n| n.entity == entity("vessel", "v")),
             "lost project path at {time}"
         );
-        assert!(nodes
-            .iter()
-            .all(|n| n.entity == entity("vessel", "v")
-                && !n.facts.contains_key("presentation.ended")));
+        assert!(nodes.iter().all(|n| n.entity == entity("vessel", "v") && !n.facts.contains_key("presentation.ended")));
         assert!(fallback(&sidebar).is_empty());
     }
     sidebar.feed(1001, [publication]);
@@ -1466,15 +930,7 @@ fn unrelated_source_removal_and_subjectless_workspaces_are_unaffected() {
     // Only the producer owning identity can remove the subject.
     assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
     sidebar.observe(
-        vec![
-            workspace(),
-            Workspace {
-                id: tab_workspace_id(99),
-                position: 1,
-                name: "Unsaved notes".into(),
-                selected: false,
-            },
-        ],
+        vec![workspace(), Workspace { id: tab_workspace_id(99), position: 1, name: "Unsaved notes".into(), selected: false }],
         vec![],
     );
     // Workspaces with no subject retain normal fallback coverage.
@@ -1483,52 +939,32 @@ fn unrelated_source_removal_and_subjectless_workspaces_are_unaffected() {
         .surface
         .sections
         .iter()
-        .any(|s| s.name == UNPLACED_WORKSPACES_SECTION
-            && s.nodes.iter().any(|n| n.label == "Unsaved notes")));
+        .any(|s| s.name == UNPLACED_WORKSPACES_SECTION && s.nodes.iter().any(|n| n.label == "Unsaved notes")));
 }
 
 #[test]
 fn nonterminal_convoy_phases_do_not_end_workspace() {
     // Failed/interrupted convoys can resume, and a standing role outlives its
     // terminal attempt. Generate all non-ending convoy phases explicitly.
-    for phase in [
-        "pending",
-        "active",
-        "interrupted",
-        "failed",
-        "anchored",
-        "landing",
-    ] {
+    for phase in ["pending", "active", "interrupted", "failed", "anchored", "landing"] {
         let mut sidebar = retained_sidebar();
-        sidebar.feed(
-            101,
-            [patch(
-                entity("vessel", "v"),
-                &[("flotilla.convoy.phase", text(phase))],
-            )],
-        );
-        assert!(
-            !workspace_nodes(&sidebar.snapshot().surface).is_empty(),
-            "{phase}"
-        );
+        sidebar.feed(101, [patch(entity("vessel", "v"), &[("flotilla.convoy.phase", text(phase))])]);
+        assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty(), "{phase}");
     }
 }
 
 #[test]
 fn standing_role_outlives_terminal_attempt_phase() {
     // Lifted attempt facts are not a terminal phase of the standing role.
-    let mut sidebar = Sidebar::new(&format!("{}\ndisplay-variable \"show-finished\" type=\"bool\" default=false label=\"Show finished\" icon=\"F\"\n",
-        CONFIG.replace("vessel", "role"))).unwrap();
+    let mut sidebar = Sidebar::new(&format!(
+        "{}\ndisplay-variable \"show-finished\" type=\"bool\" default=false label=\"Show finished\" icon=\"F\"\n",
+        CONFIG.replace("vessel", "role")
+    ))
+    .unwrap();
     sidebar.feed(
         100,
         [
-            patch(
-                entity("project", "p"),
-                &[
-                    ("flotilla.project", text("p")),
-                    ("display.label", text("Project")),
-                ],
-            ),
+            patch(entity("project", "p"), &[("flotilla.project", text("p")), ("display.label", text("Project"))]),
             patch(
                 entity("role", "r"),
                 &[
@@ -1540,14 +976,8 @@ fn standing_role_outlives_terminal_attempt_phase() {
             ),
         ],
     );
-    let effects = sidebar
-        .dispatch(Action::Activate {
-            entity: entity("role", "r"),
-        })
-        .unwrap();
-    let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
-        panic!("{effects:?}")
-    };
+    let effects = sidebar.dispatch(Action::Activate { entity: entity("role", "r") }).unwrap();
+    let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else { panic!("{effects:?}") };
     sidebar.complete(*request_id, Ok(Some(W42)));
     sidebar.observe(vec![workspace()], vec![]);
     sidebar.tick(101);
@@ -1561,36 +991,20 @@ fn standing_role_outlives_terminal_attempt_phase() {
 #[test]
 fn authoritative_ancestor_removal_retains_workspace_path_as_ended() {
     let mut sidebar = retained_sidebar();
-    sidebar.feed(
-        101,
-        [patch(
-            entity("project", "p"),
-            &[("entity.kind", text("project")), ("entity.id", text("p"))],
-        )],
-    );
+    sidebar.feed(101, [patch(entity("project", "p"), &[("entity.kind", text("project")), ("entity.id", text("p"))])]);
     let mut removal = patch(entity("project", "p"), &[("source", text("flotilla"))]);
-    removal.unset = vec![
-        "entity.kind".into(),
-        "entity.id".into(),
-        "flotilla.project".into(),
-        "display.label".into(),
-    ];
+    removal.unset = vec!["entity.kind".into(), "entity.id".into(), "flotilla.project".into(), "display.label".into()];
     sidebar.feed(102, [removal]);
     // A removed ancestor is authoritative, unlike a lease-expired ancestor.
     assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
-    sidebar
-        .dispatch(Action::ToggleDisplayVariable {
-            name: "show-finished".into(),
-        })
-        .unwrap();
+    sidebar.dispatch(Action::ToggleDisplayVariable { name: "show-finished".into() }).unwrap();
     let snapshot = sidebar.snapshot();
     let project = &snapshot.surface.sections[0].nodes[0];
     assert_eq!(project.entity, entity("project", "p"));
     assert!(project.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true)));
     assert!(workspace_nodes(&snapshot.surface)
         .iter()
-        .any(|n| n.entity == entity("vessel", "v")
-            && n.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))));
+        .any(|n| n.entity == entity("vessel", "v") && n.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))));
 }
 
 #[test]
@@ -1615,11 +1029,7 @@ fn reassertion_after_authoritative_removal_is_stale_for_the_same_identity() {
     // An authoritative end is terminal for this identity. A new generation
     // needs a new subject ID; reconnect reassertions do not revive the old one.
     assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
-    sidebar
-        .dispatch(Action::ToggleDisplayVariable {
-            name: "show-finished".into(),
-        })
-        .unwrap();
+    sidebar.dispatch(Action::ToggleDisplayVariable { name: "show-finished".into() }).unwrap();
     assert!(workspace_nodes(&sidebar.snapshot().surface)
         .iter()
         .any(|n| n.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))));
@@ -1641,33 +1051,18 @@ fn lease_expiry_inside_a_patch_batch_preserves_the_original_path() {
         fact.ttl_ms = Some(10);
     }
     sidebar.feed(101, [publication]);
-    sidebar.feed(
-        500,
-        [patch(
-            entity("unrelated", "heartbeat"),
-            &[("source", text("unrelated"))],
-        )],
-    );
+    sidebar.feed(500, [patch(entity("unrelated", "heartbeat"), &[("source", text("unrelated"))])]);
     // Capture is before the clock advance even when a batch also has patches.
     let snapshot = sidebar.snapshot();
-    assert!(snapshot.surface.sections[0].nodes[0]
-        .children
-        .iter()
-        .any(|n| n.entity == entity("vessel", "v")));
-    assert!(workspace_nodes(&snapshot.surface)
-        .iter()
-        .all(|n| !n.facts.contains_key("presentation.ended")));
+    assert!(snapshot.surface.sections[0].nodes[0].children.iter().any(|n| n.entity == entity("vessel", "v")));
+    assert!(workspace_nodes(&snapshot.surface).iter().all(|n| !n.facts.contains_key("presentation.ended")));
 }
 
 #[test]
 fn closing_many_removed_workspaces_releases_retained_catalog_history() {
     let mut sidebar = retained_sidebar();
     sidebar.observe(vec![], vec![]);
-    sidebar
-        .dispatch(Action::ToggleDisplayVariable {
-            name: "show-finished".into(),
-        })
-        .unwrap();
+    sidebar.dispatch(Action::ToggleDisplayVariable { name: "show-finished".into() }).unwrap();
     // Generate many sequential identities on the same client. After each close,
     // its removed subject must leave the surface rather than grow retained history.
     for index in 0..24 {
@@ -1683,29 +1078,18 @@ fn closing_many_removed_workspaces_releases_retained_catalog_history() {
             ],
         );
         sidebar.feed(200 + index * 2, [publication.clone()]);
-        let effects = sidebar
-            .dispatch(Action::Activate {
-                entity: subject.clone(),
-            })
-            .unwrap();
-        let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
-            panic!("{effects:?}")
-        };
+        let effects = sidebar.dispatch(Action::Activate { entity: subject.clone() }).unwrap();
+        let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else { panic!("{effects:?}") };
         sidebar.complete(*request_id, Ok(Some(W42)));
         sidebar.observe(vec![workspace()], vec![]);
         let mut removal = patch(subject.clone(), &[("source", text("flotilla"))]);
         removal.unset = publication.set.keys().cloned().collect();
         sidebar.feed(201 + index * 2, [removal]);
-        assert!(workspace_nodes(&sidebar.snapshot().surface)
-            .iter()
-            .any(|n| n.entity == subject));
+        assert!(workspace_nodes(&sidebar.snapshot().surface).iter().any(|n| n.entity == subject));
         sidebar.observe(vec![], vec![]);
         let snapshot = sidebar.snapshot();
         assert!(
-            !snapshot.surface.sections[0].nodes[0]
-                .children
-                .iter()
-                .any(|n| n.entity.id.starts_with("history-")),
+            !snapshot.surface.sections[0].nodes[0].children.iter().any(|n| n.entity.id.starts_with("history-")),
             "retention grew after close {index}"
         );
     }
@@ -1722,9 +1106,7 @@ fn individual_fact_unsets_are_not_resurrected_from_retained_history() {
     let snapshot = sidebar.snapshot();
     let nodes = workspace_nodes(&snapshot.surface);
     assert!(!nodes.is_empty());
-    assert!(nodes.iter().all(
-        |n| !n.facts.contains_key("status.state") && !n.facts.contains_key("status.attention")
-    ));
+    assert!(nodes.iter().all(|n| !n.facts.contains_key("status.state") && !n.facts.contains_key("status.attention")));
     assert!(snapshot.surface.sections[1].nodes.is_empty());
 }
 
@@ -1744,27 +1126,13 @@ fn shared_ancestor_survives_one_child_end_and_close() {
                     ("action.primary.recipe", text("exec /bin/sh")),
                 ],
             ),
-            patch(
-                entity("vessel", "v"),
-                &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
-            ),
+            patch(entity("vessel", "v"), &[("entity.kind", text("vessel")), ("entity.id", text("v"))]),
         ],
     );
-    let effects = sidebar
-        .dispatch(Action::Activate {
-            entity: entity("vessel", "sibling"),
-        })
-        .unwrap();
-    let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else {
-        panic!("{effects:?}")
-    };
+    let effects = sidebar.dispatch(Action::Activate { entity: entity("vessel", "sibling") }).unwrap();
+    let [HostEffect::Materialize { request_id, .. }] = effects.as_slice() else { panic!("{effects:?}") };
     sidebar.complete(*request_id, Ok(Some(W80)));
-    let sibling = Workspace {
-        id: W80,
-        position: 1,
-        name: "Sibling".into(),
-        selected: false,
-    };
+    let sibling = Workspace { id: W80, position: 1, name: "Sibling".into(), selected: false };
     sidebar.observe(vec![workspace(), sibling.clone()], vec![]);
     let mut removal = patch(entity("vessel", "v"), &[("source", text("flotilla"))]);
     removal.unset = vec![
@@ -1788,19 +1156,9 @@ fn shared_ancestor_survives_one_child_end_and_close() {
     assert!(!project.facts.contains_key("presentation.ended"));
     assert!(!workspace_nodes(&snapshot.surface).is_empty());
     assert!(project.children.iter().any(|n| n.entity.id == "sibling"
-        && matches!(
-            n.state,
-            andamento_core::presentation::PresentationState::Live {
-                workspace_id: W80,
-                ..
-            }
-        )
+        && matches!(n.state, andamento_core::presentation::PresentationState::Live { workspace_id: W80, .. })
         && !n.facts.contains_key("presentation.ended")));
-    sidebar
-        .dispatch(Action::ToggleDisplayVariable {
-            name: "show-finished".into(),
-        })
-        .unwrap();
+    sidebar.dispatch(Action::ToggleDisplayVariable { name: "show-finished".into() }).unwrap();
     assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
     sidebar.observe(vec![sibling], vec![]);
     // Closing just the ended workspace releases its history while the shared
@@ -1814,10 +1172,7 @@ fn shared_ancestor_survives_one_child_end_and_close() {
 #[test]
 fn one_producer_retraction_preserves_other_identity_owner() {
     let mut sidebar = retained_sidebar();
-    let identity = patch(
-        entity("vessel", "v"),
-        &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
-    );
+    let identity = patch(entity("vessel", "v"), &[("entity.kind", text("vessel")), ("entity.id", text("v"))]);
     let mut other = identity.clone();
     other.source_id = "other".into();
     sidebar.feed(101, [identity, other]);
@@ -1825,69 +1180,47 @@ fn one_producer_retraction_preserves_other_identity_owner() {
     remove.unset = vec!["entity.kind".into(), "entity.id".into()];
     sidebar.feed(102, [remove.clone()]);
     assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
-    assert!(workspace_nodes(&sidebar.snapshot().surface)
-        .iter()
-        .all(|n| !n.facts.contains_key("presentation.ended")));
+    assert!(workspace_nodes(&sidebar.snapshot().surface).iter().all(|n| !n.facts.contains_key("presentation.ended")));
     remove.source_id = "other".into();
     sidebar.feed(103, [remove]);
     assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
-    sidebar
-        .dispatch(Action::ToggleDisplayVariable {
-            name: "show-finished".into(),
-        })
-        .unwrap();
+    sidebar.dispatch(Action::ToggleDisplayVariable { name: "show-finished".into() }).unwrap();
     assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
 }
 
 #[test]
 fn individual_fact_expiry_is_not_resurrected_on_live_subject() {
     let mut sidebar = retained_sidebar();
-    let mut update = patch(
-        entity("vessel", "v"),
-        &[("status.attention", MetadataValue::Bool(true))],
-    );
+    let mut update = patch(entity("vessel", "v"), &[("status.attention", MetadataValue::Bool(true))]);
     update.set.get_mut("status.attention").unwrap().ttl_ms = Some(10);
     sidebar.feed(101, [update]);
-    assert!(workspace_nodes(&sidebar.snapshot().surface)
-        .iter()
-        .any(|n| n.facts.contains_key("status.attention")));
+    assert!(workspace_nodes(&sidebar.snapshot().surface).iter().any(|n| n.facts.contains_key("status.attention")));
     sidebar.tick(112);
     let snapshot = sidebar.snapshot();
     assert!(!workspace_nodes(&snapshot.surface).is_empty());
     assert!(workspace_nodes(&snapshot.surface)
         .iter()
-        .all(|n| !n.facts.contains_key("status.attention")
-            && !n.facts.contains_key("presentation.ended")));
+        .all(|n| !n.facts.contains_key("status.attention") && !n.facts.contains_key("presentation.ended")));
     assert!(snapshot.surface.sections[1].nodes.is_empty());
 }
 
 #[test]
 fn removal_after_first_topology_needs_no_intervening_snapshot() {
     let mut sidebar = sidebar();
-    sidebar.configure(&format!("{CONFIG}\ndisplay-variable \"show-finished\" type=\"bool\" default=false label=\"Show finished\" icon=\"F\"\n")).unwrap();
-    sidebar.feed(
-        101,
-        [patch(
-            entity("vessel", "v"),
-            &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
-        )],
-    );
+    sidebar
+        .configure(&format!(
+            "{CONFIG}\ndisplay-variable \"show-finished\" type=\"bool\" default=false label=\"Show finished\" icon=\"F\"\n"
+        ))
+        .unwrap();
+    sidebar.feed(101, [patch(entity("vessel", "v"), &[("entity.kind", text("vessel")), ("entity.id", text("v"))])]);
     let request = open(&mut sidebar);
     sidebar.complete(request, Ok(Some(W42)));
     sidebar.observe(vec![workspace()], vec![]);
     let mut removal = patch(entity("vessel", "v"), &[]);
-    removal.unset = vec![
-        "entity.kind".into(),
-        "entity.id".into(),
-        "display.label".into(),
-    ];
+    removal.unset = vec!["entity.kind".into(), "entity.id".into(), "display.label".into()];
     sidebar.feed(102, [removal]);
     assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
-    sidebar
-        .dispatch(Action::ToggleDisplayVariable {
-            name: "show-finished".into(),
-        })
-        .unwrap();
+    sidebar.dispatch(Action::ToggleDisplayVariable { name: "show-finished".into() }).unwrap();
     assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
 }
 
@@ -1902,65 +1235,31 @@ fn shared_action_targets_do_not_steal_subject_workspace_or_selection() {
         101,
         [patch(
             other.clone(),
-            &[
-                ("flotilla.project", text("p")),
-                ("display.label", text("Other subject")),
-                ("action.primary.target", text("vessel:v")),
-            ],
+            &[("flotilla.project", text("p")), ("display.label", text("Other subject")), ("action.primary.target", text("vessel:v"))],
         )],
     );
-    let mut binding = patch(
-        other.clone(),
-        &[
-            ("entity.kind", text("vessel")),
-            ("entity.id", text("other")),
-        ],
-    );
+    let mut binding = patch(other.clone(), &[("entity.kind", text("vessel")), ("entity.id", text("other"))]);
     binding.target = MetadataTarget::Tab(W43);
     sidebar.feed(102, [binding]);
     for selected in [42, 43] {
         for collapsed in [false, true] {
             sidebar.observe(
                 vec![
-                    Workspace {
-                        id: W42,
-                        position: 0,
-                        name: "Vessel".into(),
-                        selected: selected == 42,
-                    },
-                    Workspace {
-                        id: W43,
-                        position: 1,
-                        name: "Other".into(),
-                        selected: selected == 43,
-                    },
+                    Workspace { id: W42, position: 0, name: "Vessel".into(), selected: selected == 42 },
+                    Workspace { id: W43, position: 1, name: "Other".into(), selected: selected == 43 },
                 ],
                 vec![],
             );
             let snapshot = sidebar.snapshot();
             let project = &snapshot.surface.sections[0].nodes[0];
             if project.collapsed != collapsed {
-                sidebar
-                    .dispatch(Action::TogglePlacement {
-                        key: project.key.clone(),
-                    })
-                    .unwrap();
+                sidebar.dispatch(Action::TogglePlacement { key: project.key.clone() }).unwrap();
             }
             let snapshot = sidebar.snapshot();
             let project = &snapshot.surface.sections[0].nodes[0];
             for (subject, id) in [(entity("vessel", "v"), 42), (other.clone(), 43)] {
-                let node = project
-                    .children
-                    .iter()
-                    .find(|node| node.entity == subject)
-                    .unwrap();
-                assert_eq!(
-                    node.state,
-                    PresentationState::Live {
-                        workspace_id: tab_workspace_id(id),
-                        selected: selected == id
-                    }
-                );
+                let node = project.children.iter().find(|node| node.entity == subject).unwrap();
+                assert_eq!(node.state, PresentationState::Live { workspace_id: tab_workspace_id(id), selected: selected == id });
             }
         }
     }
@@ -1972,10 +1271,7 @@ fn duplicate_subject_bindings_prefer_selection_then_inventory_order() {
     // of inventory order; without selection, the first inventory ID wins.
     use andamento_core::presentation::PresentationState;
     let mut sidebar = retained_sidebar();
-    let mut binding = patch(
-        entity("vessel", "v"),
-        &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
-    );
+    let mut binding = patch(entity("vessel", "v"), &[("entity.kind", text("vessel")), ("entity.id", text("v"))]);
     binding.target = MetadataTarget::Tab(W43);
     sidebar.feed(101, [binding]);
     for order in [[42, 43], [43, 42]] {
@@ -1997,10 +1293,7 @@ fn duplicate_subject_bindings_prefer_selection_then_inventory_order() {
             let node = &snapshot.surface.sections[0].nodes[0].children[0];
             assert_eq!(
                 node.state,
-                PresentationState::Live {
-                    workspace_id: tab_workspace_id(selected.unwrap_or(order[0])),
-                    selected: selected.is_some()
-                }
+                PresentationState::Live { workspace_id: tab_workspace_id(selected.unwrap_or(order[0])), selected: selected.is_some() }
             );
         }
     }
@@ -2012,19 +1305,13 @@ fn unbound_action_target_keeps_selection_on_its_alias() {
     // remains selected so a workspace with an unbound subject is reachable.
     use andamento_core::presentation::PresentationState;
     let mut sidebar = sidebar();
-    let mut binding = patch(
-        entity("vessel", "v"),
-        &[("action.primary.target", text("vessel:v"))],
-    );
+    let mut binding = patch(entity("vessel", "v"), &[("action.primary.target", text("vessel:v"))]);
     binding.target = MetadataTarget::Tab(W42);
     sidebar.feed(101, [binding]);
     sidebar.observe(vec![workspace()], vec![]);
     assert_eq!(
         sidebar.snapshot().surface.sections[0].nodes[0].children[0].state,
-        PresentationState::Live {
-            workspace_id: W42,
-            selected: true
-        }
+        PresentationState::Live { workspace_id: W42, selected: true }
     );
 }
 
@@ -2033,53 +1320,27 @@ fn open_ended_path_overrides_non_finished_visibility_policy_until_close() {
     // Reachability of an open ended subject takes precedence over arbitrary
     // display filters, not only Show finished. Close restores normal filtering.
     let mut sidebar = retained_sidebar();
-    let filtered_config = CONFIG.replace(
-        "for \"vessel\" kind=\"vessel\"",
-        "for \"vessel\" kind=\"vessel\" visibility=\"private\"",
-    );
-    assert_ne!(
-        filtered_config, CONFIG,
-        "visibility fixture replacement must match"
-    );
+    let filtered_config = CONFIG.replace("for \"vessel\" kind=\"vessel\"", "for \"vessel\" kind=\"vessel\" visibility=\"private\"");
+    assert_ne!(filtered_config, CONFIG, "visibility fixture replacement must match");
     let config = filtered_config
         + "\ndisplay-variable \"private\" type=\"bool\" default=false label=\"Private\" icon=\"P\"\nvisibility \"private\" { when kind=\"vessel\" visible-when=\"private\"; }\n";
     sidebar.configure(&config).unwrap();
-    sidebar.feed(
-        102,
-        [patch(
-            entity("vessel", "v"),
-            &[("flotilla.convoy.phase", text("landed"))],
-        )],
-    );
+    sidebar.feed(102, [patch(entity("vessel", "v"), &[("flotilla.convoy.phase", text("landed"))])]);
     let snapshot = sidebar.snapshot();
     assert!(snapshot.surface.sections[0].nodes[0]
         .children
         .iter()
-        .any(|node| node.entity == entity("vessel", "v")
-            && node.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))));
+        .any(|node| node.entity == entity("vessel", "v") && node.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))));
     sidebar.observe(vec![], vec![]);
-    assert!(sidebar.snapshot().surface.sections[0].nodes[0]
-        .children
-        .is_empty());
+    assert!(sidebar.snapshot().surface.sections[0].nodes[0].children.is_empty());
 }
 
 fn vessel_patch(id: &str, label: &str) -> MetadataPatch {
-    patch(
-        entity("vessel", id),
-        &[
-            ("flotilla.project", text("p")),
-            ("flotilla.vessel", text(id)),
-            ("display.label", text(label)),
-        ],
-    )
+    patch(entity("vessel", id), &[("flotilla.project", text("p")), ("flotilla.vessel", text(id)), ("display.label", text(label))])
 }
 
 fn vessel_ids(sidebar: &Sidebar) -> Vec<String> {
-    sidebar.snapshot().surface.sections[0].nodes[0]
-        .children
-        .iter()
-        .map(|n| n.entity.id.clone())
-        .collect()
+    sidebar.snapshot().surface.sections[0].nodes[0].children.iter().map(|n| n.entity.id.clone()).collect()
 }
 
 #[test]
@@ -2089,29 +1350,18 @@ fn host_sibling_order_reorders_a_run_and_merges_changes_by_data_order() {
     let mut ordered = sidebar();
     let mut data = sidebar();
     for s in [&mut ordered, &mut data] {
-        s.feed(
-            101,
-            ["a", "b", "c"].map(|id| vessel_patch(id, &id.to_uppercase())),
-        );
+        s.feed(101, ["a", "b", "c"].map(|id| vessel_patch(id, &id.to_uppercase())));
     }
     let base = vessel_ids(&data);
     assert_eq!(base.len(), 4);
     let first = ordered.snapshot().surface.sections[0].nodes[0].children[0].clone();
     let loop_key = first.loop_key.clone();
     // Every sibling in the run shares the loop key the host uses.
-    assert!(ordered.snapshot().surface.sections[0].nodes[0]
-        .children
-        .iter()
-        .all(|n| n.loop_key == loop_key));
+    assert!(ordered.snapshot().surface.sections[0].nodes[0].children.iter().all(|n| n.loop_key == loop_key));
 
     // A full order replaces data order.
     let reversed: Vec<String> = base.iter().rev().cloned().collect();
-    ordered
-        .set_sibling_order(
-            loop_key.clone(),
-            reversed.iter().map(|id| entity("vessel", id)).collect(),
-        )
-        .unwrap();
+    ordered.set_sibling_order(loop_key.clone(), reversed.iter().map(|id| entity("vessel", id)).collect()).unwrap();
     assert_eq!(vessel_ids(&ordered), reversed);
 
     // A sibling the order doesn't name goes right after its nearest data-order
@@ -2132,10 +1382,7 @@ fn host_sibling_order_reorders_a_run_and_merges_changes_by_data_order() {
     assert_eq!(vessel_ids(&ordered), expected);
 
     // A sibling that leaves the run drops out; the rest keep the saved order.
-    let leave = MetadataPatch {
-        unset: vec!["flotilla.project".into()],
-        ..patch(entity("vessel", "c"), &[])
-    };
+    let leave = MetadataPatch { unset: vec!["flotilla.project".into()], ..patch(entity("vessel", "c"), &[]) };
     ordered.feed(103, [leave]);
     expected.retain(|id| id != "c");
     assert_eq!(vessel_ids(&ordered), expected);
@@ -2150,9 +1397,7 @@ fn host_sibling_order_reorders_a_run_and_merges_changes_by_data_order() {
     // A repeated name places its row once, at its first mention.
     let last = data_without_c.last().unwrap().clone();
     let repeated = [&last, &data_without_c[0], &last].map(|id| entity("vessel", id));
-    ordered
-        .set_sibling_order(loop_key, repeated.to_vec())
-        .unwrap();
+    ordered.set_sibling_order(loop_key, repeated.to_vec()).unwrap();
     let shown = vessel_ids(&ordered);
     assert_eq!(shown.len(), data_without_c.len());
     assert_eq!(shown[..2], [last, data_without_c[0].clone()]);
@@ -2170,14 +1415,7 @@ fn placement_loop_keys_round_trip_through_their_host_text() {
     };
     let text = key.encode();
     assert_eq!(andamento_core::PlacementLoopKey::decode(&text), Some(key));
-    for bad in [
-        "",
-        "4:tree",
-        "x:tree",
-        "9:tree5:vessel",
-        "4:tree1:a1:b5:vessel",
-        "99999999999999999999:tree5:vessel",
-    ] {
+    for bad in ["", "4:tree", "x:tree", "9:tree5:vessel", "4:tree1:a1:b5:vessel", "99999999999999999999:tree5:vessel"] {
         assert_eq!(andamento_core::PlacementLoopKey::decode(bad), None, "{bad}");
     }
 }
@@ -2232,40 +1470,20 @@ fn host_entities_place_and_cover_their_workspace_without_subject_lifecycle() {
     sidebar.feed(
         100,
         [
-            patch(
-                entity("project", "p"),
-                &[
-                    ("flotilla.project", text("p")),
-                    ("display.label", text("Project P")),
-                ],
-            ),
-            patch(
-                local.clone(),
-                &[
-                    ("display.label", text("Local")),
-                    ("flotilla.project", text("p")),
-                ],
-            ),
-            tab_patch(
-                42,
-                &[(".host.kind", text(".workspace")), (".host.id", text("w1"))],
-            ),
+            patch(entity("project", "p"), &[("flotilla.project", text("p")), ("display.label", text("Project P"))]),
+            patch(local.clone(), &[("display.label", text("Local")), ("flotilla.project", text("p"))]),
+            tab_patch(42, &[(".host.kind", text(".workspace")), (".host.id", text("w1"))]),
         ],
     );
     sidebar.observe(vec![workspace()], vec![]);
-    let live = andamento_core::presentation::PresentationState::Live {
-        workspace_id: W42,
-        selected: true,
-    };
+    let live = andamento_core::presentation::PresentationState::Live { workspace_id: W42, selected: true };
     // Homed with its project: placed there, live, and so not left over.
     let children = project_children(&sidebar);
     assert_eq!(children.len(), 1);
     assert_eq!(children[0].entity, local);
     assert_eq!(children[0].state, live);
     assert!(fallback(&sidebar).is_empty());
-    let card = sidebar
-        .detail_card(&local)
-        .expect("a host entity has details");
+    let card = sidebar.detail_card(&local).expect("a host entity has details");
     assert_eq!(card.workspace_id, Some(W42));
 
     // Unhomed: left over, under its own identity rather than a synthetic one.
@@ -2282,11 +1500,7 @@ fn host_entities_place_and_cover_their_workspace_without_subject_lifecycle() {
     sidebar.observe(vec![], vec![]);
     assert!(fallback(&sidebar).is_empty());
     let snapshot = sidebar.snapshot();
-    assert!(snapshot
-        .surface
-        .sections
-        .iter()
-        .all(|s| s.nodes.iter().all(|n| n.entity != local)));
+    assert!(snapshot.surface.sections.iter().all(|s| s.nodes.iter().all(|n| n.entity != local)));
 }
 
 /// Two tabs naming one host entity both stay covered, under distinct keys;
@@ -2315,10 +1529,7 @@ fn shared_or_incomplete_host_entities_keep_every_workspace_covered() {
     sidebar.observe(vec![workspace(), second, third], vec![]);
     let nodes = fallback(&sidebar);
     assert_eq!(nodes.len(), 3);
-    let keys = nodes
-        .iter()
-        .map(|n| n.key.clone())
-        .collect::<std::collections::BTreeSet<_>>();
+    let keys = nodes.iter().map(|n| n.key.clone()).collect::<std::collections::BTreeSet<_>>();
     assert_eq!(keys.len(), 3, "each covered tab keeps a distinct key");
     assert_eq!(nodes.iter().filter(|n| n.entity == local).count(), 1);
     assert!(nodes.iter().any(|n| n.entity == common::fallback(44)));
@@ -2330,22 +1541,11 @@ fn a_tab_with_a_subject_and_a_host_entity_makes_both_live() {
     let mut sidebar = Sidebar::new(HOST_ENTITY_CONFIG).unwrap();
     let subject = entity(".workspace", "subject");
     let local = entity(".workspace", "w1");
-    let homed = |label: &str| {
-        [
-            ("display.label", text(label)),
-            ("flotilla.project", text("p")),
-        ]
-    };
+    let homed = |label: &str| [("display.label", text(label)), ("flotilla.project", text("p"))];
     sidebar.feed(
         100,
         [
-            patch(
-                entity("project", "p"),
-                &[
-                    ("flotilla.project", text("p")),
-                    ("display.label", text("Project P")),
-                ],
-            ),
+            patch(entity("project", "p"), &[("flotilla.project", text("p")), ("display.label", text("Project P"))]),
             patch(subject.clone(), &homed("Subject")),
             patch(local.clone(), &homed("Local")),
             tab_patch(
@@ -2360,35 +1560,16 @@ fn a_tab_with_a_subject_and_a_host_entity_makes_both_live() {
         ],
     );
     sidebar.observe(vec![workspace()], vec![]);
-    let live = andamento_core::presentation::PresentationState::Live {
-        workspace_id: W42,
-        selected: true,
-    };
+    let live = andamento_core::presentation::PresentationState::Live { workspace_id: W42, selected: true };
     let children = project_children(&sidebar);
     for wanted in [&subject, &local] {
-        let node = children
-            .iter()
-            .find(|n| &n.entity == wanted)
-            .expect("placed");
+        let node = children.iter().find(|n| &n.entity == wanted).expect("placed");
         assert_eq!(node.state, live, "{wanted:?} is live for the tab");
     }
     // Either one focuses the tab, rather than falling back to Inspect.
     for wanted in [subject, local] {
-        let effects = sidebar
-            .dispatch(Action::Activate {
-                entity: wanted.clone(),
-            })
-            .unwrap();
-        assert!(
-            matches!(
-                effects[..],
-                [HostEffect::Focus {
-                    workspace_id: W42,
-                    ..
-                }]
-            ),
-            "{wanted:?} focuses its tab: {effects:?}"
-        );
+        let effects = sidebar.dispatch(Action::Activate { entity: wanted.clone() }).unwrap();
+        assert!(matches!(effects[..], [HostEffect::Focus { workspace_id: W42, .. }]), "{wanted:?} focuses its tab: {effects:?}");
     }
 }
 
@@ -2460,11 +1641,7 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
             patch(section.clone(), &[("display.label", text("Pinned"))]),
             patch(
                 group.clone(),
-                &[
-                    ("display.label", text("Workspaces")),
-                    (".section", refs(section.clone())),
-                    (".default", MetadataValue::Bool(true)),
-                ],
+                &[("display.label", text("Workspaces")), (".section", refs(section.clone())), (".default", MetadataValue::Bool(true))],
             ),
             patch(
                 vessel.clone(),
@@ -2475,31 +1652,10 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
                     ("action.primary.recipe", text("printf hello")),
                 ],
             ),
-            patch(
-                entity(".ref", "r1"),
-                &[
-                    (".group", refs(group.clone())),
-                    (".target", refs(vessel.clone())),
-                ],
-            ),
-            patch(
-                entity(".ref", "r2"),
-                &[
-                    (".group", refs(group.clone())),
-                    (".target", refs(vessel.clone())),
-                ],
-            ),
-            patch(
-                local.clone(),
-                &[
-                    ("display.label", text("Scratch")),
-                    (".group", refs(group.clone())),
-                ],
-            ),
-            tab_patch(
-                42,
-                &[(".host.kind", text(".workspace")), (".host.id", text("w1"))],
-            ),
+            patch(entity(".ref", "r1"), &[(".group", refs(group.clone())), (".target", refs(vessel.clone()))]),
+            patch(entity(".ref", "r2"), &[(".group", refs(group.clone())), (".target", refs(vessel.clone()))]),
+            patch(local.clone(), &[("display.label", text("Scratch")), (".group", refs(group.clone()))]),
+            tab_patch(42, &[(".host.kind", text(".workspace")), (".host.id", text("w1"))]),
         ],
     );
     let mut leftover = workspace();
@@ -2508,89 +1664,36 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
     leftover.selected = false;
     sidebar.observe(vec![workspace(), leftover], vec![]);
     let snapshot = sidebar.snapshot();
-    let local_section = snapshot
-        .surface
-        .sections
-        .iter()
-        .find(|s| s.name == "local")
-        .unwrap();
+    let local_section = snapshot.surface.sections.iter().find(|s| s.name == "local").unwrap();
     assert_eq!(local_section.nodes.len(), 1);
     let made = &local_section.nodes[0];
-    assert_eq!(
-        (made.entity.clone(), made.layout.as_deref()),
-        (section, Some("section"))
-    );
+    assert_eq!((made.entity.clone(), made.layout.as_deref()), (section, Some("section")));
     assert_eq!(made.children.len(), 1);
     let items = &made.children[0].children;
     let entities = items.iter().map(|n| n.entity.clone()).collect::<Vec<_>>();
     // Homed workspace, both ghosts (one entity, two refs), then the leftover tab.
-    assert_eq!(
-        entities,
-        vec![
-            local.clone(),
-            entity(".ref", "r1"),
-            entity(".ref", "r2"),
-            common::fallback(43)
-        ]
-    );
-    assert_eq!(
-        items[1].label, "Worker",
-        "a ref presents its target's label"
-    );
+    assert_eq!(entities, vec![local.clone(), entity(".ref", "r1"), entity(".ref", "r2"), common::fallback(43)]);
+    assert_eq!(items[1].label, "Worker", "a ref presents its target's label");
     assert_eq!(
         items[1].state,
         andamento_core::presentation::PresentationState::Latent { openable: true },
         "a ref of an openable target is openable"
     );
     assert_ne!(items[1].key, items[2].key, "each ghost keeps its own key");
-    assert_eq!(
-        items[0].state,
-        andamento_core::presentation::PresentationState::Live {
-            workspace_id: W42,
-            selected: true
-        }
-    );
-    assert!(
-        fallback(&sidebar).is_empty(),
-        "the default group covers leftover tabs"
-    );
+    assert_eq!(items[0].state, andamento_core::presentation::PresentationState::Live { workspace_id: W42, selected: true });
+    assert!(fallback(&sidebar).is_empty(), "the default group covers leftover tabs");
     // Attention places the vessel once; its ghosts aren't placed by its facts.
-    let attention = snapshot
-        .surface
-        .sections
-        .iter()
-        .find(|s| s.name == "attention")
-        .unwrap();
-    assert_eq!(
-        attention
-            .nodes
-            .iter()
-            .map(|n| n.entity.clone())
-            .collect::<Vec<_>>(),
-        vec![vessel.clone()]
-    );
+    let attention = snapshot.surface.sections.iter().find(|s| s.name == "attention").unwrap();
+    assert_eq!(attention.nodes.iter().map(|n| n.entity.clone()).collect::<Vec<_>>(), vec![vessel.clone()]);
     // Details and activation follow the target.
-    assert_eq!(
-        sidebar.detail_card(&entity(".ref", "r1")).unwrap().label,
-        "Worker"
-    );
-    let effects = sidebar
-        .dispatch(Action::ActivatePlacement {
-            key: items[1].key.clone(),
-        })
-        .unwrap();
+    assert_eq!(sidebar.detail_card(&entity(".ref", "r1")).unwrap().label, "Worker");
+    let effects = sidebar.dispatch(Action::ActivatePlacement { key: items[1].key.clone() }).unwrap();
     assert!(
         matches!(&effects[..], [HostEffect::Materialize { entity: subject, .. }] if subject == &vessel),
         "activating a ghost opens its target: {effects:?}"
     );
     // A ghost of an open target is live for the target's workspace.
-    sidebar.feed(
-        200,
-        [tab_patch(
-            44,
-            &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
-        )],
-    );
+    sidebar.feed(200, [tab_patch(44, &[("entity.kind", text("vessel")), ("entity.id", text("v"))])]);
     let mut opened = workspace();
     opened.id = tab_workspace_id(44);
     opened.position = 2;
@@ -2603,24 +1706,9 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
     second.selected = false;
     sidebar.observe(vec![first, second, opened], vec![]);
     let snapshot = sidebar.snapshot();
-    let local_section = snapshot
-        .surface
-        .sections
-        .iter()
-        .find(|s| s.name == "local")
-        .unwrap();
-    let ghost = local_section.nodes[0].children[0]
-        .children
-        .iter()
-        .find(|n| n.entity == entity(".ref", "r1"))
-        .unwrap();
-    assert_eq!(
-        ghost.state,
-        andamento_core::presentation::PresentationState::Live {
-            workspace_id: tab_workspace_id(44),
-            selected: false
-        }
-    );
+    let local_section = snapshot.surface.sections.iter().find(|s| s.name == "local").unwrap();
+    let ghost = local_section.nodes[0].children[0].children.iter().find(|n| n.entity == entity(".ref", "r1")).unwrap();
+    assert_eq!(ghost.state, andamento_core::presentation::PresentationState::Live { workspace_id: tab_workspace_id(44), selected: false });
 }
 
 /// With several default groups, the first placed one covers leftover tabs;
@@ -2631,12 +1719,7 @@ fn the_first_placed_default_group_covers_leftover_tabs() {
     let section = entity(".section", "s1");
     let stray = entity(".group", "a-stray");
     let placed = entity(".group", "b-placed");
-    let default = |of: &EntityRef| {
-        [
-            (".section", refs(of.clone())),
-            (".default", MetadataValue::Bool(true)),
-        ]
-    };
+    let default = |of: &EntityRef| [(".section", refs(of.clone())), (".default", MetadataValue::Bool(true))];
     sidebar.feed(
         100,
         [
@@ -2647,22 +1730,10 @@ fn the_first_placed_default_group_covers_leftover_tabs() {
     );
     sidebar.observe(vec![workspace()], vec![]);
     let snapshot = sidebar.snapshot();
-    let local = snapshot
-        .surface
-        .sections
-        .iter()
-        .find(|s| s.name == "local")
-        .unwrap();
+    let local = snapshot.surface.sections.iter().find(|s| s.name == "local").unwrap();
     let group = &local.nodes[0].children[0];
     assert_eq!(group.entity, placed);
-    assert_eq!(
-        group
-            .children
-            .iter()
-            .map(|n| n.entity.clone())
-            .collect::<Vec<_>>(),
-        vec![common::fallback(42)]
-    );
+    assert_eq!(group.children.iter().map(|n| n.entity.clone()).collect::<Vec<_>>(), vec![common::fallback(42)]);
     assert!(fallback(&sidebar).is_empty());
 }
 
@@ -2676,13 +1747,7 @@ fn only_a_boolean_default_marks_the_default_group() {
         100,
         [
             patch(section.clone(), &[("display.label", text("Workspaces"))]),
-            patch(
-                entity(".group", "g1"),
-                &[
-                    (".section", refs(section.clone())),
-                    (".default", text("true")),
-                ],
-            ),
+            patch(entity(".group", "g1"), &[(".section", refs(section.clone())), (".default", text("true"))]),
         ],
     );
     sidebar.observe(vec![workspace()], vec![]);
@@ -2702,40 +1767,17 @@ fn a_ref_to_a_ref_presents_nothing_further() {
             patch(section.clone(), &[("display.label", text("Pinned"))]),
             patch(group.clone(), &[(".section", refs(section.clone()))]),
             patch(vessel.clone(), &[("display.label", text("Worker"))]),
-            patch(
-                entity(".ref", "inner"),
-                &[(".group", refs(group.clone())), (".target", refs(vessel))],
-            ),
-            patch(
-                entity(".ref", "outer"),
-                &[
-                    (".group", refs(group.clone())),
-                    (".target", refs(entity(".ref", "inner"))),
-                ],
-            ),
+            patch(entity(".ref", "inner"), &[(".group", refs(group.clone())), (".target", refs(vessel))]),
+            patch(entity(".ref", "outer"), &[(".group", refs(group.clone())), (".target", refs(entity(".ref", "inner")))]),
         ],
     );
     let snapshot = sidebar.snapshot();
-    let local = snapshot
-        .surface
-        .sections
-        .iter()
-        .find(|s| s.name == "local")
-        .unwrap();
+    let local = snapshot.surface.sections.iter().find(|s| s.name == "local").unwrap();
     let items = &local.nodes[0].children[0].children;
-    let inner = items
-        .iter()
-        .find(|n| n.entity == entity(".ref", "inner"))
-        .unwrap();
-    let outer = items
-        .iter()
-        .find(|n| n.entity == entity(".ref", "outer"))
-        .unwrap();
+    let inner = items.iter().find(|n| n.entity == entity(".ref", "inner")).unwrap();
+    let outer = items.iter().find(|n| n.entity == entity(".ref", "outer")).unwrap();
     assert_eq!(inner.label, "Worker");
-    assert_ne!(
-        outer.label, "Worker",
-        "a ref to a ref doesn't present the inner ref's target"
-    );
+    assert_ne!(outer.label, "Worker", "a ref to a ref doesn't present the inner ref's target");
 }
 
 /// A ref whose target is missing, or whose `.target` isn't a single
@@ -2751,41 +1793,21 @@ fn a_ref_without_a_usable_target_keeps_its_own_facts() {
             patch(section.clone(), &[("display.label", text("Pinned"))]),
             patch(group.clone(), &[(".section", refs(section.clone()))]),
             patch(entity("vessel", "v"), &[("display.label", text("Worker"))]),
-            patch(
-                entity(".ref", "missing"),
-                &[
-                    (".group", refs(group.clone())),
-                    (".target", refs(entity("vessel", "gone"))),
-                ],
-            ),
+            patch(entity(".ref", "missing"), &[(".group", refs(group.clone())), (".target", refs(entity("vessel", "gone")))]),
             patch(
                 entity(".ref", "malformed"),
                 &[
                     (".group", refs(group.clone())),
-                    (
-                        ".target",
-                        MetadataValue::EntityRefs(vec![
-                            entity("vessel", "v"),
-                            entity("vessel", "v"),
-                        ]),
-                    ),
+                    (".target", MetadataValue::EntityRefs(vec![entity("vessel", "v"), entity("vessel", "v")])),
                 ],
             ),
         ],
     );
     let snapshot = sidebar.snapshot();
-    let local = snapshot
-        .surface
-        .sections
-        .iter()
-        .find(|s| s.name == "local")
-        .unwrap();
+    let local = snapshot.surface.sections.iter().find(|s| s.name == "local").unwrap();
     let items = &local.nodes[0].children[0].children;
     for id in ["missing", "malformed"] {
-        let node = items
-            .iter()
-            .find(|n| n.entity == entity(".ref", id))
-            .expect("still placed");
+        let node = items.iter().find(|n| n.entity == entity(".ref", id)).expect("still placed");
         assert_ne!(node.label, "Worker", "{id} presents no target");
     }
 }
@@ -2828,13 +1850,8 @@ template "local/item" {
     let section = entity(".section", "s1");
     let group = entity(".group", "g1");
     let home = entity(".workspace", "w1");
-    let item = |label: &str, position: &str| {
-        vec![
-            ("display.label", text(label)),
-            (".group", refs(group.clone())),
-            (".position", text(position)),
-        ]
-    };
+    let item =
+        |label: &str, position: &str| vec![("display.label", text(label)), (".group", refs(group.clone())), (".position", text(position))];
     sidebar.feed(
         100,
         [
@@ -2842,37 +1859,15 @@ template "local/item" {
             patch(group.clone(), &[(".section", refs(section.clone()))]),
             patch(home.clone(), &item("Home", "0")),
             patch(entity(".workspace", "w2"), &item("Other", "3")),
-            patch(
-                entity(".ref", "placed"),
-                &[
-                    (".group", refs(group.clone())),
-                    (".target", refs(home.clone())),
-                    (".position", text("5")),
-                ],
-            ),
-            patch(
-                entity(".ref", "unplaced"),
-                &[(".target", refs(home.clone()))],
-            ),
+            patch(entity(".ref", "placed"), &[(".group", refs(group.clone())), (".target", refs(home.clone())), (".position", text("5"))]),
+            patch(entity(".ref", "unplaced"), &[(".target", refs(home.clone()))]),
         ],
     );
     let snapshot = sidebar.snapshot();
-    let local = snapshot
-        .surface
-        .sections
-        .iter()
-        .find(|s| s.name == "local")
-        .unwrap();
+    let local = snapshot.surface.sections.iter().find(|s| s.name == "local").unwrap();
     let items = &local.nodes[0].children[0].children;
-    let order = items
-        .iter()
-        .map(|n| n.entity.id.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        order,
-        ["w1", "w2", "placed"],
-        "the ref sorts by its own position and only it is placed"
-    );
+    let order = items.iter().map(|n| n.entity.id.as_str()).collect::<Vec<_>>();
+    assert_eq!(order, ["w1", "w2", "placed"], "the ref sorts by its own position and only it is placed");
     assert_eq!(items[2].label, "Home", "it still presents its target");
 }
 
@@ -2890,58 +1885,25 @@ fn a_retracted_ref_leaves_its_group() {
         [
             patch(section.clone(), &[("display.label", text("Pinned"))]),
             patch(group.clone(), &[(".section", refs(section.clone()))]),
-            patch(
-                vessel.clone(),
-                &[
-                    ("display.label", text("Worker")),
-                    ("action.primary.recipe", text("printf hello")),
-                ],
-            ),
-            patch(
-                r.clone(),
-                &[
-                    (".group", refs(group.clone())),
-                    (".target", refs(vessel.clone())),
-                    (".position", text("1")),
-                ],
-            ),
+            patch(vessel.clone(), &[("display.label", text("Worker")), ("action.primary.recipe", text("printf hello"))]),
+            patch(r.clone(), &[(".group", refs(group.clone())), (".target", refs(vessel.clone())), (".position", text("1"))]),
         ],
     );
     let ref_key = |sidebar: &Sidebar| {
         let snapshot = sidebar.snapshot();
-        let local = snapshot
-            .surface
-            .sections
-            .iter()
-            .find(|s| s.name == "local")
-            .cloned()
-            .unwrap();
-        local.nodes[0].children[0]
-            .children
-            .iter()
-            .find(|n| n.entity == r)
-            .map(|n| n.key.clone())
+        let local = snapshot.surface.sections.iter().find(|s| s.name == "local").cloned().unwrap();
+        local.nodes[0].children[0].children.iter().find(|n| n.entity == r).map(|n| n.key.clone())
     };
     // Open the target through the ghost, as a click on its row does.
     let key = ref_key(&sidebar).expect("placed");
     let effects = sidebar.dispatch(Action::ActivatePlacement { key }).unwrap();
     let request_id = match &effects[..] {
-        [HostEffect::Materialize {
-            request_id,
-            entity: subject,
-            ..
-        }] if subject == &vessel => *request_id,
+        [HostEffect::Materialize { request_id, entity: subject, .. }] if subject == &vessel => *request_id,
         other => panic!("expected the target to open, got {other:?}"),
     };
     sidebar.complete(request_id, Ok(Some(W42)));
     // The host names the opened workspace's subject, as Wheelhouse does.
-    sidebar.feed(
-        150,
-        [tab_patch(
-            42,
-            &[("entity.kind", text("vessel")), ("entity.id", text("v"))],
-        )],
-    );
+    sidebar.feed(150, [tab_patch(42, &[("entity.kind", text("vessel")), ("entity.id", text("v"))])]);
     sidebar.observe(vec![workspace()], vec![]);
     assert!(ref_key(&sidebar).is_some());
     // Hosts observe every frame; retained paths are recorded from a snapshot.
@@ -2950,8 +1912,5 @@ fn a_retracted_ref_leaves_its_group() {
     retract.unset = vec![".group".into(), ".target".into(), ".position".into()];
     sidebar.feed(200, [retract]);
     sidebar.observe(vec![workspace()], vec![]);
-    assert!(
-        ref_key(&sidebar).is_none(),
-        "a retracted ref is no longer placed"
-    );
+    assert!(ref_key(&sidebar).is_none(), "a retracted ref is no longer placed");
 }

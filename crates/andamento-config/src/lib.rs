@@ -6,19 +6,16 @@ use std::time::Instant;
 use andamento_shared::segment_bar;
 use andamento_shared::{
     host::{parse_tab_label, tab_label},
-    tab_workspace_id, ConfigInspectRequest, ControllerViewModel, MetadataEntry,
-    MetadataSourceEntry, MetadataTriState, MetadataValue, MetadataVisibilitySetRequest, NodeKey,
-    NodeVariableSetRequest, PluginPaneKind, PluginPlacement, PluginRegistrationHello,
-    PluginStatsSnapshot, RailConfig, RailStructure, ResolvedMetadataTarget, TabCard, WorkspaceId,
-    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
+    tab_workspace_id, ConfigInspectRequest, ControllerViewModel, MetadataEntry, MetadataSourceEntry, MetadataTriState, MetadataValue,
+    MetadataVisibilitySetRequest, NodeKey, NodeVariableSetRequest, PluginPaneKind, PluginPlacement, PluginRegistrationHello,
+    PluginStatsSnapshot, RailConfig, RailStructure, ResolvedMetadataTarget, TabCard, WorkspaceId, NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 use unicode_width::UnicodeWidthStr;
 
 use andamento_shared::StatsCollectRequest;
 use andamento_shared::{
-    PluginStatsRecorder, RendererHello, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT,
-    MSG_REQUEST_STATE, MSG_SET_METADATA_VISIBILITY, MSG_SET_NODE_VARIABLE, MSG_SET_RAIL_CONFIG,
-    MSG_STATS_COLLECT, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_VIEW_MODEL,
+    PluginStatsRecorder, RendererHello, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT, MSG_REQUEST_STATE, MSG_SET_METADATA_VISIBILITY,
+    MSG_SET_NODE_VARIABLE, MSG_SET_RAIL_CONFIG, MSG_STATS_COLLECT, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_VIEW_MODEL,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -41,55 +38,19 @@ struct ConfigLocalTab {
 }
 
 fn local_tabs_from_zellij(tabs: &[TabInfo]) -> Vec<ConfigLocalTab> {
-    tabs.iter()
-        .map(|tab| ConfigLocalTab {
-            tab_id: tab_workspace_id(tab.tab_id as u64),
-            position: tab.position,
-        })
-        .collect()
+    tabs.iter().map(|tab| ConfigLocalTab { tab_id: tab_workspace_id(tab.tab_id as u64), position: tab.position }).collect()
 }
 
-fn own_plugin_tab_placement(
-    pane_manifest: &PaneManifest,
-    local_tabs: &[ConfigLocalTab],
-    plugin_id: u32,
-) -> Option<PluginPlacement> {
-    let (tab_position, pane) = pane_manifest
-        .panes
-        .iter()
-        .find_map(|(tab_position, panes)| {
-            panes
-                .iter()
-                .find(|pane| pane.is_plugin && pane.id == plugin_id)
-                .map(|pane| (*tab_position, pane))
-        })?;
-    let tab_id = local_tabs
-        .iter()
-        .find(|tab| tab.position == tab_position)
-        .map(|tab| tab.tab_id)?;
-    Some(PluginPlacement::Tab {
-        tab_id,
-        pane_kind: if pane.is_floating {
-            PluginPaneKind::Floating
-        } else {
-            PluginPaneKind::Tiled
-        },
-    })
+fn own_plugin_tab_placement(pane_manifest: &PaneManifest, local_tabs: &[ConfigLocalTab], plugin_id: u32) -> Option<PluginPlacement> {
+    let (tab_position, pane) = pane_manifest.panes.iter().find_map(|(tab_position, panes)| {
+        panes.iter().find(|pane| pane.is_plugin && pane.id == plugin_id).map(|pane| (*tab_position, pane))
+    })?;
+    let tab_id = local_tabs.iter().find(|tab| tab.position == tab_position).map(|tab| tab.tab_id)?;
+    Some(PluginPlacement::Tab { tab_id, pane_kind: if pane.is_floating { PluginPaneKind::Floating } else { PluginPaneKind::Tiled } })
 }
 
-fn config_editor_hello_payload(
-    plugin_id: u32,
-    client_id: u16,
-    placement: PluginPlacement,
-) -> Option<String> {
-    serde_json::to_string(&PluginRegistrationHello {
-        identity: RendererHello {
-            plugin_id,
-            client_id,
-        },
-        placement,
-    })
-    .ok()
+fn config_editor_hello_payload(plugin_id: u32, client_id: u16, placement: PluginPlacement) -> Option<String> {
+    serde_json::to_string(&PluginRegistrationHello { identity: RendererHello { plugin_id, client_id }, placement }).ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,14 +117,7 @@ struct ConfigUiFrame {
 
 impl ConfigUiFrame {
     fn new(rows: usize, cols: usize) -> Self {
-        Self {
-            rows,
-            cols,
-            next_row: 0,
-            lines: vec![],
-            hit_regions: vec![],
-            ribbons: vec![],
-        }
+        Self { rows, cols, next_row: 0, lines: vec![], hit_regions: vec![], ribbons: vec![] }
     }
 
     fn current_row(&self) -> usize {
@@ -185,13 +139,8 @@ impl ConfigUiFrame {
         let row = self.next_row;
         let mut buffer = Buffer::empty(Rect::new(0, 0, self.cols as u16, 1));
         Paragraph::new(line).render(Rect::new(0, 0, self.cols as u16, 1), &mut buffer);
-        let rendered = (0..self.cols)
-            .map(|col| buffer[(col as u16, 0)].symbol())
-            .collect::<String>();
-        self.lines.push(pad_to_width(
-            &truncate_to_width(&rendered, self.cols),
-            self.cols,
-        ));
+        let rendered = (0..self.cols).map(|col| buffer[(col as u16, 0)].symbol()).collect::<String>();
+        self.lines.push(pad_to_width(&truncate_to_width(&rendered, self.cols), self.cols));
         self.next_row = self.next_row.saturating_add(1);
         Some(row)
     }
@@ -200,12 +149,7 @@ impl ConfigUiFrame {
         if row >= self.rows || col_start >= self.cols {
             return;
         }
-        self.hit_regions.push(HitRegion {
-            row,
-            col_start,
-            col_end: col_end.min(self.cols.saturating_sub(1)),
-            action,
-        });
+        self.hit_regions.push(HitRegion { row, col_start, col_end: col_end.min(self.cols.saturating_sub(1)), action });
     }
 
     fn add_ribbon(&mut self, ribbon: RibbonOverlay) {
@@ -253,28 +197,15 @@ impl ZellijPlugin for PluginState {
         let ids = get_plugin_ids();
         self.own_plugin_id = Some(ids.plugin_id);
         self.own_client_id = Some(ids.client_id);
-        self.controller_plugin_url = configuration
-            .get(CONFIG_CONTROLLER_PLUGIN_URL)
-            .cloned()
-            .unwrap_or_else(|| "andamento-controller".to_owned());
-        self.close_on_hidden = configuration
-            .get(CONFIG_CLOSE_ON_HIDDEN)
-            .is_some_and(|value| config_bool(value));
+        self.controller_plugin_url =
+            configuration.get(CONFIG_CONTROLLER_PLUGIN_URL).cloned().unwrap_or_else(|| "andamento-controller".to_owned());
+        self.close_on_hidden = configuration.get(CONFIG_CLOSE_ON_HIDDEN).is_some_and(|value| config_bool(value));
         self.rail_scope = config_scope(&configuration);
         self.own_plugin_placement = launch_config_placement(&configuration);
         self.page = initial_page_for_scope(self.rail_scope.as_deref());
 
-        request_permission(&[
-            PermissionType::ChangeApplicationState,
-            PermissionType::MessageAndLaunchOtherPlugins,
-        ]);
-        subscribe(&[
-            EventType::TabUpdate,
-            EventType::PaneUpdate,
-            EventType::Mouse,
-            EventType::PermissionRequestResult,
-            EventType::Visible,
-        ]);
+        request_permission(&[PermissionType::ChangeApplicationState, PermissionType::MessageAndLaunchOtherPlugins]);
+        subscribe(&[EventType::TabUpdate, EventType::PaneUpdate, EventType::Mouse, EventType::PermissionRequestResult, EventType::Visible]);
         self.send_hello();
     }
 
@@ -309,8 +240,7 @@ impl ZellijPlugin for PluginState {
                 let started_at = Instant::now();
                 match serde_json::from_str::<ControllerViewModel>(payload) {
                     Ok(model) => {
-                        self.stats
-                            .record_span_elapsed("json.decode-view-model", started_at);
+                        self.stats.record_span_elapsed("json.decode-view-model", started_at);
                         self.model = Some(model);
                         self.pending_config = None;
                         return true;
@@ -334,15 +264,10 @@ impl ZellijPlugin for PluginState {
                 let started_at = Instant::now();
                 match serde_json::from_str::<PluginStatsSnapshot>(payload) {
                     Ok(snapshot) if snapshot.collection_id == self.stats_collection_id => {
-                        self.stats
-                            .record_span_elapsed("json.decode-stats-report", started_at);
+                        self.stats.record_span_elapsed("json.decode-stats-report", started_at);
                         self.stats_collection_pending = false;
                         self.stats_reports.push(snapshot);
-                        self.stats_reports.sort_by(|a, b| {
-                            a.plugin_kind
-                                .cmp(&b.plugin_kind)
-                                .then_with(|| a.plugin_id.cmp(&b.plugin_id))
-                        });
+                        self.stats_reports.sort_by(|a, b| a.plugin_kind.cmp(&b.plugin_kind).then_with(|| a.plugin_id.cmp(&b.plugin_id)));
                         return true;
                     }
                     Ok(_) => {}
@@ -415,10 +340,7 @@ impl ZellijPlugin for PluginState {
     fn render(&mut self, rows: usize, cols: usize) {
         self.stats.increment("render.total");
         let started_at = Instant::now();
-        let config = self
-            .pending_config
-            .or_else(|| self.model.as_ref().map(|model| model.config))
-            .unwrap_or_default();
+        let config = self.pending_config.or_else(|| self.model.as_ref().map(|model| model.config)).unwrap_or_default();
         let rendered = render_config_with_scope(
             config,
             self.model.as_ref(),
@@ -468,24 +390,15 @@ impl PluginState {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
             return;
         };
-        let Some(payload) = config_editor_hello_payload(
-            plugin_id,
-            client_id,
-            self.own_plugin_placement
-                .clone()
-                .unwrap_or(PluginPlacement::Unknown),
-        ) else {
+        let Some(payload) =
+            config_editor_hello_payload(plugin_id, client_id, self.own_plugin_placement.clone().unwrap_or(PluginPlacement::Unknown))
+        else {
             return;
         };
         pipe_message_to_plugin(
-            self.controller_message(MSG_CONFIG_EDITOR_HELLO)
-                .with_destination_client_id(client_id)
-                .with_payload(payload),
+            self.controller_message(MSG_CONFIG_EDITOR_HELLO).with_destination_client_id(client_id).with_payload(payload),
         );
-        pipe_message_to_plugin(
-            self.controller_message(MSG_REQUEST_STATE)
-                .with_destination_client_id(client_id),
-        );
+        pipe_message_to_plugin(self.controller_message(MSG_REQUEST_STATE).with_destination_client_id(client_id));
     }
 
     fn observe_own_config_placement(&mut self, pane_manifest: &PaneManifest) {
@@ -500,11 +413,7 @@ impl PluginState {
     }
 
     fn handle_click(&mut self, row: usize, col: usize) -> bool {
-        let Some(hit) = self
-            .hit_regions
-            .iter()
-            .find(|hit| hit.row == row && col >= hit.col_start && col <= hit.col_end)
-        else {
+        let Some(hit) = self.hit_regions.iter().find(|hit| hit.row == row && col >= hit.col_start && col <= hit.col_end) else {
             return false;
         };
         if let ConfigAction::SetPage(page) = hit.action {
@@ -523,10 +432,7 @@ impl PluginState {
             self.set_node_variable(variable, value);
             return true;
         }
-        let mut config = self
-            .pending_config
-            .or_else(|| self.model.as_ref().map(|model| model.config))
-            .unwrap_or_default();
+        let mut config = self.pending_config.or_else(|| self.model.as_ref().map(|model| model.config)).unwrap_or_default();
         config = apply_config_action(config, hit.action);
         self.pending_config = Some(config);
         let Ok(payload) = serde_json::to_string(&config) else {
@@ -535,11 +441,7 @@ impl PluginState {
         let Some(client_id) = self.own_client_id else {
             return true;
         };
-        pipe_message_to_plugin(
-            self.controller_message(MSG_SET_RAIL_CONFIG)
-                .with_destination_client_id(client_id)
-                .with_payload(payload),
-        );
+        pipe_message_to_plugin(self.controller_message(MSG_SET_RAIL_CONFIG).with_destination_client_id(client_id).with_payload(payload));
         true
     }
 
@@ -551,35 +453,18 @@ impl PluginState {
         self.stats_collection_pending = true;
         self.stats_reports.clear();
         self.body_scroll_offset = 0;
-        let request = StatsCollectRequest {
-            requester: RendererHello {
-                plugin_id,
-                client_id,
-            },
-            collection_id: self.stats_collection_id,
-        };
+        let request = StatsCollectRequest { requester: RendererHello { plugin_id, client_id }, collection_id: self.stats_collection_id };
         let Ok(payload) = serde_json::to_string(&request) else {
             return;
         };
-        pipe_message_to_plugin(
-            self.controller_message(MSG_STATS_COLLECT)
-                .with_destination_client_id(client_id)
-                .with_payload(payload),
-        );
+        pipe_message_to_plugin(self.controller_message(MSG_STATS_COLLECT).with_destination_client_id(client_id).with_payload(payload));
     }
 
     fn send_stats_report_to(&self, requester: RendererHello, collection_id: u64) {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
             return;
         };
-        let snapshot = self.stats.snapshot(
-            collection_id,
-            RendererHello {
-                plugin_id,
-                client_id,
-            },
-            "config",
-        );
+        let snapshot = self.stats.snapshot(collection_id, RendererHello { plugin_id, client_id }, "config");
         let Ok(payload) = serde_json::to_string(&snapshot) else {
             return;
         };
@@ -600,9 +485,7 @@ impl PluginState {
             return;
         };
         pipe_message_to_plugin(
-            self.controller_message(MSG_SET_METADATA_VISIBILITY)
-                .with_destination_client_id(client_id)
-                .with_payload(payload),
+            self.controller_message(MSG_SET_METADATA_VISIBILITY).with_destination_client_id(client_id).with_payload(payload),
         );
     }
 
@@ -612,15 +495,8 @@ impl PluginState {
     /// click is only valid while the frame it was aimed at is still on screen,
     /// and that is worth a test at this call site rather than only where the
     /// shared guard is defined.
-    fn metadata_visibility_request(
-        &self,
-        state: Option<MetadataTriState>,
-    ) -> Option<MetadataVisibilitySetRequest> {
-        Some(MetadataVisibilitySetRequest {
-            client_id: self.own_client_id?,
-            node_key: self.clicked_node()?,
-            state,
-        })
+    fn metadata_visibility_request(&self, state: Option<MetadataTriState>) -> Option<MetadataVisibilitySetRequest> {
+        Some(MetadataVisibilitySetRequest { client_id: self.own_client_id?, node_key: self.clicked_node()?, state })
     }
 
     fn set_node_variable(&self, variable: usize, value: Option<usize>) {
@@ -631,11 +507,7 @@ impl PluginState {
         let Ok(payload) = serde_json::to_string(&request) else {
             return;
         };
-        pipe_message_to_plugin(
-            self.controller_message(MSG_SET_NODE_VARIABLE)
-                .with_destination_client_id(client_id)
-                .with_payload(payload),
-        );
+        pipe_message_to_plugin(self.controller_message(MSG_SET_NODE_VARIABLE).with_destination_client_id(client_id).with_payload(payload));
     }
 
     /// Resolve a clicked control back into a set request.
@@ -643,11 +515,7 @@ impl PluginState {
     /// Split from the send so the resolution is testable: the indices come from
     /// a rendered frame and the model may have moved on since, so a stale index
     /// must resolve to nothing rather than to a different variable or value.
-    fn node_variable_request(
-        &self,
-        variable: usize,
-        value: Option<usize>,
-    ) -> Option<NodeVariableSetRequest> {
+    fn node_variable_request(&self, variable: usize, value: Option<usize>) -> Option<NodeVariableSetRequest> {
         let client_id = self.own_client_id?;
         let node_key = match self.clicked_node()? {
             NodeKey::Root => NodeKey::Root,
@@ -657,24 +525,13 @@ impl PluginState {
         let declaration = self
             .model
             .as_ref()
-            .and_then(|model| {
-                model
-                    .template_config
-                    .effective_variables
-                    .iter()
-                    .find(|variables| variables.node == node_key)
-            })
+            .and_then(|model| model.template_config.effective_variables.iter().find(|variables| variables.node == node_key))
             .and_then(|variables| variables.declarations.get(variable))?;
         let value = match value {
             None => None,
             Some(index) => Some(declaration.values.get(index)?.clone()),
         };
-        Some(NodeVariableSetRequest {
-            client_id,
-            node_key,
-            name: declaration.name.clone(),
-            value,
-        })
+        Some(NodeVariableSetRequest { client_id, node_key, name: declaration.name.clone(), value })
     }
 
     /// The node a click applies to, or `None` if the frame it was aimed at is
@@ -702,9 +559,7 @@ fn apply_config_action(mut config: RailConfig, action: ConfigAction) -> RailConf
     match action {
         ConfigAction::SetPage(_) => {}
         ConfigAction::SetStructure(structure) => config.structure = structure,
-        ConfigAction::CollectStats
-        | ConfigAction::SetInspectedMetadata(_)
-        | ConfigAction::SetNodeVariable { .. } => {}
+        ConfigAction::CollectStats | ConfigAction::SetInspectedMetadata(_) | ConfigAction::SetNodeVariable { .. } => {}
     }
     config
 }
@@ -714,10 +569,7 @@ fn permission_result_should_resync(granted: bool) -> bool {
 }
 
 fn config_bool(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
 
 fn config_should_close_on_visibility(is_visible: bool, close_on_hidden: bool) -> bool {
@@ -725,19 +577,12 @@ fn config_should_close_on_visibility(is_visible: bool, close_on_hidden: bool) ->
 }
 
 fn config_scope(configuration: &BTreeMap<String, String>) -> Option<String> {
-    configuration
-        .get(CONFIG_RAIL_SCOPE)
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
+    configuration.get(CONFIG_RAIL_SCOPE).map(|value| value.trim()).filter(|value| !value.is_empty()).map(str::to_owned)
 }
 
 fn launch_config_placement(configuration: &BTreeMap<String, String>) -> Option<PluginPlacement> {
     let tab_id = parse_tab_label(configuration.get(CONFIG_ORIGIN_TAB_ID)?.trim())?;
-    let pane_kind = match configuration
-        .get(CONFIG_PANE_KIND)
-        .map(|value| value.trim())
-    {
+    let pane_kind = match configuration.get(CONFIG_PANE_KIND).map(|value| value.trim()) {
         Some("floating") => PluginPaneKind::Floating,
         Some("tiled") => PluginPaneKind::Tiled,
         _ => return None,
@@ -753,11 +598,7 @@ fn initial_page_for_scope(rail_scope: Option<&str>) -> ConfigPage {
     }
 }
 
-fn apply_config_inspect_request(
-    rail_scope: &mut Option<String>,
-    page: &mut ConfigPage,
-    request: ConfigInspectRequest,
-) {
+fn apply_config_inspect_request(rail_scope: &mut Option<String>, page: &mut ConfigPage, request: ConfigInspectRequest) {
     *rail_scope = Some(inspect_scope_label(&request.node_key));
     *page = ConfigPage::Inspect;
 }
@@ -771,10 +612,7 @@ fn inspect_scope_label(key: &NodeKey) -> String {
             "placement:{}",
             key.0
                 .iter()
-                .map(|segment| format!(
-                    "{}={}:{}",
-                    segment.loop_name, segment.entity.kind, segment.entity.id
-                ))
+                .map(|segment| format!("{}={}:{}", segment.loop_name, segment.entity.kind, segment.entity.id))
                 .collect::<Vec<_>>()
                 .join("/")
         ),
@@ -804,10 +642,7 @@ fn inspect_target_for<'a>(
     rail_scope: Option<&str>,
     model: &'a ControllerViewModel,
 ) -> InspectTargetView<'a> {
-    let node_key = inspected_node
-        .cloned()
-        .or_else(|| rail_scope.and_then(parse_scope_node_key))
-        .unwrap_or(NodeKey::Root);
+    let node_key = inspected_node.cloned().or_else(|| rail_scope.and_then(parse_scope_node_key)).unwrap_or(NodeKey::Root);
     let metadata = metadata_for_node(model, &node_key);
     let sources = sources_for_node(model, &node_key);
     match node_key.clone() {
@@ -852,16 +687,11 @@ fn inspect_target_for<'a>(
         NodeKey::Placement(key) => {
             let entity = key.0.last().map(|segment| &segment.entity);
             InspectTargetView {
-                label: entity
-                    .map(|entity| format!("Placement of {} {}", entity.kind, entity.id))
-                    .unwrap_or_else(|| "Placement".to_owned()),
+                label: entity.map(|entity| format!("Placement of {} {}", entity.kind, entity.id)).unwrap_or_else(|| "Placement".to_owned()),
                 kind: InspectTargetKind::Entity,
                 node_key,
                 tab: None,
-                placement: model
-                    .presentation
-                    .as_ref()
-                    .and_then(|surface| surface.node(&key)),
+                placement: model.presentation.as_ref().and_then(|surface| surface.node(&key)),
                 metadata,
                 sources,
             }
@@ -876,38 +706,22 @@ fn parse_scope_node_key(scope: &str) -> Option<NodeKey> {
     parse_tab_scope(scope).map(NodeKey::Tab)
 }
 
-fn metadata_for_node(
-    model: &ControllerViewModel,
-    node_key: &NodeKey,
-) -> BTreeMap<String, MetadataEntry> {
-    resolved_metadata_for_node(model, node_key)
-        .map(|metadata| metadata.values.clone())
-        .unwrap_or_default()
+fn metadata_for_node(model: &ControllerViewModel, node_key: &NodeKey) -> BTreeMap<String, MetadataEntry> {
+    resolved_metadata_for_node(model, node_key).map(|metadata| metadata.values.clone()).unwrap_or_default()
 }
 
-fn sources_for_node(
-    model: &ControllerViewModel,
-    node_key: &NodeKey,
-) -> BTreeMap<String, Vec<MetadataSourceEntry>> {
-    resolved_metadata_for_node(model, node_key)
-        .map(|metadata| metadata.source_entries.clone())
-        .unwrap_or_default()
+fn sources_for_node(model: &ControllerViewModel, node_key: &NodeKey) -> BTreeMap<String, Vec<MetadataSourceEntry>> {
+    resolved_metadata_for_node(model, node_key).map(|metadata| metadata.source_entries.clone()).unwrap_or_default()
 }
 
-fn resolved_metadata_for_node<'a>(
-    model: &'a ControllerViewModel,
-    node_key: &NodeKey,
-) -> Option<&'a andamento_shared::ResolvedMetadata> {
+fn resolved_metadata_for_node<'a>(model: &'a ControllerViewModel, node_key: &NodeKey) -> Option<&'a andamento_shared::ResolvedMetadata> {
     let target = match node_key {
         NodeKey::Root => ResolvedMetadataTarget::Root,
         NodeKey::Tab(tab_id) => ResolvedMetadataTarget::Tab(*tab_id),
         NodeKey::Entity(entity) => ResolvedMetadataTarget::Entity(entity.clone()),
         NodeKey::Placement(key) => ResolvedMetadataTarget::Entity(key.0.last()?.entity.clone()),
     };
-    model
-        .resolved_metadata
-        .iter()
-        .find(|metadata| metadata.target == target)
+    model.resolved_metadata.iter().find(|metadata| metadata.target == target)
 }
 
 #[cfg(test)]
@@ -921,17 +735,7 @@ fn render_config(
     stats_collection_pending: bool,
     body_scroll_offset: usize,
 ) -> RenderedConfig {
-    render_config_with_scope(
-        config,
-        model,
-        page,
-        None,
-        rows,
-        cols,
-        stats_reports,
-        stats_collection_pending,
-        body_scroll_offset,
-    )
+    render_config_with_scope(config, model, page, None, rows, cols, stats_reports, stats_collection_pending, body_scroll_offset)
 }
 
 fn render_config_with_scope(
@@ -946,12 +750,7 @@ fn render_config_with_scope(
     body_scroll_offset: usize,
 ) -> RenderedConfig {
     if rows == 0 || cols == 0 {
-        return RenderedConfig {
-            lines: vec![],
-            hit_regions: vec![],
-            ribbons: vec![],
-            body_scroll_offset: 0,
-        };
+        return RenderedConfig { lines: vec![], hit_regions: vec![], ribbons: vec![], body_scroll_offset: 0 };
     }
     let mut tab_frame = ConfigUiFrame::new(1, cols);
     push_tab_row(&mut tab_frame, page);
@@ -978,19 +777,8 @@ fn render_with_scroll(
     let max_scroll_offset = body_frame.lines.len().saturating_sub(body_rows);
     let effective_scroll_offset = scroll_offset.min(max_scroll_offset);
     let mut lines = Vec::with_capacity(rows);
-    lines.push(
-        tab_frame
-            .lines
-            .first()
-            .cloned()
-            .unwrap_or_else(|| " ".repeat(cols)),
-    );
-    for line in body_frame
-        .lines
-        .iter()
-        .skip(effective_scroll_offset)
-        .take(body_rows)
-    {
+    lines.push(tab_frame.lines.first().cloned().unwrap_or_else(|| " ".repeat(cols)));
+    for line in body_frame.lines.iter().skip(effective_scroll_offset).take(body_rows) {
         lines.push(line.clone());
     }
     while lines.len() < rows {
@@ -1003,10 +791,7 @@ fn render_with_scroll(
         if hit.row < effective_scroll_offset || hit.row >= visible_end {
             return None;
         }
-        hit.row = hit
-            .row
-            .saturating_sub(effective_scroll_offset)
-            .saturating_add(1);
+        hit.row = hit.row.saturating_sub(effective_scroll_offset).saturating_add(1);
         Some(hit)
     }));
     ribbons.extend(body_frame.ribbons.into_iter().filter_map(|mut ribbon| {
@@ -1014,25 +799,13 @@ fn render_with_scroll(
         if ribbon.row < effective_scroll_offset || ribbon.row >= visible_end {
             return None;
         }
-        ribbon.row = ribbon
-            .row
-            .saturating_sub(effective_scroll_offset)
-            .saturating_add(1);
+        ribbon.row = ribbon.row.saturating_sub(effective_scroll_offset).saturating_add(1);
         Some(ribbon)
     }));
-    RenderedConfig {
-        lines,
-        hit_regions,
-        ribbons,
-        body_scroll_offset: effective_scroll_offset,
-    }
+    RenderedConfig { lines, hit_regions, ribbons, body_scroll_offset: effective_scroll_offset }
 }
 
-fn push_inspect_page(
-    frame: &mut ConfigUiFrame,
-    model: Option<&ControllerViewModel>,
-    rail_scope: Option<&str>,
-) {
+fn push_inspect_page(frame: &mut ConfigUiFrame, model: Option<&ControllerViewModel>, rail_scope: Option<&str>) {
     let Some(model) = model else {
         frame.push_plain("Inspect");
         frame.push_blank();
@@ -1062,18 +835,9 @@ fn push_inspect_page(
     push_inspect_templates_section(frame, &target);
 }
 
-fn push_inspect_variables_section(
-    frame: &mut ConfigUiFrame,
-    model: &ControllerViewModel,
-    target: &InspectTargetView<'_>,
-) {
+fn push_inspect_variables_section(frame: &mut ConfigUiFrame, model: &ControllerViewModel, target: &InspectTargetView<'_>) {
     push_section_header(frame, "Variables");
-    let Some(variables) = model
-        .template_config
-        .effective_variables
-        .iter()
-        .find(|variables| variables.node == target.node_key)
-    else {
+    let Some(variables) = model.template_config.effective_variables.iter().find(|variables| variables.node == target.node_key) else {
         frame.push_plain("  <none>");
         return;
     };
@@ -1086,12 +850,7 @@ fn push_inspect_variables_section(
             effective.provenance.origin.label(),
         ));
         for overridden in &effective.overridden {
-            frame.push_plain(&format!(
-                "    overrides {} at {:?} [{}]",
-                overridden.setter,
-                overridden.ancestor,
-                overridden.origin.label(),
-            ));
+            frame.push_plain(&format!("    overrides {} at {:?} [{}]", overridden.setter, overridden.ancestor, overridden.origin.label(),));
         }
     }
 }
@@ -1140,58 +899,28 @@ fn push_inspect_identity_section(frame: &mut ConfigUiFrame, target: &InspectTarg
     }
 }
 
-fn push_inspect_options_section(
-    frame: &mut ConfigUiFrame,
-    model: &ControllerViewModel,
-    target: &InspectTargetView<'_>,
-) {
+fn push_inspect_options_section(frame: &mut ConfigUiFrame, model: &ControllerViewModel, target: &InspectTargetView<'_>) {
     push_section_header(frame, "Options");
     // One row per node variable declared in scope here, so the shared column
     // width has to come from the names actually rendered. A hardcoded
     // placeholder would misalign every declaration that is not its length, and
     // silently — the control still works, it just stops lining up.
-    let node_variables = model
-        .template_config
-        .effective_variables
-        .iter()
-        .find(|variables| variables.node == target.node_key);
-    let declarations = node_variables
-        .map(|variables| variables.declarations.as_slice())
-        .unwrap_or_default();
+    let node_variables = model.template_config.effective_variables.iter().find(|variables| variables.node == target.node_key);
+    let declarations = node_variables.map(|variables| variables.declarations.as_slice()).unwrap_or_default();
     let label_width = std::iter::once("Metadata")
-        .chain(
-            declarations
-                .iter()
-                .map(|declaration| declaration.name.as_str()),
-        )
+        .chain(declarations.iter().map(|declaration| declaration.name.as_str()))
         .map(|label| label.width())
         .max()
         .unwrap_or(0);
-    let explicit_state = model
-        .metadata_controls
-        .per_node
-        .get(&target.node_key)
-        .copied();
+    let explicit_state = model.metadata_controls.per_node.get(&target.node_key).copied();
     push_segmented_form_choice(
         frame,
         "Metadata",
         label_width,
         &[
-            (
-                "inherit",
-                explicit_state.is_none(),
-                ConfigAction::SetInspectedMetadata(None),
-            ),
-            (
-                "hidden",
-                explicit_state == Some(MetadataTriState::Clean),
-                ConfigAction::SetInspectedMetadata(Some(MetadataTriState::Clean)),
-            ),
-            (
-                "item",
-                explicit_state == Some(MetadataTriState::Meta),
-                ConfigAction::SetInspectedMetadata(Some(MetadataTriState::Meta)),
-            ),
+            ("inherit", explicit_state.is_none(), ConfigAction::SetInspectedMetadata(None)),
+            ("hidden", explicit_state == Some(MetadataTriState::Clean), ConfigAction::SetInspectedMetadata(Some(MetadataTriState::Clean))),
+            ("item", explicit_state == Some(MetadataTriState::Meta), ConfigAction::SetInspectedMetadata(Some(MetadataTriState::Meta))),
             (
                 "subtree",
                 explicit_state == Some(MetadataTriState::MetaChildren),
@@ -1202,28 +931,17 @@ fn push_inspect_options_section(
     // Node variables render from their declarations: one segmented control per
     // variable in scope at this node, offering inherit plus its allowed values.
     for (variable, declaration) in declarations.iter().enumerate() {
-        let effective =
-            node_variables.and_then(|variables| variables.values.get(&declaration.name));
+        let effective = node_variables.and_then(|variables| variables.values.get(&declaration.name));
         let explicit = effective.is_some_and(|value| {
-            value.provenance.ancestor == target.node_key
-                && value.provenance.setter == NODE_VARIABLE_CONFIG_OVERRIDE_SETTER
+            value.provenance.ancestor == target.node_key && value.provenance.setter == NODE_VARIABLE_CONFIG_OVERRIDE_SETTER
         });
-        let mut options: Vec<(&str, bool, ConfigAction)> = vec![(
-            "inherit",
-            !explicit,
-            ConfigAction::SetNodeVariable {
-                variable,
-                value: None,
-            },
-        )];
+        let mut options: Vec<(&str, bool, ConfigAction)> =
+            vec![("inherit", !explicit, ConfigAction::SetNodeVariable { variable, value: None })];
         for (value, allowed) in declaration.values.iter().enumerate() {
             options.push((
                 allowed.as_str(),
                 explicit && effective.is_some_and(|current| &current.value == allowed),
-                ConfigAction::SetNodeVariable {
-                    variable,
-                    value: Some(value),
-                },
+                ConfigAction::SetNodeVariable { variable, value: Some(value) },
             ));
         }
         push_segmented_form_choice(frame, &declaration.name, label_width, &options);
@@ -1236,10 +954,7 @@ fn push_inspect_metadata_section(frame: &mut ConfigUiFrame, target: &InspectTarg
         frame.push_plain("  <none>");
         return;
     }
-    frame.push_plain(&format!(
-        "{:<22} {:<30} {:>7} {:>6}",
-        "key", "value", "updated", "ttl"
-    ));
+    frame.push_plain(&format!("{:<22} {:<30} {:>7} {:>6}", "key", "value", "updated", "ttl"));
     for (key, entry) in &target.metadata {
         frame.push_plain(&format!(
             "{:<22} {:<30} {:>7} {:>6}",
@@ -1257,10 +972,7 @@ fn push_inspect_sources_section(frame: &mut ConfigUiFrame, target: &InspectTarge
         frame.push_plain("  <none>");
         return;
     }
-    frame.push_plain(&format!(
-        "{:<22} {:<22} {:<26} {:>6} {:>5} {:>5}",
-        "key", "source", "value", "ttl", "prec", "ord"
-    ));
+    frame.push_plain(&format!("{:<22} {:<22} {:<26} {:>6} {:>5} {:>5}", "key", "source", "value", "ttl", "prec", "ord"));
     for (key, entries) in &target.sources {
         for source in entries {
             frame.push_plain(&format!(
@@ -1283,11 +995,7 @@ fn push_inspect_templates_section(frame: &mut ConfigUiFrame, target: &InspectTar
         return;
     };
     for (label, content) in [("line", &node.content), ("detail", &node.detail)] {
-        push_key_value(
-            frame,
-            label,
-            content.template_name.as_deref().unwrap_or("<none>"),
-        );
+        push_key_value(frame, label, content.template_name.as_deref().unwrap_or("<none>"));
         for line in content.effective_kdl.lines() {
             frame.push_plain(line);
         }
@@ -1347,11 +1055,7 @@ fn format_pane_target(target: &andamento_shared::PaneTarget) -> String {
     }
 }
 
-fn push_stats_page(
-    frame: &mut ConfigUiFrame,
-    stats_reports: &[PluginStatsSnapshot],
-    stats_collection_pending: bool,
-) {
+fn push_stats_page(frame: &mut ConfigUiFrame, stats_reports: &[PluginStatsSnapshot], stats_collection_pending: bool) {
     push_section_header(frame, "Stats");
     push_button(frame, "collect stats", ConfigAction::CollectStats);
     frame.push_blank();
@@ -1364,51 +1068,30 @@ fn push_stats_page(
         return;
     }
     for report in stats_reports {
-        frame.push_plain(&format!(
-            "{} #{} c{}",
-            report.plugin_kind, report.plugin_id, report.client_id
-        ));
+        frame.push_plain(&format!("{} #{} c{}", report.plugin_kind, report.plugin_id, report.client_id));
         for (name, count) in &report.counters {
             frame.push_plain(&format!("  {name}: {count}"));
         }
         for span in &report.spans {
-            let avg_us = if span.count == 0 {
-                0
-            } else {
-                span.total_us / span.count
-            };
-            frame.push_plain(&format!(
-                "  {}: n={} total={}us avg={}us max={}us",
-                span.name, span.count, span.total_us, avg_us, span.max_us
-            ));
+            let avg_us = if span.count == 0 { 0 } else { span.total_us / span.count };
+            frame
+                .push_plain(&format!("  {}: n={} total={}us avg={}us max={}us", span.name, span.count, span.total_us, avg_us, span.max_us));
         }
     }
 }
 
-fn push_settings_page(
-    frame: &mut ConfigUiFrame,
-    config: RailConfig,
-    model: Option<&ControllerViewModel>,
-) {
+fn push_settings_page(frame: &mut ConfigUiFrame, config: RailConfig, model: Option<&ControllerViewModel>) {
     push_segmented_choice(
         frame,
         "structure",
         &[
-            (
-                "joined cells",
-                config.structure == RailStructure::JoinedCells,
-                ConfigAction::SetStructure(RailStructure::JoinedCells),
-            ),
+            ("joined cells", config.structure == RailStructure::JoinedCells, ConfigAction::SetStructure(RailStructure::JoinedCells)),
             (
                 "split around active",
                 config.structure == RailStructure::SplitAroundActive,
                 ConfigAction::SetStructure(RailStructure::SplitAroundActive),
             ),
-            (
-                "box per tab",
-                config.structure == RailStructure::BoxPerTab,
-                ConfigAction::SetStructure(RailStructure::BoxPerTab),
-            ),
+            ("box per tab", config.structure == RailStructure::BoxPerTab, ConfigAction::SetStructure(RailStructure::BoxPerTab)),
         ],
     );
     frame.push_blank();
@@ -1424,14 +1107,8 @@ fn push_templates_page(frame: &mut ConfigUiFrame, model: Option<&ControllerViewM
         return;
     };
     let diagnostics = &model.template_config;
-    frame.push_plain(&format!(
-        "state: {}",
-        template_config_state_text(diagnostics.state)
-    ));
-    frame.push_plain(&format!(
-        "path: {}",
-        diagnostics.path.as_deref().unwrap_or("<not configured>")
-    ));
+    frame.push_plain(&format!("state: {}", template_config_state_text(diagnostics.state)));
+    frame.push_plain(&format!("path: {}", diagnostics.path.as_deref().unwrap_or("<not configured>")));
     frame.push_plain(&format!("template count: {}", diagnostics.template_count));
     if !diagnostics.template_names.is_empty() {
         frame.push_plain("template names");
@@ -1453,11 +1130,7 @@ fn push_templates_page(frame: &mut ConfigUiFrame, model: Option<&ControllerViewM
     frame.push_plain("resolved templates");
     fn show(frame: &mut ConfigUiFrame, nodes: &[andamento_shared::presentation::PlacementNode]) {
         for node in nodes {
-            frame.push_plain(&format!(
-                "{}: {}",
-                node.label,
-                node.content.template_name.as_deref().unwrap_or("<none>")
-            ));
+            frame.push_plain(&format!("{}: {}", node.label, node.content.template_name.as_deref().unwrap_or("<none>")));
             show(frame, &node.children);
         }
     }
@@ -1501,10 +1174,7 @@ fn render_tab_row(page: ConfigPage, cols: usize) -> RenderedTabRow {
     ];
     let items = tabs
         .iter()
-        .map(|(tab_page, label)| segment_bar::SegmentItem {
-            label: (*label).to_owned(),
-            active: *tab_page == page,
-        })
+        .map(|(tab_page, label)| segment_bar::SegmentItem { label: (*label).to_owned(), active: *tab_page == page })
         .collect::<Vec<_>>();
     let (line, segment_hits) = segment_bar::render(&items, &segment_bar::ZellijRibbonStyle, cols);
     let mut hit_regions = vec![];
@@ -1513,12 +1183,7 @@ fn render_tab_row(page: ConfigPage, cols: usize) -> RenderedTabRow {
         let Some((tab_page, label)) = tabs.get(hit.index) else {
             continue;
         };
-        hit_regions.push(HitRegion {
-            row: 0,
-            col_start: hit.col_start,
-            col_end: hit.col_end,
-            action: ConfigAction::SetPage(*tab_page),
-        });
+        hit_regions.push(HitRegion { row: 0, col_start: hit.col_start, col_end: hit.col_end, action: ConfigAction::SetPage(*tab_page) });
         ribbons.push(RibbonOverlay {
             row: 0,
             col: hit.col_start,
@@ -1530,11 +1195,7 @@ fn render_tab_row(page: ConfigPage, cols: usize) -> RenderedTabRow {
     if let Some(last_ribbon) = ribbons.last_mut() {
         last_ribbon.width = cols.saturating_sub(last_ribbon.col).max(last_ribbon.width);
     }
-    RenderedTabRow {
-        line,
-        hit_regions,
-        ribbons,
-    }
+    RenderedTabRow { line, hit_regions, ribbons }
 }
 
 fn push_cwd_metadata(frame: &mut ConfigUiFrame, model: Option<&ControllerViewModel>) {
@@ -1545,10 +1206,7 @@ fn push_cwd_metadata(frame: &mut ConfigUiFrame, model: Option<&ControllerViewMod
     };
     for tab in &model.tabs {
         let metadata = metadata_for_node(model, &NodeKey::Tab(tab.tab_id));
-        let value = metadata
-            .get("zellij.pane.cwd")
-            .map(|v| format_metadata_value(&v.value))
-            .unwrap_or_else(|| "<none>".into());
+        let value = metadata.get("zellij.pane.cwd").map(|v| format_metadata_value(&v.value)).unwrap_or_else(|| "<none>".into());
         frame.push_plain(&format!("{}: {}", tab.name, value));
     }
 }
@@ -1559,39 +1217,21 @@ fn format_metadata_value(value: &MetadataValue) -> String {
         MetadataValue::Bool(value) => value.to_string(),
         MetadataValue::Integer(value) => value.to_string(),
         MetadataValue::StringList(values) => values.join(","),
-        MetadataValue::EntityRefs(values) => values
-            .iter()
-            .map(|value| format!("{}:{}", value.kind, value.id))
-            .collect::<Vec<_>>()
-            .join(","),
-        MetadataValue::GroupPath(segments) => segments
-            .iter()
-            .map(|segment| {
-                segment
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| segment.value.display())
-            })
-            .collect::<Vec<_>>()
-            .join(" / "),
+        MetadataValue::EntityRefs(values) => {
+            values.iter().map(|value| format!("{}:{}", value.kind, value.id)).collect::<Vec<_>>().join(",")
+        }
+        MetadataValue::GroupPath(segments) => {
+            segments.iter().map(|segment| segment.label.clone().unwrap_or_else(|| segment.value.display())).collect::<Vec<_>>().join(" / ")
+        }
     }
 }
 
-fn push_segmented_choice(
-    frame: &mut ConfigUiFrame,
-    label: &str,
-    options: &[(&str, bool, ConfigAction)],
-) {
+fn push_segmented_choice(frame: &mut ConfigUiFrame, label: &str, options: &[(&str, bool, ConfigAction)]) {
     const MIN_LABEL_WIDTH: usize = 9;
     push_segmented_form_choice(frame, label, MIN_LABEL_WIDTH.max(label.width()), options);
 }
 
-fn push_segmented_form_choice(
-    frame: &mut ConfigUiFrame,
-    label: &str,
-    label_width: usize,
-    options: &[(&str, bool, ConfigAction)],
-) {
+fn push_segmented_form_choice(frame: &mut ConfigUiFrame, label: &str, label_width: usize, options: &[(&str, bool, ConfigAction)]) {
     let label_width = label_width.max(label.width());
     let mut text = format!("{label:<label_width$}  ");
     let mut col = text.width();
@@ -1607,14 +1247,7 @@ fn push_segmented_form_choice(
         col = col.saturating_add(segment_width);
         if segment_start < frame.cols {
             let row = frame.current_row();
-            frame.add_hit(
-                row,
-                segment_start,
-                segment_start
-                    .saturating_add(segment_width)
-                    .saturating_sub(1),
-                *action,
-            );
+            frame.add_hit(row, segment_start, segment_start.saturating_add(segment_width).saturating_sub(1), *action);
         }
     }
     frame.push_plain(&text);
@@ -1705,11 +1338,7 @@ mod tests {
         }]);
         model.inspected_node = Some(NodeKey::Placement(key.clone()));
         model.template_config.effective_variables =
-            vec![andamento_shared::EffectiveNodeVariables {
-                node: NodeKey::Placement(key),
-                values: BTreeMap::new(),
-                declarations,
-            }];
+            vec![andamento_shared::EffectiveNodeVariables { node: NodeKey::Placement(key), values: BTreeMap::new(), declarations }];
         model
     }
 
@@ -1718,18 +1347,12 @@ mod tests {
     #[test]
     fn inspect_lists_unmatched_catalog_count_and_ids() {
         let mut model = model_with_tab(tab_workspace_id(7), "workspace");
-        model.unmatched_entities = vec![
-            EntityRef::local("novel", "unmatched-one"),
-            EntityRef::local("repo", "unmatched-two"),
-        ];
+        model.unmatched_entities = vec![EntityRef::local("novel", "unmatched-one"), EntityRef::local("repo", "unmatched-two")];
         let mut frame = ConfigUiFrame::new(100, 100);
         push_inspect_page(&mut frame, Some(&model), None);
         let text = frame.lines.join("\n");
         assert!(text.contains("Unmatched catalog entities"));
-        assert!(frame
-            .lines
-            .iter()
-            .any(|line| line.contains("count") && line.contains('2')));
+        assert!(frame.lines.iter().any(|line| line.contains("count") && line.contains('2')));
         assert!(text.contains("novel: unmatched-one"));
         assert!(text.contains("repo: unmatched-two"));
     }
@@ -1737,10 +1360,7 @@ mod tests {
     #[test]
     fn renders_selected_config() {
         let rendered = render_config(
-            RailConfig {
-                structure: RailStructure::BoxPerTab,
-                segment_between_color: None,
-            },
+            RailConfig { structure: RailStructure::BoxPerTab, segment_between_color: None },
             None,
             ConfigPage::Settings,
             22,
@@ -1750,38 +1370,20 @@ mod tests {
             0,
         );
 
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim().ends_with("● box per tab")));
+        assert!(rendered.lines.iter().any(|line| line.trim().ends_with("● box per tab")));
     }
 
     #[test]
     fn maps_click_rows_to_config_actions() {
-        let rendered = render_config(
-            RailConfig::default(),
-            None,
-            ConfigPage::Settings,
-            22,
-            90,
-            &[],
-            false,
-            0,
-        );
+        let rendered = render_config(RailConfig::default(), None, ConfigPage::Settings, 22, 90, &[], false, 0);
 
-        assert!(rendered
-            .hit_regions
-            .iter()
-            .any(|hit| hit.action == ConfigAction::SetStructure(RailStructure::BoxPerTab)));
+        assert!(rendered.hit_regions.iter().any(|hit| hit.action == ConfigAction::SetStructure(RailStructure::BoxPerTab)));
     }
 
     #[test]
     fn settings_page_renders_enum_choices_inline() {
         let rendered = render_config(
-            RailConfig {
-                structure: RailStructure::BoxPerTab,
-                segment_between_color: None,
-            },
+            RailConfig { structure: RailStructure::BoxPerTab, segment_between_color: None },
             None,
             ConfigPage::Settings,
             16,
@@ -1791,25 +1393,12 @@ mod tests {
             0,
         );
 
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.trim()
-                == "structure  ○ joined cells  ○ split around active  ● box per tab"));
+        assert!(rendered.lines.iter().any(|line| line.trim() == "structure  ○ joined cells  ○ split around active  ● box per tab"));
     }
 
     #[test]
     fn settings_inline_choices_have_separate_click_targets() {
-        let rendered = render_config(
-            RailConfig::default(),
-            None,
-            ConfigPage::Settings,
-            16,
-            90,
-            &[],
-            false,
-            0,
-        );
+        let rendered = render_config(RailConfig::default(), None, ConfigPage::Settings, 16, 90, &[], false, 0);
 
         let structure_hits = rendered
             .hit_regions
@@ -1824,9 +1413,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(structure_hits.len(), 3);
-        assert!(structure_hits
-            .windows(2)
-            .all(|pair| pair[0].row == pair[1].row && pair[0].col_end < pair[1].col_start));
+        assert!(structure_hits.windows(2).all(|pair| pair[0].row == pair[1].row && pair[0].col_end < pair[1].col_start));
     }
 
     #[test]
@@ -1839,34 +1426,15 @@ mod tests {
         assert!(line.contains("inspect"));
         assert!(line.contains("templates"));
         assert!(line.contains("stats"));
-        assert!(
-            !line.contains("TEMPLATES"),
-            "active tab should be styled by the segment, not uppercased"
-        );
-        assert!(
-            !line.contains(""),
-            "config tabs should use a consistent Zellij ribbon shape"
-        );
+        assert!(!line.contains("TEMPLATES"), "active tab should be styled by the segment, not uppercased");
+        assert!(!line.contains(""), "config tabs should use a consistent Zellij ribbon shape");
         assert!(line.starts_with(" settings  inspect "));
         assert_eq!(
-            rendered
-                .ribbons
-                .iter()
-                .map(|ribbon| (ribbon.label.as_str(), ribbon.selected))
-                .collect::<Vec<_>>(),
-            vec![
-                ("settings", false),
-                ("inspect", false),
-                ("templates", true),
-                ("stats", false)
-            ]
+            rendered.ribbons.iter().map(|ribbon| (ribbon.label.as_str(), ribbon.selected)).collect::<Vec<_>>(),
+            vec![("settings", false), ("inspect", false), ("templates", true), ("stats", false)]
         );
         let last_ribbon = rendered.ribbons.last().expect("last ribbon");
-        assert_eq!(
-            last_ribbon.col + last_ribbon.width,
-            60,
-            "final ribbon should fill the rest of the tab row"
-        );
+        assert_eq!(last_ribbon.col + last_ribbon.width, 60, "final ribbon should fill the rest of the tab row");
         assert_eq!(
             hits.iter().map(|hit| hit.action).collect::<Vec<_>>(),
             vec![
@@ -1891,15 +1459,9 @@ mod tests {
         ];
 
         for (action, label) in expectations {
-            let hit = hits
-                .iter()
-                .find(|hit| hit.action == action)
-                .expect("hit for tab");
+            let hit = hits.iter().find(|hit| hit.action == action).expect("hit for tab");
             let segment = display_width_slice(&line, hit.col_start, hit.col_end);
-            assert!(
-                segment.contains(label),
-                "segment {segment:?} should contain {label:?}"
-            );
+            assert!(segment.contains(label), "segment {segment:?} should contain {label:?}");
         }
     }
 
@@ -1909,10 +1471,7 @@ mod tests {
         configuration.insert("rail_scope".to_owned(), " tab:7 ".to_owned());
 
         assert_eq!(config_scope(&configuration), Some("tab:7".to_owned()));
-        assert_eq!(
-            initial_page_for_scope(config_scope(&configuration).as_deref()),
-            ConfigPage::Inspect
-        );
+        assert_eq!(initial_page_for_scope(config_scope(&configuration).as_deref()), ConfigPage::Inspect);
     }
 
     #[test]
@@ -1923,10 +1482,7 @@ mod tests {
 
         assert_eq!(
             launch_config_placement(&configuration),
-            Some(PluginPlacement::Tab {
-                tab_id: tab_workspace_id(7),
-                pane_kind: PluginPaneKind::Floating,
-            })
+            Some(PluginPlacement::Tab { tab_id: tab_workspace_id(7), pane_kind: PluginPaneKind::Floating })
         );
     }
 
@@ -1951,81 +1507,41 @@ mod tests {
     #[test]
     fn resolves_own_config_tab_placement_from_pane_manifest() {
         let pane_manifest = PaneManifest {
-            panes: HashMap::from([(
-                2,
-                vec![PaneInfo {
-                    id: 21,
-                    is_plugin: true,
-                    is_floating: false,
-                    ..Default::default()
-                }],
-            )]),
+            panes: HashMap::from([(2, vec![PaneInfo { id: 21, is_plugin: true, is_floating: false, ..Default::default() }])]),
         };
-        let local_tabs = vec![ConfigLocalTab {
-            tab_id: tab_workspace_id(7),
-            position: 2,
-        }];
+        let local_tabs = vec![ConfigLocalTab { tab_id: tab_workspace_id(7), position: 2 }];
 
         assert_eq!(
             own_plugin_tab_placement(&pane_manifest, &local_tabs, 21),
-            Some(PluginPlacement::Tab {
-                tab_id: tab_workspace_id(7),
-                pane_kind: PluginPaneKind::Tiled,
-            })
+            Some(PluginPlacement::Tab { tab_id: tab_workspace_id(7), pane_kind: PluginPaneKind::Tiled })
         );
     }
 
     #[test]
     fn resolves_floating_config_placement_from_pane_manifest() {
         let pane_manifest = PaneManifest {
-            panes: HashMap::from([(
-                3,
-                vec![PaneInfo {
-                    id: 22,
-                    is_plugin: true,
-                    is_floating: true,
-                    ..Default::default()
-                }],
-            )]),
+            panes: HashMap::from([(3, vec![PaneInfo { id: 22, is_plugin: true, is_floating: true, ..Default::default() }])]),
         };
-        let local_tabs = vec![ConfigLocalTab {
-            tab_id: tab_workspace_id(8),
-            position: 3,
-        }];
+        let local_tabs = vec![ConfigLocalTab { tab_id: tab_workspace_id(8), position: 3 }];
 
         assert_eq!(
             own_plugin_tab_placement(&pane_manifest, &local_tabs, 22),
-            Some(PluginPlacement::Tab {
-                tab_id: tab_workspace_id(8),
-                pane_kind: PluginPaneKind::Floating,
-            })
+            Some(PluginPlacement::Tab { tab_id: tab_workspace_id(8), pane_kind: PluginPaneKind::Floating })
         );
     }
 
     #[test]
     fn config_editor_hello_payload_includes_registration_placement() {
-        let payload = config_editor_hello_payload(
-            22,
-            4,
-            PluginPlacement::Tab {
-                tab_id: tab_workspace_id(8),
-                pane_kind: PluginPaneKind::Floating,
-            },
-        )
-        .unwrap();
+        let payload =
+            config_editor_hello_payload(22, 4, PluginPlacement::Tab { tab_id: tab_workspace_id(8), pane_kind: PluginPaneKind::Floating })
+                .unwrap();
         let decoded: PluginRegistrationHello = serde_json::from_str(&payload).unwrap();
 
         assert_eq!(
             decoded,
             PluginRegistrationHello {
-                identity: RendererHello {
-                    plugin_id: 22,
-                    client_id: 4,
-                },
-                placement: PluginPlacement::Tab {
-                    tab_id: tab_workspace_id(8),
-                    pane_kind: PluginPaneKind::Floating,
-                },
+                identity: RendererHello { plugin_id: 22, client_id: 4 },
+                placement: PluginPlacement::Tab { tab_id: tab_workspace_id(8), pane_kind: PluginPaneKind::Floating },
             }
         );
     }
@@ -2100,14 +1616,10 @@ mod tests {
         // move on before the click lands, so resolution must fail closed.
         let mut plugin = PluginState::default();
         plugin.own_client_id = Some(3);
-        plugin.model = Some(placement_model_with_declarations(vec![
-            child_layout_declaration(),
-        ]));
+        plugin.model = Some(placement_model_with_declarations(vec![child_layout_declaration()]));
         plugin.rendered_for_node = Some(plugin.current_inspected_node());
 
-        let request = plugin
-            .node_variable_request(0, Some(1))
-            .expect("a live index resolves");
+        let request = plugin.node_variable_request(0, Some(1)).expect("a live index resolves");
         assert_eq!(request.name, "child-layout");
         assert_eq!(request.value.as_deref(), Some("strip"));
 
@@ -2116,21 +1628,15 @@ mod tests {
             None,
             "a variable index past the declarations must not fall through to another variable"
         );
-        assert_eq!(
-            plugin.node_variable_request(0, Some(9)),
-            None,
-            "a value index past the allowed values must not set a foreign value"
-        );
+        assert_eq!(plugin.node_variable_request(0, Some(9)), None, "a value index past the allowed values must not set a foreign value");
 
         // The same click against a model whose declarations have changed under
         // it resolves to the new declaration or to nothing, never to the old one.
-        plugin.model = Some(placement_model_with_declarations(vec![
-            andamento_shared::template_config::NodeVariableDefinition {
-                name: "caption".to_owned(),
-                default: "none".to_owned(),
-                values: vec![],
-            },
-        ]));
+        plugin.model = Some(placement_model_with_declarations(vec![andamento_shared::template_config::NodeVariableDefinition {
+            name: "caption".to_owned(),
+            default: "none".to_owned(),
+            values: vec![],
+        }]));
         assert_eq!(
             plugin.node_variable_request(0, Some(1)),
             None,
@@ -2145,17 +1651,10 @@ mod tests {
         // fail a test rather than pass silently.
         let mut plugin = PluginState::default();
         plugin.own_client_id = Some(3);
-        plugin.model = Some(placement_model_with_declarations(vec![
-            child_layout_declaration(),
-        ]));
+        plugin.model = Some(placement_model_with_declarations(vec![child_layout_declaration()]));
         plugin.rendered_for_node = Some(plugin.current_inspected_node());
 
-        assert!(
-            plugin
-                .metadata_visibility_request(Some(MetadataTriState::Meta))
-                .is_some(),
-            "a click against the frame on screen resolves"
-        );
+        assert!(plugin.metadata_visibility_request(Some(MetadataTriState::Meta)).is_some(), "a click against the frame on screen resolves");
 
         plugin.rendered_for_node = Some(NodeKey::Root);
         assert_eq!(
@@ -2179,28 +1678,12 @@ mod tests {
             },
         ]);
 
-        let rendered = render_config_with_scope(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Inspect,
-            None,
-            60,
-            100,
-            &[],
-            false,
-            0,
-        );
+        let rendered = render_config_with_scope(RailConfig::default(), Some(&model), ConfigPage::Inspect, None, 60, 100, &[], false, 0);
 
         let metadata = option_column(&rendered.lines, "Metadata").expect("metadata row");
         let short = option_column(&rendered.lines, "child-layout").expect("child-layout row");
-        let long =
-            option_column(&rendered.lines, "attention.density.preference").expect("long-name row");
-        assert_eq!(
-            (metadata, short),
-            (long, long),
-            "every option row shares one column: {:?}",
-            rendered.lines
-        );
+        let long = option_column(&rendered.lines, "attention.density.preference").expect("long-name row");
+        assert_eq!((metadata, short), (long, long), "every option row shares one column: {:?}", rendered.lines);
     }
 
     #[test]
@@ -2209,36 +1692,17 @@ mod tests {
         // finite set of segments to offer. It renders inherit alone rather than
         // an empty row. Setting a free-form value from the inspector needs a
         // different control — see the follow-up issue.
-        let model = placement_model_with_declarations(vec![
-            andamento_shared::template_config::NodeVariableDefinition {
-                name: "caption".to_owned(),
-                default: "none".to_owned(),
-                values: vec![],
-            },
-        ]);
+        let model = placement_model_with_declarations(vec![andamento_shared::template_config::NodeVariableDefinition {
+            name: "caption".to_owned(),
+            default: "none".to_owned(),
+            values: vec![],
+        }]);
 
-        let rendered = render_config_with_scope(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Inspect,
-            None,
-            60,
-            100,
-            &[],
-            false,
-            0,
-        );
+        let rendered = render_config_with_scope(RailConfig::default(), Some(&model), ConfigPage::Inspect, None, 60, 100, &[], false, 0);
 
         assert!(option_column(&rendered.lines, "caption").is_some());
         assert_eq!(
-            rendered
-                .hit_regions
-                .iter()
-                .filter(|hit| matches!(
-                    hit.action,
-                    ConfigAction::SetNodeVariable { variable: 0, .. }
-                ))
-                .count(),
+            rendered.hit_regions.iter().filter(|hit| matches!(hit.action, ConfigAction::SetNodeVariable { variable: 0, .. })).count(),
             1,
             "only the inherit segment is offered: {:?}",
             rendered.lines
@@ -2249,49 +1713,36 @@ mod tests {
     fn inspect_root_options_expose_inheritable_child_layout_actions() {
         let mut model = model_with_tab(tab_workspace_id(7), "repo");
         model.inspected_node = Some(NodeKey::Root);
-        model.template_config.effective_variables = vec![
-            andamento_shared::EffectiveNodeVariables {
-                node: NodeKey::Root,
-                values: BTreeMap::from([(
-                    "child-layout".to_owned(),
-                    andamento_shared::EffectiveVariableValue {
-                        value: "strip".to_owned(),
-                        provenance: andamento_shared::VariableSetterProvenance {
-                            setter: "config".to_owned(),
-                            ancestor: NodeKey::Root,
-                            origin: andamento_shared::template_config::TemplateConfigOrigin {
-                                layer:
-                                    andamento_shared::template_config::TemplateConfigLayerKind::User,
-                                membership: None,
-                                source: "user.kdl".to_owned(),
-                            },
+        model.template_config.effective_variables = vec![andamento_shared::EffectiveNodeVariables {
+            node: NodeKey::Root,
+            values: BTreeMap::from([(
+                "child-layout".to_owned(),
+                andamento_shared::EffectiveVariableValue {
+                    value: "strip".to_owned(),
+                    provenance: andamento_shared::VariableSetterProvenance {
+                        setter: "config".to_owned(),
+                        ancestor: NodeKey::Root,
+                        origin: andamento_shared::template_config::TemplateConfigOrigin {
+                            layer: andamento_shared::template_config::TemplateConfigLayerKind::User,
+                            membership: None,
+                            source: "user.kdl".to_owned(),
                         },
-                        overridden: vec![andamento_shared::VariableSetterProvenance {
-                            setter: "default".to_owned(),
-                            ancestor: NodeKey::Root,
-                            origin: andamento_shared::template_config::TemplateConfigOrigin {
-                                layer: andamento_shared::template_config::TemplateConfigLayerKind::Bundled,
-                                membership: None,
-                                source: "templates/flotilla-default.kdl".to_owned(),
-                            },
-                        }],
                     },
-                )]),
-                declarations: vec![child_layout_declaration()],
-            },
-        ];
+                    overridden: vec![andamento_shared::VariableSetterProvenance {
+                        setter: "default".to_owned(),
+                        ancestor: NodeKey::Root,
+                        origin: andamento_shared::template_config::TemplateConfigOrigin {
+                            layer: andamento_shared::template_config::TemplateConfigLayerKind::Bundled,
+                            membership: None,
+                            source: "templates/flotilla-default.kdl".to_owned(),
+                        },
+                    }],
+                },
+            )]),
+            declarations: vec![child_layout_declaration()],
+        }];
 
-        let rendered = render_config_with_scope(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Inspect,
-            None,
-            40,
-            100,
-            &[],
-            false,
-            0,
-        );
+        let rendered = render_config_with_scope(RailConfig::default(), Some(&model), ConfigPage::Inspect, None, 40, 100, &[], false, 0);
         let rendered_text = rendered.lines.join("\n");
 
         assert!(rendered_text.contains("Options"));
@@ -2300,13 +1751,7 @@ mod tests {
         assert!(rendered_text.contains("child-layout = strip"));
         assert!(rendered_text.contains("config at Root [user (user.kdl)]"));
         assert!(rendered_text.contains("overrides default at Root"));
-        assert!(rendered.hit_regions.iter().any(|hit| {
-            hit.action
-                == ConfigAction::SetNodeVariable {
-                    variable: 0,
-                    value: Some(1),
-                }
-        }));
+        assert!(rendered.hit_regions.iter().any(|hit| { hit.action == ConfigAction::SetNodeVariable { variable: 0, value: Some(1) } }));
     }
 
     #[test]
@@ -2330,24 +1775,12 @@ mod tests {
             values: BTreeMap::from([("git.repo".to_owned(), entry.clone())]),
             source_entries: BTreeMap::from([(
                 "git.repo".to_owned(),
-                vec![MetadataSourceEntry {
-                    source_id: "andamento-git-watcher".to_owned(),
-                    entry,
-                }],
+                vec![MetadataSourceEntry { source_id: "andamento-git-watcher".to_owned(), entry }],
             )]),
             reachable_identities: vec![],
         }];
 
-        let rendered = render_config(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Inspect,
-            40,
-            100,
-            &[],
-            false,
-            0,
-        );
+        let rendered = render_config(RailConfig::default(), Some(&model), ConfigPage::Inspect, 40, 100, &[], false, 0);
         let rendered_text = rendered.lines.join("\n");
 
         assert!(rendered_text.contains("key                    value"));
@@ -2383,26 +1816,8 @@ mod tests {
             reachable_identities: vec![],
         }];
 
-        let top = render_config(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Inspect,
-            10,
-            80,
-            &[],
-            false,
-            0,
-        );
-        let scrolled = render_config(
-            RailConfig::default(),
-            Some(&model),
-            ConfigPage::Inspect,
-            10,
-            80,
-            &[],
-            false,
-            usize::MAX,
-        );
+        let top = render_config(RailConfig::default(), Some(&model), ConfigPage::Inspect, 10, 80, &[], false, 0);
+        let scrolled = render_config(RailConfig::default(), Some(&model), ConfigPage::Inspect, 10, 80, &[], false, usize::MAX);
 
         assert!(top.lines.join("\n").contains("Inspect: Tab \"repo\" #7"));
         assert!(!top.lines.join("\n").contains("meta.15"));
@@ -2412,59 +1827,26 @@ mod tests {
 
     #[test]
     fn click_action_updates_config_locally() {
-        let updated = apply_config_action(
-            RailConfig::default(),
-            ConfigAction::SetStructure(RailStructure::BoxPerTab),
-        );
+        let updated = apply_config_action(RailConfig::default(), ConfigAction::SetStructure(RailStructure::BoxPerTab));
 
         assert_eq!(updated.structure, RailStructure::BoxPerTab);
     }
 
     #[test]
     fn renders_stats_page_collect_action() {
-        let rendered = render_config(
-            RailConfig::default(),
-            None,
-            ConfigPage::Stats,
-            10,
-            40,
-            &[],
-            false,
-            0,
-        );
+        let rendered = render_config(RailConfig::default(), None, ConfigPage::Stats, 10, 40, &[], false, 0);
 
         assert!(rendered.lines.iter().any(|line| line.contains("stats")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("collect stats")));
-        assert!(rendered
-            .hit_regions
-            .iter()
-            .any(|hit| hit.action == ConfigAction::CollectStats));
+        assert!(rendered.lines.iter().any(|line| line.contains("collect stats")));
+        assert!(rendered.hit_regions.iter().any(|hit| hit.action == ConfigAction::CollectStats));
     }
 
     #[test]
     fn renders_stats_collection_pending_feedback() {
-        let rendered = render_config(
-            RailConfig::default(),
-            None,
-            ConfigPage::Stats,
-            10,
-            40,
-            &[],
-            true,
-            0,
-        );
+        let rendered = render_config(RailConfig::default(), None, ConfigPage::Stats, 10, 40, &[], true, 0);
 
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("collecting")));
-        assert!(!rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("no stats collected yet")));
+        assert!(rendered.lines.iter().any(|line| line.contains("collecting")));
+        assert!(!rendered.lines.iter().any(|line| line.contains("no stats collected yet")));
     }
 
     #[test]
@@ -2482,26 +1864,11 @@ mod tests {
             spans: vec![],
         }];
 
-        let rendered = render_config(
-            RailConfig::default(),
-            None,
-            ConfigPage::Stats,
-            8,
-            80,
-            &reports,
-            false,
-            5,
-        );
+        let rendered = render_config(RailConfig::default(), None, ConfigPage::Stats, 8, 80, &reports, false, 5);
 
         assert!(rendered.lines[0].contains("stats"));
-        assert!(!rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("counter-00")));
-        assert!(rendered
-            .lines
-            .iter()
-            .any(|line| line.contains("counter-03")));
+        assert!(!rendered.lines.iter().any(|line| line.contains("counter-00")));
+        assert!(rendered.lines.iter().any(|line| line.contains("counter-03")));
     }
 
     #[test]

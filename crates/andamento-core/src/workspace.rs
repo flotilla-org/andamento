@@ -15,8 +15,8 @@ use crate::{
     records,
     records::SubjectRecord,
     slots::{
-        Arrangement, ArrangementCommit, ArrangementDoc, ArrangementView, Baseline, OverlayView,
-        Resolve, SlotInfo, StoredArrangement, WorkspaceSlots,
+        Arrangement, ArrangementCommit, ArrangementDoc, ArrangementView, Baseline, OverlayView, Resolve, SlotInfo, StoredArrangement,
+        WorkspaceSlots,
     },
     suggested_layout::{Content, RebindPolicy, ViewSpec},
     target_resolution::{PortableResolution, SavedResolution, SavedResolutions},
@@ -52,10 +52,7 @@ impl WorkspaceRecord {
     /// The generation of what a host reads as workspace content: slots,
     /// arrangement and resolutions.
     pub fn content_generation(&self) -> u64 {
-        self.slots
-            .generation()
-            .max(self.arrangement.generation())
-            .max(self.resolutions.generation())
+        self.slots.generation().max(self.arrangement.generation()).max(self.resolutions.generation())
     }
 
     pub fn encode(&self) -> String {
@@ -90,10 +87,7 @@ impl WorkspaceRecord {
     }
 
     pub fn slot(&self, key: &str) -> Result<SlotInfo, String> {
-        self.slots
-            .get()
-            .slot(key)
-            .ok_or_else(|| format!("no slot {key:?}"))
+        self.slots.get().slot(key).ok_or_else(|| format!("no slot {key:?}"))
     }
 
     /// Where a slot's resolution comes from: a baseline slot that follows
@@ -101,19 +95,9 @@ impl WorkspaceRecord {
     /// its spec, as a local recipe or a provider facet (`facet` of the
     /// entity's own layout, `primary` for the `workspace.primary.*` facts).
     pub fn slot_source(&self, slot: &SlotInfo) -> SlotSource {
-        match (
-            self.subject(),
-            slot.in_baseline && !slot.detached,
-            &slot.spec.content,
-        ) {
-            (Some(subject), true, _) => SlotSource::Provider {
-                entity: subject.clone(),
-                slot: slot.key.clone(),
-            },
-            (_, _, Content::ProviderFacet { entity, facet }) => SlotSource::Provider {
-                entity: entity.clone(),
-                slot: facet.clone(),
-            },
+        match (self.subject(), slot.in_baseline && !slot.detached, &slot.spec.content) {
+            (Some(subject), true, _) => SlotSource::Provider { entity: subject.clone(), slot: slot.key.clone() },
+            (_, _, Content::ProviderFacet { entity, facet }) => SlotSource::Provider { entity: entity.clone(), slot: facet.clone() },
             (_, _, Content::Local(recipe)) => SlotSource::Local(recipe.clone()),
         }
     }
@@ -130,19 +114,12 @@ impl WorkspaceRecord {
     pub fn follow_baseline(&mut self, clock: &mut Clock, baseline: Option<Baseline>) -> bool {
         let mut changed = false;
         if let Some(baseline) = baseline {
-            let hint_changed = self
-                .slots
-                .get()
-                .baseline
-                .as_ref()
-                .is_some_and(|old| old.hint != baseline.hint);
+            let hint_changed = self.slots.get().baseline.as_ref().is_some_and(|old| old.hint != baseline.hint);
             changed = self.slots.follow(clock, |slots| {
                 slots.set_baseline(baseline);
             });
             if hint_changed {
-                changed |= self
-                    .arrangement
-                    .follow(clock, Arrangement::note_hint_change);
+                changed |= self.arrangement.follow(clock, Arrangement::note_hint_change);
             }
         }
         if changed || (self.arrangement.get().is_none() && !self.slots.get().is_empty()) {
@@ -156,20 +133,12 @@ impl WorkspaceRecord {
     /// unowned one shows a tombstoned slot this restores. A slot whose
     /// content changed loses its saved resolution. Returns whether anything
     /// changed.
-    pub fn set_slot(
-        &mut self,
-        clock: &mut Clock,
-        key: &str,
-        spec: ViewSpec,
-        rebind: RebindPolicy,
-    ) -> Result<bool, String> {
+    pub fn set_slot(&mut self, clock: &mut Clock, key: &str, spec: ViewSpec, rebind: RebindPolicy) -> Result<bool, String> {
         if let Content::ProviderFacet { entity, .. } = &spec.content {
             entity.check_provider()?;
         }
         let before = self.slots.get().clone();
-        let changed = self
-            .slots
-            .edit(clock, |slots| slots.set(key, spec, rebind))?;
+        let changed = self.slots.edit(clock, |slots| slots.set(key, spec, rebind))?;
         if self.slots.get().hidden() != before.hidden() {
             self.follow_unowned(clock);
         }
@@ -225,34 +194,18 @@ impl WorkspaceRecord {
 
     /// Commit the host's whole arrangement at `expected`, validated against
     /// the slot set and reconciled (see [`Arrangement::commit`]).
-    pub fn commit_arrangement(
-        &mut self,
-        clock: &mut Clock,
-        doc: ArrangementDoc,
-        expected: u64,
-    ) -> Result<ArrangementCommit, CommitError> {
+    pub fn commit_arrangement(&mut self, clock: &mut Clock, doc: ArrangementDoc, expected: u64) -> Result<ArrangementCommit, CommitError> {
         let slots = self.slots.get().slots();
         let baseline = self.slots.get().baseline.as_ref();
-        let (generation, placed) = self.arrangement.update(Some(expected), clock, |stored| {
-            Ok(Arrangement::commit(stored, doc, baseline, &slots)?)
-        })?;
+        let (generation, placed) =
+            self.arrangement.update(Some(expected), clock, |stored| Ok(Arrangement::commit(stored, doc, baseline, &slots)?))?;
         let stored = self.arrangement.get().as_ref().expect("committed");
-        Ok(ArrangementCommit {
-            generation,
-            placed,
-            gone: stored.gone(&slots).into_iter().collect(),
-            owned: stored.owned,
-        })
+        Ok(ArrangementCommit { generation, placed, gone: stored.gone(&slots).into_iter().collect(), owned: stored.owned })
     }
 
     /// Settle a provider change to an owned arrangement at `expected`.
     /// Returns the generation after.
-    pub fn resolve_arrangement(
-        &mut self,
-        clock: &mut Clock,
-        choice: Resolve,
-        expected: u64,
-    ) -> Result<u64, CommitError> {
+    pub fn resolve_arrangement(&mut self, clock: &mut Clock, choice: Resolve, expected: u64) -> Result<u64, CommitError> {
         let slots = self.slots.get().slots();
         let baseline = self.slots.get().baseline.as_ref();
         let (generation, ()) = self.arrangement.update(Some(expected), clock, |stored| {
@@ -292,30 +245,18 @@ impl WorkspaceRecord {
         let slot = self.slot(key)?;
         if let Some(DesiredContent::Ready(desired)) = managed.desired(&self.slot_source(&slot)) {
             if desired.id() != applied {
-                return Err(format!(
-                    "slot {key:?} no longer resolves to what was applied: plan it again"
-                )
-                .into());
+                return Err(format!("slot {key:?} no longer resolves to what was applied: plan it again").into());
             }
         }
         let stamp = clock.next();
-        let (_, generation) = self.resolutions.update(None, clock, |saved| {
-            saved.set(key, resolution, applied, expected, stamp)
-        })?;
+        let (_, generation) = self.resolutions.update(None, clock, |saved| saved.set(key, resolution, applied, expected, stamp))?;
         Ok(generation)
     }
 
     /// Clear a slot's saved resolution at its `expected` generation.
     /// Returns whether there was one.
-    pub fn clear_resolution(
-        &mut self,
-        clock: &mut Clock,
-        key: &str,
-        expected: u64,
-    ) -> Result<bool, CommitError> {
-        let (_, cleared) = self
-            .resolutions
-            .update(None, clock, |saved| saved.clear(key, expected))?;
+    pub fn clear_resolution(&mut self, clock: &mut Clock, key: &str, expected: u64) -> Result<bool, CommitError> {
+        let (_, cleared) = self.resolutions.update(None, clock, |saved| saved.clear(key, expected))?;
         Ok(cleared)
     }
 
@@ -327,13 +268,8 @@ impl WorkspaceRecord {
         if self.resolutions.get().by_slot.is_empty() {
             return false;
         }
-        let sources: BTreeMap<String, SlotSource> = self
-            .slots
-            .get()
-            .slots()
-            .iter()
-            .map(|slot| (slot.key.clone(), self.slot_source(slot)))
-            .collect();
+        let sources: BTreeMap<String, SlotSource> =
+            self.slots.get().slots().iter().map(|slot| (slot.key.clone(), self.slot_source(slot))).collect();
         self.resolutions.follow(clock, |saved| {
             saved.retain(|key, saved| {
                 let Some(source) = sources.get(key) else {
@@ -354,12 +290,7 @@ impl WorkspaceRecord {
 
     /// A slot whose content the user edited, or which went, loses its saved
     /// portable resolution: it was made for other content.
-    fn forget_resolution_if_edited(
-        &mut self,
-        clock: &mut Clock,
-        key: &str,
-        before: &WorkspaceSlots,
-    ) {
+    fn forget_resolution_if_edited(&mut self, clock: &mut Clock, key: &str, before: &WorkspaceSlots) {
         let spec = |slots: &WorkspaceSlots| slots.slot(key).map(|slot| slot.spec);
         if spec(self.slots.get()) != spec(before) {
             self.resolutions.follow(clock, |r| r.forget(key));
@@ -379,9 +310,7 @@ impl WorkspaceRecord {
     fn follow_slots(&mut self, clock: &mut Clock) -> bool {
         let slots = self.slots.get().slots();
         let baseline = self.slots.get().baseline.as_ref();
-        self.arrangement.follow(clock, |stored| {
-            Arrangement::follow(stored, baseline, &slots)
-        })
+        self.arrangement.follow(clock, |stored| Arrangement::follow(stored, baseline, &slots))
     }
 }
 
@@ -405,10 +334,7 @@ mod tests {
                         label: Some("Worker".into()),
                         ended: true,
                         last_seen_ms: Some(102),
-                        facts: BTreeMap::from([(
-                            "flotilla.project".into(),
-                            MetadataValue::Text("p".into()),
-                        )]),
+                        facts: BTreeMap::from([("flotilla.project".into(), MetadataValue::Text("p".into()))]),
                     },
                 )]),
             },

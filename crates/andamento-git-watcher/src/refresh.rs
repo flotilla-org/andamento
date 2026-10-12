@@ -13,11 +13,7 @@ pub struct Cycle {
 
 /// Failed discovery is not an empty inventory. Individual publish failures do
 /// not suppress later entities or discard the invalidation watch list.
-pub fn run_cycle(
-    roots: &[PathBuf],
-    transport: &mut dyn Transport,
-    ttl_ms: u64,
-) -> io::Result<Cycle> {
+pub fn run_cycle(roots: &[PathBuf], transport: &mut dyn Transport, ttl_ms: u64) -> io::Result<Cycle> {
     let observed = transport.observed()?;
     let trees = discover(roots, &observed);
     let mut errors = Vec::new();
@@ -36,13 +32,9 @@ pub fn factory_layout(enabled: bool, layout: Option<PathBuf>) -> io::Result<Opti
     if !enabled {
         return Ok(None);
     }
-    let layout = layout
-        .ok_or_else(|| io::Error::other("--factory-repo-manager requires --factory-layout PATH"))?;
+    let layout = layout.ok_or_else(|| io::Error::other("--factory-repo-manager requires --factory-layout PATH"))?;
     if !layout.is_file() {
-        return Err(io::Error::other(format!(
-            "factory layout is not a file: {}",
-            layout.display()
-        )));
+        return Err(io::Error::other(format!("factory layout is not a file: {}", layout.display())));
     }
     Ok(Some(layout))
 }
@@ -58,24 +50,14 @@ impl RefreshWatch {
             .flat_map(|t| {
                 ["HEAD", "index", "packed-refs"]
                     .into_iter()
-                    .filter_map(|name| {
-                        git(
-                            &t.root,
-                            &["rev-parse", "--path-format=absolute", "--git-path", name],
-                        )
-                        .ok()
-                        .map(PathBuf::from)
-                    })
+                    .filter_map(|name| git(&t.root, &["rev-parse", "--path-format=absolute", "--git-path", name]).ok().map(PathBuf::from))
             })
             .collect::<Vec<_>>();
         let stamps = paths.iter().map(|p| stamp(p)).collect();
         Self { paths, stamps }
     }
     pub fn changed(&self) -> bool {
-        self.paths
-            .iter()
-            .zip(&self.stamps)
-            .any(|(path, before)| stamp(path) != *before)
+        self.paths.iter().zip(&self.stamps).any(|(path, before)| stamp(path) != *before)
     }
 }
 fn stamp(path: &Path) -> Option<SystemTime> {

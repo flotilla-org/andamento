@@ -4,13 +4,12 @@ use std::{collections::BTreeMap, ops::ControlFlow};
 use serde::{Deserialize, Serialize};
 
 use crate::template_config::{
-    ChromeSpec, TemplateConfigFieldClass, TemplateConfigMatchContext, TemplateConfigNodeKind,
-    TemplateConfigRenderedField, TemplateConfigSlot, TemplateControlSpec,
-    TemplateVariableDefinition,
+    ChromeSpec, TemplateConfigFieldClass, TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigRenderedField,
+    TemplateConfigSlot, TemplateControlSpec, TemplateVariableDefinition,
 };
 use crate::{
-    ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EntityRef, MetadataValue,
-    NodeKey, PlacementKey, ResolvedTemplateSlot, WorkspaceId,
+    ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EntityRef, MetadataValue, NodeKey, PlacementKey,
+    ResolvedTemplateSlot, WorkspaceId,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,20 +128,13 @@ pub struct Content {
 impl Content {
     /// Plain content for a frontend to measure. No terminal elision or styling.
     pub fn text(&self) -> String {
-        self.fields
-            .iter()
-            .map(|f| f.value.as_str())
-            .collect::<Vec<_>>()
-            .join(" ")
+        self.fields.iter().map(|f| f.value.as_str()).collect::<Vec<_>>().join(" ")
     }
 }
 
 /// The first placement of `entity`, depth first. A default group placed more
 /// than once covers leftover tabs under its first placement only.
-fn find_node_mut<'a>(
-    nodes: &'a mut [PlacementNode],
-    entity: &EntityRef,
-) -> Option<&'a mut PlacementNode> {
+fn find_node_mut<'a>(nodes: &'a mut [PlacementNode], entity: &EntityRef) -> Option<&'a mut PlacementNode> {
     for node in nodes {
         if &node.entity == entity {
             return Some(node);
@@ -156,10 +148,7 @@ fn find_node_mut<'a>(
 
 // Inspection and coverage both traverse collapsed descendants. The callback can
 // stop early for lookup, without allocating an intermediate list of nodes.
-fn visit_nodes<'a, B>(
-    nodes: &'a [PlacementNode],
-    visit: &mut impl FnMut(&'a PlacementNode) -> ControlFlow<B>,
-) -> ControlFlow<B> {
+fn visit_nodes<'a, B>(nodes: &'a [PlacementNode], visit: &mut impl FnMut(&'a PlacementNode) -> ControlFlow<B>) -> ControlFlow<B> {
     for node in nodes {
         visit(node)?;
         visit_nodes(&node.children, visit)?;
@@ -171,9 +160,7 @@ impl SurfaceSnapshot {
     /// Sections a frontend without a workspace-creation affordance renders:
     /// everything except the empty workspace fallback.
     pub fn visible_sections(&self) -> impl Iterator<Item = &Section> {
-        self.sections
-            .iter()
-            .filter(|section| !section.is_empty_workspace_fallback())
+        self.sections.iter().filter(|section| !section.is_empty_workspace_fallback())
     }
 
     pub fn node(&self, key: &PlacementKey) -> Option<&PlacementNode> {
@@ -227,26 +214,16 @@ impl SurfaceSnapshot {
                 .get(&workspace.tab_id)
                 .filter(|host| hosts_used.insert((*host).clone()))
                 .cloned()
-                .unwrap_or_else(|| {
-                    EntityRef::local(system::WORKSPACE, workspace.tab_id.to_string())
-                });
-            let key = PlacementKey(vec![crate::PlacementSegment {
-                loop_name: UNPLACED_WORKSPACES_SECTION.into(),
-                entity: entity.clone(),
-            }]);
+                .unwrap_or_else(|| EntityRef::local(system::WORKSPACE, workspace.tab_id.to_string()));
+            let key = PlacementKey(vec![crate::PlacementSegment { loop_name: UNPLACED_WORKSPACES_SECTION.into(), entity: entity.clone() }]);
             nodes.push(PlacementNode {
-                loop_key: key
-                    .loop_key(UNPLACED_WORKSPACES_SECTION)
-                    .expect("a cover key has its one segment"),
+                loop_key: key.loop_key(UNPLACED_WORKSPACES_SECTION).expect("a cover key has its one segment"),
                 key,
                 entity,
                 label: workspace.name.clone(),
                 layout: None,
                 form: "compact".into(),
-                state: PresentationState::Live {
-                    workspace_id: workspace.tab_id,
-                    selected: workspace.active,
-                },
+                state: PresentationState::Live { workspace_id: workspace.tab_id, selected: workspace.active },
                 content: Content {
                     fields: vec![TemplateConfigRenderedField {
                         class: TemplateConfigFieldClass::Required,
@@ -271,15 +248,10 @@ impl SurfaceSnapshot {
                 if let Some(parent) = find_node_mut(&mut section.nodes, group) {
                     for mut node in std::mem::take(&mut nodes) {
                         let mut segments = parent.key.0.clone();
-                        segments.push(crate::PlacementSegment {
-                            loop_name: UNPLACED_WORKSPACES_SECTION.into(),
-                            entity: node.entity.clone(),
-                        });
+                        segments
+                            .push(crate::PlacementSegment { loop_name: UNPLACED_WORKSPACES_SECTION.into(), entity: node.entity.clone() });
                         node.key = PlacementKey(segments);
-                        node.loop_key = node
-                            .key
-                            .loop_key(&section.name)
-                            .expect("a cover key has the default group's segment and its own");
+                        node.loop_key = node.key.loop_key(&section.name).expect("a cover key has the default group's segment and its own");
                         parent.children.push(node);
                     }
                     break 'groups;
@@ -322,9 +294,7 @@ impl SurfaceSnapshot {
             effective_metadata(model, &NodeKey::Root, &mut metadata);
             let content = resolve_content(region.root.as_ref(), &metadata, false, false, false);
             if let Some(error) = &content.error {
-                snapshot
-                    .diagnostics
-                    .push(format!("region {}: {error}", definition.name));
+                snapshot.diagnostics.push(format!("region {}: {error}", definition.name));
             }
             snapshot.sections.push(Section {
                 name: definition.name.clone(),
@@ -333,13 +303,7 @@ impl SurfaceSnapshot {
                 pinned: definition.pinned,
                 content,
                 nodes: apply_sibling_orders(
-                    region
-                        .entities
-                        .iter()
-                        .filter_map(|entity| {
-                            resolve_node(model, entity, definition, layouts, states, &orders)
-                        })
-                        .collect(),
+                    region.entities.iter().filter_map(|entity| resolve_node(model, entity, definition, layouts, states, &orders)).collect(),
                     &orders,
                 ),
             });
@@ -356,21 +320,15 @@ pub fn apply_declared_abbreviation(
     binding: &str,
     explicit: Option<crate::template_config::AbbreviationTier>,
 ) -> bool {
-    let tier = explicit
-        .map(|tier| tier.as_str())
-        .or_else(|| metadata_text(metadata, &format!("var.{binding}.tier")))
-        .unwrap_or("full");
+    let tier = explicit.map(|tier| tier.as_str()).or_else(|| metadata_text(metadata, &format!("var.{binding}.tier"))).unwrap_or("full");
     let full = metadata_text(metadata, "display.label").map(str::to_owned);
     let medium = metadata_text(metadata, "display.label.medium").map(str::to_owned);
     let short = metadata_text(metadata, "display.label.short").map(str::to_owned);
     let Some((selected, producer_supplied)) = (match tier {
-        "short" => short
-            .map(|label| (label, true))
-            .or_else(|| medium.map(|label| (label, true)))
-            .or_else(|| full.map(|label| (label, false))),
-        "medium" => medium
-            .map(|label| (label, true))
-            .or_else(|| full.map(|label| (label, false))),
+        "short" => {
+            short.map(|label| (label, true)).or_else(|| medium.map(|label| (label, true))).or_else(|| full.map(|label| (label, false)))
+        }
+        "medium" => medium.map(|label| (label, true)).or_else(|| full.map(|label| (label, false))),
         _ => full.map(|label| (label, true)),
     }) else {
         return false;
@@ -391,16 +349,9 @@ fn effective_metadata(
     target: &NodeKey,
     metadata: &mut BTreeMap<String, MetadataValue>,
 ) -> Option<EffectiveNodeVariables> {
-    let variables = model
-        .template_config
-        .effective_variables
-        .iter()
-        .find(|v| &v.node == target)?;
+    let variables = model.template_config.effective_variables.iter().find(|v| &v.node == target)?;
     for (name, value) in &variables.values {
-        metadata.insert(
-            format!("var.{name}"),
-            MetadataValue::Text(value.value.clone()),
-        );
+        metadata.insert(format!("var.{name}"), MetadataValue::Text(value.value.clone()));
     }
     Some(variables.clone())
 }
@@ -409,10 +360,7 @@ fn effective_metadata(
 /// invocation. Named entities come first in the saved order; an entity the
 /// order doesn't name goes after its nearest data-order predecessor already
 /// placed, or first; names that no longer match are skipped.
-fn apply_sibling_orders(
-    nodes: Vec<PlacementNode>,
-    orders: &BTreeMap<crate::PlacementLoopKey, Vec<EntityRef>>,
-) -> Vec<PlacementNode> {
+fn apply_sibling_orders(nodes: Vec<PlacementNode>, orders: &BTreeMap<crate::PlacementLoopKey, Vec<EntityRef>>) -> Vec<PlacementNode> {
     if orders.is_empty() {
         return nodes;
     }
@@ -445,17 +393,11 @@ fn order_run(data: Vec<PlacementNode>, order: &[EntityRef]) -> Vec<PlacementNode
         if placed.contains(&index) {
             continue;
         }
-        let at = (0..index)
-            .rev()
-            .find_map(|before| placed.iter().position(|&p| p == before))
-            .map_or(0, |position| position + 1);
+        let at = (0..index).rev().find_map(|before| placed.iter().position(|&p| p == before)).map_or(0, |position| position + 1);
         placed.insert(at, index);
     }
     let mut data: Vec<Option<PlacementNode>> = data.into_iter().map(Some).collect();
-    placed
-        .into_iter()
-        .filter_map(|index| data[index].take())
-        .collect()
+    placed.into_iter().filter_map(|index| data[index].take()).collect()
 }
 
 fn resolve_node(
@@ -477,39 +419,19 @@ fn resolve_node(
         .unwrap_or(&region.form)
         .clone();
     let collapsed = model.collapsed_placements.contains(&key);
-    let slot = if form == crate::DISPLAY_FORM_COMPACT {
-        entity.templates.compact.as_ref()
-    } else {
-        entity.templates.detail.as_ref()
-    };
+    let slot = if form == crate::DISPLAY_FORM_COMPACT { entity.templates.compact.as_ref() } else { entity.templates.detail.as_ref() };
     let mut display_facts = facts.clone();
     apply_declared_abbreviation(&mut display_facts, &key.0.last()?.loop_name, entity.tier);
     Some(PlacementNode {
-        content: resolve_content(
-            slot,
-            &display_facts,
-            collapsed,
-            !entity.children.is_empty(),
-            true,
-        ),
+        content: resolve_content(slot, &display_facts, collapsed, !entity.children.is_empty(), true),
         detail: {
-            let mut detail = resolve_content(
-                entity.templates.detail.as_ref(),
-                &facts,
-                collapsed,
-                !entity.children.is_empty(),
-                false,
-            );
+            let mut detail = resolve_content(entity.templates.detail.as_ref(), &facts, collapsed, !entity.children.is_empty(), false);
             if let Some(annotation) = layouts.get(&key) {
-                detail
-                    .fields
-                    .extend(annotation.related_detail.iter().cloned());
+                detail.fields.extend(annotation.related_detail.iter().cloned());
             }
             detail
         },
-        layout: layouts
-            .get(&key)
-            .and_then(|annotation| annotation.layout.clone()),
+        layout: layouts.get(&key).and_then(|annotation| annotation.layout.clone()),
         state: states.get(&entity.entity).cloned().unwrap_or_default(),
         loop_key: key.loop_key(&region.name)?,
         key,
@@ -521,11 +443,7 @@ fn resolve_node(
         collapsed,
         stale: false,
         children: apply_sibling_orders(
-            entity
-                .children
-                .iter()
-                .filter_map(|child| resolve_node(model, child, region, layouts, states, orders))
-                .collect(),
+            entity.children.iter().filter_map(|child| resolve_node(model, child, region, layouts, states, orders)).collect(),
             orders,
         ),
     })
@@ -578,16 +496,8 @@ fn resolve_content(
     };
     Content {
         fields,
-        controls: slot
-            .render_ready
-            .as_ref()
-            .map(|r| r.controls.clone())
-            .unwrap_or_default(),
-        chrome: slot
-            .render_ready
-            .as_ref()
-            .map(|r| r.chrome.clone())
-            .unwrap_or_default(),
+        controls: slot.render_ready.as_ref().map(|r| r.controls.clone()).unwrap_or_default(),
+        chrome: slot.render_ready.as_ref().map(|r| r.chrome.clone()).unwrap_or_default(),
         template_name: Some(slot.template_name.clone()),
         effective_kdl: slot.effective_kdl.clone(),
         error: slot.resolve_error.clone(),

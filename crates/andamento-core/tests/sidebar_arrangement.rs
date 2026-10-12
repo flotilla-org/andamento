@@ -40,34 +40,21 @@ fn config(regions: &[(&str, &str)]) -> String {
 }
 
 fn ab() -> String {
-    config(&[
-        ("b", "default-host=\"sidebar\" order=20"),
-        ("a", "default-host=\"sidebar\" order=10"),
-    ])
+    config(&[("b", "default-host=\"sidebar\" order=20"), ("a", "default-host=\"sidebar\" order=10")])
 }
 
 fn tabs(id: &str, keys: &[&str]) -> Panel {
     Panel {
         id: id.into(),
         weight: 1.0,
-        node: PanelNode::Tabs {
-            tabs: keys.iter().map(|k| k.to_string()).collect(),
-            selected: keys.first().map(|k| k.to_string()),
-        },
+        node: PanelNode::Tabs { tabs: keys.iter().map(|k| k.to_string()).collect(), selected: keys.first().map(|k| k.to_string()) },
     }
 }
 
 fn dock(children: Vec<Panel>) -> SidebarDoc {
     SidebarDoc {
         dock: ArrangementDoc {
-            root: Some(Panel {
-                id: "root".into(),
-                weight: 1.0,
-                node: PanelNode::Split {
-                    axis: Axis::Column,
-                    children,
-                },
-            }),
+            root: Some(Panel { id: "root".into(), weight: 1.0, node: PanelNode::Split { axis: Axis::Column, children } }),
         },
         floating: Vec::new(),
     }
@@ -77,18 +64,15 @@ fn dock(children: Vec<Panel>) -> SidebarDoc {
 fn docked(sidebar: &Sidebar) -> Vec<Vec<String>> {
     let (view, _) = sidebar.sidebar_arrangement();
     match view.doc.dock.root.map(|root| root.node) {
-        Some(PanelNode::Split { children, .. }) => children
-            .iter()
-            .map(|child| child.tabs().into_iter().map(str::to_owned).collect())
-            .collect(),
+        Some(PanelNode::Split { children, .. }) => {
+            children.iter().map(|child| child.tabs().into_iter().map(str::to_owned).collect()).collect()
+        }
         other => panic!("expected a split dock: {other:?}"),
     }
 }
 
 fn keys(keys: &[&[&str]]) -> Vec<Vec<String>> {
-    keys.iter()
-        .map(|panel| panel.iter().map(|k| k.to_string()).collect())
-        .collect()
+    keys.iter().map(|panel| panel.iter().map(|k| k.to_string()).collect()).collect()
 }
 
 fn section(id: &str, position: &str) -> (EntityRef, BTreeMap<String, MetadataValue>) {
@@ -111,9 +95,7 @@ fn configuration_places_sections_and_commits_leave_the_snapshot_current() {
     let snapshot = sidebar.snapshot();
 
     // The user reorders and closes the workspace fallback.
-    let report = sidebar
-        .set_sidebar_arrangement(dock(vec![tabs("1", &["b"]), tabs("2", &["a"])]), generation)
-        .unwrap();
+    let report = sidebar.set_sidebar_arrangement(dock(vec![tabs("1", &["b"]), tabs("2", &["a"])]), generation).unwrap();
     let committed = sidebar.sidebar_arrangement_generation();
     assert!(report.duplicates.is_empty());
     let (view, _) = sidebar.sidebar_arrangement();
@@ -124,36 +106,24 @@ fn configuration_places_sections_and_commits_leave_the_snapshot_current() {
         sidebar.set_sidebar_arrangement(dock(vec![tabs("1", &["a", "b"])]), generation),
         Err(CommitError::Stale { current: committed })
     );
-    sidebar
-        .restore_sidebar_section(".unplaced", committed)
-        .unwrap();
+    sidebar.restore_sidebar_section(".unplaced", committed).unwrap();
     assert_eq!(docked(&sidebar), keys(&[&["b"], &["a"], &[".unplaced"]]));
     // None of it touched the sidebar's evaluation.
     assert_eq!(sidebar.revision(), revision);
     assert_eq!(sidebar.snapshot(), snapshot);
 
     // Adding a hinted region places it before its next placed neighbour.
-    sidebar
-        .configure(&format!("{}{}", ab(), region("c", "order=15")))
-        .unwrap();
-    assert_eq!(
-        docked(&sidebar),
-        keys(&[&["c"], &["b"], &["a"], &[".unplaced"]])
-    );
+    sidebar.configure(&format!("{}{}", ab(), region("c", "order=15"))).unwrap();
+    assert_eq!(docked(&sidebar), keys(&[&["c"], &["b"], &["a"], &[".unplaced"]]));
     let (_, report) = sidebar.sidebar_arrangement();
     assert_eq!(report.placed, ["c"]);
 
     // A template that drops b flags it and keeps its place.
-    sidebar
-        .configure(&config(&[("a", "order=10"), ("c", "order=15")]))
-        .unwrap();
+    sidebar.configure(&config(&[("a", "order=10"), ("c", "order=15")])).unwrap();
     let (view, report) = sidebar.sidebar_arrangement();
     assert_eq!(view.unresolved, set(&["b"]));
     assert_eq!(report.unresolved, ["b"]);
-    assert_eq!(
-        docked(&sidebar),
-        keys(&[&["c"], &["b"], &["a"], &[".unplaced"]])
-    );
+    assert_eq!(docked(&sidebar), keys(&[&["c"], &["b"], &["a"], &[".unplaced"]]));
 
     // Reset forgets it and places every section by its hints.
     let generation = sidebar.sidebar_arrangement_generation();
@@ -165,15 +135,7 @@ fn configuration_places_sections_and_commits_leave_the_snapshot_current() {
 fn the_arrangement_survives_a_restart_in_the_dashboard_record() {
     let mut before = Sidebar::new(&ab()).unwrap();
     let generation = before.sidebar_arrangement_generation();
-    before
-        .set_sidebar_arrangement(
-            dock(vec![
-                tabs("1", &["b", "u:notes"]),
-                tabs("2", &[".unplaced"]),
-            ]),
-            generation,
-        )
-        .unwrap();
+    before.set_sidebar_arrangement(dock(vec![tabs("1", &["b", "u:notes"]), tabs("2", &[".unplaced"])]), generation).unwrap();
     let record = before.export_record("dashboard").unwrap();
 
     let mut after = Sidebar::new(&ab()).unwrap();
@@ -190,9 +152,7 @@ fn the_arrangement_survives_a_restart_in_the_dashboard_record() {
 
     // A commit at a generation from before the import is stale, and leaves
     // the record byte-identical.
-    assert!(after
-        .set_sidebar_arrangement(dock(vec![tabs("1", &["a"])]), fresh)
-        .is_err());
+    assert!(after.set_sidebar_arrangement(dock(vec![tabs("1", &["a"])]), fresh).is_err());
     assert_eq!(after.export_record("dashboard").unwrap(), record);
 }
 
@@ -204,41 +164,26 @@ fn an_imported_record_with_duplicates_is_repaired() {
     let mut doc = dock(vec![tabs("2", &["a"]), tabs("3", &["a"])]);
     doc.floating.push(tabs("4", &["b", "a"]));
     let record = DashboardRecord {
-        sidebar: Some(SidebarArrangement {
-            owned: true,
-            doc,
-            closed: set(&[".unplaced"]),
-            ..SidebarArrangement::default()
-        }),
+        sidebar: Some(SidebarArrangement { owned: true, doc, closed: set(&[".unplaced"]), ..SidebarArrangement::default() }),
         ..DashboardRecord::default()
     };
-    sidebar
-        .import_record("dashboard", &record.encode())
-        .unwrap();
+    sidebar.import_record("dashboard", &record.encode()).unwrap();
     let (view, report) = sidebar.sidebar_arrangement();
     assert_eq!(report.duplicates, ["a"]);
     assert_eq!(view.doc.tabs(), ["a", "b"]);
 
     // A dashboard with no arrangement: the hints place one.
     let mut placed = Sidebar::new(&ab()).unwrap();
-    placed
-        .import_record("dashboard", &DashboardRecord::default().encode())
-        .unwrap();
+    placed.import_record("dashboard", &DashboardRecord::default().encode()).unwrap();
     assert_eq!(docked(&placed), keys(&[&["a"], &["b"], &[".unplaced"]]));
 }
 
 #[test]
 fn local_sections_follow_their_container_and_are_flagged_when_removed() {
-    let text = format!(
-        "{}{LOCAL}",
-        config(&[("tree", "default-host=\"sidebar\" order=10")])
-    );
+    let text = format!("{}{LOCAL}", config(&[("tree", "default-host=\"sidebar\" order=10")]));
     let mut sidebar = Sidebar::new(&text).unwrap();
     // No local sections yet: the container is a section itself.
-    assert_eq!(
-        docked(&sidebar),
-        keys(&[&["tree"], &["local"], &[".unplaced"]])
-    );
+    assert_eq!(docked(&sidebar), keys(&[&["tree"], &["local"], &[".unplaced"]]));
     let (entity, facts) = section("pins", "1");
     sidebar.set_local(entity, facts).unwrap();
     let (entity, facts) = section("workspaces", "0");
@@ -249,36 +194,19 @@ fn local_sections_follow_their_container_and_are_flagged_when_removed() {
         .set_local(
             EntityRef::local(".group", "g"),
             BTreeMap::from([
-                (
-                    ".section".into(),
-                    MetadataValue::EntityRefs(vec![EntityRef::local(".section", "workspaces")]),
-                ),
+                (".section".into(), MetadataValue::EntityRefs(vec![EntityRef::local(".section", "workspaces")])),
                 (".default".into(), MetadataValue::Bool(true)),
             ]),
         )
         .unwrap();
-    assert_eq!(
-        docked(&sidebar),
-        keys(&[
-            &["tree"],
-            &["local"],
-            &[".section:workspaces"],
-            &[".section:pins"],
-            &[".unplaced"]
-        ])
-    );
+    assert_eq!(docked(&sidebar), keys(&[&["tree"], &["local"], &[".section:workspaces"], &[".section:pins"], &[".unplaced"]]));
     let (view, _) = sidebar.sidebar_arrangement();
     assert_eq!(view.unresolved, set(&["local"]));
     // The host drops the stand-in and puts workspaces first.
     let generation = view.generation;
     sidebar
         .set_sidebar_arrangement(
-            dock(vec![
-                tabs("1", &["tree"]),
-                tabs("2", &[".section:workspaces"]),
-                tabs("3", &[".section:pins"]),
-                tabs("4", &[".unplaced"]),
-            ]),
+            dock(vec![tabs("1", &["tree"]), tabs("2", &[".section:workspaces"]), tabs("3", &[".section:pins"]), tabs("4", &[".unplaced"])]),
             generation,
         )
         .unwrap();
@@ -290,10 +218,7 @@ fn local_sections_follow_their_container_and_are_flagged_when_removed() {
     sidebar
         .set_local(
             EntityRef::local(".ref", "r"),
-            BTreeMap::from([(
-                ".group".into(),
-                MetadataValue::EntityRefs(vec![EntityRef::local(".group", "g")]),
-            )]),
+            BTreeMap::from([(".group".into(), MetadataValue::EntityRefs(vec![EntityRef::local(".group", "g")]))]),
         )
         .unwrap();
     assert_eq!(sidebar.sidebar_arrangement_generation(), generation);

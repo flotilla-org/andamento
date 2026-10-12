@@ -7,13 +7,7 @@ use super::*;
 const UNPLACED: &str = ".unplaced";
 
 fn region(name: &str, host: Option<&str>, order: Option<i64>) -> RegionHints {
-    RegionHints {
-        name: name.into(),
-        default_host: host.map(str::to_owned),
-        order,
-        pinned: false,
-        hosts_local_sections: false,
-    }
+    RegionHints { name: name.into(), default_host: host.map(str::to_owned), order, pinned: false, hosts_local_sections: false }
 }
 
 fn sidebar(name: &str, order: i64) -> RegionHints {
@@ -33,28 +27,16 @@ fn tabs(id: &str, weight: f64, keys: &[&str]) -> Panel {
     Panel {
         id: id.into(),
         weight,
-        node: PanelNode::Tabs {
-            tabs: keys.iter().map(|k| k.to_string()).collect(),
-            selected: keys.first().map(|k| k.to_string()),
-        },
+        node: PanelNode::Tabs { tabs: keys.iter().map(|k| k.to_string()).collect(), selected: keys.first().map(|k| k.to_string()) },
     }
 }
 
 fn split(id: &str, weight: f64, axis: Axis, children: Vec<Panel>) -> Panel {
-    Panel {
-        id: id.into(),
-        weight,
-        node: PanelNode::Split { axis, children },
-    }
+    Panel { id: id.into(), weight, node: PanelNode::Split { axis, children } }
 }
 
 fn dock(children: Vec<Panel>) -> SidebarDoc {
-    SidebarDoc {
-        dock: ArrangementDoc {
-            root: Some(split("root", 1.0, Axis::Column, children)),
-        },
-        floating: Vec::new(),
-    }
+    SidebarDoc { dock: ArrangementDoc { root: Some(split("root", 1.0, Axis::Column, children)) }, floating: Vec::new() }
 }
 
 fn children(doc: &SidebarDoc) -> &[Panel] {
@@ -86,12 +68,8 @@ fn set(keys: &[&str]) -> BTreeSet<String> {
 #[test]
 fn unrelated_panels_and_host_views_are_kept() {
     let mut arrangement = fresh(&ab());
-    let doc = dock(vec![
-        tabs("1", 1.0, &["a"]),
-        tabs("reserved", 0.25, &[]),
-        tabs("2", 1.0, &["b", "u:notes"]),
-        tabs("3", 1.0, &[UNPLACED]),
-    ]);
+    let doc =
+        dock(vec![tabs("1", 1.0, &["a"]), tabs("reserved", 0.25, &[]), tabs("2", 1.0, &["b", "u:notes"]), tabs("3", 1.0, &[UNPLACED])]);
     arrangement.commit(&ab(), doc.clone()).unwrap();
     arrangement.follow(&ab());
     assert_eq!(arrangement.doc, doc);
@@ -112,48 +90,25 @@ fn duplicates_keep_the_first_copy_and_drop_panels_they_empty() {
         tabs("5", 0.0625, &["a"]),
     ]);
     // Copies in floating panels: the docked originals win.
-    doc.floating = vec![
-        tabs("6", 0.5, &["a", "u:floating"]),
-        tabs("7", 0.25, &["b"]),
-    ];
+    doc.floating = vec![tabs("6", 0.5, &["a", "u:floating"]), tabs("7", 0.25, &["b"])];
     let report = arrangement.commit(&ab(), doc).unwrap();
     assert_eq!(report.duplicates, ["a", "b"]);
-    assert_eq!(
-        docked(&arrangement),
-        [vec!["b"], vec!["a"], vec![UNPLACED], vec!["u:text"]]
-    );
+    assert_eq!(docked(&arrangement), [vec!["b"], vec!["a"], vec![UNPLACED], vec!["u:text"]]);
     assert_eq!(children(&arrangement.doc)[3].weight, 0.125);
     assert_eq!(floating(&arrangement), [vec!["u:floating"]]);
     assert_eq!(arrangement.doc.floating[0].weight, 0.5);
     // The removed tab was selected; the panel selects what is left.
-    assert_eq!(
-        children(&arrangement.doc)[3].node,
-        PanelNode::Tabs {
-            tabs: vec!["u:text".into()],
-            selected: Some("u:text".into()),
-        }
-    );
+    assert_eq!(children(&arrangement.doc)[3].node, PanelNode::Tabs { tabs: vec!["u:text".into()], selected: Some("u:text".into()) });
     assert!(arrangement.doc.check().is_ok());
 }
 
 #[test]
 fn closing_is_remembered_and_restore_gives_an_equal_share() {
-    let abc = declared(&[
-        sidebar("b", 20),
-        sidebar("a", 10),
-        region("c", None, Some(15)),
-    ]);
+    let abc = declared(&[sidebar("b", 20), sidebar("a", 10), region("c", None, Some(15))]);
     let mut arrangement = fresh(&abc);
-    assert_eq!(
-        docked(&arrangement),
-        [vec!["a"], vec!["c"], vec!["b"], vec![UNPLACED]]
-    );
+    assert_eq!(docked(&arrangement), [vec!["a"], vec!["c"], vec!["b"], vec![UNPLACED]]);
     // Closing c: commit without it.
-    let doc = dock(vec![
-        tabs("1", 0.75, &["a"]),
-        tabs("2", 1.0, &["b"]),
-        tabs("3", 0.5, &[UNPLACED]),
-    ]);
+    let doc = dock(vec![tabs("1", 0.75, &["a"]), tabs("2", 1.0, &["b"]), tabs("3", 0.5, &[UNPLACED])]);
     arrangement.commit(&abc, doc).unwrap();
     assert_eq!(arrangement.closed, set(&["c"]));
     // A known, closed section is not an unseen one: it stays closed.
@@ -165,20 +120,11 @@ fn closing_is_remembered_and_restore_gives_an_equal_share() {
     let report = arrangement.restore(&abc, "c").unwrap();
     assert_eq!(report.restored, ["c"]);
     assert!(arrangement.closed.is_empty());
-    assert_eq!(
-        docked(&arrangement),
-        [vec!["a"], vec!["c"], vec!["b"], vec![UNPLACED]]
-    );
-    let weights: Vec<f64> = children(&arrangement.doc)
-        .iter()
-        .map(|p| p.weight)
-        .collect();
+    assert_eq!(docked(&arrangement), [vec!["a"], vec!["c"], vec!["b"], vec![UNPLACED]]);
+    let weights: Vec<f64> = children(&arrangement.doc).iter().map(|p| p.weight).collect();
     assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-9);
     assert_eq!(weights[1], 0.25);
-    assert!(
-        (weights[0] / weights[2] - 0.75).abs() < 1e-9,
-        "relative shares kept"
-    );
+    assert!((weights[0] / weights[2] - 0.75).abs() < 1e-9, "relative shares kept");
     assert!(weights.iter().all(|w| *w > 0.0));
 
     // Restoring again, or an open section, changes nothing.
@@ -193,35 +139,13 @@ fn closing_is_remembered_and_restore_gives_an_equal_share() {
 
 #[test]
 fn a_saved_split_stays_whole_when_a_neighbour_arrives_before_it() {
-    let abc = declared(&[
-        sidebar("b", 20),
-        sidebar("a", 10),
-        region("c", None, Some(15)),
-    ]);
+    let abc = declared(&[sidebar("b", 20), sidebar("a", 10), region("c", None, Some(15))]);
     let mut arrangement = fresh(&abc);
-    let nested = split(
-        "nested",
-        0.5,
-        Axis::Row,
-        vec![tabs("n1", 1.0, &["u:x"]), tabs("n2", 2.0, &["b"])],
-    );
+    let nested = split("nested", 0.5, Axis::Row, vec![tabs("n1", 1.0, &["u:x"]), tabs("n2", 2.0, &["b"])]);
     arrangement
-        .commit(
-            &abc,
-            dock(vec![
-                tabs("1", 1.0, &["a"]),
-                tabs("2", 1.0, &["c"]),
-                nested.clone(),
-                tabs("3", 1.0, &[UNPLACED]),
-            ]),
-        )
+        .commit(&abc, dock(vec![tabs("1", 1.0, &["a"]), tabs("2", 1.0, &["c"]), nested.clone(), tabs("3", 1.0, &[UNPLACED])]))
         .unwrap();
-    let abcd = declared(&[
-        sidebar("b", 20),
-        sidebar("a", 10),
-        region("c", None, Some(15)),
-        region("d", None, Some(17)),
-    ]);
+    let abcd = declared(&[sidebar("b", 20), sidebar("a", 10), region("c", None, Some(15)), region("d", None, Some(17))]);
     arrangement.follow(&abcd);
     let panels = children(&arrangement.doc);
     assert_eq!(panels[2].tabs(), ["d"]);
@@ -233,12 +157,7 @@ fn restore_lifts_a_merged_leaf() {
     // A dock that is one tab panel: its tabs move into a panel of their own
     // beside the restored section, an equal share each.
     let mut arrangement = fresh(&ab());
-    let leaf = SidebarDoc {
-        dock: ArrangementDoc {
-            root: Some(tabs("leaf", 1.0, &["u:text", "a"])),
-        },
-        floating: Vec::new(),
-    };
+    let leaf = SidebarDoc { dock: ArrangementDoc { root: Some(tabs("leaf", 1.0, &["u:text", "a"])) }, floating: Vec::new() };
     arrangement.commit(&ab(), leaf).unwrap();
     arrangement.restore(&ab(), "b").unwrap();
     let panels = children(&arrangement.doc);
@@ -247,123 +166,52 @@ fn restore_lifts_a_merged_leaf() {
     assert_eq!(panels[0].tabs(), ["u:text", "a"]);
     assert_eq!(panels[1].tabs(), ["b"]);
     assert_eq!((panels[0].weight, panels[1].weight), (0.5, 0.5));
-    let ids: BTreeSet<&str> = arrangement
-        .doc
-        .panels()
-        .iter()
-        .map(|p| p.id.as_str())
-        .collect();
+    let ids: BTreeSet<&str> = arrangement.doc.panels().iter().map(|p| p.id.as_str()).collect();
     assert_eq!(ids.len(), 3, "fresh IDs are unique");
 }
 
 #[test]
 fn local_sections_take_their_containers_place_and_hints() {
-    let regions = [
-        sidebar("tree", 10),
-        RegionHints {
-            hosts_local_sections: true,
-            ..sidebar("local", 50)
-        },
-        sidebar("git", 40),
-    ];
+    let regions = [sidebar("tree", 10), RegionHints { hosts_local_sections: true, ..sidebar("local", 50) }, sidebar("git", 40)];
     // With no local sections, the container is a section itself.
     let plain = Declared::new(&regions, &[]);
     let keys: Vec<&str> = plain.sections.iter().map(|s| s.key.as_str()).collect();
     assert_eq!(keys, ["tree", "git", "local", UNPLACED]);
     let local = [
-        LocalSection {
-            id: "pins".into(),
-            position: Some(1),
-            default: false,
-        },
-        LocalSection {
-            id: "workspaces".into(),
-            position: Some(0),
-            default: true,
-        },
-        LocalSection {
-            id: "later".into(),
-            position: None,
-            default: false,
-        },
+        LocalSection { id: "pins".into(), position: Some(1), default: false },
+        LocalSection { id: "workspaces".into(), position: Some(0), default: true },
+        LocalSection { id: "later".into(), position: None, default: false },
     ];
     let with_local = Declared::new(&regions, &local);
     let keys: Vec<&str> = with_local.sections.iter().map(|s| s.key.as_str()).collect();
-    assert_eq!(
-        keys,
-        [
-            "tree",
-            "git",
-            ".section:workspaces",
-            ".section:pins",
-            ".section:later",
-            UNPLACED
-        ]
-    );
+    assert_eq!(keys, ["tree", "git", ".section:workspaces", ".section:pins", ".section:later", UNPLACED]);
     // Adding a local section places it among its siblings; the container
     // that stood in for them is flagged until the host drops it.
     let mut arrangement = fresh(&plain);
     let report = arrangement.follow(&with_local);
-    assert_eq!(
-        report.placed,
-        [".section:workspaces", ".section:pins", ".section:later"]
-    );
+    assert_eq!(report.placed, [".section:workspaces", ".section:pins", ".section:later"]);
     assert_eq!(report.unresolved, ["local"]);
 
     // An unhinted container: the default section goes last, like .unplaced.
-    let unhinted = [
-        region("tree", None, None),
-        RegionHints {
-            hosts_local_sections: true,
-            ..region("local", None, None)
-        },
-    ];
-    let keys: Vec<String> = Declared::new(&unhinted, &local)
-        .sections
-        .into_iter()
-        .map(|s| s.key)
-        .collect();
-    assert_eq!(
-        keys,
-        [
-            "tree",
-            ".section:pins",
-            ".section:later",
-            ".section:workspaces",
-            UNPLACED
-        ]
-    );
+    let unhinted = [region("tree", None, None), RegionHints { hosts_local_sections: true, ..region("local", None, None) }];
+    let keys: Vec<String> = Declared::new(&unhinted, &local).sections.into_iter().map(|s| s.key).collect();
+    assert_eq!(keys, ["tree", ".section:pins", ".section:later", ".section:workspaces", UNPLACED]);
 }
 
 #[test]
 fn a_local_section_with_no_container_resolves_but_is_not_placed() {
-    let local = [LocalSection {
-        id: "s1".into(),
-        position: None,
-        default: false,
-    }];
+    let local = [LocalSection { id: "s1".into(), position: None, default: false }];
     let declared = Declared::new(&[sidebar("a", 10)], &local);
     assert!(declared.resolves(".section:s1"));
     assert!(!declared.sections.iter().any(|s| s.key == ".section:s1"));
     let mut arrangement = fresh(&declared);
-    arrangement
-        .commit(
-            &declared,
-            dock(vec![tabs("1", 1.0, &["a", ".section:s1", UNPLACED])]),
-        )
-        .unwrap();
+    arrangement.commit(&declared, dock(vec![tabs("1", 1.0, &["a", ".section:s1", UNPLACED])])).unwrap();
     assert!(arrangement.view(0, &declared).unresolved.is_empty());
 }
 
 #[test]
 fn pinned_regions_sort_first() {
-    let declared = declared(&[
-        sidebar("a", 10),
-        RegionHints {
-            pinned: true,
-            ..sidebar("b", 20)
-        },
-    ]);
+    let declared = declared(&[sidebar("a", 10), RegionHints { pinned: true, ..sidebar("b", 20) }]);
     let keys: Vec<&str> = declared.sections.iter().map(|s| s.key.as_str()).collect();
     assert_eq!(keys, ["b", "a", UNPLACED]);
 }
@@ -376,19 +224,10 @@ fn invalid_commits_change_nothing() {
     clash.floating.push(tabs("1", 1.0, &["b"]));
     let invalid = [
         (dock(vec![tabs("1", 1.0, &["nope"])]), "no section \"nope\""),
-        (
-            dock(vec![tabs("1", 1.0, &["u:Bad"])]),
-            "no section \"u:Bad\"",
-        ),
-        (
-            dock(vec![tabs("1", 1.0, &["a"]), tabs("1", 1.0, &["b"])]),
-            "panel ID \"1\" is used twice",
-        ),
+        (dock(vec![tabs("1", 1.0, &["u:Bad"])]), "no section \"u:Bad\""),
+        (dock(vec![tabs("1", 1.0, &["a"]), tabs("1", 1.0, &["b"])]), "panel ID \"1\" is used twice"),
         (dock(vec![tabs("1", 0.0, &["a"])]), "weights are positive"),
-        (
-            dock(vec![split("s", 1.0, Axis::Row, Vec::new())]),
-            "split \"s\" has no panels",
-        ),
+        (dock(vec![split("s", 1.0, Axis::Row, Vec::new())]), "split \"s\" has no panels"),
         // A floating panel can't reuse a docked panel's ID either.
         (clash, "panel ID \"1\" is used twice"),
     ];
@@ -415,11 +254,7 @@ enum Step {
 }
 
 const AB: &[Region] = &[("b", S, Some(20)), ("a", S, Some(10))];
-const ABC: &[Region] = &[
-    ("b", S, Some(20)),
-    ("a", S, Some(10)),
-    ("c", None, Some(15)),
-];
+const ABC: &[Region] = &[("b", S, Some(20)), ("a", S, Some(10)), ("c", None, Some(15))];
 const ONLY_A: &[Region] = &[("a", S, Some(10))];
 const U: &str = UNPLACED;
 
@@ -427,13 +262,7 @@ const U: &str = UNPLACED;
 /// the dock's tab panels, the floating ones, closed and placed keys, and the
 /// report's placed, restored and unresolved keys.
 fn summary(arrangement: &SidebarArrangement, report: &Report) -> String {
-    let panels = |panels: Vec<Vec<&str>>| {
-        panels
-            .iter()
-            .map(|keys| format!("[{}]", keys.join(" ")))
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
+    let panels = |panels: Vec<Vec<&str>>| panels.iter().map(|keys| format!("[{}]", keys.join(" "))).collect::<Vec<_>>().join(" ");
     let keys = |keys: Vec<&String>| keys.into_iter().cloned().collect::<Vec<_>>().join(" ");
     let docked = match arrangement.doc.dock.root {
         Some(_) => panels(docked(arrangement)),
@@ -512,14 +341,7 @@ fn placement_scenarios() {
          &[("123", None, None), ("closed", None, None)], &[Commit(&[&["closed"]])],
          "dock [closed]; float ; closed .unplaced 123; placed ; report  /  / ; owned"),
     ];
-    let regions = |regions: &[Region]| {
-        declared(
-            &regions
-                .iter()
-                .map(|(name, host, order)| region(name, *host, *order))
-                .collect::<Vec<_>>(),
-        )
-    };
+    let regions = |regions: &[Region]| declared(&regions.iter().map(|(name, host, order)| region(name, *host, *order)).collect::<Vec<_>>());
     for (name, initial, steps, expected) in cases {
         let mut now = regions(initial);
         let mut arrangement = SidebarArrangement::default();
@@ -533,13 +355,7 @@ fn placement_scenarios() {
                 Commit(panels) => {
                     let mut doc = SidebarDoc::default();
                     if !panels.is_empty() {
-                        doc = dock(
-                            panels
-                                .iter()
-                                .enumerate()
-                                .map(|(i, keys)| tabs(&(i + 1).to_string(), 1.0, keys))
-                                .collect(),
-                        );
+                        doc = dock(panels.iter().enumerate().map(|(i, keys)| tabs(&(i + 1).to_string(), 1.0, keys)).collect());
                     }
                     arrangement.commit(&now, doc).unwrap()
                 }

@@ -90,9 +90,7 @@ impl<T: Clone + PartialEq> Versioned<T> {
         edit: impl FnOnce(&mut T) -> Result<R, CommitError>,
     ) -> Result<(u64, R), CommitError> {
         if expected.is_some_and(|expected| expected != self.generation) {
-            return Err(CommitError::Stale {
-                current: self.generation,
-            });
+            return Err(CommitError::Stale { current: self.generation });
         }
         let mut next = self.value.clone();
         let out = edit(&mut next)?;
@@ -105,14 +103,8 @@ impl<T: Clone + PartialEq> Versioned<T> {
 
     /// An edit nothing compares: [`update`](Self::update) with no expected
     /// generation.
-    pub fn edit<R>(
-        &mut self,
-        clock: &mut Clock,
-        edit: impl FnOnce(&mut T) -> Result<R, String>,
-    ) -> Result<R, String> {
-        self.update(None, clock, |value| Ok(edit(value)?))
-            .map(|(_, out)| out)
-            .map_err(|error| error.to_string())
+    pub fn edit<R>(&mut self, clock: &mut Clock, edit: impl FnOnce(&mut T) -> Result<R, String>) -> Result<R, String> {
+        self.update(None, clock, |value| Ok(edit(value)?)).map(|(_, out)| out).map_err(|error| error.to_string())
     }
 
     /// An edit nothing compares or rejects, such as following a provider's
@@ -135,10 +127,7 @@ impl<T: Clone + PartialEq> Versioned<T> {
 /// A value read from a record: no generation yet.
 impl<T> From<T> for Versioned<T> {
     fn from(value: T) -> Self {
-        Self {
-            generation: 0,
-            value,
-        }
+        Self { generation: 0, value }
     }
 }
 
@@ -174,10 +163,7 @@ mod tests {
         assert_eq!(a.update(Some(0), &mut clock, set(1)), Ok((1, ())));
         // Another document's change takes the next generation, not its own 1.
         assert_eq!(b.update(None, &mut clock, set(1)), Ok((2, ())));
-        assert_eq!(
-            a.update(Some(0), &mut clock, set(2)),
-            Err(CommitError::Stale { current: 1 })
-        );
+        assert_eq!(a.update(Some(0), &mut clock, set(2)), Err(CommitError::Stale { current: 1 }));
         // The same value keeps its generation; a failed edit changes nothing.
         assert_eq!(a.update(Some(1), &mut clock, set(1)), Ok((1, ())));
         let failed: Result<(u64, ()), _> = a.update(Some(1), &mut clock, |value| {

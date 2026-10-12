@@ -1,10 +1,8 @@
 use andamento_core::presentation::{Content, PlacementNode, PresentationState, SurfaceSnapshot};
-use andamento_core::template_config::{
-    TemplateConfigCatalog, TemplateConfigFieldClass, TemplateControlKind,
-};
+use andamento_core::template_config::{TemplateConfigCatalog, TemplateConfigFieldClass, TemplateControlKind};
 use andamento_core::{
-    tab_workspace_id, ControllerViewModel, MaterializeLatentRequest, MetadataControls, NodeKey,
-    PlacementKey, Priority, StatusIcon, WorkspaceId,
+    tab_workspace_id, ControllerViewModel, MaterializeLatentRequest, MetadataControls, NodeKey, PlacementKey, Priority, StatusIcon,
+    WorkspaceId,
 };
 use ansi_term::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -116,23 +114,14 @@ fn style_body_text(line: String, theme: Option<RenderTheme>) -> String {
     let Some(theme) = theme else {
         return line;
     };
-    foreground_style(theme.body_foreground)
-        .paint(line)
-        .to_string()
+    foreground_style(theme.body_foreground).paint(line).to_string()
 }
 
 fn style_border_text(line: String, active: bool, theme: Option<RenderTheme>) -> String {
     let Some(theme) = theme else {
         return line;
     };
-    foreground_style(if active {
-        theme.active_border
-    } else {
-        theme.inactive_border
-    })
-    .bold()
-    .paint(line)
-    .to_string()
+    foreground_style(if active { theme.active_border } else { theme.inactive_border }).bold().paint(line).to_string()
 }
 
 fn foreground_style(color: PaletteColor) -> Style {
@@ -194,12 +183,7 @@ pub fn hit_at(hit_regions: &[HitRegion], row: usize, col: usize) -> Option<HitRe
     hit_regions
         .iter()
         .rev()
-        .filter(|region| {
-            row >= region.row_start
-                && row <= region.row_end
-                && col >= region.col_start
-                && col <= region.col_end
-        })
+        .filter(|region| row >= region.row_start && row <= region.row_end && col >= region.col_start && col <= region.col_end)
         .min_by_key(|region| {
             let rows = region.row_end.saturating_sub(region.row_start) + 1;
             let cols = region.col_end.saturating_sub(region.col_start) + 1;
@@ -208,18 +192,11 @@ pub fn hit_at(hit_regions: &[HitRegion], row: usize, col: usize) -> Option<HitRe
         .cloned()
 }
 
-fn render_detail_card(
-    content: &[String],
-    height: usize,
-    width: usize,
-    theme: Option<RenderTheme>,
-) -> Vec<String> {
+fn render_detail_card(content: &[String], height: usize, width: usize, theme: Option<RenderTheme>) -> Vec<String> {
     if height < 2 || width < 2 {
         let summary = content.first().map(String::as_str).unwrap_or_default();
         let line = pad_to_width(&truncate_to_width(summary, width), width);
-        return (0..height)
-            .map(|_| style_body_text(line.clone(), theme))
-            .collect();
+        return (0..height).map(|_| style_body_text(line.clone(), theme)).collect();
     }
     let inner_width = width - 2;
     let horizontal = "─".repeat(inner_width);
@@ -253,10 +230,7 @@ fn semantic_fields(content: &andamento_core::presentation::Content) -> Vec<Templ
         .iter()
         .cloned()
         .map(|field| match field.class {
-            _ if field.priority.is_some() => TemplateField::Prioritized {
-                value: field.value,
-                priority: field.priority.unwrap_or(100),
-            },
+            _ if field.priority.is_some() => TemplateField::Prioritized { value: field.value, priority: field.priority.unwrap_or(100) },
             TemplateConfigFieldClass::Required => TemplateField::Required(field.value),
             TemplateConfigFieldClass::Optional => TemplateField::Optional(field.value),
             TemplateConfigFieldClass::Priority => TemplateField::Priority(field.value),
@@ -266,9 +240,7 @@ fn semantic_fields(content: &andamento_core::presentation::Content) -> Vec<Templ
 
 fn template_field_value(field: &TemplateField) -> &str {
     match field {
-        TemplateField::Required(value)
-        | TemplateField::Optional(value)
-        | TemplateField::Priority(value) => value,
+        TemplateField::Required(value) | TemplateField::Optional(value) | TemplateField::Priority(value) => value,
         TemplateField::Prioritized { value, .. } => value,
     }
 }
@@ -290,16 +262,8 @@ struct PlacementRenderLine<'a> {
 /// scope. The controller has already materialized the loop tree; the final
 /// placement segment identifies sibling loop instances, and `placement_layout`
 /// carries the declaration that selected their geometry.
-fn render_placement_lines<'a>(
-    root: String,
-    entities: &'a [PlacementNode],
-    cols: usize,
-) -> Vec<PlacementRenderLine<'a>> {
-    let mut lines = vec![PlacementRenderLine {
-        text: root,
-        entity: None,
-        inline_hits: vec![],
-    }];
+fn render_placement_lines<'a>(root: String, entities: &'a [PlacementNode], cols: usize) -> Vec<PlacementRenderLine<'a>> {
+    let mut lines = vec![PlacementRenderLine { text: root, entity: None, inline_hits: vec![] }];
     append_placement_loop_instance(&mut lines, 0, entities, 0, cols);
     lines
 }
@@ -356,13 +320,7 @@ fn append_placement_loop_instance<'a>(
                     if entity.collapsed {
                         continue;
                     }
-                    append_placement_loop_instance(
-                        lines,
-                        parent_row,
-                        &entity.children,
-                        depth + 1,
-                        cols,
-                    );
+                    append_placement_loop_instance(lines, parent_row, &entity.children, depth + 1, cols);
                 }
             } else {
                 // Once the niche rejects the instance, every item moves. Wrap
@@ -375,13 +333,8 @@ fn append_placement_loop_instance<'a>(
                 for (entity, item) in siblings.iter().zip(&item_texts) {
                     let item = truncate_to_width(item, available);
                     let separator = if current.is_empty() { "" } else { "  " };
-                    if !current.is_empty()
-                        && current.width() + separator.width() + item.width() > available
-                    {
-                        rows.push((
-                            std::mem::take(&mut current),
-                            std::mem::take(&mut current_hits),
-                        ));
+                    if !current.is_empty() && current.width() + separator.width() + item.width() > available {
+                        rows.push((std::mem::take(&mut current), std::mem::take(&mut current_hits)));
                     }
                     if !current.is_empty() {
                         current.push_str("  ");
@@ -396,13 +349,8 @@ fn append_placement_loop_instance<'a>(
                 let mut item_parent_rows = Vec::new();
                 for (row, inline_hits) in rows {
                     let row_index = lines.len();
-                    item_parent_rows
-                        .extend(inline_hits.iter().map(|(entity, _)| (*entity, row_index)));
-                    lines.push(PlacementRenderLine {
-                        text: format!("{indent}{row}"),
-                        entity: None,
-                        inline_hits,
-                    });
+                    item_parent_rows.extend(inline_hits.iter().map(|(entity, _)| (*entity, row_index)));
+                    lines.push(PlacementRenderLine { text: format!("{indent}{row}"), entity: None, inline_hits });
                 }
                 for entity in siblings {
                     if entity.collapsed {
@@ -410,27 +358,15 @@ fn append_placement_loop_instance<'a>(
                     }
                     let item_parent = item_parent_rows
                         .iter()
-                        .find_map(|(candidate, row)| {
-                            std::ptr::eq(*candidate, entity).then_some(*row)
-                        })
+                        .find_map(|(candidate, row)| std::ptr::eq(*candidate, entity).then_some(*row))
                         .unwrap_or(parent_row);
-                    append_placement_loop_instance(
-                        lines,
-                        item_parent,
-                        &entity.children,
-                        depth + 1,
-                        cols,
-                    );
+                    append_placement_loop_instance(lines, item_parent, &entity.children, depth + 1, cols);
                 }
             }
         } else {
             for (entity, text) in siblings.iter().zip(item_texts) {
                 let row = lines.len();
-                lines.push(PlacementRenderLine {
-                    text: format!("{indent}{text}"),
-                    entity: Some(entity),
-                    inline_hits: vec![],
-                });
+                lines.push(PlacementRenderLine { text: format!("{indent}{text}"), entity: Some(entity), inline_hits: vec![] });
                 if entity.collapsed {
                     continue;
                 }
@@ -462,11 +398,7 @@ fn resolve_placement_loop_fields(entities: &[PlacementNode], cols: usize) -> Vec
     let column_count = rows.iter().map(Vec::len).max().unwrap_or_default();
     let mut widths = (0..column_count)
         .map(|column| {
-            rows.iter()
-                .filter_map(|row| row.get(column))
-                .map(|field| template_field_value(field).width())
-                .max()
-                .unwrap_or_default()
+            rows.iter().filter_map(|row| row.get(column)).map(|field| template_field_value(field).width()).max().unwrap_or_default()
         })
         .collect::<Vec<_>>();
     let mut visible = vec![true; column_count];
@@ -483,11 +415,7 @@ fn resolve_placement_loop_fields(entities: &[PlacementNode], cols: usize) -> Vec
 
     if total_width(&visible, &widths) > cols {
         for column in 0..column_count {
-            if rows
-                .iter()
-                .filter_map(|row| row.get(column))
-                .all(|field| matches!(field, TemplateField::Optional(_)))
-            {
+            if rows.iter().filter_map(|row| row.get(column)).all(|field| matches!(field, TemplateField::Optional(_))) {
                 visible[column] = false;
             }
         }
@@ -528,10 +456,7 @@ fn resolve_placement_loop_fields(entities: &[PlacementNode], cols: usize) -> Vec
                 .enumerate()
                 .filter(|(_, visible)| **visible)
                 .map(|(column, _)| {
-                    let value = row
-                        .get(column)
-                        .map(template_field_value)
-                        .unwrap_or_default();
+                    let value = row.get(column).map(template_field_value).unwrap_or_default();
                     pad_to_width(&truncate_to_width(value, widths[column]), widths[column])
                 })
                 .collect::<Vec<_>>();
@@ -573,12 +498,7 @@ fn add_toggle_hit(hits: &mut Vec<HitRegion>, node: &PlacementNode, col: usize, e
     }
 }
 
-fn control_line(
-    content: &Content,
-    surface: &SurfaceSnapshot,
-    cols: usize,
-    can_scroll: bool,
-) -> (String, Vec<HitRegion>) {
+fn control_line(content: &Content, surface: &SurfaceSnapshot, cols: usize, can_scroll: bool) -> (String, Vec<HitRegion>) {
     let mut cells = vec![' '; cols];
     let mut hits = Vec::new();
     let mut left = 0;
@@ -591,17 +511,11 @@ fn control_line(
             TemplateControlKind::ScrollDown if can_scroll => ('▼', HitAction::ScrollRailDown, true),
             TemplateControlKind::ScrollUp | TemplateControlKind::ScrollDown => continue,
             TemplateControlKind::DisplayVariable => {
-                let Some(index) = surface
-                    .display_variables
-                    .iter()
-                    .position(|v| Some(&v.name) == control.variable.as_ref())
-                else {
+                let Some(index) = surface.display_variables.iter().position(|v| Some(&v.name) == control.variable.as_ref()) else {
                     continue;
                 };
                 let v = &surface.display_variables[index];
-                let glyph = if surface.display_values.get(&v.name)
-                    == Some(&andamento_core::DisplayVariableValue::Bool(false))
-                {
+                let glyph = if surface.display_values.get(&v.name) == Some(&andamento_core::DisplayVariableValue::Bool(false)) {
                     '·'
                 } else {
                     v.icon.chars().next().unwrap_or('·')
@@ -620,11 +534,7 @@ fn control_line(
             left += 1;
             col
         };
-        cells[col] = control
-            .glyph
-            .as_deref()
-            .and_then(|s| s.chars().next())
-            .unwrap_or(fallback);
+        cells[col] = control.glyph.as_deref().and_then(|s| s.chars().next()).unwrap_or(fallback);
         hits.push(HitRegion {
             row_start: 0,
             row_end: 0,
@@ -648,60 +558,35 @@ struct BufferedLine {
 }
 
 fn contains_selected(node: &PlacementNode) -> bool {
-    matches!(node.state, PresentationState::Live { selected: true, .. })
-        || node.children.iter().any(contains_selected)
+    matches!(node.state, PresentationState::Live { selected: true, .. }) || node.children.iter().any(contains_selected)
 }
 
 fn show_metadata(model: &ControllerViewModel, node: &PlacementNode) -> bool {
     let controls = &model.metadata_controls;
     let mut inherited = controls.propagates_to_children(&NodeKey::Root, false);
     for depth in 1..node.key.0.len() {
-        inherited = controls.propagates_to_children(
-            &NodeKey::Placement(PlacementKey(node.key.0[..depth].to_vec())),
-            inherited,
-        );
+        inherited = controls.propagates_to_children(&NodeKey::Placement(PlacementKey(node.key.0[..depth].to_vec())), inherited);
     }
     let placement = NodeKey::Placement(node.key.clone());
-    let target = if controls.per_node.contains_key(&placement) {
-        placement
-    } else {
-        NodeKey::Entity(node.entity.clone())
-    };
+    let target = if controls.per_node.contains_key(&placement) { placement } else { NodeKey::Entity(node.entity.clone()) };
     controls.effective_show(&target, inherited)
 }
 
-fn buffer_section<'a>(
-    model: &ControllerViewModel,
-    section: &'a andamento_core::presentation::Section,
-    cols: usize,
-) -> Vec<BufferedLine> {
+fn buffer_section<'a>(model: &ControllerViewModel, section: &'a andamento_core::presentation::Section, cols: usize) -> Vec<BufferedLine> {
     let mut lines = render_placement_lines(section.content.text(), &section.nodes, cols);
-    if lines
-        .first()
-        .is_some_and(|l| l.text.is_empty() && l.inline_hits.is_empty())
-    {
+    if lines.first().is_some_and(|l| l.text.is_empty() && l.inline_hits.is_empty()) {
         lines.remove(0);
     }
     let mut buffered = Vec::new();
     for line in lines {
-        let nodes = line
-            .entity
-            .into_iter()
-            .chain(line.inline_hits.iter().map(|(node, _)| *node))
-            .collect::<Vec<_>>();
+        let nodes = line.entity.into_iter().chain(line.inline_hits.iter().map(|(node, _)| *node)).collect::<Vec<_>>();
         let active = nodes.iter().any(|node| {
-            matches!(node.state, PresentationState::Live { selected: true, .. })
-                || (node.collapsed && contains_selected(node))
+            matches!(node.state, PresentationState::Live { selected: true, .. }) || (node.collapsed && contains_selected(node))
         });
         let mut hits = Vec::new();
         if let Some(node) = line.entity {
             hits.push(node_hit(node, 0, 0..cols));
-            add_toggle_hit(
-                &mut hits,
-                node,
-                line.text.chars().take_while(|c| *c == ' ').count(),
-                cols,
-            );
+            add_toggle_hit(&mut hits, node, line.text.chars().take_while(|c| *c == ' ').count(), cols);
         }
         for (node, range) in line.inline_hits {
             if range.start < cols && range.end > range.start {
@@ -709,12 +594,7 @@ fn buffer_section<'a>(
                 add_toggle_hit(&mut hits, node, range.start, range.end.min(cols));
             }
         }
-        buffered.push(BufferedLine {
-            text: line.text,
-            hits,
-            active,
-            card: None,
-        });
+        buffered.push(BufferedLine { text: line.text, hits, active, card: None });
         for node in nodes {
             if let PresentationState::Live { workspace_id, .. } = node.state {
                 if let Some(tab) = model.tab_by_id(workspace_id) {
@@ -724,10 +604,7 @@ fn buffer_section<'a>(
                     let title = tab.status.as_ref().map(|s| s.title.as_str()).unwrap_or("");
                     let text = format!(
                         "{}{}",
-                        pad_to_width(
-                            &truncate_to_width(&format!("  {title}"), cols.saturating_sub(1)),
-                            cols.saturating_sub(1)
-                        ),
+                        pad_to_width(&truncate_to_width(&format!("  {title}"), cols.saturating_sub(1)), cols.saturating_sub(1)),
                         if tab.pinned { "◆" } else { "◇" }
                     );
                     buffered.push(BufferedLine {
@@ -739,13 +616,11 @@ fn buffer_section<'a>(
                             tab_position: tab.position,
                             row_start: 0,
                             status_row: Some(0),
-                            status_icon_rect: icon.as_ref().filter(|_| cols > 2).map(|_| {
-                                VisibleIconRect {
-                                    x: 0,
-                                    y: 0,
-                                    columns: 1,
-                                    rows: 1,
-                                }
+                            status_icon_rect: icon.as_ref().filter(|_| cols > 2).map(|_| VisibleIconRect {
+                                x: 0,
+                                y: 0,
+                                columns: 1,
+                                rows: 1,
                             }),
                             status_priority: tab.status.as_ref().map(|s| s.priority),
                             status_icon: icon,
@@ -755,24 +630,14 @@ fn buffer_section<'a>(
             }
             if show_metadata(model, node) {
                 for (key, value) in &node.facts {
-                    buffered.push(BufferedLine {
-                        text: format!("    {key}: {value:?}"),
-                        hits: vec![],
-                        active: false,
-                        card: None,
-                    });
+                    buffered.push(BufferedLine { text: format!("    {key}: {value:?}"), hits: vec![], active: false, card: None });
                 }
             }
             if !node.content.controls.is_empty() {
                 // Widgets are content, so they follow the entity they belong to.
                 let surface = model.presentation.as_ref().unwrap();
                 let (text, hits) = control_line(&node.content, surface, cols, false);
-                buffered.push(BufferedLine {
-                    text,
-                    hits,
-                    active: false,
-                    card: None,
-                });
+                buffered.push(BufferedLine { text, hits, active: false, card: None });
             }
         }
     }
@@ -803,9 +668,7 @@ fn render_snapshot(
     if cols == 0 || rows == 0 {
         return result;
     }
-    let Some((model, surface)) =
-        model.and_then(|model| model.presentation.as_ref().map(|surface| (model, surface)))
-    else {
+    let Some((model, surface)) = model.and_then(|model| model.presentation.as_ref().map(|surface| (model, surface))) else {
         for (row, tab) in tabs.iter().take(rows).enumerate() {
             result.lines[row] = pad_to_width(&truncate_to_width(&tab.name, cols), cols);
             result.hit_regions.push(HitRegion {
@@ -822,11 +685,7 @@ fn render_snapshot(
         }
         return result;
     };
-    let detail_rows = if detail {
-        DETAIL_PANEL_HEIGHT.min(rows.saturating_sub(1))
-    } else {
-        0
-    };
+    let detail_rows = if detail { DETAIL_PANEL_HEIGHT.min(rows.saturating_sub(1)) } else { 0 };
     // An empty workspace fallback renders nothing here: this frontend has no
     // workspace-creation affordance to anchor to its header. It keeps an empty
     // entry rather than using `visible_sections`, because the layout below
@@ -834,41 +693,19 @@ fn render_snapshot(
     let mut sections = surface
         .sections
         .iter()
-        .map(|section| {
-            if section.is_empty_workspace_fallback() {
-                Vec::new()
-            } else {
-                buffer_section(model, section, cols)
-            }
-        })
+        .map(|section| if section.is_empty_workspace_fallback() { Vec::new() } else { buffer_section(model, section, cols) })
         .collect::<Vec<_>>();
-    let height = |index: usize, lines: &[BufferedLine]| {
-        lines.len() + usize::from(!surface.sections[index].content.controls.is_empty())
-    };
-    let fixed = sections
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| surface.sections[*i].pinned)
-        .map(|(i, lines)| height(i, lines))
-        .sum::<usize>();
+    let height = |index: usize, lines: &[BufferedLine]| lines.len() + usize::from(!surface.sections[index].content.controls.is_empty());
+    let fixed = sections.iter().enumerate().filter(|(i, _)| surface.sections[*i].pinned).map(|(i, lines)| height(i, lines)).sum::<usize>();
     let available = rows.saturating_sub(fixed + detail_rows);
     result.available_rows = available;
-    result.content_height = sections
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !surface.sections[*i].pinned)
-        .map(|(i, lines)| height(i, lines))
-        .sum();
+    result.content_height =
+        sections.iter().enumerate().filter(|(i, _)| !surface.sections[*i].pinned).map(|(i, lines)| height(i, lines)).sum();
     let can_scroll = result.can_scroll();
     for (section, lines) in surface.sections.iter().zip(&mut sections) {
         if !section.content.controls.is_empty() {
             let (text, hits) = control_line(&section.content, surface, cols, can_scroll);
-            lines.push(BufferedLine {
-                text,
-                hits,
-                active: false,
-                card: None,
-            });
+            lines.push(BufferedLine { text, hits, active: false, card: None });
         }
     }
     let mut start = (offset.max(0) as usize).min(result.content_height.saturating_sub(available));
@@ -901,11 +738,7 @@ fn render_snapshot(
         .rposition(|section| !section.pinned && !section.is_empty_workspace_fallback())
         .map(|i| i + 1)
         .unwrap_or(surface.sections.len());
-    let suffix_rows = sections[suffix_start..]
-        .iter()
-        .map(Vec::len)
-        .sum::<usize>()
-        .min(rows.saturating_sub(detail_rows));
+    let suffix_rows = sections[suffix_start..].iter().map(Vec::len).sum::<usize>().min(rows.saturating_sub(detail_rows));
     let suffix_row = rows - suffix_rows;
     let body_end = suffix_row.saturating_sub(detail_rows);
     let mut row = 0;
@@ -922,20 +755,12 @@ fn render_snapshot(
                     continue;
                 }
             }
-            let limit = if index >= suffix_start {
-                rows
-            } else {
-                body_end
-            };
+            let limit = if index >= suffix_start { rows } else { body_end };
             if row >= limit {
                 continue;
             }
             let text = pad_to_width(&truncate_to_width(&line.text, cols), cols);
-            result.lines[row] = if line.active {
-                Style::new().bold().paint(text).to_string()
-            } else {
-                style_body_text(text, theme)
-            };
+            result.lines[row] = if line.active { Style::new().bold().paint(text).to_string() } else { style_body_text(text, theme) };
             for hit in &mut line.hits {
                 hit.row_start = row;
                 hit.row_end = row;
@@ -960,19 +785,8 @@ fn render_snapshot(
             Some(NodeKey::Placement(key)) => surface.node(key),
             _ => None,
         };
-        let content = node
-            .map(|node| {
-                node.detail
-                    .fields
-                    .iter()
-                    .map(|f| f.value.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for (row, line) in render_detail_card(&content, detail_rows, cols, theme)
-            .into_iter()
-            .enumerate()
-        {
+        let content = node.map(|node| node.detail.fields.iter().map(|f| f.value.clone()).collect::<Vec<_>>()).unwrap_or_default();
+        for (row, line) in render_detail_card(&content, detail_rows, cols, theme).into_iter().enumerate() {
             result.lines[body_end + row] = line;
         }
     }
@@ -997,17 +811,7 @@ pub fn render_lines_with_theme(
     controller_available: bool,
     theme: Option<RenderTheme>,
 ) -> RenderedRail {
-    render_lines_with_options(
-        model,
-        tabs,
-        rows,
-        cols,
-        controller_available,
-        theme,
-        None,
-        &[],
-        None,
-    )
+    render_lines_with_options(model, tabs, rows, cols, controller_available, theme, None, &[], None)
 }
 #[allow(clippy::too_many_arguments)]
 pub fn render_lines_with_template_catalog(
@@ -1018,17 +822,7 @@ pub fn render_lines_with_template_catalog(
     controller_available: bool,
     template_catalog: Option<&TemplateConfigCatalog>,
 ) -> RenderedRail {
-    render_lines_with_options(
-        model,
-        tabs,
-        rows,
-        cols,
-        controller_available,
-        None,
-        None,
-        &[],
-        template_catalog,
-    )
+    render_lines_with_options(model, tabs, rows, cols, controller_available, None, None, &[], template_catalog)
 }
 #[allow(clippy::too_many_arguments)]
 pub fn render_lines_with_options(
@@ -1127,24 +921,8 @@ pub fn render_lines_with_detail_surface(
     ensure_active_visible: bool,
     detail_target: Option<&NodeKey>,
 ) -> RenderedRail {
-    let _ = (
-        controller_available,
-        terminal_cell_size,
-        collapsed_placements,
-        template_catalog,
-        metadata_controls,
-    );
-    render_snapshot(
-        model,
-        tabs,
-        rows,
-        cols,
-        theme,
-        rail_scroll_offset,
-        ensure_active_visible,
-        detail_target,
-        true,
-    )
+    let _ = (controller_available, terminal_cell_size, collapsed_placements, template_catalog, metadata_controls);
+    render_snapshot(model, tabs, rows, cols, theme, rail_scroll_offset, ensure_active_visible, detail_target, true)
 }
 #[allow(clippy::too_many_arguments)]
 pub fn render_lines_with_rail_viewport(
@@ -1161,22 +939,6 @@ pub fn render_lines_with_rail_viewport(
     rail_scroll_offset: isize,
     ensure_active_visible: bool,
 ) -> RenderedRail {
-    let _ = (
-        controller_available,
-        terminal_cell_size,
-        collapsed_placements,
-        template_catalog,
-        metadata_controls,
-    );
-    render_snapshot(
-        model,
-        tabs,
-        rows,
-        cols,
-        theme,
-        rail_scroll_offset,
-        ensure_active_visible,
-        None,
-        false,
-    )
+    let _ = (controller_available, terminal_cell_size, collapsed_placements, template_catalog, metadata_controls);
+    render_snapshot(model, tabs, rows, cols, theme, rail_scroll_offset, ensure_active_visible, None, false)
 }

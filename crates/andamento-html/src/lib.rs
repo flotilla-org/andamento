@@ -6,11 +6,7 @@ use andamento_core::{
 };
 
 pub fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 
 fn action_attribute(action: &Action) -> String {
@@ -21,58 +17,37 @@ fn content(content: &Content, fallback: &str) -> String {
     if content.fields.is_empty() {
         return escape(fallback);
     }
-    content
-        .fields
-        .iter()
-        .map(|field| format!("<span>{}</span>", escape(&field.value)))
-        .collect()
+    content.fields.iter().map(|field| format!("<span>{}</span>", escape(&field.value))).collect()
 }
 
 fn node(node: &PlacementNode) -> String {
     let key = escape(&serde_json::to_string(&node.key).expect("placement keys serialize"));
-    let mut result = format!(
-        "<article data-placement=\"{key}\" data-layout=\"{}\">",
-        escape(node.layout.as_deref().unwrap_or("lines"))
-    );
-    let activation = action_attribute(&Action::ActivatePlacement {
-        key: node.key.clone(),
-    });
+    let mut result = format!("<article data-placement=\"{key}\" data-layout=\"{}\">", escape(node.layout.as_deref().unwrap_or("lines")));
+    let activation = action_attribute(&Action::ActivatePlacement { key: node.key.clone() });
     if !node.children.is_empty() {
         result.push_str(&format!(
             "<details {} data-toggle=\"{}\"><summary>",
             if node.collapsed { "" } else { "open" },
-            action_attribute(&Action::TogglePlacement {
-                key: node.key.clone()
-            })
+            action_attribute(&Action::TogglePlacement { key: node.key.clone() })
         ));
     }
-    result.push_str(&format!(
-        "<button data-action=\"{activation}\">{}</button>",
-        content(&node.content, &node.label)
-    ));
-    result.push_str(&format!(
-        "<small>{}</small>",
-        escape(&format!("{:?}", node.state))
-    ));
+    result.push_str(&format!("<button data-action=\"{activation}\">{}</button>", content(&node.content, &node.label)));
+    result.push_str(&format!("<small>{}</small>", escape(&format!("{:?}", node.state))));
     if !node.children.is_empty() {
         result.push_str("</summary>");
     }
     if let Some(variables) = &node.variables {
         for declaration in &variables.declarations {
-            result.push_str(&format!("<label>{}<select data-variable=\"{}\" data-key=\"{key}\"><option value=\"\">Inherit</option>",escape(&declaration.name),escape(&declaration.name)));
+            result.push_str(&format!(
+                "<label>{}<select data-variable=\"{}\" data-key=\"{key}\"><option value=\"\">Inherit</option>",
+                escape(&declaration.name),
+                escape(&declaration.name)
+            ));
             for value in &declaration.values {
                 result.push_str(&format!(
                     "<option value=\"{}\" {}>{}</option>",
                     escape(value),
-                    if variables
-                        .values
-                        .get(&declaration.name)
-                        .is_some_and(|v| v.value == *value)
-                    {
-                        "selected"
-                    } else {
-                        ""
-                    },
+                    if variables.values.get(&declaration.name).is_some_and(|v| v.value == *value) { "selected" } else { "" },
                     escape(value)
                 ));
             }
@@ -98,10 +73,7 @@ body{font:16px system-ui;margin:2rem;max-width:72rem;color:#20242b;background:#f
 </style><h1>Andamento</h1><p>Semantic snapshot with native HTML geometry. Controls emit actions; a host owns dispatch and supplies the next snapshot.</p><main>"#,
     );
     for section in snapshot.surface.visible_sections() {
-        html.push_str(&format!(
-            "<section><h2>{}</h2>",
-            content(&section.content, &section.name)
-        ));
+        html.push_str(&format!("<section><h2>{}</h2>", content(&section.content, &section.name)));
         for node in &section.nodes {
             html.push_str(&self::node(node));
         }
@@ -122,11 +94,7 @@ body{font:16px system-ui;margin:2rem;max-width:72rem;color:#20242b;background:#f
         html.push_str(&format!("<p>{}</p>", escape(diagnostic)));
     }
     for error in &snapshot.errors {
-        html.push_str(&format!(
-            "<p>{}: {}</p>",
-            escape(&error.entity.id),
-            escape(&error.message)
-        ));
+        html.push_str(&format!("<p>{}: {}</p>", escape(&error.entity.id), escape(&error.message)));
     }
     html.push_str(r#"<footer><h2>Emitted action</h2><pre id="action">No action yet.</pre></footer><script>
 function emit(action){document.getElementById('action').textContent=JSON.stringify(action,null,2);window.dispatchEvent(new CustomEvent('andamento-action',{detail:action}));}

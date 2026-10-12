@@ -2,8 +2,7 @@
 #![allow(dead_code)]
 use andamento_core::presentation::{PlacementNode, SurfaceSnapshot};
 use andamento_core::{
-    tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate,
-    Sidebar, WorkspaceId,
+    tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar, WorkspaceId,
 };
 use std::collections::BTreeSet;
 
@@ -42,12 +41,7 @@ pub fn refs(entity: EntityRef) -> MetadataValue {
 }
 
 pub fn update(value: MetadataValue) -> MetadataValueUpdate {
-    MetadataValueUpdate {
-        value,
-        ttl_ms: None,
-        precedence: None,
-        ordinal: None,
-    }
+    MetadataValueUpdate { value, ttl_ms: None, precedence: None, ordinal: None }
 }
 
 /// A patch setting `facts` on `subject`.
@@ -55,10 +49,7 @@ pub fn patch(subject: EntityRef, facts: &[(&str, MetadataValue)]) -> MetadataPat
     MetadataPatch {
         target: MetadataTarget::Entity(subject),
         source_id: "fixture".into(),
-        set: facts
-            .iter()
-            .map(|(key, value)| (key.to_string(), update(value.clone())))
-            .collect(),
+        set: facts.iter().map(|(key, value)| (key.to_string(), update(value.clone()))).collect(),
         unset: vec![],
     }
 }

@@ -89,17 +89,8 @@ impl Declared {
     ///   other host, or none, docks it.
     pub fn new(regions: &[RegionHints], local: &[LocalSection]) -> Self {
         let mut local_sorted: Vec<&LocalSection> = local.iter().collect();
-        local_sorted.sort_by(|a, b| {
-            (a.position.is_none(), a.position, &a.id).cmp(&(
-                b.position.is_none(),
-                b.position,
-                &b.id,
-            ))
-        });
-        let container = regions
-            .iter()
-            .position(|region| region.hosts_local_sections)
-            .filter(|_| !local.is_empty());
+        local_sorted.sort_by(|a, b| (a.position.is_none(), a.position, &a.id).cmp(&(b.position.is_none(), b.position, &b.id)));
+        let container = regions.iter().position(|region| region.hosts_local_sections).filter(|_| !local.is_empty());
         let mut sections: Vec<Section> = Vec::new();
         let mut push = |key: String, region: Option<&RegionHints>, fallback: bool| {
             if sections.iter().any(|section| section.key == key) {
@@ -129,10 +120,7 @@ impl Declared {
         push(UNPLACED_WORKSPACES_SECTION.to_owned(), None, true);
         // Stable: equal keys keep declaration order.
         sections.sort_by_key(|section| (!section.pinned, section.order));
-        Self {
-            sections,
-            local: local.iter().map(|section| local_key(&section.id)).collect(),
-        }
+        Self { sections, local: local.iter().map(|section| local_key(&section.id)).collect() }
     }
 
     fn index(&self, key: &str) -> Option<usize> {
@@ -152,8 +140,7 @@ pub fn local_key(id: &str) -> String {
 }
 
 fn is_host_view(key: &str) -> bool {
-    key.strip_prefix(HOST_VIEW_PREFIX)
-        .is_some_and(|id| slots::check_key(id).is_ok())
+    key.strip_prefix(HOST_VIEW_PREFIX).is_some_and(|id| slots::check_key(id).is_ok())
 }
 
 /// The sidebar's panels: the dock's tree, and the floating panels, each a
@@ -224,10 +211,7 @@ pub struct Report {
 /// hints. Nothing that no longer resolves is dropped; it is reported.
 pub fn reconcile(declared: &Declared, stored: &SidebarArrangement) -> (SidebarArrangement, Report) {
     let mut next = stored.clone();
-    let mut report = Report {
-        duplicates: dedupe(&mut next.doc),
-        ..Report::default()
-    };
+    let mut report = Report { duplicates: dedupe(&mut next.doc), ..Report::default() };
     // A merged record can both tab and close a section: the tab wins.
     let tabs: BTreeSet<String> = next.doc.tabs().into_iter().map(str::to_owned).collect();
     next.closed.retain(|key| !tabs.contains(key));
@@ -294,27 +278,15 @@ impl SidebarArrangement {
     /// restored.
     pub fn commit(&mut self, declared: &Declared, doc: SidebarDoc) -> Result<Report, String> {
         doc.check()?;
-        if let Some(key) = doc.tabs().into_iter().find(|key| {
-            !declared.resolves(key) && !self.doc.contains(key) && !self.closed.contains(*key)
-        }) {
-            return Err(format!(
-                "no section {key:?}: a tab names a declared or local section, or a host view \"{HOST_VIEW_PREFIX}<id>\""
-            ));
+        if let Some(key) =
+            doc.tabs().into_iter().find(|key| !declared.resolves(key) && !self.doc.contains(key) && !self.closed.contains(*key))
+        {
+            return Err(format!("no section {key:?}: a tab names a declared or local section, or a host view \"{HOST_VIEW_PREFIX}<id>\""));
         }
-        let mut next = Self {
-            owned: true,
-            doc,
-            closed: self.closed.clone(),
-            placed: BTreeSet::new(),
-        };
+        let mut next = Self { owned: true, doc, closed: self.closed.clone(), placed: BTreeSet::new() };
         let duplicates = dedupe(&mut next.doc);
         let tabs: BTreeSet<String> = next.doc.tabs().into_iter().map(str::to_owned).collect();
-        let restored: Vec<String> = next
-            .closed
-            .iter()
-            .filter(|key| tabs.contains(*key))
-            .cloned()
-            .collect();
+        let restored: Vec<String> = next.closed.iter().filter(|key| tabs.contains(*key)).cloned().collect();
         next.closed.retain(|key| !tabs.contains(key));
         for section in &declared.sections {
             if !tabs.contains(&section.key) {
@@ -331,9 +303,7 @@ impl SidebarArrangement {
     /// Reopen a declared section the user closed, by its hints, with an
     /// equal share of its host. A section that has a tab is left where it is.
     pub fn restore(&mut self, declared: &Declared, key: &str) -> Result<Report, String> {
-        let index = declared
-            .index(key)
-            .ok_or_else(|| format!("no section {key:?} is declared to restore"))?;
+        let index = declared.index(key).ok_or_else(|| format!("no section {key:?} is declared to restore"))?;
         let mut report = Report::default();
         self.closed.remove(key);
         if !self.doc.contains(key) {
@@ -370,16 +340,10 @@ enum Share {
 fn dedupe(doc: &mut SidebarDoc) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut removed = Vec::new();
-    if doc
-        .dock
-        .root
-        .as_mut()
-        .is_some_and(|root| dedupe_panel(root, &mut seen, &mut removed))
-    {
+    if doc.dock.root.as_mut().is_some_and(|root| dedupe_panel(root, &mut seen, &mut removed)) {
         doc.dock.root = None;
     }
-    doc.floating
-        .retain_mut(|root| !dedupe_panel(root, &mut seen, &mut removed));
+    doc.floating.retain_mut(|root| !dedupe_panel(root, &mut seen, &mut removed));
     removed
 }
 
@@ -413,11 +377,7 @@ fn dedupe_panel(panel: &mut Panel, seen: &mut BTreeSet<String>, removed: &mut Ve
 /// integers free.
 fn fresh_ids(doc: &SidebarDoc, count: usize) -> Vec<String> {
     let used: BTreeSet<&str> = doc.panels().into_iter().map(|p| p.id.as_str()).collect();
-    (1..)
-        .map(|n: u64| n.to_string())
-        .filter(|id| !used.contains(id.as_str()))
-        .take(count)
-        .collect()
+    (1..).map(|n: u64| n.to_string()).filter(|id| !used.contains(id.as_str())).take(count).collect()
 }
 
 /// Place declared section `index` in a new tab panel of its host, before the
@@ -426,25 +386,11 @@ fn fresh_ids(doc: &SidebarDoc, count: usize) -> Vec<String> {
 /// scales the dock's).
 fn place(doc: &mut SidebarDoc, declared: &Declared, index: usize, share: Share) {
     let section = &declared.sections[index];
-    let later: Vec<&str> = declared.sections[index + 1..]
-        .iter()
-        .map(|s| s.key.as_str())
-        .collect();
+    let later: Vec<&str> = declared.sections[index + 1..].iter().map(|s| s.key.as_str()).collect();
     let [panel_id, split_id]: [String; 2] = fresh_ids(doc, 2).try_into().expect("two IDs");
-    let mut panel = Panel {
-        id: panel_id,
-        weight: 1.0,
-        node: PanelNode::Tabs {
-            tabs: vec![section.key.clone()],
-            selected: Some(section.key.clone()),
-        },
-    };
-    let anchor = |panels: &[Panel]| {
-        later
-            .iter()
-            .find_map(|key| panels.iter().position(|p| p.tabs().contains(key)))
-            .unwrap_or(panels.len())
-    };
+    let mut panel =
+        Panel { id: panel_id, weight: 1.0, node: PanelNode::Tabs { tabs: vec![section.key.clone()], selected: Some(section.key.clone()) } };
+    let anchor = |panels: &[Panel]| later.iter().find_map(|key| panels.iter().position(|p| p.tabs().contains(key))).unwrap_or(panels.len());
     match section.host {
         Host::Floating => {
             let at = anchor(&doc.floating);
@@ -470,36 +416,13 @@ fn place(doc: &mut SidebarDoc, declared: &Declared, index: usize, share: Share) 
 /// dock gets one; an empty tab panel becomes one; a tab panel with tabs is
 /// lifted into a new one.
 fn dock_children(dock: &mut ArrangementDoc, split_id: String) -> &mut Vec<Panel> {
-    let column = |id, weight, children| Panel {
-        id,
-        weight,
-        node: PanelNode::Split {
-            axis: Axis::Column,
-            children,
-        },
-    };
+    let column = |id, weight, children| Panel { id, weight, node: PanelNode::Split { axis: Axis::Column, children } };
     let root = match dock.root.take() {
         None => column(split_id, 1.0, Vec::new()),
-        Some(Panel {
-            id,
-            weight,
-            node: PanelNode::Tabs { tabs, .. },
-        }) if tabs.is_empty() => column(id, weight, Vec::new()),
-        Some(
-            leaf @ Panel {
-                node: PanelNode::Tabs { .. },
-                ..
-            },
-        ) => {
+        Some(Panel { id, weight, node: PanelNode::Tabs { tabs, .. } }) if tabs.is_empty() => column(id, weight, Vec::new()),
+        Some(leaf @ Panel { node: PanelNode::Tabs { .. }, .. }) => {
             let weight = leaf.weight;
-            column(
-                split_id,
-                weight,
-                vec![Panel {
-                    weight: 1.0,
-                    ..leaf
-                }],
-            )
+            column(split_id, weight, vec![Panel { weight: 1.0, ..leaf }])
         }
         Some(split) => split,
     };

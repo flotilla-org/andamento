@@ -27,10 +27,7 @@ pub fn render(snapshot: &SurfaceSnapshot, columns: usize) -> Frame {
                 width <= columns
             })
             .collect();
-        frame.lines.push(format!(
-            "{text}{}",
-            " ".repeat(columns.saturating_sub(text.width()))
-        ));
+        frame.lines.push(format!("{text}{}", " ".repeat(columns.saturating_sub(text.width()))));
     }
     fn nodes(frame: &mut Frame, items: &[PlacementNode], depth: usize, columns: usize) {
         for node in items {
@@ -46,52 +43,26 @@ pub fn render(snapshot: &SurfaceSnapshot, columns: usize) -> Frame {
             frame.hits.push(Hit {
                 row: frame.lines.len(),
                 action: if node.children.is_empty() {
-                    Action::ActivatePlacement {
-                        key: node.key.clone(),
-                    }
+                    Action::ActivatePlacement { key: node.key.clone() }
                 } else {
-                    Action::TogglePlacement {
-                        key: node.key.clone(),
-                    }
+                    Action::TogglePlacement { key: node.key.clone() }
                 },
             });
-            line(
-                frame,
-                format!("{}{prefix} {text}", "  ".repeat(depth)),
-                columns,
-            );
+            line(frame, format!("{}{prefix} {text}", "  ".repeat(depth)), columns);
             if !node.collapsed {
                 nodes(frame, &node.children, depth + 1, columns);
             }
         }
     }
-    let mut frame = Frame {
-        lines: vec![],
-        hits: vec![],
-    };
+    let mut frame = Frame { lines: vec![], hits: vec![] };
     for section in snapshot.visible_sections() {
         let text = section.content.text();
-        line(
-            &mut frame,
-            if text.is_empty() {
-                section.name.clone()
-            } else {
-                text
-            },
-            columns,
-        );
+        line(&mut frame, if text.is_empty() { section.name.clone() } else { text }, columns);
         nodes(&mut frame, &section.nodes, 0, columns);
         for control in &section.content.controls {
             if let Some(name) = &control.variable {
-                frame.hits.push(Hit {
-                    row: frame.lines.len(),
-                    action: Action::ToggleDisplayVariable { name: name.clone() },
-                });
-                line(
-                    &mut frame,
-                    format!("[{name}: {:?}]", snapshot.display_values.get(name)),
-                    columns,
-                );
+                frame.hits.push(Hit { row: frame.lines.len(), action: Action::ToggleDisplayVariable { name: name.clone() } });
+                line(&mut frame, format!("[{name}: {:?}]", snapshot.display_values.get(name)), columns);
             }
         }
     }

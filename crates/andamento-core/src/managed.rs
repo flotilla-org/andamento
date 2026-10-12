@@ -82,13 +82,7 @@ impl Resolved {
     /// target, as managed primary content describes it.
     pub fn as_terminal(&self) -> Option<(&str, &str, Option<&str>)> {
         match (&self.target, &self.recipe) {
-            (
-                Some(target),
-                LocalRecipe::Command {
-                    line: CommandLine::Shell(command),
-                    cwd,
-                },
-            ) => Some((target, command, cwd.as_deref())),
+            (Some(target), LocalRecipe::Command { line: CommandLine::Shell(command), cwd }) => Some((target, command, cwd.as_deref())),
             _ => None,
         }
     }
@@ -96,13 +90,7 @@ impl Resolved {
 
 impl From<TerminalContent> for Resolved {
     fn from(content: TerminalContent) -> Self {
-        Self {
-            target: Some(content.target),
-            recipe: LocalRecipe::Command {
-                line: CommandLine::Shell(content.command),
-                cwd: content.cwd,
-            },
-        }
+        Self { target: Some(content.target), recipe: LocalRecipe::Command { line: CommandLine::Shell(content.command), cwd: content.cwd } }
     }
 }
 
@@ -202,13 +190,8 @@ impl ManagedContent {
     /// The resolution `source` has now; `None` is Unavailable.
     pub fn desired(&self, source: &SlotSource) -> Option<DesiredContent> {
         match source {
-            SlotSource::Provider { entity, slot } => {
-                self.desired.get(&(entity.clone(), slot.clone())).cloned()
-            }
-            SlotSource::Local(recipe) => Some(DesiredContent::Ready(Resolved {
-                target: None,
-                recipe: recipe.clone(),
-            })),
+            SlotSource::Provider { entity, slot } => self.desired.get(&(entity.clone(), slot.clone())).cloned(),
+            SlotSource::Local(recipe) => Some(DesiredContent::Ready(Resolved { target: None, recipe: recipe.clone() })),
         }
     }
 
@@ -224,67 +207,37 @@ impl ManagedContent {
 
     /// Plan `slot` of `workspace`, whose content comes from `source`, given
     /// the identity of the resolution the host applied (empty for none).
-    pub fn plan_slot(
-        &mut self,
-        workspace: WorkspaceId,
-        slot: &str,
-        source: SlotSource,
-        rebind: RebindPolicy,
-        applied: &str,
-    ) -> SlotPlan {
+    pub fn plan_slot(&mut self, workspace: WorkspaceId, slot: &str, source: SlotSource, rebind: RebindPolicy, applied: &str) -> SlotPlan {
         let desired = self.desired(&source);
-        let binding = self
-            .bindings
-            .entry((workspace, slot.to_owned()))
-            .or_insert_with(|| Binding {
-                source: source.clone(),
-                rebind,
-                applied: applied.to_owned(),
-                pending: None,
-                failed: false,
-                previous: None,
-            });
+        let binding = self.bindings.entry((workspace, slot.to_owned())).or_insert_with(|| Binding {
+            source: source.clone(),
+            rebind,
+            applied: applied.to_owned(),
+            pending: None,
+            failed: false,
+            previous: None,
+        });
         if binding.source != source || binding.applied != applied {
             let previous = binding.previous.take().filter(|_| binding.source == source);
-            *binding = Binding {
-                source,
-                rebind,
-                applied: applied.to_owned(),
-                pending: None,
-                failed: false,
-                previous,
-            };
+            *binding = Binding { source, rebind, applied: applied.to_owned(), pending: None, failed: false, previous };
         }
         binding.rebind = rebind;
         let state = match &desired {
             None => ContentState::Unavailable,
             Some(DesiredContent::Held) => ContentState::Held,
-            Some(DesiredContent::Ready(content)) if content.id() == binding.applied => {
-                ContentState::Current
-            }
+            Some(DesiredContent::Ready(content)) if content.id() == binding.applied => ContentState::Current,
             Some(DesiredContent::Ready(_)) if binding.failed => ContentState::Failed,
             Some(DesiredContent::Ready(content)) => {
-                if binding
-                    .pending
-                    .as_ref()
-                    .is_none_or(|pending| pending.resolution != *content)
-                {
+                if binding.pending.as_ref().is_none_or(|pending| pending.resolution != *content) {
                     self.next_token += 1;
-                    binding.pending = Some(SlotUpdate {
-                        token: self.next_token,
-                        id: content.id(),
-                        resolution: content.clone(),
-                    });
+                    binding.pending = Some(SlotUpdate { token: self.next_token, id: content.id(), resolution: content.clone() });
                 }
                 ContentState::Updating
             }
         };
         SlotPlan {
             state,
-            update: binding
-                .pending
-                .clone()
-                .filter(|_| state == ContentState::Updating),
+            update: binding.pending.clone().filter(|_| state == ContentState::Updating),
             rebind: binding.rebind,
             previous: binding.previous.clone(),
             saved: None,
@@ -293,31 +246,18 @@ impl ManagedContent {
 
     /// Host calls immediately before mutation, on the same owner thread as publication.
     pub fn slot_valid(&self, workspace: WorkspaceId, slot: &str, token: u64) -> bool {
-        self.bindings
-            .get(&(workspace, slot.to_owned()))
-            .is_some_and(|b| {
-                b.pending.as_ref().is_some_and(|u| {
-                    u.token == token
-                        && self.desired(&b.source)
-                            == Some(DesiredContent::Ready(u.resolution.clone()))
-                })
-            })
+        self.bindings.get(&(workspace, slot.to_owned())).is_some_and(|b| {
+            b.pending
+                .as_ref()
+                .is_some_and(|u| u.token == token && self.desired(&b.source) == Some(DesiredContent::Ready(u.resolution.clone())))
+        })
     }
 
-    pub fn complete_slot(
-        &mut self,
-        workspace: WorkspaceId,
-        slot: &str,
-        token: u64,
-        success: bool,
-    ) -> bool {
+    pub fn complete_slot(&mut self, workspace: WorkspaceId, slot: &str, token: u64, success: bool) -> bool {
         if !self.slot_valid(workspace, slot, token) {
             return false;
         }
-        let binding = self
-            .bindings
-            .get_mut(&(workspace, slot.to_owned()))
-            .unwrap();
+        let binding = self.bindings.get_mut(&(workspace, slot.to_owned())).unwrap();
         let update = binding.pending.take().unwrap();
         if success {
             let replaced = std::mem::replace(&mut binding.applied, update.id);
@@ -339,9 +279,6 @@ impl ManagedContent {
     /// The host closed the instance a `KeepPrevious` rebind kept. Returns
     /// whether there was one.
     pub fn release_previous(&mut self, workspace: WorkspaceId, slot: &str) -> bool {
-        self.bindings
-            .get_mut(&(workspace, slot.to_owned()))
-            .and_then(|binding| binding.previous.take())
-            .is_some()
+        self.bindings.get_mut(&(workspace, slot.to_owned())).and_then(|binding| binding.previous.take()).is_some()
     }
 }

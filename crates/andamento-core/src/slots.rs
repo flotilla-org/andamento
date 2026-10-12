@@ -6,9 +6,7 @@
 //! (`u:3`). A baseline slot the user overrides is detached: it shows the
 //! override and no longer follows the provider. Its arrangement is one typed
 //! document the host commits whole, at an expected generation.
-use crate::suggested_layout::{
-    self, Axis, BaselineVersion, Content, RebindPolicy, SuggestedLayout, ViewSpec,
-};
+use crate::suggested_layout::{self, Axis, BaselineVersion, Content, RebindPolicy, SuggestedLayout, ViewSpec};
 use crate::versioned::Versioned;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,11 +31,7 @@ impl Baseline {
             slots: layout
                 .slots
                 .iter()
-                .map(|slot| SlotDef {
-                    key: slot.key.clone(),
-                    spec: slot.spec.clone(),
-                    rebind: slot.rebind,
-                })
+                .map(|slot| SlotDef { key: slot.key.clone(), spec: slot.spec.clone(), rebind: slot.rebind })
                 .collect(),
             hint: layout.arrangement.as_ref().map(ArrangementDoc::from_hint),
         }
@@ -92,10 +86,7 @@ impl SlotEdit {
 
     fn overridden(&self) -> Option<&ViewSpec> {
         match &self.content {
-            Some(ContentEdit {
-                change: ContentChange::Override(spec),
-                ..
-            }) => Some(spec),
+            Some(ContentEdit { change: ContentChange::Override(spec), .. }) => Some(spec),
             _ => None,
         }
     }
@@ -173,11 +164,7 @@ impl WorkspaceSlots {
         for slot in baseline {
             let edit = self.edits.get(&slot.key);
             let rebind_edit = edit.and_then(|edit| edit.rebind);
-            let mut flags = if rebind_edit.is_some() {
-                flag::REBIND
-            } else {
-                0
-            };
+            let mut flags = if rebind_edit.is_some() { flag::REBIND } else { 0 };
             let mut spec = slot.spec.clone();
             if let Some(content) = edit.and_then(|edit| edit.content.as_ref()) {
                 let changed = content.against != slot.spec;
@@ -239,19 +226,11 @@ impl WorkspaceSlots {
     /// Baseline slots the user removed, which are hidden.
     pub fn hidden(&self) -> BTreeSet<String> {
         let live = self.keys();
-        self.baseline
-            .iter()
-            .flat_map(|b| &b.slots)
-            .map(|slot| &slot.key)
-            .filter(|key| !live.contains(*key))
-            .cloned()
-            .collect()
+        self.baseline.iter().flat_map(|b| &b.slots).map(|slot| &slot.key).filter(|key| !live.contains(*key)).cloned().collect()
     }
 
     fn in_baseline(&self, key: &str) -> bool {
-        self.baseline
-            .as_ref()
-            .is_some_and(|b| b.slot(key).is_some())
+        self.baseline.as_ref().is_some_and(|b| b.slot(key).is_some())
     }
 
     /// Store `edit` for `key`, or drop it when empty. Returns whether
@@ -278,11 +257,7 @@ impl WorkspaceSlots {
         check_spec(&spec)?;
         if let Some(id) = key.strip_prefix(USER_PREFIX) {
             check_key(id).map_err(|_| format!("invalid user slot key {key:?}"))?;
-            let slot = SlotDef {
-                key: key.to_owned(),
-                spec,
-                rebind,
-            };
+            let slot = SlotDef { key: key.to_owned(), spec, rebind };
             return Ok(match self.user.iter_mut().find(|s| s.key == key) {
                 Some(existing) if *existing == slot => false,
                 Some(existing) => {
@@ -297,10 +272,8 @@ impl WorkspaceSlots {
         }
         if let Some(baseline) = self.baseline.as_ref().and_then(|b| b.slot(key)).cloned() {
             let edit = SlotEdit {
-                content: (spec != baseline.spec).then(|| ContentEdit {
-                    change: ContentChange::Override(spec),
-                    against: baseline.spec.clone(),
-                }),
+                content: (spec != baseline.spec)
+                    .then(|| ContentEdit { change: ContentChange::Override(spec), against: baseline.spec.clone() }),
                 rebind: (rebind != baseline.rebind).then_some(rebind),
             };
             return Ok(self.put(key, edit));
@@ -314,17 +287,9 @@ impl WorkspaceSlots {
             .and_then(|edit| edit.content.as_ref())
             .map(|content| content.against.clone())
         else {
-            return Err(format!(
-                "no slot {key:?}: add the user's own slots with keys \"{USER_PREFIX}<id>\""
-            ));
+            return Err(format!("no slot {key:?}: add the user's own slots with keys \"{USER_PREFIX}<id>\""));
         };
-        let edit = SlotEdit {
-            content: Some(ContentEdit {
-                change: ContentChange::Override(spec),
-                against,
-            }),
-            rebind: Some(rebind),
-        };
+        let edit = SlotEdit { content: Some(ContentEdit { change: ContentChange::Override(spec), against }), rebind: Some(rebind) };
         Ok(self.put(key, edit))
     }
 
@@ -340,13 +305,7 @@ impl WorkspaceSlots {
             return Ok(true);
         }
         if let Some(baseline) = self.baseline.as_ref().and_then(|b| b.slot(key)).cloned() {
-            let edit = SlotEdit {
-                content: Some(ContentEdit {
-                    change: ContentChange::Tombstone,
-                    against: baseline.spec,
-                }),
-                rebind: None,
-            };
+            let edit = SlotEdit { content: Some(ContentEdit { change: ContentChange::Tombstone, against: baseline.spec }), rebind: None };
             return Ok(self.put(key, edit));
         }
         Ok(self.edits.remove(key).is_some())
@@ -391,8 +350,7 @@ impl WorkspaceSlots {
                 continue;
             }
             if edit.content.is_none() {
-                self.departed
-                    .insert(slot.key.clone(), edit.rebind.unwrap_or(slot.rebind));
+                self.departed.insert(slot.key.clone(), edit.rebind.unwrap_or(slot.rebind));
             }
             self.edits.remove(&slot.key);
         }
@@ -411,9 +369,7 @@ impl WorkspaceSlots {
         let keep: Vec<String> = self
             .edits
             .iter()
-            .filter(|(key, edit)| {
-                !edit.is_empty() && (new.slot(key).is_some() || edit.overridden().is_some())
-            })
+            .filter(|(key, edit)| !edit.is_empty() && (new.slot(key).is_some() || edit.overridden().is_some()))
             .map(|(key, _)| key.clone())
             .collect();
         self.edits.retain(|key, _| keep.contains(key));
@@ -431,9 +387,7 @@ impl WorkspaceSlots {
 pub(crate) fn check_key(id: &str) -> Result<(), String> {
     let mut chars = id.chars();
     let valid = id.len() <= 64
-        && chars
-            .next()
-            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
     if valid {
         Ok(())
@@ -461,9 +415,7 @@ fn check_spec(spec: &ViewSpec) -> Result<(), String> {
         },
         Content::Local(LocalRecipe::File { path }) if path.is_empty() => return empty("a path"),
         Content::Local(LocalRecipe::Url { url }) if url.is_empty() => return empty("a URL"),
-        Content::Local(LocalRecipe::Jackstay { launcher, endpoint })
-            if launcher.is_empty() || endpoint.is_empty() =>
-        {
+        Content::Local(LocalRecipe::Jackstay { launcher, endpoint }) if launcher.is_empty() || endpoint.is_empty() => {
             return empty("a launcher and an endpoint")
         }
         Content::Local(_) => {}
@@ -539,20 +491,16 @@ impl ArrangementDoc {
                 id: id.to_owned(),
                 weight: f64::from(source.weight),
                 node: match &source.node {
-                    suggested_layout::PanelNode::Split { axis, children } => PanelNode::Split {
-                        axis: *axis,
-                        children: children.iter().map(|child| panel(hint, child)).collect(),
-                    },
-                    suggested_layout::PanelNode::Tabs { slots, selected } => PanelNode::Tabs {
-                        tabs: slots.clone(),
-                        selected: Some(selected.clone()),
-                    },
+                    suggested_layout::PanelNode::Split { axis, children } => {
+                        PanelNode::Split { axis: *axis, children: children.iter().map(|child| panel(hint, child)).collect() }
+                    }
+                    suggested_layout::PanelNode::Tabs { slots, selected } => {
+                        PanelNode::Tabs { tabs: slots.clone(), selected: Some(selected.clone()) }
+                    }
                 },
             }
         }
-        Self {
-            root: Some(panel(hint, &hint.root)),
-        }
+        Self { root: Some(panel(hint, &hint.root)) }
     }
 
     /// Panels in preorder.
@@ -582,23 +530,12 @@ impl ArrangementDoc {
     /// them. Returns the slots placed.
     pub fn place(&mut self, order: &[String]) -> Vec<String> {
         let present: BTreeSet<String> = self.tabs().into_iter().map(str::to_owned).collect();
-        let missing: Vec<String> = order
-            .iter()
-            .filter(|key| !present.contains(*key))
-            .cloned()
-            .collect();
+        let missing: Vec<String> = order.iter().filter(|key| !present.contains(*key)).cloned().collect();
         if missing.is_empty() {
             return missing;
         }
         if self.root.is_none() {
-            self.root = Some(Panel {
-                id: "1".into(),
-                weight: 1.0,
-                node: PanelNode::Tabs {
-                    tabs: Vec::new(),
-                    selected: None,
-                },
-            });
+            self.root = Some(Panel { id: "1".into(), weight: 1.0, node: PanelNode::Tabs { tabs: Vec::new(), selected: None } });
         }
         fn first_tabs(panel: &mut Panel) -> Option<(&mut Vec<String>, &mut Option<String>)> {
             match &mut panel.node {
@@ -606,8 +543,7 @@ impl ArrangementDoc {
                 PanelNode::Split { children, .. } => children.iter_mut().find_map(first_tabs),
             }
         }
-        let (tabs, selected) =
-            first_tabs(self.root.as_mut().expect("made above")).expect("every leaf is a tab panel");
+        let (tabs, selected) = first_tabs(self.root.as_mut().expect("made above")).expect("every leaf is a tab panel");
         tabs.extend(missing.iter().cloned());
         if selected.is_none() {
             *selected = missing.first().cloned();
@@ -630,20 +566,14 @@ pub(crate) fn check_panels(panels: Vec<&Panel>, duplicate_tabs: bool) -> Result<
             return Err(format!("panel ID {:?} is used twice", panel.id));
         }
         if !(panel.weight.is_finite() && panel.weight > 0.0) {
-            return Err(format!(
-                "panel {:?} has weight {}; weights are positive",
-                panel.id, panel.weight
-            ));
+            return Err(format!("panel {:?} has weight {}; weights are positive", panel.id, panel.weight));
         }
         match &panel.node {
             PanelNode::Split { children, .. } if children.is_empty() => {
                 return Err(format!("split {:?} has no panels", panel.id));
             }
             PanelNode::Split { .. } => {}
-            PanelNode::Tabs {
-                tabs: panel_tabs,
-                selected,
-            } => {
+            PanelNode::Tabs { tabs: panel_tabs, selected } => {
                 for tab in panel_tabs {
                     if tab.is_empty() {
                         return Err(format!("panel {:?} has a tab with no slot", panel.id));
@@ -654,10 +584,7 @@ pub(crate) fn check_panels(panels: Vec<&Panel>, duplicate_tabs: bool) -> Result<
                 }
                 if let Some(selected) = selected {
                     if !panel_tabs.contains(selected) {
-                        return Err(format!(
-                            "panel {:?} selects {selected:?}, which is not one of its tabs",
-                            panel.id
-                        ));
+                        return Err(format!("panel {:?} selects {selected:?}, which is not one of its tabs", panel.id));
                     }
                 }
             }
@@ -753,20 +680,12 @@ fn shape(doc: &ArrangementDoc) -> ArrangementDoc {
             id: panel.id.clone(),
             weight: 1.0,
             node: match &panel.node {
-                PanelNode::Split { axis, children } => PanelNode::Split {
-                    axis: *axis,
-                    children: children.iter().map(walk).collect(),
-                },
-                PanelNode::Tabs { tabs, .. } => PanelNode::Tabs {
-                    tabs: tabs.clone(),
-                    selected: None,
-                },
+                PanelNode::Split { axis, children } => PanelNode::Split { axis: *axis, children: children.iter().map(walk).collect() },
+                PanelNode::Tabs { tabs, .. } => PanelNode::Tabs { tabs: tabs.clone(), selected: None },
             },
         }
     }
-    ArrangementDoc {
-        root: doc.root.as_ref().map(walk),
-    }
+    ArrangementDoc { root: doc.root.as_ref().map(walk) }
 }
 
 impl ArrangementDoc {
@@ -806,9 +725,7 @@ impl ArrangementDoc {
                 return Some(panel);
             }
             match &mut panel.node {
-                PanelNode::Split { children, .. } => {
-                    children.iter_mut().find_map(|child| walk(child, id))
-                }
+                PanelNode::Split { children, .. } => children.iter_mut().find_map(|child| walk(child, id)),
                 PanelNode::Tabs { .. } => None,
             }
         }
@@ -824,9 +741,7 @@ impl ArrangementDoc {
             if let Some(weight) = edit.weight {
                 panel.weight = weight;
             }
-            if let (Some(tab), PanelNode::Tabs { tabs, selected }) =
-                (&edit.selected, &mut panel.node)
-            {
+            if let (Some(tab), PanelNode::Tabs { tabs, selected }) = (&edit.selected, &mut panel.node) {
                 if tabs.contains(tab) {
                     *selected = Some(tab.clone());
                 }
@@ -841,12 +756,8 @@ impl Arrangement {
     fn derived(baseline: Option<&Baseline>, slots: &[SlotInfo]) -> (ArrangementDoc, Vec<String>) {
         let mut doc = baseline.and_then(|b| b.hint.clone()).unwrap_or_default();
         let live: BTreeSet<&str> = slots.iter().map(|slot| slot.key.as_str()).collect();
-        let hidden: BTreeSet<String> = baseline
-            .iter()
-            .flat_map(|b| &b.slots)
-            .map(|slot| slot.key.clone())
-            .filter(|key| !live.contains(key.as_str()))
-            .collect();
+        let hidden: BTreeSet<String> =
+            baseline.iter().flat_map(|b| &b.slots).map(|slot| slot.key.clone()).filter(|key| !live.contains(key.as_str())).collect();
         doc.strip(&hidden);
         let order: Vec<String> = slots.iter().map(|slot| slot.key.clone()).collect();
         let placed = doc.place(&order);
@@ -873,23 +784,11 @@ impl Arrangement {
         doc.check()?;
         let known: BTreeSet<&str> = slots.iter().map(|slot| slot.key.as_str()).collect();
         let tabbed: BTreeSet<&str> = stored.iter().flat_map(|a| a.doc.tabs()).collect();
-        if let Some(tab) = doc
-            .tabs()
-            .into_iter()
-            .find(|tab| !known.contains(tab) && !tabbed.contains(tab))
-        {
-            return Err(format!(
-                "no slot {tab:?}: add a slot before giving it a tab"
-            ));
+        if let Some(tab) = doc.tabs().into_iter().find(|tab| !known.contains(tab) && !tabbed.contains(tab)) {
+            return Err(format!("no slot {tab:?}: add a slot before giving it a tab"));
         }
-        let soft_from = stored
-            .as_ref()
-            .filter(|a| !a.owned && shape(&doc) == shape(&a.doc));
-        let mut next = Self {
-            owned: true,
-            doc,
-            ..Self::default()
-        };
+        let soft_from = stored.as_ref().filter(|a| !a.owned && shape(&doc) == shape(&a.doc));
+        let mut next = Self { owned: true, doc, ..Self::default() };
         if let Some(stored) = soft_from {
             next.owned = false;
             next.soft = stored.soft.clone();
@@ -898,17 +797,8 @@ impl Arrangement {
                 let Some(from) = base.panels().into_iter().find(|p| p.id == panel.id) else {
                     continue;
                 };
-                let mut edit = SoftOverride {
-                    weight: (panel.weight != from.weight).then_some(panel.weight),
-                    selected: None,
-                };
-                if let (
-                    PanelNode::Tabs { selected, .. },
-                    PanelNode::Tabs {
-                        selected: provider, ..
-                    },
-                ) = (&panel.node, &from.node)
-                {
+                let mut edit = SoftOverride { weight: (panel.weight != from.weight).then_some(panel.weight), selected: None };
+                if let (PanelNode::Tabs { selected, .. }, PanelNode::Tabs { selected: provider, .. }) = (&panel.node, &from.node) {
                     if selected != provider {
                         edit.selected = selected.clone();
                     }
@@ -962,12 +852,7 @@ impl Arrangement {
 
     /// Keep the user's arrangement over a provider change, or follow the
     /// provider again, dropping ownership and soft overrides.
-    pub fn resolve(
-        stored: &mut Option<Self>,
-        choice: Resolve,
-        baseline: Option<&Baseline>,
-        slots: &[SlotInfo],
-    ) {
+    pub fn resolve(stored: &mut Option<Self>, choice: Resolve, baseline: Option<&Baseline>, slots: &[SlotInfo]) {
         match choice {
             Resolve::Keep => {
                 if let Some(arrangement) = stored {
@@ -983,12 +868,7 @@ impl Arrangement {
 
     pub fn gone(&self, slots: &[SlotInfo]) -> BTreeSet<String> {
         let known: BTreeSet<&str> = slots.iter().map(|slot| slot.key.as_str()).collect();
-        self.doc
-            .tabs()
-            .into_iter()
-            .filter(|tab| !known.contains(tab))
-            .map(str::to_owned)
-            .collect()
+        self.doc.tabs().into_iter().filter(|tab| !known.contains(tab)).map(str::to_owned).collect()
     }
 
     /// Soft overrides whose panel, or selected tab, is no longer in the
@@ -997,16 +877,14 @@ impl Arrangement {
         let panels = self.doc.panels();
         self.soft
             .iter()
-            .filter(
-                |(id, edit)| match panels.iter().find(|panel| panel.id == **id) {
-                    None => true,
-                    Some(panel) => match (&edit.selected, &panel.node) {
-                        (Some(tab), PanelNode::Tabs { tabs, .. }) => !tabs.contains(tab),
-                        (Some(_), PanelNode::Split { .. }) => true,
-                        (None, _) => false,
-                    },
+            .filter(|(id, edit)| match panels.iter().find(|panel| panel.id == **id) {
+                None => true,
+                Some(panel) => match (&edit.selected, &panel.node) {
+                    (Some(tab), PanelNode::Tabs { tabs, .. }) => !tabs.contains(tab),
+                    (Some(_), PanelNode::Split { .. }) => true,
+                    (None, _) => false,
                 },
-            )
+            })
             .map(|(id, _)| id.clone())
             .collect()
     }

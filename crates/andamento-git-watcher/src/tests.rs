@@ -14,10 +14,7 @@ impl Temp {
         let path = std::env::temp_dir().join(format!(
             "git-watcher-{}-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
             SERIAL.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&path).unwrap();
@@ -42,16 +39,8 @@ fn discovers_linked_worktrees_and_refreshes_git_state() {
     let root = temp.0.join("scan/repo");
     init(&root);
     let linked = temp.0.join("outside quote' and space");
-    git(
-        &root,
-        &["remote", "add", "origin", "git@example.test:team/repo.git"],
-    )
-    .unwrap();
-    git(
-        &root,
-        &["worktree", "add", "-b", "feature", linked.to_str().unwrap()],
-    )
-    .unwrap();
+    git(&root, &["remote", "add", "origin", "git@example.test:team/repo.git"]).unwrap();
+    git(&root, &["worktree", "add", "-b", "feature", linked.to_str().unwrap()]).unwrap();
     fs::create_dir(linked.join("subdir")).unwrap();
     let trees = discover(&[temp.0.join("scan")], &[linked.join("subdir")]);
     assert_eq!(trees.len(), 2);
@@ -64,27 +53,16 @@ fn discovers_linked_worktrees_and_refreshes_git_state() {
     assert!(!root_tree.open);
     fs::write(linked.join("untracked"), "dirty").unwrap();
     git(&linked, &["checkout", "--detach"]).unwrap();
-    let tree = discover(std::slice::from_ref(&linked), &[])
-        .into_iter()
-        .find(|t| t.root == linked)
-        .unwrap();
+    let tree = discover(std::slice::from_ref(&linked), &[]).into_iter().find(|t| t.root == linked).unwrap();
     assert!(tree.branch.starts_with("detached:"));
     assert!(tree.dirty);
     assert!(!tree.open);
     let stream = patches(&[tree], 10_000);
-    let recipe = stream[1]["set"]["action.primary.recipe"]["value"]["value"]
-        .as_str()
-        .unwrap();
+    let recipe = stream[1]["set"]["action.primary.recipe"]["value"]["value"].as_str().unwrap();
     let cd = recipe.split(" && exec").next().unwrap();
-    let output = Command::new("sh")
-        .args(["-c", &format!("{cd} && pwd")])
-        .output()
-        .unwrap();
+    let output = Command::new("sh").args(["-c", &format!("{cd} && pwd")]).output().unwrap();
     assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap().trim(),
-        linked.to_str().unwrap()
-    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), linked.to_str().unwrap());
 }
 #[test]
 fn remote_less_worktrees_share_parent_and_upstream_is_cleared() {
@@ -92,11 +70,7 @@ fn remote_less_worktrees_share_parent_and_upstream_is_cleared() {
     let root = temp.0.join("repo");
     init(&root);
     let linked = temp.0.join("linked");
-    git(
-        &root,
-        &["worktree", "add", "-b", "feature", linked.to_str().unwrap()],
-    )
-    .unwrap();
+    git(&root, &["worktree", "add", "-b", "feature", linked.to_str().unwrap()]).unwrap();
     git(&linked, &["branch", "--set-upstream-to=main"]).unwrap();
     let trees = discover(std::slice::from_ref(&root), &[]);
     assert_eq!(trees.len(), 2);
@@ -105,46 +79,26 @@ fn remote_less_worktrees_share_parent_and_upstream_is_cleared() {
     assert_eq!(tree.upstream.as_deref(), Some("main"));
     assert_eq!(tree.ahead, Some(0));
     git(&linked, &["commit", "--allow-empty", "-m", "ahead"]).unwrap();
-    assert_eq!(
-        discover(std::slice::from_ref(&root), &[])
-            .iter()
-            .find(|t| t.root == linked)
-            .unwrap()
-            .ahead,
-        Some(1)
-    );
+    assert_eq!(discover(std::slice::from_ref(&root), &[]).iter().find(|t| t.root == linked).unwrap().ahead, Some(1));
     git(&linked, &["branch", "--unset-upstream"]).unwrap();
     let stream = patches(&discover(&[root], &[]), 1000);
     assert!(stream
         .iter()
         .filter(|p| p["target"]["value"]["kind"] == "worktree")
-        .all(|p| p["unset"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("git.upstream"))));
+        .all(|p| p["unset"].as_array().unwrap().contains(&json!("git.upstream"))));
 }
 #[test]
 fn parses_forge_remotes_and_host_inventories() {
-    for remote in [
-        "git@github.com:owner/repo.git",
-        "https://forge.test/owner/repo.git",
-        "ssh://git@forge.test/owner/repo",
-    ] {
+    for remote in ["git@github.com:owner/repo.git", "https://forge.test/owner/repo.git", "ssh://git@forge.test/owner/repo"] {
         assert_eq!(repo_name(remote).as_deref(), Some("owner/repo"));
     }
-    assert_eq!(
-        repo_name("https://forge.test/group/sub/repo.git").as_deref(),
-        Some("group/sub/repo")
-    );
+    assert_eq!(repo_name("https://forge.test/group/sub/repo.git").as_deref(), Some("group/sub/repo"));
     assert_eq!(repo_name("/local/repo"), None);
     let dirs = transport::workdirs(&json!({"workdirs":[{"cwd":"/old","live_cwd":"/new"},{"cwd":"/saved","live_cwd":null},{"cwd":"/saved","live_cwd":""},{"cwd":null}]})).unwrap();
     assert_eq!(dirs, vec![PathBuf::from("/new"), PathBuf::from("/saved")]);
     assert!(transport::workdirs(&json!({})).is_err());
     let response = r#"[{"identity":{"key":"zellij.pane.cwd","value":{"type":"text","value":"/repo"}}}] [{"identity":{"key":"zellij.pane.cwd","value":{"type":"text","value":"/repo"}}}]"#;
-    assert_eq!(
-        transport::observed_identities(response).unwrap(),
-        vec![PathBuf::from("/repo")]
-    );
+    assert_eq!(transport::observed_identities(response).unwrap(), vec![PathBuf::from("/repo")]);
 }
 #[test]
 fn emitted_patches_replay_under_git_placement_and_expire() {
@@ -160,31 +114,16 @@ fn emitted_patches_replay_under_git_placement_and_expire() {
         open: false,
     };
     let stream = patches(&[tree], 10_000);
-    let frames: Vec<Frame> = stream
-        .into_iter()
-        .map(|p| Frame {
-            offset_ms: 0,
-            patch: serde_json::from_value(p).unwrap(),
-        })
-        .collect();
+    let frames: Vec<Frame> = stream.into_iter().map(|p| Frame { offset_ms: 0, patch: serde_json::from_value(p).unwrap() }).collect();
     let mut replay = Replay::new(frames).unwrap();
-    for config in [
-        include_str!("../../../templates/andamento-git.kdl"),
-        include_str!("../../../templates/flotilla-default.kdl"),
-    ] {
+    for config in [include_str!("../../../templates/andamento-git.kdl"), include_str!("../../../templates/flotilla-default.kdl")] {
         let mut sidebar = Sidebar::new(config).unwrap();
         // Use the same replay reader as checked-in connector captures.
         let capture = include_str!("../../../fixtures/git-watcher.jsonl");
-        let mut recorded =
-            Replay::new(replay::read(std::io::Cursor::new(capture)).unwrap()).unwrap();
+        let mut recorded = Replay::new(replay::read(std::io::Cursor::new(capture)).unwrap()).unwrap();
         recorded.advance_to(&mut sidebar, 0).unwrap();
         let snapshot = sidebar.snapshot();
-        let section = snapshot
-            .surface
-            .sections
-            .iter()
-            .find(|s| s.nodes.iter().any(|n| n.entity.kind == "repo"))
-            .unwrap();
+        let section = snapshot.surface.sections.iter().find(|s| s.nodes.iter().any(|n| n.entity.kind == "repo")).unwrap();
         for width in [24, 80] {
             let rendered = andamento_terminal::surface::render(&snapshot.surface, width);
             let lines = rendered.lines.join("\n");
@@ -197,34 +136,14 @@ fn emitted_patches_replay_under_git_placement_and_expire() {
             }
         }
         assert_eq!(section.nodes.len(), 2);
-        assert_eq!(
-            section
-                .nodes
-                .iter()
-                .map(|n| n.children.len())
-                .sum::<usize>(),
-            4
-        );
-        assert!(section
-            .nodes
-            .iter()
-            .all(|n| n.children.iter().all(|c| c.entity.kind == "worktree")));
+        assert_eq!(section.nodes.iter().map(|n| n.children.len()).sum::<usize>(), 4);
+        assert!(section.nodes.iter().all(|n| n.children.iter().all(|c| c.entity.kind == "worktree")));
         recorded.advance_to(&mut sidebar, 10_001).unwrap();
-        assert!(sidebar
-            .snapshot()
-            .surface
-            .sections
-            .iter()
-            .all(|s| s.nodes.is_empty()));
+        assert!(sidebar.snapshot().surface.sections.iter().all(|s| s.nodes.is_empty()));
     }
     let mut sidebar = Sidebar::new(include_str!("../../../templates/andamento-git.kdl")).unwrap();
     replay.advance_to(&mut sidebar, 0).unwrap();
-    assert_eq!(
-        sidebar.snapshot().surface.sections[0].nodes[0]
-            .children
-            .len(),
-        1
-    );
+    assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].children.len(), 1);
 }
 
 #[cfg(unix)]
@@ -239,18 +158,11 @@ fn wheelhouse_uses_unix_http_and_prefers_live_cwd() {
     let socket = temp.0.join("ingress.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = std::thread::spawn(move || {
-        for (index, expected) in [
-            "GET /v1/observed/workdirs",
-            "POST /v1/metadata/patch",
-            "GET /v1/observed/workdirs",
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, expected) in
+            ["GET /v1/observed/workdirs", "POST /v1/metadata/patch", "GET /v1/observed/workdirs"].into_iter().enumerate()
         {
             let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut first = String::new();
             reader.read_line(&mut first).unwrap();
@@ -276,20 +188,13 @@ fn wheelhouse_uses_unix_http_and_prefers_live_cwd() {
                 stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
             } else if first.contains("GET") && length == 0 {
                 let body = r#"{"workdirs":[{"cwd":"/saved","live_cwd":"/live"}]}"#;
-                write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                )
-                .unwrap();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
             }
         }
     });
     let mut host = transport::Wheelhouse { socket };
     assert_eq!(host.observed().unwrap(), vec![PathBuf::from("/live")]);
-    host.publish(&entity_patch("repo", "test", BTreeMap::new(), vec![], 1000))
-        .unwrap();
+    host.publish(&entity_patch("repo", "test", BTreeMap::new(), vec![], 1000)).unwrap();
     assert!(host.observed().is_err());
     server.join().unwrap();
 }
@@ -302,16 +207,11 @@ fn zellij_factory_dedupes_live_tabs_and_scopes_panes() {
     let temp = Temp::new();
     let root = temp.0.join("repo");
     init(&root);
-    git(
-        &root,
-        &["remote", "add", "origin", "git@example.test:owner/repo.git"],
-    )
-    .unwrap();
+    git(&root, &["remote", "add", "origin", "git@example.test:owner/repo.git"]).unwrap();
     let bin = temp.0.join("zellij");
     let log = temp.0.join("patches.jsonl");
     let state = temp.0.join("created");
-    let observed =
-        json!([{"identity":{"key":"zellij.pane.cwd","value":{"type":"text","value":root}}}]);
+    let observed = json!([{"identity":{"key":"zellij.pane.cwd","value":{"type":"text","value":root}}}]);
     let script = format!(
         r#"#!/bin/sh
 set -eu
@@ -354,29 +254,13 @@ fi
         host.reconcile(&trees, &observed, 10_000).unwrap();
     }
     assert_eq!(fs::read_to_string(&state).unwrap().lines().count(), 1);
-    let patches: Vec<Value> = fs::read_to_string(&log)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    let pane = patches
-        .iter()
-        .find(|p| p["target"]["kind"] == "identity")
-        .unwrap();
+    let patches: Vec<Value> = fs::read_to_string(&log).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    let pane = patches.iter().find(|p| p["target"]["kind"] == "identity").unwrap();
     assert_eq!(pane["set"]["entity.kind"]["value"]["value"], "worktree");
-    let tab = patches
-        .iter()
-        .find(|p| p["target"]["kind"] == "tab")
-        .unwrap();
-    assert_eq!(
-        tab["target"]["value"],
-        andamento_core::tab_workspace_id(42).to_string()
-    );
+    let tab = patches.iter().find(|p| p["target"]["kind"] == "tab").unwrap();
+    assert_eq!(tab["target"]["value"], andamento_core::tab_workspace_id(42).to_string());
     for tab in [0, 42, u64::MAX] {
-        assert_eq!(
-            transport::tab_workspace_id(tab),
-            andamento_core::tab_workspace_id(tab).to_string()
-        );
+        assert_eq!(transport::tab_workspace_id(tab), andamento_core::tab_workspace_id(tab).to_string());
     }
     assert!(tab["set"]["entity.id"]["ttl_ms"].is_null());
     fs::remove_file(&state).unwrap();
@@ -389,40 +273,17 @@ fn remotes_redact_credentials_and_handle_ports_and_file_urls() {
     assert_eq!(redact_remote("https://host"), "https://host");
     assert_eq!(redact_remote("https://user:secret@host"), "https://host");
     assert_eq!(redact_remote("https://user:pass/word@host/org/repo"), "");
-    assert_eq!(
-        redact_remote("https://user:pass%2Fword@host/org/repo"),
-        "https://host/org/repo"
-    );
-    assert_eq!(
-        redact_remote("https://alice:pass@word@host/org/repo"),
-        "https://host/org/repo"
-    );
-    let remote =
-        redact_remote("https://alice:secret@forge.test:8443/org/repo.git?token=hidden#fragment");
+    assert_eq!(redact_remote("https://user:pass%2Fword@host/org/repo"), "https://host/org/repo");
+    assert_eq!(redact_remote("https://alice:pass@word@host/org/repo"), "https://host/org/repo");
+    let remote = redact_remote("https://alice:secret@forge.test:8443/org/repo.git?token=hidden#fragment");
     assert_eq!(remote, "https://forge.test:8443/org/repo.git");
     assert_eq!(repo_name(&remote).as_deref(), Some("org/repo"));
-    assert_eq!(
-        repo_name("ssh://git@host:22/org/repo").as_deref(),
-        Some("org/repo")
-    );
+    assert_eq!(repo_name("ssh://git@host:22/org/repo").as_deref(), Some("org/repo"));
     assert_eq!(repo_name("file:///local/org/repo.git"), None);
     let temp = Temp::new();
     init(&temp.0);
-    git(
-        &temp.0,
-        &[
-            "remote",
-            "add",
-            "origin",
-            "https://alice:secret@forge.test:8443/org/repo.git",
-        ],
-    )
-    .unwrap();
-    let stream = serde_json::to_string(&patches(
-        &discover(std::slice::from_ref(&temp.0), &[]),
-        1000,
-    ))
-    .unwrap();
+    git(&temp.0, &["remote", "add", "origin", "https://alice:secret@forge.test:8443/org/repo.git"]).unwrap();
+    let stream = serde_json::to_string(&patches(&discover(std::slice::from_ref(&temp.0), &[]), 1000)).unwrap();
     assert!(!stream.contains("secret"));
     assert!(!stream.contains("alice"));
     assert!(stream.contains("forge.test:8443/org/repo.git"));
@@ -455,11 +316,7 @@ fn cycle_continues_after_publish_failure_and_retains_watch_roots() {
     }
     let temp = Temp::new();
     init(&temp.0);
-    let mut host = Host {
-        root: temp.0.clone(),
-        attempts: 0,
-        reconciled: false,
-    };
+    let mut host = Host { root: temp.0.clone(), attempts: 0, reconciled: false };
     let cycle = refresh::run_cycle(&[], &mut host, 1000).unwrap();
     assert_eq!(cycle.trees.len(), 1);
     assert_eq!(cycle.errors, ["first rejected"]);
@@ -471,29 +328,19 @@ fn cycle_continues_after_publish_failure_and_retains_watch_roots() {
     assert!(watch.changed());
     let watch = refresh::RefreshWatch::new(&cycle.trees);
     assert!(!watch.changed());
-    fs::write(
-        temp.0.join(".git/packed-refs"),
-        "# pack-refs with: peeled fully-peeled sorted\n",
-    )
-    .unwrap();
+    fs::write(temp.0.join(".git/packed-refs"), "# pack-refs with: peeled fully-peeled sorted\n").unwrap();
     assert!(watch.changed());
 }
 
 #[test]
 fn factory_layout_is_explicit_and_validated_before_host_actions() {
-    assert!(refresh::factory_layout(true, None)
-        .unwrap_err()
-        .to_string()
-        .contains("--factory-layout"));
+    assert!(refresh::factory_layout(true, None).unwrap_err().to_string().contains("--factory-layout"));
     assert!(refresh::factory_layout(true, Some("/missing-layout.kdl".into())).is_err());
     assert!(refresh::factory_layout(false, None).unwrap().is_none());
     let temp = Temp::new();
     let layout = temp.0.join("tab.kdl");
     fs::write(&layout, "layout {}").unwrap();
-    assert_eq!(
-        refresh::factory_layout(true, Some(layout.clone())).unwrap(),
-        Some(layout)
-    );
+    assert_eq!(refresh::factory_layout(true, Some(layout.clone())).unwrap(), Some(layout));
 }
 
 #[cfg(unix)]
@@ -526,13 +373,8 @@ fn non_utf8_paths_never_panic_or_create_lossy_recipes() {
     let invalid = temp.0.join(std::ffi::OsString::from_vec(vec![0xff]));
     fs::create_dir(&invalid).unwrap();
     let trees = discover(std::slice::from_ref(&temp.0), &[]);
-    let mut host = transport::Zellij {
-        bin: "/not-invoked".into(),
-        plugin: None,
-        factory_layout: None,
-    };
-    host.reconcile(&trees, std::slice::from_ref(&invalid), 1000)
-        .unwrap();
+    let mut host = transport::Zellij { bin: "/not-invoked".into(), plugin: None, factory_layout: None };
+    host.reconcile(&trees, std::slice::from_ref(&invalid), 1000).unwrap();
     let mut tree = trees[0].clone();
     tree.root = invalid;
     assert!(patches(&[tree], 1000).is_empty());
@@ -550,10 +392,7 @@ fn labels_remain_nonempty_and_disambiguate_worktree_basenames() {
     second.branch = "other".into();
     trees.push(second);
     let stream = patches(&trees, 1000);
-    assert_ne!(
-        stream[1]["set"]["display.label"],
-        stream[2]["set"]["display.label"]
-    );
+    assert_ne!(stream[1]["set"]["display.label"], stream[2]["set"]["display.label"]);
 }
 
 #[cfg(unix)]
@@ -593,16 +432,7 @@ fn zellij_continues_after_pane_factory_and_tab_patch_failures() {
         .map(|name| {
             let root = temp.0.join(name);
             init(&root);
-            git(
-                &root,
-                &[
-                    "remote",
-                    "add",
-                    "origin",
-                    &format!("git@host:owner/{name}.git"),
-                ],
-            )
-            .unwrap();
+            git(&root, &["remote", "add", "origin", &format!("git@host:owner/{name}.git")]).unwrap();
             root
         })
         .collect();
@@ -639,26 +469,13 @@ fi
     )
     .unwrap();
     fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
-    let mut host = transport::Zellij {
-        bin: bin.to_str().unwrap().into(),
-        plugin: None,
-        factory_layout: Some("/factory.kdl".into()),
-    };
-    let error = host
-        .reconcile(&trees, &roots, 1000)
-        .unwrap_err()
-        .to_string();
+    let mut host = transport::Zellij { bin: bin.to_str().unwrap().into(), plugin: None, factory_layout: Some("/factory.kdl".into()) };
+    let error = host.reconcile(&trees, &roots, 1000).unwrap_err().to_string();
     for text in ["first pane failed", "creation failed", "tab failed"] {
         assert!(error.contains(text), "{error}");
     }
     let calls = fs::read_to_string(&log).unwrap();
-    assert_eq!(
-        calls
-            .lines()
-            .filter(|s| s.contains("\"kind\":\"identity\""))
-            .count(),
-        3
-    );
+    assert_eq!(calls.lines().filter(|s| s.contains("\"kind\":\"identity\"")).count(), 3);
     assert!(calls.contains("\"kind\":\"tab\",\"value\":\"00000000-0000-0000-0000-00000000002b\""));
     assert!(calls.contains("\"kind\":\"tab\",\"value\":\"00000000-0000-0000-0000-00000000002c\""));
     // A failed global inventory must not create blindly, but all panes refresh.
@@ -667,13 +484,7 @@ fi
     assert!(host.reconcile(&trees, &roots, 1000).is_err());
     let calls = fs::read_to_string(&log).unwrap();
     assert!(!calls.contains("new-tab"));
-    assert_eq!(
-        calls
-            .lines()
-            .filter(|s| s.contains("\"kind\":\"identity\""))
-            .count(),
-        3
-    );
+    assert_eq!(calls.lines().filter(|s| s.contains("\"kind\":\"identity\"")).count(), 3);
 }
 
 #[cfg(unix)]
@@ -686,16 +497,9 @@ fn early_http_rejection_reports_curl_error_instead_of_broken_pipe() {
     let listener = UnixListener::bind(&socket).unwrap();
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .write_all(
-                b"HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            )
-            .unwrap();
+        stream.write_all(b"HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
     });
-    let error = transport::Wheelhouse { socket }
-        .publish(&json!({"large":"x".repeat(2_000_000)}))
-        .unwrap_err()
-        .to_string();
+    let error = transport::Wheelhouse { socket }.publish(&json!({"large":"x".repeat(2_000_000)})).unwrap_err().to_string();
     server.join().unwrap();
     assert!(error.contains("Wheelhouse ingress:"), "{error}");
     assert!(error.contains("curl:"), "{error}");

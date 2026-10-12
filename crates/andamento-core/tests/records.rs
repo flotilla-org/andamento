@@ -6,9 +6,7 @@ use andamento_core::presentation::{PlacementNode, PresentationState};
 use andamento_core::records::{DashboardRecord, DashboardState};
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::workspace::WorkspaceRecord;
-use andamento_core::{
-    tab_workspace_id, DisplayVariableValue, EntityRef, MetadataPatch, MetadataValue, Sidebar,
-};
+use andamento_core::{tab_workspace_id, DisplayVariableValue, EntityRef, MetadataPatch, MetadataValue, Sidebar};
 use common::{entity, nodes, refs, text, worker, Feed, WORKER};
 
 /// A patch setting `facts` on `subject`, each with `ttl`.
@@ -74,23 +72,11 @@ fn vessel(id: &str, label: &str) -> MetadataPatch {
     )
 }
 fn project() -> MetadataPatch {
-    patch(
-        entity("project", "p"),
-        &[
-            ("flotilla.project", text("p")),
-            ("display.label", text("Project P")),
-        ],
-        None,
-    )
+    patch(entity("project", "p"), &[("flotilla.project", text("p")), ("display.label", text("Project P"))], None)
 }
 
 fn workspace(selected: bool) -> Workspace {
-    Workspace {
-        id: worker(),
-        position: 0,
-        name: "Worker".into(),
-        selected,
-    }
+    Workspace { id: worker(), position: 0, name: "Worker".into(), selected }
 }
 
 fn tree(sidebar: &Sidebar) -> PlacementNode {
@@ -115,11 +101,7 @@ fn issues_checked(sidebar: &Sidebar) -> bool {
 fn arranged_session() -> Sidebar {
     let mut sidebar = Sidebar::new(&config()).unwrap();
     sidebar.feed(100, [project(), vessel("v", "Vee"), vessel("w", "Double")]);
-    let effects = sidebar
-        .dispatch(Action::Activate {
-            entity: entity("vessel", "v"),
-        })
-        .unwrap();
+    let effects = sidebar.dispatch(Action::Activate { entity: entity("vessel", "v") }).unwrap();
     let [HostEffect::Materialize { request_id, .. }] = effects[..] else {
         panic!("expected materialize: {effects:?}");
     };
@@ -128,40 +110,16 @@ fn arranged_session() -> Sidebar {
 
     let project_row = tree(&sidebar);
     let vessels = project_row.children[0].loop_key.clone();
-    sidebar
-        .set_sibling_order(vessels, vec![entity("vessel", "w"), entity("vessel", "v")])
-        .unwrap();
-    sidebar
-        .dispatch(Action::SetVariable {
-            key: project_row.key.clone(),
-            name: "density".into(),
-            value: Some("compact".into()),
-        })
-        .unwrap();
-    sidebar
-        .dispatch(Action::TogglePlacement {
-            key: project_row.key,
-        })
-        .unwrap();
-    sidebar
-        .set_display_variable("show-issues", Some(DisplayVariableValue::Bool(false)))
-        .unwrap();
-    sidebar
-        .set_display_variable("show-finished", Some(DisplayVariableValue::Bool(true)))
-        .unwrap();
-    sidebar
-        .set_local(
-            EntityRef::local(".section", "s1"),
-            BTreeMap::from([("display.label".into(), text("Mine"))]),
-        )
-        .unwrap();
+    sidebar.set_sibling_order(vessels, vec![entity("vessel", "w"), entity("vessel", "v")]).unwrap();
+    sidebar.dispatch(Action::SetVariable { key: project_row.key.clone(), name: "density".into(), value: Some("compact".into()) }).unwrap();
+    sidebar.dispatch(Action::TogglePlacement { key: project_row.key }).unwrap();
+    sidebar.set_display_variable("show-issues", Some(DisplayVariableValue::Bool(false))).unwrap();
+    sidebar.set_display_variable("show-finished", Some(DisplayVariableValue::Bool(true))).unwrap();
+    sidebar.set_local(EntityRef::local(".section", "s1"), BTreeMap::from([("display.label".into(), text("Mine"))])).unwrap();
     sidebar
         .set_local(
             EntityRef::local(".group", "g1"),
-            BTreeMap::from([
-                ("display.label".into(), text("Pinned")),
-                (".section".into(), refs(EntityRef::local(".section", "s1"))),
-            ]),
+            BTreeMap::from([("display.label".into(), text("Pinned")), (".section".into(), refs(EntityRef::local(".section", "s1")))]),
         )
         .unwrap();
     sidebar
@@ -176,16 +134,9 @@ fn arranged_session() -> Sidebar {
         .unwrap();
     // The producer removes v: the open workspace keeps it, ended.
     let mut removal = patch(entity("vessel", "v"), &[], None);
-    removal.unset = [
-        "entity.kind",
-        "entity.id",
-        "flotilla.project",
-        "display.label",
-        "status.state",
-        "action.primary.recipe",
-    ]
-    .map(String::from)
-    .to_vec();
+    removal.unset = ["entity.kind", "entity.id", "flotilla.project", "display.label", "status.state", "action.primary.recipe"]
+        .map(String::from)
+        .to_vec();
     sidebar.feed(150, [removal]);
     sidebar.snapshot();
     sidebar.tick(150);
@@ -212,34 +163,17 @@ fn export_all(sidebar: &mut Sidebar) -> Vec<(String, String)> {
 #[test]
 fn records_are_named_for_the_dashboard_and_registered_workspaces() {
     let sidebar = arranged_session();
-    assert_eq!(
-        sidebar.record_names(),
-        vec!["dashboard".to_owned(), format!("workspace/{WORKER}")]
-    );
-    let workspace = WorkspaceRecord::decode(
-        &sidebar
-            .export_record(&format!("workspace/{WORKER}"))
-            .unwrap(),
-        &mut Default::default(),
-    )
-    .unwrap();
+    assert_eq!(sidebar.record_names(), vec!["dashboard".to_owned(), format!("workspace/{WORKER}")]);
+    let workspace =
+        WorkspaceRecord::decode(&sidebar.export_record(&format!("workspace/{WORKER}")).unwrap(), &mut Default::default()).unwrap();
     assert_eq!(workspace.subject(), Some(&entity("vessel", "v")));
     let vessel = &workspace.subject.get().retained[&entity("vessel", "v")];
-    assert_eq!(
-        (vessel.label.as_deref(), vessel.ended, vessel.last_seen_ms),
-        (Some("Vee"), true, Some(150))
-    );
+    assert_eq!((vessel.label.as_deref(), vessel.ended, vessel.last_seen_ms), (Some("Vee"), true, Some(150)));
     let project = &workspace.subject.get().retained[&entity("project", "p")];
-    assert_eq!(
-        (project.label.as_deref(), project.ended),
-        (Some("Project P"), false)
-    );
+    assert_eq!((project.label.as_deref(), project.ended), (Some("Project P"), false));
     // Only facts placement reads are kept, not the full fact set.
     for retained in workspace.subject.get().retained.values() {
-        assert_eq!(
-            retained.facts.keys().collect::<Vec<_>>(),
-            ["flotilla.project"]
-        );
+        assert_eq!(retained.facts.keys().collect::<Vec<_>>(), ["flotilla.project"]);
     }
     let dashboard = DashboardRecord::decode(&sidebar.export_record("dashboard").unwrap()).unwrap();
     // A display variable that doesn't persist is presentation, not saved.
@@ -252,10 +186,7 @@ fn records_are_named_for_the_dashboard_and_registered_workspaces() {
     );
     assert_eq!(dashboard.state.orders.len(), 1);
     assert_eq!(dashboard.state.variables.len(), 1);
-    assert!(dashboard
-        .state
-        .local
-        .contains_key(&EntityRef::local(".ref", "r1")));
+    assert!(dashboard.state.local.contains_key(&EntityRef::local(".ref", "r1")));
     let unknown = format!("workspace/{}", tab_workspace_id(7));
     assert!(sidebar.export_record(&unknown).is_err());
     assert!(sidebar.export_record("nonsense").is_err());
@@ -283,50 +214,32 @@ fn importing_before_the_first_observation_restores_the_sidebar_without_facts() {
     assert_eq!(project_row.label, "Project P");
     assert!(project_row.collapsed, "row collapse is restored");
     let v = &project_row.children[0];
-    assert_eq!(
-        (v.entity.clone(), v.label.as_str()),
-        (entity("vessel", "v"), "Vee")
-    );
+    assert_eq!((v.entity.clone(), v.label.as_str()), (entity("vessel", "v"), "Vee"));
     assert!(ended(v));
     assert!(matches!(
         v.state,
         PresentationState::Live { workspace_id, selected: true } if workspace_id == worker()
     ));
-    assert_eq!(
-        project_row.variables.as_ref().unwrap().values["density"].value,
-        "compact",
-        "placement variables are restored"
-    );
+    assert_eq!(project_row.variables.as_ref().unwrap().values["density"].value, "compact", "placement variables are restored");
     assert!(!issues_checked(&sidebar), "display variables are restored");
 
     // Local sections, groups and pins are back, owned by Andamento.
     let snapshot = sidebar.snapshot();
     let all = nodes(&snapshot.surface);
-    for local in [
-        EntityRef::local(".section", "s1"),
-        EntityRef::local(".group", "g1"),
-        EntityRef::local(".ref", "r1"),
-    ] {
+    for local in [EntityRef::local(".section", "s1"), EntityRef::local(".group", "g1"), EntityRef::local(".ref", "r1")] {
         assert!(all.iter().any(|n| n.entity == local), "{local:?}");
     }
     assert_eq!(sidebar.local_entities().len(), 3);
 
     // When w is published again, the saved sibling order applies.
     sidebar.feed(300, [vessel("w", "Double")]);
-    let order = tree(&sidebar)
-        .children
-        .iter()
-        .map(|n| n.entity.id.clone())
-        .collect::<Vec<_>>();
+    let order = tree(&sidebar).children.iter().map(|n| n.entity.id.clone()).collect::<Vec<_>>();
     assert_eq!(order, ["w", "v"]);
 
     // Opening the restored ended row focuses the same workspace.
     let key = tree(&sidebar).children[1].key.clone();
     let effects = sidebar.dispatch(Action::ActivatePlacement { key }).unwrap();
-    assert!(
-        matches!(&effects[..], [HostEffect::Focus { workspace_id, .. }] if *workspace_id == worker()),
-        "{effects:?}"
-    );
+    assert!(matches!(&effects[..], [HostEffect::Focus { workspace_id, .. }] if *workspace_id == worker()), "{effects:?}");
 }
 
 #[test]
@@ -359,31 +272,17 @@ fn closing_a_registered_workspace_keeps_its_record_and_forgetting_drops_it() {
 fn bad_records_are_rejected_without_change() {
     let mut sidebar = arranged_session();
     let records = export_all(&mut sidebar);
-    let generations = records
-        .iter()
-        .map(|(name, _)| sidebar.record_generation(name).unwrap())
-        .collect::<Vec<_>>();
+    let generations = records.iter().map(|(name, _)| sidebar.record_generation(name).unwrap()).collect::<Vec<_>>();
     let revision = sidebar.revision();
     let not_local = DashboardRecord {
-        state: DashboardState {
-            local: BTreeMap::from([(entity("vessel", "x"), BTreeMap::new())]),
-            ..DashboardState::default()
-        },
+        state: DashboardState { local: BTreeMap::from([(entity("vessel", "x"), BTreeMap::new())]), ..DashboardState::default() },
         sidebar: None,
     };
     let workspace = format!("workspace/{WORKER}");
     for (name, text, reason) in [
         ("dashboard", "{".to_owned(), "not a dashboard record"),
-        (
-            "dashboard",
-            not_local.encode(),
-            "\"vessel\" is not a local entity kind",
-        ),
-        (
-            workspace.as_str(),
-            "[]".to_owned(),
-            "not a workspace record",
-        ),
+        ("dashboard", not_local.encode(), "\"vessel\" is not a local entity kind"),
+        (workspace.as_str(), "[]".to_owned(), "not a workspace record"),
         ("workspace/9", "{}".to_owned(), "unknown record name"),
     ] {
         let error = sidebar.import_record(name, &text).unwrap_err();
@@ -405,11 +304,7 @@ fn generations_change_only_with_content() {
     // Facts, time and topology are not dashboard content.
     sidebar.feed(100, [project(), vessel("v", "Vee")]);
     sidebar.tick(5_000);
-    let effects = sidebar
-        .dispatch(Action::Activate {
-            entity: entity("vessel", "v"),
-        })
-        .unwrap();
+    let effects = sidebar.dispatch(Action::Activate { entity: entity("vessel", "v") }).unwrap();
     let [HostEffect::Materialize { request_id, .. }] = effects[..] else {
         panic!("{effects:?}");
     };
@@ -418,21 +313,11 @@ fn generations_change_only_with_content() {
     sidebar.observe(vec![workspace(false)], vec![]);
     assert_eq!(sidebar.record_generation("dashboard").unwrap(), dashboard);
     // Setting a value it already has changes nothing; a real change does.
-    sidebar
-        .set_display_variable("show-issues", Some(DisplayVariableValue::Bool(true)))
-        .unwrap();
+    sidebar.set_display_variable("show-issues", Some(DisplayVariableValue::Bool(true))).unwrap();
     assert_eq!(sidebar.record_generation("dashboard").unwrap(), dashboard);
-    sidebar
-        .set_display_variable("mode", Some(DisplayVariableValue::Enum("narrow".into())))
-        .unwrap();
-    assert_eq!(
-        sidebar.record_generation("dashboard").unwrap(),
-        dashboard,
-        "a variable that doesn't persist is not content"
-    );
-    sidebar
-        .set_display_variable("show-issues", Some(DisplayVariableValue::Bool(false)))
-        .unwrap();
+    sidebar.set_display_variable("mode", Some(DisplayVariableValue::Enum("narrow".into()))).unwrap();
+    assert_eq!(sidebar.record_generation("dashboard").unwrap(), dashboard, "a variable that doesn't persist is not content");
+    sidebar.set_display_variable("show-issues", Some(DisplayVariableValue::Bool(false))).unwrap();
     let changed = sidebar.record_generation("dashboard").unwrap();
     assert!(changed > dashboard);
     assert_eq!(sidebar.record_generation("dashboard").unwrap(), changed);
@@ -447,17 +332,8 @@ fn generations_change_only_with_content() {
     sidebar.feed(8_000, [vessel("v", "Renamed")]);
     let renamed = sidebar.record_generation(&name).unwrap();
     assert!(renamed > workspace);
-    let record = WorkspaceRecord::decode(
-        &sidebar.export_record(&name).unwrap(),
-        &mut Default::default(),
-    )
-    .unwrap();
-    assert_eq!(
-        record.subject.get().retained[&entity("vessel", "v")]
-            .label
-            .as_deref(),
-        Some("Renamed")
-    );
+    let record = WorkspaceRecord::decode(&sidebar.export_record(&name).unwrap(), &mut Default::default()).unwrap();
+    assert_eq!(record.subject.get().retained[&entity("vessel", "v")].label.as_deref(), Some("Renamed"));
 
     // Importing what is already there is no change.
     let text = sidebar.export_record("dashboard").unwrap();
@@ -470,48 +346,22 @@ fn display_variables_and_local_entities_are_set_directly() {
     let mut sidebar = Sidebar::new(&config()).unwrap();
     // No snapshot or retry is needed, and invalid values change nothing.
     for (name, value, reason) in [
-        (
-            "missing",
-            DisplayVariableValue::Bool(true),
-            "unknown display variable",
-        ),
-        (
-            "show-issues",
-            DisplayVariableValue::Enum("x".into()),
-            "not allowed",
-        ),
-        (
-            "mode",
-            DisplayVariableValue::Enum("tall".into()),
-            "not allowed",
-        ),
+        ("missing", DisplayVariableValue::Bool(true), "unknown display variable"),
+        ("show-issues", DisplayVariableValue::Enum("x".into()), "not allowed"),
+        ("mode", DisplayVariableValue::Enum("tall".into()), "not allowed"),
     ] {
         let error = sidebar.set_display_variable(name, Some(value)).unwrap_err();
         assert!(error.contains(reason), "{name}: {error}");
     }
-    sidebar
-        .set_display_variable("show-issues", Some(DisplayVariableValue::Bool(false)))
-        .unwrap();
+    sidebar.set_display_variable("show-issues", Some(DisplayVariableValue::Bool(false))).unwrap();
     assert!(!issues_checked(&sidebar));
     sidebar.set_display_variable("show-issues", None).unwrap();
     assert!(issues_checked(&sidebar), "None returns to the default");
 
     for (entity, facts, reason) in [
-        (
-            entity("vessel", "v"),
-            BTreeMap::new(),
-            "local entities have the \"local\" provider",
-        ),
-        (
-            EntityRef::local("vessel", "v"),
-            BTreeMap::new(),
-            "local entities are",
-        ),
-        (
-            EntityRef::local(".group", "g"),
-            BTreeMap::from([("list".into(), MetadataValue::StringList(vec![]))]),
-            "local facts are text",
-        ),
+        (entity("vessel", "v"), BTreeMap::new(), "local entities have the \"local\" provider"),
+        (EntityRef::local("vessel", "v"), BTreeMap::new(), "local entities are"),
+        (EntityRef::local(".group", "g"), BTreeMap::from([("list".into(), MetadataValue::StringList(vec![]))]), "local facts are text"),
         (
             EntityRef::local(".group", "g"),
             BTreeMap::from([(".section".into(), refs(EntityRef::new("", ".section", "s")))]),
@@ -522,31 +372,14 @@ fn display_variables_and_local_entities_are_set_directly() {
         assert!(error.contains(reason), "{error}");
     }
     sidebar
-        .set_local(
-            EntityRef::local(".section", "s"),
-            BTreeMap::from([
-                ("display.label".into(), text("One")),
-                ("extra".into(), text("x")),
-            ]),
-        )
+        .set_local(EntityRef::local(".section", "s"), BTreeMap::from([("display.label".into(), text("One")), ("extra".into(), text("x"))]))
         .unwrap();
-    let section = |sidebar: &Sidebar| {
-        nodes(&sidebar.snapshot().surface)
-            .into_iter()
-            .find(|n| n.entity == EntityRef::local(".section", "s"))
-            .cloned()
-    };
+    let section =
+        |sidebar: &Sidebar| nodes(&sidebar.snapshot().surface).into_iter().find(|n| n.entity == EntityRef::local(".section", "s")).cloned();
     assert_eq!(section(&sidebar).unwrap().label, "One");
     // Setting replaces every fact; a dropped one is unset.
-    sidebar
-        .set_local(
-            EntityRef::local(".section", "s"),
-            BTreeMap::from([("display.label".into(), text("Two"))]),
-        )
-        .unwrap();
-    let card = sidebar
-        .detail_card(&EntityRef::local(".section", "s"))
-        .unwrap();
+    sidebar.set_local(EntityRef::local(".section", "s"), BTreeMap::from([("display.label".into(), text("Two"))])).unwrap();
+    let card = sidebar.detail_card(&EntityRef::local(".section", "s")).unwrap();
     assert_eq!(card.label, "Two");
     assert!(!card.fields.iter().any(|f| f.name == "extra"));
     assert!(sidebar.remove_local(&EntityRef::local(".section", "s")));
