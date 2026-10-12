@@ -36,6 +36,13 @@ target/wasm32-wasip1/release/andamento-rail.wasm
 target/wasm32-wasip1/release/andamento-config.wasm
 ```
 
+Code is formatted with stable `cargo fmt` (`rustfmt.toml`). To have local
+`git blame` skip the commit that reformatted the repo:
+
+```sh
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
 ## Use in Zellij
 
 The local development layout wires the controller, rail, config plugin, and

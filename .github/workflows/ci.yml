@@ -46,6 +46,8 @@ jobs:
           --package andamento-ffi
           --package andamento-tui
           --package andamento-git-watcher
+      # tools/scenario is a workspace of its own.
+      - run: cargo fmt --check --manifest-path tools/scenario/Cargo.toml
 
   clippy:
     name: Clippy
