@@ -29,26 +29,16 @@ impl ZellijObservations for ControllerState {
             .panes
             .into_iter()
             .flat_map(|(position, panes)| {
-                let workspace_id = tabs
-                    .iter()
-                    .find(|t| t.position == position)
-                    .map(|t| t.tab_id);
-                panes
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(move |(ordinal, pane)| {
-                        Some(PaneObservation {
-                            workspace_id: workspace_id?,
-                            pane_id: if pane.is_plugin {
-                                PaneTarget::Plugin(pane.id)
-                            } else {
-                                PaneTarget::Terminal(pane.id)
-                            },
-                            is_selectable: pane.is_selectable,
-                            is_focused: pane.is_focused,
-                            ordinal: ordinal as i64,
-                        })
+                let workspace_id = tabs.iter().find(|t| t.position == position).map(|t| t.tab_id);
+                panes.into_iter().enumerate().filter_map(move |(ordinal, pane)| {
+                    Some(PaneObservation {
+                        workspace_id: workspace_id?,
+                        pane_id: if pane.is_plugin { PaneTarget::Plugin(pane.id) } else { PaneTarget::Terminal(pane.id) },
+                        is_selectable: pane.is_selectable,
+                        is_focused: pane.is_focused,
+                        ordinal: ordinal as i64,
                     })
+                })
             })
             .collect();
         self.observe_panes(observations)

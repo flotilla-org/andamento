@@ -7,47 +7,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::{MetadataValue, ResolvedTemplateFieldSource};
 
-pub fn parse_template_config_json(
-    input: &str,
-) -> Result<ExternalTemplateConfig, TemplateConfigError> {
-    let config = serde_json::from_str::<ExternalTemplateConfig>(input)
-        .map_err(|source| TemplateConfigError::Parse(source.to_string()))?;
+pub fn parse_template_config_json(input: &str) -> Result<ExternalTemplateConfig, TemplateConfigError> {
+    let config = serde_json::from_str::<ExternalTemplateConfig>(input).map_err(|source| TemplateConfigError::Parse(source.to_string()))?;
     config.validate()?;
     Ok(config)
 }
 
-pub fn parse_template_config_kdl(
-    input: &str,
-) -> Result<ExternalTemplateConfig, TemplateConfigError> {
-    let document = input
-        .parse::<KdlDocument>()
-        .map_err(|source| TemplateConfigError::Parse(source.to_string()))?;
-    if document
-        .nodes()
-        .iter()
-        .any(|node| node.name().value() == "grouping")
-    {
-        return Err(TemplateConfigError::Validation(
-            "grouping rules were replaced by placement queries".into(),
-        ));
+pub fn parse_template_config_kdl(input: &str) -> Result<ExternalTemplateConfig, TemplateConfigError> {
+    let document = input.parse::<KdlDocument>().map_err(|source| TemplateConfigError::Parse(source.to_string()))?;
+    if document.nodes().iter().any(|node| node.name().value() == "grouping") {
+        return Err(TemplateConfigError::Validation("grouping rules were replaced by placement queries".into()));
     }
-    let version = document
-        .get_arg("version")
-        .map(kdl_u32)
-        .transpose()?
-        .unwrap_or_else(default_template_config_version);
-    let templates = document
-        .nodes()
-        .iter()
-        .filter(|node| node.name().value() == "template")
-        .map(parse_kdl_template)
-        .collect::<Result<Vec<_>, _>>()?;
-    let fragments = document
-        .nodes()
-        .iter()
-        .filter(|node| node.name().value() == "fragment")
-        .map(parse_kdl_fragment)
-        .collect::<Result<Vec<_>, _>>()?;
+    let version = document.get_arg("version").map(kdl_u32).transpose()?.unwrap_or_else(default_template_config_version);
+    let templates =
+        document.nodes().iter().filter(|node| node.name().value() == "template").map(parse_kdl_template).collect::<Result<Vec<_>, _>>()?;
+    let fragments =
+        document.nodes().iter().filter(|node| node.name().value() == "fragment").map(parse_kdl_fragment).collect::<Result<Vec<_>, _>>()?;
     let variables = document
         .nodes()
         .iter()
@@ -66,12 +41,8 @@ pub fn parse_template_config_kdl(
         .filter(|node| node.name().value() == "set")
         .map(parse_kdl_variable_setter)
         .collect::<Result<Vec<_>, _>>()?;
-    let regions = document
-        .nodes()
-        .iter()
-        .filter(|node| node.name().value() == "region")
-        .map(parse_kdl_region)
-        .collect::<Result<Vec<_>, _>>()?;
+    let regions =
+        document.nodes().iter().filter(|node| node.name().value() == "region").map(parse_kdl_region).collect::<Result<Vec<_>, _>>()?;
     let placements = document
         .nodes()
         .iter()
@@ -84,17 +55,8 @@ pub fn parse_template_config_kdl(
         .filter(|node| node.name().value() == "visibility")
         .map(parse_kdl_visibility)
         .collect::<Result<Vec<_>, _>>()?;
-    let config = ExternalTemplateConfig {
-        version,
-        templates,
-        fragments,
-        variables,
-        display_variables,
-        sets,
-        regions,
-        placements,
-        visibility,
-    };
+    let config =
+        ExternalTemplateConfig { version, templates, fragments, variables, display_variables, sets, regions, placements, visibility };
     config.validate()?;
     Ok(config)
 }
@@ -125,23 +87,15 @@ pub struct ExternalTemplateConfig {
 impl ExternalTemplateConfig {
     fn validate(&self) -> Result<(), TemplateConfigError> {
         if self.version != 1 {
-            return Err(TemplateConfigError::Validation(format!(
-                "unsupported template config version: {}",
-                self.version
-            )));
+            return Err(TemplateConfigError::Validation(format!("unsupported template config version: {}", self.version)));
         }
         let mut names = BTreeSet::new();
         for template in &self.templates {
             if template.name.trim().is_empty() {
-                return Err(TemplateConfigError::Validation(
-                    "template name cannot be empty".to_owned(),
-                ));
+                return Err(TemplateConfigError::Validation("template name cannot be empty".to_owned()));
             }
             if !names.insert(template.name.clone()) {
-                return Err(TemplateConfigError::Validation(format!(
-                    "duplicate template name: {}",
-                    template.name
-                )));
+                return Err(TemplateConfigError::Validation(format!("duplicate template name: {}", template.name)));
             }
             if template.operations.is_empty()
                 && template.sets.is_empty()
@@ -164,10 +118,7 @@ impl ExternalTemplateConfig {
                         )));
                     }
                     if field.sources.is_empty() {
-                        return Err(TemplateConfigError::Validation(format!(
-                            "template {} has a field with no sources",
-                            template.name
-                        )));
+                        return Err(TemplateConfigError::Validation(format!("template {} has a field with no sources", template.name)));
                     }
                 }
             }
@@ -181,26 +132,16 @@ impl ExternalTemplateConfig {
                     )));
                 }
             }
-            let template_binding = template
-                .name
-                .split('/')
-                .next()
-                .unwrap_or(&template.name)
-                .to_owned();
+            let template_binding = template.name.split('/').next().unwrap_or(&template.name).to_owned();
             validate_placement_loops(&template.loops, &BTreeSet::from([template_binding]))?;
         }
         let mut fragment_names = BTreeSet::new();
         for fragment in &self.fragments {
             if fragment.name.trim().is_empty() {
-                return Err(TemplateConfigError::Validation(
-                    "fragment name cannot be empty".to_owned(),
-                ));
+                return Err(TemplateConfigError::Validation("fragment name cannot be empty".to_owned()));
             }
             if !fragment_names.insert(fragment.name.clone()) {
-                return Err(TemplateConfigError::Validation(format!(
-                    "duplicate fragment name: {}",
-                    fragment.name
-                )));
+                return Err(TemplateConfigError::Validation(format!("duplicate fragment name: {}", fragment.name)));
             }
             let mut field_names = BTreeSet::new();
             for operation in &fragment.operations {
@@ -212,10 +153,7 @@ impl ExternalTemplateConfig {
                         )));
                     }
                     if field.sources.is_empty() {
-                        return Err(TemplateConfigError::Validation(format!(
-                            "fragment {} has a field with no sources",
-                            fragment.name
-                        )));
+                        return Err(TemplateConfigError::Validation(format!("fragment {} has a field with no sources", fragment.name)));
                     }
                 }
             }
@@ -226,38 +164,21 @@ impl ExternalTemplateConfig {
         let mut variable_names = BTreeSet::new();
         for variable in &self.variables {
             if variable.name.trim().is_empty() {
-                return Err(TemplateConfigError::Validation(
-                    "variable name cannot be empty".to_owned(),
-                ));
+                return Err(TemplateConfigError::Validation("variable name cannot be empty".to_owned()));
             }
             if !variable_names.insert(variable.name.clone()) {
-                return Err(TemplateConfigError::Validation(format!(
-                    "duplicate variable name: {}",
-                    variable.name
-                )));
+                return Err(TemplateConfigError::Validation(format!("duplicate variable name: {}", variable.name)));
             }
             variable.validate()?;
         }
-        let local_variables = self
-            .variables
+        let local_variables = self.variables.iter().map(|variable| (variable.name.as_str(), variable)).collect::<BTreeMap<_, _>>();
+        for (scope, setter) in self
+            .sets
             .iter()
-            .map(|variable| (variable.name.as_str(), variable))
-            .collect::<BTreeMap<_, _>>();
-        for (scope, setter) in
-            self.sets
-                .iter()
-                .map(|setter| ("config", setter))
-                .chain(self.templates.iter().flat_map(|template| {
-                    template
-                        .sets
-                        .iter()
-                        .map(move |setter| (template.name.as_str(), setter))
-                }))
+            .map(|setter| ("config", setter))
+            .chain(self.templates.iter().flat_map(|template| template.sets.iter().map(move |setter| (template.name.as_str(), setter))))
         {
-            if local_variables
-                .get(setter.name.as_str())
-                .is_some_and(|variable| !variable.accepts(&setter.value))
-            {
+            if local_variables.get(setter.name.as_str()).is_some_and(|variable| !variable.accepts(&setter.value)) {
                 return Err(TemplateConfigError::Validation(format!(
                     "{scope} sets variable {} to disallowed value {}",
                     setter.name, setter.value
@@ -267,32 +188,25 @@ impl ExternalTemplateConfig {
         let mut display_variable_names = BTreeSet::new();
         for variable in &self.display_variables {
             if variable.name.trim().is_empty() {
-                return Err(TemplateConfigError::Validation(
-                    "display variable name cannot be empty".to_owned(),
-                ));
+                return Err(TemplateConfigError::Validation("display variable name cannot be empty".to_owned()));
             }
             if !display_variable_names.insert(variable.name.clone()) {
-                return Err(TemplateConfigError::Validation(format!(
-                    "duplicate display variable name: {}",
-                    variable.name
-                )));
+                return Err(TemplateConfigError::Validation(format!("duplicate display variable name: {}", variable.name)));
             }
             variable.validate()?;
         }
         let mut visibility_names = BTreeSet::new();
         for policy in &self.visibility {
             if policy.name.trim().is_empty() || !visibility_names.insert(policy.name.clone()) {
-                return Err(TemplateConfigError::Validation(
-                    "visibility policy names must be nonempty and unique".into(),
-                ));
+                return Err(TemplateConfigError::Validation("visibility policy names must be nonempty and unique".into()));
             }
             for rule in &policy.rules {
-                for name in std::iter::once(&rule.visible_when).chain(rule.and_visible_when.iter())
-                {
-                    if !self.display_variables.iter().any(|variable| {
-                        &variable.name == name
-                            && matches!(variable.variable_type, TemplateVariableType::Bool)
-                    }) {
+                for name in std::iter::once(&rule.visible_when).chain(rule.and_visible_when.iter()) {
+                    if !self
+                        .display_variables
+                        .iter()
+                        .any(|variable| &variable.name == name && matches!(variable.variable_type, TemplateVariableType::Bool))
+                    {
                         return Err(TemplateConfigError::Validation(format!(
                             "visibility {} requires boolean display variable {} in the same config",
                             policy.name, name
@@ -300,10 +214,10 @@ impl ExternalTemplateConfig {
                     }
                 }
                 if rule.predicates.is_empty()
-                    || rule.predicates.iter().any(|predicate| {
-                        predicate.key.is_empty()
-                            || predicate.value.is_some() == predicate.exists.is_some()
-                    })
+                    || rule
+                        .predicates
+                        .iter()
+                        .any(|predicate| predicate.key.is_empty() || predicate.value.is_some() == predicate.exists.is_some())
                 {
                     return Err(TemplateConfigError::Validation(format!(
                         "visibility {} requires predicates with exactly one of value or exists",
@@ -322,40 +236,22 @@ impl ExternalTemplateConfig {
         for setter in &self.sets {
             setter.validate()?;
             if !setter_names.insert(setter.name.clone()) {
-                return Err(TemplateConfigError::Validation(format!(
-                    "duplicate config variable setter: {}",
-                    setter.name
-                )));
+                return Err(TemplateConfigError::Validation(format!("duplicate config variable setter: {}", setter.name)));
             }
         }
         let mut region_names = BTreeSet::new();
         for region in &self.regions {
             if region.name.trim().is_empty() {
-                return Err(TemplateConfigError::Validation(
-                    "region name cannot be empty".to_owned(),
-                ));
+                return Err(TemplateConfigError::Validation("region name cannot be empty".to_owned()));
             }
-            if region
-                .default_host
-                .as_ref()
-                .is_some_and(|host| host.trim().is_empty())
-            {
-                return Err(TemplateConfigError::Validation(format!(
-                    "region {} default-host cannot be empty",
-                    region.name
-                )));
+            if region.default_host.as_ref().is_some_and(|host| host.trim().is_empty()) {
+                return Err(TemplateConfigError::Validation(format!("region {} default-host cannot be empty", region.name)));
             }
             if !region_names.insert(region.name.clone()) {
-                return Err(TemplateConfigError::Validation(format!(
-                    "duplicate region name: {}",
-                    region.name
-                )));
+                return Err(TemplateConfigError::Validation(format!("duplicate region name: {}", region.name)));
             }
             if region.form.trim().is_empty() {
-                return Err(TemplateConfigError::Validation(format!(
-                    "region {} form cannot be empty",
-                    region.name
-                )));
+                return Err(TemplateConfigError::Validation(format!("region {} form cannot be empty", region.name)));
             }
             // A named placement must resolve. Falling through silently to the
             // legacy path (or to nothing) on a typo is exactly the failure mode
@@ -366,11 +262,7 @@ impl ExternalTemplateConfig {
             // region referencing a placement from another layer would need this
             // moved to catalog construction, where the whole stack is visible.
             if let Some(placement) = region.placement.as_deref() {
-                if !self
-                    .placements
-                    .iter()
-                    .any(|declared| declared.name == placement)
-                {
+                if !self.placements.iter().any(|declared| declared.name == placement) {
                     return Err(TemplateConfigError::Validation(format!(
                         "region {} names placement {placement}, which is not declared",
                         region.name
@@ -399,20 +291,10 @@ fn collect_visibility_names(loops: &[PlacementLoop], names: &mut BTreeSet<String
     }
 }
 
-fn check_visibility(
-    loops: &[PlacementLoop],
-    names: &BTreeSet<String>,
-) -> Result<(), TemplateConfigError> {
+fn check_visibility(loops: &[PlacementLoop], names: &BTreeSet<String>) -> Result<(), TemplateConfigError> {
     for item in loops {
-        if item
-            .visibility
-            .as_ref()
-            .is_some_and(|name| !names.contains(name))
-        {
-            return Err(TemplateConfigError::Validation(format!(
-                "loop {} references an undeclared visibility policy",
-                item.binding
-            )));
+        if item.visibility.as_ref().is_some_and(|name| !names.contains(name)) {
+            return Err(TemplateConfigError::Validation(format!("loop {} references an undeclared visibility policy", item.binding)));
         }
         check_visibility(&item.loops, names)?;
     }
@@ -436,36 +318,19 @@ fn validate_forward_source(
     Ok(())
 }
 
-fn validate_placement_loops(
-    loops: &[PlacementLoop],
-    enclosing: &BTreeSet<String>,
-) -> Result<(), TemplateConfigError> {
+fn validate_placement_loops(loops: &[PlacementLoop], enclosing: &BTreeSet<String>) -> Result<(), TemplateConfigError> {
     let mut bindings = BTreeSet::new();
     for loop_definition in loops {
         if !bindings.insert(loop_definition.binding.clone()) {
-            return Err(TemplateConfigError::Validation(format!(
-                "duplicate sibling loop binding {}",
-                loop_definition.binding
-            )));
+            return Err(TemplateConfigError::Validation(format!("duplicate sibling loop binding {}", loop_definition.binding)));
         }
         if loop_definition.binding.ends_with('s') {
-            return Err(TemplateConfigError::Validation(format!(
-                "loop binding {} must be singular",
-                loop_definition.binding
-            )));
+            return Err(TemplateConfigError::Validation(format!("loop binding {} must be singular", loop_definition.binding)));
         }
         if enclosing.contains(&loop_definition.binding) {
-            return Err(TemplateConfigError::Validation(format!(
-                "loop binding {} shadows an enclosing binding",
-                loop_definition.binding
-            )));
+            return Err(TemplateConfigError::Validation(format!("loop binding {} shadows an enclosing binding", loop_definition.binding)));
         }
-        validate_forward_source(
-            &loop_definition.binding,
-            loop_definition.in_key.as_deref(),
-            loop_definition.of.as_deref(),
-            enclosing,
-        )?;
+        validate_forward_source(&loop_definition.binding, loop_definition.in_key.as_deref(), loop_definition.of.as_deref(), enclosing)?;
         for predicate in &loop_definition.predicates {
             if predicate.value.is_some() == predicate.of.is_some() {
                 return Err(TemplateConfigError::Validation(format!(
@@ -549,30 +414,12 @@ impl TemplateConfigLayer {
         Self::new(TemplateConfigLayerKind::User, None, source, config)
     }
 
-    pub fn repo(
-        membership: impl Into<String>,
-        source: impl Into<String>,
-        config: ExternalTemplateConfig,
-    ) -> Self {
-        Self::new(
-            TemplateConfigLayerKind::Repo,
-            Some(membership.into()),
-            source,
-            config,
-        )
+    pub fn repo(membership: impl Into<String>, source: impl Into<String>, config: ExternalTemplateConfig) -> Self {
+        Self::new(TemplateConfigLayerKind::Repo, Some(membership.into()), source, config)
     }
 
-    pub fn project(
-        membership: impl Into<String>,
-        source: impl Into<String>,
-        config: ExternalTemplateConfig,
-    ) -> Self {
-        Self::new(
-            TemplateConfigLayerKind::Project,
-            Some(membership.into()),
-            source,
-            config,
-        )
+    pub fn project(membership: impl Into<String>, source: impl Into<String>, config: ExternalTemplateConfig) -> Self {
+        Self::new(TemplateConfigLayerKind::Project, Some(membership.into()), source, config)
     }
 
     pub fn fleet(source: impl Into<String>, config: ExternalTemplateConfig) -> Self {
@@ -583,32 +430,17 @@ impl TemplateConfigLayer {
         Self::new(TemplateConfigLayerKind::Bundled, None, source, config)
     }
 
-    fn new(
-        layer: TemplateConfigLayerKind,
-        membership: Option<String>,
-        source: impl Into<String>,
-        config: ExternalTemplateConfig,
-    ) -> Self {
-        Self {
-            origin: TemplateConfigOrigin {
-                layer,
-                membership,
-                source: source.into(),
-            },
-            config,
-        }
+    fn new(layer: TemplateConfigLayerKind, membership: Option<String>, source: impl Into<String>, config: ExternalTemplateConfig) -> Self {
+        Self { origin: TemplateConfigOrigin { layer, membership, source: source.into() }, config }
     }
 
     fn applies_to(&self, metadata: &BTreeMap<String, MetadataValue>) -> bool {
         let membership_key = match self.origin.layer {
             TemplateConfigLayerKind::Repo => Some("vcs.repo"),
             TemplateConfigLayerKind::Project => Some("flotilla.project"),
-            TemplateConfigLayerKind::User
-            | TemplateConfigLayerKind::Fleet
-            | TemplateConfigLayerKind::Bundled => None,
+            TemplateConfigLayerKind::User | TemplateConfigLayerKind::Fleet | TemplateConfigLayerKind::Bundled => None,
         };
-        membership_key
-            .is_none_or(|key| self.origin.membership.as_deref() == metadata_text(metadata, key))
+        membership_key.is_none_or(|key| self.origin.membership.as_deref() == metadata_text(metadata, key))
     }
 }
 
@@ -623,10 +455,7 @@ pub struct TemplateConfigCatalog {
 
 impl Default for TemplateConfigCatalog {
     fn default() -> Self {
-        Self::from_layers(vec![TemplateConfigLayer::bundled(
-            "templates/flotilla-default.kdl",
-            bundled_default_config(),
-        )])
+        Self::from_layers(vec![TemplateConfigLayer::bundled("templates/flotilla-default.kdl", bundled_default_config())])
     }
 }
 
@@ -638,10 +467,7 @@ impl TemplateConfigCatalog {
     pub fn with_bundled_defaults(config: ExternalTemplateConfig) -> Self {
         Self::from_layers(vec![
             TemplateConfigLayer::user("<configured>", config),
-            TemplateConfigLayer::bundled(
-                "templates/flotilla-default.kdl",
-                bundled_default_config(),
-            ),
+            TemplateConfigLayer::bundled("templates/flotilla-default.kdl", bundled_default_config()),
         ])
     }
 
@@ -654,12 +480,8 @@ impl TemplateConfigCatalog {
             .filter(|variable| seen_display_variables.insert(variable.name.clone()))
             .cloned()
             .collect();
-        let regions = layers
-            .iter()
-            .find_map(|layer| {
-                (!layer.config.regions.is_empty()).then(|| layer.config.regions.clone())
-            })
-            .unwrap_or_default();
+        let regions =
+            layers.iter().find_map(|layer| (!layer.config.regions.is_empty()).then(|| layer.config.regions.clone())).unwrap_or_default();
         let mut seen_placements = BTreeSet::new();
         let placements: Vec<PlacementDefinition> = layers
             .iter()
@@ -680,25 +502,13 @@ impl TemplateConfigCatalog {
         let visibility = layers
             .iter()
             .flat_map(|layer| &layer.config.visibility)
-            .filter(|policy| {
-                referenced_visibility.contains(&policy.name)
-                    && seen_visibility.insert(policy.name.clone())
-            })
+            .filter(|policy| referenced_visibility.contains(&policy.name) && seen_visibility.insert(policy.name.clone()))
             .cloned()
             .collect();
-        Self {
-            layers,
-            display_variables,
-            regions,
-            placements,
-            visibility,
-        }
+        Self { layers, display_variables, regions, placements, visibility }
     }
 
-    pub fn resolve(
-        &self,
-        context: TemplateConfigMatchContext<'_>,
-    ) -> Result<Option<TemplateConfigResolved>, TemplateConfigResolveError> {
+    pub fn resolve(&self, context: TemplateConfigMatchContext<'_>) -> Result<Option<TemplateConfigResolved>, TemplateConfigResolveError> {
         let Some((requested_name, declared)) = template_name_for(context) else {
             return Ok(None);
         };
@@ -709,8 +519,7 @@ impl TemplateConfigCatalog {
                 find_bundled_template(&stack, &bundled_name).or_else(|| {
                     (context.node_kind == TemplateConfigNodeKind::Entity)
                         .then(|| {
-                            let fallback_name =
-                                format!("flotilla/entity/{}", context.slot.convention_form()?);
+                            let fallback_name = format!("flotilla/entity/{}", context.slot.convention_form()?);
                             find_bundled_template(&stack, &fallback_name)
                         })
                         .flatten()
@@ -719,21 +528,13 @@ impl TemplateConfigCatalog {
         });
         let Some((layer, template)) = found else {
             if declared {
-                return Err(TemplateConfigResolveError::UnknownDeclaredTemplate(
-                    requested_name,
-                ));
+                return Err(TemplateConfigResolveError::UnknownDeclaredTemplate(requested_name));
             }
             return Ok(None);
         };
         let mut template_stack = vec![];
         let mut fragment_stack = vec![];
-        let mut resolved = flatten_template(
-            &stack,
-            layer,
-            template,
-            &mut template_stack,
-            &mut fragment_stack,
-        )?;
+        let mut resolved = flatten_template(&stack, layer, template, &mut template_stack, &mut fragment_stack)?;
         resolved.name = requested_name;
         if resolved.slot != context.slot || resolved.node_kind != context.node_kind {
             return Err(TemplateConfigResolveError::BindingMismatch {
@@ -748,10 +549,7 @@ impl TemplateConfigCatalog {
     }
 
     pub fn len(&self) -> usize {
-        self.layers
-            .iter()
-            .map(|layer| layer.config.templates.len())
-            .sum()
+        self.layers.iter().map(|layer| layer.config.templates.len()).sum()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -759,11 +557,7 @@ impl TemplateConfigCatalog {
     }
 
     pub fn template_names(&self) -> Vec<String> {
-        self.layers
-            .iter()
-            .flat_map(|layer| layer.config.templates.iter())
-            .map(|template| template.name.clone())
-            .collect()
+        self.layers.iter().flat_map(|layer| layer.config.templates.iter()).map(|template| template.name.clone()).collect()
     }
 
     pub fn visibility(&self) -> &[PlacementVisibility] {
@@ -826,58 +620,38 @@ impl TemplateConfigCatalog {
         keys
     }
 
-    pub fn variables(
-        &self,
-        metadata: &BTreeMap<String, MetadataValue>,
-    ) -> Vec<ResolvedNodeVariableDefinition> {
+    pub fn variables(&self, metadata: &BTreeMap<String, MetadataValue>) -> Vec<ResolvedNodeVariableDefinition> {
         self.variable_scope(metadata).declarations
     }
 
-    pub fn variable_scope(
-        &self,
-        metadata: &BTreeMap<String, MetadataValue>,
-    ) -> ResolvedVariableScope {
+    pub fn variable_scope(&self, metadata: &BTreeMap<String, MetadataValue>) -> ResolvedVariableScope {
         let stack = self.layer_stack(metadata);
         let mut seen = BTreeSet::new();
         let declarations = stack
             .iter()
             .copied()
             .flat_map(|layer| {
-                layer.config.variables.iter().map(move |definition| {
-                    ResolvedNodeVariableDefinition {
-                        definition: definition.clone(),
-                        origin: layer.origin.clone(),
-                    }
-                })
+                layer
+                    .config
+                    .variables
+                    .iter()
+                    .map(move |definition| ResolvedNodeVariableDefinition { definition: definition.clone(), origin: layer.origin.clone() })
             })
             .filter(|variable| seen.insert(variable.definition.name.clone()))
             .collect::<Vec<_>>();
-        let declaration_by_name = declarations
-            .iter()
-            .map(|resolved| (resolved.definition.name.as_str(), &resolved.definition))
-            .collect::<BTreeMap<_, _>>();
+        let declaration_by_name =
+            declarations.iter().map(|resolved| (resolved.definition.name.as_str(), &resolved.definition)).collect::<BTreeMap<_, _>>();
         let mut setters = vec![];
         let mut warnings = vec![];
         let mut seen = BTreeSet::new();
         for resolved in stack.iter().copied().flat_map(|layer| {
-            layer
-                .config
-                .sets
-                .iter()
-                .map(move |setter| ResolvedVariableSetter {
-                    setter: setter.clone(),
-                    origin: layer.origin.clone(),
-                })
+            layer.config.sets.iter().map(move |setter| ResolvedVariableSetter { setter: setter.clone(), origin: layer.origin.clone() })
         }) {
             if !seen.insert(resolved.setter.name.clone()) {
                 continue;
             }
             let Some(declaration) = declaration_by_name.get(resolved.setter.name.as_str()) else {
-                warnings.push(format!(
-                    "{} sets undeclared node variable {}",
-                    resolved.origin.label(),
-                    resolved.setter.name,
-                ));
+                warnings.push(format!("{} sets undeclared node variable {}", resolved.origin.label(), resolved.setter.name,));
                 continue;
             };
             if !declaration.accepts(&resolved.setter.value) {
@@ -891,17 +665,10 @@ impl TemplateConfigCatalog {
             }
             setters.push(resolved);
         }
-        ResolvedVariableScope {
-            declarations,
-            setters,
-            warnings,
-        }
+        ResolvedVariableScope { declarations, setters, warnings }
     }
 
-    pub fn config_variable_setters(
-        &self,
-        metadata: &BTreeMap<String, MetadataValue>,
-    ) -> Vec<ResolvedVariableSetter> {
+    pub fn config_variable_setters(&self, metadata: &BTreeMap<String, MetadataValue>) -> Vec<ResolvedVariableSetter> {
         self.variable_scope(metadata).setters
     }
 
@@ -910,9 +677,7 @@ impl TemplateConfigCatalog {
     }
 
     pub fn placement(&self, name: &str) -> Option<&PlacementDefinition> {
-        self.placements
-            .iter()
-            .find(|placement| placement.name == name)
+        self.placements.iter().find(|placement| placement.name == name)
     }
 
     pub fn placement_template<'a>(
@@ -920,13 +685,7 @@ impl TemplateConfigCatalog {
         name: &str,
         metadata: &BTreeMap<String, MetadataValue>,
     ) -> Option<&'a TemplateConfigDefinition> {
-        self.layer_stack(metadata).into_iter().find_map(|layer| {
-            layer
-                .config
-                .templates
-                .iter()
-                .find(|template| template.name == name)
-        })
+        self.layer_stack(metadata).into_iter().find_map(|layer| layer.config.templates.iter().find(|template| template.name == name))
     }
 
     /// Resolve the render surface of a template reached through
@@ -956,10 +715,7 @@ impl TemplateConfigCatalog {
             if inherited_slot.is_some() && inherited_node_kind.is_some() {
                 break;
             }
-            cursor = candidate
-                .extends
-                .as_deref()
-                .and_then(|parent| find_template(&stack, parent).map(|(_, template)| template));
+            cursor = candidate.extends.as_deref().and_then(|parent| find_template(&stack, parent).map(|(_, template)| template));
         }
         let mut template = template.clone();
         template.slot = inherited_slot.or(Some(TemplateConfigSlot::Compact));
@@ -970,10 +726,7 @@ impl TemplateConfigCatalog {
     }
 
     fn layer_stack(&self, metadata: &BTreeMap<String, MetadataValue>) -> Vec<&TemplateConfigLayer> {
-        self.layers
-            .iter()
-            .filter(|layer| layer.applies_to(metadata))
-            .collect()
+        self.layers.iter().filter(|layer| layer.applies_to(metadata)).collect()
     }
 }
 
@@ -1003,10 +756,7 @@ pub struct SurfaceRegionDefinition {
 pub fn region_placement_sort_key(order: Option<i64>, declaration_index: usize) -> (i64, usize) {
     // Inventories cannot realistically exceed i64::MAX regions, but keep this
     // public helper total for any usize index a host supplies.
-    (
-        order.unwrap_or_else(|| i64::try_from(declaration_index).unwrap_or(i64::MAX)),
-        declaration_index,
-    )
+    (order.unwrap_or_else(|| i64::try_from(declaration_index).unwrap_or(i64::MAX)), declaration_index)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1162,15 +912,12 @@ pub fn placement_index_text(value: &MetadataValue) -> Option<String> {
         MetadataValue::Text(text) => Some(text.clone()),
         MetadataValue::Bool(flag) => Some(flag.to_string()),
         MetadataValue::Integer(number) => Some(number.to_string()),
-        MetadataValue::StringList(_)
-        | MetadataValue::GroupPath(_)
-        | MetadataValue::EntityRefs(_) => None,
+        MetadataValue::StringList(_) | MetadataValue::GroupPath(_) | MetadataValue::EntityRefs(_) => None,
     }
 }
 
 fn bundled_default_config() -> ExternalTemplateConfig {
-    parse_template_config_kdl(include_str!("../../../templates/flotilla-default.kdl"))
-        .expect("bundled template config must remain valid")
+    parse_template_config_kdl(include_str!("../../../templates/flotilla-default.kdl")).expect("bundled template config must remain valid")
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1197,14 +944,8 @@ pub struct TemplateConfigResolved {
 }
 
 impl TemplateConfigResolved {
-    pub fn render_fields(
-        &self,
-        context: TemplateConfigMatchContext<'_>,
-    ) -> Vec<TemplateConfigRenderedField> {
-        self.fields
-            .iter()
-            .filter_map(|field| field.spec.render(context))
-            .collect()
+    pub fn render_fields(&self, context: TemplateConfigMatchContext<'_>) -> Vec<TemplateConfigRenderedField> {
+        self.fields.iter().filter_map(|field| field.spec.render(context)).collect()
     }
 
     pub fn render_ready(&self) -> TemplateConfigRenderReady {
@@ -1216,12 +957,7 @@ impl TemplateConfigResolved {
     }
 
     pub fn dump_kdl(&self) -> String {
-        let chain = self
-            .chain
-            .iter()
-            .map(|entry| format!("{} [{}]", entry.name, entry.origin.label()))
-            .collect::<Vec<_>>()
-            .join(" -> ");
+        let chain = self.chain.iter().map(|entry| format!("{} [{}]", entry.name, entry.origin.label())).collect::<Vec<_>>().join(" -> ");
         let mut output = format!("// chain: {chain}\n");
         output.push_str(&format!(
             "template {} slot={} node-kind={} {{\n",
@@ -1318,13 +1054,7 @@ impl fmt::Display for TemplateConfigResolveError {
             Self::RemoveUnknownField { template, field } => {
                 write!(formatter, "template {template} removes unknown field {field}")
             }
-            Self::BindingMismatch {
-                name,
-                expected_slot,
-                actual_slot,
-                expected_node_kind,
-                actual_node_kind,
-            } => write!(
+            Self::BindingMismatch { name, expected_slot, actual_slot, expected_node_kind, actual_node_kind } => write!(
                 formatter,
                 "template {name} resolves as {actual_node_kind:?}/{actual_slot:?}, expected {expected_node_kind:?}/{expected_slot:?}"
             ),
@@ -1348,18 +1078,8 @@ fn template_name_for(context: TemplateConfigMatchContext<'_>) -> Option<(String,
     Some((name, false))
 }
 
-fn find_template<'a>(
-    stack: &'a [&'a TemplateConfigLayer],
-    name: &str,
-) -> Option<(&'a TemplateConfigLayer, &'a TemplateConfigDefinition)> {
-    stack.iter().find_map(|layer| {
-        layer
-            .config
-            .templates
-            .iter()
-            .find(|template| template.name == name)
-            .map(|template| (*layer, template))
-    })
+fn find_template<'a>(stack: &'a [&'a TemplateConfigLayer], name: &str) -> Option<(&'a TemplateConfigLayer, &'a TemplateConfigDefinition)> {
+    stack.iter().find_map(|layer| layer.config.templates.iter().find(|template| template.name == name).map(|template| (*layer, template)))
 }
 
 fn find_bundled_template<'a>(
@@ -1369,31 +1089,14 @@ fn find_bundled_template<'a>(
     stack
         .iter()
         .filter(|layer| layer.origin.layer == TemplateConfigLayerKind::Bundled)
-        .find_map(|layer| {
-            layer
-                .config
-                .templates
-                .iter()
-                .find(|template| template.name == name)
-                .map(|template| (*layer, template))
-        })
+        .find_map(|layer| layer.config.templates.iter().find(|template| template.name == name).map(|template| (*layer, template)))
 }
 
 fn find_fragment<'a>(
     stack: &'a [&'a TemplateConfigLayer],
     name: &str,
-) -> Option<(
-    &'a TemplateConfigLayer,
-    &'a TemplateConfigFragmentDefinition,
-)> {
-    stack.iter().find_map(|layer| {
-        layer
-            .config
-            .fragments
-            .iter()
-            .find(|fragment| fragment.name == name)
-            .map(|fragment| (*layer, fragment))
-    })
+) -> Option<(&'a TemplateConfigLayer, &'a TemplateConfigFragmentDefinition)> {
+    stack.iter().find_map(|layer| layer.config.fragments.iter().find(|fragment| fragment.name == name).map(|fragment| (*layer, fragment)))
 }
 
 fn flatten_template(
@@ -1403,10 +1106,7 @@ fn flatten_template(
     template_stack: &mut Vec<String>,
     fragment_stack: &mut Vec<String>,
 ) -> Result<TemplateConfigResolved, TemplateConfigResolveError> {
-    if let Some(position) = template_stack
-        .iter()
-        .position(|name| name == &template.name)
-    {
+    if let Some(position) = template_stack.iter().position(|name| name == &template.name) {
         let mut cycle = template_stack[position..].to_vec();
         cycle.push(template.name.clone());
         return Err(TemplateConfigResolveError::TemplateCycle(cycle));
@@ -1415,18 +1115,9 @@ fn flatten_template(
 
     let parent = if let Some(parent_name) = template.extends.as_deref() {
         let Some((parent_layer, parent)) = find_template(stack, parent_name) else {
-            return Err(TemplateConfigResolveError::UnknownParent {
-                template: template.name.clone(),
-                parent: parent_name.to_owned(),
-            });
+            return Err(TemplateConfigResolveError::UnknownParent { template: template.name.clone(), parent: parent_name.to_owned() });
         };
-        Some(flatten_template(
-            stack,
-            parent_layer,
-            parent,
-            template_stack,
-            fragment_stack,
-        )?)
+        Some(flatten_template(stack, parent_layer, parent, template_stack, fragment_stack)?)
     } else {
         None
     };
@@ -1434,43 +1125,19 @@ fn flatten_template(
     let slot = template
         .slot
         .or_else(|| parent.as_ref().map(|parent| parent.slot))
-        .ok_or_else(|| TemplateConfigResolveError::MissingProperty {
-            template: template.name.clone(),
-            property: "slot",
-        })?;
+        .ok_or_else(|| TemplateConfigResolveError::MissingProperty { template: template.name.clone(), property: "slot" })?;
     let node_kind = template
         .node_kind
         .or_else(|| parent.as_ref().map(|parent| parent.node_kind))
-        .ok_or_else(|| TemplateConfigResolveError::MissingProperty {
-            template: template.name.clone(),
-            property: "node-kind",
-        })?;
+        .ok_or_else(|| TemplateConfigResolveError::MissingProperty { template: template.name.clone(), property: "node-kind" })?;
     let interleave_new_fields = parent.is_some();
-    let mut fields = parent
-        .as_ref()
-        .map(|parent| parent.fields.clone())
-        .unwrap_or_default();
-    let mut controls = parent
-        .as_ref()
-        .map(|parent| parent.controls.clone())
-        .unwrap_or_default();
-    let mut chrome = parent
-        .as_ref()
-        .map(|parent| parent.chrome.clone())
-        .unwrap_or_default();
-    let mut setters = parent
-        .as_ref()
-        .map(|parent| parent.setters.clone())
-        .unwrap_or_default();
+    let mut fields = parent.as_ref().map(|parent| parent.fields.clone()).unwrap_or_default();
+    let mut controls = parent.as_ref().map(|parent| parent.controls.clone()).unwrap_or_default();
+    let mut chrome = parent.as_ref().map(|parent| parent.chrome.clone()).unwrap_or_default();
+    let mut setters = parent.as_ref().map(|parent| parent.setters.clone()).unwrap_or_default();
     for setter in &template.sets {
-        let resolved = ResolvedVariableSetter {
-            setter: setter.clone(),
-            origin: layer.origin.clone(),
-        };
-        if let Some(index) = setters
-            .iter()
-            .position(|existing| existing.setter.name == setter.name)
-        {
+        let resolved = ResolvedVariableSetter { setter: setter.clone(), origin: layer.origin.clone() };
+        if let Some(index) = setters.iter().position(|existing| existing.setter.name == setter.name) {
             setters[index] = resolved;
         } else {
             setters.push(resolved);
@@ -1487,10 +1154,7 @@ fn flatten_template(
         fragment_stack,
         interleave_new_fields,
     )?;
-    let mut chain = vec![TemplateConfigChainEntry {
-        name: template.name.clone(),
-        origin: layer.origin.clone(),
-    }];
+    let mut chain = vec![TemplateConfigChainEntry { name: template.name.clone(), origin: layer.origin.clone() }];
     if let Some(parent) = parent {
         chain.extend(parent.chain);
     }
@@ -1523,38 +1187,21 @@ fn apply_operations(
     for operation in operations {
         match operation {
             TemplateConfigFieldOperation::Set { field } => {
-                let resolved = TemplateConfigResolvedField {
-                    spec: field.clone(),
-                    origin: origin.clone(),
-                };
-                if let Some(index) = fields
-                    .iter()
-                    .position(|existing| existing.spec.name == field.name)
-                {
+                let resolved = TemplateConfigResolvedField { spec: field.clone(), origin: origin.clone() };
+                if let Some(index) = fields.iter().position(|existing| existing.spec.name == field.name) {
                     fields[index] = resolved;
                     continue;
                 }
                 let insert_at = if interleave_new_fields {
-                    fields
-                        .iter()
-                        .position(|existing| {
-                            existing.spec.order_priority() < field.order_priority()
-                        })
-                        .unwrap_or(fields.len())
+                    fields.iter().position(|existing| existing.spec.order_priority() < field.order_priority()).unwrap_or(fields.len())
                 } else {
                     fields.len()
                 };
                 fields.insert(insert_at, resolved);
             }
             TemplateConfigFieldOperation::Remove { name } => {
-                let Some(index) = fields
-                    .iter()
-                    .position(|existing| existing.spec.name == *name)
-                else {
-                    return Err(TemplateConfigResolveError::RemoveUnknownField {
-                        template: template_name.to_owned(),
-                        field: name.clone(),
-                    });
+                let Some(index) = fields.iter().position(|existing| existing.spec.name == *name) else {
+                    return Err(TemplateConfigResolveError::RemoveUnknownField { template: template_name.to_owned(), field: name.clone() });
                 };
                 fields.remove(index);
             }
@@ -1565,10 +1212,7 @@ fn apply_operations(
                     return Err(TemplateConfigResolveError::FragmentCycle(cycle));
                 }
                 let Some((fragment_layer, fragment)) = find_fragment(stack, name) else {
-                    return Err(TemplateConfigResolveError::UnknownFragment {
-                        template: template_name.to_owned(),
-                        fragment: name.clone(),
-                    });
+                    return Err(TemplateConfigResolveError::UnknownFragment { template: template_name.to_owned(), fragment: name.clone() });
                 };
                 fragment_stack.push(name.clone());
                 apply_operations(
@@ -1616,11 +1260,7 @@ pub struct ChromeSpec {
 impl ChromeSpec {
     fn set(&mut self, primitive: ChromePrimitive) {
         let kind = primitive.kind();
-        if let Some(existing) = self
-            .primitives
-            .iter_mut()
-            .find(|existing| existing.kind() == kind)
-        {
+        if let Some(existing) = self.primitives.iter_mut().find(|existing| existing.kind() == kind) {
             *existing = primitive;
         } else {
             self.primitives.push(primitive);
@@ -1628,48 +1268,35 @@ impl ChromeSpec {
     }
 
     pub fn boxed(&self) -> bool {
-        self.primitives
-            .iter()
-            .any(|primitive| matches!(primitive, ChromePrimitive::Box { .. }))
+        self.primitives.iter().any(|primitive| matches!(primitive, ChromePrimitive::Box { .. }))
     }
 
     pub fn toggle(&self) -> Option<(&str, &str)> {
-        self.primitives
-            .iter()
-            .find_map(|primitive| match primitive {
-                ChromePrimitive::Toggle {
-                    collapsed,
-                    expanded,
-                } => Some((collapsed.as_str(), expanded.as_str())),
-                _ => None,
-            })
+        self.primitives.iter().find_map(|primitive| match primitive {
+            ChromePrimitive::Toggle { collapsed, expanded } => Some((collapsed.as_str(), expanded.as_str())),
+            _ => None,
+        })
     }
 
     pub fn fill(&self) -> Option<char> {
-        self.primitives
-            .iter()
-            .find_map(|primitive| match primitive {
-                ChromePrimitive::Fill { glyph } => Some(*glyph),
-                _ => None,
-            })
+        self.primitives.iter().find_map(|primitive| match primitive {
+            ChromePrimitive::Fill { glyph } => Some(*glyph),
+            _ => None,
+        })
     }
 
     pub fn dimmed(&self, metadata: &BTreeMap<String, MetadataValue>) -> bool {
         self.primitives.iter().any(|primitive| match primitive {
-            ChromePrimitive::Dim { when } => when
-                .as_deref()
-                .is_none_or(|key| matches!(metadata.get(key), Some(MetadataValue::Bool(true)))),
+            ChromePrimitive::Dim { when } => when.as_deref().is_none_or(|key| matches!(metadata.get(key), Some(MetadataValue::Bool(true)))),
             _ => false,
         })
     }
 
     pub fn indent_width(&self) -> Option<usize> {
-        self.primitives
-            .iter()
-            .find_map(|primitive| match primitive {
-                ChromePrimitive::Indent { level } => Some(*level),
-                _ => None,
-            })
+        self.primitives.iter().find_map(|primitive| match primitive {
+            ChromePrimitive::Indent { level } => Some(*level),
+            _ => None,
+        })
     }
 }
 
@@ -1713,14 +1340,9 @@ impl ChromePrimitive {
             Self::Box { border } => {
                 format!("{pad}box border={}\n", quote_kdl(border.as_str()))
             }
-            Self::Toggle {
-                collapsed,
-                expanded,
-            } => format!(
-                "{pad}toggle collapsed={} expanded={}\n",
-                quote_kdl(collapsed),
-                quote_kdl(expanded)
-            ),
+            Self::Toggle { collapsed, expanded } => {
+                format!("{pad}toggle collapsed={} expanded={}\n", quote_kdl(collapsed), quote_kdl(expanded))
+            }
             Self::Fill { glyph } => {
                 format!("{pad}fill glyph={}\n", quote_kdl(&glyph.to_string()))
             }
@@ -1759,14 +1381,8 @@ pub struct TemplateConfigRenderReady {
 }
 
 impl TemplateConfigRenderReady {
-    pub fn render_fields(
-        &self,
-        context: TemplateConfigMatchContext<'_>,
-    ) -> Vec<TemplateConfigRenderedField> {
-        self.fields
-            .iter()
-            .filter_map(|field| field.render(context))
-            .collect()
+    pub fn render_fields(&self, context: TemplateConfigMatchContext<'_>) -> Vec<TemplateConfigRenderedField> {
+        self.fields.iter().filter_map(|field| field.render(context)).collect()
     }
 }
 
@@ -1910,29 +1526,18 @@ pub struct NodeVariableDefinition {
 impl NodeVariableDefinition {
     fn validate(&self) -> Result<(), TemplateConfigError> {
         if self.name.trim().is_empty() {
-            return Err(TemplateConfigError::Validation(
-                "variable name cannot be empty".to_owned(),
-            ));
+            return Err(TemplateConfigError::Validation("variable name cannot be empty".to_owned()));
         }
         if self.default.is_empty() {
-            return Err(TemplateConfigError::Validation(format!(
-                "variable {} default cannot be empty",
-                self.name
-            )));
+            return Err(TemplateConfigError::Validation(format!("variable {} default cannot be empty", self.name)));
         }
         if !self.values.is_empty() {
             let unique = self.values.iter().collect::<BTreeSet<_>>();
             if unique.len() != self.values.len() {
-                return Err(TemplateConfigError::Validation(format!(
-                    "variable {} has duplicate allowed values",
-                    self.name
-                )));
+                return Err(TemplateConfigError::Validation(format!("variable {} has duplicate allowed values", self.name)));
             }
             if !self.values.contains(&self.default) {
-                return Err(TemplateConfigError::Validation(format!(
-                    "variable {} default is not in its allowed values",
-                    self.name
-                )));
+                return Err(TemplateConfigError::Validation(format!("variable {} default is not in its allowed values", self.name)));
             }
         }
         Ok(())
@@ -1953,9 +1558,7 @@ pub struct TemplateVariableSetter {
 impl TemplateVariableSetter {
     fn validate(&self) -> Result<(), TemplateConfigError> {
         if self.name.trim().is_empty() || self.value.is_empty() {
-            return Err(TemplateConfigError::Validation(
-                "set must declare a non-empty variable name and value".to_owned(),
-            ));
+            return Err(TemplateConfigError::Validation("set must declare a non-empty variable name and value".to_owned()));
         }
         Ok(())
     }
@@ -2003,10 +1606,7 @@ impl TemplateVariableDefinition {
             _ => false,
         };
         if !valid_default {
-            return Err(TemplateConfigError::Validation(format!(
-                "variable {} has a default incompatible with its type",
-                self.name
-            )));
+            return Err(TemplateConfigError::Validation(format!("variable {} has a default incompatible with its type", self.name)));
         }
         Ok(())
     }
@@ -2036,21 +1636,12 @@ fn format_metadata_value(value: &MetadataValue) -> String {
         MetadataValue::Bool(value) => value.to_string(),
         MetadataValue::Integer(value) => value.to_string(),
         MetadataValue::StringList(values) => values.join(", "),
-        MetadataValue::EntityRefs(values) => values
-            .iter()
-            .map(|value| format!("{}:{}", value.kind, value.id))
-            .collect::<Vec<_>>()
-            .join(", "),
-        MetadataValue::GroupPath(segments) => segments
-            .iter()
-            .map(|segment| {
-                segment
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| segment.value.display())
-            })
-            .collect::<Vec<_>>()
-            .join(" / "),
+        MetadataValue::EntityRefs(values) => {
+            values.iter().map(|value| format!("{}:{}", value.kind, value.id)).collect::<Vec<_>>().join(", ")
+        }
+        MetadataValue::GroupPath(segments) => {
+            segments.iter().map(|segment| segment.label.clone().unwrap_or_else(|| segment.value.display())).collect::<Vec<_>>().join(" / ")
+        }
     }
 }
 
@@ -2087,9 +1678,7 @@ impl std::str::FromStr for DetailRole {
             "state" => Ok(Self::State),
             "fact" => Ok(Self::Fact),
             "relation" => Ok(Self::Relation),
-            _ => Err(TemplateConfigError::Validation(format!(
-                "unsupported detail role: {value:?}"
-            ))),
+            _ => Err(TemplateConfigError::Validation(format!("unsupported detail role: {value:?}"))),
         }
     }
 }
@@ -2121,24 +1710,13 @@ pub struct TemplateConfigFieldSpec {
 }
 
 impl TemplateConfigFieldSpec {
-    pub fn render(
-        &self,
-        context: TemplateConfigMatchContext<'_>,
-    ) -> Option<TemplateConfigRenderedField> {
+    pub fn render(&self, context: TemplateConfigMatchContext<'_>) -> Option<TemplateConfigRenderedField> {
         if self.structured_only || !self.condition.matches(context) {
             return None;
         }
-        let resolved = self
-            .sources
-            .iter()
-            .find_map(|source| source.resolve(context))?;
+        let resolved = self.sources.iter().find_map(|source| source.resolve(context))?;
         let value = format!("{}{}{}", self.prefix, resolved.value, self.suffix);
-        Some(TemplateConfigRenderedField {
-            class: self.class,
-            priority: self.priority,
-            value,
-            source: resolved.source,
-        })
+        Some(TemplateConfigRenderedField { class: self.class, priority: self.priority, value, source: resolved.source })
     }
 
     fn order_priority(&self) -> i64 {
@@ -2151,11 +1729,9 @@ impl TemplateConfigFieldSpec {
     fn to_kdl(&self, indent: usize) -> String {
         let pad = " ".repeat(indent);
         let mut properties = format!("class={}", quote_kdl(self.class.as_str()));
-        for (key, value) in [
-            ("section", self.section.as_deref()),
-            ("role", self.role.map(DetailRole::as_str)),
-            ("label", self.label.as_deref()),
-        ] {
+        for (key, value) in
+            [("section", self.section.as_deref()), ("role", self.role.map(DetailRole::as_str)), ("label", self.label.as_deref())]
+        {
             if let Some(value) = value {
                 properties.push_str(&format!(" {key}={}", quote_kdl(value)));
             }
@@ -2173,10 +1749,7 @@ impl TemplateConfigFieldSpec {
             properties.push_str(&format!(" suffix={}", quote_kdl(&self.suffix)));
         }
         if self.condition != TemplateConfigFieldCondition::Always {
-            properties.push_str(&format!(
-                " condition={}",
-                quote_kdl(self.condition.as_str())
-            ));
+            properties.push_str(&format!(" condition={}", quote_kdl(self.condition.as_str())));
         }
         if self.sources.len() == 1 {
             properties.push(' ');
@@ -2248,20 +1821,14 @@ pub enum TemplateConfigValueSource {
 }
 
 impl TemplateConfigValueSource {
-    pub(crate) fn resolve(
-        &self,
-        context: TemplateConfigMatchContext<'_>,
-    ) -> Option<TemplateConfigResolvedValue> {
+    pub(crate) fn resolve(&self, context: TemplateConfigMatchContext<'_>) -> Option<TemplateConfigResolvedValue> {
         let value = match self {
             TemplateConfigValueSource::Literal { value } => value.clone(),
             TemplateConfigValueSource::MetadataText { key } => {
                 let value = MetadataValue::Text(metadata_text(context.metadata, key)?.to_owned());
                 return Some(TemplateConfigResolvedValue {
                     value: format_metadata_value(&value),
-                    source: Some(ResolvedTemplateFieldSource {
-                        key: key.clone(),
-                        value,
-                    }),
+                    source: Some(ResolvedTemplateFieldSource { key: key.clone(), value }),
                 });
             }
             TemplateConfigValueSource::MetadataTextBasename { key } => {
@@ -2269,52 +1836,31 @@ impl TemplateConfigValueSource {
                 let value = raw.trim_end_matches('/').rsplit('/').next()?.to_owned();
                 return (!value.is_empty()).then(|| TemplateConfigResolvedValue {
                     value,
-                    source: context.metadata.get(key).cloned().map(|value| {
-                        ResolvedTemplateFieldSource {
-                            key: key.clone(),
-                            value,
-                        }
-                    }),
+                    source: context.metadata.get(key).cloned().map(|value| ResolvedTemplateFieldSource { key: key.clone(), value }),
                 });
             }
             TemplateConfigValueSource::MetadataDisplay { key } => {
                 let value = context.metadata.get(key)?.clone();
                 return Some(TemplateConfigResolvedValue {
                     value: format_metadata_value(&value),
-                    source: Some(ResolvedTemplateFieldSource {
-                        key: key.clone(),
-                        value,
-                    }),
+                    source: Some(ResolvedTemplateFieldSource { key: key.clone(), value }),
                 });
             }
             TemplateConfigValueSource::MetadataFirstToken { key } => {
-                let value = metadata_text(context.metadata, key)?
-                    .split_whitespace()
-                    .next()?
-                    .to_owned();
+                let value = metadata_text(context.metadata, key)?.split_whitespace().next()?.to_owned();
                 return Some(TemplateConfigResolvedValue {
                     value,
-                    source: context.metadata.get(key).cloned().map(|value| {
-                        ResolvedTemplateFieldSource {
-                            key: key.clone(),
-                            value,
-                        }
-                    }),
+                    source: context.metadata.get(key).cloned().map(|value| ResolvedTemplateFieldSource { key: key.clone(), value }),
                 });
             }
             TemplateConfigValueSource::TabNumberFromPosition => {
-                let MetadataValue::Integer(position) =
-                    context.metadata.get("zellij.tab.position")?
-                else {
+                let MetadataValue::Integer(position) = context.metadata.get("zellij.tab.position")? else {
                     return None;
                 };
                 format!("Tab {}", position + 1)
             }
             TemplateConfigValueSource::ActiveTabName => context.active_tab_name?.to_owned(),
-            TemplateConfigValueSource::CollapsedToggle {
-                collapsed,
-                expanded,
-            } => {
+            TemplateConfigValueSource::CollapsedToggle { collapsed, expanded } => {
                 if !context.collapsible {
                     return None;
                 }
@@ -2325,10 +1871,7 @@ impl TemplateConfigValueSource {
                 }
             }
         };
-        (!value.is_empty()).then_some(TemplateConfigResolvedValue {
-            value,
-            source: None,
-        })
+        (!value.is_empty()).then_some(TemplateConfigResolvedValue { value, source: None })
     }
 
     fn to_kdl_properties(&self) -> String {
@@ -2350,14 +1893,9 @@ impl TemplateConfigValueSource {
             }
             Self::TabNumberFromPosition => "source=\"tab-number\"".to_owned(),
             Self::ActiveTabName => "source=\"active-tab-name\"".to_owned(),
-            Self::CollapsedToggle {
-                collapsed,
-                expanded,
-            } => format!(
-                "source=\"collapsed-toggle\" collapsed={} expanded={}",
-                quote_kdl(collapsed),
-                quote_kdl(expanded)
-            ),
+            Self::CollapsedToggle { collapsed, expanded } => {
+                format!("source=\"collapsed-toggle\" collapsed={} expanded={}", quote_kdl(collapsed), quote_kdl(expanded))
+            }
         }
     }
 }
@@ -2380,29 +1918,23 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
     let mut loops = vec![];
     let mut apply_template = None;
     let template_name = kdl_required_arg_string(node, 0, "template name")?;
-    let template_binding = template_name
-        .split('/')
-        .next()
-        .unwrap_or(&template_name)
-        .to_owned();
+    let template_binding = template_name.split('/').next().unwrap_or(&template_name).to_owned();
     let template_scope = BTreeSet::from([template_binding]);
     for child in children.nodes() {
         match child.name().value() {
             "when" | "predicate" => {
                 return Err(TemplateConfigError::Validation(
-                    "template-level when/predicate selection has been removed; use convention binding or a declaration override"
-                        .to_owned(),
+                    "template-level when/predicate selection has been removed; use convention binding or a declaration override".to_owned(),
                 ));
             }
-            "field" | "remove" | "use" | "box" | "toggle" | "fill" | "dim" | "indent"
-            | "control" => operations.push(parse_kdl_field_operation(child)?),
+            "field" | "remove" | "use" | "box" | "toggle" | "fill" | "dim" | "indent" | "control" => {
+                operations.push(parse_kdl_field_operation(child)?)
+            }
             "set" => sets.push(parse_kdl_variable_setter(child)?),
             "for" => loops.push(parse_kdl_placement_loop(child, &template_scope)?),
             "apply-template" => {
                 if apply_template.is_some() {
-                    return Err(TemplateConfigError::Validation(
-                        "template applies more than one template".to_owned(),
-                    ));
+                    return Err(TemplateConfigError::Validation("template applies more than one template".to_owned()));
                 }
                 apply_template = Some(kdl_node_arg_string(child, 0).unwrap_or("").to_owned());
             }
@@ -2417,12 +1949,8 @@ fn parse_kdl_template(node: &KdlNode) -> Result<TemplateConfigDefinition, Templa
     Ok(TemplateConfigDefinition {
         name: template_name,
         extends: kdl_prop_string(node, "extends"),
-        slot: kdl_prop_string(node, "slot")
-            .map(|value| parse_kdl_slot(&value))
-            .transpose()?,
-        node_kind: kdl_prop_string(node, "node-kind")
-            .map(|value| parse_kdl_node_kind(&value))
-            .transpose()?,
+        slot: kdl_prop_string(node, "slot").map(|value| parse_kdl_slot(&value)).transpose()?,
+        node_kind: kdl_prop_string(node, "node-kind").map(|value| parse_kdl_node_kind(&value)).transpose()?,
         operations,
         sets,
         loops,
@@ -2445,38 +1973,25 @@ fn parse_kdl_placement(node: &KdlNode) -> Result<PlacementDefinition, TemplateCo
         .transpose()?
         .unwrap_or_default();
     if loops.is_empty() {
-        return Err(TemplateConfigError::Validation(format!(
-            "placement {name} declares no loops"
-        )));
+        return Err(TemplateConfigError::Validation(format!("placement {name} declares no loops")));
     }
     Ok(PlacementDefinition { name, loops })
 }
 
-fn parse_kdl_placement_loop(
-    node: &KdlNode,
-    enclosing: &BTreeSet<String>,
-) -> Result<PlacementLoop, TemplateConfigError> {
+fn parse_kdl_placement_loop(node: &KdlNode, enclosing: &BTreeSet<String>) -> Result<PlacementLoop, TemplateConfigError> {
     let binding = kdl_required_arg_string(node, 0, "loop binding")?;
     if binding.ends_with('s') {
-        return Err(TemplateConfigError::Validation(format!(
-            "loop binding {binding} must be singular"
-        )));
+        return Err(TemplateConfigError::Validation(format!("loop binding {binding} must be singular")));
     }
     if enclosing.contains(&binding) {
-        return Err(TemplateConfigError::Validation(format!(
-            "loop binding {binding} shadows an enclosing binding"
-        )));
+        return Err(TemplateConfigError::Validation(format!("loop binding {binding} shadows an enclosing binding")));
     }
     let mut scope = enclosing.clone();
     scope.insert(binding.clone());
     let mut predicates = vec![];
     // `kind=` is sugar for the overwhelmingly common entity.kind equality.
     if let Some(kind) = kdl_prop_string(node, "kind") {
-        predicates.push(PlacementPredicate {
-            key: "entity.kind".to_owned(),
-            value: Some(kind),
-            of: None,
-        });
+        predicates.push(PlacementPredicate { key: "entity.kind".to_owned(), value: Some(kind), of: None });
     }
     let mut fields = vec![];
     let mut order = vec![];
@@ -2485,41 +2000,29 @@ fn parse_kdl_placement_loop(
     if let Some(children) = node.children() {
         for child in children.nodes() {
             match child.name().value() {
-                "match" => {
-                    predicates.push(parse_kdl_placement_predicate(child, &binding, enclosing)?)
-                }
+                "match" => predicates.push(parse_kdl_placement_predicate(child, &binding, enclosing)?),
                 "field" => fields.push(parse_kdl_field(child)?),
                 "order" => order.push(parse_kdl_placement_order(child)?),
                 "for" => loops.push(parse_kdl_placement_loop(child, &scope)?),
                 "apply-template" => {
                     if apply_template.is_some() {
-                        return Err(TemplateConfigError::Validation(format!(
-                            "loop {binding} applies more than one template"
-                        )));
+                        return Err(TemplateConfigError::Validation(format!("loop {binding} applies more than one template")));
                     }
                     apply_template = Some(kdl_node_arg_string(child, 0).unwrap_or("").to_owned());
                 }
-                other => {
-                    return Err(TemplateConfigError::Validation(format!(
-                        "loop {binding} has unsupported child {other}"
-                    )))
-                }
+                other => return Err(TemplateConfigError::Validation(format!("loop {binding} has unsupported child {other}"))),
             }
         }
     }
     if predicates.is_empty() {
-        return Err(TemplateConfigError::Validation(format!(
-            "loop {binding} selects every entity; declare kind= or a match"
-        )));
+        return Err(TemplateConfigError::Validation(format!("loop {binding} selects every entity; declare kind= or a match")));
     }
     let tier = kdl_prop_string(node, "tier")
         .map(|tier| match tier.as_str() {
             "full" => Ok(AbbreviationTier::Full),
             "medium" => Ok(AbbreviationTier::Medium),
             "short" => Ok(AbbreviationTier::Short),
-            other => Err(TemplateConfigError::Validation(format!(
-                "loop {binding} has unsupported abbreviation tier {other}"
-            ))),
+            other => Err(TemplateConfigError::Validation(format!("loop {binding} has unsupported abbreviation tier {other}"))),
         })
         .transpose()?;
     let in_key = kdl_prop_string(node, "in");
@@ -2529,10 +2032,7 @@ fn parse_kdl_placement_loop(
         binding,
         in_key,
         of,
-        visibility: node
-            .get("visibility")
-            .map(|_| kdl_required_prop_string(node, "visibility"))
-            .transpose()?,
+        visibility: node.get("visibility").map(|_| kdl_required_prop_string(node, "visibility")).transpose()?,
         predicates,
         order,
         fields,
@@ -2549,51 +2049,35 @@ fn parse_kdl_visibility(node: &KdlNode) -> Result<PlacementVisibility, TemplateC
     if let Some(children) = node.children() {
         for rule in children.nodes() {
             if rule.name().value() != "when" {
-                return Err(TemplateConfigError::Validation(format!(
-                    "visibility {name} only accepts when rules"
-                )));
+                return Err(TemplateConfigError::Validation(format!("visibility {name} only accepts when rules")));
             }
             let visible_when = kdl_required_prop_string(rule, "visible-when")?;
             let mut predicates = vec![];
             if rule.get("kind").is_some() {
                 let kind = kdl_required_prop_string(rule, "kind")?;
-                predicates.push(VisibilityPredicate {
-                    key: "entity.kind".into(),
-                    value: Some(kind),
-                    exists: None,
-                });
+                predicates.push(VisibilityPredicate { key: "entity.kind".into(), value: Some(kind), exists: None });
             }
             if let Some(matches) = rule.children() {
                 for predicate in matches.nodes() {
                     if predicate.name().value() != "match" || predicate.get("of").is_some() {
-                        return Err(TemplateConfigError::Validation(format!(
-                            "visibility {name} only accepts constant fact matches"
-                        )));
+                        return Err(TemplateConfigError::Validation(format!("visibility {name} only accepts constant fact matches")));
                     }
                     predicates.push(VisibilityPredicate {
                         key: kdl_required_arg_string(predicate, 0, "visibility fact key")?,
-                        value: predicate
-                            .get("value")
-                            .map(|_| kdl_required_prop_string(predicate, "value"))
-                            .transpose()?,
+                        value: predicate.get("value").map(|_| kdl_required_prop_string(predicate, "value")).transpose()?,
                         exists: predicate
                             .get("exists")
                             .map(|entry| {
-                                entry.value().as_bool().ok_or_else(|| {
-                                    TemplateConfigError::Validation(
-                                        "visibility exists must be boolean".into(),
-                                    )
-                                })
+                                entry
+                                    .value()
+                                    .as_bool()
+                                    .ok_or_else(|| TemplateConfigError::Validation("visibility exists must be boolean".into()))
                             })
                             .transpose()?,
                     });
                 }
             }
-            rules.push(PlacementVisibilityRule {
-                predicates,
-                visible_when,
-                and_visible_when: kdl_prop_string(rule, "and-visible-when"),
-            });
+            rules.push(PlacementVisibilityRule { predicates, visible_when, and_visible_when: kdl_prop_string(rule, "and-visible-when") });
         }
     }
     Ok(PlacementVisibility { name, rules })
@@ -2604,29 +2088,17 @@ fn parse_kdl_placement_order(node: &KdlNode) -> Result<PlacementOrder, TemplateC
     let direction = match kdl_prop_string(node, "direction").as_deref() {
         None | Some("ascending") => PlacementOrderDirection::Ascending,
         Some("descending") => PlacementOrderDirection::Descending,
-        Some(other) => {
-            return Err(TemplateConfigError::Validation(format!(
-                "unsupported order direction: {other}"
-            )))
-        }
+        Some(other) => return Err(TemplateConfigError::Validation(format!("unsupported order direction: {other}"))),
     };
     let absent = match kdl_prop_string(node, "absent").as_deref() {
         None | Some("last") => PlacementOrderAbsent::Last,
         Some("first") => PlacementOrderAbsent::First,
-        Some(other) => {
-            return Err(TemplateConfigError::Validation(format!(
-                "unsupported absent placement: {other}"
-            )))
-        }
+        Some(other) => return Err(TemplateConfigError::Validation(format!("unsupported absent placement: {other}"))),
     };
     Ok(PlacementOrder {
         natural: node
             .get("natural")
-            .map(|entry| {
-                entry.value().as_bool().ok_or_else(|| {
-                    TemplateConfigError::Validation("order natural must be boolean".into())
-                })
-            })
+            .map(|entry| entry.value().as_bool().ok_or_else(|| TemplateConfigError::Validation("order natural must be boolean".into())))
             .transpose()?
             .unwrap_or(false),
         key,
@@ -2651,33 +2123,21 @@ fn parse_kdl_placement_predicate(
     }
     if let Some(of) = kdl_prop_string(node, "of") {
         if !enclosing.contains(&of) {
-            return Err(TemplateConfigError::Validation(format!(
-                "loop {binding} refers to unbound enclosing loop {of}"
-            )));
+            return Err(TemplateConfigError::Validation(format!("loop {binding} refers to unbound enclosing loop {of}")));
         }
-        return Ok(PlacementPredicate {
-            key,
-            value: None,
-            of: Some(of),
-        });
+        return Ok(PlacementPredicate { key, value: None, of: Some(of) });
     }
     let Some(value) = kdl_prop_string(node, "value") else {
         return Err(TemplateConfigError::Validation(format!(
             "loop {binding} matches {key} without value=; the placement index can only answer equality against a constant"
         )));
     };
-    Ok(PlacementPredicate {
-        key,
-        value: Some(value),
-        of: None,
-    })
+    Ok(PlacementPredicate { key, value: Some(value), of: None })
 }
 
 fn parse_kdl_region(node: &KdlNode) -> Result<SurfaceRegionDefinition, TemplateConfigError> {
     if node.get("source").is_some() || node.get("attention-key").is_some() {
-        return Err(TemplateConfigError::Validation(
-            "region source and attention-key were replaced by placement queries".into(),
-        ));
+        return Err(TemplateConfigError::Validation("region source and attention-key were replaced by placement queries".into()));
     }
     Ok(SurfaceRegionDefinition {
         name: kdl_required_arg_string(node, 0, "region name")?,
@@ -2685,25 +2145,20 @@ fn parse_kdl_region(node: &KdlNode) -> Result<SurfaceRegionDefinition, TemplateC
         default_host: node
             .get("default-host")
             .map(|entry| {
-                entry.value().as_string().map(str::to_owned).ok_or_else(|| {
-                    TemplateConfigError::Validation("region default-host must be a string".into())
-                })
+                entry
+                    .value()
+                    .as_string()
+                    .map(str::to_owned)
+                    .ok_or_else(|| TemplateConfigError::Validation("region default-host must be a string".into()))
             })
             .transpose()?,
         order: node
             .get("order")
-            .map(|entry| {
-                entry.value().as_i64().ok_or_else(|| {
-                    TemplateConfigError::Validation("region order must be an integer".into())
-                })
-            })
+            .map(|entry| entry.value().as_i64().ok_or_else(|| TemplateConfigError::Validation("region order must be an integer".into())))
             .transpose()?,
         form: kdl_prop_string(node, "form").unwrap_or_else(|| "full".to_owned()),
         placement: kdl_prop_string(node, "placement"),
-        pinned: node
-            .get("pinned")
-            .and_then(|entry| entry.value().as_bool())
-            .unwrap_or(false),
+        pinned: node.get("pinned").and_then(|entry| entry.value().as_bool()).unwrap_or(false),
         promotions: node
             .children()
             .map(|children| {
@@ -2724,41 +2179,21 @@ fn parse_kdl_region(node: &KdlNode) -> Result<SurfaceRegionDefinition, TemplateC
     })
 }
 
-fn parse_kdl_fragment(
-    node: &KdlNode,
-) -> Result<TemplateConfigFragmentDefinition, TemplateConfigError> {
+fn parse_kdl_fragment(node: &KdlNode) -> Result<TemplateConfigFragmentDefinition, TemplateConfigError> {
     let name = kdl_required_arg_string(node, 0, "fragment name")?;
-    let children = node.children().ok_or_else(|| {
-        TemplateConfigError::Validation(format!("fragment {name} must define a child block"))
-    })?;
-    let operations = children
-        .nodes()
-        .iter()
-        .map(parse_kdl_field_operation)
-        .collect::<Result<Vec<_>, _>>()?;
+    let children = node.children().ok_or_else(|| TemplateConfigError::Validation(format!("fragment {name} must define a child block")))?;
+    let operations = children.nodes().iter().map(parse_kdl_field_operation).collect::<Result<Vec<_>, _>>()?;
     Ok(TemplateConfigFragmentDefinition { name, operations })
 }
 
-fn parse_kdl_field_operation(
-    node: &KdlNode,
-) -> Result<TemplateConfigFieldOperation, TemplateConfigError> {
+fn parse_kdl_field_operation(node: &KdlNode) -> Result<TemplateConfigFieldOperation, TemplateConfigError> {
     match node.name().value() {
         "field" => Ok(TemplateConfigFieldOperation::set(parse_kdl_field(node)?)),
-        "remove" => Ok(TemplateConfigFieldOperation::Remove {
-            name: kdl_required_arg_string(node, 0, "field name")?,
-        }),
-        "use" => Ok(TemplateConfigFieldOperation::Use {
-            name: kdl_required_arg_string(node, 0, "fragment name")?,
-        }),
-        "control" => Ok(TemplateConfigFieldOperation::Control {
-            control: parse_kdl_control(node)?,
-        }),
-        "box" | "toggle" | "fill" | "dim" | "indent" => Ok(TemplateConfigFieldOperation::Chrome {
-            primitive: parse_kdl_chrome(node)?,
-        }),
-        other => Err(TemplateConfigError::Validation(format!(
-            "unsupported fragment/template operation: {other}"
-        ))),
+        "remove" => Ok(TemplateConfigFieldOperation::Remove { name: kdl_required_arg_string(node, 0, "field name")? }),
+        "use" => Ok(TemplateConfigFieldOperation::Use { name: kdl_required_arg_string(node, 0, "fragment name")? }),
+        "control" => Ok(TemplateConfigFieldOperation::Control { control: parse_kdl_control(node)? }),
+        "box" | "toggle" | "fill" | "dim" | "indent" => Ok(TemplateConfigFieldOperation::Chrome { primitive: parse_kdl_chrome(node)? }),
+        other => Err(TemplateConfigError::Validation(format!("unsupported fragment/template operation: {other}"))),
     }
 }
 
@@ -2769,17 +2204,11 @@ fn parse_kdl_control(node: &KdlNode) -> Result<TemplateControlSpec, TemplateConf
         "scroll-down" => TemplateControlKind::ScrollDown,
         "scroll-up" => TemplateControlKind::ScrollUp,
         "inspect-root" => TemplateControlKind::InspectRoot,
-        other => {
-            return Err(TemplateConfigError::Validation(format!(
-                "unsupported control kind: {other}"
-            )))
-        }
+        other => return Err(TemplateConfigError::Validation(format!("unsupported control kind: {other}"))),
     };
     let variable = kdl_prop_string(node, "variable");
     if kind == TemplateControlKind::DisplayVariable && variable.is_none() {
-        return Err(TemplateConfigError::Validation(
-            "display-variable control requires variable=\"...\"".to_owned(),
-        ));
+        return Err(TemplateConfigError::Validation("display-variable control requires variable=\"...\"".to_owned()));
     }
     if kind != TemplateControlKind::DisplayVariable && variable.is_some() {
         return Err(TemplateConfigError::Validation(format!(
@@ -2787,26 +2216,15 @@ fn parse_kdl_control(node: &KdlNode) -> Result<TemplateControlSpec, TemplateConf
             kdl_required_arg_string(node, 0, "control kind")?
         )));
     }
-    Ok(TemplateControlSpec {
-        kind,
-        variable,
-        glyph: kdl_prop_string(node, "glyph"),
-    })
+    Ok(TemplateControlSpec { kind, variable, glyph: kdl_prop_string(node, "glyph") })
 }
 
 fn parse_kdl_chrome(node: &KdlNode) -> Result<ChromePrimitive, TemplateConfigError> {
     match node.name().value() {
         "box" => {
-            let border = match kdl_prop_string(node, "border")
-                .as_deref()
-                .unwrap_or("single")
-            {
+            let border = match kdl_prop_string(node, "border").as_deref().unwrap_or("single") {
                 "single" => BoxBorderStyle::Single,
-                other => {
-                    return Err(TemplateConfigError::Validation(format!(
-                        "unsupported box border: {other}"
-                    )))
-                }
+                other => return Err(TemplateConfigError::Validation(format!("unsupported box border: {other}"))),
             };
             Ok(ChromePrimitive::Box { border })
         }
@@ -2817,39 +2235,24 @@ fn parse_kdl_chrome(node: &KdlNode) -> Result<ChromePrimitive, TemplateConfigErr
         "fill" => {
             let glyph = kdl_required_prop_string(node, "glyph")?;
             let mut chars = glyph.chars();
-            let glyph = chars.next().ok_or_else(|| {
-                TemplateConfigError::Validation("fill glyph cannot be empty".to_owned())
-            })?;
+            let glyph = chars.next().ok_or_else(|| TemplateConfigError::Validation("fill glyph cannot be empty".to_owned()))?;
             if chars.next().is_some() {
-                return Err(TemplateConfigError::Validation(
-                    "fill glyph must be exactly one character".to_owned(),
-                ));
+                return Err(TemplateConfigError::Validation("fill glyph must be exactly one character".to_owned()));
             }
             Ok(ChromePrimitive::Fill { glyph })
         }
-        "dim" => Ok(ChromePrimitive::Dim {
-            when: kdl_prop_string(node, "when"),
-        }),
+        "dim" => Ok(ChromePrimitive::Dim { when: kdl_prop_string(node, "when") }),
         "indent" => {
             let level = node
                 .get("level")
                 .and_then(|entry| entry.value().as_i64())
-                .ok_or_else(|| {
-                    TemplateConfigError::Validation(
-                        "indent node must include integer property level".to_owned(),
-                    )
-                })?;
+                .ok_or_else(|| TemplateConfigError::Validation("indent node must include integer property level".to_owned()))?;
             Ok(ChromePrimitive::Indent {
-                level: usize::try_from(level).map_err(|_| {
-                    TemplateConfigError::Validation(
-                        "indent level must be a non-negative integer".to_owned(),
-                    )
-                })?,
+                level: usize::try_from(level)
+                    .map_err(|_| TemplateConfigError::Validation("indent level must be a non-negative integer".to_owned()))?,
             })
         }
-        other => Err(TemplateConfigError::Validation(format!(
-            "unsupported chrome primitive: {other}"
-        ))),
+        other => Err(TemplateConfigError::Validation(format!("unsupported chrome primitive: {other}"))),
     }
 }
 
@@ -2874,9 +2277,7 @@ fn parse_kdl_node_variable(node: &KdlNode) -> Result<NodeVariableDefinition, Tem
     Ok(variable)
 }
 
-fn parse_kdl_variable_setter(
-    node: &KdlNode,
-) -> Result<TemplateVariableSetter, TemplateConfigError> {
+fn parse_kdl_variable_setter(node: &KdlNode) -> Result<TemplateVariableSetter, TemplateConfigError> {
     let setter = TemplateVariableSetter {
         name: kdl_required_arg_string(node, 0, "variable name")?,
         value: kdl_required_arg_string(node, 1, "variable value")?,
@@ -2885,9 +2286,7 @@ fn parse_kdl_variable_setter(
     Ok(setter)
 }
 
-fn parse_kdl_display_variable(
-    node: &KdlNode,
-) -> Result<TemplateVariableDefinition, TemplateConfigError> {
+fn parse_kdl_display_variable(node: &KdlNode) -> Result<TemplateVariableDefinition, TemplateConfigError> {
     let name = kdl_required_arg_string(node, 0, "variable name")?;
     let variable_type_name = kdl_required_prop_string(node, "type")?;
     let (variable_type, default) = match variable_type_name.as_str() {
@@ -2896,11 +2295,7 @@ fn parse_kdl_display_variable(
             crate::DisplayVariableValue::Bool(
                 node.get("default")
                     .and_then(|entry| entry.value().as_bool())
-                    .ok_or_else(|| {
-                        TemplateConfigError::Validation(format!(
-                            "variable {name} must have a boolean default"
-                        ))
-                    })?,
+                    .ok_or_else(|| TemplateConfigError::Validation(format!("variable {name} must have a boolean default")))?,
             ),
         ),
         "enum" => {
@@ -2916,16 +2311,9 @@ fn parse_kdl_display_variable(
                 })
                 .unwrap_or_default();
             let default = kdl_required_prop_string(node, "default")?;
-            (
-                TemplateVariableType::Enum { values },
-                crate::DisplayVariableValue::Enum(default),
-            )
+            (TemplateVariableType::Enum { values }, crate::DisplayVariableValue::Enum(default))
         }
-        other => {
-            return Err(TemplateConfigError::Validation(format!(
-                "unsupported variable type: {other}"
-            )))
-        }
+        other => return Err(TemplateConfigError::Validation(format!("unsupported variable type: {other}"))),
     };
     let variable = TemplateVariableDefinition {
         name,
@@ -2933,10 +2321,7 @@ fn parse_kdl_display_variable(
         default,
         label: kdl_required_prop_string(node, "label")?,
         icon: kdl_required_prop_string(node, "icon")?,
-        persist: node
-            .get("persist")
-            .and_then(|entry| entry.value().as_bool())
-            .unwrap_or(true),
+        persist: node.get("persist").and_then(|entry| entry.value().as_bool()).unwrap_or(true),
     };
     variable.validate()?;
     Ok(variable)
@@ -2954,102 +2339,64 @@ fn parse_kdl_field(node: &KdlNode) -> Result<TemplateConfigFieldSpec, TemplateCo
         vec![parse_kdl_value_source(node)?]
     };
     let explicit_class = kdl_prop_string(node, "class");
-    let class = explicit_class
-        .as_deref()
-        .map(parse_kdl_field_class)
-        .transpose()?
-        .unwrap_or(TemplateConfigFieldClass::Required);
+    let class = explicit_class.as_deref().map(parse_kdl_field_class).transpose()?.unwrap_or(TemplateConfigFieldClass::Required);
     // Class-less KDL predates explicit field classes and treated every field as priority 100.
-    let priority = if explicit_class.is_some() {
-        kdl_prop_i64(node, "priority")
-    } else {
-        kdl_prop_i64(node, "priority").or(Some(100))
-    };
+    let priority = if explicit_class.is_some() { kdl_prop_i64(node, "priority") } else { kdl_prop_i64(node, "priority").or(Some(100)) };
     Ok(TemplateConfigFieldSpec {
         name: kdl_required_arg_string(node, 0, "field name")?,
         section: kdl_optional_string(node, "section")?,
         structured_only: node
             .get("structured-only")
             .map(|entry| {
-                entry.value().as_bool().ok_or_else(|| {
-                    TemplateConfigError::Validation(format!(
-                        "structured-only must be boolean, got {}",
-                        entry.value()
-                    ))
-                })
+                entry
+                    .value()
+                    .as_bool()
+                    .ok_or_else(|| TemplateConfigError::Validation(format!("structured-only must be boolean, got {}", entry.value())))
             })
             .transpose()?
             .unwrap_or(false),
-        role: kdl_optional_string(node, "role")?
-            .map(|role| role.parse())
-            .transpose()?,
+        role: kdl_optional_string(node, "role")?.map(|role| role.parse()).transpose()?,
         label: kdl_optional_string(node, "label")?,
         class,
         priority,
         sources,
         prefix: kdl_prop_string(node, "prefix").unwrap_or_default(),
         suffix: kdl_prop_string(node, "suffix").unwrap_or_default(),
-        condition: parse_kdl_condition(
-            kdl_prop_string(node, "condition")
-                .as_deref()
-                .unwrap_or("always"),
-        )?,
+        condition: parse_kdl_condition(kdl_prop_string(node, "condition").as_deref().unwrap_or("always"))?,
     })
 }
 
-fn parse_kdl_value_source(
-    node: &KdlNode,
-) -> Result<TemplateConfigValueSource, TemplateConfigError> {
+fn parse_kdl_value_source(node: &KdlNode) -> Result<TemplateConfigValueSource, TemplateConfigError> {
     if let Some(source) = kdl_prop_string(node, "source") {
         return match source.as_str() {
             "active-tab-name" => Ok(TemplateConfigValueSource::ActiveTabName),
-            "tab-number" | "tab-number-from-position" => {
-                Ok(TemplateConfigValueSource::TabNumberFromPosition)
-            }
+            "tab-number" | "tab-number-from-position" => Ok(TemplateConfigValueSource::TabNumberFromPosition),
             "collapsed-toggle" => Ok(TemplateConfigValueSource::CollapsedToggle {
                 collapsed: kdl_required_prop_string(node, "collapsed")?,
                 expanded: kdl_required_prop_string(node, "expanded")?,
             }),
-            "metadata-text" => Ok(TemplateConfigValueSource::MetadataText {
-                key: kdl_required_prop_string(node, "key")?,
-            }),
-            "metadata-text-basename" => Ok(TemplateConfigValueSource::MetadataTextBasename {
-                key: kdl_required_prop_string(node, "key")?,
-            }),
-            "metadata-display" => Ok(TemplateConfigValueSource::MetadataDisplay {
-                key: kdl_required_prop_string(node, "key")?,
-            }),
-            "metadata-first-token" => Ok(TemplateConfigValueSource::MetadataFirstToken {
-                key: kdl_required_prop_string(node, "key")?,
-            }),
-            "literal" => Ok(TemplateConfigValueSource::Literal {
-                value: kdl_required_prop_string(node, "value")?,
-            }),
-            other => Err(TemplateConfigError::Validation(format!(
-                "unsupported value source: {other}"
-            ))),
+            "metadata-text" => Ok(TemplateConfigValueSource::MetadataText { key: kdl_required_prop_string(node, "key")? }),
+            "metadata-text-basename" => Ok(TemplateConfigValueSource::MetadataTextBasename { key: kdl_required_prop_string(node, "key")? }),
+            "metadata-display" => Ok(TemplateConfigValueSource::MetadataDisplay { key: kdl_required_prop_string(node, "key")? }),
+            "metadata-first-token" => Ok(TemplateConfigValueSource::MetadataFirstToken { key: kdl_required_prop_string(node, "key")? }),
+            "literal" => Ok(TemplateConfigValueSource::Literal { value: kdl_required_prop_string(node, "value")? }),
+            other => Err(TemplateConfigError::Validation(format!("unsupported value source: {other}"))),
         };
     }
     if let Some(key) = kdl_prop_string(node, "key") {
         return Ok(TemplateConfigValueSource::MetadataDisplay { key });
     }
-    if let Some(value) = kdl_prop_string(node, "literal").or_else(|| kdl_prop_string(node, "text"))
-    {
+    if let Some(value) = kdl_prop_string(node, "literal").or_else(|| kdl_prop_string(node, "text")) {
         return Ok(TemplateConfigValueSource::Literal { value });
     }
-    Err(TemplateConfigError::Validation(format!(
-        "{} node must include key, text, literal, or source",
-        node.name().value()
-    )))
+    Err(TemplateConfigError::Validation(format!("{} node must include key, text, literal, or source", node.name().value())))
 }
 
 fn parse_kdl_slot(value: &str) -> Result<TemplateConfigSlot, TemplateConfigError> {
     match value {
         "compact" => Ok(TemplateConfigSlot::Compact),
         "detail" => Ok(TemplateConfigSlot::Detail),
-        other => Err(TemplateConfigError::Validation(format!(
-            "unsupported template slot: {other}"
-        ))),
+        other => Err(TemplateConfigError::Validation(format!("unsupported template slot: {other}"))),
     }
 }
 
@@ -3057,9 +2404,7 @@ fn parse_kdl_node_kind(value: &str) -> Result<TemplateConfigNodeKind, TemplateCo
     match value {
         "tab" => Ok(TemplateConfigNodeKind::Tab),
         "entity" => Ok(TemplateConfigNodeKind::Entity),
-        other => Err(TemplateConfigError::Validation(format!(
-            "unsupported template node-kind: {other}"
-        ))),
+        other => Err(TemplateConfigError::Validation(format!("unsupported template node-kind: {other}"))),
     }
 }
 
@@ -3067,9 +2412,7 @@ fn parse_kdl_condition(value: &str) -> Result<TemplateConfigFieldCondition, Temp
     match value {
         "always" => Ok(TemplateConfigFieldCondition::Always),
         "collapsed" => Ok(TemplateConfigFieldCondition::Collapsed),
-        other => Err(TemplateConfigError::Validation(format!(
-            "unsupported field condition: {other}"
-        ))),
+        other => Err(TemplateConfigError::Validation(format!("unsupported field condition: {other}"))),
     }
 }
 
@@ -3078,25 +2421,14 @@ fn parse_kdl_field_class(value: &str) -> Result<TemplateConfigFieldClass, Templa
         "required" => Ok(TemplateConfigFieldClass::Required),
         "optional" => Ok(TemplateConfigFieldClass::Optional),
         "priority" => Ok(TemplateConfigFieldClass::Priority),
-        other => Err(TemplateConfigError::Validation(format!(
-            "unsupported field class: {other}"
-        ))),
+        other => Err(TemplateConfigError::Validation(format!("unsupported field class: {other}"))),
     }
 }
 
-fn kdl_required_arg_string(
-    node: &KdlNode,
-    index: usize,
-    label: &str,
-) -> Result<String, TemplateConfigError> {
+fn kdl_required_arg_string(node: &KdlNode, index: usize, label: &str) -> Result<String, TemplateConfigError> {
     kdl_node_arg_string(node, index)
         .map(str::to_owned)
-        .ok_or_else(|| {
-            TemplateConfigError::Validation(format!(
-                "{} node must include string argument for {label}",
-                node.name().value()
-            ))
-        })
+        .ok_or_else(|| TemplateConfigError::Validation(format!("{} node must include string argument for {label}", node.name().value())))
 }
 
 fn kdl_node_arg_string(node: &KdlNode, index: usize) -> Option<&str> {
@@ -3104,30 +2436,20 @@ fn kdl_node_arg_string(node: &KdlNode, index: usize) -> Option<&str> {
 }
 
 fn kdl_required_prop_string(node: &KdlNode, key: &str) -> Result<String, TemplateConfigError> {
-    kdl_prop_string(node, key).ok_or_else(|| {
-        TemplateConfigError::Validation(format!(
-            "{} node must include string property {key}",
-            node.name().value()
-        ))
-    })
+    kdl_prop_string(node, key)
+        .ok_or_else(|| TemplateConfigError::Validation(format!("{} node must include string property {key}", node.name().value())))
 }
 
 fn kdl_optional_string(node: &KdlNode, key: &str) -> Result<Option<String>, TemplateConfigError> {
     node.get(key)
         .map(|entry| {
-            entry
-                .value()
-                .as_string()
-                .map(str::to_owned)
-                .ok_or_else(|| TemplateConfigError::Validation(format!("{key} must be a string")))
+            entry.value().as_string().map(str::to_owned).ok_or_else(|| TemplateConfigError::Validation(format!("{key} must be a string")))
         })
         .transpose()
 }
 
 fn kdl_prop_string(node: &KdlNode, key: &str) -> Option<String> {
-    node.get(key)
-        .and_then(|entry| entry.value().as_string())
-        .map(str::to_owned)
+    node.get(key).and_then(|entry| entry.value().as_string()).map(str::to_owned)
 }
 
 fn kdl_prop_i64(node: &KdlNode, key: &str) -> Option<i64> {
@@ -3136,13 +2458,9 @@ fn kdl_prop_i64(node: &KdlNode, key: &str) -> Option<i64> {
 
 fn kdl_u32(value: &KdlValue) -> Result<u32, TemplateConfigError> {
     let Some(value) = value.as_i64() else {
-        return Err(TemplateConfigError::Validation(
-            "version must be an integer".to_owned(),
-        ));
+        return Err(TemplateConfigError::Validation("version must be an integer".to_owned()));
     };
-    u32::try_from(value).map_err(|_| {
-        TemplateConfigError::Validation(format!("version must be a positive u32: {value}"))
-    })
+    u32::try_from(value).map_err(|_| TemplateConfigError::Validation(format!("version must be a positive u32: {value}")))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3170,9 +2488,7 @@ impl Error for TemplateConfigError {}
 mod tests {
     use super::*;
 
-    fn entity_context<'a>(
-        metadata: &'a BTreeMap<String, MetadataValue>,
-    ) -> TemplateConfigMatchContext<'a> {
+    fn entity_context<'a>(metadata: &'a BTreeMap<String, MetadataValue>) -> TemplateConfigMatchContext<'a> {
         TemplateConfigMatchContext {
             slot: TemplateConfigSlot::Compact,
             node_kind: TemplateConfigNodeKind::Entity,
@@ -3197,35 +2513,18 @@ mod tests {
         )
         .expect("templates parse");
         let catalog = TemplateConfigCatalog::from_config(config);
-        let convention_metadata = BTreeMap::from([(
-            "entity.kind".to_owned(),
-            MetadataValue::Text("issue".to_owned()),
-        )]);
+        let convention_metadata = BTreeMap::from([("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned()))]);
         let declared_metadata = BTreeMap::from([
-            (
-                "entity.kind".to_owned(),
-                MetadataValue::Text("issue".to_owned()),
-            ),
-            (
-                "presentation.template".to_owned(),
-                MetadataValue::Text("special/compact".to_owned()),
-            ),
+            ("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned())),
+            ("presentation.template".to_owned(), MetadataValue::Text("special/compact".to_owned())),
         ]);
 
         assert_eq!(
-            catalog
-                .resolve(entity_context(&convention_metadata))
-                .expect("resolution succeeds")
-                .expect("convention template")
-                .name,
+            catalog.resolve(entity_context(&convention_metadata)).expect("resolution succeeds").expect("convention template").name,
             "issue/compact"
         );
         assert_eq!(
-            catalog
-                .resolve(entity_context(&declared_metadata))
-                .expect("resolution succeeds")
-                .expect("declared template")
-                .name,
+            catalog.resolve(entity_context(&declared_metadata)).expect("resolution succeeds").expect("declared template").name,
             "special/compact"
         );
         assert!(parse_template_config_kdl(
@@ -3245,35 +2544,17 @@ mod tests {
     fn novel_entity_kind_uses_bundled_generic_form_fallback() {
         let catalog = TemplateConfigCatalog::default();
         let metadata = BTreeMap::from([
-            (
-                "entity.kind".to_owned(),
-                MetadataValue::Text("deployment".to_owned()),
-            ),
-            (
-                "entity.id".to_owned(),
-                MetadataValue::Text("prod/api".to_owned()),
-            ),
-            (
-                "display.label".to_owned(),
-                MetadataValue::Text("api".to_owned()),
-            ),
+            ("entity.kind".to_owned(), MetadataValue::Text("deployment".to_owned())),
+            ("entity.id".to_owned(), MetadataValue::Text("prod/api".to_owned())),
+            ("display.label".to_owned(), MetadataValue::Text("api".to_owned())),
         ]);
 
-        let resolved = catalog
-            .resolve(entity_context(&metadata))
-            .expect("resolution succeeds")
-            .expect("generic entity template resolves");
+        let resolved = catalog.resolve(entity_context(&metadata)).expect("resolution succeeds").expect("generic entity template resolves");
 
         assert_eq!(resolved.name, "deployment/compact");
         assert!(resolved.is_bundled);
-        assert_eq!(
-            resolved.render_fields(entity_context(&metadata))[0].value,
-            "api"
-        );
-        assert!(resolved
-            .chain
-            .iter()
-            .any(|entry| entry.name == "flotilla/entity/compact"));
+        assert_eq!(resolved.render_fields(entity_context(&metadata))[0].value, "api");
+        assert!(resolved.chain.iter().any(|entry| entry.name == "flotilla/entity/compact"));
     }
 
     #[test]
@@ -3287,20 +2568,11 @@ mod tests {
         )
         .expect("user template parses");
         let catalog = TemplateConfigCatalog::with_bundled_defaults(user);
-        let metadata = BTreeMap::from([(
-            "entity.kind".to_owned(),
-            MetadataValue::Text("deployment".to_owned()),
-        )]);
+        let metadata = BTreeMap::from([("entity.kind".to_owned(), MetadataValue::Text("deployment".to_owned()))]);
 
-        let resolved = catalog
-            .resolve(entity_context(&metadata))
-            .expect("resolution succeeds")
-            .expect("user template resolves");
+        let resolved = catalog.resolve(entity_context(&metadata)).expect("resolution succeeds").expect("user template resolves");
 
-        assert_eq!(
-            resolved.render_fields(entity_context(&metadata))[0].value,
-            "custom deployment"
-        );
+        assert_eq!(resolved.render_fields(entity_context(&metadata))[0].value, "custom deployment");
         assert!(!resolved.is_bundled);
     }
 
@@ -3332,36 +2604,16 @@ mod tests {
             TemplateConfigLayer::user("user.kdl", user),
             TemplateConfigLayer::bundled("templates/flotilla-default.kdl", bundled),
         ]);
-        let metadata = BTreeMap::from([(
-            "entity.kind".to_owned(),
-            MetadataValue::Text("issue".to_owned()),
-        )]);
+        let metadata = BTreeMap::from([("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned()))]);
 
-        let resolved = catalog
-            .resolve(entity_context(&metadata))
-            .expect("resolution succeeds")
-            .expect("template resolves");
+        let resolved = catalog.resolve(entity_context(&metadata)).expect("resolution succeeds").expect("template resolves");
 
         assert_eq!(resolved.name, "issue/compact");
-        assert_eq!(
-            resolved
-                .fields
-                .iter()
-                .map(|field| field.spec.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["label", "status"]
-        );
+        assert_eq!(resolved.fields.iter().map(|field| field.spec.name.as_str()).collect::<Vec<_>>(), vec!["label", "status"]);
         assert_eq!(resolved.fields[0].origin.source, "user.kdl");
+        assert_eq!(resolved.fields[1].origin.source, "templates/flotilla-default.kdl");
         assert_eq!(
-            resolved.fields[1].origin.source,
-            "templates/flotilla-default.kdl"
-        );
-        assert_eq!(
-            resolved
-                .chain
-                .iter()
-                .map(|entry| entry.name.as_str())
-                .collect::<Vec<_>>(),
+            resolved.chain.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>(),
             vec!["issue/compact", "flotilla/issue/compact"]
         );
         let dump = resolved.dump_kdl();
@@ -3398,14 +2650,7 @@ mod tests {
             .expect("placement template resolves")
             .expect("placement template exists");
 
-        assert_eq!(
-            resolved
-                .fields
-                .iter()
-                .map(|field| field.spec.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["inherited", "own"]
-        );
+        assert_eq!(resolved.fields.iter().map(|field| field.spec.name.as_str()).collect::<Vec<_>>(), vec!["inherited", "own"]);
         assert_eq!(resolved.controls.len(), 1);
         assert_eq!(resolved.setters[0].setter.name, "child-layout");
         assert_eq!(resolved.setters[0].setter.value, "strip");
@@ -3454,34 +2699,16 @@ mod tests {
             TemplateConfigLayer::fleet("fleet.kdl", fleet),
         ]);
         let project_a = BTreeMap::from([
-            (
-                "entity.kind".to_owned(),
-                MetadataValue::Text("issue".to_owned()),
-            ),
-            (
-                "flotilla.project".to_owned(),
-                MetadataValue::Text("project-a".to_owned()),
-            ),
+            ("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned())),
+            ("flotilla.project".to_owned(), MetadataValue::Text("project-a".to_owned())),
         ]);
         let project_b = BTreeMap::from([
-            (
-                "entity.kind".to_owned(),
-                MetadataValue::Text("issue".to_owned()),
-            ),
-            (
-                "flotilla.project".to_owned(),
-                MetadataValue::Text("project-b".to_owned()),
-            ),
+            ("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned())),
+            ("flotilla.project".to_owned(), MetadataValue::Text("project-b".to_owned())),
         ]);
 
-        let a = catalog
-            .resolve(entity_context(&project_a))
-            .expect("project A resolves")
-            .expect("project A template");
-        let b = catalog
-            .resolve(entity_context(&project_b))
-            .expect("project B resolves")
-            .expect("project B template");
+        let a = catalog.resolve(entity_context(&project_a)).expect("project A resolves").expect("project A template");
+        let b = catalog.resolve(entity_context(&project_b)).expect("project B resolves").expect("project B template");
 
         assert_eq!(a.fields[0].origin.layer, TemplateConfigLayerKind::Project);
         assert_eq!(a.fields[0].origin.membership.as_deref(), Some("project-a"));
@@ -3511,16 +2738,8 @@ placement "attention" {
         assert_eq!(
             loop_definition.predicates,
             vec![
-                PlacementPredicate {
-                    key: "entity.kind".to_owned(),
-                    value: Some("vessel".to_owned()),
-                    of: None,
-                },
-                PlacementPredicate {
-                    key: "status.attention".to_owned(),
-                    value: Some("true".to_owned()),
-                    of: None,
-                },
+                PlacementPredicate { key: "entity.kind".to_owned(), value: Some("vessel".to_owned()), of: None },
+                PlacementPredicate { key: "status.attention".to_owned(), value: Some("true".to_owned()), of: None },
             ],
             "kind= is sugar for an entity.kind equality"
         );
@@ -3534,28 +2753,23 @@ placement "attention" {
     // the forward selection rather than silently replacing it with a broad loop.
     #[test]
     fn forward_loop_json_names_round_trip() {
-        let config = parse_template_config_kdl(r#"
+        let config = parse_template_config_kdl(
+            r#"
             placement "tree" { for "role" kind="role" { for "attempt" kind="convoy" in="attempts" of="role"; }; }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let query = &config.placements[0].loops[0].loops[0];
         let json = serde_json::to_value(query).unwrap();
         assert_eq!(json["in"], "attempts");
         assert_eq!(json["of"], "role");
         assert!(json.get("in-key").is_none());
-        assert_eq!(
-            &serde_json::from_value::<PlacementLoop>(json).unwrap(),
-            query
-        );
+        assert_eq!(&serde_json::from_value::<PlacementLoop>(json).unwrap(), query);
     }
 
     #[test]
     fn forward_loop_rejects_unpaired_or_unbound_sources() {
-        for properties in [
-            r#"in="attempts""#,
-            r#"of="role""#,
-            r#"in="attempts" of="missing""#,
-            r#"in="attempts" of="attempt""#,
-        ] {
+        for properties in [r#"in="attempts""#, r#"of="role""#, r#"in="attempts" of="missing""#, r#"in="attempts" of="attempt""#] {
             let input = format!(
                 r#"
                 placement "tree" {{
@@ -3639,10 +2853,7 @@ placement "attention" {
         // which is what makes nested loops quadratic, so each is a config error.
         for (predicate, expected) in [
             (r#"match "status.attention" exists=true"#, "existence test"),
-            (
-                r#"match "flotilla.project" of="project""#,
-                "unbound enclosing loop",
-            ),
+            (r#"match "flotilla.project" of="project""#, "unbound enclosing loop"),
             (r#"match "status.attention""#, "equality against a constant"),
         ] {
             let error = parse_template_config_kdl(&format!(
@@ -3650,10 +2861,7 @@ placement "attention" {
             ))
             .expect_err("unindexable predicate must be refused");
             let message = format!("{error:?}");
-            assert!(
-                message.contains(expected),
-                "diagnostic for {predicate} should explain {expected}: {message}"
-            );
+            assert!(message.contains(expected), "diagnostic for {predicate} should explain {expected}: {message}");
         }
     }
 
@@ -3774,38 +2982,19 @@ region "attention" root-template="r" form="full"
             TemplateConfigLayer::user("user.kdl", empty()),
         ]);
         let metadata = BTreeMap::from([
-            (
-                "vcs.repo".to_owned(),
-                MetadataValue::Text("org/repo".to_owned()),
-            ),
-            (
-                "flotilla.project".to_owned(),
-                MetadataValue::Text("project-a".to_owned()),
-            ),
+            ("vcs.repo".to_owned(), MetadataValue::Text("org/repo".to_owned())),
+            ("flotilla.project".to_owned(), MetadataValue::Text("project-a".to_owned())),
         ]);
 
         assert_eq!(
-            catalog
-                .layer_stack(&metadata)
-                .iter()
-                .map(|layer| layer.origin.source.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "user.kdl",
-                "repo.kdl",
-                "project.kdl",
-                "fleet.kdl",
-                "bundled.kdl",
-            ]
+            catalog.layer_stack(&metadata).iter().map(|layer| layer.origin.source.as_str()).collect::<Vec<_>>(),
+            vec!["user.kdl", "repo.kdl", "project.kdl", "fleet.kdl", "bundled.kdl",]
         );
     }
 
     #[test]
     fn inheritance_failures_are_visible_resolution_errors() {
-        let metadata = BTreeMap::from([(
-            "entity.kind".to_owned(),
-            MetadataValue::Text("issue".to_owned()),
-        )]);
+        let metadata = BTreeMap::from([("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned()))]);
 
         let unknown_parent = TemplateConfigCatalog::from_config(
             parse_template_config_kdl(
@@ -3817,10 +3006,7 @@ region "attention" root-template="r" form="full"
             )
             .expect("unknown parent is a resolution concern"),
         );
-        assert!(matches!(
-            unknown_parent.resolve(entity_context(&metadata)),
-            Err(TemplateConfigResolveError::UnknownParent { .. })
-        ));
+        assert!(matches!(unknown_parent.resolve(entity_context(&metadata)), Err(TemplateConfigResolveError::UnknownParent { .. })));
 
         let unknown_fragment = TemplateConfigCatalog::from_config(
             parse_template_config_kdl(
@@ -3832,10 +3018,7 @@ region "attention" root-template="r" form="full"
             )
             .expect("unknown fragment is a resolution concern"),
         );
-        assert!(matches!(
-            unknown_fragment.resolve(entity_context(&metadata)),
-            Err(TemplateConfigResolveError::UnknownFragment { .. })
-        ));
+        assert!(matches!(unknown_fragment.resolve(entity_context(&metadata)), Err(TemplateConfigResolveError::UnknownFragment { .. })));
 
         let cycle = TemplateConfigCatalog::from_config(
             parse_template_config_kdl(
@@ -3846,10 +3029,7 @@ region "attention" root-template="r" form="full"
             )
             .expect("inheritance cycle is a resolution concern"),
         );
-        assert!(matches!(
-            cycle.resolve(entity_context(&metadata)),
-            Err(TemplateConfigResolveError::TemplateCycle(_))
-        ));
+        assert!(matches!(cycle.resolve(entity_context(&metadata)), Err(TemplateConfigResolveError::TemplateCycle(_))));
 
         let self_cycle = TemplateConfigCatalog::from_config(
             parse_template_config_kdl(
@@ -3913,10 +3093,7 @@ region "attention" root-template="r" form="full"
             )
             .expect("binding mismatch is a resolution concern"),
         );
-        assert!(matches!(
-            binding_mismatch.resolve(entity_context(&metadata)),
-            Err(TemplateConfigResolveError::BindingMismatch { .. })
-        ));
+        assert!(matches!(binding_mismatch.resolve(entity_context(&metadata)), Err(TemplateConfigResolveError::BindingMismatch { .. })));
     }
 
     #[test]
@@ -3931,22 +3108,14 @@ region "attention" root-template="r" form="full"
         )
         .expect_err("duplicate field names make override intent ambiguous");
 
-        assert!(error
-            .to_string()
-            .contains("template issue/compact has duplicate field name: label"));
+        assert!(error.to_string().contains("template issue/compact has duplicate field name: label"));
     }
 
     // Hints round-trip independently of content and preserve legacy absence.
     // Explicit generator covers absent hints, opaque hosts, signed boundaries and ties.
     #[test]
     fn region_hints_round_trip_and_validation() {
-        for host in [
-            None,
-            Some("sidebar"),
-            Some("future-host"),
-            Some(" sidebar "),
-            Some("host\"\\name"),
-        ] {
+        for host in [None, Some("sidebar"), Some("future-host"), Some(" sidebar "), Some("host\"\\name")] {
             for order in [
                 None,
                 // kdl 4 parses the magnitude before the sign, so i64::MIN
@@ -3959,13 +3128,13 @@ region "attention" root-template="r" form="full"
             ] {
                 let attributes = format!(
                     "{}{}",
-                    host.map(|h| format!(" default-host={}", KdlValue::String(h.to_owned())))
-                        .unwrap_or_default(),
+                    host.map(|h| format!(" default-host={}", KdlValue::String(h.to_owned()))).unwrap_or_default(),
                     order.map(|o| format!(" order={o}")).unwrap_or_default()
                 );
                 let config = parse_template_config_kdl(&format!(
                     "region \"a\" root-template=\"a\"{attributes}\nregion \"b\" root-template=\"b\"{attributes}"
-                )).unwrap();
+                ))
+                .unwrap();
                 assert_eq!(config.regions[0].default_host.as_deref(), host);
                 assert_eq!(config.regions[0].order, order);
                 assert_eq!(config.regions[1].name, "b");
@@ -3981,12 +3150,10 @@ region "attention" root-template="r" form="full"
         ))
         .unwrap();
         assert_eq!(min.regions[0].order, Some(i64::MIN));
-        assert!(parse_template_config_json(
-            r#"{"regions":[{"name":"named","root-template":"a","form":"full","default-host":" "}]}"#
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("region named default-host"));
+        assert!(parse_template_config_json(r#"{"regions":[{"name":"named","root-template":"a","form":"full","default-host":" "}]}"#)
+            .unwrap_err()
+            .to_string()
+            .contains("region named default-host"));
         for (orders, expected) in [
             (vec![None, None, None], vec![0, 1, 2]),
             (vec![Some(20), None, Some(10)], vec![1, 2, 0]),
@@ -4000,29 +3167,16 @@ region "attention" root-template="r" form="full"
             assert_eq!(indices, expected);
         }
         // Identity errors precede hint errors when both declarations are invalid.
-        assert!(
-            parse_template_config_kdl(r#"region "" root-template="a" default-host="""#)
-                .unwrap_err()
-                .to_string()
-                .contains("region name cannot be empty")
-        );
-        for attributes in [
-            "order=1.5",
-            "order=\"10\"",
-            "order=true",
-            "default-host=\"\"",
-            "default-host=\"  \"",
-            "default-host=10",
-        ] {
-            assert!(parse_template_config_kdl(&format!(
-                "region \"a\" root-template=\"a\" {attributes}"
-            ))
-            .is_err());
+        assert!(parse_template_config_kdl(r#"region "" root-template="a" default-host="""#)
+            .unwrap_err()
+            .to_string()
+            .contains("region name cannot be empty"));
+        for attributes in ["order=1.5", "order=\"10\"", "order=true", "default-host=\"\"", "default-host=\"  \"", "default-host=10"] {
+            assert!(parse_template_config_kdl(&format!("region \"a\" root-template=\"a\" {attributes}")).is_err());
         }
-        assert!(serde_json::from_str::<SurfaceRegionDefinition>(
-            r#"{"name":"a","root-template":"a","form":"full","unexpected":true}"#
-        )
-        .is_err());
+        assert!(
+            serde_json::from_str::<SurfaceRegionDefinition>(r#"{"name":"a","root-template":"a","form":"full","unexpected":true}"#).is_err()
+        );
     }
 
     #[test]
@@ -4035,14 +3189,7 @@ region "attention" root-template="r" form="full"
         )
         .expect("regions parse");
 
-        assert_eq!(
-            config
-                .regions
-                .iter()
-                .map(|region| region.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["attention", "tree"]
-        );
+        assert_eq!(config.regions.iter().map(|region| region.name.as_str()).collect::<Vec<_>>(), vec!["attention", "tree"]);
         assert_eq!(config.regions[0].form, "expanded");
         assert!(config.regions[1].pinned);
     }
@@ -4065,33 +3212,16 @@ region "attention" root-template="r" form="full"
         .expect("node variables parse");
         let catalog = TemplateConfigCatalog::from_config(config);
         let metadata = BTreeMap::from([
-            (
-                "entity.kind".to_owned(),
-                MetadataValue::Text("issue".to_owned()),
-            ),
-            (
-                "var.child-layout".to_owned(),
-                MetadataValue::Text("strip".to_owned()),
-            ),
+            ("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned())),
+            ("var.child-layout".to_owned(), MetadataValue::Text("strip".to_owned())),
         ]);
 
         assert_eq!(catalog.variables(&metadata)[0].definition.default, "cards");
-        assert_eq!(
-            catalog.config_variable_setters(&metadata)[0].setter.value,
-            "strip"
-        );
-        let resolved = catalog
-            .resolve(entity_context(&metadata))
-            .expect("template resolves")
-            .expect("template is present");
+        assert_eq!(catalog.config_variable_setters(&metadata)[0].setter.value, "strip");
+        let resolved = catalog.resolve(entity_context(&metadata)).expect("template resolves").expect("template is present");
         assert_eq!(resolved.setters[0].setter.value, "cards");
-        assert_eq!(
-            resolved.render_fields(entity_context(&metadata))[0].value,
-            "strip"
-        );
-        assert!(resolved
-            .dump_kdl()
-            .contains("set \"child-layout\" \"cards\""));
+        assert_eq!(resolved.render_fields(entity_context(&metadata))[0].value, "strip");
+        assert!(resolved.dump_kdl().contains("set \"child-layout\" \"cards\""));
     }
 
     #[test]
@@ -4107,9 +3237,7 @@ region "attention" root-template="r" form="full"
         )
         .expect_err("disallowed setter must fail validation");
 
-        assert!(error
-            .to_string()
-            .contains("config sets variable child-layout to disallowed value grid"));
+        assert!(error.to_string().contains("config sets variable child-layout to disallowed value grid"));
     }
 
     #[test]
@@ -4134,21 +3262,16 @@ region "attention" root-template="r" form="full"
             TemplateConfigLayer::project("flotilla-org/andamento", "project.kdl", project),
             TemplateConfigLayer::bundled("bundled.kdl", bundled),
         ]);
-        let metadata = BTreeMap::from([(
-            "flotilla.project".to_owned(),
-            MetadataValue::Text("flotilla-org/andamento".to_owned()),
-        )]);
+        let metadata = BTreeMap::from([("flotilla.project".to_owned(), MetadataValue::Text("flotilla-org/andamento".to_owned()))]);
 
         let scope = catalog.variable_scope(&metadata);
 
         assert!(scope.setters.is_empty());
-        assert!(scope.warnings.iter().any(|warning| {
-            warning.contains("child-layout") && warning.contains("disallowed value compact-strip")
-        }));
         assert!(scope
             .warnings
             .iter()
-            .any(|warning| warning.contains("undeclared node variable typo-variable")));
+            .any(|warning| { warning.contains("child-layout") && warning.contains("disallowed value compact-strip") }));
+        assert!(scope.warnings.iter().any(|warning| warning.contains("undeclared node variable typo-variable")));
     }
 
     #[test]
@@ -4179,14 +3302,7 @@ region "attention" root-template="r" form="full"
         .expect("regions parse");
         let catalog = TemplateConfigCatalog::with_bundled_defaults(config);
 
-        assert_eq!(
-            catalog
-                .regions()
-                .iter()
-                .map(|region| region.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["tree-first", "attention-second"]
-        );
+        assert_eq!(catalog.regions().iter().map(|region| region.name.as_str()).collect::<Vec<_>>(), vec!["tree-first", "attention-second"]);
     }
 
     #[test]
@@ -4205,10 +3321,7 @@ region "attention" root-template="r" form="full"
         )
         .expect("a section template does not require a loop or field");
         let catalog = TemplateConfigCatalog::from_config(config);
-        let metadata = BTreeMap::from([(
-            "presentation.template".to_owned(),
-            MetadataValue::Text("region/controls".to_owned()),
-        )]);
+        let metadata = BTreeMap::from([("presentation.template".to_owned(), MetadataValue::Text("region/controls".to_owned()))]);
         let resolved = catalog
             .resolve(TemplateConfigMatchContext {
                 slot: TemplateConfigSlot::Compact,
@@ -4224,9 +3337,7 @@ region "attention" root-template="r" form="full"
         assert!(resolved.fields.is_empty());
         assert_eq!(resolved.controls.len(), 5);
         assert_eq!(resolved.render_ready().controls, resolved.controls);
-        assert!(resolved
-            .dump_kdl()
-            .contains("control \"display-variable\" variable=\"show-issues\""));
+        assert!(resolved.dump_kdl().contains("control \"display-variable\" variable=\"show-issues\""));
     }
 }
 
@@ -4238,12 +3349,17 @@ mod compatibility_tests {
     // flat output remains identical, including labels and punctuation.
     #[test]
     fn structured_only_does_not_change_flat_fields() {
-        let catalog = TemplateConfigCatalog::from_config(parse_template_config_kdl(r#"
+        let catalog = TemplateConfigCatalog::from_config(
+            parse_template_config_kdl(
+                r#"
             template "item/detail" slot="detail" node-kind="entity" {
                 field "legacy" role="fact" label="Label" literal="value" prefix="Prefix: " suffix="!"
                 field "identity" structured-only=true role="identity" key="entity.id"
             }
-        "#).unwrap());
+        "#,
+            )
+            .unwrap(),
+        );
         let facts = BTreeMap::from([
             ("entity.kind".into(), MetadataValue::Text("item".into())),
             ("entity.id".into(), MetadataValue::Text("id".into())),
@@ -4261,21 +3377,9 @@ mod compatibility_tests {
         assert_eq!(flat.len(), 1);
         assert_eq!(flat[0].value, "Prefix: value!");
         let decoded = parse_template_config_kdl(&resolved.dump_kdl()).unwrap();
-        let TemplateConfigFieldOperation::Set { field } = &decoded.templates[0].operations[1]
-        else {
-            panic!("field expected")
-        };
+        let TemplateConfigFieldOperation::Set { field } = &decoded.templates[0].operations[1] else { panic!("field expected") };
         assert!(field.structured_only);
-        assert_eq!(
-            crate::detail::resolve_field(field, context, &BTreeMap::new())
-                .unwrap()
-                .text
-                .as_deref(),
-            Some("id")
-        );
-        assert!(parse_template_config_kdl(
-            r#"template "item/detail" { field "x" structured-only="true" literal="x"; }"#
-        )
-        .is_err());
+        assert_eq!(crate::detail::resolve_field(field, context, &BTreeMap::new()).unwrap().text.as_deref(), Some("id"));
+        assert!(parse_template_config_kdl(r#"template "item/detail" { field "x" structured-only="true" literal="x"; }"#).is_err());
     }
 }

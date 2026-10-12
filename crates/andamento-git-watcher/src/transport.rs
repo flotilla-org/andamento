@@ -11,12 +11,7 @@ use std::{
 pub trait Transport {
     fn observed(&mut self) -> io::Result<Vec<PathBuf>>;
     fn publish(&mut self, patch: &Value) -> io::Result<()>;
-    fn reconcile(
-        &mut self,
-        _trees: &[Worktree],
-        _observed: &[PathBuf],
-        _ttl_ms: u64,
-    ) -> io::Result<()> {
+    fn reconcile(&mut self, _trees: &[Worktree], _observed: &[PathBuf], _ttl_ms: u64) -> io::Result<()> {
         Ok(())
     }
 }
@@ -43,36 +38,14 @@ impl Wheelhouse {
         // and status errors; no shell interpolation or network fallback is used.
         let mut command = Command::new("curl");
         command
-            .args([
-                "--silent",
-                "--show-error",
-                "--fail-with-body",
-                "--max-time",
-                "6",
-                "--noproxy",
-                "*",
-                "--unix-socket",
-            ])
+            .args(["--silent", "--show-error", "--fail-with-body", "--max-time", "6", "--noproxy", "*", "--unix-socket"])
             .arg(&self.socket)
             .arg(format!("http://localhost{route}"));
         if body.is_some() {
-            command.args([
-                "--header",
-                "Content-Type: application/json",
-                "--data-binary",
-                "@-",
-            ]);
+            command.args(["--header", "Content-Type: application/json", "--data-binary", "@-"]);
         }
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let written = if let Some(body) = body {
-            serde_json::to_writer(child.stdin.take().unwrap(), body)
-        } else {
-            Ok(())
-        };
+        let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        let written = if let Some(body) = body { serde_json::to_writer(child.stdin.take().unwrap(), body) } else { Ok(()) };
         // Always reap curl. If it rejected the request before consuming stdin,
         // its HTTP/socket diagnostic is more useful than our broken pipe.
         let output = child.wait_with_output()?;
@@ -93,22 +66,14 @@ impl Wheelhouse {
 }
 
 pub fn workdirs(value: &Value) -> io::Result<Vec<PathBuf>> {
-    let entries = value
-        .get("workdirs")
-        .and_then(Value::as_array)
-        .ok_or_else(|| io::Error::other("expected workdirs array"))?;
+    let entries = value.get("workdirs").and_then(Value::as_array).ok_or_else(|| io::Error::other("expected workdirs array"))?;
     let mut paths = Vec::new();
     for entry in entries {
         let path = entry
             .get("live_cwd")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
-            .or_else(|| {
-                entry
-                    .get("cwd")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty())
-            });
+            .or_else(|| entry.get("cwd").and_then(Value::as_str).filter(|s| !s.is_empty()));
         if let Some(path) = path {
             paths.push(PathBuf::from(path));
         }
@@ -119,9 +84,7 @@ pub fn workdirs(value: &Value) -> io::Result<Vec<PathBuf>> {
 }
 impl Transport for Wheelhouse {
     fn observed(&mut self) -> io::Result<Vec<PathBuf>> {
-        workdirs(&serde_json::from_str(
-            &self.request("/v1/observed/workdirs", None)?,
-        )?)
+        workdirs(&serde_json::from_str(&self.request("/v1/observed/workdirs", None)?)?)
     }
     fn publish(&mut self, patch: &Value) -> io::Result<()> {
         self.request("/v1/metadata/patch", Some(patch)).map(|_| ())
@@ -137,9 +100,7 @@ impl Zellij {
     fn run(&self, args: &[&str]) -> io::Result<String> {
         let output = Command::new(&self.bin).args(args).output()?;
         if !output.status.success() {
-            return Err(io::Error::other(
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            ));
+            return Err(io::Error::other(String::from_utf8_lossy(&output.stderr).into_owned()));
         }
         String::from_utf8(output.stdout).map_err(io::Error::other)
     }
@@ -160,16 +121,11 @@ pub fn observed_identities(output: &str) -> io::Result<Vec<PathBuf>> {
     // Broadcast pipes can concatenate multiple plugin responses.
     for value in serde_json::Deserializer::from_str(output).into_iter::<Value>() {
         let value = value?;
-        let entries = value
-            .as_array()
-            .ok_or_else(|| io::Error::other("expected observed identities array"))?;
+        let entries = value.as_array().ok_or_else(|| io::Error::other("expected observed identities array"))?;
         for entry in entries {
             let identity = &entry["identity"];
             if identity["key"] == "zellij.pane.cwd" && identity["value"]["type"] == "text" {
-                if let Some(path) = identity["value"]["value"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                {
+                if let Some(path) = identity["value"]["value"].as_str().filter(|s| !s.is_empty()) {
                     paths.push(PathBuf::from(path));
                 }
             }
@@ -185,15 +141,9 @@ impl Transport for Zellij {
         observed_identities(&self.pipe("andamento-observed-identities", None)?)
     }
     fn publish(&mut self, patch: &Value) -> io::Result<()> {
-        self.pipe("andamento-apply-metadata-patch", Some(&patch.to_string()))
-            .map(|_| ())
+        self.pipe("andamento-apply-metadata-patch", Some(&patch.to_string())).map(|_| ())
     }
-    fn reconcile(
-        &mut self,
-        trees: &[Worktree],
-        observed: &[PathBuf],
-        ttl_ms: u64,
-    ) -> io::Result<()> {
+    fn reconcile(&mut self, trees: &[Worktree], observed: &[PathBuf], ttl_ms: u64) -> io::Result<()> {
         let mut errors = Vec::new();
         for cwd in observed {
             let Some(cwd_text) = cwd.to_str() else {
@@ -201,8 +151,17 @@ impl Transport for Zellij {
             };
             if let Some(root) = super::checkout(cwd) {
                 if let Some(tree) = trees.iter().find(|t| t.root == root) {
-                    let result = self.publish(&patch(json!({"kind":"identity","value":{"key":"zellij.pane.cwd","value":{"type":"text","value":cwd_text}}}),
-                        BTreeMap::from([("entity.kind".into(), json!("worktree")), ("entity.id".into(), json!(root.to_string_lossy())), ("git.root".into(), json!(root.to_string_lossy())), ("git.repo".into(), json!(tree.repo))]), vec![], ttl_ms));
+                    let result = self.publish(&patch(
+                        json!({"kind":"identity","value":{"key":"zellij.pane.cwd","value":{"type":"text","value":cwd_text}}}),
+                        BTreeMap::from([
+                            ("entity.kind".into(), json!("worktree")),
+                            ("entity.id".into(), json!(root.to_string_lossy())),
+                            ("git.root".into(), json!(root.to_string_lossy())),
+                            ("git.repo".into(), json!(tree.repo)),
+                        ]),
+                        vec![],
+                        ttl_ms,
+                    ));
                     if let Err(error) = result {
                         errors.push(format!("pane {}: {error}", cwd.display()));
                     }
@@ -212,9 +171,8 @@ impl Transport for Zellij {
         if let Some(layout) = self.factory_layout.clone() {
             // This snapshot is a global safety prerequisite: never create tabs
             // blindly after a failed dedupe read. Pane patches above still run.
-            let tabs = self
-                .run(&["action", "list-tabs", "--json"])
-                .and_then(|s| serde_json::from_str::<Vec<Value>>(&s).map_err(io::Error::other));
+            let tabs =
+                self.run(&["action", "list-tabs", "--json"]).and_then(|s| serde_json::from_str::<Vec<Value>>(&s).map_err(io::Error::other));
             match tabs {
                 Err(error) => errors.push(format!("factory inventory: {error}")),
                 Ok(tabs) => {
@@ -224,11 +182,7 @@ impl Transport for Zellij {
                             continue;
                         }
                         let name = format!("repo: {}", tree.repo);
-                        let mut ids: Vec<u64> = tabs
-                            .iter()
-                            .filter(|t| t["name"] == name)
-                            .filter_map(|t| t["tab_id"].as_u64())
-                            .collect();
+                        let mut ids: Vec<u64> = tabs.iter().filter(|t| t["name"] == name).filter_map(|t| t["tab_id"].as_u64()).collect();
                         if ids.is_empty() {
                             match self.run(&[
                                 "action",
@@ -244,12 +198,7 @@ impl Transport for Zellij {
                                     errors.push(format!("{name}: {error}"));
                                     continue;
                                 }
-                                Ok(output) => {
-                                    ids = output
-                                        .lines()
-                                        .filter_map(|line| line.trim().parse().ok())
-                                        .collect()
-                                }
+                                Ok(output) => ids = output.lines().filter_map(|line| line.trim().parse().ok()).collect(),
                             }
                             if ids.is_empty() {
                                 errors.push(format!("{name}: new-tab returned no tab ids"));
@@ -263,10 +212,7 @@ impl Transport for Zellij {
                                     ("entity.kind".into(), json!("repo")),
                                     ("entity.id".into(), json!(tree.repo)),
                                     ("git.repo".into(), json!(tree.repo)),
-                                    (
-                                        "action.primary.target".into(),
-                                        json!(format!("repo-manager:{}", tree.repo)),
-                                    ),
+                                    ("action.primary.target".into(), json!(format!("repo-manager:{}", tree.repo))),
                                 ]),
                                 vec![],
                                 ttl_ms,
@@ -294,9 +240,5 @@ impl Transport for Zellij {
 /// (`andamento_core::tab_workspace_id`): the tab number in the last eight
 /// bytes, printed as a UUID.
 pub(crate) fn tab_workspace_id(tab: u64) -> String {
-    format!(
-        "00000000-0000-0000-{:04x}-{:012x}",
-        tab >> 48,
-        tab & 0xffff_ffff_ffff
-    )
+    format!("00000000-0000-0000-{:04x}-{:012x}", tab >> 48, tab & 0xffff_ffff_ffff)
 }

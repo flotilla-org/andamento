@@ -21,10 +21,7 @@ pub fn wire_patch(patch: &MetadataPatch) -> serde_json::Value {
     value
 }
 
-fn serialize_patch<S: serde::Serializer>(
-    patch: &MetadataPatch,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
+fn serialize_patch<S: serde::Serializer>(patch: &MetadataPatch, serializer: S) -> Result<S::Ok, S::Error> {
     wire_patch(patch).serialize(serializer)
 }
 
@@ -41,23 +38,12 @@ pub fn read(reader: impl BufRead) -> io::Result<Vec<Frame>> {
             if value.get("offset_ms").is_some() || value.get("patch").is_some() {
                 serde_json::from_value(value)
             } else {
-                Ok(Frame {
-                    offset_ms: 0,
-                    patch: serde_json::from_value(value)?,
-                })
+                Ok(Frame { offset_ms: 0, patch: serde_json::from_value(value)? })
             }
         })();
-        let frame = parsed.map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("line {}: {e}", index + 1),
-            )
-        })?;
+        let frame = parsed.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("line {}: {e}", index + 1)))?;
         if frame.offset_ms < previous {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("line {}: decreasing offset", index + 1),
-            ));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("line {}: decreasing offset", index + 1)));
         }
         previous = frame.offset_ms;
         frames.push(frame);
@@ -76,29 +62,17 @@ pub struct Replay {
 }
 impl Replay {
     pub fn new(frames: Vec<Frame>) -> io::Result<Self> {
-        if frames
-            .windows(2)
-            .any(|pair| pair[0].offset_ms > pair[1].offset_ms)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "decreasing offset",
-            ));
+        if frames.windows(2).any(|pair| pair[0].offset_ms > pair[1].offset_ms) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "decreasing offset"));
         }
-        Ok(Self {
-            frames: frames.into_iter(),
-            now_ms: 0,
-        })
+        Ok(Self { frames: frames.into_iter(), now_ms: 0 })
     }
     pub fn next_offset(&self) -> Option<u64> {
         self.frames.as_slice().first().map(|f| f.offset_ms)
     }
     pub fn advance_to(&mut self, sidebar: &mut Sidebar, offset_ms: u64) -> io::Result<()> {
         if offset_ms < self.now_ms {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "cannot rewind replay",
-            ));
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot rewind replay"));
         }
         while self.next_offset().is_some_and(|at| at <= offset_ms) {
             let at = self.next_offset().unwrap();
@@ -106,9 +80,7 @@ impl Replay {
             while self.next_offset() == Some(at) {
                 patches.push(self.frames.next().unwrap().patch);
             }
-            sidebar
-                .apply(at, PROVIDER, patches)
-                .map_err(io::Error::other)?;
+            sidebar.apply(at, PROVIDER, patches).map_err(io::Error::other)?;
         }
         sidebar.tick(offset_ms);
         self.now_ms = offset_ms;
@@ -134,10 +106,7 @@ impl<W: Write> Recorder<W> {
     /// Capture offsets include idle time since construction, including the
     /// delay before the first patch (matching connector startup timing).
     pub fn new(writer: W) -> Self {
-        Self {
-            writer,
-            start: Instant::now(),
-        }
+        Self { writer, start: Instant::now() }
     }
     pub fn record(&mut self, patch: MetadataPatch) -> io::Result<()> {
         let offset_ms = u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX);

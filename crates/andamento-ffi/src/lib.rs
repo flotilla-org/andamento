@@ -8,8 +8,7 @@ use andamento_core::{
     presentation::{Content, PlacementNode, PresentationState},
     sidebar::{Action, HostEffect, Workspace},
     template_config::{TemplateConfigFieldClass, TemplateControlKind},
-    EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, PaneTarget,
-    Sidebar, WorkspaceId,
+    EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, PaneTarget, Sidebar, WorkspaceId,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -42,15 +41,10 @@ pub struct Text {
 }
 impl Text {
     fn borrowed(s: &str) -> Self {
-        Self {
-            data: s.as_ptr(),
-            len: s.len(),
-        }
+        Self { data: s.as_ptr(), len: s.len() }
     }
     unsafe fn read(self) -> Result<String, String> {
-        Ok(std::str::from_utf8(slice(self.data, self.len)?)
-            .map_err(|e| e.to_string())?
-            .to_owned())
+        Ok(std::str::from_utf8(slice(self.data, self.len)?).map_err(|e| e.to_string())?.to_owned())
     }
 }
 unsafe fn slice<'a, T>(data: *const T, len: usize) -> Result<&'a [T], String> {
@@ -80,10 +74,7 @@ pub struct Bytes {
 fn owned_bytes(bytes: Vec<u8>) -> Bytes {
     let boxed = bytes.into_boxed_slice();
     let len = boxed.len();
-    Bytes {
-        data: Box::into_raw(boxed) as *mut u8,
-        len,
-    }
+    Bytes { data: Box::into_raw(boxed) as *mut u8, len }
 }
 unsafe fn write_bytes(out: *mut Bytes, bytes: Vec<u8>) -> Result<(), String> {
     let out = out.as_mut().ok_or("null output")?;
@@ -115,11 +106,7 @@ pub struct Andamento {
     client: u64,
     effects: Vec<HostEffect>,
 }
-unsafe fn run<T>(
-    handle: *mut Andamento,
-    error: *mut *mut c_char,
-    f: impl FnOnce(&mut Andamento) -> Result<T, String>,
-) -> Option<T> {
+unsafe fn run<T>(handle: *mut Andamento, error: *mut *mut c_char, f: impl FnOnce(&mut Andamento) -> Result<T, String>) -> Option<T> {
     if !error.is_null() {
         *error = ptr::null_mut();
     }
@@ -169,9 +156,7 @@ impl From<WorkspaceIdView> for WorkspaceId {
 }
 impl From<WorkspaceId> for WorkspaceIdView {
     fn from(id: WorkspaceId) -> Self {
-        Self {
-            bytes: id.to_bytes(),
-        }
+        Self { bytes: id.to_bytes() }
     }
 }
 /// A Workspace ID for output: zeroes for none.
@@ -192,25 +177,13 @@ pub struct EntityView {
 }
 impl EntityView {
     fn empty() -> Self {
-        Self {
-            provider: Text::borrowed(""),
-            kind: Text::borrowed(""),
-            id: Text::borrowed(""),
-        }
+        Self { provider: Text::borrowed(""), kind: Text::borrowed(""), id: Text::borrowed("") }
     }
     fn of(entity: &EntityRef) -> Self {
-        Self {
-            provider: Text::borrowed(&entity.provider),
-            kind: Text::borrowed(&entity.kind),
-            id: Text::borrowed(&entity.id),
-        }
+        Self { provider: Text::borrowed(&entity.provider), kind: Text::borrowed(&entity.kind), id: Text::borrowed(&entity.id) }
     }
     unsafe fn read(self) -> Result<EntityRef, String> {
-        Ok(EntityRef::new(
-            provider(self.provider)?,
-            self.kind.read()?,
-            self.id.read()?,
-        ))
+        Ok(EntityRef::new(provider(self.provider)?, self.kind.read()?, self.id.read()?))
     }
 }
 /// A provider (subscription ID) a host passes: nonempty UTF-8.
@@ -231,24 +204,12 @@ pub extern "C" fn andamento_abi_version() -> u32 {
 /// A sidebar configured with a template catalog (KDL), or NULL with an
 /// error.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_create(
-    config_kdl: *const u8,
-    len: usize,
-    error_out: *mut *mut c_char,
-) -> *mut Andamento {
+pub unsafe extern "C" fn andamento_create(config_kdl: *const u8, len: usize, error_out: *mut *mut c_char) -> *mut Andamento {
     if !error_out.is_null() {
         *error_out = ptr::null_mut();
     }
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        Sidebar::new(
-            &Text {
-                data: config_kdl,
-                len,
-            }
-            .read()?,
-        )
-    }))
-    .unwrap_or_else(|_| Err("core panicked while creating sidebar".into()));
+    let result = catch_unwind(AssertUnwindSafe(|| Sidebar::new(&Text { data: config_kdl, len }.read()?)))
+        .unwrap_or_else(|_| Err("core panicked while creating sidebar".into()));
     match result {
         Ok(sidebar) => Box::into_raw(Box::new(Andamento {
             sidebar,
@@ -266,11 +227,7 @@ pub unsafe extern "C" fn andamento_create(
 }
 /// Replace the template catalog; an invalid one changes nothing.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_configure(
-    h: *mut Andamento,
-    kdl: Text,
-    error_out: *mut *mut c_char,
-) -> u32 {
+pub unsafe extern "C" fn andamento_configure(h: *mut Andamento, kdl: Text, error_out: *mut *mut c_char) -> u32 {
     run(h, error_out, |h| h.sidebar.configure(&kdl.read()?)).is_some() as u32
 }
 #[no_mangle]
@@ -289,9 +246,7 @@ pub unsafe extern "C" fn andamento_string_free(s: *mut c_char) {
 #[no_mangle]
 pub unsafe extern "C" fn andamento_bytes_free(bytes: Bytes) {
     if !bytes.data.is_null() {
-        drop(Box::from_raw(ptr::slice_from_raw_parts_mut(
-            bytes.data, bytes.len,
-        )));
+        drop(Box::from_raw(ptr::slice_from_raw_parts_mut(bytes.data, bytes.len)));
     }
 }
 
@@ -311,8 +266,7 @@ pub unsafe extern "C" fn andamento_apply_patch_json(
     error_out: *mut *mut c_char,
 ) -> u32 {
     run(h, error_out, |h| {
-        let patch: MetadataPatch =
-            serde_json::from_str(&json.read()?).map_err(|e| e.to_string())?;
+        let patch: MetadataPatch = serde_json::from_str(&json.read()?).map_err(|e| e.to_string())?;
         h.sidebar.apply(now_ms, &provider.read()?, [patch])
     })
     .is_some() as u32
@@ -321,11 +275,7 @@ pub unsafe extern "C" fn andamento_apply_patch_json(
 /// What open workspaces and refs showed of its entities is retained, as when
 /// facts expire.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_provider_retract(
-    h: *mut Andamento,
-    provider: Text,
-    error_out: *mut *mut c_char,
-) -> u32 {
+pub unsafe extern "C" fn andamento_provider_retract(h: *mut Andamento, provider: Text, error_out: *mut *mut c_char) -> u32 {
     run(h, error_out, |h| {
         h.sidebar.retract_provider(&self::provider(provider)?);
         Ok(())
@@ -337,15 +287,9 @@ pub unsafe extern "C" fn andamento_provider_retract(
 /// its entities report stale; fresh again, each live TTL fact renews its
 /// lease from now. Retracting a provider clears its staleness.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_provider_set_stale(
-    h: *mut Andamento,
-    provider: Text,
-    stale: u32,
-    error_out: *mut *mut c_char,
-) -> u32 {
+pub unsafe extern "C" fn andamento_provider_set_stale(h: *mut Andamento, provider: Text, stale: u32, error_out: *mut *mut c_char) -> u32 {
     run(h, error_out, |h| {
-        h.sidebar
-            .set_provider_stale(&self::provider(provider)?, stale != 0);
+        h.sidebar.set_provider_stale(&self::provider(provider)?, stale != 0);
         Ok(())
     })
     .is_some() as u32
@@ -418,18 +362,8 @@ pub unsafe extern "C" fn andamento_apply_workspace(
     })
     .is_some() as u32
 }
-unsafe fn scalar_patch(
-    target: MetadataTarget,
-    source: Text,
-    facts: *const Fact,
-    count: usize,
-) -> Result<MetadataPatch, String> {
-    let mut patch = MetadataPatch {
-        target,
-        source_id: source.read()?,
-        set: Default::default(),
-        unset: vec![],
-    };
+unsafe fn scalar_patch(target: MetadataTarget, source: Text, facts: *const Fact, count: usize) -> Result<MetadataPatch, String> {
+    let mut patch = MetadataPatch { target, source_id: source.read()?, set: Default::default(), unset: vec![] };
     let mut keys = BTreeSet::new();
     for f in slice(facts, count)? {
         let key = f.key.read()?;
@@ -467,11 +401,7 @@ unsafe fn scalar(kind: u32, text: Text, integer: i64) -> Result<MetadataValue, S
 /// this sidebar. Drain facts, topology and completions before acquiring a
 /// snapshot.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_tick(
-    h: *mut Andamento,
-    now_ms: u64,
-    error_out: *mut *mut c_char,
-) -> u32 {
+pub unsafe extern "C" fn andamento_tick(h: *mut Andamento, now_ms: u64, error_out: *mut *mut c_char) -> u32 {
     run(h, error_out, |h| {
         h.sidebar.tick(now_ms);
         Ok(())
@@ -515,14 +445,7 @@ pub unsafe extern "C" fn andamento_observe(
     run(h, error_out, |h| {
         let workspaces = slice(workspaces, count)?
             .iter()
-            .map(|w| {
-                Ok(Workspace {
-                    id: w.id.into(),
-                    position: w.position,
-                    name: w.name.read()?,
-                    selected: w.selected != 0,
-                })
-            })
+            .map(|w| Ok(Workspace { id: w.id.into(), position: w.position, name: w.name.read()?, selected: w.selected != 0 }))
             .collect::<Result<Vec<_>, String>>()?;
         let panes = slice(panes, pane_count)?
             .iter()
@@ -562,10 +485,8 @@ pub unsafe extern "C" fn andamento_observe_workdirs(
     error_out: *mut *mut c_char,
 ) -> u32 {
     run(h, error_out, |h| {
-        let workdirs = slice(workdirs, count)?
-            .iter()
-            .map(|w| Ok((w.workspace_id.into(), w.cwd.read()?)))
-            .collect::<Result<Vec<_>, String>>()?;
+        let workdirs =
+            slice(workdirs, count)?.iter().map(|w| Ok((w.workspace_id.into(), w.cwd.read()?))).collect::<Result<Vec<_>, String>>()?;
         h.sidebar.observe_workdirs(workdirs);
         Ok(())
     })
@@ -607,11 +528,7 @@ pub unsafe extern "C" fn andamento_complete(
 /// MATERIALIZE, whose completion registers it too). Registration gives it a
 /// record and is independent of topology; registering twice is harmless.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_workspace_register(
-    h: *mut Andamento,
-    workspace: WorkspaceIdView,
-    error_out: *mut *mut c_char,
-) -> u32 {
+pub unsafe extern "C" fn andamento_workspace_register(h: *mut Andamento, workspace: WorkspaceIdView, error_out: *mut *mut c_char) -> u32 {
     run(h, error_out, |h| {
         h.sidebar.register_workspace(workspace.into());
         Ok(())
@@ -620,11 +537,7 @@ pub unsafe extern "C" fn andamento_workspace_register(
 }
 /// The host deleted the workspace rather than closing it: its record goes.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_workspace_forget(
-    h: *mut Andamento,
-    workspace: WorkspaceIdView,
-    error_out: *mut *mut c_char,
-) -> u32 {
+pub unsafe extern "C" fn andamento_workspace_forget(h: *mut Andamento, workspace: WorkspaceIdView, error_out: *mut *mut c_char) -> u32 {
     run(h, error_out, |h| {
         h.sidebar.forget_workspace(workspace.into());
         Ok(())
@@ -633,17 +546,8 @@ pub unsafe extern "C" fn andamento_workspace_forget(
 }
 /// 1 if the workspace is registered (or materialized) and not forgotten.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_workspace_registered(
-    h: *mut Andamento,
-    workspace: WorkspaceIdView,
-    error_out: *mut *mut c_char,
-) -> u32 {
-    run(h, error_out, |h| {
-        Ok(h.sidebar
-            .registered_workspaces()
-            .contains(&workspace.into()))
-    })
-    .unwrap_or(false) as u32
+pub unsafe extern "C" fn andamento_workspace_registered(h: *mut Andamento, workspace: WorkspaceIdView, error_out: *mut *mut c_char) -> u32 {
+    run(h, error_out, |h| Ok(h.sidebar.registered_workspaces().contains(&workspace.into()))).unwrap_or(false) as u32
 }
 
 // Snapshots, details, dispatch and effects. A snapshot owns all the text it
@@ -755,23 +659,15 @@ impl AndamentoSnapshot {
     // storage. Appending may move structs but must not move those buffers or
     // renumber existing actions; small inline-string representations would break it.
     fn add_detail(&mut self, card: andamento_core::detail::DetailCard, sidebar: &Sidebar) -> usize {
-        let activate = self.action(Action::Activate {
-            entity: card.entity.clone(),
-        });
+        let activate = self.action(Action::Activate { entity: card.entity.clone() });
         let copy_url = if sidebar.subject_url(&card.entity).is_some() {
-            self.action(Action::CopySubjectUrl {
-                entity: card.entity.clone(),
-            })
+            self.action(Action::CopySubjectUrl { entity: card.entity.clone() })
         } else {
             NONE
         };
         let index = self.details.len();
         self.detail_index.insert(card.entity.clone(), index);
-        self.details.push(Detail {
-            card,
-            activate,
-            copy_url,
-        });
+        self.details.push(Detail { card, activate, copy_url });
         index
     }
     fn action(&mut self, a: Action) -> usize {
@@ -802,10 +698,7 @@ impl AndamentoSnapshot {
                 TemplateControlKind::InspectRoot => ANDAMENTO_CONTROL_INSPECT_ROOT,
             };
             let action = if kind == ANDAMENTO_CONTROL_DISPLAY_VARIABLE {
-                c.variable
-                    .as_ref()
-                    .map(|name| self.action(Action::ToggleDisplayVariable { name: name.clone() }))
-                    .unwrap_or(NONE)
+                c.variable.as_ref().map(|name| self.action(Action::ToggleDisplayVariable { name: name.clone() })).unwrap_or(NONE)
             } else {
                 NONE
             };
@@ -824,25 +717,14 @@ impl AndamentoSnapshot {
         if let Some(error) = &content.error {
             self.diagnostics.push(error.clone());
         }
-        (
-            start,
-            content.fields.len(),
-            controls,
-            content.controls.len(),
-        )
+        (start, content.fields.len(), controls, content.controls.len())
     }
     fn node(&mut self, n: &PlacementNode, parent: usize, sidebar: &Sidebar) {
         let (fields, field_count, controls, control_count) = self.content(&n.content);
         let (details, detail_count, _, _) = self.content(&n.detail);
         let activate = self.action(Action::ActivatePlacement { key: n.key.clone() });
         let has_url = sidebar.subject_url(&n.entity).is_some();
-        let copy_url = if has_url {
-            self.action(Action::CopySubjectUrl {
-                entity: n.entity.clone(),
-            })
-        } else {
-            NONE
-        };
+        let copy_url = if has_url { self.action(Action::CopySubjectUrl { entity: n.entity.clone() }) } else { NONE };
         let toggle = self.action(Action::TogglePlacement { key: n.key.clone() });
         // Length framing is collision-free even when IDs contain separators.
         // Hosts compare this opaque value; its encoding is not an interface.
@@ -850,24 +732,14 @@ impl AndamentoSnapshot {
             .key
             .0
             .iter()
-            .flat_map(|s| {
-                [
-                    &s.loop_name,
-                    &s.entity.provider,
-                    &s.entity.kind,
-                    &s.entity.id,
-                ]
-            })
+            .flat_map(|s| [&s.loop_name, &s.entity.provider, &s.entity.kind, &s.entity.id])
             .map(|s| format!("{}:{}", s.len(), s))
             .collect();
         let (state, workspace, selected, openable) = match n.state {
             PresentationState::Catalog => (ANDAMENTO_CATALOG, None, false, false),
             PresentationState::Latent { openable } => (ANDAMENTO_LATENT, None, false, openable),
             PresentationState::Opening => (ANDAMENTO_OPENING, None, false, false),
-            PresentationState::Live {
-                workspace_id,
-                selected,
-            } => (ANDAMENTO_LIVE, Some(workspace_id), selected, false),
+            PresentationState::Live { workspace_id, selected } => (ANDAMENTO_LIVE, Some(workspace_id), selected, false),
         };
         let index = self.nodes.len();
         self.nodes.push(Node {
@@ -914,39 +786,25 @@ pub unsafe extern "C" fn andamento_snapshot_is_current(
     snapshot: *const AndamentoSnapshot,
     error_out: *mut *mut c_char,
 ) -> u32 {
-    run(h, error_out, |h| {
-        Ok(snapshot
-            .as_ref()
-            .is_some_and(|s| s.client == h.client && s.generation == h.sidebar.revision()))
-    })
-    .unwrap_or(false) as u32
+    run(h, error_out, |h| Ok(snapshot.as_ref().is_some_and(|s| s.client == h.client && s.generation == h.sidebar.revision())))
+        .unwrap_or(false) as u32
 }
 
 /// The sidebar as nodes in preorder: sections have parent ANDAMENTO_NONE,
 /// and every other node's parent is an earlier node. Collapsed children
 /// are included.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_snapshot_acquire(
-    h: *mut Andamento,
-    error_out: *mut *mut c_char,
-) -> *mut AndamentoSnapshot {
+pub unsafe extern "C" fn andamento_snapshot_acquire(h: *mut Andamento, error_out: *mut *mut c_char) -> *mut AndamentoSnapshot {
     acquire_snapshot(h, error_out, false)
 }
 /// As andamento_snapshot_acquire, with every catalog card's detail.
 /// andamento_snapshot_acquire resolves none (detail_count is 0 until
 /// requested).
 #[no_mangle]
-pub unsafe extern "C" fn andamento_snapshot_acquire_details(
-    h: *mut Andamento,
-    error_out: *mut *mut c_char,
-) -> *mut AndamentoSnapshot {
+pub unsafe extern "C" fn andamento_snapshot_acquire_details(h: *mut Andamento, error_out: *mut *mut c_char) -> *mut AndamentoSnapshot {
     acquire_snapshot(h, error_out, true)
 }
-unsafe fn acquire_snapshot(
-    h: *mut Andamento,
-    error_out: *mut *mut c_char,
-    include_details: bool,
-) -> *mut AndamentoSnapshot {
+unsafe fn acquire_snapshot(h: *mut Andamento, error_out: *mut *mut c_char, include_details: bool) -> *mut AndamentoSnapshot {
     run(h, error_out, |h| {
         let _phase = andamento_core::profile::span("abi-acquire");
         let snapshot = h.sidebar.snapshot();
@@ -964,8 +822,7 @@ unsafe fn acquire_snapshot(
             diagnostics: snapshot.surface.diagnostics,
         };
         for e in snapshot.errors {
-            out.diagnostics
-                .push(format!("{}:{}: {}", e.entity.kind, e.entity.id, e.message));
+            out.diagnostics.push(format!("{}:{}: {}", e.entity.kind, e.entity.id, e.message));
         }
         for section in snapshot.surface.sections {
             let (fields, field_count, controls, control_count) = out.content(&section.content);
@@ -1018,21 +875,12 @@ unsafe fn acquire_snapshot(
                     }
                 }
             }
-            if let Some(definition) = snapshot
-                .surface
-                .display_variables
-                .iter()
-                .find(|d| d.name == control.variable)
-            {
+            if let Some(definition) = snapshot.surface.display_variables.iter().find(|d| d.name == control.variable) {
                 control.persist = definition.persist;
                 if control.glyph.is_empty() {
                     control.glyph = definition.icon.clone();
                 }
-                control.label = if definition.label.is_empty() {
-                    definition.name.clone()
-                } else {
-                    definition.label.clone()
-                };
+                control.label = if definition.label.is_empty() { definition.name.clone() } else { definition.label.clone() };
             }
         }
         if include_details {
@@ -1132,21 +980,14 @@ pub unsafe extern "C" fn andamento_snapshot_detail_count(s: *const AndamentoSnap
 }
 /// The index of an entity's detail in the snapshot, or ANDAMENTO_NONE.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_snapshot_detail_find(
-    s: *const AndamentoSnapshot,
-    entity: EntityView,
-) -> usize {
+pub unsafe extern "C" fn andamento_snapshot_detail_find(s: *const AndamentoSnapshot, entity: EntityView) -> usize {
     let (Some(s), Ok(entity)) = (s.as_ref(), entity.read()) else {
         return NONE;
     };
     s.detail_index.get(&entity).copied().unwrap_or(NONE)
 }
 #[no_mangle]
-pub unsafe extern "C" fn andamento_snapshot_detail(
-    s: *const AndamentoSnapshot,
-    index: usize,
-    out: *mut DetailView,
-) -> u32 {
+pub unsafe extern "C" fn andamento_snapshot_detail(s: *const AndamentoSnapshot, index: usize, out: *mut DetailView) -> u32 {
     let (Some(s), Some(out)) = (s.as_ref(), out.as_mut()) else {
         return 0;
     };
@@ -1183,20 +1024,12 @@ pub unsafe extern "C" fn andamento_snapshot_detail_action(
         return 0;
     };
     let (intent, label, action) = match index {
-        0 => (
-            d.card.primary_intent.as_str(),
-            d.card.primary_label.as_str(),
-            d.activate,
-        ),
+        0 => (d.card.primary_intent.as_str(), d.card.primary_label.as_str(), d.activate),
         1 if d.copy_url != NONE => ("copy-url", "Copy URL", d.copy_url),
         _ => return 0,
     };
-    *out = DetailActionView {
-        intent: Text::borrowed(intent),
-        label: Text::borrowed(label),
-        entity: EntityView::of(&d.card.entity),
-        action,
-    };
+    *out =
+        DetailActionView { intent: Text::borrowed(intent), label: Text::borrowed(label), entity: EntityView::of(&d.card.entity), action };
     1
 }
 #[no_mangle]
@@ -1249,12 +1082,7 @@ pub unsafe extern "C" fn andamento_snapshot_detail_relation(
     let (Some(s), Some(out), Ok(path)) = (s.as_ref(), out.as_mut(), slice(path, path_count)) else {
         return 0;
     };
-    let Some(entity) = s
-        .details
-        .get(detail)
-        .and_then(|d| d.card.fields.get(field))
-        .and_then(|f| f.relations.get(relation))
-    else {
+    let Some(entity) = s.details.get(detail).and_then(|d| d.card.fields.get(field)).and_then(|f| f.relations.get(relation)) else {
         return 0;
     };
     for item in path {
@@ -1267,9 +1095,7 @@ pub unsafe extern "C" fn andamento_snapshot_detail_relation(
     let target = s.detail_index.get(entity).copied();
     *out = DetailRelationView {
         entity: EntityView::of(entity),
-        display_text: Text::borrowed(target.map_or(entity.id.as_str(), |index| {
-            s.details[index].card.label.as_str()
-        })),
+        display_text: Text::borrowed(target.map_or(entity.id.as_str(), |index| s.details[index].card.label.as_str())),
         detail: target.unwrap_or(NONE),
     };
     1
@@ -1346,11 +1172,7 @@ pub unsafe extern "C" fn andamento_snapshot_node_count(s: *const AndamentoSnapsh
     s.as_ref().map_or(0, |s| s.nodes.len())
 }
 #[no_mangle]
-pub unsafe extern "C" fn andamento_snapshot_node(
-    s: *const AndamentoSnapshot,
-    index: usize,
-    out: *mut NodeView,
-) -> u32 {
+pub unsafe extern "C" fn andamento_snapshot_node(s: *const AndamentoSnapshot, index: usize, out: *mut NodeView) -> u32 {
     let (Some(n), Some(out)) = (s.as_ref().and_then(|s| s.nodes.get(index)), out.as_mut()) else {
         return 0;
     };
@@ -1386,11 +1208,7 @@ pub unsafe extern "C" fn andamento_snapshot_node(
     1
 }
 #[no_mangle]
-pub unsafe extern "C" fn andamento_snapshot_field(
-    s: *const AndamentoSnapshot,
-    index: usize,
-    out: *mut FieldView,
-) -> u32 {
+pub unsafe extern "C" fn andamento_snapshot_field(s: *const AndamentoSnapshot, index: usize, out: *mut FieldView) -> u32 {
     let (Some(f), Some(out)) = (s.as_ref().and_then(|s| s.fields.get(index)), out.as_mut()) else {
         return 0;
     };
@@ -1403,13 +1221,8 @@ pub unsafe extern "C" fn andamento_snapshot_field(
     1
 }
 #[no_mangle]
-pub unsafe extern "C" fn andamento_snapshot_control(
-    s: *const AndamentoSnapshot,
-    index: usize,
-    out: *mut ControlView,
-) -> u32 {
-    let (Some(c), Some(out)) = (s.as_ref().and_then(|s| s.controls.get(index)), out.as_mut())
-    else {
+pub unsafe extern "C" fn andamento_snapshot_control(s: *const AndamentoSnapshot, index: usize, out: *mut ControlView) -> u32 {
+    let (Some(c), Some(out)) = (s.as_ref().and_then(|s| s.controls.get(index)), out.as_mut()) else {
         return 0;
     };
     *out = ControlView {
@@ -1420,11 +1233,7 @@ pub unsafe extern "C" fn andamento_snapshot_control(
         value_kind: c.value_kind,
         checked: c.checked as u32,
         value: Text::borrowed(&c.value),
-        variable: Text::borrowed(if c.kind == ANDAMENTO_CONTROL_DISPLAY_VARIABLE {
-            &c.variable
-        } else {
-            ""
-        }),
+        variable: Text::borrowed(if c.kind == ANDAMENTO_CONTROL_DISPLAY_VARIABLE { &c.variable } else { "" }),
         persist: (c.kind == ANDAMENTO_CONTROL_DISPLAY_VARIABLE && c.persist) as u32,
     };
     1
@@ -1435,15 +1244,8 @@ pub unsafe extern "C" fn andamento_snapshot_diagnostic_count(s: *const Andamento
     s.as_ref().map_or(0, |s| s.diagnostics.len())
 }
 #[no_mangle]
-pub unsafe extern "C" fn andamento_snapshot_diagnostic(
-    s: *const AndamentoSnapshot,
-    index: usize,
-    out: *mut Text,
-) -> u32 {
-    let (Some(message), Some(out)) = (
-        s.as_ref().and_then(|s| s.diagnostics.get(index)),
-        out.as_mut(),
-    ) else {
+pub unsafe extern "C" fn andamento_snapshot_diagnostic(s: *const AndamentoSnapshot, index: usize, out: *mut Text) -> u32 {
+    let (Some(message), Some(out)) = (s.as_ref().and_then(|s| s.diagnostics.get(index)), out.as_mut()) else {
         return 0;
     };
     *out = Text::borrowed(message);
@@ -1469,11 +1271,7 @@ pub unsafe extern "C" fn andamento_dispatch(
         if s.generation != h.sidebar.revision() {
             return Err("stale snapshot action; acquire a new snapshot".into());
         }
-        let action = s
-            .actions
-            .get(action)
-            .ok_or("invalid action reference")?
-            .clone();
+        let action = s.actions.get(action).ok_or("invalid action reference")?.clone();
         h.effects.extend(h.sidebar.dispatch(action)?);
         Ok(())
     })
@@ -1507,27 +1305,16 @@ pub struct EffectView {
 }
 /// Drain the effect queue; an empty queue returns an empty batch.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_effects_take(
-    h: *mut Andamento,
-    error_out: *mut *mut c_char,
-) -> *mut AndamentoEffects {
-    run(h, error_out, |h| {
-        Ok(Box::into_raw(Box::new(AndamentoEffects {
-            effects: std::mem::take(&mut h.effects),
-        })))
-    })
-    .unwrap_or(ptr::null_mut())
+pub unsafe extern "C" fn andamento_effects_take(h: *mut Andamento, error_out: *mut *mut c_char) -> *mut AndamentoEffects {
+    run(h, error_out, |h| Ok(Box::into_raw(Box::new(AndamentoEffects { effects: std::mem::take(&mut h.effects) }))))
+        .unwrap_or(ptr::null_mut())
 }
 #[no_mangle]
 pub unsafe extern "C" fn andamento_effects_count(e: *const AndamentoEffects) -> usize {
     e.as_ref().map_or(0, |e| e.effects.len())
 }
 #[no_mangle]
-pub unsafe extern "C" fn andamento_effects_get(
-    e: *const AndamentoEffects,
-    index: usize,
-    out: *mut EffectView,
-) -> u32 {
+pub unsafe extern "C" fn andamento_effects_get(e: *const AndamentoEffects, index: usize, out: *mut EffectView) -> u32 {
     let (Some(e), Some(out)) = (e.as_ref().and_then(|e| e.effects.get(index)), out.as_mut()) else {
         return 0;
     };
@@ -1544,21 +1331,11 @@ pub unsafe extern "C" fn andamento_effects_get(
         primary_target: Text::borrowed(""),
     };
     match e {
-        HostEffect::Focus {
-            request_id,
-            workspace_id,
-        } => {
+        HostEffect::Focus { request_id, workspace_id } => {
             v.request_id = *request_id;
             v.workspace_id = (*workspace_id).into();
         }
-        HostEffect::Materialize {
-            request_id,
-            entity,
-            name,
-            recipe,
-            cwd,
-            primary_target,
-        } => {
+        HostEffect::Materialize { request_id, entity, name, recipe, cwd, primary_target } => {
             v.kind = ANDAMENTO_EFFECT_MATERIALIZE;
             v.request_id = *request_id;
             v.entity = EntityView::of(entity);
@@ -1570,11 +1347,7 @@ pub unsafe extern "C" fn andamento_effects_get(
             v.primary_target = Text::borrowed(primary_target.as_deref().unwrap_or_default());
         }
         HostEffect::OpenUrl { url } | HostEffect::CopyUrl { url } => {
-            v.kind = if matches!(e, HostEffect::OpenUrl { .. }) {
-                ANDAMENTO_EFFECT_OPEN_URL
-            } else {
-                ANDAMENTO_EFFECT_COPY_URL
-            };
+            v.kind = if matches!(e, HostEffect::OpenUrl { .. }) { ANDAMENTO_EFFECT_OPEN_URL } else { ANDAMENTO_EFFECT_COPY_URL };
             v.recipe = Text::borrowed(url);
         }
         HostEffect::Inspect { entity } => {
@@ -1587,15 +1360,9 @@ pub unsafe extern "C" fn andamento_effects_get(
 }
 /// Queue a COPY_URL effect for a subject's current forge URL.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_copy_subject_url(
-    h: *mut Andamento,
-    entity: EntityView,
-    error_out: *mut *mut c_char,
-) -> u32 {
+pub unsafe extern "C" fn andamento_copy_subject_url(h: *mut Andamento, entity: EntityView, error_out: *mut *mut c_char) -> u32 {
     run(h, error_out, |h| {
-        let effects = h.sidebar.dispatch(Action::CopySubjectUrl {
-            entity: entity.read()?,
-        })?;
+        let effects = h.sidebar.dispatch(Action::CopySubjectUrl { entity: entity.read()? })?;
         h.effects.extend(effects);
         Ok(())
     })

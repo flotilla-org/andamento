@@ -13,10 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Result<Vec<_>, _>>()?;
     sidebar.apply(0, replay::PROVIDER, patches)?;
     if let Some(path) = args.get(2) {
-        for line in std::fs::read_to_string(path)?
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-        {
+        for line in std::fs::read_to_string(path)?.lines().filter(|l| !l.trim().is_empty()) {
             sidebar.handle(serde_json::from_str::<Request>(line)?)?;
         }
     }

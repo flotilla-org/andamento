@@ -1,11 +1,6 @@
 use crate::state::ControllerState;
-use crate::template_config::{
-    parse_template_config_kdl, TemplateConfigCatalog, TemplateConfigLayer,
-};
-use crate::{
-    DisplayVariableValue, EntityRef, MetadataPatch, MetadataTarget, MetadataValue,
-    MetadataValueUpdate, RailUiAction,
-};
+use crate::template_config::{parse_template_config_kdl, TemplateConfigCatalog, TemplateConfigLayer};
+use crate::{DisplayVariableValue, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, RailUiAction};
 
 const CONFIG: &str = r#"
 display-variable "finished" type="bool" default=false label="Finished" icon="F" persist=true
@@ -33,15 +28,7 @@ fn publish(state: &mut ControllerState, id: &str, facts: &[(&str, MetadataValue)
         set: facts
             .iter()
             .map(|(key, value)| {
-                (
-                    key.to_string(),
-                    MetadataValueUpdate {
-                        value: value.clone(),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
-                )
+                (key.to_string(), MetadataValueUpdate { value: value.clone(), ttl_ms: None, precedence: None, ordinal: None })
             })
             .collect(),
         unset: vec![],
@@ -72,26 +59,13 @@ fn policy_is_opt_in_shared_by_aliases_and_preserves_first_match_precedence() {
     for id in ["active", "done", "standing"] {
         publish(&mut state, id, &[("attention", MetadataValue::Bool(true))]);
     }
-    publish(
-        &mut state,
-        "done",
-        &[
-            ("phase", MetadataValue::Text("done".into())),
-            ("role", MetadataValue::Text("governor".into())),
-        ],
-    );
+    publish(&mut state, "done", &[("phase", MetadataValue::Text("done".into())), ("role", MetadataValue::Text("governor".into()))]);
     // Existence includes non-scalar facts, unlike equality query predicates.
-    publish(
-        &mut state,
-        "standing",
-        &[("role", MetadataValue::StringList(vec!["governor".into()]))],
-    );
+    publish(&mut state, "standing", &[("role", MetadataValue::StringList(vec!["governor".into()]))]);
     assert_eq!(ids(&state, "tree"), ["active"]);
     assert_eq!(ids(&state, "attention"), ["active"]);
     assert_eq!(ids(&state, "audit"), ["active", "done", "standing"]);
-    let original_key = state.view_model().presentation.unwrap().sections[0].nodes[0]
-        .key
-        .clone();
+    let original_key = state.view_model().presentation.unwrap().sections[0].nodes[0].key.clone();
     toggle(&mut state, "attempts");
     assert_eq!(ids(&state, "tree"), ["active", "standing"]);
     toggle(&mut state, "finished");
@@ -99,27 +73,16 @@ fn policy_is_opt_in_shared_by_aliases_and_preserves_first_match_precedence() {
     assert_eq!(ids(&state, "tree"), ["active", "done"]);
     assert_eq!(ids(&state, "attention"), ["active", "done"]);
     toggle(&mut state, "finished");
-    assert_eq!(
-        original_key,
-        state.view_model().presentation.unwrap().sections[0].nodes[0].key
-    );
+    assert_eq!(original_key, state.view_model().presentation.unwrap().sections[0].nodes[0].key);
 
     // Changing facts recomputes visibility without changing toggle state.
-    publish(
-        &mut state,
-        "done",
-        &[("phase", MetadataValue::Text("active".into()))],
-    );
+    publish(&mut state, "done", &[("phase", MetadataValue::Text("active".into()))]);
     assert_eq!(ids(&state, "tree"), ["active"]); // still a standing attempt
     let mut restored = ControllerState::default();
     restored.set_template_catalog(Some(config(CONFIG)));
     toggle(&mut state, "attempts");
     restored.apply_rail_ui_state(state.rail_ui_state());
-    publish(
-        &mut restored,
-        "standing",
-        &[("role", MetadataValue::Bool(false))],
-    );
+    publish(&mut restored, "standing", &[("role", MetadataValue::Bool(false))]);
     assert_eq!(ids(&restored, "tree"), ["standing"]);
 }
 
@@ -132,16 +95,9 @@ fn policies_and_boolean_defaults_follow_layer_precedence() {
         TemplateConfigLayer::bundled("bundled", bundled),
         TemplateConfigLayer::user("user", user),
     ])));
-    publish(
-        &mut state,
-        "done",
-        &[("phase", MetadataValue::Text("done".into()))],
-    );
+    publish(&mut state, "done", &[("phase", MetadataValue::Text("done".into()))]);
     assert_eq!(ids(&state, "tree"), ["done"]);
-    assert_eq!(
-        state.rail_ui_state().variables.get("finished"),
-        Some(&DisplayVariableValue::Bool(true))
-    );
+    assert_eq!(state.rail_ui_state().variables.get("finished"), Some(&DisplayVariableValue::Bool(true)));
 }
 
 #[test]
@@ -150,25 +106,13 @@ fn invalid_visibility_configuration_is_rejected() {
         ("visibility=\"activity\"", "visibility=\"typo\""),
         ("visible-when=\"finished\"", "visible-when=\"typo\""),
         ("match \"role\" exists=true", "match \"role\""),
-        (
-            "match \"role\" exists=true",
-            "match \"role\" exists=true value=\"x\"",
-        ),
-        (
-            "match \"role\" exists=true",
-            "match \"role\" exists=\"yes\"",
-        ),
+        ("match \"role\" exists=true", "match \"role\" exists=true value=\"x\""),
+        ("match \"role\" exists=true", "match \"role\" exists=\"yes\""),
         ("match \"role\" exists=true", "match \"role\" of=\"vessel\""),
-        (
-            "when kind=\"vessel\" visible-when=\"attempts\"",
-            "oops kind=\"vessel\" visible-when=\"attempts\"",
-        ),
+        ("when kind=\"vessel\" visible-when=\"attempts\"", "oops kind=\"vessel\" visible-when=\"attempts\""),
         ("visibility \"activity\"", "visibility \"\""),
     ] {
-        assert!(
-            parse_template_config_kdl(&CONFIG.replace(old, new)).is_err(),
-            "accepted {new}"
-        );
+        assert!(parse_template_config_kdl(&CONFIG.replace(old, new)).is_err(), "accepted {new}");
     }
     let nonbool = CONFIG.replace(
         "type=\"bool\" default=false label=\"Finished\" icon=\"F\" persist=true",
@@ -178,11 +122,7 @@ fn invalid_visibility_configuration_is_rejected() {
     let duplicate = format!("{CONFIG}\nvisibility \"activity\" {{}}\n");
     assert!(parse_template_config_kdl(&duplicate).is_err());
     // The new policy must not loosen indexed query validation.
-    assert!(parse_template_config_kdl(&CONFIG.replace(
-        "match \"attention\" value=\"true\"",
-        "match \"attention\" exists=true"
-    ))
-    .is_err());
+    assert!(parse_template_config_kdl(&CONFIG.replace("match \"attention\" value=\"true\"", "match \"attention\" exists=true")).is_err());
 }
 
 #[test]
@@ -210,11 +150,7 @@ fn absence_and_identity_rules_hide_parent_subtrees_until_enabled() {
     let mut state = ControllerState::default();
     state.set_template_catalog(Some(config(&input)));
     for id in ["parent", "child"] {
-        publish(
-            &mut state,
-            id,
-            &[("display.label", MetadataValue::Text(id.into()))],
-        );
+        publish(&mut state, id, &[("display.label", MetadataValue::Text(id.into()))]);
     }
     assert!(ids(&state, "tree").is_empty());
     toggle(&mut state, "finished");
@@ -225,38 +161,28 @@ fn absence_and_identity_rules_hide_parent_subtrees_until_enabled() {
     assert_eq!(nodes[0].children[0].entity.id, "child");
     toggle(&mut state, "finished");
     assert!(ids(&state, "tree").is_empty());
-    publish(
-        &mut state,
-        "parent",
-        &[("exempt", MetadataValue::Bool(false))],
-    );
+    publish(&mut state, "parent", &[("exempt", MetadataValue::Bool(false))]);
     assert_eq!(ids(&state, "tree"), ["parent"]); // present false is not absence
 }
 
 #[test]
 fn unused_policies_are_not_evaluated_and_non_boolean_overrides_are_diagnosed() {
-    let input = format!(
-        "{CONFIG}\nvisibility \"unused\" {{ when kind=\"vessel\" visible-when=\"finished\"; }}"
-    );
+    let input = format!("{CONFIG}\nvisibility \"unused\" {{ when kind=\"vessel\" visible-when=\"finished\"; }}");
     let bundled = parse_template_config_kdl(&input).unwrap();
-    let user = parse_template_config_kdl("display-variable \"finished\" type=\"enum\" default=\"yes\" label=\"Finished\" icon=\"F\" { value \"yes\"; }").unwrap();
-    let catalog = TemplateConfigCatalog::from_layers(vec![
-        TemplateConfigLayer::bundled("bundled", bundled),
-        TemplateConfigLayer::user("user", user),
-    ]);
+    let user = parse_template_config_kdl(
+        "display-variable \"finished\" type=\"enum\" default=\"yes\" label=\"Finished\" icon=\"F\" { value \"yes\"; }",
+    )
+    .unwrap();
+    let catalog =
+        TemplateConfigCatalog::from_layers(vec![TemplateConfigLayer::bundled("bundled", bundled), TemplateConfigLayer::user("user", user)]);
     assert_eq!(catalog.visibility().len(), 1);
     assert_eq!(catalog.visibility()[0].name, "activity");
     let mut state = ControllerState::default();
     state.set_template_catalog(Some(catalog));
-    publish(
-        &mut state,
-        "done",
-        &[("phase", MetadataValue::Text("done".into()))],
-    );
+    publish(&mut state, "done", &[("phase", MetadataValue::Text("done".into()))]);
     assert!(ids(&state, "tree").is_empty());
     let warnings = state.view_model().template_config.warnings;
-    assert!(warnings.iter().any(|warning| warning
-        .contains("visibility activity requires boolean display variable finished")));
+    assert!(warnings.iter().any(|warning| warning.contains("visibility activity requires boolean display variable finished")));
     assert!(!warnings.iter().any(|warning| warning.contains("unused")));
 }
 
@@ -264,54 +190,29 @@ fn unused_policies_are_not_evaluated_and_non_boolean_overrides_are_diagnosed() {
 // precedence apply to the conjunction just as they do to a single gate.
 #[test]
 fn conjunctive_visibility_covers_boolean_truth_table() {
-    let input = CONFIG.replace(
-        "visible-when=\"finished\"",
-        "visible-when=\"finished\" and-visible-when=\"attempts\"",
-    );
+    let input = CONFIG.replace("visible-when=\"finished\"", "visible-when=\"finished\" and-visible-when=\"attempts\"");
     let mut state = ControllerState::default();
     state.set_template_catalog(Some(config(&input)));
-    publish(
-        &mut state,
-        "done",
-        &[("phase", MetadataValue::Text("done".into()))],
-    );
+    publish(&mut state, "done", &[("phase", MetadataValue::Text("done".into()))]);
     for (finished, attempts) in [(false, false), (true, false), (true, true), (false, true)] {
-        assert_eq!(
-            ids(&state, "tree"),
-            if finished && attempts {
-                vec!["done"]
-            } else {
-                vec![]
-            }
-        );
-        toggle(
-            &mut state,
-            if finished == attempts {
-                "finished"
-            } else {
-                "attempts"
-            },
-        );
+        assert_eq!(ids(&state, "tree"), if finished && attempts { vec!["done"] } else { vec![] });
+        toggle(&mut state, if finished == attempts { "finished" } else { "attempts" });
     }
-    assert!(parse_template_config_kdl(&input.replace(
-        "and-visible-when=\"attempts\"",
-        "and-visible-when=\"missing\""
-    ))
-    .is_err());
+    assert!(parse_template_config_kdl(&input.replace("and-visible-when=\"attempts\"", "and-visible-when=\"missing\"")).is_err());
 }
 
 // Misconfigured layer overrides must report every variable in a conjunction,
 // even when the first variable already hides the matching entities.
 #[test]
 fn conjunction_reports_both_non_boolean_overrides() {
-    let input = CONFIG.replace(
-        "visible-when=\"finished\"",
-        "visible-when=\"finished\" and-visible-when=\"attempts\"",
-    );
-    let user = parse_template_config_kdl(r#"
+    let input = CONFIG.replace("visible-when=\"finished\"", "visible-when=\"finished\" and-visible-when=\"attempts\"");
+    let user = parse_template_config_kdl(
+        r#"
         display-variable "finished" type="enum" default="yes" label="Finished" icon="F" { value "yes"; }
         display-variable "attempts" type="enum" default="yes" label="Attempts" icon="A" { value "yes"; }
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
     let mut state = ControllerState::default();
     state.set_template_catalog(Some(TemplateConfigCatalog::from_layers(vec![
         TemplateConfigLayer::bundled("bundled", parse_template_config_kdl(&input).unwrap()),
@@ -319,8 +220,6 @@ fn conjunction_reports_both_non_boolean_overrides() {
     ])));
     let warnings = state.view_model().template_config.warnings;
     for name in ["finished", "attempts"] {
-        assert!(warnings
-            .iter()
-            .any(|warning| warning.contains(&format!("boolean display variable {name}"))));
+        assert!(warnings.iter().any(|warning| warning.contains(&format!("boolean display variable {name}"))));
     }
 }

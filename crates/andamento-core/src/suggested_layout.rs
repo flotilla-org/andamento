@@ -74,20 +74,10 @@ pub enum Content {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LocalRecipe {
-    Command {
-        line: CommandLine,
-        cwd: Option<String>,
-    },
-    File {
-        path: String,
-    },
-    Url {
-        url: String,
-    },
-    Jackstay {
-        launcher: String,
-        endpoint: String,
-    },
+    Command { line: CommandLine, cwd: Option<String> },
+    File { path: String },
+    Url { url: String },
+    Jackstay { launcher: String, endpoint: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -110,10 +100,7 @@ pub enum RebindPolicy {
 pub enum SlotResolution {
     /// What a frontend runs now. `target` identifies the backing instance and
     /// changes whenever it is replaced, even if the recipe text does not.
-    Ready {
-        target: Option<String>,
-        recipe: LocalRecipe,
-    },
+    Ready { target: Option<String>, recipe: LocalRecipe },
     /// The provider explicitly suspends replacement.
     Held,
     /// Missing, malformed or incomplete resolution facts. Not deletion.
@@ -135,14 +122,8 @@ pub struct Panel {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PanelNode {
-    Split {
-        axis: Axis,
-        children: Vec<String>,
-    },
-    Tabs {
-        slots: Vec<String>,
-        selected: String,
-    },
+    Split { axis: Axis, children: Vec<String> },
+    Tabs { slots: Vec<String>, selected: String },
 }
 
 /// `Row` lays children left to right, `Column` top to bottom.
@@ -227,10 +208,7 @@ impl fmt::Display for LayoutError {
             ReservedPrimary { key } => {
                 write!(f, "{key}: the primary slot comes from workspace.primary.*")
             }
-            MissingPrimary => write!(
-                f,
-                "layout.slots lists primary without workspace.primary.state"
-            ),
+            MissingPrimary => write!(f, "layout.slots lists primary without workspace.primary.state"),
             UnlistedSlot { key } => write!(f, "{key} names a slot layout.slots does not list"),
             IncompleteFacet { slot } => write!(f, "slot {slot} needs both entity and facet"),
             ArgvGap { slot } => write!(f, "slot {slot} argv indices are not 0..n"),
@@ -256,19 +234,10 @@ impl std::error::Error for LayoutError {}
 /// Reads the Suggested Layout `entity` publishes, if any. `facts` are its
 /// resolved, live facts. Returns `Ok(None)` when it publishes neither
 /// `layout.*` nor `workspace.primary.state`.
-pub fn parse(
-    entity: &EntityRef,
-    facts: &BTreeMap<String, MetadataValue>,
-) -> Result<Option<SuggestedLayout>, LayoutError> {
-    let primary = facts
-        .contains_key(KEY_PRIMARY_STATE)
-        .then(|| primary_slot(entity, facts));
+pub fn parse(entity: &EntityRef, facts: &BTreeMap<String, MetadataValue>) -> Result<Option<SuggestedLayout>, LayoutError> {
+    let primary = facts.contains_key(KEY_PRIMARY_STATE).then(|| primary_slot(entity, facts));
     if !facts.keys().any(|key| key.starts_with("layout.")) {
-        return Ok(primary.map(|slot| SuggestedLayout {
-            version: BaselineVersion::PrimaryOnly,
-            slots: vec![slot],
-            arrangement: None,
-        }));
+        return Ok(primary.map(|slot| SuggestedLayout { version: BaselineVersion::PrimaryOnly, slots: vec![slot], arrangement: None }));
     }
     let f = Facts(facts);
     let version = f.text(KEY_VERSION)?.filter(|v| !v.is_empty());
@@ -282,10 +251,7 @@ pub fn parse(
         }
     }
     for fact in facts.keys() {
-        if let Some((slot, _)) = fact
-            .strip_prefix(SLOT_PREFIX)
-            .and_then(|rest| rest.split_once('.'))
-        {
+        if let Some((slot, _)) = fact.strip_prefix(SLOT_PREFIX).and_then(|rest| rest.split_once('.')) {
             if slot == PRIMARY_SLOT {
                 return Err(LayoutError::ReservedPrimary { key: fact.clone() });
             }
@@ -311,11 +277,7 @@ pub fn parse(
     }
     let known: BTreeSet<&str> = slots.iter().map(|s| s.key.as_str()).collect();
     let arrangement = arrangement(&f, &known)?;
-    Ok(Some(SuggestedLayout {
-        version: BaselineVersion::Published(version.to_owned()),
-        slots,
-        arrangement,
-    }))
+    Ok(Some(SuggestedLayout { version: BaselineVersion::Published(version.to_owned()), slots, arrangement }))
 }
 
 /// The single-slot special case, read exactly as managed primary content does.
@@ -326,16 +288,10 @@ fn primary_slot(entity: &EntityRef, facts: &BTreeMap<String, MetadataValue>) -> 
     };
     let resolution = match text(KEY_PRIMARY_STATE).as_deref() {
         Some("held") => SlotResolution::Held,
-        Some("ready") => match (
-            text(KEY_PRIMARY_TARGET).filter(|s| !s.is_empty()),
-            text(KEY_PRIMARY_RECIPE).filter(|s| !s.is_empty()),
-        ) {
+        Some("ready") => match (text(KEY_PRIMARY_TARGET).filter(|s| !s.is_empty()), text(KEY_PRIMARY_RECIPE).filter(|s| !s.is_empty())) {
             (Some(target), Some(command)) => SlotResolution::Ready {
                 target: Some(target),
-                recipe: LocalRecipe::Command {
-                    line: CommandLine::Shell(command),
-                    cwd: text(KEY_PRIMARY_CWD),
-                },
+                recipe: LocalRecipe::Command { line: CommandLine::Shell(command), cwd: text(KEY_PRIMARY_CWD) },
             },
             _ => SlotResolution::Unavailable,
         },
@@ -343,13 +299,7 @@ fn primary_slot(entity: &EntityRef, facts: &BTreeMap<String, MetadataValue>) -> 
     };
     Slot {
         key: PRIMARY_SLOT.to_owned(),
-        spec: ViewSpec {
-            content: Content::ProviderFacet {
-                entity: entity.clone(),
-                facet: PRIMARY_FACET.to_owned(),
-            },
-            presentation: None,
-        },
+        spec: ViewSpec { content: Content::ProviderFacet { entity: entity.clone(), facet: PRIMARY_FACET.to_owned() }, presentation: None },
         rebind: RebindPolicy::Replace,
         resolution,
     }
@@ -380,10 +330,7 @@ fn provider_slot(f: &Facts, key: &str) -> Result<Slot, LayoutError> {
                 Some("ready") => {
                     let target = f.text(&at("target")).ok().flatten();
                     match (target.filter(|s| !s.is_empty()), recipe(f, key)) {
-                        (Some(target), Ok(recipe)) => SlotResolution::Ready {
-                            target: Some(target.to_owned()),
-                            recipe,
-                        },
+                        (Some(target), Ok(recipe)) => SlotResolution::Ready { target: Some(target.to_owned()), recipe },
                         _ => SlotResolution::Unavailable,
                     }
                 }
@@ -395,30 +342,15 @@ fn provider_slot(f: &Facts, key: &str) -> Result<Slot, LayoutError> {
         (None, None) => {
             let recipe = recipe(f, key)?;
             let resolution = match state? {
-                None | Some("ready") => SlotResolution::Ready {
-                    target: f.text(&at("target"))?.map(str::to_owned),
-                    recipe: recipe.clone(),
-                },
+                None | Some("ready") => SlotResolution::Ready { target: f.text(&at("target"))?.map(str::to_owned), recipe: recipe.clone() },
                 Some("held") => SlotResolution::Held,
                 Some(other) => return Err(invalid(&at("state"), other)),
             };
             (Content::Local(recipe), resolution)
         }
-        _ => {
-            return Err(LayoutError::IncompleteFacet {
-                slot: key.to_owned(),
-            })
-        }
+        _ => return Err(LayoutError::IncompleteFacet { slot: key.to_owned() }),
     };
-    Ok(Slot {
-        key: key.to_owned(),
-        spec: ViewSpec {
-            content,
-            presentation,
-        },
-        rebind,
-        resolution,
-    })
+    Ok(Slot { key: key.to_owned(), spec: ViewSpec { content, presentation }, rebind, resolution })
 }
 
 fn recipe(f: &Facts, key: &str) -> Result<LocalRecipe, LayoutError> {
@@ -439,21 +371,11 @@ fn recipe(f: &Facts, key: &str) -> Result<LocalRecipe, LayoutError> {
                 (true, Some(shell)) if !shell.is_empty() => CommandLine::Shell(shell.to_owned()),
                 _ => return Err(missing(&at("argv.0"))),
             };
-            LocalRecipe::Command {
-                line,
-                cwd: f.text(&at("cwd"))?.map(str::to_owned),
-            }
+            LocalRecipe::Command { line, cwd: f.text(&at("cwd"))?.map(str::to_owned) }
         }
-        "file" => LocalRecipe::File {
-            path: required("path")?,
-        },
-        "url" => LocalRecipe::Url {
-            url: required("url")?,
-        },
-        "jackstay" => LocalRecipe::Jackstay {
-            launcher: required("launcher")?,
-            endpoint: required("endpoint")?,
-        },
+        "file" => LocalRecipe::File { path: required("path")? },
+        "url" => LocalRecipe::Url { url: required("url")? },
+        "jackstay" => LocalRecipe::Jackstay { launcher: required("launcher")?, endpoint: required("endpoint")? },
         other => return Err(invalid(&at("kind"), other)),
     })
 }
@@ -465,22 +387,15 @@ fn argv(f: &Facts, key: &str) -> Result<Vec<String>, LayoutError> {
         let Some(index) = fact.strip_prefix(&prefix) else {
             break;
         };
-        let n: usize = index
-            .parse()
-            .ok()
-            .filter(|n: &usize| n.to_string() == index)
-            .ok_or_else(|| LayoutError::ArgvGap {
-                slot: key.to_owned(),
-            })?;
+        let n: usize =
+            index.parse().ok().filter(|n: &usize| n.to_string() == index).ok_or_else(|| LayoutError::ArgvGap { slot: key.to_owned() })?;
         let MetadataValue::Text(arg) = value else {
             return Err(wrong(fact, "text"));
         };
         indexed.insert(n, arg.clone());
     }
     if indexed.keys().copied().ne(0..indexed.len()) {
-        return Err(LayoutError::ArgvGap {
-            slot: key.to_owned(),
-        });
+        return Err(LayoutError::ArgvGap { slot: key.to_owned() });
     }
     Ok(indexed.into_values().collect())
 }
@@ -488,10 +403,7 @@ fn argv(f: &Facts, key: &str) -> Result<Vec<String>, LayoutError> {
 fn arrangement(f: &Facts, known: &BTreeSet<&str>) -> Result<Option<Arrangement>, LayoutError> {
     let mut declared = BTreeSet::new();
     for fact in f.0.keys() {
-        if let Some((panel, _)) = fact
-            .strip_prefix(PANEL_PREFIX)
-            .and_then(|rest| rest.split_once('.'))
-        {
+        if let Some((panel, _)) = fact.strip_prefix(PANEL_PREFIX).and_then(|rest| rest.split_once('.')) {
             check_id(fact, panel)?;
             declared.insert(panel.to_owned());
         }
@@ -516,17 +428,12 @@ fn arrangement(f: &Facts, known: &BTreeSet<&str>) -> Result<Option<Arrangement>,
         let at = |field: &str| format!("{PANEL_PREFIX}{id}.{field}");
         let weight = match f.0.get(&at("weight")) {
             None => 1,
-            Some(MetadataValue::Integer(w)) => u32::try_from(*w)
-                .ok()
-                .filter(|w| *w > 0)
-                .ok_or_else(|| invalid(&at("weight"), &w.to_string()))?,
+            Some(MetadataValue::Integer(w)) => {
+                u32::try_from(*w).ok().filter(|w| *w > 0).ok_or_else(|| invalid(&at("weight"), &w.to_string()))?
+            }
             Some(_) => return Err(wrong(&at("weight"), "a positive integer")),
         };
-        let shape = (
-            f.text(&at("axis"))?,
-            f.list(&at("children"))?,
-            f.list(&at("slots"))?,
-        );
+        let shape = (f.text(&at("axis"))?, f.list(&at("children"))?, f.list(&at("slots"))?);
         let node = match shape {
             (Some(axis), Some(children), None) if !children.is_empty() => {
                 let axis = match axis {
@@ -541,18 +448,12 @@ fn arrangement(f: &Facts, known: &BTreeSet<&str>) -> Result<Option<Arrangement>,
                 if f.0.contains_key(&at("selected")) {
                     return Err(LayoutError::PanelShape { panel: id });
                 }
-                PanelNode::Split {
-                    axis,
-                    children: children.clone(),
-                }
+                PanelNode::Split { axis, children: children.clone() }
             }
             (None, None, Some(slots)) if !slots.is_empty() => {
                 for slot in slots {
                     if !known.contains(slot.as_str()) {
-                        return Err(LayoutError::UnknownSlot {
-                            panel: id,
-                            slot: slot.clone(),
-                        });
+                        return Err(LayoutError::UnknownSlot { panel: id, slot: slot.clone() });
                     }
                     if !placed.insert(slot.clone()) {
                         return Err(LayoutError::SlotInTwoPanels { slot: slot.clone() });
@@ -560,15 +461,9 @@ fn arrangement(f: &Facts, known: &BTreeSet<&str>) -> Result<Option<Arrangement>,
                 }
                 let selected = f.text(&at("selected"))?.unwrap_or(&slots[0]).to_owned();
                 if !slots.contains(&selected) {
-                    return Err(LayoutError::SelectedNotInPanel {
-                        panel: id,
-                        slot: selected,
-                    });
+                    return Err(LayoutError::SelectedNotInPanel { panel: id, slot: selected });
                 }
-                PanelNode::Tabs {
-                    slots: slots.clone(),
-                    selected,
-                }
+                PanelNode::Tabs { slots: slots.clone(), selected }
             }
             _ => return Err(LayoutError::PanelShape { panel: id }),
         };
@@ -577,10 +472,7 @@ fn arrangement(f: &Facts, known: &BTreeSet<&str>) -> Result<Option<Arrangement>,
     if let Some(panel) = declared.into_iter().find(|id| !panels.contains_key(id)) {
         return Err(LayoutError::UnreachablePanel { panel });
     }
-    Ok(Some(Arrangement {
-        root: root.to_owned(),
-        panels,
-    }))
+    Ok(Some(Arrangement { root: root.to_owned(), panels }))
 }
 
 struct Facts<'a>(&'a BTreeMap<String, MetadataValue>);
@@ -607,36 +499,23 @@ impl Facts<'_> {
 fn check_id(key: &str, id: &str) -> Result<(), LayoutError> {
     let mut chars = id.chars();
     let valid = id.len() <= 64
-        && chars
-            .next()
-            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
     if valid {
         Ok(())
     } else {
-        Err(LayoutError::InvalidId {
-            key: key.to_owned(),
-            id: id.to_owned(),
-        })
+        Err(LayoutError::InvalidId { key: key.to_owned(), id: id.to_owned() })
     }
 }
 
 fn missing(key: &str) -> LayoutError {
-    LayoutError::MissingFact {
-        key: key.to_owned(),
-    }
+    LayoutError::MissingFact { key: key.to_owned() }
 }
 fn wrong(key: &str, expected: &'static str) -> LayoutError {
-    LayoutError::WrongType {
-        key: key.to_owned(),
-        expected,
-    }
+    LayoutError::WrongType { key: key.to_owned(), expected }
 }
 fn invalid(key: &str, value: &str) -> LayoutError {
-    LayoutError::InvalidValue {
-        key: key.to_owned(),
-        value: value.to_owned(),
-    }
+    LayoutError::InvalidValue { key: key.to_owned(), value: value.to_owned() }
 }
 
 #[cfg(test)]

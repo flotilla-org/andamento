@@ -61,9 +61,7 @@ pub(crate) fn resolve_field(
     context: crate::template_config::TemplateConfigMatchContext<'_>,
     entries: &std::collections::BTreeMap<String, MetadataEntry>,
 ) -> Option<DetailField> {
-    use crate::template_config::{
-        TemplateConfigResolvedValue, TemplateConfigValueSource as Source,
-    };
+    use crate::template_config::{TemplateConfigResolvedValue, TemplateConfigValueSource as Source};
     let role = spec.role?;
     if !spec.condition.matches(context) {
         return None;
@@ -71,10 +69,7 @@ pub(crate) fn resolve_field(
     let resolved = spec.sources.iter().find_map(|source| match source {
         // Known-empty literals are values in structured content. Flat rendering
         // preserves its existing omission of empty literals.
-        Source::Literal { value } => Some(TemplateConfigResolvedValue {
-            value: value.clone(),
-            source: None,
-        }),
+        Source::Literal { value } => Some(TemplateConfigResolvedValue { value: value.clone(), source: None }),
         _ => source.resolve(context),
     });
     let source = resolved.as_ref().and_then(|value| value.source.as_ref());
@@ -85,10 +80,7 @@ pub(crate) fn resolve_field(
         match source.map(|source| &source.value) {
             Some(crate::MetadataValue::EntityRefs(refs)) => {
                 let mut seen = std::collections::BTreeSet::new();
-                refs.iter()
-                    .filter(|entity| seen.insert((*entity).clone()))
-                    .cloned()
-                    .collect()
+                refs.iter().filter(|entity| seen.insert((*entity).clone())).cloned().collect()
             }
             _ => vec![],
         }
@@ -111,10 +103,7 @@ pub(crate) fn resolve_field(
 #[cfg(test)]
 mod tests {
     const PROVIDER: &str = "test";
-    use crate::{
-        template_config::*, EntityRef, MetadataPatch, MetadataTarget, MetadataValue,
-        MetadataValueUpdate, Sidebar,
-    };
+    use crate::{template_config::*, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar};
     use std::collections::BTreeMap;
 
     // Enumerate every semantic role and both source-presence states. Configuration
@@ -136,8 +125,7 @@ mod tests {
                     r#"{{"templates":[{{"name":"item/detail","slot":"detail","node-kind":"entity","operations":[{{"kind":"set","field":{{"name":"value","class":"required","section":"custom","role":"{role}","label":"Label","sources":[{{"kind":"metadata-display","key":"fact"}}],"prefix":"Prefix: ","suffix":"!","priority":100}}}},{{"kind":"set","field":{{"name":"literal","class":"required","role":"fact","sources":[{{"kind":"literal","value":""}}],"priority":100}}}}]}}]}}"#
                 );
                 assert_eq!(parse_template_config_json(&json).unwrap(), parsed);
-                let facts =
-                    BTreeMap::from([("entity.kind".into(), MetadataValue::Text("item".into()))]);
+                let facts = BTreeMap::from([("entity.kind".into(), MetadataValue::Text("item".into()))]);
                 let context = TemplateConfigMatchContext {
                     slot: TemplateConfigSlot::Detail,
                     node_kind: TemplateConfigNodeKind::Entity,
@@ -146,36 +134,20 @@ mod tests {
                     collapsible: false,
                     active_tab_name: None,
                 };
-                let resolved = TemplateConfigCatalog::from_config(parsed.clone())
-                    .resolve(context)
-                    .unwrap()
-                    .unwrap();
+                let resolved = TemplateConfigCatalog::from_config(parsed.clone()).resolve(context).unwrap().unwrap();
                 assert_eq!(
-                    parse_template_config_kdl(&resolved.dump_kdl())
-                        .unwrap()
-                        .templates[0]
-                        .operations,
+                    parse_template_config_kdl(&resolved.dump_kdl()).unwrap().templates[0].operations,
                     parsed.templates[0].operations
                 );
                 let mut sidebar = Sidebar::new(&config).unwrap();
                 let mut set = BTreeMap::from([(
                     "display.label".into(),
-                    MetadataValueUpdate {
-                        value: MetadataValue::Text("Entity".into()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
+                    MetadataValueUpdate { value: MetadataValue::Text("Entity".into()), ttl_ms: None, precedence: None, ordinal: None },
                 )]);
                 if let Some(value) = value {
                     set.insert(
                         "fact".into(),
-                        MetadataValueUpdate {
-                            value: MetadataValue::Text(value.into()),
-                            ttl_ms: Some(10),
-                            precedence: None,
-                            ordinal: None,
-                        },
+                        MetadataValueUpdate { value: MetadataValue::Text(value.into()), ttl_ms: Some(10), precedence: None, ordinal: None },
                     );
                 }
                 sidebar
@@ -204,18 +176,9 @@ mod tests {
     // Invalid semantic roles must be rejected by both frontend-neutral formats.
     #[test]
     fn invalid_roles_are_rejected() {
-        assert!(parse_template_config_kdl(
-            r#"template "item/detail" { field "x" role=1 literal="x"; }"#
-        )
-        .is_err());
-        assert!(parse_template_config_kdl(
-            r#"template "item/detail" { field "x" label=true literal="x"; }"#
-        )
-        .is_err());
-        assert!(parse_template_config_kdl(
-            r#"template "item/detail" { field "x" role="color-red" literal="x"; }"#
-        )
-        .is_err());
+        assert!(parse_template_config_kdl(r#"template "item/detail" { field "x" role=1 literal="x"; }"#).is_err());
+        assert!(parse_template_config_kdl(r#"template "item/detail" { field "x" label=true literal="x"; }"#).is_err());
+        assert!(parse_template_config_kdl(r#"template "item/detail" { field "x" role="color-red" literal="x"; }"#).is_err());
         assert!(parse_template_config_json(r#"{"templates":[{"name":"item/detail","operations":[{"kind":"set","field":{"name":"x","class":"required","role":"color-red","sources":[{"kind":"literal","value":"x"}]}}]}]}"#).is_err());
     }
 }
@@ -229,22 +192,20 @@ mod edge_tests {
     // no winner, and duplicate relations retain the first occurrence order.
     #[test]
     fn conditional_fields_fallbacks_and_duplicate_relations() {
-        let parsed = parse_template_config_kdl(r#"
+        let parsed = parse_template_config_kdl(
+            r#"
             template "item/detail" {
                 field "hidden" role="fact" structured-only=true condition="collapsed" literal="value"
                 field "fallback" role="fact" { value key="missing-first"; value key="missing-second"; }
                 field "relations" role="relation" key="refs"
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let targets = [EntityRef::local("item", "a"), EntityRef::local("item", "b")];
         let metadata = BTreeMap::from([(
             "refs".into(),
-            MetadataValue::EntityRefs(vec![
-                targets[0].clone(),
-                targets[0].clone(),
-                targets[1].clone(),
-                targets[0].clone(),
-            ]),
+            MetadataValue::EntityRefs(vec![targets[0].clone(), targets[0].clone(), targets[1].clone(), targets[0].clone()]),
         )]);
         let context = TemplateConfigMatchContext {
             slot: TemplateConfigSlot::Detail,
@@ -258,45 +219,21 @@ mod edge_tests {
             .operations
             .iter()
             .map(|op| {
-                let TemplateConfigFieldOperation::Set { field } = op else {
-                    panic!("field expected")
-                };
+                let TemplateConfigFieldOperation::Set { field } = op else { panic!("field expected") };
                 field
             })
             .collect();
         assert!(resolve_field(fields[0], context, &BTreeMap::new()).is_none());
         assert_eq!(
-            resolve_field(
-                fields[0],
-                TemplateConfigMatchContext {
-                    collapsed: true,
-                    ..context
-                },
-                &BTreeMap::new()
-            )
-            .unwrap()
-            .text
-            .as_deref(),
+            resolve_field(fields[0], TemplateConfigMatchContext { collapsed: true, ..context }, &BTreeMap::new()).unwrap().text.as_deref(),
             Some("value")
         );
         let missing = resolve_field(fields[1], context, &BTreeMap::new()).unwrap();
         assert_eq!(missing.text, None);
         assert_eq!(missing.source_key, "");
+        assert_eq!(resolve_field(fields[2], context, &BTreeMap::new()).unwrap().relations, targets);
         assert_eq!(
-            resolve_field(fields[2], context, &BTreeMap::new())
-                .unwrap()
-                .relations,
-            targets
-        );
-        assert_eq!(
-            [
-                DetailRole::Identity,
-                DetailRole::Title,
-                DetailRole::State,
-                DetailRole::Fact,
-                DetailRole::Relation
-            ]
-            .map(|role| role as u32),
+            [DetailRole::Identity, DetailRole::Title, DetailRole::State, DetailRole::Fact, DetailRole::Relation].map(|role| role as u32),
             [0, 1, 2, 3, 4]
         );
     }

@@ -2,8 +2,7 @@
 use andamento_core::{
     replay::{self, read, Replay},
     suggested_layout::{
-        parse, Axis, BaselineVersion, CommandLine, Content, LocalRecipe, PanelNode, RebindPolicy,
-        SlotResolution, SuggestedLayout,
+        parse, Axis, BaselineVersion, CommandLine, Content, LocalRecipe, PanelNode, RebindPolicy, SlotResolution, SuggestedLayout,
     },
     EntityRef, Sidebar, LOCAL_PROVIDER,
 };
@@ -24,22 +23,15 @@ template "line" { field "label" key="display.label"; }
 "#;
 
 fn replay(name: &str) -> Replay {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures")
-        .join(name);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures").join(name);
     Replay::new(read(Cursor::new(std::fs::read(path).unwrap())).unwrap()).unwrap()
 }
 
 /// The layout of the only entity of `kind` on the surface, if any.
 fn layout(sidebar: &Sidebar, kind: &str) -> Option<SuggestedLayout> {
     let snapshot = sidebar.snapshot();
-    let nodes: Vec<_> = snapshot
-        .surface
-        .sections
-        .iter()
-        .flat_map(|section| &section.nodes)
-        .filter(|node| node.entity.kind == kind)
-        .collect();
+    let nodes: Vec<_> =
+        snapshot.surface.sections.iter().flat_map(|section| &section.nodes).filter(|node| node.entity.kind == kind).collect();
     match nodes.as_slice() {
         [] => None,
         [node] => parse(&node.entity, &node.facts).unwrap(),
@@ -52,11 +44,7 @@ fn keys(layout: &SuggestedLayout) -> Vec<&str> {
 }
 
 fn entity(kind: &str, id: &str) -> EntityRef {
-    let provider = if kind.starts_with('.') {
-        LOCAL_PROVIDER
-    } else {
-        replay::PROVIDER
-    };
+    let provider = if kind.starts_with('.') { LOCAL_PROVIDER } else { replay::PROVIDER };
     EntityRef::new(provider, kind, id)
 }
 
@@ -80,19 +68,14 @@ fn review_convoy_layout_replays_into_slots_and_an_arrangement_baseline() {
     let primary = first.slot("primary").unwrap();
     assert_eq!(
         primary.spec.content,
-        Content::ProviderFacet {
-            entity: entity("convoy", "flotilla/review-147@fleet"),
-            facet: "primary".into()
-        }
+        Content::ProviderFacet { entity: entity("convoy", "flotilla/review-147@fleet"), facet: "primary".into() }
     );
     assert_eq!(
         primary.resolution,
         SlotResolution::Ready {
             target: Some("vessel:flotilla/review-147/coder@lab".into()),
             recipe: LocalRecipe::Command {
-                line: CommandLine::Shell(
-                    "'flotilla' attach --host 'lab' 'review-147/coder'".into()
-                ),
+                line: CommandLine::Shell("'flotilla' attach --host 'lab' 'review-147/coder'".into()),
                 cwd: Some(root.into()),
             },
         }
@@ -101,10 +84,7 @@ fn review_convoy_layout_replays_into_slots_and_an_arrangement_baseline() {
     let reviewer = first.slot("reviewer").unwrap();
     assert_eq!(
         reviewer.spec.content,
-        Content::ProviderFacet {
-            entity: entity("vessel", "flotilla/review-147/reviewer@lab"),
-            facet: "terminal".into()
-        }
+        Content::ProviderFacet { entity: entity("vessel", "flotilla/review-147/reviewer@lab"), facet: "terminal".into() }
     );
     assert_eq!(reviewer.spec.presentation.as_deref(), Some("terminal"));
     assert_eq!(reviewer.rebind, RebindPolicy::KeepPrevious);
@@ -113,24 +93,14 @@ fn review_convoy_layout_replays_into_slots_and_an_arrangement_baseline() {
         SlotResolution::Ready {
             target: Some("vessel:flotilla/review-147/reviewer@lab#gen-1".into()),
             recipe: LocalRecipe::Command {
-                line: CommandLine::Argv(
-                    ["flotilla", "attach", "--host", "lab", "review-147/reviewer"]
-                        .map(String::from)
-                        .to_vec()
-                ),
+                line: CommandLine::Argv(["flotilla", "attach", "--host", "lab", "review-147/reviewer"].map(String::from).to_vec()),
                 cwd: Some(root.into()),
             },
         }
     );
 
     let pr_slot = first.slot("pr").unwrap();
-    assert_eq!(
-        pr_slot.spec.content,
-        Content::ProviderFacet {
-            entity: pr.clone(),
-            facet: "review".into()
-        }
-    );
+    assert_eq!(pr_slot.spec.content, Content::ProviderFacet { entity: pr.clone(), facet: "review".into() });
     assert_eq!(pr_slot.spec.presentation.as_deref(), Some("web"));
     assert!(matches!(
         &pr_slot.resolution,
@@ -139,54 +109,22 @@ fn review_convoy_layout_replays_into_slots_and_an_arrangement_baseline() {
     ));
 
     let notes = first.slot("notes").unwrap();
-    let file = LocalRecipe::File {
-        path: format!("{root}/.flotilla/review/notes.md"),
-    };
+    let file = LocalRecipe::File { path: format!("{root}/.flotilla/review/notes.md") };
     assert_eq!(notes.spec.content, Content::Local(file.clone()));
     assert_eq!(notes.spec.presentation.as_deref(), Some("markdown"));
-    assert_eq!(
-        notes.resolution,
-        SlotResolution::Ready {
-            target: None,
-            recipe: file
-        }
-    );
+    assert_eq!(notes.resolution, SlotResolution::Ready { target: None, recipe: file });
 
     let arrangement = first.arrangement.as_ref().unwrap();
     assert_eq!(arrangement.root, "main");
     let panel = |id: &str| &arrangement.panels[id];
-    assert_eq!(
-        panel("main").node,
-        PanelNode::Split {
-            axis: Axis::Row,
-            children: vec!["agents".into(), "review".into()]
-        }
-    );
+    assert_eq!(panel("main").node, PanelNode::Split { axis: Axis::Row, children: vec!["agents".into(), "review".into()] });
     assert_eq!(panel("agents").weight, 3);
-    assert_eq!(
-        panel("agents").node,
-        PanelNode::Tabs {
-            slots: vec!["primary".into(), "reviewer".into()],
-            selected: "reviewer".into()
-        }
-    );
+    assert_eq!(panel("agents").node, PanelNode::Tabs { slots: vec!["primary".into(), "reviewer".into()], selected: "reviewer".into() });
     assert_eq!(panel("review").weight, 2);
-    assert_eq!(
-        panel("review").node,
-        PanelNode::Split {
-            axis: Axis::Column,
-            children: vec!["pr-view".into(), "notes-view".into()]
-        }
-    );
+    assert_eq!(panel("review").node, PanelNode::Split { axis: Axis::Column, children: vec!["pr-view".into(), "notes-view".into()] });
     assert_eq!(panel("pr-view").weight, 2);
     assert_eq!(panel("notes-view").weight, 1);
-    assert_eq!(
-        panel("notes-view").node,
-        PanelNode::Tabs {
-            slots: vec!["notes".into()],
-            selected: "notes".into()
-        }
-    );
+    assert_eq!(panel("notes-view").node, PanelNode::Tabs { slots: vec!["notes".into()], selected: "notes".into() });
 
     // A changed resolution is not a changed baseline.
     assert_eq!(replay.step(&mut sidebar).unwrap(), Some(1000));
@@ -197,33 +135,18 @@ fn review_convoy_layout_replays_into_slots_and_an_arrangement_baseline() {
     for (a, b) in held.slots.iter().zip(&first.slots) {
         assert_eq!(a.spec, b.spec);
     }
-    assert_eq!(
-        held.slot("reviewer").unwrap().resolution,
-        SlotResolution::Held
-    );
+    assert_eq!(held.slot("reviewer").unwrap().resolution, SlotResolution::Held);
     assert_eq!(held.slot("primary"), first.slot("primary"));
 
     // A new slot is a new baseline.
     assert_eq!(replay.step(&mut sidebar).unwrap(), Some(2000));
     let second = layout(&sidebar, "convoy").unwrap();
     assert_eq!(second.version, BaselineVersion::Published("2".into()));
-    assert_eq!(
-        keys(&second),
-        ["primary", "reviewer", "pr", "checks", "notes"]
-    );
-    assert_eq!(
-        second.slot("checks").unwrap().spec.content,
-        Content::ProviderFacet {
-            entity: pr,
-            facet: "checks".into()
-        }
-    );
+    assert_eq!(keys(&second), ["primary", "reviewer", "pr", "checks", "notes"]);
+    assert_eq!(second.slot("checks").unwrap().spec.content, Content::ProviderFacet { entity: pr, facet: "checks".into() });
     assert_eq!(
         second.arrangement.as_ref().unwrap().panels["pr-view"].node,
-        PanelNode::Tabs {
-            slots: vec!["pr".into(), "checks".into()],
-            selected: "pr".into()
-        }
+        PanelNode::Tabs { slots: vec!["pr".into(), "checks".into()], selected: "pr".into() }
     );
     assert!(matches!(
         &second.slot("reviewer").unwrap().resolution,
@@ -257,14 +180,7 @@ fn standing_role_primary_facts_replay_as_a_one_slot_layout() {
         match (generation, &slot.resolution) {
             (
                 Some(generation),
-                SlotResolution::Ready {
-                    target: Some(target),
-                    recipe:
-                        LocalRecipe::Command {
-                            line: CommandLine::Shell(command),
-                            ..
-                        },
-                },
+                SlotResolution::Ready { target: Some(target), recipe: LocalRecipe::Command { line: CommandLine::Shell(command), .. } },
             ) => {
                 assert!(target.contains(generation), "{target}");
                 assert!(command.contains("attach"), "{command}");

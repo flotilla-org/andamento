@@ -90,48 +90,22 @@ impl ViewSpecView {
 
     unsafe fn read(&self) -> Result<ViewSpec, String> {
         let content = match self.content {
-            ANDAMENTO_SLOT_FACET => Content::ProviderFacet {
-                entity: self.entity.read()?,
-                facet: self.facet.read()?,
-            },
+            ANDAMENTO_SLOT_FACET => Content::ProviderFacet { entity: self.entity.read()?, facet: self.facet.read()? },
             ANDAMENTO_SLOT_COMMAND => {
-                let argv = slice(self.argv, self.argc)?
-                    .iter()
-                    .map(|arg| arg.read())
-                    .collect::<Result<Vec<_>, _>>()?;
+                let argv = slice(self.argv, self.argc)?.iter().map(|arg| arg.read()).collect::<Result<Vec<_>, _>>()?;
                 Content::Local(LocalRecipe::Command {
-                    line: if argv.is_empty() {
-                        CommandLine::Shell(self.command.read()?)
-                    } else {
-                        CommandLine::Argv(argv)
-                    },
-                    cwd: if self.has_cwd != 0 {
-                        Some(self.cwd.read()?)
-                    } else {
-                        None
-                    },
+                    line: if argv.is_empty() { CommandLine::Shell(self.command.read()?) } else { CommandLine::Argv(argv) },
+                    cwd: if self.has_cwd != 0 { Some(self.cwd.read()?) } else { None },
                 })
             }
-            ANDAMENTO_SLOT_FILE => Content::Local(LocalRecipe::File {
-                path: self.path.read()?,
-            }),
-            ANDAMENTO_SLOT_URL => Content::Local(LocalRecipe::Url {
-                url: self.url.read()?,
-            }),
-            ANDAMENTO_SLOT_JACKSTAY => Content::Local(LocalRecipe::Jackstay {
-                launcher: self.launcher.read()?,
-                endpoint: self.endpoint.read()?,
-            }),
+            ANDAMENTO_SLOT_FILE => Content::Local(LocalRecipe::File { path: self.path.read()? }),
+            ANDAMENTO_SLOT_URL => Content::Local(LocalRecipe::Url { url: self.url.read()? }),
+            ANDAMENTO_SLOT_JACKSTAY => {
+                Content::Local(LocalRecipe::Jackstay { launcher: self.launcher.read()?, endpoint: self.endpoint.read()? })
+            }
             other => return Err(format!("unknown slot content kind {other}")),
         };
-        Ok(ViewSpec {
-            content,
-            presentation: if self.has_presentation != 0 {
-                Some(self.presentation.read()?)
-            } else {
-                None
-            },
-        })
+        Ok(ViewSpec { content, presentation: if self.has_presentation != 0 { Some(self.presentation.read()?) } else { None } })
     }
 }
 
@@ -232,13 +206,7 @@ pub struct SlotListView {
     pub slot_count: usize,
 }
 
-type SlotsKeep = (
-    Vec<SlotInfo>,
-    Vec<Option<SavedResolution>>,
-    Vec<Vec<Text>>,
-    Vec<Vec<ResolutionFieldView>>,
-    Vec<SlotView>,
-);
+type SlotsKeep = (Vec<SlotInfo>, Vec<Option<SavedResolution>>, Vec<Vec<Text>>, Vec<Vec<ResolutionFieldView>>, Vec<SlotView>);
 
 /// A registered workspace's slots. Free them with andamento_slots_free.
 #[no_mangle]
@@ -250,14 +218,8 @@ pub unsafe extern "C" fn andamento_slots_get(
     run(h, error_out, |h| {
         let workspace = workspace.into();
         let slots = h.sidebar.slots(workspace)?;
-        let saved = slots
-            .iter()
-            .map(|slot| h.sidebar.slot_resolution(workspace, &slot.key))
-            .collect::<Result<Vec<_>, _>>()?;
-        let fields: Vec<Vec<ResolutionFieldView>> = saved
-            .iter()
-            .map(|saved| saved.as_ref().map(field_views).unwrap_or_default())
-            .collect();
+        let saved = slots.iter().map(|slot| h.sidebar.slot_resolution(workspace, &slot.key)).collect::<Result<Vec<_>, _>>()?;
+        let fields: Vec<Vec<ResolutionFieldView>> = saved.iter().map(|saved| saved.as_ref().map(field_views).unwrap_or_default()).collect();
         let mut argv = Vec::new();
         let views = slots
             .iter()
@@ -281,14 +243,8 @@ pub unsafe extern "C" fn andamento_slots_get(
                 }
             })
             .collect::<Vec<_>>();
-        let value = SlotListView {
-            slots: views.as_ptr(),
-            slot_count: views.len(),
-        };
-        Ok(give::<_, SlotsKeep>(
-            value,
-            (slots, saved, argv, fields, views),
-        ))
+        let value = SlotListView { slots: views.as_ptr(), slot_count: views.len() };
+        Ok(give::<_, SlotsKeep>(value, (slots, saved, argv, fields, views)))
     })
     .unwrap_or(ptr::null_mut())
 }
@@ -314,8 +270,7 @@ pub unsafe extern "C" fn andamento_slot_set(
 ) -> u32 {
     run(h, error_out, |h| {
         let spec = spec.as_ref().ok_or("a slot needs a view spec")?.read()?;
-        h.sidebar
-            .set_slot(workspace.into(), &key.read()?, spec, rebind_policy(rebind)?)?;
+        h.sidebar.set_slot(workspace.into(), &key.read()?, spec, rebind_policy(rebind)?)?;
         Ok(())
     })
     .is_some() as u32
@@ -410,9 +365,7 @@ pub unsafe extern "C" fn andamento_slot_plan(
 ) -> *mut SlotContentView {
     use andamento_core::managed::ContentState;
     run(h, error_out, |h| {
-        let plan = h
-            .sidebar
-            .plan_slot(workspace.into(), &key.read()?, &applied.read()?)?;
+        let plan = h.sidebar.plan_slot(workspace.into(), &key.read()?, &applied.read()?)?;
         let fields = plan.saved.as_ref().map(field_views).unwrap_or_default();
         let mut value = SlotContentView {
             state: match plan.state {
@@ -465,12 +418,7 @@ pub unsafe extern "C" fn andamento_slot_valid(
     token: u64,
     error_out: *mut *mut c_char,
 ) -> u32 {
-    run(h, error_out, |h| {
-        Ok(h.sidebar
-            .managed
-            .slot_valid(workspace.into(), &key.read()?, token))
-    })
-    .unwrap_or(false) as u32
+    run(h, error_out, |h| Ok(h.sidebar.managed.slot_valid(workspace.into(), &key.read()?, token))).unwrap_or(false) as u32
 }
 
 /// The host committed (success nonzero) or abandoned the update. Returns 1
@@ -484,12 +432,7 @@ pub unsafe extern "C" fn andamento_slot_complete(
     success: u32,
     error_out: *mut *mut c_char,
 ) -> u32 {
-    run(h, error_out, |h| {
-        Ok(h.sidebar
-            .managed
-            .complete_slot(workspace.into(), &key.read()?, token, success != 0))
-    })
-    .unwrap_or(false) as u32
+    run(h, error_out, |h| Ok(h.sidebar.managed.complete_slot(workspace.into(), &key.read()?, token, success != 0))).unwrap_or(false) as u32
 }
 
 /// Plan a FAILED slot's update again.
@@ -517,11 +460,7 @@ pub unsafe extern "C" fn andamento_slot_release_previous(
     key: Text,
     error_out: *mut *mut c_char,
 ) -> u32 {
-    run(h, error_out, |h| {
-        h.sidebar
-            .release_slot_previous(workspace.into(), &key.read()?)
-    })
-    .unwrap_or(false) as u32
+    run(h, error_out, |h| h.sidebar.release_slot_previous(workspace.into(), &key.read()?)).unwrap_or(false) as u32
 }
 
 /// One named field of a portable Target Resolution.
@@ -554,26 +493,16 @@ fn field_views(saved: &SavedResolution) -> Vec<ResolutionFieldView> {
         .resolution
         .fields
         .iter()
-        .map(|(name, value)| ResolutionFieldView {
-            name: Text::borrowed(name),
-            value: Text::borrowed(value),
-        })
+        .map(|(name, value)| ResolutionFieldView { name: Text::borrowed(name), value: Text::borrowed(value) })
         .collect()
 }
 
 /// A saved resolution as C reads it; all empty for none.
-fn resolution_view(
-    saved: Option<&SavedResolution>,
-    fields: &[ResolutionFieldView],
-) -> ResolutionView {
+fn resolution_view(saved: Option<&SavedResolution>, fields: &[ResolutionFieldView]) -> ResolutionView {
     ResolutionView {
         generation: saved.map_or(0, |saved| saved.generation),
         kind: Text::borrowed(saved.map_or("", |saved| &saved.resolution.kind)),
-        fields: if fields.is_empty() {
-            ptr::null()
-        } else {
-            fields.as_ptr()
-        },
+        fields: if fields.is_empty() { ptr::null() } else { fields.as_ptr() },
         field_count: fields.len(),
         against: Text::borrowed(saved.map_or("", |saved| &saved.against)),
     }
@@ -601,28 +530,15 @@ pub unsafe extern "C" fn andamento_slot_resolution_set(
     use andamento_core::{target_resolution::PortableResolution, versioned::CommitError};
     run(h, error_out, |h| {
         let key = key.read()?;
-        let mut resolution = PortableResolution {
-            kind: kind.read()?,
-            fields: Default::default(),
-        };
+        let mut resolution = PortableResolution { kind: kind.read()?, fields: Default::default() };
         for field in slice(fields, field_count)? {
             let name = field.name.read()?;
-            if resolution
-                .fields
-                .insert(name.clone(), field.value.read()?)
-                .is_some()
-            {
+            if resolution.fields.insert(name.clone(), field.value.read()?).is_some() {
                 return Err(format!("resolution field {name:?} is given twice"));
             }
         }
         let workspace = workspace.into();
-        let result = h.sidebar.set_slot_resolution(
-            workspace,
-            &key,
-            resolution,
-            &applied.read()?,
-            expected_generation,
-        );
+        let result = h.sidebar.set_slot_resolution(workspace, &key, resolution, &applied.read()?, expected_generation);
         let current = match &result {
             Ok(generation) => Some(*generation),
             Err(CommitError::Stale { current }) => Some(*current),
@@ -653,9 +569,7 @@ pub unsafe extern "C" fn andamento_slot_resolution_clear(
 ) -> u32 {
     use andamento_core::versioned::CommitError;
     run(h, error_out, |h| {
-        let result =
-            h.sidebar
-                .clear_slot_resolution(workspace.into(), &key.read()?, expected_generation);
+        let result = h.sidebar.clear_slot_resolution(workspace.into(), &key.read()?, expected_generation);
         let current = match &result {
             Ok(_) => Some(0),
             Err(CommitError::Stale { current }) => Some(*current),
@@ -778,16 +692,8 @@ pub unsafe extern "C" fn andamento_overlay_get(
             .tombstoned
             .iter()
             .map(|key| (ANDAMENTO_OVERLAY_TOMBSTONED, key, 0))
-            .chain(
-                view.departed
-                    .iter()
-                    .map(|(key, rebind)| (ANDAMENTO_OVERLAY_DEPARTED, key, rebind_code(*rebind))),
-            )
-            .map(|(kind, key, rebind)| OverlayNoteView {
-                kind,
-                key: Text::borrowed(key),
-                rebind,
-            })
+            .chain(view.departed.iter().map(|(key, rebind)| (ANDAMENTO_OVERLAY_DEPARTED, key, rebind_code(*rebind))))
+            .map(|(kind, key, rebind)| OverlayNoteView { kind, key: Text::borrowed(key), rebind })
             .collect();
         let version = match &view.baseline {
             Some(BaselineVersion::Published(version)) => version.as_str(),

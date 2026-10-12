@@ -24,31 +24,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut once = false;
     let mut args = env::args_os()
         .skip(1)
-        .map(|arg| {
-            arg.into_string()
-                .map_err(|_| "arguments must be valid UTF-8")
-        })
+        .map(|arg| arg.into_string().map_err(|_| "arguments must be valid UTF-8"))
         .collect::<Result<Vec<_>, _>>()?
         .into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--roots" => roots.push(PathBuf::from(
-                args.next().ok_or("--roots needs a directory")?,
-            )),
-            "--transport" => {
-                mode = args
-                    .next()
-                    .ok_or("--transport needs stdout, zellij or wheelhouse")?
-            }
+            "--roots" => roots.push(PathBuf::from(args.next().ok_or("--roots needs a directory")?)),
+            "--transport" => mode = args.next().ok_or("--transport needs stdout, zellij or wheelhouse")?,
             "--socket" => socket = Some(PathBuf::from(args.next().ok_or("--socket needs a path")?)),
             "--zellij-bin" => bin = args.next().ok_or("--zellij-bin needs a path")?,
             "--plugin-url" => plugin = Some(args.next().ok_or("--plugin-url needs a URL")?),
             "--factory-repo-manager" => factory = true,
-            "--factory-layout" => {
-                layout = Some(PathBuf::from(
-                    args.next().ok_or("--factory-layout needs a path")?,
-                ))
-            }
+            "--factory-layout" => layout = Some(PathBuf::from(args.next().ok_or("--factory-layout needs a path")?)),
             "--interval" => interval = args.next().ok_or("--interval needs seconds")?.parse()?,
             "--ttl-ms" => ttl_ms = args.next().ok_or("--ttl-ms needs milliseconds")?.parse()?,
             "--once" => once = true,
@@ -76,14 +63,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let layout = factory_layout(factory, layout)?;
     let mut transport: Box<dyn Transport> = match mode.as_str() {
         "stdout" => Box::new(Stdout),
-        "wheelhouse" => Box::new(Wheelhouse {
-            socket: socket.ok_or("--socket or WHEELHOUSE_SOCKET required")?,
-        }),
-        "zellij" => Box::new(Zellij {
-            bin,
-            plugin,
-            factory_layout: layout,
-        }),
+        "wheelhouse" => Box::new(Wheelhouse { socket: socket.ok_or("--socket or WHEELHOUSE_SOCKET required")? }),
+        "zellij" => Box::new(Zellij { bin, plugin, factory_layout: layout }),
         _ => return Err("unknown transport".into()),
     };
     let interval = Duration::from_secs_f64(interval);
@@ -106,7 +87,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         if start.elapsed() >= Duration::from_millis(ttl_ms) {
-            eprintln!("andamento-git-watcher: refresh took {:?}, exceeding TTL {ttl_ms}ms; increase --ttl-ms for this inventory", start.elapsed());
+            eprintln!(
+                "andamento-git-watcher: refresh took {:?}, exceeding TTL {ttl_ms}ms; increase --ttl-ms for this inventory",
+                start.elapsed()
+            );
         }
         if once {
             return Ok(());
@@ -115,9 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // edits and host inventory changes are picked up by the regular loop.
         let watch = RefreshWatch::new(&trees);
         while start.elapsed() < interval {
-            std::thread::sleep(
-                Duration::from_millis(250).min(interval.saturating_sub(start.elapsed())),
-            );
+            std::thread::sleep(Duration::from_millis(250).min(interval.saturating_sub(start.elapsed())));
             if watch.changed() {
                 break;
             }

@@ -34,11 +34,9 @@ impl PortableResolution {
     /// A kind and field names are 1 to 64 of `[a-z0-9_-]`, starting with a
     /// letter or digit; field values are any text.
     pub fn check(&self) -> Result<(), String> {
-        slots::check_key(&self.kind)
-            .map_err(|_| format!("invalid resolution kind {:?}", self.kind))?;
+        slots::check_key(&self.kind).map_err(|_| format!("invalid resolution kind {:?}", self.kind))?;
         for name in self.fields.keys() {
-            slots::check_key(name)
-                .map_err(|_| format!("invalid resolution field name {name:?}"))?;
+            slots::check_key(name).map_err(|_| format!("invalid resolution field name {name:?}"))?;
         }
         Ok(())
     }
@@ -86,14 +84,7 @@ impl SavedResolutions {
     /// if `expected` is the slot's current generation; `stamp` is the
     /// generation the change takes. Saving what is already saved keeps its
     /// generation. Returns the generation after.
-    pub fn set(
-        &mut self,
-        key: &str,
-        resolution: PortableResolution,
-        against: &str,
-        expected: u64,
-        stamp: u64,
-    ) -> Result<u64, CommitError> {
+    pub fn set(&mut self, key: &str, resolution: PortableResolution, against: &str, expected: u64, stamp: u64) -> Result<u64, CommitError> {
         self.check_expected(key, expected)?;
         resolution.check()?;
         if against.is_empty() {
@@ -104,14 +95,7 @@ impl SavedResolutions {
                 return Ok(saved.generation);
             }
         }
-        self.by_slot.insert(
-            key.to_owned(),
-            SavedResolution {
-                resolution,
-                against: against.to_owned(),
-                generation: stamp,
-            },
-        );
+        self.by_slot.insert(key.to_owned(), SavedResolution { resolution, against: against.to_owned(), generation: stamp });
         Ok(stamp)
     }
 
@@ -161,10 +145,7 @@ mod tests {
         assert_eq!(saved.set("a", cleat("S"), "id1", 0, 5), Ok(5));
         // Saving the same again keeps the generation.
         assert_eq!(saved.set("a", cleat("S"), "id1", 5, 6), Ok(5));
-        assert_eq!(
-            saved.set("a", cleat("T"), "id1", 0, 7),
-            Err(CommitError::Stale { current: 5 })
-        );
+        assert_eq!(saved.set("a", cleat("T"), "id1", 0, 7), Err(CommitError::Stale { current: 5 }));
         assert_eq!(saved.clear("a", 5), Ok(true));
         assert_eq!(saved.generation("a"), 0);
         assert_eq!(saved.clear("b", 0), Ok(false));

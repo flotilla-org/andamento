@@ -1,13 +1,9 @@
 // Synthetic catalog scaling probe. Run with a placement template configuration.
-use andamento_core::{
-    EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar,
-};
+use andamento_core::{EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar};
 use std::{collections::BTreeMap, hint::black_box, time::Instant};
 const PROVIDER: &str = "bench";
 fn main() {
-    let config_path = std::env::args()
-        .nth(1)
-        .expect("usage: snapshot-bench CONFIG.kdl");
+    let config_path = std::env::args().nth(1).expect("usage: snapshot-bench CONFIG.kdl");
     let config = std::fs::read_to_string(config_path).unwrap();
     for n in [25, 50, 100, 200] {
         let mut sidebar = Sidebar::new(&config).unwrap();
@@ -25,15 +21,7 @@ fn main() {
                 ]
                 .into_iter()
                 .map(|(k, v)| {
-                    (
-                        k.into(),
-                        MetadataValueUpdate {
-                            value: MetadataValue::Text(v),
-                            ttl_ms: None,
-                            precedence: None,
-                            ordinal: Some(i),
-                        },
-                    )
+                    (k.into(), MetadataValueUpdate { value: MetadataValue::Text(v), ttl_ms: None, precedence: None, ordinal: Some(i) })
                 })
                 .collect::<BTreeMap<_, _>>(),
             })
@@ -64,18 +52,12 @@ fn main() {
                 .unwrap();
             black_box(sidebar.snapshot_shared());
         }
-        println!(
-            "entities={n} changed_snapshot_ms={:.3}",
-            t.elapsed().as_secs_f64() * 1000. / 3.
-        );
+        println!("entities={n} changed_snapshot_ms={:.3}", t.elapsed().as_secs_f64() * 1000. / 3.);
         let t = Instant::now();
         for _ in 0..1000 {
             sidebar.tick(100);
             black_box(sidebar.snapshot_shared());
         }
-        println!(
-            "entities={n} unchanged_tick_and_snapshot_us={:.3}",
-            t.elapsed().as_secs_f64() * 1000.
-        );
+        println!("entities={n} unchanged_tick_and_snapshot_us={:.3}", t.elapsed().as_secs_f64() * 1000.);
     }
 }

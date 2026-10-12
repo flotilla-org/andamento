@@ -73,9 +73,7 @@ impl Serialize for WorkspaceId {
 
 impl<'de> Deserialize<'de> for WorkspaceId {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(serde::de::Error::custom)
+        String::deserialize(deserializer)?.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -96,10 +94,7 @@ mod tests {
             assert!(bad.parse::<WorkspaceId>().is_err(), "{bad}");
         }
         assert_eq!(serde_json::to_string(&id).unwrap(), format!("\"{UUID}\""));
-        assert_eq!(
-            serde_json::from_str::<WorkspaceId>(&format!("\"{UUID}\"")).unwrap(),
-            id
-        );
+        assert_eq!(serde_json::from_str::<WorkspaceId>(&format!("\"{UUID}\"")).unwrap(), id);
         assert!(serde_json::from_str::<WorkspaceId>("7").is_err());
     }
 }

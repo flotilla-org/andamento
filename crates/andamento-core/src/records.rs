@@ -12,8 +12,7 @@ use std::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{
-    sidebar_arrangement::SidebarArrangement, DisplayVariableValue, EntityRef, MetadataValue,
-    PlacementKey, PlacementLoopKey, WorkspaceId,
+    sidebar_arrangement::SidebarArrangement, DisplayVariableValue, EntityRef, MetadataValue, PlacementKey, PlacementLoopKey, WorkspaceId,
 };
 
 /// The name of a record: `dashboard`, or `workspace/<id>` for a registered
@@ -111,24 +110,14 @@ pub(crate) mod pairs {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::BTreeMap;
 
-    pub fn serialize<K: Serialize, V: Serialize, S: Serializer>(
-        map: &BTreeMap<K, V>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<K: Serialize, V: Serialize, S: Serializer>(map: &BTreeMap<K, V>, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_seq(map)
     }
 
-    pub fn deserialize<
-        'de,
-        K: Ord + Deserialize<'de>,
-        V: Deserialize<'de>,
-        D: Deserializer<'de>,
-    >(
+    pub fn deserialize<'de, K: Ord + Deserialize<'de>, V: Deserialize<'de>, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<BTreeMap<K, V>, D::Error> {
-        Ok(Vec::<(K, V)>::deserialize(deserializer)?
-            .into_iter()
-            .collect())
+        Ok(Vec::<(K, V)>::deserialize(deserializer)?.into_iter().collect())
     }
 }
 
@@ -143,13 +132,7 @@ pub(crate) fn decode<T: DeserializeOwned>(text: &str, what: &str) -> Result<T, S
 /// Whether a fact value can be written to a record. Lists of text and group
 /// paths are producer detail no placement reads.
 pub fn recordable(value: &MetadataValue) -> bool {
-    matches!(
-        value,
-        MetadataValue::Text(_)
-            | MetadataValue::Bool(_)
-            | MetadataValue::Integer(_)
-            | MetadataValue::EntityRefs(_)
-    )
+    matches!(value, MetadataValue::Text(_) | MetadataValue::Bool(_) | MetadataValue::Integer(_) | MetadataValue::EntityRefs(_))
 }
 
 #[cfg(test)]
@@ -167,17 +150,11 @@ mod tests {
     }
 
     fn dashboard() -> DashboardRecord {
-        let project = PlacementKey(vec![PlacementSegment {
-            loop_name: "project".into(),
-            entity: entity("project", "p"),
-        }]);
+        let project = PlacementKey(vec![PlacementSegment { loop_name: "project".into(), entity: entity("project", "p") }]);
         let tabs = |id: &str, keys: &[&str]| Panel {
             id: id.into(),
             weight: 0.5,
-            node: PanelNode::Tabs {
-                tabs: keys.iter().map(|key| (*key).into()).collect(),
-                selected: keys.first().map(|key| (*key).into()),
-            },
+            node: PanelNode::Tabs { tabs: keys.iter().map(|key| (*key).into()).collect(), selected: keys.first().map(|key| (*key).into()) },
         };
         DashboardRecord {
             state: DashboardState {
@@ -187,28 +164,15 @@ mod tests {
                 ]),
                 collapsed: BTreeSet::from([project.clone()]),
                 orders: BTreeMap::from([(
-                    PlacementLoopKey {
-                        region: "tree".into(),
-                        parent: project.clone(),
-                        binding: "vessel".into(),
-                    },
+                    PlacementLoopKey { region: "tree".into(), parent: project.clone(), binding: "vessel".into() },
                     // The same kind and ID under two providers are two entities.
-                    vec![
-                        entity("vessel", "b"),
-                        EntityRef::new("sub-2", "vessel", "b"),
-                    ],
+                    vec![entity("vessel", "b"), EntityRef::new("sub-2", "vessel", "b")],
                 )]),
-                variables: BTreeMap::from([(
-                    project,
-                    BTreeMap::from([("density".into(), "compact".into())]),
-                )]),
+                variables: BTreeMap::from([(project, BTreeMap::from([("density".into(), "compact".into())]))]),
                 local: BTreeMap::from([(
                     EntityRef::local(".group", "g1"),
                     BTreeMap::from([
-                        (
-                            ".section".into(),
-                            MetadataValue::EntityRefs(vec![EntityRef::local(".section", "s1")]),
-                        ),
+                        (".section".into(), MetadataValue::EntityRefs(vec![EntityRef::local(".section", "s1")])),
                         (".position".into(), MetadataValue::Integer(12)),
                     ]),
                 )]),
@@ -220,10 +184,7 @@ mod tests {
                         root: Some(Panel {
                             id: "1".into(),
                             weight: 1.0,
-                            node: PanelNode::Split {
-                                axis: Axis::Column,
-                                children: vec![tabs("2", &["tree", "u:notes"])],
-                            },
+                            node: PanelNode::Split { axis: Axis::Column, children: vec![tabs("2", &["tree", "u:notes"])] },
                         }),
                     },
                     floating: vec![tabs("3", &["git"])],
@@ -246,13 +207,7 @@ mod tests {
         let sidebar = bad_doc.sidebar.as_mut().unwrap();
         sidebar.doc.floating[0].weight = -1.0;
         let mut bad_fact = dashboard();
-        bad_fact
-            .state
-            .local
-            .values_mut()
-            .next()
-            .unwrap()
-            .insert("list".into(), MetadataValue::StringList(vec!["x".into()]));
+        bad_fact.state.local.values_mut().next().unwrap().insert("list".into(), MetadataValue::StringList(vec!["x".into()]));
         for (text, reason) in [
             ("".to_owned(), "not a dashboard record"),
             ("{}".to_owned(), "not a dashboard record: missing field"),

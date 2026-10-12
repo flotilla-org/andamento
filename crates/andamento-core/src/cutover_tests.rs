@@ -1,9 +1,6 @@
 use crate::presentation::PlacementNode;
 use crate::state::ControllerState;
-use crate::{
-    EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, NodeKey,
-    RailUiAction,
-};
+use crate::{EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, NodeKey, RailUiAction};
 use std::collections::BTreeMap;
 
 fn state() -> ControllerState {
@@ -30,15 +27,7 @@ fn patch(kind: &str, id: &str, key: &str, value: MetadataValue) -> MetadataPatch
     MetadataPatch {
         target: MetadataTarget::Entity(EntityRef::local(kind, id)),
         source_id: "fixture".into(),
-        set: BTreeMap::from([(
-            key.into(),
-            MetadataValueUpdate {
-                value,
-                ttl_ms: None,
-                precedence: None,
-                ordinal: None,
-            },
-        )]),
+        set: BTreeMap::from([(key.into(), MetadataValueUpdate { value, ttl_ms: None, precedence: None, ordinal: None })]),
         unset: vec![],
     }
 }
@@ -48,25 +37,15 @@ fn bundled_defaults_are_placement_templates_without_a_configuration_switch() {
     let model = state().view_model();
     let mut text = String::new();
     for section in &model.presentation.as_ref().unwrap().sections {
-        text.push_str(&format!(
-            "section {} pinned={}\n",
-            section.name, section.pinned
-        ));
+        text.push_str(&format!("section {} pinned={}\n", section.name, section.pinned));
         outline(&section.nodes, 1, &mut text);
     }
     insta::assert_snapshot!("default_placement_tree", text);
     assert!(model.unmatched_entities.is_empty());
     let wire = serde_json::to_string(&model).unwrap();
-    for retired in [
-        "collapsed_groups",
-        "group-header",
-        "tab-title",
-        "tab-status",
-        "loop-binding",
-        "loop-tier",
-        "surface_regions",
-        "placement_layout",
-    ] {
+    for retired in
+        ["collapsed_groups", "group-header", "tab-title", "tab-status", "loop-binding", "loop-tier", "surface_regions", "placement_layout"]
+    {
         assert!(!wire.contains(retired), "retired wire field {retired}");
     }
 }
@@ -74,45 +53,20 @@ fn bundled_defaults_are_placement_templates_without_a_configuration_switch() {
 #[test]
 fn catalog_coverage_does_not_depend_on_grouping_facts_or_collapse() {
     let mut state = state();
-    state.apply_metadata_patch(patch(
-        "novel",
-        "no-hierarchy",
-        "display.label",
-        MetadataValue::Text("Unknown".into()),
-    ));
+    state.apply_metadata_patch(patch("novel", "no-hierarchy", "display.label", MetadataValue::Text("Unknown".into())));
     let model = state.view_model();
-    assert!(model
-        .unmatched_entities
-        .iter()
-        .any(|e| e.id == "no-hierarchy"));
+    assert!(model.unmatched_entities.iter().any(|e| e.id == "no-hierarchy"));
     let project = model.presentation.unwrap().sections[1].nodes[0].key.clone();
     state.apply_rail_ui_action(RailUiAction::TogglePlacement { key: project });
-    assert_eq!(
-        state.view_model().unmatched_entities,
-        model.unmatched_entities
-    );
-    state.apply_metadata_patch(patch(
-        "novel",
-        "no-hierarchy",
-        "status.attention",
-        MetadataValue::Bool(true),
-    ));
-    assert!(!state
-        .view_model()
-        .unmatched_entities
-        .iter()
-        .any(|e| e.id == "no-hierarchy"));
+    assert_eq!(state.view_model().unmatched_entities, model.unmatched_entities);
+    state.apply_metadata_patch(patch("novel", "no-hierarchy", "status.attention", MetadataValue::Bool(true)));
+    assert!(!state.view_model().unmatched_entities.iter().any(|e| e.id == "no-hierarchy"));
 }
 
 #[test]
 fn one_entity_in_two_sections_has_independent_state_and_typed_tier() {
     let mut state = state();
-    state.apply_metadata_patch(patch(
-        "convoy",
-        "c",
-        "status.attention",
-        MetadataValue::Bool(true),
-    ));
+    state.apply_metadata_patch(patch("convoy", "c", "status.attention", MetadataValue::Bool(true)));
     let before = state.view_model().presentation.unwrap();
     let tree = &before.sections[1].nodes[0].children[2];
     let attention = &before.sections[0].nodes[0];
@@ -120,21 +74,14 @@ fn one_entity_in_two_sections_has_independent_state_and_typed_tier() {
     assert_ne!(tree.key, attention.key);
     let key = tree.key.clone();
     state.apply_rail_ui_action(RailUiAction::TogglePlacement { key: key.clone() });
-    state.set_node_variable(
-        NodeKey::Placement(key.clone()),
-        "convoy.tier".into(),
-        Some("short".into()),
-    );
+    state.set_node_variable(NodeKey::Placement(key.clone()), "convoy.tier".into(), Some("short".into()));
     let after = state.view_model().presentation.unwrap();
     let tree = after.node(&key).unwrap();
     assert!(tree.collapsed);
     assert_eq!(tree.content.text(), "PC");
     assert!(tree.detail.text().contains("Placement cutover"));
     assert!(!after.sections[0].nodes[0].collapsed);
-    assert!(!tree
-        .facts
-        .keys()
-        .any(|k| k.starts_with("andamento.placement.")));
+    assert!(!tree.facts.keys().any(|k| k.starts_with("andamento.placement.")));
 }
 
 #[test]
@@ -150,14 +97,14 @@ fn defaults_keep_the_nested_shape_and_do_not_fuse_single_children() {
 #[test]
 fn old_configuration_and_ui_identity_are_rejected() {
     use crate::template_config::parse_template_config_kdl;
-    for config in ["grouping \"old\" { level key=\"entity.id\"; }",
+    for config in [
+        "grouping \"old\" { level key=\"entity.id\"; }",
         "region \"old\" source=\"tree\" root-template=\"root\"",
         "region \"old\" attention-key=\"status.attention\" root-template=\"root\"",
-        "template \"old\" slot=\"group-header\" node-kind=\"group\" { field \"label\" key=\"display.label\"; }"] {
+        "template \"old\" slot=\"group-header\" node-kind=\"group\" { field \"label\" key=\"display.label\"; }",
+    ] {
         assert!(parse_template_config_kdl(config).is_err(), "{config}");
     }
     assert!(serde_json::from_str::<NodeKey>(r#"{"kind":"group","value":[]}"#).is_err());
-    assert!(
-        serde_json::from_str::<RailUiAction>(r#"{"action":"toggle-group","path":[]}"#).is_err()
-    );
+    assert!(serde_json::from_str::<RailUiAction>(r#"{"action":"toggle-group","path":[]}"#).is_err());
 }

@@ -7,55 +7,28 @@ use andamento_core::PlacementLoopKey;
 /// newline): "dashboard", then "workspace/<id>" for each registered
 /// workspace (<id> a hyphenated UUID).
 #[no_mangle]
-pub unsafe extern "C" fn andamento_record_names(
-    h: *mut Andamento,
-    out: *mut Bytes,
-    error_out: *mut *mut c_char,
-) -> u32 {
-    run(h, error_out, |h| {
-        write_bytes(out, h.sidebar.record_names().join("\n").into_bytes())
-    })
-    .is_some() as u32
+pub unsafe extern "C" fn andamento_record_names(h: *mut Andamento, out: *mut Bytes, error_out: *mut *mut c_char) -> u32 {
+    run(h, error_out, |h| write_bytes(out, h.sidebar.record_names().join("\n").into_bytes())).is_some() as u32
 }
 /// A record's generation, nonzero: it changes whenever the record does and
 /// is never reused. 0 with an error for an unknown record. Store a record
 /// when its generation differs from the one last stored.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_record_generation(
-    h: *mut Andamento,
-    name: Text,
-    error_out: *mut *mut c_char,
-) -> u64 {
+pub unsafe extern "C" fn andamento_record_generation(h: *mut Andamento, name: Text, error_out: *mut *mut c_char) -> u64 {
     run(h, error_out, |h| h.sidebar.record_generation(&name.read()?)).unwrap_or(0)
 }
 /// A record to store as it is: its bytes are private to Andamento and may
 /// change from one build to the next. Free them with andamento_bytes_free.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_record_get(
-    h: *mut Andamento,
-    name: Text,
-    out: *mut Bytes,
-    error_out: *mut *mut c_char,
-) -> u32 {
-    run(h, error_out, |h| {
-        write_bytes(out, h.sidebar.export_record(&name.read()?)?.into_bytes())
-    })
-    .is_some() as u32
+pub unsafe extern "C" fn andamento_record_get(h: *mut Andamento, name: Text, out: *mut Bytes, error_out: *mut *mut c_char) -> u32 {
+    run(h, error_out, |h| write_bytes(out, h.sidebar.export_record(&name.read()?)?.into_bytes())).is_some() as u32
 }
 /// Restore a record andamento_record_get returned, before the first
 /// observe. A record that doesn't read is rejected without change.
 /// Restoring "workspace/<id>" registers the workspace.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_record_put(
-    h: *mut Andamento,
-    name: Text,
-    record: Text,
-    error_out: *mut *mut c_char,
-) -> u32 {
-    run(h, error_out, |h| {
-        h.sidebar.import_record(&name.read()?, &record.read()?)
-    })
-    .is_some() as u32
+pub unsafe extern "C" fn andamento_record_put(h: *mut Andamento, name: Text, record: Text, error_out: *mut *mut c_char) -> u32 {
+    run(h, error_out, |h| h.sidebar.import_record(&name.read()?, &record.read()?)).is_some() as u32
 }
 
 /// Set a declared display variable without a snapshot action, so a host
@@ -63,12 +36,7 @@ pub unsafe extern "C" fn andamento_record_put(
 /// one of an enum's values, or empty for its default. Unknown variables and
 /// values the declaration doesn't allow are rejected.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_set_display_variable(
-    h: *mut Andamento,
-    name: Text,
-    value: Text,
-    error_out: *mut *mut c_char,
-) -> u32 {
+pub unsafe extern "C" fn andamento_set_display_variable(h: *mut Andamento, name: Text, value: Text, error_out: *mut *mut c_char) -> u32 {
     use andamento_core::DisplayVariableValue;
     run(h, error_out, |h| {
         let name = name.read()?;
@@ -86,13 +54,8 @@ pub unsafe extern "C" fn andamento_set_display_variable(
             Some(flag) => h
                 .sidebar
                 .set_display_variable(&name, Some(DisplayVariableValue::Bool(flag)))
-                .or_else(|_| {
-                    h.sidebar
-                        .set_display_variable(&name, Some(DisplayVariableValue::Enum(value)))
-                }),
-            None => h
-                .sidebar
-                .set_display_variable(&name, Some(DisplayVariableValue::Enum(value))),
+                .or_else(|_| h.sidebar.set_display_variable(&name, Some(DisplayVariableValue::Enum(value)))),
+            None => h.sidebar.set_display_variable(&name, Some(DisplayVariableValue::Enum(value))),
         }
     })
     .is_some() as u32
@@ -112,10 +75,7 @@ pub unsafe extern "C" fn andamento_set_sibling_order(
     run(h, error_out, |h| {
         let key = loop_key.read()?;
         let key = PlacementLoopKey::decode(&key).ok_or("invalid loop key")?;
-        let order = slice(entities, count)?
-            .iter()
-            .map(|e| e.read())
-            .collect::<Result<Vec<_>, String>>()?;
+        let order = slice(entities, count)?.iter().map(|e| e.read()).collect::<Result<Vec<_>, String>>()?;
         h.sidebar.set_sibling_order(key, order)
     })
     .is_some() as u32
@@ -162,15 +122,9 @@ pub unsafe extern "C" fn andamento_local_set(
 }
 /// Remove a local entity; removing an unknown one is harmless.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_local_remove(
-    h: *mut Andamento,
-    kind: Text,
-    id: Text,
-    error_out: *mut *mut c_char,
-) -> u32 {
+pub unsafe extern "C" fn andamento_local_remove(h: *mut Andamento, kind: Text, id: Text, error_out: *mut *mut c_char) -> u32 {
     run(h, error_out, |h| {
-        h.sidebar
-            .remove_local(&EntityRef::local(kind.read()?, id.read()?));
+        h.sidebar.remove_local(&EntityRef::local(kind.read()?, id.read()?));
         Ok(())
     })
     .is_some() as u32
@@ -221,10 +175,7 @@ struct OwnedDashboard {
 /// The Dashboard's local entities, in key order, and its saved sibling
 /// orders. Free it with andamento_dashboard_free.
 #[no_mangle]
-pub unsafe extern "C" fn andamento_dashboard_get(
-    h: *mut Andamento,
-    error_out: *mut *mut c_char,
-) -> *mut DashboardView {
+pub unsafe extern "C" fn andamento_dashboard_get(h: *mut Andamento, error_out: *mut *mut c_char) -> *mut DashboardView {
     run(h, error_out, |h| {
         let mut owned = Box::new(OwnedDashboard {
             value: DashboardView {
@@ -243,43 +194,23 @@ pub unsafe extern "C" fn andamento_dashboard_get(
                     (entity.clone(), facts)
                 })
                 .collect(),
-            orders: h
-                .sidebar
-                .sibling_orders()
-                .iter()
-                .map(|(key, entities)| (key.encode(), entities.clone()))
-                .collect(),
+            orders: h.sidebar.sibling_orders().iter().map(|(key, entities)| (key.encode(), entities.clone())).collect(),
             local_views: Vec::new(),
             fact_views: Vec::new(),
             order_views: Vec::new(),
             entity_views: Vec::new(),
         });
         // Views borrow the boxed strings, whose bytes don't move.
-        let fact_views: Vec<Vec<LocalFact>> = owned
-            .locals
-            .iter()
-            .map(|(_, facts)| {
-                facts
-                    .iter()
-                    .map(|(key, value)| local_fact_view(key, value))
-                    .collect()
-            })
-            .collect();
+        let fact_views: Vec<Vec<LocalFact>> =
+            owned.locals.iter().map(|(_, facts)| facts.iter().map(|(key, value)| local_fact_view(key, value)).collect()).collect();
         let local_views = owned
             .locals
             .iter()
             .zip(&fact_views)
-            .map(|((entity, _), facts)| LocalEntityView {
-                entity: EntityView::of(entity),
-                facts: facts.as_ptr(),
-                fact_count: facts.len(),
-            })
+            .map(|((entity, _), facts)| LocalEntityView { entity: EntityView::of(entity), facts: facts.as_ptr(), fact_count: facts.len() })
             .collect();
-        let entity_views: Vec<Vec<EntityView>> = owned
-            .orders
-            .iter()
-            .map(|(_, entities)| entities.iter().map(EntityView::of).collect())
-            .collect();
+        let entity_views: Vec<Vec<EntityView>> =
+            owned.orders.iter().map(|(_, entities)| entities.iter().map(EntityView::of).collect()).collect();
         let order_views = owned
             .orders
             .iter()
@@ -320,9 +251,7 @@ fn local_fact_view(key: &str, value: &MetadataValue) -> LocalFact {
     };
     match value {
         MetadataValue::Text(text) => fact.text = Text::borrowed(text),
-        MetadataValue::Bool(flag) => {
-            (fact.kind, fact.integer) = (ANDAMENTO_FACT_BOOL, *flag as i64)
-        }
+        MetadataValue::Bool(flag) => (fact.kind, fact.integer) = (ANDAMENTO_FACT_BOOL, *flag as i64),
         MetadataValue::Integer(n) => (fact.kind, fact.integer) = (ANDAMENTO_FACT_INTEGER, *n),
         MetadataValue::EntityRefs(refs) => {
             fact.kind = ANDAMENTO_FACT_ENTITY;

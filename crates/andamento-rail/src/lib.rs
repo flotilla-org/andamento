@@ -16,31 +16,21 @@ fn visible_graphics_signature(visible_cards: &[VisibleCard]) -> Vec<GraphicsSign
         .iter()
         .enumerate()
         .filter_map(|(index, card)| {
-            let (Some(rect), Some(icon)) = (card.status_icon_rect, card.status_icon.as_ref())
-            else {
+            let (Some(rect), Some(icon)) = (card.status_icon_rect, card.status_icon.as_ref()) else {
                 return None;
             };
             if !status_icon_is_renderable(icon) {
                 return None;
             }
-            Some(GraphicsSignatureEntry {
-                placement_id: 10_000 + index as u32,
-                rect,
-                icon: icon.clone(),
-            })
+            Some(GraphicsSignatureEntry { placement_id: 10_000 + index as u32, rect, icon: icon.clone() })
         })
         .collect()
 }
 
 #[cfg(test)]
-fn graphics_signature_needs_sync(
-    previous: Option<&[GraphicsSignatureEntry]>,
-    visible_cards: &[VisibleCard],
-) -> bool {
+fn graphics_signature_needs_sync(previous: Option<&[GraphicsSignatureEntry]>, visible_cards: &[VisibleCard]) -> bool {
     let current = visible_graphics_signature(visible_cards);
-    previous
-        .map(|previous| previous != current.as_slice())
-        .unwrap_or(true)
+    previous.map(|previous| previous != current.as_slice()).unwrap_or(true)
 }
 
 fn local_tabs_from_zellij(tabs: &[TabInfo]) -> Vec<LocalTab> {
@@ -48,11 +38,7 @@ fn local_tabs_from_zellij(tabs: &[TabInfo]) -> Vec<LocalTab> {
         .map(|tab| LocalTab {
             tab_id: tab_workspace_id(tab.tab_id as u64),
             position: tab.position,
-            name: if tab.name.is_empty() {
-                format!("Tab {}", tab.position + 1)
-            } else {
-                tab.name.clone()
-            },
+            name: if tab.name.is_empty() { format!("Tab {}", tab.position + 1) } else { tab.name.clone() },
             active: tab.active,
         })
         .collect()
@@ -71,9 +57,7 @@ fn tab_index_after_scroll(active_tab_idx: usize, tab_count: usize, delta: isize)
     if delta < 0 {
         active_tab_idx.saturating_sub(delta.unsigned_abs()).max(1)
     } else {
-        active_tab_idx
-            .saturating_add(delta.unsigned_abs())
-            .min(tab_count)
+        active_tab_idx.saturating_add(delta.unsigned_abs()).min(tab_count)
     }
 }
 
@@ -189,64 +173,29 @@ fn rail_size_target_should_apply(
     if own_client_id != Some(target.client_id) || target.version <= applied_version {
         return false;
     }
-    !current_size
-        .map(|current| current.within_tolerance(target.size))
-        .unwrap_or(false)
+    !current_size.map(|current| current.within_tolerance(target.size)).unwrap_or(false)
 }
 
-fn own_plugin_tab_placement(
-    pane_manifest: &PaneManifest,
-    local_tabs: &[LocalTab],
-    plugin_id: u32,
-) -> Option<PluginPlacement> {
-    let (tab_position, pane) = pane_manifest
-        .panes
-        .iter()
-        .find_map(|(tab_position, panes)| {
-            panes
-                .iter()
-                .find(|pane| pane.is_plugin && pane.id == plugin_id)
-                .map(|pane| (*tab_position, pane))
-        })?;
-    let tab_id = local_tabs
-        .iter()
-        .find(|tab| tab.position == tab_position)
-        .map(|tab| tab.tab_id)?;
-    Some(PluginPlacement::Tab {
-        tab_id,
-        pane_kind: if pane.is_floating {
-            PluginPaneKind::Floating
-        } else {
-            PluginPaneKind::Tiled
-        },
-    })
+fn own_plugin_tab_placement(pane_manifest: &PaneManifest, local_tabs: &[LocalTab], plugin_id: u32) -> Option<PluginPlacement> {
+    let (tab_position, pane) = pane_manifest.panes.iter().find_map(|(tab_position, panes)| {
+        panes.iter().find(|pane| pane.is_plugin && pane.id == plugin_id).map(|pane| (*tab_position, pane))
+    })?;
+    let tab_id = local_tabs.iter().find(|tab| tab.position == tab_position).map(|tab| tab.tab_id)?;
+    Some(PluginPlacement::Tab { tab_id, pane_kind: if pane.is_floating { PluginPaneKind::Floating } else { PluginPaneKind::Tiled } })
 }
 
-fn renderer_hello_payload(
-    plugin_id: u32,
-    client_id: u16,
-    placement: PluginPlacement,
-) -> Option<String> {
-    serde_json::to_string(&PluginRegistrationHello {
-        identity: RendererHello {
-            plugin_id,
-            client_id,
-        },
-        placement,
-    })
-    .ok()
+fn renderer_hello_payload(plugin_id: u32, client_id: u16, placement: PluginPlacement) -> Option<String> {
+    serde_json::to_string(&PluginRegistrationHello { identity: RendererHello { plugin_id, client_id }, placement }).ok()
 }
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 use andamento_shared::{
-    tab_workspace_id, ConfigInspectRequest, ControllerViewModel, NodeKey, PluginPaneKind,
-    PluginPlacement, PluginRegistrationHello, PluginStatsRecorder, RailSizeObserved, RailUiAction,
-    RailUiState, RendererHello, StatsCollectRequest, MSG_CONFIG_INSPECT, MSG_RAIL_SIZE_OBSERVED,
-    MSG_RAIL_SIZE_TARGET, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO,
-    MSG_REQUEST_RAIL_UI_STATE, MSG_REQUEST_STATE, MSG_STATS_REPORT, MSG_STATS_REQUEST,
-    MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
+    tab_workspace_id, ConfigInspectRequest, ControllerViewModel, NodeKey, PluginPaneKind, PluginPlacement, PluginRegistrationHello,
+    PluginStatsRecorder, RailSizeObserved, RailUiAction, RailUiState, RendererHello, StatsCollectRequest, MSG_CONFIG_INSPECT,
+    MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_SIZE_TARGET, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO, MSG_REQUEST_RAIL_UI_STATE,
+    MSG_REQUEST_STATE, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
 };
 use andamento_shared::{RailSize, RailSizeTarget};
 use andamento_shared::{StatusIcon, WorkspaceId};
@@ -290,14 +239,9 @@ fn build_materialize_latent_message(
     request: &andamento_shared::MaterializeLatentRequest,
 ) -> Option<MessageToPlugin> {
     let payload = serde_json::to_string(request).ok()?;
-    let message = MessageToPlugin::new(andamento_shared::MSG_MATERIALIZE_LATENT)
-        .with_destination_client_id(client_id)
-        .with_payload(payload);
-    Some(if controller_plugin_url.trim().is_empty() {
-        message
-    } else {
-        message.with_plugin_url(controller_plugin_url.to_owned())
-    })
+    let message =
+        MessageToPlugin::new(andamento_shared::MSG_MATERIALIZE_LATENT).with_destination_client_id(client_id).with_payload(payload);
+    Some(if controller_plugin_url.trim().is_empty() { message } else { message.with_plugin_url(controller_plugin_url.to_owned()) })
 }
 
 fn build_activate_entity_message(
@@ -320,27 +264,14 @@ fn build_activate_entity_message(
         },
     };
     let payload = serde_json::to_string(&request).ok()?;
-    let message = MessageToPlugin::new(andamento_shared::MSG_ACTIVATE_ENTITY)
-        .with_destination_client_id(client_id)
-        .with_payload(payload);
-    Some(if controller_plugin_url.trim().is_empty() {
-        message
-    } else {
-        message.with_plugin_url(controller_plugin_url.to_owned())
-    })
+    let message = MessageToPlugin::new(andamento_shared::MSG_ACTIVATE_ENTITY).with_destination_client_id(client_id).with_payload(payload);
+    Some(if controller_plugin_url.trim().is_empty() { message } else { message.with_plugin_url(controller_plugin_url.to_owned()) })
 }
 
-fn build_rail_ui_action_message(
-    controller_plugin_url: &str,
-    action: RailUiAction,
-) -> Option<MessageToPlugin> {
+fn build_rail_ui_action_message(controller_plugin_url: &str, action: RailUiAction) -> Option<MessageToPlugin> {
     let payload = serde_json::to_string(&action).ok()?;
     let message = MessageToPlugin::new(MSG_RAIL_UI_ACTION).with_payload(payload);
-    Some(if controller_plugin_url.trim().is_empty() {
-        message
-    } else {
-        message.with_plugin_url(controller_plugin_url.to_owned())
-    })
+    Some(if controller_plugin_url.trim().is_empty() { message } else { message.with_plugin_url(controller_plugin_url.to_owned()) })
 }
 
 fn build_rail_ui_state_request_message(controller_plugin_url: &str) -> MessageToPlugin {
@@ -393,18 +324,10 @@ impl ZellijPlugin for PluginState {
         let ids = get_plugin_ids();
         self.own_plugin_id = Some(ids.plugin_id);
         self.own_client_id = Some(ids.client_id);
-        self.controller_plugin_url = configuration
-            .get(CONFIG_CONTROLLER_PLUGIN_URL)
-            .cloned()
-            .unwrap_or_else(|| "andamento-controller".to_owned());
-        self.config_plugin_url = configuration
-            .get(CONFIG_CONFIG_PLUGIN_URL)
-            .cloned()
-            .unwrap_or_else(|| "andamento-config".to_owned());
-        self.rail_placement = configuration
-            .get(CONFIG_RAIL_PLACEMENT)
-            .and_then(|value| parse_rail_placement(value))
-            .unwrap_or_default();
+        self.controller_plugin_url =
+            configuration.get(CONFIG_CONTROLLER_PLUGIN_URL).cloned().unwrap_or_else(|| "andamento-controller".to_owned());
+        self.config_plugin_url = configuration.get(CONFIG_CONFIG_PLUGIN_URL).cloned().unwrap_or_else(|| "andamento-config".to_owned());
+        self.rail_placement = configuration.get(CONFIG_RAIL_PLACEMENT).and_then(|value| parse_rail_placement(value)).unwrap_or_default();
 
         request_permission(&[
             PermissionType::ReadApplicationState,
@@ -458,8 +381,7 @@ impl ZellijPlugin for PluginState {
                 let previous_active_tab_id = self.active_tab_id();
                 self.tabs = tabs;
                 self.local_tabs = local_tabs;
-                self.ensure_active_visible |= previous_active_tab_id != self.active_tab_id()
-                    && self.active_tab_id().is_some();
+                self.ensure_active_visible |= previous_active_tab_id != self.active_tab_id() && self.active_tab_id().is_some();
                 if let Some(pane_manifest) = self.last_pane_manifest.clone() {
                     self.observe_own_rail_size(&pane_manifest);
                 }
@@ -497,8 +419,7 @@ impl ZellijPlugin for PluginState {
                 let started_at = Instant::now();
                 match serde_json::from_str::<ControllerViewModel>(payload) {
                     Ok(model) => {
-                        self.stats
-                            .record_span_elapsed("json.decode-view-model", started_at);
+                        self.stats.record_span_elapsed("json.decode-view-model", started_at);
                         self.controller_model = Some(model);
                         // Defensive: zellij may grant cached permissions
                         // without firing PermissionRequestResult. Receiving a
@@ -559,34 +480,22 @@ impl ZellijPlugin for PluginState {
         self.stats.increment("render.total");
         let started_at = Instant::now();
         let controller_available = self.controller_model.is_some();
-        let metadata_controls = self
-            .controller_model
-            .as_ref()
-            .map(|model| model.metadata_controls.clone())
-            .unwrap_or_default();
-        let should_ensure_active_visible =
-            self.ensure_active_visible && self.own_tab_id() == self.active_tab_id();
+        let metadata_controls = self.controller_model.as_ref().map(|model| model.metadata_controls.clone()).unwrap_or_default();
+        let should_ensure_active_visible = self.ensure_active_visible && self.own_tab_id() == self.active_tab_id();
         let rendered = render::render_lines_with_detail_surface(
             self.controller_model.as_ref(),
             &self.local_tabs,
             rows,
             cols,
             controller_available,
-            self.mode_info
-                .as_ref()
-                .map(|mode_info| render::theme_from_zellij(mode_info.style.colors)),
-            terminal_pixel_cell_size().map(|s| render::SizeInPixels {
-                height: s.height,
-                width: s.width,
-            }),
+            self.mode_info.as_ref().map(|mode_info| render::theme_from_zellij(mode_info.style.colors)),
+            terminal_pixel_cell_size().map(|s| render::SizeInPixels { height: s.height, width: s.width }),
             &self.rail_ui_state.collapsed_placements,
             None,
             &metadata_controls,
             self.rail_ui_state.scroll_offset,
             should_ensure_active_visible,
-            self.hovered_detail_target
-                .as_ref()
-                .or(self.selected_detail_target.as_ref()),
+            self.hovered_detail_target.as_ref().or(self.selected_detail_target.as_ref()),
         );
         if should_ensure_active_visible && rendered.ensure_active_resolved {
             self.ensure_active_visible = false;
@@ -659,31 +568,18 @@ mod tests {
             tab_position: 0,
             row_start: 0,
             status_row: Some(1),
-            status_icon_rect: Some(VisibleIconRect {
-                x: 2,
-                y: 1,
-                columns: 1,
-                rows: 1,
-            }),
+            status_icon_rect: Some(VisibleIconRect { x: 2, y: 1, columns: 1, rows: 1 }),
             status_priority: None,
             status_icon: Some(StatusIcon::PngFile("/tmp/icon.png".into())),
         }];
         let signature = visible_graphics_signature(&visible_cards);
 
-        assert!(!graphics_signature_needs_sync(
-            Some(signature.as_slice()),
-            &visible_cards
-        ));
+        assert!(!graphics_signature_needs_sync(Some(signature.as_slice()), &visible_cards));
     }
 
     #[test]
     fn unchanged_local_tab_projection_does_not_need_render() {
-        let current = vec![LocalTab {
-            tab_id: tab_workspace_id(1),
-            position: 0,
-            name: "work".to_owned(),
-            active: true,
-        }];
+        let current = vec![LocalTab { tab_id: tab_workspace_id(1), position: 0, name: "work".to_owned(), active: true }];
         let zellij_tabs = vec![tab_info(1, 0, "work", true)];
 
         assert!(!local_tabs_need_render(&current, &zellij_tabs));
@@ -698,18 +594,13 @@ mod tests {
 
     #[test]
     fn scroll_action_preserves_its_full_line_count() {
-        let message = build_rail_ui_action_message(
-            "andamento-controller",
-            RailUiAction::ScrollBy { delta: 7 },
-        )
-        .unwrap();
+        let message = build_rail_ui_action_message("andamento-controller", RailUiAction::ScrollBy { delta: 7 }).unwrap();
 
         assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
         assert_eq!(message.destination_client_id, None);
         assert_eq!(message.message_name, MSG_RAIL_UI_ACTION);
         assert_eq!(
-            serde_json::from_str::<RailUiAction>(message.message_payload.as_deref().unwrap())
-                .unwrap(),
+            serde_json::from_str::<RailUiAction>(message.message_payload.as_deref().unwrap()).unwrap(),
             RailUiAction::ScrollBy { delta: 7 }
         );
     }
@@ -771,12 +662,10 @@ mod tests {
 
     #[test]
     fn placement_hit_targets_drive_hover_detail_state() {
-        let target = NodeKey::Placement(andamento_shared::PlacementKey(vec![
-            andamento_shared::PlacementSegment {
-                loop_name: "attention".to_owned(),
-                entity: EntityRef::local("vessel", "worker"),
-            },
-        ]));
+        let target = NodeKey::Placement(andamento_shared::PlacementKey(vec![andamento_shared::PlacementSegment {
+            loop_name: "attention".to_owned(),
+            entity: EntityRef::local("vessel", "worker"),
+        }]));
         let mut state = PluginState {
             hit_regions: vec![HitRegion {
                 row_start: 1,
@@ -811,13 +700,8 @@ mod tests {
             materialize_request: None,
             action: HitAction::Materialize,
         };
-        let mut state = PluginState {
-            hit_regions: vec![
-                detail_hit(2, 6, first.clone()),
-                detail_hit(8, 15, second.clone()),
-            ],
-            ..Default::default()
-        };
+        let mut state =
+            PluginState { hit_regions: vec![detail_hit(2, 6, first.clone()), detail_hit(8, 15, second.clone())], ..Default::default() };
 
         assert!(state.handle_mouse(Mouse::Hover(1, 4)));
         assert!(!state.handle_mouse(Mouse::Hover(1, 7)));
@@ -866,16 +750,8 @@ mod tests {
     #[test]
     fn ensure_visible_latch_survives_until_controller_render_can_resolve_target() {
         let mut state = PluginState {
-            local_tabs: vec![LocalTab {
-                tab_id: tab_workspace_id(1),
-                position: 0,
-                name: "work".to_owned(),
-                active: true,
-            }],
-            own_plugin_placement: Some(PluginPlacement::Tab {
-                tab_id: tab_workspace_id(1),
-                pane_kind: PluginPaneKind::Tiled,
-            }),
+            local_tabs: vec![LocalTab { tab_id: tab_workspace_id(1), position: 0, name: "work".to_owned(), active: true }],
+            own_plugin_placement: Some(PluginPlacement::Tab { tab_id: tab_workspace_id(1), pane_kind: PluginPaneKind::Tiled }),
             ensure_active_visible: true,
             ..Default::default()
         };
@@ -914,18 +790,8 @@ mod tests {
     fn confirmed_fitting_rail_cycles_tabs() {
         let mut state = PluginState {
             local_tabs: vec![
-                LocalTab {
-                    tab_id: tab_workspace_id(1),
-                    position: 0,
-                    name: "one".to_owned(),
-                    active: true,
-                },
-                LocalTab {
-                    tab_id: tab_workspace_id(2),
-                    position: 1,
-                    name: "two".to_owned(),
-                    active: false,
-                },
+                LocalTab { tab_id: tab_workspace_id(1), position: 0, name: "one".to_owned(), active: true },
+                LocalTab { tab_id: tab_workspace_id(2), position: 1, name: "two".to_owned(), active: false },
             ],
             rail_can_scroll: Some(false),
             ..Default::default()
@@ -935,24 +801,15 @@ mod tests {
         state.handle_mouse(Mouse::ScrollDown(1));
         state.flush_pending_scroll();
 
-        assert_eq!(
-            SCROLL_TAB_SWITCH_TARGET.with(|target| target.get()),
-            Some(2)
-        );
+        assert_eq!(SCROLL_TAB_SWITCH_TARGET.with(|target| target.get()), Some(2));
     }
 
     #[test]
     fn wheel_burst_does_not_advance_render_state_event_by_event() {
-        let mut state = PluginState {
-            rail_can_scroll: Some(true),
-            ..Default::default()
-        };
+        let mut state = PluginState { rail_can_scroll: Some(true), ..Default::default() };
 
-        let render_requests = [
-            state.handle_mouse(Mouse::ScrollDown(1)),
-            state.handle_mouse(Mouse::ScrollDown(1)),
-            state.handle_mouse(Mouse::ScrollUp(1)),
-        ];
+        let render_requests =
+            [state.handle_mouse(Mouse::ScrollDown(1)), state.handle_mouse(Mouse::ScrollDown(1)), state.handle_mouse(Mouse::ScrollUp(1))];
 
         assert_eq!(render_requests, [false, false, false]);
         assert_eq!(state.rail_ui_state.scroll_offset, 0);
@@ -966,12 +823,7 @@ mod tests {
     #[test]
     fn explicit_navigation_clears_scroll_queued_before_it() {
         let mut state = PluginState {
-            rail_ui_state: RailUiState {
-                collapsed_placements: vec![],
-                scroll_offset: 4,
-                variables: BTreeMap::new(),
-                ..Default::default()
-            },
+            rail_ui_state: RailUiState { collapsed_placements: vec![], scroll_offset: 4, variables: BTreeMap::new(), ..Default::default() },
             rail_can_scroll: Some(true),
             ..Default::default()
         };
@@ -996,48 +848,18 @@ mod tests {
 
     #[test]
     fn converts_pane_dimension_constraint_to_shared_rail_size() {
-        assert_eq!(
-            rail_size_from_constraint(PaneDimensionConstraint::Fixed(24)),
-            RailSize::Fixed(24)
-        );
-        assert_eq!(
-            rail_size_from_constraint(PaneDimensionConstraint::Percent(18.75)),
-            RailSize::Percent(18.75)
-        );
+        assert_eq!(rail_size_from_constraint(PaneDimensionConstraint::Fixed(24)), RailSize::Fixed(24));
+        assert_eq!(rail_size_from_constraint(PaneDimensionConstraint::Percent(18.75)), RailSize::Percent(18.75));
     }
 
     #[test]
     fn rail_size_target_applies_only_for_new_different_same_client_target() {
-        let target = RailSizeTarget {
-            client_id: 7,
-            size: RailSize::Percent(22.0),
-            version: 3,
-        };
+        let target = RailSizeTarget { client_id: 7, size: RailSize::Percent(22.0), version: 3 };
 
-        assert!(rail_size_target_should_apply(
-            &target,
-            Some(7),
-            Some(RailSize::Percent(18.0)),
-            2
-        ));
-        assert!(!rail_size_target_should_apply(
-            &target,
-            Some(8),
-            Some(RailSize::Percent(18.0)),
-            2
-        ));
-        assert!(!rail_size_target_should_apply(
-            &target,
-            Some(7),
-            Some(RailSize::Percent(18.0)),
-            3
-        ));
-        assert!(!rail_size_target_should_apply(
-            &target,
-            Some(7),
-            Some(RailSize::Percent(22.0005)),
-            2
-        ));
+        assert!(rail_size_target_should_apply(&target, Some(7), Some(RailSize::Percent(18.0)), 2));
+        assert!(!rail_size_target_should_apply(&target, Some(8), Some(RailSize::Percent(18.0)), 2));
+        assert!(!rail_size_target_should_apply(&target, Some(7), Some(RailSize::Percent(18.0)), 3));
+        assert!(!rail_size_target_should_apply(&target, Some(7), Some(RailSize::Percent(22.0005)), 2));
     }
 
     #[test]
@@ -1062,14 +884,8 @@ mod tests {
         let rows = Some(PaneDimensionConstraint::Percent(12.5));
         let columns = Some(PaneDimensionConstraint::Percent(25.0));
 
-        assert_eq!(
-            rail_size_from_constraints(RailPlacement::Left, rows, columns),
-            Some(RailSize::Percent(25.0))
-        );
-        assert_eq!(
-            rail_size_from_constraints(RailPlacement::Top, rows, columns),
-            Some(RailSize::Percent(12.5))
-        );
+        assert_eq!(rail_size_from_constraints(RailPlacement::Left, rows, columns), Some(RailSize::Percent(25.0)));
+        assert_eq!(rail_size_from_constraints(RailPlacement::Top, rows, columns), Some(RailSize::Percent(12.5)));
     }
 
     #[test]
@@ -1089,8 +905,7 @@ mod tests {
         assert!(message.plugin_config.is_empty());
         assert!(message.new_plugin_args.is_none());
 
-        let payload: ConfigInspectRequest =
-            serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
+        let payload: ConfigInspectRequest = serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
         assert_eq!(payload.client_id, 4);
         assert_eq!(payload.origin_tab_id, tab_workspace_id(7));
         assert_eq!(payload.node_key, NodeKey::Tab(tab_workspace_id(7)));
@@ -1102,20 +917,12 @@ mod tests {
     fn attention_activation_builds_an_entity_only_controller_request() {
         let entity = EntityRef::local("vessel", "dev/focus/worker@lab");
 
-        let message = build_activate_entity_message(
-            "andamento-controller",
-            "andamento-config",
-            4,
-            tab_workspace_id(7),
-            &entity,
-        )
-        .unwrap();
+        let message = build_activate_entity_message("andamento-controller", "andamento-config", 4, tab_workspace_id(7), &entity).unwrap();
 
         assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
         assert_eq!(message.destination_client_id, Some(4));
         assert_eq!(message.message_name, andamento_shared::MSG_ACTIVATE_ENTITY);
-        let payload: andamento_shared::EntityActivationRequest =
-            serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
+        let payload: andamento_shared::EntityActivationRequest = serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
         assert_eq!(payload.entity, entity);
         assert_eq!(
             payload.inspect_fallback.node_key,
@@ -1139,32 +946,16 @@ mod tests {
     fn inspect_defaults_to_rail_own_tab_before_global_active_tab() {
         let state = PluginState {
             local_tabs: vec![
-                LocalTab {
-                    tab_id: tab_workspace_id(1),
-                    position: 0,
-                    name: "main".to_owned(),
-                    active: true,
-                },
-                LocalTab {
-                    tab_id: tab_workspace_id(7),
-                    position: 1,
-                    name: "work".to_owned(),
-                    active: false,
-                },
+                LocalTab { tab_id: tab_workspace_id(1), position: 0, name: "main".to_owned(), active: true },
+                LocalTab { tab_id: tab_workspace_id(7), position: 1, name: "work".to_owned(), active: false },
             ],
-            own_plugin_placement: Some(PluginPlacement::Tab {
-                tab_id: tab_workspace_id(7),
-                pane_kind: PluginPaneKind::Tiled,
-            }),
+            own_plugin_placement: Some(PluginPlacement::Tab { tab_id: tab_workspace_id(7), pane_kind: PluginPaneKind::Tiled }),
             ..Default::default()
         };
 
         assert_eq!(state.active_tab_id(), Some(tab_workspace_id(1)));
         assert_eq!(state.own_tab_id(), Some(tab_workspace_id(7)));
-        assert_eq!(
-            state.active_inspect_node(),
-            Some(NodeKey::Tab(tab_workspace_id(7)))
-        );
+        assert_eq!(state.active_inspect_node(), Some(NodeKey::Tab(tab_workspace_id(7))));
     }
 
     #[test]
@@ -1187,85 +978,40 @@ mod tests {
     #[test]
     fn resolves_own_plugin_tab_placement_from_pane_manifest() {
         let pane_manifest = PaneManifest {
-            panes: HashMap::from([(
-                2,
-                vec![PaneInfo {
-                    id: 42,
-                    is_plugin: true,
-                    is_floating: false,
-                    ..Default::default()
-                }],
-            )]),
+            panes: HashMap::from([(2, vec![PaneInfo { id: 42, is_plugin: true, is_floating: false, ..Default::default() }])]),
         };
-        let local_tabs = vec![LocalTab {
-            tab_id: tab_workspace_id(70),
-            position: 2,
-            name: "work".to_owned(),
-            active: true,
-        }];
+        let local_tabs = vec![LocalTab { tab_id: tab_workspace_id(70), position: 2, name: "work".to_owned(), active: true }];
 
         assert_eq!(
             own_plugin_tab_placement(&pane_manifest, &local_tabs, 42),
-            Some(PluginPlacement::Tab {
-                tab_id: tab_workspace_id(70),
-                pane_kind: PluginPaneKind::Tiled,
-            })
+            Some(PluginPlacement::Tab { tab_id: tab_workspace_id(70), pane_kind: PluginPaneKind::Tiled })
         );
     }
 
     #[test]
     fn resolves_floating_plugin_placement_from_pane_manifest() {
         let pane_manifest = PaneManifest {
-            panes: HashMap::from([(
-                1,
-                vec![PaneInfo {
-                    id: 9,
-                    is_plugin: true,
-                    is_floating: true,
-                    ..Default::default()
-                }],
-            )]),
+            panes: HashMap::from([(1, vec![PaneInfo { id: 9, is_plugin: true, is_floating: true, ..Default::default() }])]),
         };
-        let local_tabs = vec![LocalTab {
-            tab_id: tab_workspace_id(15),
-            position: 1,
-            name: "settings".to_owned(),
-            active: false,
-        }];
+        let local_tabs = vec![LocalTab { tab_id: tab_workspace_id(15), position: 1, name: "settings".to_owned(), active: false }];
 
         assert_eq!(
             own_plugin_tab_placement(&pane_manifest, &local_tabs, 9),
-            Some(PluginPlacement::Tab {
-                tab_id: tab_workspace_id(15),
-                pane_kind: PluginPaneKind::Floating,
-            })
+            Some(PluginPlacement::Tab { tab_id: tab_workspace_id(15), pane_kind: PluginPaneKind::Floating })
         );
     }
 
     #[test]
     fn renderer_hello_payload_includes_registration_placement() {
-        let payload = renderer_hello_payload(
-            42,
-            3,
-            PluginPlacement::Tab {
-                tab_id: tab_workspace_id(70),
-                pane_kind: PluginPaneKind::Tiled,
-            },
-        )
-        .unwrap();
+        let payload =
+            renderer_hello_payload(42, 3, PluginPlacement::Tab { tab_id: tab_workspace_id(70), pane_kind: PluginPaneKind::Tiled }).unwrap();
         let decoded: PluginRegistrationHello = serde_json::from_str(&payload).unwrap();
 
         assert_eq!(
             decoded,
             PluginRegistrationHello {
-                identity: RendererHello {
-                    plugin_id: 42,
-                    client_id: 3,
-                },
-                placement: PluginPlacement::Tab {
-                    tab_id: tab_workspace_id(70),
-                    pane_kind: PluginPaneKind::Tiled,
-                },
+                identity: RendererHello { plugin_id: 42, client_id: 3 },
+                placement: PluginPlacement::Tab { tab_id: tab_workspace_id(70), pane_kind: PluginPaneKind::Tiled },
             }
         );
     }
@@ -1274,12 +1020,7 @@ mod tests {
 impl PluginState {
     fn sync_graphics(&mut self, visible_cards: &[VisibleCard]) {
         let signature = visible_graphics_signature(visible_cards);
-        if self
-            .last_graphics_signature
-            .as_deref()
-            .map(|previous| previous == signature.as_slice())
-            .unwrap_or(false)
-        {
+        if self.last_graphics_signature.as_deref().map(|previous| previous == signature.as_slice()).unwrap_or(false) {
             return;
         }
         let mut ops = vec![PluginGraphicsOp::ClearPlacements];
@@ -1313,71 +1054,44 @@ impl PluginState {
 
     fn send_renderer_hello(&self) {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
-            log::info!("andamento-rail: send_renderer_hello SKIPPED (own_plugin_id={:?}, own_client_id={:?})", self.own_plugin_id, self.own_client_id);
+            log::info!(
+                "andamento-rail: send_renderer_hello SKIPPED (own_plugin_id={:?}, own_client_id={:?})",
+                self.own_plugin_id,
+                self.own_client_id
+            );
             return;
         };
-        log::info!("andamento-rail: send_renderer_hello plugin_id={plugin_id} client_id={client_id} → controller={:?}", self.controller_plugin_url);
-        let Some(payload) = renderer_hello_payload(
-            plugin_id,
-            client_id,
-            self.own_plugin_placement
-                .clone()
-                .unwrap_or(PluginPlacement::Unknown),
-        ) else {
+        log::info!(
+            "andamento-rail: send_renderer_hello plugin_id={plugin_id} client_id={client_id} → controller={:?}",
+            self.controller_plugin_url
+        );
+        let Some(payload) =
+            renderer_hello_payload(plugin_id, client_id, self.own_plugin_placement.clone().unwrap_or(PluginPlacement::Unknown))
+        else {
             return;
         };
-        pipe_message_to_plugin(
-            self.controller_message(MSG_RENDERER_HELLO)
-                .with_destination_client_id(client_id)
-                .with_payload(payload),
-        );
-        pipe_message_to_plugin(
-            self.controller_message(MSG_REQUEST_STATE)
-                .with_destination_client_id(client_id),
-        );
+        pipe_message_to_plugin(self.controller_message(MSG_RENDERER_HELLO).with_destination_client_id(client_id).with_payload(payload));
+        pipe_message_to_plugin(self.controller_message(MSG_REQUEST_STATE).with_destination_client_id(client_id));
         // UI state is session-wide and intentionally broadcast. Request the
         // controller's current snapshot on every hello so rails created after
         // earlier collapse/scroll actions immediately catch up.
-        pipe_message_to_plugin(build_rail_ui_state_request_message(
-            &self.controller_plugin_url,
-        ));
+        pipe_message_to_plugin(build_rail_ui_state_request_message(&self.controller_plugin_url));
     }
 
     fn send_stats_report_to(&self, requester: RendererHello, collection_id: u64) {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
             return;
         };
-        let mut snapshot = self.stats.snapshot(
-            collection_id,
-            RendererHello {
-                plugin_id,
-                client_id,
-            },
-            "rail",
-        );
-        snapshot.counters.insert(
-            format!("rail.placement.{}", self.rail_placement.as_str()),
-            1,
-        );
-        snapshot.counters.insert(
-            format!(
-                "rail.boundary.{}",
-                direction_name(rail_resize_boundary(self.rail_placement))
-            ),
-            1,
-        );
+        let mut snapshot = self.stats.snapshot(collection_id, RendererHello { plugin_id, client_id }, "rail");
+        snapshot.counters.insert(format!("rail.placement.{}", self.rail_placement.as_str()), 1);
+        snapshot.counters.insert(format!("rail.boundary.{}", direction_name(rail_resize_boundary(self.rail_placement))), 1);
         if let Some(size) = self.observed_rail_size {
             match size {
                 RailSize::Fixed(cells) => {
-                    snapshot
-                        .counters
-                        .insert("rail.size.fixed-cells".to_owned(), cells as u64);
+                    snapshot.counters.insert("rail.size.fixed-cells".to_owned(), cells as u64);
                 }
                 RailSize::Percent(percent) => {
-                    snapshot.counters.insert(
-                        "rail.size.percent-x1000".to_owned(),
-                        (percent * 1000.0).round() as u64,
-                    );
+                    snapshot.counters.insert("rail.size.percent-x1000".to_owned(), (percent * 1000.0).round() as u64);
                 }
             }
         }
@@ -1401,11 +1115,7 @@ impl PluginState {
             self.own_plugin_placement = next_placement;
             self.send_renderer_hello();
         }
-        let own_pane = pane_manifest
-            .panes
-            .values()
-            .flat_map(|panes| panes.iter())
-            .find(|pane| pane.is_plugin && pane.id == plugin_id);
+        let own_pane = pane_manifest.panes.values().flat_map(|panes| panes.iter()).find(|pane| pane.is_plugin && pane.id == plugin_id);
         if let Some(pane) = own_pane {
             // Defensive auto-correct: the rail should never be selectable
             // once we're past the initial permission window (signalled by
@@ -1417,20 +1127,12 @@ impl PluginState {
                 self.stats.increment("rail.auto-unselectable");
             }
         }
-        let Some(size) = own_pane.and_then(|pane| {
-            rail_size_from_constraints(
-                self.rail_placement,
-                pane.pane_rows_constraint,
-                pane.pane_columns_constraint,
-            )
-        }) else {
+        let Some(size) = own_pane
+            .and_then(|pane| rail_size_from_constraints(self.rail_placement, pane.pane_rows_constraint, pane.pane_columns_constraint))
+        else {
             return;
         };
-        if self
-            .observed_rail_size
-            .map(|current| current.within_tolerance(size))
-            .unwrap_or(false)
-        {
+        if self.observed_rail_size.map(|current| current.within_tolerance(size)).unwrap_or(false) {
             return;
         }
         self.observed_rail_size = Some(size);
@@ -1442,33 +1144,18 @@ impl PluginState {
         let (Some(plugin_id), Some(client_id)) = (self.own_plugin_id, self.own_client_id) else {
             return;
         };
-        let observed = RailSizeObserved {
-            rail: RendererHello {
-                plugin_id,
-                client_id,
-            },
-            size,
-        };
+        let observed = RailSizeObserved { rail: RendererHello { plugin_id, client_id }, size };
         let Ok(payload) = serde_json::to_string(&observed) else {
             return;
         };
-        pipe_message_to_plugin(
-            self.controller_message(MSG_RAIL_SIZE_OBSERVED)
-                .with_destination_client_id(client_id)
-                .with_payload(payload),
-        );
+        pipe_message_to_plugin(self.controller_message(MSG_RAIL_SIZE_OBSERVED).with_destination_client_id(client_id).with_payload(payload));
     }
 
     fn handle_rail_size_target(&mut self, target: RailSizeTarget) {
         if self.own_client_id != Some(target.client_id) {
             return;
         }
-        if self
-            .latest_rail_size_target
-            .as_ref()
-            .map(|current| current.version < target.version)
-            .unwrap_or(true)
-        {
+        if self.latest_rail_size_target.as_ref().map(|current| current.version < target.version).unwrap_or(true) {
             self.latest_rail_size_target = Some(target);
         }
         self.reconcile_rail_size_target();
@@ -1481,12 +1168,7 @@ impl PluginState {
         let Some(plugin_id) = self.own_plugin_id else {
             return;
         };
-        if !rail_size_target_should_apply(
-            &target,
-            self.own_client_id,
-            self.observed_rail_size,
-            self.applied_rail_size_version,
-        ) {
+        if !rail_size_target_should_apply(&target, self.own_client_id, self.observed_rail_size, self.applied_rail_size_version) {
             self.applied_rail_size_version = self.applied_rail_size_version.max(target.version);
             return;
         }
@@ -1520,9 +1202,7 @@ impl PluginState {
                                 &self.controller_plugin_url,
                                 &self.config_plugin_url,
                                 client_id,
-                                self.own_tab_id()
-                                    .or_else(|| self.active_tab_id())
-                                    .unwrap_or(tab_workspace_id(0)),
+                                self.own_tab_id().or_else(|| self.active_tab_id()).unwrap_or(tab_workspace_id(0)),
                                 entity,
                             ) {
                                 pipe_message_to_plugin(message);
@@ -1531,15 +1211,9 @@ impl PluginState {
                         false
                     }
                     HitAction::Materialize => {
-                        if let (Some(request), Some(client_id)) =
-                            (hit.materialize_request.as_ref(), self.own_client_id)
-                        {
+                        if let (Some(request), Some(client_id)) = (hit.materialize_request.as_ref(), self.own_client_id) {
                             self.reset_scroll_position();
-                            if let Some(message) = build_materialize_latent_message(
-                                &self.controller_plugin_url,
-                                client_id,
-                                request,
-                            ) {
+                            if let Some(message) = build_materialize_latent_message(&self.controller_plugin_url, client_id, request) {
                                 pipe_message_to_plugin(message);
                             }
                         }
@@ -1592,20 +1266,14 @@ impl PluginState {
             }
             Mouse::Hover(row, col) if row >= 0 => {
                 let row = row as usize;
-                let target = hit_at(&self.hit_regions, row, col).and_then(|hit| {
-                    match hit.inspect_target.as_ref() {
-                        Some(target @ (NodeKey::Entity(_) | NodeKey::Placement(_))) => {
-                            Some(target.clone())
-                        }
-                        _ => None,
-                    }
+                let target = hit_at(&self.hit_regions, row, col).and_then(|hit| match hit.inspect_target.as_ref() {
+                    Some(target @ (NodeKey::Entity(_) | NodeKey::Placement(_))) => Some(target.clone()),
+                    _ => None,
                 });
                 if target.is_none()
                     && self.hovered_detail_target.is_some()
                     && self.hit_regions.iter().any(|hit| {
-                        hit.inspect_target.as_ref() == self.hovered_detail_target.as_ref()
-                            && row >= hit.row_start
-                            && row <= hit.row_end
+                        hit.inspect_target.as_ref() == self.hovered_detail_target.as_ref() && row >= hit.row_start && row <= hit.row_end
                     })
                 {
                     return false;
@@ -1617,14 +1285,8 @@ impl PluginState {
                     true
                 }
             }
-            Mouse::ScrollUp(lines) => self.queue_scroll_delta(
-                isize::try_from(lines)
-                    .unwrap_or(isize::MAX)
-                    .saturating_neg(),
-            ),
-            Mouse::ScrollDown(lines) => {
-                self.queue_scroll_delta(isize::try_from(lines).unwrap_or(isize::MAX))
-            }
+            Mouse::ScrollUp(lines) => self.queue_scroll_delta(isize::try_from(lines).unwrap_or(isize::MAX).saturating_neg()),
+            Mouse::ScrollDown(lines) => self.queue_scroll_delta(isize::try_from(lines).unwrap_or(isize::MAX)),
             _ => false,
         }
     }
@@ -1670,10 +1332,7 @@ impl PluginState {
     }
 
     fn active_tab_idx(&self) -> Option<usize> {
-        self.local_tabs
-            .iter()
-            .position(|tab| tab.active)
-            .map(|idx| idx + 1)
+        self.local_tabs.iter().position(|tab| tab.active).map(|idx| idx + 1)
     }
 
     fn toggle_pin(&self, tab_id: WorkspaceId) {
@@ -1685,16 +1344,11 @@ impl PluginState {
         }
         let mut args = BTreeMap::new();
         args.insert("tab_id".to_owned(), tab_id.to_string());
-        pipe_message_to_plugin(
-            self.controller_message(MSG_TOGGLE_PIN)
-                .with_destination_client_id(client_id)
-                .with_args(args),
-        );
+        pipe_message_to_plugin(self.controller_message(MSG_TOGGLE_PIN).with_destination_client_id(client_id).with_args(args));
     }
 
     fn send_rail_ui_action(&self, action: RailUiAction) {
-        let Some(message) = build_rail_ui_action_message(&self.controller_plugin_url, action)
-        else {
+        let Some(message) = build_rail_ui_action_message(&self.controller_plugin_url, action) else {
             return;
         };
         pipe_message_to_plugin(message);
@@ -1712,9 +1366,7 @@ impl PluginState {
             &self.controller_plugin_url,
             &self.config_plugin_url,
             client_id,
-            self.own_tab_id()
-                .or_else(|| self.active_tab_id())
-                .unwrap_or(tab_workspace_id(0)),
+            self.own_tab_id().or_else(|| self.active_tab_id()).unwrap_or(tab_workspace_id(0)),
             node_key,
         ) else {
             return;
@@ -1723,10 +1375,7 @@ impl PluginState {
     }
 
     fn active_tab_id(&self) -> Option<WorkspaceId> {
-        self.local_tabs
-            .iter()
-            .find(|tab| tab.active)
-            .map(|tab| tab.tab_id)
+        self.local_tabs.iter().find(|tab| tab.active).map(|tab| tab.tab_id)
     }
 
     fn own_tab_id(&self) -> Option<WorkspaceId> {
@@ -1737,9 +1386,7 @@ impl PluginState {
     }
 
     fn active_inspect_node(&self) -> Option<NodeKey> {
-        self.own_tab_id()
-            .or_else(|| self.active_tab_id())
-            .map(NodeKey::Tab)
+        self.own_tab_id().or_else(|| self.active_tab_id()).map(NodeKey::Tab)
     }
 
     fn asset_id_for_icon(&mut self, icon: &StatusIcon, ops: &mut Vec<PluginGraphicsOp>) -> u32 {
@@ -1753,10 +1400,7 @@ impl PluginState {
         self.next_icon_asset_id = self.next_icon_asset_id.saturating_add(1);
         self.icon_asset_ids.insert(icon.clone(), asset_id);
         if let StatusIcon::PngFile(path) = icon {
-            ops.push(PluginGraphicsOp::SetAsset {
-                asset_id,
-                source: PluginImageSource::PngFile(path.clone()),
-            });
+            ops.push(PluginGraphicsOp::SetAsset { asset_id, source: PluginImageSource::PngFile(path.clone()) });
         }
         asset_id
     }

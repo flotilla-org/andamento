@@ -12,21 +12,15 @@ use crate::{
     managed::{ManagedContent, SlotPlan},
     presentation::{system, SurfaceSnapshot, UNPLACED_WORKSPACES_SECTION},
     records::{recordable, DashboardRecord, DashboardState, RecordName, SubjectRecord},
-    sidebar_arrangement::{
-        self, Declared, LocalSection, Report, SidebarArrangement, SidebarDoc, SidebarView,
-    },
-    slots::{
-        ArrangementCommit, ArrangementDoc, ArrangementView, Baseline, OverlayView, Resolve,
-        SlotInfo,
-    },
+    sidebar_arrangement::{self, Declared, LocalSection, Report, SidebarArrangement, SidebarDoc, SidebarView},
+    slots::{ArrangementCommit, ArrangementDoc, ArrangementView, Baseline, OverlayView, Resolve, SlotInfo},
     state::{ControllerState, ControllerTab, EntityActivation},
     suggested_layout::{RebindPolicy, ViewSpec},
     target_resolution::{PortableResolution, SavedResolution},
     versioned::{Clock, CommitError, Versioned},
     workspace::{Subject, WorkspaceRecord},
-    DisplayVariableValue, EntityRef, MaterializeLatentRequest, MetadataPatch, MetadataTarget,
-    MetadataValue, MetadataValueUpdate, NodeKey, PlacementKey, PlacementLoopKey, RailUiAction,
-    WorkspaceId, LOCAL_PROVIDER,
+    DisplayVariableValue, EntityRef, MaterializeLatentRequest, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, NodeKey,
+    PlacementKey, PlacementLoopKey, RailUiAction, WorkspaceId, LOCAL_PROVIDER,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,11 +224,7 @@ impl Sidebar {
                 self.configure(&kdl)?;
                 vec![]
             }
-            Request::Apply {
-                now_ms,
-                provider,
-                patches,
-            } => {
+            Request::Apply { now_ms, provider, patches } => {
                 self.apply(now_ms, &provider, patches)?;
                 vec![]
             }
@@ -255,11 +245,7 @@ impl Sidebar {
                 vec![]
             }
             Request::Dispatch { action } => self.dispatch(action)?,
-            Request::Complete {
-                request_id,
-                workspace_id,
-                error,
-            } => {
+            Request::Complete { request_id, workspace_id, error } => {
                 self.complete(
                     request_id,
                     match error {
@@ -295,10 +281,7 @@ impl Sidebar {
             }
             Request::Snapshot => vec![],
         };
-        Ok(Response {
-            snapshot: self.snapshot(),
-            effects,
-        })
+        Ok(Response { snapshot: self.snapshot(), effects })
     }
 
     pub fn new(config_kdl: &str) -> Result<Self, String> {
@@ -309,11 +292,8 @@ impl Sidebar {
 
     /// Validate the template catalog before replacing the active configuration.
     pub fn configure(&mut self, config_kdl: &str) -> Result<(), String> {
-        let templates = crate::template_config::parse_template_config_kdl(config_kdl)
-            .map_err(|e| e.to_string())?;
-        self.state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::with_bundled_defaults(templates),
-        ));
+        let templates = crate::template_config::parse_template_config_kdl(config_kdl).map_err(|e| e.to_string())?;
+        self.state.set_template_catalog(Some(crate::template_config::TemplateConfigCatalog::with_bundled_defaults(templates)));
         self.placement_keys = self.state.placement_fact_keys();
         self.invalidate();
         self.follow_sidebar_declarations();
@@ -324,17 +304,9 @@ impl Sidebar {
     /// received it on, before requesting a snapshot. The provider is stamped
     /// over every entity the patches name; a patch never names its own. Time
     /// is monotonic milliseconds in this instance, supplied by the host.
-    pub fn apply(
-        &mut self,
-        now_ms: u64,
-        provider: &str,
-        patches: impl IntoIterator<Item = MetadataPatch>,
-    ) -> Result<(), String> {
+    pub fn apply(&mut self, now_ms: u64, provider: &str, patches: impl IntoIterator<Item = MetadataPatch>) -> Result<(), String> {
         if provider.is_empty() || provider == LOCAL_PROVIDER {
-            return Err(format!(
-                "a provider needs a name other than {:?}",
-                LOCAL_PROVIDER
-            ));
+            return Err(format!("a provider needs a name other than {:?}", LOCAL_PROVIDER));
         }
         self.apply_patches(now_ms, Some(provider), patches);
         Ok(())
@@ -388,12 +360,7 @@ impl Sidebar {
         self.state.provider_is_stale(provider)
     }
 
-    fn apply_patches(
-        &mut self,
-        now_ms: u64,
-        provider: Option<&str>,
-        patches: impl IntoIterator<Item = MetadataPatch>,
-    ) {
+    fn apply_patches(&mut self, now_ms: u64, provider: Option<&str>, patches: impl IntoIterator<Item = MetadataPatch>) {
         let _phase = crate::profile::span("apply");
         let maintenance = crate::profile::span("workspace-maintenance");
         let subjects = self.state.workspace_subjects();
@@ -409,9 +376,7 @@ impl Sidebar {
         drop(patch_phase);
         let maintenance = crate::profile::span("workspace-maintenance");
         changed |= self.state.refresh_retained_subjects();
-        changed |= self
-            .state
-            .mark_ended_workspace_paths(&self.retained_paths, &subjects);
+        changed |= self.state.mark_ended_workspace_paths(&self.retained_paths, &subjects);
         drop(maintenance);
         if changed {
             self.invalidate();
@@ -437,13 +402,8 @@ impl Sidebar {
                 if subject {
                     ancestors.push(node.entity.clone());
                 }
-                if let crate::presentation::PresentationState::Live { workspace_id, .. } =
-                    node.state
-                {
-                    paths
-                        .entry(workspace_id)
-                        .or_default()
-                        .extend(ancestors.iter().cloned());
+                if let crate::presentation::PresentationState::Live { workspace_id, .. } = node.state {
+                    paths.entry(workspace_id).or_default().extend(ancestors.iter().cloned());
                 }
                 collect(&node.children, ancestors, paths);
                 if subject {
@@ -458,11 +418,7 @@ impl Sidebar {
                     collect(&section.nodes, &mut Vec::new(), &mut paths);
                 }
                 self.retained_paths
-                    .extend(paths.into_iter().filter(|(id, path)| {
-                        subjects
-                            .get(id)
-                            .is_some_and(|subject| path.contains(subject))
-                    }));
+                    .extend(paths.into_iter().filter(|(id, path)| subjects.get(id).is_some_and(|subject| path.contains(subject))));
                 self.retained_paths_revision = Some(self.revision);
             }
         }
@@ -477,16 +433,13 @@ impl Sidebar {
                 && !subject.retained.is_empty()
                 && !self.retained_paths.contains_key(id)
             {
-                self.retained_paths
-                    .insert(*id, subject.retained.keys().cloned().collect());
+                self.retained_paths.insert(*id, subject.retained.keys().cloned().collect());
             }
         }
-        self.retained_paths.retain(|id, subjects_on_path| {
-            subjects.contains_key(id) && !retained_workspace_expired(&self.state, subjects_on_path)
-        });
+        self.retained_paths
+            .retain(|id, subjects_on_path| subjects.contains_key(id) && !retained_workspace_expired(&self.state, subjects_on_path));
         let saved = self.saved_subjects();
-        let mut retained: BTreeSet<EntityRef> =
-            self.retained_paths.values().flatten().cloned().collect();
+        let mut retained: BTreeSet<EntityRef> = self.retained_paths.values().flatten().cloned().collect();
         retained.extend(self.ref_targets());
         self.state.retain_workspace_paths(retained, &saved)
     }
@@ -511,9 +464,8 @@ impl Sidebar {
         let mut saved = BTreeMap::<EntityRef, SubjectRecord>::new();
         for entry in self.workspaces.values() {
             for (entity, record) in &entry.record.subject.get().retained {
-                let newer = saved.get(entity).is_none_or(|current| {
-                    (record.ended, record.last_seen_ms) > (current.ended, current.last_seen_ms)
-                });
+                let newer =
+                    saved.get(entity).is_none_or(|current| (record.ended, record.last_seen_ms) > (current.ended, current.last_seen_ms));
                 if newer {
                     saved.insert(entity.clone(), record.clone());
                 }
@@ -525,17 +477,11 @@ impl Sidebar {
     /// Full host topology, including selected workspace. Closing a workspace
     /// removes its local presentation, not the separately published entity.
     pub fn observe(&mut self, workspaces: Vec<Workspace>, panes: Vec<PaneObservation>) {
-        self.managed
-            .retain_workspaces(&workspaces.iter().map(|w| w.id).collect::<Vec<_>>());
+        self.managed.retain_workspaces(&workspaces.iter().map(|w| w.id).collect::<Vec<_>>());
         let mut changed = self.state.observe_workspaces(
             workspaces
                 .into_iter()
-                .map(|w| ControllerTab {
-                    tab_id: w.id,
-                    position: w.position,
-                    name: w.name,
-                    active: w.selected,
-                })
+                .map(|w| ControllerTab { tab_id: w.id, position: w.position, name: w.name, active: w.selected })
                 .collect(),
         );
         changed |= self.state.observe_panes(panes);
@@ -553,9 +499,7 @@ impl Sidebar {
             }
         }
         changed |= self.retain_workspace_paths(&subjects);
-        changed |= self
-            .state
-            .mark_ended_workspace_paths(&self.retained_paths, &subjects);
+        changed |= self.state.mark_ended_workspace_paths(&self.retained_paths, &subjects);
         if changed {
             self.invalidate();
         }
@@ -618,16 +562,11 @@ impl Sidebar {
 
     /// Set the host-owned order of one sibling run, identified by the loop key
     /// every node in it carries. An empty order returns the run to data order.
-    pub fn set_sibling_order(
-        &mut self,
-        loop_key: PlacementLoopKey,
-        order: Vec<EntityRef>,
-    ) -> Result<(), String> {
+    pub fn set_sibling_order(&mut self, loop_key: PlacementLoopKey, order: Vec<EntityRef>) -> Result<(), String> {
         for entity in &order {
             entity.check_provider()?;
         }
-        self.state
-            .apply_rail_ui_action(RailUiAction::SetSiblingOrder { loop_key, order });
+        self.state.apply_rail_ui_action(RailUiAction::SetSiblingOrder { loop_key, order });
         self.invalidate();
         Ok(())
     }
@@ -635,11 +574,7 @@ impl Sidebar {
     /// Set a declared display variable, or return it to its default with
     /// None, without a snapshot action. Unknown variables and values the
     /// declaration doesn't allow are rejected.
-    pub fn set_display_variable(
-        &mut self,
-        name: &str,
-        value: Option<DisplayVariableValue>,
-    ) -> Result<(), String> {
+    pub fn set_display_variable(&mut self, name: &str, value: Option<DisplayVariableValue>) -> Result<(), String> {
         if self.state.set_display_variable(name, value)? {
             self.invalidate();
         }
@@ -651,26 +586,15 @@ impl Sidebar {
     /// dashboard record; their provider is [`LOCAL_PROVIDER`](crate::LOCAL_PROVIDER).
     /// Lists of text and group paths are not allowed; entity references name
     /// their providers.
-    pub fn set_local(
-        &mut self,
-        entity: EntityRef,
-        facts: BTreeMap<String, MetadataValue>,
-    ) -> Result<(), String> {
+    pub fn set_local(&mut self, entity: EntityRef, facts: BTreeMap<String, MetadataValue>) -> Result<(), String> {
         if entity.provider != LOCAL_PROVIDER {
-            return Err(format!(
-                "local entities have the {:?} provider, not {:?}",
-                LOCAL_PROVIDER, entity.provider
-            ));
+            return Err(format!("local entities have the {:?} provider, not {:?}", LOCAL_PROVIDER, entity.provider));
         }
         for value in facts.values() {
             value.check_providers()?;
         }
         if !LOCAL_KINDS.contains(&entity.kind.as_str()) {
-            return Err(format!(
-                "local entities are {}, not {:?}",
-                LOCAL_KINDS.join(", "),
-                entity.kind
-            ));
+            return Err(format!("local entities are {}, not {:?}", LOCAL_KINDS.join(", "), entity.kind));
         }
         if entity.id.is_empty() {
             return Err("a local entity needs an ID".into());
@@ -718,11 +642,7 @@ impl Sidebar {
 
     /// The patch that makes the catalog hold `facts` for a local entity,
     /// unsetting the keys it held before.
-    fn local_patch(
-        &self,
-        entity: &EntityRef,
-        facts: Option<&BTreeMap<String, MetadataValue>>,
-    ) -> MetadataPatch {
+    fn local_patch(&self, entity: &EntityRef, facts: Option<&BTreeMap<String, MetadataValue>>) -> MetadataPatch {
         let empty = BTreeMap::new();
         let facts = facts.unwrap_or(&empty);
         MetadataPatch {
@@ -731,25 +651,10 @@ impl Sidebar {
             set: facts
                 .iter()
                 .map(|(key, value)| {
-                    (
-                        key.clone(),
-                        MetadataValueUpdate {
-                            value: value.clone(),
-                            ttl_ms: None,
-                            precedence: None,
-                            ordinal: None,
-                        },
-                    )
+                    (key.clone(), MetadataValueUpdate { value: value.clone(), ttl_ms: None, precedence: None, ordinal: None })
                 })
                 .collect(),
-            unset: self
-                .local
-                .get(entity)
-                .into_iter()
-                .flat_map(BTreeMap::keys)
-                .filter(|key| !facts.contains_key(*key))
-                .cloned()
-                .collect(),
+            unset: self.local.get(entity).into_iter().flat_map(BTreeMap::keys).filter(|key| !facts.contains_key(*key)).cloned().collect(),
         }
     }
 
@@ -768,9 +673,7 @@ impl Sidebar {
         let subjects = self.state.workspace_subjects();
         changed |= self.retain_workspace_paths(&subjects);
         changed |= self.state.refresh_retained_subjects();
-        changed |= self
-            .state
-            .mark_ended_workspace_paths(&self.retained_paths, &subjects);
+        changed |= self.state.mark_ended_workspace_paths(&self.retained_paths, &subjects);
         if changed {
             self.invalidate();
         }
@@ -784,13 +687,7 @@ impl Sidebar {
     /// subject and its path, as retained now. A closed workspace keeps the
     /// record it had when it closed.
     fn refresh_workspace_records(&mut self) {
-        let open = self
-            .state
-            .workspaces()
-            .iter()
-            .map(|tab| tab.tab_id)
-            .filter(|id| self.workspaces.contains_key(id))
-            .collect::<Vec<_>>();
+        let open = self.state.workspaces().iter().map(|tab| tab.tab_id).filter(|id| self.workspaces.contains_key(id)).collect::<Vec<_>>();
         if open.is_empty() {
             return;
         }
@@ -799,15 +696,11 @@ impl Sidebar {
         let now = self.state.evaluation_time();
         for id in open {
             let path = self.retained_paths.get(&id).cloned().unwrap_or_default();
-            let entry = self
-                .workspaces
-                .get_mut(&id)
-                .expect("open IDs are registered");
+            let entry = self.workspaces.get_mut(&id).expect("open IDs are registered");
             let mut retained = BTreeMap::new();
             let mut observed = BTreeSet::new();
             for entity in path {
-                let Some((mut record, seen)) = self.state.retained_subject_record(&entity, keys)
-                else {
+                let Some((mut record, seen)) = self.state.retained_subject_record(&entity, keys) else {
                     if let Some(old) = entry.record.subject.get().retained.get(&entity) {
                         retained.insert(entity, old.clone());
                     }
@@ -818,8 +711,7 @@ impl Sidebar {
                 // away, not on every heartbeat.
                 record.last_seen_ms = match old {
                     Some(old)
-                        if (&old.label, old.ended, &old.facts)
-                            == (&record.label, record.ended, &record.facts)
+                        if (&old.label, old.ended, &old.facts) == (&record.label, record.ended, &record.facts)
                             && entry.observed.contains(&entity) == seen =>
                     {
                         old.last_seen_ms
@@ -831,10 +723,7 @@ impl Sidebar {
                 }
                 retained.insert(entity, record);
             }
-            let subject = Subject {
-                entity: subjects.get(&id).cloned(),
-                retained,
-            };
+            let subject = Subject { entity: subjects.get(&id).cloned(), retained };
             entry.record.follow_subject(&mut self.clock, subject);
             entry.observed = observed;
         }
@@ -855,8 +744,7 @@ impl Sidebar {
         match RecordName::parse(name)? {
             RecordName::Dashboard => Ok(DashboardRecord {
                 state: self.dashboard.get().clone(),
-                sidebar: (self.sidebar_arrangement.generation() != 0)
-                    .then(|| self.sidebar_arrangement.get().clone()),
+                sidebar: (self.sidebar_arrangement.generation() != 0).then(|| self.sidebar_arrangement.get().clone()),
             }
             .encode()),
             RecordName::Workspace(id) => Ok(self.workspace(id)?.encode()),
@@ -868,10 +756,7 @@ impl Sidebar {
     /// last stored.
     pub fn record_generation(&self, name: &str) -> Result<u64, String> {
         match RecordName::parse(name)? {
-            RecordName::Dashboard => Ok(self
-                .dashboard
-                .generation()
-                .max(self.sidebar_arrangement.generation())),
+            RecordName::Dashboard => Ok(self.dashboard.generation().max(self.sidebar_arrangement.generation())),
             RecordName::Workspace(id) => Ok(self.workspace(id)?.generation()),
         }
     }
@@ -897,22 +782,11 @@ impl Sidebar {
         match RecordName::parse(name)? {
             RecordName::Dashboard => {
                 let DashboardRecord { state, sidebar } = DashboardRecord::decode(text)?;
-                if let Some(entity) = state
-                    .local
-                    .keys()
-                    .find(|entity| !LOCAL_KINDS.contains(&entity.kind.as_str()))
-                {
+                if let Some(entity) = state.local.keys().find(|entity| !LOCAL_KINDS.contains(&entity.kind.as_str())) {
                     return Err(format!("{:?} is not a local entity kind", entity.kind));
                 }
-                if let Some(entity) = state
-                    .local
-                    .keys()
-                    .find(|entity| entity.provider != LOCAL_PROVIDER)
-                {
-                    return Err(format!(
-                        "local entity {:?} has provider {:?}",
-                        entity.id, entity.provider
-                    ));
+                if let Some(entity) = state.local.keys().find(|entity| entity.provider != LOCAL_PROVIDER) {
+                    return Err(format!("local entity {:?} has provider {:?}", entity.id, entity.provider));
                 }
                 self.state.restore_dashboard(&state);
                 let mut patches = Vec::new();
@@ -938,13 +812,7 @@ impl Sidebar {
                 self.state.bind_workspace_subject(id, record.subject());
                 // A path from this session is no longer the recorded one.
                 self.retained_paths.remove(&id);
-                self.workspaces.insert(
-                    id,
-                    WorkspaceEntry {
-                        record,
-                        observed: BTreeSet::new(),
-                    },
-                );
+                self.workspaces.insert(id, WorkspaceEntry { record, observed: BTreeSet::new() });
                 self.maintain(true);
             }
         }
@@ -960,12 +828,7 @@ impl Sidebar {
         if self.managed.publish(self.state.slot_resolutions()) {
             self.content_changed = self.clock.tick();
         }
-        let open: BTreeSet<WorkspaceId> = self
-            .state
-            .workspaces()
-            .iter()
-            .map(|tab| tab.tab_id)
-            .collect();
+        let open: BTreeSet<WorkspaceId> = self.state.workspaces().iter().map(|tab| tab.tab_id).collect();
         for (id, entry) in self.workspaces.iter_mut() {
             let record = &mut entry.record;
             if open.contains(id) {
@@ -983,17 +846,11 @@ impl Sidebar {
     /// and arrangements. It changes when any of them may have; the
     /// sidebar's [`revision`](Self::revision) does not change with them.
     pub fn content_revision(&self) -> u64 {
-        self.workspaces
-            .values()
-            .map(|entry| entry.record.content_generation())
-            .fold(self.content_changed, u64::max)
+        self.workspaces.values().map(|entry| entry.record.content_generation()).fold(self.content_changed, u64::max)
     }
 
     fn workspace(&self, id: WorkspaceId) -> Result<&WorkspaceRecord, String> {
-        self.workspaces
-            .get(&id)
-            .map(|entry| &entry.record)
-            .ok_or_else(|| format!("workspace {id} is not registered"))
+        self.workspaces.get(&id).map(|entry| &entry.record).ok_or_else(|| format!("workspace {id} is not registered"))
     }
 
     /// Edit a registered workspace's record, with the clock its parts take
@@ -1003,10 +860,7 @@ impl Sidebar {
         id: WorkspaceId,
         edit: impl FnOnce(&mut WorkspaceRecord, &mut Clock, &ManagedContent) -> Result<R, E>,
     ) -> Result<R, E> {
-        let entry = self
-            .workspaces
-            .get_mut(&id)
-            .ok_or_else(|| E::from(format!("workspace {id} is not registered")))?;
+        let entry = self.workspaces.get_mut(&id).ok_or_else(|| E::from(format!("workspace {id} is not registered")))?;
         edit(&mut entry.record, &mut self.clock, &self.managed)
     }
 
@@ -1020,24 +874,15 @@ impl Sidebar {
     /// edit (see [`WorkspaceSlots::set`](crate::slots::WorkspaceSlots::set)).
     /// The host gives a new slot a tab in its next commit, which otherwise
     /// places it. A facet's entity names its provider.
-    pub fn set_slot(
-        &mut self,
-        workspace: WorkspaceId,
-        key: &str,
-        spec: ViewSpec,
-        rebind: RebindPolicy,
-    ) -> Result<bool, String> {
-        self.with_workspace(workspace, |record, clock, _| {
-            record.set_slot(clock, key, spec, rebind)
-        })
+    pub fn set_slot(&mut self, workspace: WorkspaceId, key: &str, spec: ViewSpec, rebind: RebindPolicy) -> Result<bool, String> {
+        self.with_workspace(workspace, |record, clock, _| record.set_slot(clock, key, spec, rebind))
     }
 
     /// Remove a slot: the user's own slot or a detached slot its baseline
     /// dropped goes; a baseline slot gets a tombstone (see
     /// [`WorkspaceSlots::remove`](crate::slots::WorkspaceSlots::remove)).
     pub fn remove_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
-        let removed =
-            self.with_workspace(workspace, |record, clock, _| record.remove_slot(clock, key))?;
+        let removed = self.with_workspace(workspace, |record, clock, _| record.remove_slot(clock, key))?;
         if removed {
             self.managed.forget_slot(workspace, key);
         }
@@ -1047,46 +892,26 @@ impl Sidebar {
     /// Drop a baseline slot's override or tombstone, so it follows the
     /// provider again.
     pub fn reattach_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
-        self.with_workspace(workspace, |record, clock, _| {
-            Ok(record.reattach_slot(clock, key))
-        })
+        self.with_workspace(workspace, |record, clock, _| Ok(record.reattach_slot(clock, key)))
     }
 
     /// Set the user's name for a workspace over the provider's, or drop it
     /// with `None`. Returns whether it changed.
-    pub fn set_workspace_name(
-        &mut self,
-        workspace: WorkspaceId,
-        name: Option<String>,
-    ) -> Result<bool, String> {
-        self.with_workspace(workspace, |record, clock, _| {
-            Ok(record.set_name(clock, name))
-        })
+    pub fn set_workspace_name(&mut self, workspace: WorkspaceId, name: Option<String>) -> Result<bool, String> {
+        self.with_workspace(workspace, |record, clock, _| Ok(record.set_name(clock, name)))
     }
 
     /// Set the user's mood for a workspace over the provider's, or drop it
     /// with `None`. Returns whether it changed.
-    pub fn set_workspace_mood(
-        &mut self,
-        workspace: WorkspaceId,
-        mood: Option<String>,
-    ) -> Result<bool, String> {
-        self.with_workspace(workspace, |record, clock, _| {
-            Ok(record.set_mood(clock, mood))
-        })
+    pub fn set_workspace_mood(&mut self, workspace: WorkspaceId, mood: Option<String>) -> Result<bool, String> {
+        self.with_workspace(workspace, |record, clock, _| Ok(record.set_mood(clock, mood)))
     }
 
     /// The host has dealt with the live instance a rebind replaced: a
     /// `keep-previous` slot's previous instance, or the instance of a slot
     /// the provider removed. Returns whether there was one.
-    pub fn release_slot_previous(
-        &mut self,
-        workspace: WorkspaceId,
-        key: &str,
-    ) -> Result<bool, String> {
-        let released = self.with_workspace(workspace, |record, clock, _| {
-            Ok::<_, String>(record.release_departed(clock, key))
-        })?;
+    pub fn release_slot_previous(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
+        let released = self.with_workspace(workspace, |record, clock, _| Ok::<_, String>(record.release_departed(clock, key)))?;
         Ok(self.managed.release_previous(workspace, key) || released)
     }
 
@@ -1098,30 +923,19 @@ impl Sidebar {
 
     /// Plan one slot, given the identity of the resolution the host applied
     /// to it (empty for none). See [`crate::managed`].
-    pub fn plan_slot(
-        &mut self,
-        workspace: WorkspaceId,
-        key: &str,
-        applied: &str,
-    ) -> Result<SlotPlan, String> {
+    pub fn plan_slot(&mut self, workspace: WorkspaceId, key: &str, applied: &str) -> Result<SlotPlan, String> {
         let record = self.workspace(workspace)?;
         let slot = record.slot(key)?;
         let source = record.slot_source(&slot);
         let saved = record.resolutions.get().get(key).cloned();
-        let mut plan = self
-            .managed
-            .plan_slot(workspace, key, source, slot.rebind, applied);
+        let mut plan = self.managed.plan_slot(workspace, key, source, slot.rebind, applied);
         plan.saved = saved;
         Ok(plan)
     }
 
     /// The portable Target Resolution saved for a slot, if any (see
     /// [`crate::target_resolution`]).
-    pub fn slot_resolution(
-        &self,
-        workspace: WorkspaceId,
-        key: &str,
-    ) -> Result<Option<SavedResolution>, String> {
+    pub fn slot_resolution(&self, workspace: WorkspaceId, key: &str) -> Result<Option<SavedResolution>, String> {
         self.workspace(workspace)?.resolution(key)
     }
 
@@ -1139,22 +953,13 @@ impl Sidebar {
         applied: &str,
         expected: u64,
     ) -> Result<u64, CommitError> {
-        self.with_workspace(workspace, |record, clock, managed| {
-            record.set_resolution(clock, managed, key, resolution, applied, expected)
-        })
+        self.with_workspace(workspace, |record, clock, managed| record.set_resolution(clock, managed, key, resolution, applied, expected))
     }
 
     /// Clear a slot's saved portable Target Resolution, if `expected` is its
     /// saved generation. Returns whether there was one.
-    pub fn clear_slot_resolution(
-        &mut self,
-        workspace: WorkspaceId,
-        key: &str,
-        expected: u64,
-    ) -> Result<bool, CommitError> {
-        self.with_workspace(workspace, |record, clock, _| {
-            record.clear_resolution(clock, key, expected)
-        })
+    pub fn clear_slot_resolution(&mut self, workspace: WorkspaceId, key: &str, expected: u64) -> Result<bool, CommitError> {
+        self.with_workspace(workspace, |record, clock, _| record.clear_resolution(clock, key, expected))
     }
 
     /// Commit a workspace's whole arrangement, if `expected` is its current
@@ -1169,23 +974,14 @@ impl Sidebar {
         doc: ArrangementDoc,
         expected: u64,
     ) -> Result<ArrangementCommit, CommitError> {
-        self.with_workspace(workspace, |record, clock, _| {
-            record.commit_arrangement(clock, doc, expected)
-        })
+        self.with_workspace(workspace, |record, clock, _| record.commit_arrangement(clock, doc, expected))
     }
 
     /// Settle a provider change to an arrangement the user owns: keep the
     /// user's, or follow the provider's again (which also drops soft
     /// overrides). Returns the generation after the call.
-    pub fn resolve_arrangement(
-        &mut self,
-        workspace: WorkspaceId,
-        choice: Resolve,
-        expected: u64,
-    ) -> Result<u64, CommitError> {
-        self.with_workspace(workspace, |record, clock, _| {
-            record.resolve_arrangement(clock, choice, expected)
-        })
+    pub fn resolve_arrangement(&mut self, workspace: WorkspaceId, choice: Resolve, expected: u64) -> Result<u64, CommitError> {
+        self.with_workspace(workspace, |record, clock, _| record.resolve_arrangement(clock, choice, expected))
     }
 
     /// A registered workspace's arrangement. Before anything is stored it is
@@ -1200,14 +996,9 @@ impl Sidebar {
         let sections_with_default: BTreeSet<&str> = self
             .local
             .iter()
-            .filter(|(entity, facts)| {
-                entity.kind == system::GROUP
-                    && matches!(facts.get(system::DEFAULT), Some(MetadataValue::Bool(true)))
-            })
+            .filter(|(entity, facts)| entity.kind == system::GROUP && matches!(facts.get(system::DEFAULT), Some(MetadataValue::Bool(true))))
             .filter_map(|(_, facts)| match facts.get(system::SECTION) {
-                Some(MetadataValue::EntityRefs(refs)) if refs.len() == 1 => {
-                    Some(refs[0].id.as_str())
-                }
+                Some(MetadataValue::EntityRefs(refs)) if refs.len() == 1 => Some(refs[0].id.as_str()),
                 _ => None,
             })
             .collect();
@@ -1233,16 +1024,14 @@ impl Sidebar {
     fn follow_sidebar_declarations(&mut self) {
         let declared = self.sidebar_declared();
         let mut report = Report::default();
-        self.sidebar_arrangement
-            .follow(&mut self.clock, |stored| report = stored.follow(&declared));
+        self.sidebar_arrangement.follow(&mut self.clock, |stored| report = stored.follow(&declared));
         self.sidebar_report = report;
     }
 
     /// Adopt an imported arrangement, reconciled, at a new generation.
     fn import_sidebar_arrangement(&mut self, imported: SidebarArrangement) {
         let (next, report) = sidebar_arrangement::reconcile(&self.sidebar_declared(), &imported);
-        self.sidebar_arrangement
-            .follow(&mut self.clock, |stored| *stored = next);
+        self.sidebar_arrangement.follow(&mut self.clock, |stored| *stored = next);
         self.sidebar_report = report;
     }
 
@@ -1252,12 +1041,8 @@ impl Sidebar {
     /// resolves.
     pub fn sidebar_arrangement(&self) -> (SidebarView, &Report) {
         let declared = self.sidebar_declared();
-        let mut view = self
-            .sidebar_arrangement
-            .get()
-            .view(self.sidebar_arrangement.generation(), &declared);
-        view.unresolved
-            .extend(self.unresolved_dashboard_keys(&declared));
+        let mut view = self.sidebar_arrangement.get().view(self.sidebar_arrangement.generation(), &declared);
+        view.unresolved.extend(self.unresolved_dashboard_keys(&declared));
         (view, &self.sidebar_report)
     }
 
@@ -1267,15 +1052,10 @@ impl Sidebar {
     /// the template brings their names back.
     fn unresolved_dashboard_keys(&self, declared: &Declared) -> Vec<String> {
         let (loops, display) = self.state.template_names();
-        let loop_resolves =
-            |name: &str| loops.contains(name) || name == UNPLACED_WORKSPACES_SECTION;
+        let loop_resolves = |name: &str| loops.contains(name) || name == UNPLACED_WORKSPACES_SECTION;
         let key_resolves = |key: &PlacementKey| key.0.iter().all(|s| loop_resolves(&s.loop_name));
         let key_text = |key: &PlacementKey| {
-            key.0
-                .iter()
-                .map(|s| format!("{}={}", s.loop_name, s.entity.action_target()))
-                .collect::<Vec<_>>()
-                .join("/")
+            key.0.iter().map(|s| format!("{}={}", s.loop_name, s.entity.action_target())).collect::<Vec<_>>().join("/")
         };
         let mut unresolved = Vec::new();
         for name in self.state.recorded_display_variables().keys() {
@@ -1289,10 +1069,7 @@ impl Sidebar {
             }
         }
         for key in self.state.sibling_orders().keys() {
-            if !(declared.resolves(&key.region)
-                && loop_resolves(&key.binding)
-                && key_resolves(&key.parent))
-            {
+            if !(declared.resolves(&key.region) && loop_resolves(&key.binding) && key_resolves(&key.parent)) {
                 unresolved.push(format!("order:{}", key.encode()));
             }
         }
@@ -1313,20 +1090,12 @@ impl Sidebar {
     /// Commit the host's whole sidebar arrangement, if `expected` is its
     /// generation. Declared sections it leaves out are closed. A stale or
     /// invalid commit changes nothing; neither invalidates the snapshot.
-    pub fn set_sidebar_arrangement(
-        &mut self,
-        doc: SidebarDoc,
-        expected: u64,
-    ) -> Result<Report, CommitError> {
+    pub fn set_sidebar_arrangement(&mut self, doc: SidebarDoc, expected: u64) -> Result<Report, CommitError> {
         self.edit_sidebar_arrangement(expected, |stored, declared| stored.commit(declared, doc))
     }
 
     /// Reopen a closed section by its hints, with an equal share of its host.
-    pub fn restore_sidebar_section(
-        &mut self,
-        key: &str,
-        expected: u64,
-    ) -> Result<Report, CommitError> {
+    pub fn restore_sidebar_section(&mut self, key: &str, expected: u64) -> Result<Report, CommitError> {
         self.edit_sidebar_arrangement(expected, |stored, declared| stored.restore(declared, key))
     }
 
@@ -1344,11 +1113,7 @@ impl Sidebar {
         edit: impl FnOnce(&mut SidebarArrangement, &Declared) -> Result<Report, String>,
     ) -> Result<Report, CommitError> {
         let declared = self.sidebar_declared();
-        let (_, report) =
-            self.sidebar_arrangement
-                .update(Some(expected), &mut self.clock, |stored| {
-                    Ok(edit(stored, &declared)?)
-                })?;
+        let (_, report) = self.sidebar_arrangement.update(Some(expected), &mut self.clock, |stored| Ok(edit(stored, &declared)?))?;
         self.sidebar_report = report.clone();
         Ok(report)
     }
@@ -1369,13 +1134,11 @@ impl Sidebar {
         self.evaluation.take();
         self.details.get_mut().clear();
         let state = self.dashboard_state();
-        self.dashboard
-            .follow(&mut self.clock, |current| *current = state);
+        self.dashboard.follow(&mut self.clock, |current| *current = state);
     }
 
     fn evaluation(&self) -> &crate::state::RevisionEvaluation {
-        self.evaluation
-            .get_or_init(|| self.state.evaluate_revision())
+        self.evaluation.get_or_init(|| self.state.evaluate_revision())
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -1390,19 +1153,13 @@ impl Sidebar {
             errors: self
                 .errors
                 .iter()
-                .map(|(entity, message)| ActivationError {
-                    entity: entity.clone(),
-                    message: message.clone(),
-                })
+                .map(|(entity, message)| ActivationError { entity: entity.clone(), message: message.clone() })
                 .collect(),
         })
     }
 
     pub fn detail_cards(&self) -> (u64, Vec<crate::detail::DetailCard>) {
-        (
-            self.state.evaluation_time(),
-            self.state.detail_cards_in(self.evaluation(), None),
-        )
+        (self.state.evaluation_time(), self.state.detail_cards_in(self.evaluation(), None))
     }
 
     /// Exact catalog identity, including hidden and retained ended subjects.
@@ -1411,10 +1168,7 @@ impl Sidebar {
         if let Some(card) = self.details.borrow().get(entity) {
             return card.clone();
         }
-        let card = self
-            .state
-            .detail_cards_in(self.evaluation(), Some(entity))
-            .pop();
+        let card = self.state.detail_cards_in(self.evaluation(), Some(entity)).pop();
         let mut cache = self.details.borrow_mut();
         // Whole-cache eviction is intentional: snapshot-owned cards survive it,
         // and a miss reuses the shared evaluation. Keep policy simple until a
@@ -1437,18 +1191,11 @@ impl Sidebar {
     pub fn dispatch(&mut self, action: Action) -> Result<Vec<HostEffect>, String> {
         match action {
             Action::CopySubjectUrl { entity } => {
-                let url = self
-                    .state
-                    .subject_url(&entity)
-                    .ok_or("subject URL unavailable")?;
+                let url = self.state.subject_url(&entity).ok_or("subject URL unavailable")?;
                 Ok(vec![HostEffect::CopyUrl { url }])
             }
             Action::ActivatePlacement { key } => {
-                let node = self
-                    .snapshot_shared()
-                    .surface
-                    .node(&key)
-                    .ok_or("unknown placement")?;
+                let node = self.snapshot_shared().surface.node(&key).ok_or("unknown placement")?;
                 // A reference activates what it presents.
                 let entity = self.state.presented_entity(&node.entity);
                 if let Some(url) = self.state.subject_url(&entity) {
@@ -1457,25 +1204,15 @@ impl Sidebar {
                 if self.entity_is_pending(&entity) {
                     return Ok(vec![]);
                 }
-                if let crate::presentation::PresentationState::Live { workspace_id, .. } =
-                    node.state
-                {
-                    if !self
-                        .state
-                        .workspaces()
-                        .iter()
-                        .any(|w| w.tab_id == workspace_id)
-                    {
+                if let crate::presentation::PresentationState::Live { workspace_id, .. } = node.state {
+                    if !self.state.workspaces().iter().any(|w| w.tab_id == workspace_id) {
                         return Err("workspace disappeared".into());
                     }
                     self.errors.remove(&entity);
                     let request_id = self.request_id();
                     self.pending.insert(request_id, Pending::Focus(entity));
                     self.invalidate();
-                    Ok(vec![HostEffect::Focus {
-                        request_id,
-                        workspace_id,
-                    }])
+                    Ok(vec![HostEffect::Focus { request_id, workspace_id }])
                 } else {
                     self.dispatch(Action::Activate { entity })
                 }
@@ -1493,30 +1230,18 @@ impl Sidebar {
                 let activation = self.state.activation_for_entity(&entity);
                 let effect = match activation {
                     Some(EntityActivation::FocusTab { position }) => {
-                        let workspace_id = self
-                            .state
-                            .workspaces()
-                            .iter()
-                            .find(|w| w.position == position)
-                            .ok_or("workspace disappeared")?
-                            .tab_id;
+                        let workspace_id =
+                            self.state.workspaces().iter().find(|w| w.position == position).ok_or("workspace disappeared")?.tab_id;
                         let request_id = self.request_id();
                         self.pending.insert(request_id, Pending::Focus(entity));
-                        HostEffect::Focus {
-                            request_id,
-                            workspace_id,
-                        }
+                        HostEffect::Focus { request_id, workspace_id }
                     }
                     Some(EntityActivation::Materialize(request)) => {
                         if !self.state.begin_latent_materialization(&request) {
                             return Ok(vec![]);
                         }
                         let request_id = self.request_id();
-                        let primary_target = self.state.managed_primary_target(
-                            &entity,
-                            &request.recipe,
-                            request.checkout_path.as_deref(),
-                        );
+                        let primary_target = self.state.managed_primary_target(&entity, &request.recipe, request.checkout_path.as_deref());
                         let effect = HostEffect::Materialize {
                             request_id,
                             entity: entity.clone(),
@@ -1525,8 +1250,7 @@ impl Sidebar {
                             cwd: request.checkout_path.clone(),
                             primary_target,
                         };
-                        self.pending
-                            .insert(request_id, Pending::Materialize(entity, request));
+                        self.pending.insert(request_id, Pending::Materialize(entity, request));
                         effect
                     }
                     None => {
@@ -1544,35 +1268,24 @@ impl Sidebar {
                 if self.snapshot_shared().surface.node(&key).is_none() {
                     return Err("unknown placement".into());
                 }
-                self.state
-                    .apply_rail_ui_action(RailUiAction::TogglePlacement { key });
+                self.state.apply_rail_ui_action(RailUiAction::TogglePlacement { key });
                 self.invalidate();
                 Ok(vec![])
             }
             Action::SetVariable { key, name, value } => {
                 let snapshot = self.snapshot_shared();
                 let node = snapshot.surface.node(&key).ok_or("unknown placement")?;
-                let definition = node
-                    .variables
-                    .as_ref()
-                    .and_then(|v| v.declarations.iter().find(|d| d.name == name))
-                    .ok_or("unknown variable")?;
-                if value
-                    .as_ref()
-                    .is_some_and(|value| !definition.accepts(value))
-                {
+                let definition =
+                    node.variables.as_ref().and_then(|v| v.declarations.iter().find(|d| d.name == name)).ok_or("unknown variable")?;
+                if value.as_ref().is_some_and(|value| !definition.accepts(value)) {
                     return Err("value is not allowed by the variable declaration".into());
                 }
-                self.state
-                    .set_node_variable(NodeKey::Placement(key), name, value);
+                self.state.set_node_variable(NodeKey::Placement(key), name, value);
                 self.invalidate();
                 Ok(vec![])
             }
             Action::ToggleDisplayVariable { name } => {
-                if !self
-                    .state
-                    .apply_rail_ui_action(RailUiAction::ToggleVariable { name })
-                {
+                if !self.state.apply_rail_ui_action(RailUiAction::ToggleVariable { name }) {
                     return Err("unknown display variable".into());
                 }
                 self.invalidate();
@@ -1584,11 +1297,7 @@ impl Sidebar {
     /// Materialize success supplies the newly created workspace ID. Focus
     /// success supplies None. Duplicate/stale results are ignored. The host
     /// must eventually complete each effect, including timeout or cancellation.
-    pub fn complete(
-        &mut self,
-        request_id: u64,
-        result: Result<Option<WorkspaceId>, String>,
-    ) -> bool {
+    pub fn complete(&mut self, request_id: u64, result: Result<Option<WorkspaceId>, String>) -> bool {
         let Some(pending) = self.pending.remove(&request_id) else {
             return false;
         };
@@ -1601,20 +1310,14 @@ impl Sidebar {
             Pending::Materialize(entity, request) => match result {
                 Ok(Some(id)) => {
                     self.ensure_workspace(id);
-                    self.state
-                        .bind_materializing_subject(&request, id, entity.clone());
+                    self.state.bind_materializing_subject(&request, id, entity.clone());
                     // If observation arrived before acknowledgement, claim now.
                     let current = self.state.workspaces().to_vec();
                     self.state.observe_workspaces(current);
                 }
                 other => {
                     self.state.abort_latent_materialization(&request);
-                    self.errors.insert(
-                        entity,
-                        other
-                            .err()
-                            .unwrap_or_else(|| "materialize returned no workspace ID".into()),
-                    );
+                    self.errors.insert(entity, other.err().unwrap_or_else(|| "materialize returned no workspace ID".into()));
                 }
             },
         }
@@ -1691,12 +1394,7 @@ mod evaluation_tests {
                     unset: vec![],
                     set: [(
                         "flotilla.project".into(),
-                        MetadataValueUpdate {
-                            value: MetadataValue::Text("p".into()),
-                            ttl_ms: None,
-                            precedence: None,
-                            ordinal: None,
-                        },
+                        MetadataValueUpdate { value: MetadataValue::Text("p".into()), ttl_ms: None, precedence: None, ordinal: None },
                     )]
                     .into(),
                 }],
@@ -1706,10 +1404,7 @@ mod evaluation_tests {
     fn check(sidebar: &Sidebar) {
         // Issue #96: cached presentation and exact details must equal an uncached
         // controller evaluation after every mutation, including identities without rows.
-        assert_eq!(
-            sidebar.snapshot_shared().surface,
-            sidebar.state.view_model().presentation.unwrap()
-        );
+        assert_eq!(sidebar.snapshot_shared().surface, sidebar.state.view_model().presentation.unwrap());
         let (_, all) = sidebar.state.detail_cards();
         for card in &all {
             assert_eq!(sidebar.detail_card(&card.entity).as_ref(), Some(card));
@@ -1720,15 +1415,11 @@ mod evaluation_tests {
     #[test]
     fn revision_queries_share_evaluation_and_validation() {
         let mut sidebar = Sidebar::new(CONFIG).unwrap();
-        sidebar
-            .apply(100, PROVIDER, [patch("a", "first", None, 0)])
-            .unwrap();
+        sidebar.apply(100, PROVIDER, [patch("a", "first", None, 0)]).unwrap();
         add_project(&mut sidebar);
         crate::profile::start();
         let snapshot = sidebar.snapshot();
-        let key = snapshot.surface.sections[0].nodes[0].children[0]
-            .key
-            .clone();
+        let key = snapshot.surface.sections[0].nodes[0].children[0].key.clone();
         sidebar.detail_card(&entity()).unwrap();
         sidebar.detail_cards();
         sidebar.detail_card(&entity()).unwrap();
@@ -1748,21 +1439,13 @@ mod evaluation_tests {
         // dispatch and completions. Real controller/store/template collaborators.
         for seed in 0..24u64 {
             let mut sidebar = Sidebar::new(CONFIG).unwrap();
-            sidebar
-                .apply(100, PROVIDER, [patch("base", "original", None, 0)])
-                .unwrap();
+            sidebar.apply(100, PROVIDER, [patch("base", "original", None, 0)]).unwrap();
             add_project(&mut sidebar);
             let held = sidebar.snapshot();
             let mut now = 100;
             for step in 0..18 {
                 match (seed + step * 7) % 9 {
-                    0 => sidebar
-                        .apply(
-                            now,
-                            PROVIDER,
-                            [patch("update", &format!("{seed}/{step}"), Some(5), 10)],
-                        )
-                        .unwrap(),
+                    0 => sidebar.apply(now, PROVIDER, [patch("update", &format!("{seed}/{step}"), Some(5), 10)]).unwrap(),
                     1 => {
                         now += 5;
                         sidebar.tick(now);
@@ -1777,16 +1460,9 @@ mod evaluation_tests {
                         p.unset = vec!["display.label".into()];
                         sidebar.apply(now, PROVIDER, [p]).unwrap();
                     }
-                    4 => sidebar
-                        .configure(&CONFIG.replace("default=\"roomy\"", "default=\"compact\""))
-                        .unwrap(),
+                    4 => sidebar.configure(&CONFIG.replace("default=\"roomy\"", "default=\"compact\"")).unwrap(),
                     5 => sidebar.observe(
-                        vec![Workspace {
-                            id: tab_workspace_id(1),
-                            position: 0,
-                            name: "vessel:v".into(),
-                            selected: step % 2 == 0,
-                        }],
+                        vec![Workspace { id: tab_workspace_id(1), position: 0, name: "vessel:v".into(), selected: step % 2 == 0 }],
                         vec![],
                     ),
                     6 => sidebar.observe(vec![], vec![]),
@@ -1801,23 +1477,13 @@ mod evaluation_tests {
                             .find(|n| n.entity == entity())
                             .map(|n| n.key.clone())
                         {
-                            sidebar
-                                .dispatch(Action::SetVariable {
-                                    key,
-                                    name: "density".into(),
-                                    value: Some("compact".into()),
-                                })
-                                .unwrap();
+                            sidebar.dispatch(Action::SetVariable { key, name: "density".into(), value: Some("compact".into()) }).unwrap();
                         }
                     }
                     _ => {
-                        for effect in sidebar
-                            .dispatch(Action::Activate { entity: entity() })
-                            .unwrap()
-                        {
+                        for effect in sidebar.dispatch(Action::Activate { entity: entity() }).unwrap() {
                             match effect {
-                                HostEffect::Materialize { request_id, .. }
-                                | HostEffect::Focus { request_id, .. } => {
+                                HostEffect::Materialize { request_id, .. } | HostEffect::Focus { request_id, .. } => {
                                     sidebar.complete(request_id, Err("test refusal".into()));
                                 }
                                 _ => {}
@@ -1828,10 +1494,7 @@ mod evaluation_tests {
                 check(&sidebar);
             }
             // Old snapshots are owned immutable values through every revision.
-            assert_eq!(
-                held.surface.sections[0].nodes[0].children[0].label,
-                "original"
-            );
+            assert_eq!(held.surface.sections[0].nodes[0].children[0].label, "original");
         }
     }
 
@@ -1839,31 +1502,14 @@ mod evaluation_tests {
     // inventory or controller sort order, including a pin-driven reorder.
     #[test]
     fn presentation_matches_controller_for_every_sort_mode() {
-        for mode in [
-            crate::SortMode::Controller,
-            crate::SortMode::Position,
-            crate::SortMode::PinnedFirst,
-            crate::SortMode::LatestStatus,
-        ] {
+        for mode in [crate::SortMode::Controller, crate::SortMode::Position, crate::SortMode::PinnedFirst, crate::SortMode::LatestStatus] {
             let mut sidebar = Sidebar::new(CONFIG).unwrap();
-            sidebar
-                .apply(100, PROVIDER, [patch("base", "original", None, 0)])
-                .unwrap();
+            sidebar.apply(100, PROVIDER, [patch("base", "original", None, 0)]).unwrap();
             add_project(&mut sidebar);
             sidebar.observe(
                 vec![
-                    Workspace {
-                        id: tab_workspace_id(1),
-                        position: 1,
-                        name: "vessel:v".into(),
-                        selected: true,
-                    },
-                    Workspace {
-                        id: tab_workspace_id(2),
-                        position: 0,
-                        name: "Other".into(),
-                        selected: false,
-                    },
+                    Workspace { id: tab_workspace_id(1), position: 1, name: "vessel:v".into(), selected: true },
+                    Workspace { id: tab_workspace_id(2), position: 0, name: "Other".into(), selected: false },
                 ],
                 vec![],
             );
@@ -1872,10 +1518,7 @@ mod evaluation_tests {
             sidebar.invalidate();
             check(&sidebar);
             let tabs = sidebar.state.view_model().tabs;
-            assert_eq!(
-                tabs[0].tab_id,
-                tab_workspace_id(if mode == SortMode::PinnedFirst { 1 } else { 2 })
-            );
+            assert_eq!(tabs[0].tab_id, tab_workspace_id(if mode == SortMode::PinnedFirst { 1 } else { 2 }));
         }
     }
 
@@ -1884,15 +1527,11 @@ mod evaluation_tests {
         let mut sidebar = Sidebar::new(CONFIG).unwrap();
         // Missing, empty and invalid identities are cached without growing forever.
         for i in 0..200 {
-            assert!(sidebar
-                .detail_card(&EntityRef::new(PROVIDER, "missing", i.to_string()))
-                .is_none());
+            assert!(sidebar.detail_card(&EntityRef::new(PROVIDER, "missing", i.to_string())).is_none());
             assert!(sidebar.details.borrow().len() <= 64);
         }
         assert!(sidebar.detail_card(&entity()).is_none());
-        sidebar
-            .apply(100, PROVIDER, [patch("base", "appeared", None, 0)])
-            .unwrap();
+        sidebar.apply(100, PROVIDER, [patch("base", "appeared", None, 0)]).unwrap();
         assert_eq!(sidebar.detail_card(&entity()).unwrap().label, "appeared");
     }
 }

@@ -35,15 +35,12 @@ use crate::{
     sidebar_arrangement::RegionHints,
     suggested_layout::{self, LayoutError, SuggestedLayout},
     template_config::{PlacementLoop, TemplateVariableType},
-    ControllerBootstrapSnapshot, ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables,
-    EffectiveVariableValue, EntityRef, LatentMaterializationState, LatentTab, MetadataControls,
-    MetadataEntry, MetadataIdentity, MetadataPatch, MetadataSourceEntry, MetadataTarget,
-    MetadataTriState, MetadataValue, MetadataValueUpdate, NodeKey, ObservedMetadataIdentity,
-    PaneTarget, PlacementKey, PlacementLoopKey, PlacementSegment, PluginPlacement,
-    PluginRegistrationHello, Priority, RailConfig, RailUiAction, RailUiRevision, RailUiState,
-    ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateSlot,
-    ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabStatusSummary,
-    TemplateConfigDiagnostics, VariableSetterProvenance, DISPLAY_FORM_COMPACT, LOCAL_PROVIDER,
+    ControllerBootstrapSnapshot, ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EffectiveVariableValue, EntityRef,
+    LatentMaterializationState, LatentTab, MetadataControls, MetadataEntry, MetadataIdentity, MetadataPatch, MetadataSourceEntry,
+    MetadataTarget, MetadataTriState, MetadataValue, MetadataValueUpdate, NodeKey, ObservedMetadataIdentity, PaneTarget, PlacementKey,
+    PlacementLoopKey, PlacementSegment, PluginPlacement, PluginRegistrationHello, Priority, RailConfig, RailUiAction, RailUiRevision,
+    RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus,
+    SortMode, TabCard, TabStatusSummary, TemplateConfigDiagnostics, VariableSetterProvenance, DISPLAY_FORM_COMPACT, LOCAL_PROVIDER,
     NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 
@@ -128,23 +125,14 @@ impl PlacementIndex {
             };
             // An entity's kind and id come from its ref, not from whatever the
             // producer happened to echo into its facts, so `kind=` always works.
-            insert(
-                "entity.kind".to_owned(),
-                IndexedValue::Scalar(entity.entity.kind.clone()),
-            );
-            insert(
-                "entity.id".to_owned(),
-                IndexedValue::Scalar(entity.entity.id.clone()),
-            );
+            insert("entity.kind".to_owned(), IndexedValue::Scalar(entity.entity.kind.clone()));
+            insert("entity.id".to_owned(), IndexedValue::Scalar(entity.entity.id.clone()));
             // A `.ref` carries its target's facts for presentation, but rules
             // reach it only through its own placement facts, so a query on the
             // target's facts (say, needs attention) never places the ghost too.
             let is_ref = entity.entity.kind == crate::presentation::system::REF;
             for (key, entry) in &entity.values {
-                if is_ref
-                    && key != crate::presentation::system::GROUP
-                    && key != crate::presentation::system::TARGET
-                {
+                if is_ref && key != crate::presentation::system::GROUP && key != crate::presentation::system::TARGET {
                     continue;
                 }
                 if let MetadataValue::EntityRefs(refs) = &entry.value {
@@ -160,11 +148,7 @@ impl PlacementIndex {
                 insert(key.clone(), IndexedValue::Scalar(text));
             }
         }
-        Self {
-            by_fact,
-            ref_keys,
-            visibility: BTreeMap::new(),
-        }
+        Self { by_fact, ref_keys, visibility: BTreeMap::new() }
     }
 
     /// Each policy is evaluated once over the catalog, never once per nested
@@ -181,31 +165,24 @@ impl PlacementIndex {
                 .rules
                 .iter()
                 .map(|rule| {
-                    std::iter::once(&rule.visible_when)
-                        .chain(rule.and_visible_when.iter())
-                        .fold(true, |enabled, name| {
-                            let value = variables.get(name).or_else(|| {
-                                catalog.display_variables().iter()
-                                    .find(|variable| &variable.name == name)
-                                    .map(|variable| &variable.default)
-                            });
-                            if !matches!(value, Some(crate::DisplayVariableValue::Bool(_))) {
-                                warnings.insert(format!(
-                                    "visibility {} requires boolean display variable {}; matching entities are hidden",
-                                    policy.name, name
-                                ));
-                            }
-                            enabled & matches!(value, Some(crate::DisplayVariableValue::Bool(true)))
-                        })
+                    std::iter::once(&rule.visible_when).chain(rule.and_visible_when.iter()).fold(true, |enabled, name| {
+                        let value = variables.get(name).or_else(|| {
+                            catalog.display_variables().iter().find(|variable| &variable.name == name).map(|variable| &variable.default)
+                        });
+                        if !matches!(value, Some(crate::DisplayVariableValue::Bool(_))) {
+                            warnings.insert(format!(
+                                "visibility {} requires boolean display variable {}; matching entities are hidden",
+                                policy.name, name
+                            ));
+                        }
+                        enabled & matches!(value, Some(crate::DisplayVariableValue::Bool(true)))
+                    })
                 })
                 .collect();
             let visible = entities
                 .iter()
                 .map(|entity| {
-                    let rule = policy
-                        .rules
-                        .iter()
-                        .position(|rule| visibility_rule_matches(entity, rule));
+                    let rule = policy.rules.iter().position(|rule| visibility_rule_matches(entity, rule));
                     rule.is_none_or(|position| enabled[position])
                 })
                 .collect();
@@ -215,24 +192,15 @@ impl PlacementIndex {
     }
 
     fn lookup_ref(&self, key: &str, reference: &EntityRef) -> &[usize] {
-        self.by_fact
-            .get(&(key.to_owned(), IndexedValue::Entity(reference.clone())))
-            .map(Vec::as_slice)
-            .unwrap_or_default()
+        self.by_fact.get(&(key.to_owned(), IndexedValue::Entity(reference.clone()))).map(Vec::as_slice).unwrap_or_default()
     }
 
     fn lookup_value(&self, key: &str, value: &str) -> &[usize] {
-        self.by_fact
-            .get(&(key.to_owned(), IndexedValue::Scalar(value.to_owned())))
-            .map(Vec::as_slice)
-            .unwrap_or_default()
+        self.by_fact.get(&(key.to_owned(), IndexedValue::Scalar(value.to_owned()))).map(Vec::as_slice).unwrap_or_default()
     }
 }
 
-fn visibility_rule_matches(
-    entity: &CatalogEntity,
-    rule: &crate::template_config::PlacementVisibilityRule,
-) -> bool {
+fn visibility_rule_matches(entity: &CatalogEntity, rule: &crate::template_config::PlacementVisibilityRule) -> bool {
     rule.predicates.iter().all(|predicate| {
         let identity = match predicate.key.as_str() {
             "entity.kind" => Some(entity.entity.kind.as_str()),
@@ -249,9 +217,7 @@ fn visibility_rule_matches(
         }
         match fact.map(|entry| &entry.value) {
             Some(MetadataValue::Text(text)) => Some(text.as_str()) == expected,
-            Some(MetadataValue::Bool(value)) => {
-                Some(if *value { "true" } else { "false" }) == expected
-            }
+            Some(MetadataValue::Bool(value)) => Some(if *value { "true" } else { "false" }) == expected,
             Some(MetadataValue::Integer(value)) => Some(value.to_string().as_str()) == expected,
             _ => false,
         }
@@ -319,21 +285,12 @@ struct CatalogEvaluation {
 
 impl CatalogEvaluation {
     fn new(entities: Vec<CatalogEntity>) -> Self {
-        let by_entity = entities
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (e.entity.clone(), i))
-            .collect();
-        Self {
-            entities,
-            by_entity,
-        }
+        let by_entity = entities.iter().enumerate().map(|(i, e)| (e.entity.clone(), i)).collect();
+        Self { entities, by_entity }
     }
 
     fn entity(&self, target: &EntityRef) -> Option<&CatalogEntity> {
-        self.by_entity
-            .get(target)
-            .map(|index| &self.entities[*index])
+        self.by_entity.get(target).map(|index| &self.entities[*index])
     }
 }
 
@@ -388,11 +345,7 @@ fn natural_text_order(mut left: &str, mut right: &str) -> Ordering {
     left.len().cmp(&right.len())
 }
 
-fn placement_entity_order(
-    left: &CatalogEntity,
-    right: &CatalogEntity,
-    order: &[crate::template_config::PlacementOrder],
-) -> Ordering {
+fn placement_entity_order(left: &CatalogEntity, right: &CatalogEntity, order: &[crate::template_config::PlacementOrder]) -> Ordering {
     for key in order {
         let left_value = placement_sort_fact(left, &key.key);
         let right_value = placement_sort_fact(right, &key.key);
@@ -426,10 +379,7 @@ fn placement_sort_fact<'a>(entity: &'a CatalogEntity, key: &str) -> Option<Cow<'
     match key {
         KEY_ENTITY_KIND => Some(Cow::Owned(MetadataValue::Text(entity.entity.kind.clone()))),
         KEY_ENTITY_ID => Some(Cow::Owned(MetadataValue::Text(entity.entity.id.clone()))),
-        _ => entity
-            .values
-            .get(key)
-            .map(|entry| Cow::Borrowed(&entry.value)),
+        _ => entity.values.get(key).map(|entry| Cow::Borrowed(&entry.value)),
     }
 }
 
@@ -531,9 +481,7 @@ impl ControllerState {
     }
 
     pub fn entity_is_opening(&self, entity: &EntityRef) -> bool {
-        self.latent_tabs().iter().any(|tab| {
-            &tab.entity == entity && tab.materialization == LatentMaterializationState::Opening
-        })
+        self.latent_tabs().iter().any(|tab| &tab.entity == entity && tab.materialization == LatentMaterializationState::Opening)
     }
 
     /// Current host observations, without building a presentation.
@@ -547,27 +495,17 @@ impl ControllerState {
     }
 
     fn client_mut(&mut self, client_id: u16) -> &mut ControllerClientState {
-        self.clients
-            .entry(client_id)
-            .or_insert_with(|| ControllerClientState {
-                client_id,
-                ..Default::default()
-            })
+        self.clients.entry(client_id).or_insert_with(|| ControllerClientState { client_id, ..Default::default() })
     }
 
     #[allow(dead_code)]
     pub fn observe_workspaces(&mut self, tabs: Vec<ControllerTab>) -> bool {
-        let mut pending_materialized_tab_names =
-            std::mem::take(&mut self.pending_materialized_tab_names);
+        let mut pending_materialized_tab_names = std::mem::take(&mut self.pending_materialized_tab_names);
         let mut next_tabs = Vec::with_capacity(tabs.len());
         for tab in tabs {
             let tab_id = tab.tab_id;
             let default_name = format!("Tab {}", tab.position + 1);
-            let incoming_name = if tab.name.is_empty() {
-                default_name.clone()
-            } else {
-                tab.name
-            };
+            let incoming_name = if tab.name.is_empty() { default_name.clone() } else { tab.name };
             let name = match pending_materialized_tab_names.get(&tab_id).cloned() {
                 Some(expected_name) if incoming_name == expected_name => {
                     pending_materialized_tab_names.remove(&tab_id);
@@ -580,34 +518,20 @@ impl ControllerState {
                 }
                 None => incoming_name,
             };
-            next_tabs.push(ControllerTab {
-                tab_id: tab.tab_id,
-                position: tab.position,
-                name,
-                active: tab.active,
-            });
+            next_tabs.push(ControllerTab { tab_id: tab.tab_id, position: tab.position, name, active: tab.active });
         }
         next_tabs.sort_by_key(|tab| tab.position);
         let live_tab_ids: HashSet<WorkspaceId> = next_tabs.iter().map(|tab| tab.tab_id).collect();
         pending_materialized_tab_names.retain(|tab_id, _| live_tab_ids.contains(tab_id));
         self.pending_materialized_tab_names = pending_materialized_tab_names;
-        self.observed_workdirs
-            .retain(|id, _| live_tab_ids.contains(id));
+        self.observed_workdirs.retain(|id, _| live_tab_ids.contains(id));
         let tabs_changed = self.tabs != next_tabs;
         self.tabs = next_tabs;
 
-        self.pinned_tabs
-            .retain(|tab_id| live_tab_ids.contains(tab_id));
-        self.pane_to_tab
-            .retain(|_, tab_id| live_tab_ids.contains(tab_id));
-        self.panes
-            .retain(|_, pane| live_tab_ids.contains(&pane.tab_id));
-        self.pane_statuses.retain(|pane_id, _| {
-            self.pane_to_tab
-                .get(pane_id)
-                .map(|tab_id| live_tab_ids.contains(tab_id))
-                .unwrap_or(true)
-        });
+        self.pinned_tabs.retain(|tab_id| live_tab_ids.contains(tab_id));
+        self.pane_to_tab.retain(|_, tab_id| live_tab_ids.contains(tab_id));
+        self.panes.retain(|_, pane| live_tab_ids.contains(&pane.tab_id));
+        self.pane_statuses.retain(|pane_id, _| self.pane_to_tab.get(pane_id).map(|tab_id| live_tab_ids.contains(tab_id)).unwrap_or(true));
         let claimed_materialization = self.claim_materializing_tabs();
         tabs_changed || claimed_materialization
     }
@@ -641,15 +565,12 @@ impl ControllerState {
                     is_focused: pane.is_focused,
                     ordinal: pane.ordinal,
                     cwd: previous_panes.get(&pane_target).and_then(|p| p.cwd.clone()),
-                    cwd_requested: previous_panes
-                        .get(&pane_target)
-                        .is_some_and(|p| p.cwd_requested),
+                    cwd_requested: previous_panes.get(&pane_target).is_some_and(|p| p.cwd_requested),
                 },
             );
         }
         self.retain_panes(live_panes);
-        let pane_topology_changed =
-            self.pane_to_tab != previous_pane_to_tab || self.panes != previous_panes;
+        let pane_topology_changed = self.pane_to_tab != previous_pane_to_tab || self.panes != previous_panes;
         let pane_ids: Vec<PaneTarget> = self.panes.keys().copied().collect();
         let mut metadata_changed = false;
         for pane_id in pane_ids {
@@ -664,27 +585,9 @@ impl ControllerState {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn set_test_pane(
-        &mut self,
-        pane_id: PaneTarget,
-        tab_id: WorkspaceId,
-        is_selectable: bool,
-        is_focused: bool,
-        ordinal: i64,
-    ) {
+    pub fn set_test_pane(&mut self, pane_id: PaneTarget, tab_id: WorkspaceId, is_selectable: bool, is_focused: bool, ordinal: i64) {
         self.pane_to_tab.insert(pane_id, tab_id);
-        self.panes.insert(
-            pane_id,
-            ControllerPane {
-                pane_id,
-                tab_id,
-                is_selectable,
-                is_focused,
-                ordinal,
-                cwd: None,
-                cwd_requested: false,
-            },
-        );
+        self.panes.insert(pane_id, ControllerPane { pane_id, tab_id, is_selectable, is_focused, ordinal, cwd: None, cwd_requested: false });
     }
 
     #[allow(dead_code)]
@@ -722,13 +625,7 @@ impl ControllerState {
         if status.timestamp_ms.is_none() {
             status.timestamp_ms = Some(self.receive_counter);
         }
-        self.pane_statuses.insert(
-            status.pane_id,
-            StoredPaneStatus {
-                status,
-                received_at: self.receive_counter,
-            },
-        );
+        self.pane_statuses.insert(status.pane_id, StoredPaneStatus { status, received_at: self.receive_counter });
     }
 
     #[allow(dead_code)]
@@ -737,11 +634,9 @@ impl ControllerState {
     }
 
     pub fn retain_panes(&mut self, live_panes: HashSet<PaneTarget>) {
-        self.pane_to_tab
-            .retain(|pane_id, _| live_panes.contains(pane_id));
+        self.pane_to_tab.retain(|pane_id, _| live_panes.contains(pane_id));
         self.panes.retain(|pane_id, _| live_panes.contains(pane_id));
-        self.pane_statuses
-            .retain(|pane_id, _| live_panes.contains(pane_id));
+        self.pane_statuses.retain(|pane_id, _| live_panes.contains(pane_id));
     }
 
     #[allow(dead_code)]
@@ -763,12 +658,7 @@ impl ControllerState {
         self.rail_config = rail_config;
     }
 
-    pub fn set_metadata_visibility_for_client(
-        &mut self,
-        client_id: u16,
-        key: NodeKey,
-        state: Option<MetadataTriState>,
-    ) {
+    pub fn set_metadata_visibility_for_client(&mut self, client_id: u16, key: NodeKey, state: Option<MetadataTriState>) {
         let controls = &mut self.client_mut(client_id).metadata_controls;
         if let Some(state) = state {
             controls.per_node.insert(key, state);
@@ -777,25 +667,13 @@ impl ControllerState {
         }
     }
 
-    pub fn set_node_variable(
-        &mut self,
-        node: NodeKey,
-        name: String,
-        value: Option<String>,
-    ) -> bool {
-        let previous = self
-            .node_variable_overrides
-            .get(&node)
-            .and_then(|values| values.get(&name))
-            .cloned();
+    pub fn set_node_variable(&mut self, node: NodeKey, name: String, value: Option<String>) -> bool {
+        let previous = self.node_variable_overrides.get(&node).and_then(|values| values.get(&name)).cloned();
         if previous == value {
             return false;
         }
         if let Some(value) = value {
-            self.node_variable_overrides
-                .entry(node)
-                .or_default()
-                .insert(name, value);
+            self.node_variable_overrides.entry(node).or_default().insert(name, value);
         } else if let Some(values) = self.node_variable_overrides.get_mut(&node) {
             values.remove(&name);
             if values.is_empty() {
@@ -814,12 +692,7 @@ impl ControllerState {
             let Some(definition) = self
                 .template_catalog
                 .as_ref()
-                .and_then(|catalog| {
-                    catalog
-                        .display_variables()
-                        .iter()
-                        .find(|item| &item.name == name)
-                })
+                .and_then(|catalog| catalog.display_variables().iter().find(|item| &item.name == name))
                 .cloned()
             else {
                 return false;
@@ -828,10 +701,8 @@ impl ControllerState {
         } else {
             None
         };
-        self.rail_ui.revision = RailUiRevision {
-            sequence: self.rail_ui.revision.sequence.saturating_add(1),
-            writer_client_id: self.rail_ui_writer_client_id,
-        };
+        self.rail_ui.revision =
+            RailUiRevision { sequence: self.rail_ui.revision.sequence.saturating_add(1), writer_client_id: self.rail_ui_writer_client_id };
         match action {
             RailUiAction::TogglePlacement { key } => {
                 if !self.rail_ui.collapsed_placements.insert(key.clone()) {
@@ -840,28 +711,15 @@ impl ControllerState {
             }
             RailUiAction::ToggleVariable { name } => {
                 let definition = toggle_definition.expect("toggle definition resolved above");
-                let current = self
-                    .rail_ui
-                    .variables
-                    .get(&name)
-                    .unwrap_or(&definition.default);
+                let current = self.rail_ui.variables.get(&name).unwrap_or(&definition.default);
                 let next = match (&definition.variable_type, current) {
-                    (
-                        crate::template_config::TemplateVariableType::Bool,
-                        DisplayVariableValue::Bool(value),
-                    ) => DisplayVariableValue::Bool(!value),
-                    (
-                        crate::template_config::TemplateVariableType::Enum { values },
-                        DisplayVariableValue::Enum(value),
-                    ) => {
-                        let next = values
-                            .iter()
-                            .position(|candidate| candidate == value)
-                            .map(|index| (index + 1) % values.len())
-                            .unwrap_or(0);
-                        DisplayVariableValue::Enum(
-                            values.get(next).cloned().unwrap_or_else(|| value.clone()),
-                        )
+                    (crate::template_config::TemplateVariableType::Bool, DisplayVariableValue::Bool(value)) => {
+                        DisplayVariableValue::Bool(!value)
+                    }
+                    (crate::template_config::TemplateVariableType::Enum { values }, DisplayVariableValue::Enum(value)) => {
+                        let next =
+                            values.iter().position(|candidate| candidate == value).map(|index| (index + 1) % values.len()).unwrap_or(0);
+                        DisplayVariableValue::Enum(values.get(next).cloned().unwrap_or_else(|| value.clone()))
                     }
                     _ => definition.default.clone(),
                 };
@@ -906,26 +764,16 @@ impl ControllerState {
             collapsed_placements: state.collapsed_placements.into_iter().collect(),
             scroll_offset: state.scroll_offset,
             variables: state.variables,
-            sibling_orders: state
-                .sibling_orders
-                .into_iter()
-                .filter(|(_, order)| !order.is_empty())
-                .collect(),
+            sibling_orders: state.sibling_orders.into_iter().filter(|(_, order)| !order.is_empty()).collect(),
         };
         true
     }
 
-    pub fn set_template_catalog(
-        &mut self,
-        catalog: Option<crate::template_config::TemplateConfigCatalog>,
-    ) {
+    pub fn set_template_catalog(&mut self, catalog: Option<crate::template_config::TemplateConfigCatalog>) {
         self.template_catalog = Some(catalog.unwrap_or_default());
         if let Some(catalog) = self.template_catalog.as_ref() {
             for variable in catalog.display_variables() {
-                self.rail_ui
-                    .variables
-                    .entry(variable.name.clone())
-                    .or_insert_with(|| variable.default.clone());
+                self.rail_ui.variables.entry(variable.name.clone()).or_insert_with(|| variable.default.clone());
             }
         }
     }
@@ -990,12 +838,7 @@ impl ControllerState {
                     && patch.unset.iter().any(|key| key == KEY_ENTITY_KIND)
                     && !patch.set.contains_key(KEY_ENTITY_ID)
                     && !patch.set.contains_key(KEY_ENTITY_KIND)
-                    && self.metadata.source_contributes(
-                        &EntityId::Entity(entity.clone()),
-                        KEY_ENTITY_ID,
-                        provider,
-                        &patch.source_id,
-                    ) =>
+                    && self.metadata.source_contributes(&EntityId::Entity(entity.clone()), KEY_ENTITY_ID, provider, &patch.source_id) =>
             {
                 Some(entity.clone())
             }
@@ -1008,32 +851,19 @@ impl ControllerState {
         let unset_keys: Vec<_> = patch
             .unset
             .iter()
-            .filter(|key| {
-                self.metadata.source_contributes(
-                    &EntityId::from(patch.target.clone()),
-                    key,
-                    provider,
-                    &patch.source_id,
-                )
-            })
+            .filter(|key| self.metadata.source_contributes(&EntityId::from(patch.target.clone()), key, provider, &patch.source_id))
             .cloned()
             .collect();
         let is_removal = removed.is_some();
         let next_receive_counter = self.receive_counter.saturating_add(1);
-        let outcome = self.metadata.apply_patch_from(
-            provider,
-            patch,
-            self.clock_ms.unwrap_or(next_receive_counter),
-        );
+        let outcome = self.metadata.apply_patch_from(provider, patch, self.clock_ms.unwrap_or(next_receive_counter));
         if outcome.touched {
             self.receive_counter = next_receive_counter;
         }
         let mut ended_changed = false;
         if let Some(entity) = removed {
             if self.retained_subjects.contains_key(&entity)
-                && !self
-                    .metadata
-                    .has_contributors(&EntityId::Entity(entity.clone()), KEY_ENTITY_ID)
+                && !self.metadata.has_contributors(&EntityId::Entity(entity.clone()), KEY_ENTITY_ID)
             {
                 ended_changed = self.ended_subjects.insert(entity);
             }
@@ -1042,9 +872,7 @@ impl ControllerState {
         // history. Keep the old record only for authoritative removal/loss.
         if !is_removal {
             if let Some(entity) = retained_target.as_ref() {
-                let current = self
-                    .metadata
-                    .resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
+                let current = self.metadata.resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
                 if current.contains_key(KEY_ENTITY_ID) || current.contains_key(KEY_DISPLAY_LABEL) {
                     if let Some(retained) = self.retained_subjects.get_mut(entity) {
                         for key in unset_keys {
@@ -1054,20 +882,14 @@ impl ControllerState {
                 }
             }
         }
-        let retained_changed = retained_target
-            .as_ref()
-            .is_some_and(|entity| self.refresh_retained_subjects_for(Some(entity)));
+        let retained_changed = retained_target.as_ref().is_some_and(|entity| self.refresh_retained_subjects_for(Some(entity)));
         outcome.view_changed || ended_changed || retained_changed
     }
 
     pub fn bootstrap_snapshot(&self) -> ControllerBootstrapSnapshot {
         let mut pinned_tabs: Vec<WorkspaceId> = self.pinned_tabs.iter().copied().collect();
         pinned_tabs.sort_unstable();
-        let mut pane_statuses: Vec<SetPaneStatus> = self
-            .pane_statuses
-            .values()
-            .map(|stored| stored.status.clone())
-            .collect();
+        let mut pane_statuses: Vec<SetPaneStatus> = self.pane_statuses.values().map(|stored| stored.status.clone()).collect();
         pane_statuses.sort_by_key(|status| status.timestamp_ms.unwrap_or(0));
 
         ControllerBootstrapSnapshot {
@@ -1078,10 +900,7 @@ impl ControllerState {
             node_variable_overrides: self
                 .node_variable_overrides
                 .iter()
-                .map(|(node, values)| crate::NodeVariableOverrides {
-                    node: node.clone(),
-                    values: values.clone(),
-                })
+                .map(|(node, values)| crate::NodeVariableOverrides { node: node.clone(), values: values.clone() })
                 .collect(),
             metadata_patches: self.metadata.snapshot_patches(self.now()),
             rail_ui_state: RailUiState {
@@ -1094,11 +913,7 @@ impl ControllerState {
                             .iter()
                             .filter(|variable| variable.persist)
                             .filter_map(|variable| {
-                                self.rail_ui
-                                    .variables
-                                    .get(&variable.name)
-                                    .cloned()
-                                    .map(|value| (variable.name.clone(), value))
+                                self.rail_ui.variables.get(&variable.name).cloned().map(|value| (variable.name.clone(), value))
                             })
                             .collect()
                     })
@@ -1113,10 +928,7 @@ impl ControllerState {
         self.rail_config = snapshot.config;
         self.pinned_tabs.extend(snapshot.pinned_tabs);
         for overrides in snapshot.node_variable_overrides {
-            self.node_variable_overrides
-                .entry(overrides.node)
-                .or_default()
-                .extend(overrides.values);
+            self.node_variable_overrides.entry(overrides.node).or_default().extend(overrides.values);
         }
         for status in snapshot.pane_statuses {
             self.set_status(status);
@@ -1149,10 +961,7 @@ impl ControllerState {
 
     #[allow(dead_code)]
     pub fn register_rail(&mut self, hello: PluginRegistrationHello) -> bool {
-        let registration = PluginRegistration {
-            identity: hello.identity,
-            placement: hello.placement,
-        };
+        let registration = PluginRegistration { identity: hello.identity, placement: hello.placement };
         if self.plugin_registration(registration.identity.plugin_id) == Some(&registration) {
             return false;
         }
@@ -1160,21 +969,15 @@ impl ControllerState {
         let client = self.client_mut(registration.identity.client_id);
         match registration.placement {
             PluginPlacement::Tab { tab_id, .. } => {
-                let tab = client
-                    .tabs
-                    .entry(tab_id)
-                    .or_insert_with(|| ControllerClientTabState {
-                        tab_id,
-                        rails: BTreeMap::new(),
-                        config_editors: BTreeMap::new(),
-                    });
-                tab.rails
-                    .insert(registration.identity.plugin_id, registration);
+                let tab = client.tabs.entry(tab_id).or_insert_with(|| ControllerClientTabState {
+                    tab_id,
+                    rails: BTreeMap::new(),
+                    config_editors: BTreeMap::new(),
+                });
+                tab.rails.insert(registration.identity.plugin_id, registration);
             }
             PluginPlacement::Background | PluginPlacement::Unknown => {
-                client
-                    .background_rails
-                    .insert(registration.identity.plugin_id, registration);
+                client.background_rails.insert(registration.identity.plugin_id, registration);
             }
         }
         true
@@ -1183,21 +986,13 @@ impl ControllerState {
     #[allow(dead_code)]
     pub fn retain_rails(&mut self, live_plugin_ids: &HashSet<u32>) {
         for client in self.clients.values_mut() {
-            client
-                .background_rails
-                .retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
-            client
-                .background_config_editors
-                .retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
+            client.background_rails.retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
+            client.background_config_editors.retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
             for tab in client.tabs.values_mut() {
-                tab.rails
-                    .retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
-                tab.config_editors
-                    .retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
+                tab.rails.retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
+                tab.config_editors.retain(|plugin_id, _| live_plugin_ids.contains(plugin_id));
             }
-            client
-                .tabs
-                .retain(|_, tab| !tab.rails.is_empty() || !tab.config_editors.is_empty());
+            client.tabs.retain(|_, tab| !tab.rails.is_empty() || !tab.config_editors.is_empty());
         }
         self.clients.retain(|_, client| {
             !client.background_rails.is_empty()
@@ -1214,56 +1009,30 @@ impl ControllerState {
         let mut removed = false;
         for client in self.clients.values_mut() {
             removed |= client.background_rails.remove(&plugin_id).is_some();
-            removed |= client
-                .background_config_editors
-                .remove(&plugin_id)
-                .is_some();
+            removed |= client.background_config_editors.remove(&plugin_id).is_some();
             for tab in client.tabs.values_mut() {
                 removed |= tab.rails.remove(&plugin_id).is_some();
                 removed |= tab.config_editors.remove(&plugin_id).is_some();
             }
-            client
-                .tabs
-                .retain(|_, tab| !tab.rails.is_empty() || !tab.config_editors.is_empty());
+            client.tabs.retain(|_, tab| !tab.rails.is_empty() || !tab.config_editors.is_empty());
         }
         removed
     }
 
     #[allow(dead_code)]
     pub fn rail_plugin_ids(&self) -> Vec<u32> {
-        self.rail_plugin_targets()
-            .into_iter()
-            .map(|target| target.plugin_id)
-            .collect()
+        self.rail_plugin_targets().into_iter().map(|target| target.plugin_id).collect()
     }
 
     #[allow(dead_code)]
     pub fn rail_plugin_targets(&self) -> Vec<RendererHello> {
         let mut targets = vec![];
         for client in self.clients.values() {
-            targets.extend(
-                client
-                    .background_rails
-                    .values()
-                    .map(|registration| registration.identity.clone()),
-            );
-            targets.extend(
-                client
-                    .background_config_editors
-                    .values()
-                    .map(|registration| registration.identity.clone()),
-            );
+            targets.extend(client.background_rails.values().map(|registration| registration.identity.clone()));
+            targets.extend(client.background_config_editors.values().map(|registration| registration.identity.clone()));
             for tab in client.tabs.values() {
-                targets.extend(
-                    tab.rails
-                        .values()
-                        .map(|registration| registration.identity.clone()),
-                );
-                targets.extend(
-                    tab.config_editors
-                        .values()
-                        .map(|registration| registration.identity.clone()),
-                );
+                targets.extend(tab.rails.values().map(|registration| registration.identity.clone()));
+                targets.extend(tab.config_editors.values().map(|registration| registration.identity.clone()));
             }
         }
         targets
@@ -1273,14 +1042,7 @@ impl ControllerState {
     pub fn known_rail_count(&self) -> usize {
         self.clients
             .values()
-            .map(|client| {
-                client.background_rails.len()
-                    + client
-                        .tabs
-                        .values()
-                        .map(|tab| tab.rails.len())
-                        .sum::<usize>()
-            })
+            .map(|client| client.background_rails.len() + client.tabs.values().map(|tab| tab.rails.len()).sum::<usize>())
             .sum()
     }
 
@@ -1288,28 +1050,13 @@ impl ControllerState {
     pub fn known_config_editor_count(&self) -> usize {
         self.clients
             .values()
-            .map(|client| {
-                client.background_config_editors.len()
-                    + client
-                        .tabs
-                        .values()
-                        .map(|tab| tab.config_editors.len())
-                        .sum::<usize>()
-            })
+            .map(|client| client.background_config_editors.len() + client.tabs.values().map(|tab| tab.config_editors.len()).sum::<usize>())
             .sum()
     }
 
-    pub fn config_editor_target_for_client_tab(
-        &self,
-        client_id: u16,
-        tab_id: WorkspaceId,
-    ) -> Option<RendererHello> {
+    pub fn config_editor_target_for_client_tab(&self, client_id: u16, tab_id: WorkspaceId) -> Option<RendererHello> {
         let client = self.clients.get(&client_id)?;
-        if let Some(target) = client
-            .tabs
-            .get(&tab_id)
-            .and_then(|tab| tab.config_editors.values().next())
-        {
+        if let Some(target) = client.tabs.get(&tab_id).and_then(|tab| tab.config_editors.values().next()) {
             return Some(target.identity.clone());
         }
         None
@@ -1326,10 +1073,7 @@ impl ControllerState {
 
     #[allow(dead_code)]
     pub fn register_config_editor(&mut self, hello: PluginRegistrationHello) -> bool {
-        let registration = PluginRegistration {
-            identity: hello.identity,
-            placement: hello.placement,
-        };
+        let registration = PluginRegistration { identity: hello.identity, placement: hello.placement };
         if self.plugin_registration(registration.identity.plugin_id) == Some(&registration) {
             return false;
         }
@@ -1337,21 +1081,15 @@ impl ControllerState {
         let client = self.client_mut(registration.identity.client_id);
         match registration.placement {
             PluginPlacement::Tab { tab_id, .. } => {
-                let tab = client
-                    .tabs
-                    .entry(tab_id)
-                    .or_insert_with(|| ControllerClientTabState {
-                        tab_id,
-                        rails: BTreeMap::new(),
-                        config_editors: BTreeMap::new(),
-                    });
-                tab.config_editors
-                    .insert(registration.identity.plugin_id, registration);
+                let tab = client.tabs.entry(tab_id).or_insert_with(|| ControllerClientTabState {
+                    tab_id,
+                    rails: BTreeMap::new(),
+                    config_editors: BTreeMap::new(),
+                });
+                tab.config_editors.insert(registration.identity.plugin_id, registration);
             }
             PluginPlacement::Background | PluginPlacement::Unknown => {
-                client
-                    .background_config_editors
-                    .insert(registration.identity.plugin_id, registration);
+                client.background_config_editors.insert(registration.identity.plugin_id, registration);
             }
         }
         true
@@ -1375,55 +1113,25 @@ impl ControllerState {
                     EntityId::Tab(id) => seeds.get(&id).cloned().unwrap_or_default(),
                     _ => BTreeMap::new(),
                 };
-                let (values, source_entries, reachable_identities) =
-                    self.resolve_target_metadata(&target, seed);
-                ResolvedMetadata {
-                    target,
-                    values,
-                    source_entries,
-                    reachable_identities,
-                }
+                let (values, source_entries, reachable_identities) = self.resolve_target_metadata(&target, seed);
+                ResolvedMetadata { target, values, source_entries, reachable_identities }
             })
             .collect();
         let tab_metadata = resolved_workspaces
             .iter()
-            .filter_map(|m| {
-                if let EntityId::Tab(id) = m.target {
-                    Some((id, &m.values))
-                } else {
-                    None
-                }
-            })
+            .filter_map(|m| if let EntityId::Tab(id) = m.target { Some((id, &m.values)) } else { None })
             .collect();
         let live = self.live_presentation_states(&catalog, &tab_metadata);
-        let materializable = latents
-            .iter()
-            .map(|l| (l.entity.clone(), l.materialize_request().is_some()))
-            .collect();
-        RevisionEvaluation {
-            catalog,
-            latents,
-            resolved_workspaces,
-            live,
-            materializable,
-        }
+        let materializable = latents.iter().map(|l| (l.entity.clone(), l.materialize_request().is_some())).collect();
+        RevisionEvaluation { catalog, latents, resolved_workspaces, live, materializable }
     }
 
-    pub(crate) fn presentation_in(
-        &self,
-        evaluation: &RevisionEvaluation,
-    ) -> crate::presentation::SurfaceSnapshot {
+    pub(crate) fn presentation_in(&self, evaluation: &RevisionEvaluation) -> crate::presentation::SurfaceSnapshot {
         let _phase = crate::profile::span("presentation");
-        self.view_model_in(evaluation, ModelOutputs::Presentation)
-            .presentation
-            .unwrap_or_default()
+        self.view_model_in(evaluation, ModelOutputs::Presentation).presentation.unwrap_or_default()
     }
 
-    fn view_model_in(
-        &self,
-        evaluation: &RevisionEvaluation,
-        outputs: ModelOutputs,
-    ) -> ControllerViewModel {
+    fn view_model_in(&self, evaluation: &RevisionEvaluation, outputs: ModelOutputs) -> ControllerViewModel {
         let presentation_only = matches!(outputs, ModelOutputs::Presentation);
         let catalog = &evaluation.catalog;
         let mut tabs: Vec<TabCard> = if presentation_only {
@@ -1439,11 +1147,7 @@ impl ControllerState {
                     pinned: self.pinned_tabs.contains(&tab.tab_id),
                     status: self.status_for_tab(tab.tab_id),
                     templates: ResolvedTemplateSlots::default(),
-                    active_pane: self
-                        .panes
-                        .values()
-                        .find(|pane| pane.tab_id == tab.tab_id && pane.is_focused)
-                        .map(|pane| pane.pane_id),
+                    active_pane: self.panes.values().find(|pane| pane.tab_id == tab.tab_id && pane.is_focused).map(|pane| pane.pane_id),
                 })
                 .collect()
         };
@@ -1465,19 +1169,11 @@ impl ControllerState {
         }
 
         let latent_tabs = &evaluation.latents;
-        let resolved_metadata = if presentation_only {
-            evaluation.resolved_workspaces.clone()
-        } else {
-            self.resolved_metadata_for_tabs(&tabs, catalog)
-        };
-        let observed_identities = if presentation_only {
-            vec![]
-        } else {
-            observed_metadata_identities(&resolved_metadata)
-        };
+        let resolved_metadata =
+            if presentation_only { evaluation.resolved_workspaces.clone() } else { self.resolved_metadata_for_tabs(&tabs, catalog) };
+        let observed_identities = if presentation_only { vec![] } else { observed_metadata_identities(&resolved_metadata) };
         let region_catalog_entities = &catalog.entities;
-        let (effective_variables, variable_warnings) =
-            self.resolve_effective_variables(&resolved_metadata);
+        let (effective_variables, variable_warnings) = self.resolve_effective_variables(&resolved_metadata);
         let mut template_config = self.template_config.clone();
         template_config.effective_variables = effective_variables;
         for warning in variable_warnings {
@@ -1487,11 +1183,7 @@ impl ControllerState {
         }
         let mut placement_index = PlacementIndex::build(region_catalog_entities);
         if let Some(config) = self.template_catalog.as_ref() {
-            for warning in placement_index.evaluate_visibility(
-                region_catalog_entities,
-                config,
-                &self.rail_ui.variables,
-            ) {
+            for warning in placement_index.evaluate_visibility(region_catalog_entities, config, &self.rail_ui.variables) {
                 if !template_config.warnings.contains(&warning) {
                     template_config.warnings.push(warning);
                 }
@@ -1507,15 +1199,9 @@ impl ControllerState {
                     .iter()
                     .cloned()
                     .map(|definition| {
-                        let metadata = BTreeMap::from([(
-                            "presentation.template".to_owned(),
-                            MetadataValue::Text(definition.root_template.clone()),
-                        )]);
-                        let entities = if let Some(placement) = definition
-                            .placement
-                            .as_deref()
-                            .and_then(|name| catalog.placement(name))
-                        {
+                        let metadata =
+                            BTreeMap::from([("presentation.template".to_owned(), MetadataValue::Text(definition.root_template.clone()))]);
+                        let entities = if let Some(placement) = definition.placement.as_deref().and_then(|name| catalog.placement(name)) {
                             self.evaluate_placement(
                                 placement,
                                 region_catalog_entities,
@@ -1548,18 +1234,9 @@ impl ControllerState {
             let mut placement_variables = vec![];
             let mut warnings = BTreeSet::new();
             for entity in surface_regions.iter().flat_map(|region| &region.entities) {
-                self.resolve_placement_variables(
-                    catalog,
-                    entity,
-                    &NodeKey::Root,
-                    &mut inherited,
-                    &mut placement_variables,
-                    &mut warnings,
-                );
+                self.resolve_placement_variables(catalog, entity, &NodeKey::Root, &mut inherited, &mut placement_variables, &mut warnings);
             }
-            template_config
-                .effective_variables
-                .extend(placement_variables);
+            template_config.effective_variables.extend(placement_variables);
             for warning in warnings {
                 if !template_config.warnings.contains(&warning) {
                     template_config.warnings.push(warning);
@@ -1591,19 +1268,11 @@ impl ControllerState {
             resolved_metadata,
             observed_identities,
             tabs,
-            metadata_controls: self
-                .clients
-                .get(&0)
-                .map(|client| client.metadata_controls.clone())
-                .unwrap_or_default(),
+            metadata_controls: self.clients.get(&0).map(|client| client.metadata_controls.clone()).unwrap_or_default(),
             inspected_node: None,
             collapsed_placements: self.rail_ui.collapsed_placements.iter().cloned().collect(),
             sibling_orders: self.rail_ui.sibling_orders.clone().into_iter().collect(),
-            display_variables: self
-                .template_catalog
-                .as_ref()
-                .map(|catalog| catalog.display_variables().to_vec())
-                .unwrap_or_default(),
+            display_variables: self.template_catalog.as_ref().map(|catalog| catalog.display_variables().to_vec()).unwrap_or_default(),
             display_variable_values: self.rail_ui.variables.clone(),
             presentation: None,
         };
@@ -1612,36 +1281,21 @@ impl ControllerState {
         use crate::presentation::PresentationState;
         let live = &evaluation.live;
         // Selection belongs to the workspace subject, not shared action targets.
-        let WorkspaceIdentities {
-            subjects,
-            hosts: host_entities,
-        } = self.workspace_identities();
+        let WorkspaceIdentities { subjects, hosts: host_entities } = self.workspace_identities();
         let mut exact = BTreeMap::new();
         for workspace in &self.tabs {
             // A tab's subject and its host entity (distinct entities) are each
             // live for it; selection follows the tab.
-            for entity in [
-                subjects.get(&workspace.tab_id),
-                host_entities.get(&workspace.tab_id),
-            ]
-            .into_iter()
-            .flatten()
-            {
+            for entity in [subjects.get(&workspace.tab_id), host_entities.get(&workspace.tab_id)].into_iter().flatten() {
                 // Prefer the selected workspace; otherwise preserve inventory order.
-                let state = PresentationState::Live {
-                    workspace_id: workspace.tab_id,
-                    selected: workspace.active,
-                };
+                let state = PresentationState::Live { workspace_id: workspace.tab_id, selected: workspace.active };
                 let existing = exact.entry(entity.clone()).or_insert(state.clone());
                 if workspace.active {
                     *existing = state;
                 }
             }
         }
-        let latents = latent_tabs
-            .iter()
-            .map(|latent| (&latent.entity, latent))
-            .collect::<BTreeMap<_, _>>();
+        let latents = latent_tabs.iter().map(|latent| (&latent.entity, latent)).collect::<BTreeMap<_, _>>();
         let states = region_catalog_entities
             .iter()
             .map(|entity| {
@@ -1651,11 +1305,7 @@ impl ControllerState {
                 let state = exact
                     .get(&entity.entity)
                     .cloned()
-                    .or_else(|| {
-                        live.get(&action_target).map(|state| {
-                            Self::alias_presentation_state(state, &subjects, &entity.entity)
-                        })
-                    })
+                    .or_else(|| live.get(&action_target).map(|state| Self::alias_presentation_state(state, &subjects, &entity.entity)))
                     .unwrap_or_else(|| {
                         latents
                             .get(&entity.entity)
@@ -1663,9 +1313,7 @@ impl ControllerState {
                                 if latent.materialization == LatentMaterializationState::Opening {
                                     PresentationState::Opening
                                 } else {
-                                    PresentationState::Latent {
-                                        openable: latent.materialize_request().is_some(),
-                                    }
+                                    PresentationState::Latent { openable: latent.materialize_request().is_some() }
                                 }
                             })
                             .unwrap_or_default()
@@ -1673,24 +1321,14 @@ impl ControllerState {
                 (entity.entity.clone(), state)
             })
             .collect();
-        model.presentation = Some(crate::presentation::SurfaceSnapshot::resolve(
-            &model,
-            &surface_regions,
-            &placement_layouts,
-            &states,
-        ));
+        model.presentation = Some(crate::presentation::SurfaceSnapshot::resolve(&model, &surface_regions, &placement_layouts, &states));
         if let Some(surface) = &mut model.presentation {
             // Default groups (`.default`) cover tabs nothing else places.
             let default_groups = region_catalog_entities
                 .iter()
                 .filter(|e| {
                     e.entity.kind == crate::presentation::system::GROUP
-                        && matches!(
-                            e.values
-                                .get(crate::presentation::system::DEFAULT)
-                                .map(|v| &v.value),
-                            Some(MetadataValue::Bool(true))
-                        )
+                        && matches!(e.values.get(crate::presentation::system::DEFAULT).map(|v| &v.value), Some(MetadataValue::Bool(true)))
                 })
                 .map(|e| e.entity.clone())
                 .collect::<Vec<_>>();
@@ -1698,9 +1336,7 @@ impl ControllerState {
             if self.metadata.has_stale() {
                 self.mark_stale(&mut surface.sections, catalog);
             }
-            surface
-                .diagnostics
-                .extend(model.template_config.warnings.iter().cloned());
+            surface.diagnostics.extend(model.template_config.warnings.iter().cloned());
         }
         model
     }
@@ -1739,15 +1375,8 @@ impl ControllerState {
     ) -> crate::presentation::PresentationState {
         use crate::presentation::PresentationState;
         let mut state = state.clone();
-        if let PresentationState::Live {
-            workspace_id,
-            selected,
-        } = &mut state
-        {
-            if subjects
-                .get(workspace_id)
-                .is_some_and(|subject| subject != entity)
-            {
+        if let PresentationState::Live { workspace_id, selected } = &mut state {
+            if subjects.get(workspace_id).is_some_and(|subject| subject != entity) {
                 *selected = false;
             }
         }
@@ -1779,24 +1408,16 @@ impl ControllerState {
                 // A tab's host entity is live there too, alongside any subject.
                 let host = host_entity_ref_from_entries(values).map(target_of);
                 for target in [target, host].into_iter().flatten() {
-                    live.entry(target).or_insert(PresentationState::Live {
-                        workspace_id: workspace.tab_id,
-                        selected: workspace.active,
-                    });
+                    live.entry(target).or_insert(PresentationState::Live { workspace_id: workspace.tab_id, selected: workspace.active });
                 }
             }
         }
         for (entity, id) in self.directory_bindings(&catalog.entities) {
             if let Some(candidate) = catalog.entity(&entity) {
-                let action_target = metadata_entry_text(&candidate.values, KEY_ACTION_TARGET)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| entity.action_target());
+                let action_target =
+                    metadata_entry_text(&candidate.values, KEY_ACTION_TARGET).map(str::to_owned).unwrap_or_else(|| entity.action_target());
                 let selected = self.tabs.iter().any(|tab| tab.tab_id == id && tab.active);
-                live.entry(action_target)
-                    .or_insert(PresentationState::Live {
-                        workspace_id: id,
-                        selected,
-                    });
+                live.entry(action_target).or_insert(PresentationState::Live { workspace_id: id, selected });
             }
         }
         live
@@ -1811,15 +1432,9 @@ impl ControllerState {
         (self.now(), self.detail_cards_in(&evaluation, None))
     }
 
-    pub(crate) fn detail_cards_in(
-        &self,
-        evaluation: &RevisionEvaluation,
-        target: Option<&EntityRef>,
-    ) -> Vec<crate::detail::DetailCard> {
+    pub(crate) fn detail_cards_in(&self, evaluation: &RevisionEvaluation, target: Option<&EntityRef>) -> Vec<crate::detail::DetailCard> {
         let _phase = crate::profile::span("detail-generation");
-        use crate::template_config::{
-            TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigSlot,
-        };
+        use crate::template_config::{TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigSlot};
         let catalog = &evaluation.catalog;
         let live = &evaluation.live;
         let materializable = &evaluation.materializable;
@@ -1831,11 +1446,7 @@ impl ControllerState {
             .into_iter()
             .map(|entity| {
                 let facts = entity_facts(&entity.entity, &entity.values);
-                let slot = self.resolve_template_slot(
-                    TemplateConfigSlot::Detail,
-                    TemplateConfigNodeKind::Entity,
-                    &facts,
-                );
+                let slot = self.resolve_template_slot(TemplateConfigSlot::Detail, TemplateConfigNodeKind::Entity, &facts);
                 let context = TemplateConfigMatchContext {
                     slot: TemplateConfigSlot::Detail,
                     node_kind: TemplateConfigNodeKind::Entity,
@@ -1852,13 +1463,8 @@ impl ControllerState {
                             .fields
                             .iter()
                             .filter_map(|spec| {
-                                let mut field =
-                                    crate::detail::resolve_field(spec, context, &entity.values)?;
-                                field.source_id = field
-                                    .observation
-                                    .as_ref()
-                                    .and_then(|_| entity.sources.get(&field.source_key))
-                                    .cloned();
+                                let mut field = crate::detail::resolve_field(spec, context, &entity.values)?;
+                                field.source_id = field.observation.as_ref().and_then(|_| entity.sources.get(&field.source_key)).cloned();
                                 field.relations.retain(|target| target != &entity.entity);
                                 Some(field)
                             })
@@ -1869,9 +1475,7 @@ impl ControllerState {
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity.entity.action_target());
                 let workspace_id = match live.get(&action_target) {
-                    Some(crate::presentation::PresentationState::Live { workspace_id, .. }) => {
-                        Some(*workspace_id)
-                    }
+                    Some(crate::presentation::PresentationState::Live { workspace_id, .. }) => Some(*workspace_id),
                     _ => None,
                 };
                 use crate::detail::DetailIntent;
@@ -1886,9 +1490,7 @@ impl ControllerState {
                 };
                 crate::detail::DetailCard {
                     entity: entity.entity.clone(),
-                    label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL)
-                        .unwrap_or(&entity.entity.id)
-                        .to_owned(),
+                    label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL).unwrap_or(&entity.entity.id).to_owned(),
                     workspace_id,
                     primary_label: metadata_entry_text(&entity.values, "action.primary.label")
                         .unwrap_or(primary_intent.default_label())
@@ -1925,9 +1527,7 @@ impl ControllerState {
             entity: entity.entity.clone(),
             placement: None,
             tier: None,
-            label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL)
-                .map(str::to_owned)
-                .unwrap_or_else(|| entity.entity.id.clone()),
+            label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL).map(str::to_owned).unwrap_or_else(|| entity.entity.id.clone()),
             form: DISPLAY_FORM_COMPACT.into(),
             metadata,
             templates,
@@ -1995,14 +1595,10 @@ impl ControllerState {
                     } else if predicate.key == "entity.id" {
                         Some(bound.entity.id.clone())
                     } else {
-                        bound.values.get(&predicate.key).and_then(|entry| {
-                            crate::template_config::placement_index_text(&entry.value)
-                        })
+                        bound.values.get(&predicate.key).and_then(|entry| crate::template_config::placement_index_text(&entry.value))
                     }
                 });
-                value
-                    .map(|value| index.lookup_value(&predicate.key, &value))
-                    .unwrap_or_default()
+                value.map(|value| index.lookup_value(&predicate.key, &value)).unwrap_or_default()
             })
             .collect::<Vec<_>>();
         // A join on a provider's entity (`of`) stays within that provider:
@@ -2023,42 +1619,24 @@ impl ControllerState {
         };
         let mut matches = seed
             .iter()
-            .filter(|position| {
-                rest.iter()
-                    .all(|matches| matches.binary_search(position).is_ok())
-            })
+            .filter(|position| rest.iter().all(|matches| matches.binary_search(position).is_ok()))
             .filter(|position| {
                 // An open ended workspace keeps its retained subject path reachable
                 // even while Show finished is off (wheelhouse#188 owner ruling).
                 // This deliberately overrides all visibility policies: open ended
                 // subjects must remain reachable on their retained path.
                 entities.get(**position).is_some_and(|entity| {
-                    self.ended_subjects.contains(&entity.entity)
-                        && self.retained_subjects.contains_key(&entity.entity)
+                    self.ended_subjects.contains(&entity.entity) && self.retained_subjects.contains_key(&entity.entity)
                 }) || loop_definition.visibility.as_ref().is_none_or(|name| {
-                    debug_assert!(
-                        index.visibility.contains_key(name),
-                        "validated visibility policy {name} was not evaluated"
-                    );
-                    index
-                        .visibility
-                        .get(name)
-                        .and_then(|visible| visible.get(**position))
-                        .copied()
-                        .unwrap_or(false)
+                    debug_assert!(index.visibility.contains_key(name), "validated visibility policy {name} was not evaluated");
+                    index.visibility.get(name).and_then(|visible| visible.get(**position)).copied().unwrap_or(false)
                 })
             })
             .filter_map(|position| entities.get(*position))
-            .filter(|entity| {
-                joined_providers
-                    .iter()
-                    .all(|provider| entity.entity.provider == *provider)
-            })
+            .filter(|entity| joined_providers.iter().all(|provider| entity.entity.provider == *provider))
             .filter(|entity| !ancestors.contains(&entity.entity))
             .filter(|entity| {
-                show_finished
-                    || !self.ended_subjects.contains(&entity.entity)
-                    || self.retained_subjects.contains_key(&entity.entity)
+                show_finished || !self.ended_subjects.contains(&entity.entity) || self.retained_subjects.contains_key(&entity.entity)
             })
             .collect::<Vec<_>>();
         if let Some(key) = &loop_definition.in_key {
@@ -2071,20 +1649,13 @@ impl ControllerState {
             else {
                 return vec![];
             };
-            let eligible: BTreeMap<_, _> = matches
-                .iter()
-                .map(|entity| (&entity.entity, *entity))
-                .collect();
+            let eligible: BTreeMap<_, _> = matches.iter().map(|entity| (&entity.entity, *entity)).collect();
             let mut seen = BTreeSet::new();
-            matches = refs
-                .iter()
-                .filter(|reference| seen.insert(*reference))
-                .filter_map(|reference| eligible.get(reference).copied())
-                .collect();
+            matches =
+                refs.iter().filter(|reference| seen.insert(*reference)).filter_map(|reference| eligible.get(reference).copied()).collect();
         }
         if loop_definition.in_key.is_none() || !loop_definition.order.is_empty() {
-            matches
-                .sort_by(|left, right| placement_entity_order(left, right, &loop_definition.order));
+            matches.sort_by(|left, right| placement_entity_order(left, right, &loop_definition.order));
         }
         matches
     }
@@ -2099,46 +1670,31 @@ impl ControllerState {
         entities: &'a [CatalogEntity],
         index: &PlacementIndex,
     ) -> Vec<crate::template_config::TemplateConfigRenderedField> {
-        let (Some(catalog), Some(detail)) = (
-            self.template_catalog.as_ref(),
-            display.templates.detail.as_ref(),
-        ) else {
+        let (Some(catalog), Some(detail)) = (self.template_catalog.as_ref(), display.templates.detail.as_ref()) else {
             return vec![];
         };
-        let Some(template) = catalog.placement_template(&detail.template_name, &display.metadata)
-        else {
+        let Some(template) = catalog.placement_template(&detail.template_name, &display.metadata) else {
             return vec![];
         };
-        let binding = detail
-            .template_name
-            .split('/')
-            .next()
-            .unwrap_or(&detail.template_name)
-            .to_owned();
+        let binding = detail.template_name.split('/').next().unwrap_or(&detail.template_name).to_owned();
         let bindings = BTreeMap::from([(binding, entity)]);
         let ancestors = [entity.entity.clone()];
         template
             .loops
             .iter()
             .flat_map(|related_loop| {
-                self.placement_matches(related_loop, entities, index, &bindings, &ancestors)
-                    .into_iter()
-                    .flat_map(move |related| {
-                        let metadata = entity_facts(&related.entity, &related.values);
-                        let context = crate::template_config::TemplateConfigMatchContext {
-                            slot: crate::template_config::TemplateConfigSlot::Detail,
-                            node_kind: crate::template_config::TemplateConfigNodeKind::Entity,
-                            metadata: &metadata,
-                            collapsed: false,
-                            collapsible: false,
-                            active_tab_name: None,
-                        };
-                        related_loop
-                            .fields
-                            .iter()
-                            .filter_map(|spec| spec.render(context))
-                            .collect::<Vec<_>>()
-                    })
+                self.placement_matches(related_loop, entities, index, &bindings, &ancestors).into_iter().flat_map(move |related| {
+                    let metadata = entity_facts(&related.entity, &related.values);
+                    let context = crate::template_config::TemplateConfigMatchContext {
+                        slot: crate::template_config::TemplateConfigSlot::Detail,
+                        node_kind: crate::template_config::TemplateConfigNodeKind::Entity,
+                        metadata: &metadata,
+                        collapsed: false,
+                        collapsible: false,
+                        active_tab_name: None,
+                    };
+                    related_loop.fields.iter().filter_map(|spec| spec.render(context)).collect::<Vec<_>>()
+                })
             })
             .collect()
     }
@@ -2185,18 +1741,9 @@ impl ControllerState {
                     }
                 }
                 let mut placement = parent_placement.clone();
-                placement.0.push(PlacementSegment {
-                    loop_name: loop_definition.binding.clone(),
-                    entity: entity.entity.clone(),
-                });
+                placement.0.push(PlacementSegment { loop_name: loop_definition.binding.clone(), entity: entity.entity.clone() });
                 let related_detail = self.related_detail_fields(&display, entity, entities, index);
-                layouts.insert(
-                    placement.clone(),
-                    PlacementAnnotation {
-                        layout: loop_definition.layout.clone(),
-                        related_detail,
-                    },
-                );
+                layouts.insert(placement.clone(), PlacementAnnotation { layout: loop_definition.layout.clone(), related_detail });
                 display.placement = Some(placement.clone());
                 let mut nested_bindings = bindings.clone();
                 nested_bindings.insert(loop_definition.binding.clone(), entity);
@@ -2205,18 +1752,10 @@ impl ControllerState {
 
                 let mut child_loops = loop_definition.loops.as_slice();
                 if let Some(requested) = loop_definition.apply_template.as_deref() {
-                    let template_name = if requested.is_empty() {
-                        format!("{}/line", entity.entity.kind)
-                    } else {
-                        requested.to_owned()
-                    };
+                    let template_name = if requested.is_empty() { format!("{}/line", entity.entity.kind) } else { requested.to_owned() };
                     if let Some(catalog) = self.template_catalog.as_ref() {
-                        if let Some(template) =
-                            catalog.placement_template(&template_name, &display.metadata)
-                        {
-                            let resolved_slot = match catalog
-                                .resolve_placement_template(&template_name, &display.metadata)
-                            {
+                        if let Some(template) = catalog.placement_template(&template_name, &display.metadata) {
+                            let resolved_slot = match catalog.resolve_placement_template(&template_name, &display.metadata) {
                                 Ok(Some(resolved)) => Some(ResolvedTemplateSlot {
                                     template_name: resolved.name.clone(),
                                     fields: vec![],
@@ -2244,11 +1783,7 @@ impl ControllerState {
                             child_loops = template.loops.as_slice();
                             // Applied templates intentionally start a new lexical environment.
                             nested_bindings.clear();
-                            let own_binding = template_name
-                                .split('/')
-                                .next()
-                                .unwrap_or(&template_name)
-                                .to_owned();
+                            let own_binding = template_name.split('/').next().unwrap_or(&template_name).to_owned();
                             nested_bindings.insert(own_binding, entity);
                         } else if !requested.is_empty() {
                             let slot = ResolvedTemplateSlot {
@@ -2257,9 +1792,7 @@ impl ControllerState {
                                 render_ready: None,
                                 setters: vec![],
                                 effective_kdl: String::new(),
-                                resolve_error: Some(format!(
-                                    "unknown applied template {template_name}"
-                                )),
+                                resolve_error: Some(format!("unknown applied template {template_name}")),
                             };
                             display.templates.compact = Some(slot.clone());
                             display.templates.detail = Some(slot);
@@ -2289,29 +1822,15 @@ impl ControllerState {
             .collect()
     }
 
-    fn resolve_effective_variables(
-        &self,
-        resolved_metadata: &[ResolvedMetadata],
-    ) -> (Vec<EffectiveNodeVariables>, Vec<String>) {
+    fn resolve_effective_variables(&self, resolved_metadata: &[ResolvedMetadata]) -> (Vec<EffectiveNodeVariables>, Vec<String>) {
         let Some(catalog) = self.template_catalog.as_ref() else {
             return (vec![], vec![]);
         };
         let mut warnings = BTreeSet::new();
         let root = NodeKey::Root;
-        let resolved = self.resolve_variables_at_node(
-            catalog,
-            &root,
-            None,
-            &node_metadata(&root, resolved_metadata),
-            None,
-            &mut warnings,
-        );
+        let resolved = self.resolve_variables_at_node(catalog, &root, None, &node_metadata(&root, resolved_metadata), None, &mut warnings);
         (
-            vec![EffectiveNodeVariables {
-                node: root,
-                values: resolved.values,
-                declarations: resolved.declarations,
-            }],
+            vec![EffectiveNodeVariables { node: root, values: resolved.values, declarations: resolved.declarations }],
             warnings.into_iter().collect(),
         )
     }
@@ -2329,34 +1848,13 @@ impl ControllerState {
             return;
         };
         let node = NodeKey::Placement(key);
-        let template = if entity.form == DISPLAY_FORM_COMPACT {
-            entity.templates.compact.as_ref()
-        } else {
-            entity.templates.detail.as_ref()
-        };
-        let resolved = self.resolve_variables_at_node(
-            catalog,
-            &node,
-            inherited_by_node.get(parent),
-            &entity.metadata,
-            template,
-            warnings,
-        );
+        let template =
+            if entity.form == DISPLAY_FORM_COMPACT { entity.templates.compact.as_ref() } else { entity.templates.detail.as_ref() };
+        let resolved = self.resolve_variables_at_node(catalog, &node, inherited_by_node.get(parent), &entity.metadata, template, warnings);
         inherited_by_node.insert(node.clone(), resolved.values.clone());
-        output.push(EffectiveNodeVariables {
-            node: node.clone(),
-            values: resolved.values,
-            declarations: resolved.declarations,
-        });
+        output.push(EffectiveNodeVariables { node: node.clone(), values: resolved.values, declarations: resolved.declarations });
         for child in &entity.children {
-            self.resolve_placement_variables(
-                catalog,
-                child,
-                &node,
-                inherited_by_node,
-                output,
-                warnings,
-            );
+            self.resolve_placement_variables(catalog, child, &node, inherited_by_node, output, warnings);
         }
     }
 
@@ -2372,23 +1870,19 @@ impl ControllerState {
         let scope = catalog.variable_scope(metadata);
         warnings.extend(scope.warnings);
         let declarations = scope.declarations;
-        let declaration_by_name = declarations
-            .iter()
-            .map(|resolved| (resolved.definition.name.as_str(), resolved))
-            .collect::<BTreeMap<_, _>>();
+        let declaration_by_name =
+            declarations.iter().map(|resolved| (resolved.definition.name.as_str(), resolved)).collect::<BTreeMap<_, _>>();
         let mut values = inherited.cloned().unwrap_or_default();
         for declaration in &declarations {
-            values
-                .entry(declaration.definition.name.clone())
-                .or_insert_with(|| EffectiveVariableValue {
-                    value: declaration.definition.default.clone(),
-                    provenance: VariableSetterProvenance {
-                        setter: "default".to_owned(),
-                        ancestor: node.clone(),
-                        origin: declaration.origin.clone(),
-                    },
-                    overridden: vec![],
-                });
+            values.entry(declaration.definition.name.clone()).or_insert_with(|| EffectiveVariableValue {
+                value: declaration.definition.default.clone(),
+                provenance: VariableSetterProvenance {
+                    setter: "default".to_owned(),
+                    ancestor: node.clone(),
+                    origin: declaration.origin.clone(),
+                },
+                overridden: vec![],
+            });
         }
         if let Some(template) = template {
             for setter in &template.setters {
@@ -2428,25 +1922,17 @@ impl ControllerState {
                 &mut values,
                 &setter.setter.name,
                 &setter.setter.value,
-                VariableSetterProvenance {
-                    setter: "config".to_owned(),
-                    ancestor: node.clone(),
-                    origin: setter.origin,
-                },
+                VariableSetterProvenance { setter: "config".to_owned(), ancestor: node.clone(), origin: setter.origin },
             );
         }
         if let Some(overrides) = self.node_variable_overrides.get(node) {
             for (name, value) in overrides {
                 let Some(declaration) = declaration_by_name.get(name.as_str()) else {
-                    warnings.insert(format!(
-                        "andamento-inspector sets undeclared node variable {name}"
-                    ));
+                    warnings.insert(format!("andamento-inspector sets undeclared node variable {name}"));
                     continue;
                 };
                 if !declaration.definition.accepts(value) {
-                    warnings.insert(format!(
-                        "andamento-inspector sets node variable {name} to disallowed value {value}"
-                    ));
+                    warnings.insert(format!("andamento-inspector sets node variable {name} to disallowed value {value}"));
                     continue;
                 }
                 apply_variable_setter(
@@ -2465,13 +1951,7 @@ impl ControllerState {
                 );
             }
         }
-        ResolvedNodeVariables {
-            values,
-            declarations: declarations
-                .into_iter()
-                .map(|resolved| resolved.definition)
-                .collect(),
-        }
+        ResolvedNodeVariables { values, declarations: declarations.into_iter().map(|resolved| resolved.definition).collect() }
     }
 
     fn latent_tabs(&self) -> Vec<LatentTab> {
@@ -2492,30 +1972,22 @@ impl ControllerState {
                 if live_targets.contains(&action_target) {
                     return None;
                 }
-                let name = metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| entity.entity.id.clone());
+                let name =
+                    metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL).map(str::to_owned).unwrap_or_else(|| entity.entity.id.clone());
                 Some(LatentTab {
                     entity: entity.entity.clone(),
-                    materialization: if self
-                        .pending_latent_materializations
-                        .contains_key(&action_target)
-                    {
+                    materialization: if self.pending_latent_materializations.contains_key(&action_target) {
                         LatentMaterializationState::Opening
                     } else {
                         LatentMaterializationState::Ready
                     },
                     action_target,
                     name,
-                    status_state: metadata_entry_text(&entity.values, KEY_STATUS_STATE)
-                        .map(str::to_owned),
-                    summary: metadata_entry_text(&entity.values, KEY_SUMMARY_TEXT)
-                        .map(str::to_owned),
+                    status_state: metadata_entry_text(&entity.values, KEY_STATUS_STATE).map(str::to_owned),
+                    summary: metadata_entry_text(&entity.values, KEY_SUMMARY_TEXT).map(str::to_owned),
                     source: metadata_entry_text(&entity.values, KEY_SOURCE).map(str::to_owned),
-                    materialize_recipe: metadata_entry_text(&entity.values, KEY_MATERIALIZE_RECIPE)
-                        .map(str::to_owned),
-                    checkout_path: metadata_entry_text(&entity.values, KEY_CHECKOUT_PATH)
-                        .map(str::to_owned),
+                    materialize_recipe: metadata_entry_text(&entity.values, KEY_MATERIALIZE_RECIPE).map(str::to_owned),
+                    checkout_path: metadata_entry_text(&entity.values, KEY_CHECKOUT_PATH).map(str::to_owned),
                     templates: display.templates,
                 })
             })
@@ -2527,28 +1999,19 @@ impl ControllerState {
     ///
     /// `saved` are subjects recorded in workspace records: one with no facts
     /// is retained from its record, and one recorded as ended stays ended.
-    pub(crate) fn retain_workspace_paths(
-        &mut self,
-        subjects: BTreeSet<EntityRef>,
-        saved: &BTreeMap<EntityRef, SubjectRecord>,
-    ) -> bool {
+    pub(crate) fn retain_workspace_paths(&mut self, subjects: BTreeSet<EntityRef>, saved: &BTreeMap<EntityRef, SubjectRecord>) -> bool {
         let before = (self.retained_subjects.len(), self.ended_subjects.len());
         let mut changed = false;
-        self.retained_subjects
-            .retain(|entity, _| subjects.contains(entity));
-        self.ended_subjects
-            .retain(|entity| subjects.contains(entity));
+        self.retained_subjects.retain(|entity, _| subjects.contains(entity));
+        self.ended_subjects.retain(|entity| subjects.contains(entity));
         for subject in subjects {
             if !self.retained_subjects.contains_key(&subject) {
                 let target = EntityId::Entity(subject.clone());
-                let (values, sources) = self
-                    .metadata
-                    .resolved_entries_with_sources_for(&target, self.now());
+                let (values, sources) = self.metadata.resolved_entries_with_sources_for(&target, self.now());
                 if values.is_empty() {
                     if let Some(record) = saved.get(&subject) {
                         changed = true;
-                        self.retained_subjects
-                            .insert(subject.clone(), saved_catalog_entity(subject, record));
+                        self.retained_subjects.insert(subject.clone(), saved_catalog_entity(subject, record));
                     }
                 } else {
                     changed = true;
@@ -2572,10 +2035,7 @@ impl ControllerState {
         changed |= before != (self.retained_subjects.len(), self.ended_subjects.len());
         let refreshed = self.refresh_retained_subjects();
         // Every ended subject must belong to the retained workspace-path union.
-        debug_assert!(self
-            .ended_subjects
-            .iter()
-            .all(|subject| self.retained_subjects.contains_key(subject)));
+        debug_assert!(self.ended_subjects.iter().all(|subject| self.retained_subjects.contains_key(subject)));
         changed | refreshed
     }
 
@@ -2590,9 +2050,7 @@ impl ControllerState {
             if target.is_some_and(|target| target != subject) {
                 continue;
             }
-            let (values, sources) = self
-                .metadata
-                .resolved_entries_with_sources_for(&EntityId::Entity(subject.clone()), now);
+            let (values, sources) = self.metadata.resolved_entries_with_sources_for(&EntityId::Entity(subject.clone()), now);
             // While identity remains observed, individual facts keep their ordinary
             // freshness. Only unobserved identities need the last known record.
             if values.contains_key(KEY_ENTITY_ID) || values.contains_key(KEY_DISPLAY_LABEL) {
@@ -2602,13 +2060,8 @@ impl ControllerState {
             }
             // TODO(#122): consume a producer-declared lifecycle-ended fact.
             let terminal = matches!(subject.kind.as_str(), "convoy" | "vessel")
-                && (matches!(
-                    metadata_entry_text(&retained.values, KEY_CONVOY_PHASE),
-                    Some("landed" | "abandoned" | "cancelled")
-                ) || matches!(
-                    retained.values.get(KEY_CONVOY_SUPERSEDED).map(|e| &e.value),
-                    Some(MetadataValue::Bool(true))
-                ));
+                && (matches!(metadata_entry_text(&retained.values, KEY_CONVOY_PHASE), Some("landed" | "abandoned" | "cancelled"))
+                    || matches!(retained.values.get(KEY_CONVOY_SUPERSEDED).map(|e| &e.value), Some(MetadataValue::Bool(true))));
             if terminal {
                 changed |= self.ended_subjects.insert(subject.clone());
             }
@@ -2623,10 +2076,7 @@ impl ControllerState {
     ) -> bool {
         let mut changed = false;
         for (id, path) in paths {
-            if path
-                .iter()
-                .any(|subject| self.ended_subjects.contains(subject))
-            {
+            if path.iter().any(|subject| self.ended_subjects.contains(subject)) {
                 if let Some(subject) = subjects.get(id) {
                     changed |= self.ended_subjects.insert(subject.clone());
                 }
@@ -2637,16 +2087,9 @@ impl ControllerState {
 
     /// The record of a retained subject: its label, whether it ended, the
     /// recordable facts among `keys`, and whether a producer publishes it now.
-    pub(crate) fn retained_subject_record(
-        &self,
-        subject: &EntityRef,
-        keys: &BTreeSet<String>,
-    ) -> Option<(SubjectRecord, bool)> {
+    pub(crate) fn retained_subject_record(&self, subject: &EntityRef, keys: &BTreeSet<String>) -> Option<(SubjectRecord, bool)> {
         let retained = self.retained_subjects.get(subject)?;
-        let observed = !self
-            .metadata
-            .resolved_entries_for(&EntityId::Entity(subject.clone()), self.now())
-            .is_empty();
+        let observed = !self.metadata.resolved_entries_for(&EntityId::Entity(subject.clone()), self.now()).is_empty();
         let record = SubjectRecord {
             label: metadata_entry_text(&retained.values, KEY_DISPLAY_LABEL).map(str::to_owned),
             ended: self.ended_subjects.contains(subject),
@@ -2654,9 +2097,7 @@ impl ControllerState {
             facts: retained
                 .values
                 .iter()
-                .filter(|(key, entry)| {
-                    keys.contains(*key) && *key != KEY_DISPLAY_LABEL && recordable(&entry.value)
-                })
+                .filter(|(key, entry)| keys.contains(*key) && *key != KEY_DISPLAY_LABEL && recordable(&entry.value))
                 .map(|(key, entry)| (key.clone(), entry.value.clone()))
                 .collect(),
         };
@@ -2665,11 +2106,7 @@ impl ControllerState {
 
     /// Bind a workspace to its subject, as a materialize completion does, or
     /// remove that binding.
-    pub(crate) fn bind_workspace_subject(
-        &mut self,
-        tab_id: WorkspaceId,
-        subject: Option<&EntityRef>,
-    ) -> bool {
+    pub(crate) fn bind_workspace_subject(&mut self, tab_id: WorkspaceId, subject: Option<&EntityRef>) -> bool {
         let patch = match subject {
             Some(subject) => MetadataPatch {
                 target: MetadataTarget::Tab(tab_id),
@@ -2681,9 +2118,7 @@ impl ControllerState {
                 target: MetadataTarget::Tab(tab_id),
                 source_id: SOURCE_LATENT_MATERIALIZER.to_owned(),
                 set: BTreeMap::new(),
-                unset: [KEY_ENTITY_PROVIDER, KEY_ENTITY_KIND, KEY_ENTITY_ID]
-                    .map(str::to_owned)
-                    .to_vec(),
+                unset: [KEY_ENTITY_PROVIDER, KEY_ENTITY_KIND, KEY_ENTITY_ID].map(str::to_owned).to_vec(),
             },
         };
         self.apply_metadata_patch(patch)
@@ -2693,9 +2128,7 @@ impl ControllerState {
     /// the sidebar arrangement.
     pub(crate) fn sidebar_regions(&self) -> Vec<RegionHints> {
         fn hosts_sections(loops: &[PlacementLoop]) -> bool {
-            loops
-                .iter()
-                .any(|l| l.layout.as_deref() == Some("section") || hosts_sections(&l.loops))
+            loops.iter().any(|l| l.layout.as_deref() == Some("section") || hosts_sections(&l.loops))
         }
         let Some(catalog) = self.template_catalog.as_ref() else {
             return Vec::new();
@@ -2723,41 +2156,22 @@ impl ControllerState {
         let Some(catalog) = self.template_catalog.as_ref() else {
             return Default::default();
         };
-        (
-            catalog.loop_bindings(),
-            catalog
-                .display_variables()
-                .iter()
-                .map(|variable| variable.name.clone())
-                .collect(),
-        )
+        (catalog.loop_bindings(), catalog.display_variables().iter().map(|variable| variable.name.clone()).collect())
     }
 
     /// Fact keys placement reads, for subject records.
     pub(crate) fn placement_fact_keys(&self) -> BTreeSet<String> {
-        self.template_catalog
-            .as_ref()
-            .map(|catalog| catalog.placement_fact_keys())
-            .unwrap_or_default()
+        self.template_catalog.as_ref().map(|catalog| catalog.placement_fact_keys()).unwrap_or_default()
     }
 
     /// Display variables a record keeps: declared ones that persist, and any
     /// that no configuration declares (restored before their declaration).
     pub(crate) fn recorded_display_variables(&self) -> BTreeMap<String, DisplayVariableValue> {
-        let declared = self
-            .template_catalog
-            .as_ref()
-            .map(|catalog| catalog.display_variables())
-            .unwrap_or_default();
+        let declared = self.template_catalog.as_ref().map(|catalog| catalog.display_variables()).unwrap_or_default();
         self.rail_ui
             .variables
             .iter()
-            .filter(|(name, _)| {
-                declared
-                    .iter()
-                    .find(|variable| &variable.name == *name)
-                    .is_none_or(|variable| variable.persist)
-            })
+            .filter(|(name, _)| declared.iter().find(|variable| &variable.name == *name).is_none_or(|variable| variable.persist))
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect()
     }
@@ -2784,36 +2198,18 @@ impl ControllerState {
     /// placement variables with a record's. Variables that persist and the
     /// record leaves out return to their defaults; others keep their values.
     pub(crate) fn restore_dashboard(&mut self, record: &DashboardState) {
-        let declared = self
-            .template_catalog
-            .as_ref()
-            .map(|catalog| catalog.display_variables().to_vec())
-            .unwrap_or_default();
-        self.rail_ui.variables.retain(|name, _| {
-            declared
-                .iter()
-                .any(|variable| &variable.name == name && !variable.persist)
-        });
+        let declared = self.template_catalog.as_ref().map(|catalog| catalog.display_variables().to_vec()).unwrap_or_default();
+        self.rail_ui.variables.retain(|name, _| declared.iter().any(|variable| &variable.name == name && !variable.persist));
         for variable in &declared {
-            self.rail_ui
-                .variables
-                .entry(variable.name.clone())
-                .or_insert_with(|| variable.default.clone());
+            self.rail_ui.variables.entry(variable.name.clone()).or_insert_with(|| variable.default.clone());
         }
-        self.rail_ui.variables.extend(
-            record
-                .display
-                .iter()
-                .map(|(name, value)| (name.clone(), value.clone())),
-        );
+        self.rail_ui.variables.extend(record.display.iter().map(|(name, value)| (name.clone(), value.clone())));
         self.rail_ui.collapsed_placements = record.collapsed.clone();
         self.rail_ui.sibling_orders = record.orders.clone();
-        self.node_variable_overrides
-            .retain(|node, _| !matches!(node, NodeKey::Placement(_)));
+        self.node_variable_overrides.retain(|node, _| !matches!(node, NodeKey::Placement(_)));
         for (key, values) in &record.variables {
             if !values.is_empty() {
-                self.node_variable_overrides
-                    .insert(NodeKey::Placement(key.clone()), values.clone());
+                self.node_variable_overrides.insert(NodeKey::Placement(key.clone()), values.clone());
             }
         }
         self.bump_rail_ui_revision();
@@ -2821,29 +2217,18 @@ impl ControllerState {
 
     /// Set a declared display variable directly, or return it to its default
     /// with None. Returns whether the value changed.
-    pub fn set_display_variable(
-        &mut self,
-        name: &str,
-        value: Option<DisplayVariableValue>,
-    ) -> Result<bool, String> {
+    pub fn set_display_variable(&mut self, name: &str, value: Option<DisplayVariableValue>) -> Result<bool, String> {
         let definition = self
             .template_catalog
             .as_ref()
-            .and_then(|catalog| {
-                catalog
-                    .display_variables()
-                    .iter()
-                    .find(|variable| variable.name == name)
-            })
+            .and_then(|catalog| catalog.display_variables().iter().find(|variable| variable.name == name))
             .ok_or("unknown display variable")?;
         let value = match value {
             None => definition.default.clone(),
             Some(value) => {
                 let valid = match (&definition.variable_type, &value) {
                     (TemplateVariableType::Bool, DisplayVariableValue::Bool(_)) => true,
-                    (TemplateVariableType::Enum { values }, DisplayVariableValue::Enum(value)) => {
-                        values.contains(value)
-                    }
+                    (TemplateVariableType::Enum { values }, DisplayVariableValue::Enum(value)) => values.contains(value),
                     _ => false,
                 };
                 if !valid {
@@ -2861,10 +2246,8 @@ impl ControllerState {
     }
 
     fn bump_rail_ui_revision(&mut self) {
-        self.rail_ui.revision = RailUiRevision {
-            sequence: self.rail_ui.revision.sequence.saturating_add(1),
-            writer_client_id: self.rail_ui_writer_client_id,
-        };
+        self.rail_ui.revision =
+            RailUiRevision { sequence: self.rail_ui.revision.sequence.saturating_add(1), writer_client_id: self.rail_ui_writer_client_id };
     }
 
     /// Each tab's subject (`entity.kind`/`id`) and host entity
@@ -2874,10 +2257,8 @@ impl ControllerState {
         let seeds = self.tab_seed_metadata_entries();
         let mut identities = WorkspaceIdentities::default();
         for tab in &self.tabs {
-            let (values, _, _) = self.resolve_target_metadata(
-                &EntityId::Tab(tab.tab_id),
-                seeds.get(&tab.tab_id).cloned().unwrap_or_default(),
-            );
+            let (values, _, _) =
+                self.resolve_target_metadata(&EntityId::Tab(tab.tab_id), seeds.get(&tab.tab_id).cloned().unwrap_or_default());
             if let Some(subject) = entity_ref_from_entries(&values) {
                 identities.subjects.insert(tab.tab_id, subject);
             }
@@ -2894,16 +2275,13 @@ impl ControllerState {
 
     fn show_finished(&self) -> bool {
         matches!(
-            self.rail_ui
-                .variables
-                .get(DISPLAY_SHOW_FINISHED)
-                .or_else(|| self
-                    .template_catalog
-                    .as_ref()?
-                    .display_variables()
-                    .iter()
-                    .find(|v| v.name == DISPLAY_SHOW_FINISHED)
-                    .map(|v| &v.default)),
+            self.rail_ui.variables.get(DISPLAY_SHOW_FINISHED).or_else(|| self
+                .template_catalog
+                .as_ref()?
+                .display_variables()
+                .iter()
+                .find(|v| v.name == DISPLAY_SHOW_FINISHED)
+                .map(|v| &v.default)),
             Some(DisplayVariableValue::Bool(true))
         )
     }
@@ -2919,9 +2297,7 @@ impl ControllerState {
                 let EntityId::Entity(entity) = target else {
                     return None;
                 };
-                let (values, sources) = self
-                    .metadata
-                    .resolved_entries_with_sources_for(target, self.now());
+                let (values, sources) = self.metadata.resolved_entries_with_sources_for(target, self.now());
                 if values.is_empty() {
                     return None;
                 }
@@ -2933,11 +2309,7 @@ impl ControllerState {
                 })
             })
             .collect::<Vec<_>>();
-        let positions: BTreeMap<_, _> = entities
-            .iter()
-            .enumerate()
-            .map(|(index, entity)| (entity.entity.clone(), index))
-            .collect();
+        let positions: BTreeMap<_, _> = entities.iter().enumerate().map(|(index, entity)| (entity.entity.clone(), index)).collect();
         for (subject, retained) in &self.retained_subjects {
             if let Some(index) = positions.get(subject) {
                 let current = &mut entities[*index];
@@ -2979,11 +2351,7 @@ impl ControllerState {
             }
         }
         Self::present_refs(&mut entities);
-        entities.sort_by(|a, b| {
-            a.ordinal
-                .cmp(&b.ordinal)
-                .then_with(|| a.entity.cmp(&b.entity))
-        });
+        entities.sort_by(|a, b| a.ordinal.cmp(&b.ordinal).then_with(|| a.entity.cmp(&b.entity)));
         entities
     }
 
@@ -3038,10 +2406,7 @@ impl ControllerState {
                     KEY_ACTION_TARGET.to_owned(),
                     MetadataEntry {
                         value: MetadataValue::Text(target.action_target()),
-                        updated_at: own
-                            .get(system::TARGET)
-                            .map(|e| e.updated_at)
-                            .unwrap_or_default(),
+                        updated_at: own.get(system::TARGET).map(|e| e.updated_at).unwrap_or_default(),
                         ttl_ms: None,
                         precedence: 0,
                         ordinal,
@@ -3056,9 +2421,7 @@ impl ControllerState {
         if entity.kind != crate::presentation::system::REF {
             return entity.clone();
         }
-        let (values, _) = self
-            .metadata
-            .resolved_entries_with_sources_for(&EntityId::Entity(entity.clone()), self.now());
+        let (values, _) = self.metadata.resolved_entries_with_sources_for(&EntityId::Entity(entity.clone()), self.now());
         ref_target(&values).unwrap_or_else(|| entity.clone())
     }
 
@@ -3087,24 +2450,16 @@ impl ControllerState {
             .tabs
             .iter()
             .filter(|tab| {
-                let (values, _, _) = self.resolve_target_metadata(
-                    &EntityId::Tab(tab.tab_id),
-                    seeds.get(&tab.tab_id).cloned().unwrap_or_default(),
-                );
-                entity_ref_from_entries(&values).is_none()
-                    && metadata_entry_text(&values, KEY_ACTION_TARGET).is_none()
+                let (values, _, _) =
+                    self.resolve_target_metadata(&EntityId::Tab(tab.tab_id), seeds.get(&tab.tab_id).cloned().unwrap_or_default());
+                entity_ref_from_entries(&values).is_none() && metadata_entry_text(&values, KEY_ACTION_TARGET).is_none()
             })
             .collect();
         entities
             .iter()
             .filter_map(|entity| {
-                let cwd = metadata_entry_text(&entity.values, KEY_CHECKOUT_PATH)
-                    .filter(|s| !s.is_empty())?;
-                let tab = unbound.iter().find(|tab| {
-                    self.observed_workdirs
-                        .get(&tab.tab_id)
-                        .is_some_and(|dirs| dirs.contains(cwd))
-                })?;
+                let cwd = metadata_entry_text(&entity.values, KEY_CHECKOUT_PATH).filter(|s| !s.is_empty())?;
+                let tab = unbound.iter().find(|tab| self.observed_workdirs.get(&tab.tab_id).is_some_and(|dirs| dirs.contains(cwd)))?;
                 Some((entity.entity.clone(), tab.tab_id))
             })
             .collect()
@@ -3126,11 +2481,7 @@ impl ControllerState {
             .collect()
     }
 
-    fn tab_entity_ref(
-        &self,
-        tab_id: WorkspaceId,
-        tab_seed_metadata: &TabSeedMetadata,
-    ) -> Option<EntityRef> {
+    fn tab_entity_ref(&self, tab_id: WorkspaceId, tab_seed_metadata: &TabSeedMetadata) -> Option<EntityRef> {
         let target = EntityId::Tab(tab_id);
         let seed_values = tab_seed_metadata.get(&tab_id).cloned().unwrap_or_default();
         let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
@@ -3140,52 +2491,30 @@ impl ControllerState {
     pub fn can_materialize_latent(&self, request: &crate::MaterializeLatentRequest) -> bool {
         // This exact equality check is the security boundary for controller pipe callers:
         // accepting an action target alone would let a caller substitute its own recipe or path.
-        self.latent_tabs()
-            .iter()
-            .filter_map(LatentTab::materialize_request)
-            .any(|candidate| candidate == *request)
+        self.latent_tabs().iter().filter_map(LatentTab::materialize_request).any(|candidate| candidate == *request)
     }
 
-    pub fn begin_latent_materialization(
-        &mut self,
-        request: &crate::MaterializeLatentRequest,
-    ) -> bool {
+    pub fn begin_latent_materialization(&mut self, request: &crate::MaterializeLatentRequest) -> bool {
         if self.materialized_tab_position(request).is_some()
-            || self
-                .pending_latent_materializations
-                .contains_key(&request.action_target)
+            || self.pending_latent_materializations.contains_key(&request.action_target)
             || !self.can_materialize_latent(request)
         {
             return false;
         }
-        self.pending_latent_materializations.insert(
-            request.action_target.clone(),
-            PendingLatentMaterialization {
-                request: request.clone(),
-                tab_id: None,
-                subject: None,
-            },
-        );
+        self.pending_latent_materializations
+            .insert(request.action_target.clone(), PendingLatentMaterialization { request: request.clone(), tab_id: None, subject: None });
         true
     }
 
-    pub fn bind_materializing_tab(
-        &mut self,
-        request: &crate::MaterializeLatentRequest,
-        tab_id: WorkspaceId,
-    ) -> bool {
-        let Some(pending) = self
-            .pending_latent_materializations
-            .get_mut(&request.action_target)
-        else {
+    pub fn bind_materializing_tab(&mut self, request: &crate::MaterializeLatentRequest, tab_id: WorkspaceId) -> bool {
+        let Some(pending) = self.pending_latent_materializations.get_mut(&request.action_target) else {
             return false;
         };
         if pending.request != *request || pending.tab_id.is_some() {
             return false;
         }
         pending.tab_id = Some(tab_id);
-        self.pending_materialized_tab_names
-            .insert(tab_id, request.name.clone());
+        self.pending_materialized_tab_names.insert(tab_id, request.name.clone());
         true
     }
 
@@ -3198,24 +2527,15 @@ impl ControllerState {
         if !self.bind_materializing_tab(request, tab_id) {
             return false;
         }
-        if let Some(pending) = self
-            .pending_latent_materializations
-            .get_mut(&request.action_target)
-        {
+        if let Some(pending) = self.pending_latent_materializations.get_mut(&request.action_target) {
             pending.subject = Some(subject);
             return true;
         }
         false
     }
 
-    pub fn abort_latent_materialization(
-        &mut self,
-        request: &crate::MaterializeLatentRequest,
-    ) -> bool {
-        let Some(pending) = self
-            .pending_latent_materializations
-            .get(&request.action_target)
-        else {
+    pub fn abort_latent_materialization(&mut self, request: &crate::MaterializeLatentRequest) -> bool {
+        let Some(pending) = self.pending_latent_materializations.get(&request.action_target) else {
             return false;
         };
         if pending.request != *request {
@@ -3224,27 +2544,19 @@ impl ControllerState {
         if let Some(tab_id) = pending.tab_id {
             self.pending_materialized_tab_names.remove(&tab_id);
         }
-        self.pending_latent_materializations
-            .remove(&request.action_target);
+        self.pending_latent_materializations.remove(&request.action_target);
         true
     }
 
-    pub fn materialized_tab_position(
-        &self,
-        request: &crate::MaterializeLatentRequest,
-    ) -> Option<usize> {
+    pub fn materialized_tab_position(&self, request: &crate::MaterializeLatentRequest) -> Option<usize> {
         self.materialized_tab_position_for_action_target(&request.action_target)
     }
 
     /// The action target an entity is matched by: its own
     /// `action.primary.target`, else one made from its identity.
     fn action_target_of(&self, entity: &EntityRef) -> String {
-        let values = self
-            .metadata
-            .resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
-        metadata_entry_text(&values, KEY_ACTION_TARGET)
-            .map(str::to_owned)
-            .unwrap_or_else(|| entity.action_target())
+        let values = self.metadata.resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
+        metadata_entry_text(&values, KEY_ACTION_TARGET).map(str::to_owned).unwrap_or_else(|| entity.action_target())
     }
 
     fn materialized_tab_position_for_action_target(&self, action_target: &str) -> Option<usize> {
@@ -3253,23 +2565,15 @@ impl ControllerState {
             .iter()
             .find_map(|tab| {
                 let target = EntityId::Tab(tab.tab_id);
-                let seed_values = tab_seed_metadata
-                    .get(&tab.tab_id)
-                    .cloned()
-                    .unwrap_or_default();
+                let seed_values = tab_seed_metadata.get(&tab.tab_id).cloned().unwrap_or_default();
                 let (values, _, _) = self.resolve_target_metadata(&target, seed_values);
-                let entity_target =
-                    entity_ref_from_entries(&values).map(|entity| self.action_target_of(&entity));
-                let resolved_action_target = metadata_entry_text(&values, KEY_ACTION_TARGET)
-                    .map(str::to_owned)
-                    .or(entity_target);
+                let entity_target = entity_ref_from_entries(&values).map(|entity| self.action_target_of(&entity));
+                let resolved_action_target = metadata_entry_text(&values, KEY_ACTION_TARGET).map(str::to_owned).or(entity_target);
                 // A tab's host entity is live there too (live_presentation_states),
                 // so activating it focuses the tab.
-                let host_target = host_entity_ref_from_entries(&values)
-                    .map(|entity| self.action_target_of(&entity));
-                (resolved_action_target.as_deref() == Some(action_target)
-                    || host_target.as_deref() == Some(action_target))
-                .then_some(tab.position)
+                let host_target = host_entity_ref_from_entries(&values).map(|entity| self.action_target_of(&entity));
+                (resolved_action_target.as_deref() == Some(action_target) || host_target.as_deref() == Some(action_target))
+                    .then_some(tab.position)
             })
             .or_else(|| {
                 let entities = self.catalog_entities();
@@ -3282,10 +2586,7 @@ impl ControllerState {
                         return None;
                     }
                     let id = bindings.get(&entity.entity)?;
-                    self.tabs
-                        .iter()
-                        .find(|tab| tab.tab_id == *id)
-                        .map(|tab| tab.position)
+                    self.tabs.iter().find(|tab| tab.tab_id == *id).map(|tab| tab.position)
                 })
             })
     }
@@ -3309,10 +2610,7 @@ impl ControllerState {
             if !values.keys().any(|key| key.starts_with("layout.")) {
                 continue;
             }
-            let facts = values
-                .into_iter()
-                .map(|(key, entry)| (key, entry.value))
-                .collect();
+            let facts = values.into_iter().map(|(key, entry)| (key, entry.value)).collect();
             let Ok(Some(layout)) = suggested_layout::parse(entity, &facts) else {
                 continue;
             };
@@ -3321,9 +2619,7 @@ impl ControllerState {
                     continue;
                 }
                 let desired = match slot.resolution {
-                    SlotResolution::Ready { target, recipe } => {
-                        DesiredContent::Ready(Resolved { target, recipe })
-                    }
+                    SlotResolution::Ready { target, recipe } => DesiredContent::Ready(Resolved { target, recipe }),
                     SlotResolution::Held => DesiredContent::Held,
                     SlotResolution::Unavailable => continue,
                 };
@@ -3334,10 +2630,7 @@ impl ControllerState {
     }
 
     /// The Suggested Layout `entity` publishes now, read from its live facts.
-    pub(crate) fn suggested_layout(
-        &self,
-        entity: &EntityRef,
-    ) -> Result<Option<SuggestedLayout>, LayoutError> {
+    pub(crate) fn suggested_layout(&self, entity: &EntityRef) -> Result<Option<SuggestedLayout>, LayoutError> {
         let facts = self
             .metadata
             .resolved_entries_for(&EntityId::Entity(entity.clone()), self.now())
@@ -3353,12 +2646,7 @@ impl ControllerState {
 
     /// The managed target a materialization of `recipe` would install, if the
     /// entity is ready and that recipe is its current resolution.
-    pub(crate) fn managed_primary_target(
-        &self,
-        entity: &EntityRef,
-        recipe: &str,
-        cwd: Option<&str>,
-    ) -> Option<String> {
+    pub(crate) fn managed_primary_target(&self, entity: &EntityRef, recipe: &str, cwd: Option<&str>) -> Option<String> {
         match self.desired_content(&EntityId::Entity(entity.clone()))? {
             DesiredContent::Ready(content) => {
                 let (target, command, content_cwd) = content.as_terminal()?;
@@ -3376,9 +2664,7 @@ impl ControllerState {
             "issue" => "flotilla.forge.issue_url_template",
             _ => return None,
         };
-        let values = self
-            .metadata
-            .resolved_entries_for(&EntityId::Entity(subject.clone()), self.now());
+        let values = self.metadata.resolved_entries_for(&EntityId::Entity(subject.clone()), self.now());
         let MetadataValue::EntityRefs(refs) = &values.get("flotilla.forge")?.value else {
             return None;
         };
@@ -3388,9 +2674,7 @@ impl ControllerState {
         if forge.kind != "forge" {
             return None;
         }
-        let forge_values = self
-            .metadata
-            .resolved_entries_for(&EntityId::Entity(forge.clone()), self.now());
+        let forge_values = self.metadata.resolved_entries_for(&EntityId::Entity(forge.clone()), self.now());
         let template = metadata_entry_text(&forge_values, template_key)?;
         let web_url = metadata_entry_text(&forge_values, "flotilla.forge.web_url")?;
         let scope = metadata_entry_text(&values, "flotilla.subject.scope")?;
@@ -3416,9 +2700,8 @@ impl ControllerState {
     pub fn activation_for_entity(&self, subject: &EntityRef) -> Option<EntityActivation> {
         let entities = self.catalog_entities();
         let entity = entities.iter().find(|entity| &entity.entity == subject)?;
-        let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
-            .map(str::to_owned)
-            .unwrap_or_else(|| entity.entity.action_target());
+        let action_target =
+            metadata_entry_text(&entity.values, KEY_ACTION_TARGET).map(str::to_owned).unwrap_or_else(|| entity.entity.action_target());
         if let Some(position) = self.materialized_tab_position_for_action_target(&action_target) {
             return Some(EntityActivation::FocusTab { position });
         }
@@ -3430,22 +2713,13 @@ impl ControllerState {
     }
 
     fn claim_materializing_tabs(&mut self) -> bool {
-        let live_tab_ids = self
-            .tabs
-            .iter()
-            .map(|tab| tab.tab_id)
-            .collect::<HashSet<_>>();
+        let live_tab_ids = self.tabs.iter().map(|tab| tab.tab_id).collect::<HashSet<_>>();
         let claims = self
             .pending_latent_materializations
             .iter()
             .filter_map(|(action_target, pending)| {
                 let tab_id = pending.tab_id?;
-                live_tab_ids.contains(&tab_id).then_some((
-                    action_target.clone(),
-                    tab_id,
-                    pending.request.clone(),
-                    pending.subject.clone(),
-                ))
+                live_tab_ids.contains(&tab_id).then_some((action_target.clone(), tab_id, pending.request.clone(), pending.subject.clone()))
             })
             .collect::<Vec<_>>();
         for (action_target, tab_id, request, subject) in &claims {
@@ -3529,43 +2803,21 @@ impl ControllerState {
             .panes
             .values()
             .filter(|pane| pane.tab_id == tab_id)
-            .flat_map(|pane| {
-                self.metadata
-                    .entries_for(&EntityId::Pane(pane.pane_id), key, self.now())
-            })
+            .flat_map(|pane| self.metadata.entries_for(&EntityId::Pane(pane.pane_id), key, self.now()))
             .collect();
         select_primary_entry(&entries).map(|candidate| candidate.entry)
     }
 
-    fn resolved_metadata_for_tabs(
-        &self,
-        tabs: &[TabCard],
-        catalog: &CatalogEvaluation,
-    ) -> Vec<ResolvedMetadata> {
+    fn resolved_metadata_for_tabs(&self, tabs: &[TabCard], catalog: &CatalogEvaluation) -> Vec<ResolvedMetadata> {
         let seeds = self.tab_seed_metadata_entries();
         let targets = std::iter::once(EntityId::Root)
             .chain(tabs.iter().map(|tab| EntityId::Tab(tab.tab_id)))
-            .chain(
-                catalog
-                    .entities
-                    .iter()
-                    .map(|entity| EntityId::Entity(entity.entity.clone())),
-            );
+            .chain(catalog.entities.iter().map(|entity| EntityId::Entity(entity.entity.clone())));
         targets
             .map(|target| {
-                let seed = if let EntityId::Tab(id) = target {
-                    seeds.get(&id).cloned().unwrap_or_default()
-                } else {
-                    BTreeMap::new()
-                };
-                let (values, source_entries, reachable_identities) =
-                    self.resolve_target_metadata(&target, seed);
-                ResolvedMetadata {
-                    target,
-                    values,
-                    source_entries,
-                    reachable_identities,
-                }
+                let seed = if let EntityId::Tab(id) = target { seeds.get(&id).cloned().unwrap_or_default() } else { BTreeMap::new() };
+                let (values, source_entries, reachable_identities) = self.resolve_target_metadata(&target, seed);
+                ResolvedMetadata { target, values, source_entries, reachable_identities }
             })
             .collect()
     }
@@ -3574,11 +2826,7 @@ impl ControllerState {
         &self,
         target: &EntityId,
         seed_values: BTreeMap<String, MetadataEntry>,
-    ) -> (
-        BTreeMap<String, MetadataEntry>,
-        BTreeMap<String, Vec<MetadataSourceEntry>>,
-        Vec<ReachableMetadataIdentity>,
-    ) {
+    ) -> (BTreeMap<String, MetadataEntry>, BTreeMap<String, Vec<MetadataSourceEntry>>, Vec<ReachableMetadataIdentity>) {
         let _phase = crate::profile::span("metadata-resolution");
         let mut values = BTreeMap::new();
         let mut source_entries = BTreeMap::<String, Vec<MetadataSourceEntry>>::new();
@@ -3591,32 +2839,21 @@ impl ControllerState {
                 continue;
             }
             if let EntityId::Identity(identity) = &current {
-                reachable_identities.push(ReachableMetadataIdentity {
-                    identity: identity.clone(),
-                    distance,
-                });
+                reachable_identities.push(ReachableMetadataIdentity { identity: identity.clone(), distance });
             }
             let current_values = self.metadata.resolved_entries_for(&current, self.now());
             let current_values = if &current == target {
-                seed_values
-                    .clone()
-                    .into_iter()
-                    .chain(current_values)
-                    .collect::<BTreeMap<_, _>>()
+                seed_values.clone().into_iter().chain(current_values).collect::<BTreeMap<_, _>>()
             } else {
                 current_values
             };
             // An entity restating its own identity names itself.
             let current_values = match &current {
                 EntityId::Entity(entity)
-                    if !current_values.contains_key(KEY_ENTITY_PROVIDER)
-                        && current_values.contains_key(KEY_ENTITY_ID) =>
+                    if !current_values.contains_key(KEY_ENTITY_PROVIDER) && current_values.contains_key(KEY_ENTITY_ID) =>
                 {
                     let mut values = current_values;
-                    let entry = MetadataEntry {
-                        value: MetadataValue::Text(entity.provider.clone()),
-                        ..values[KEY_ENTITY_ID].clone()
-                    };
+                    let entry = MetadataEntry { value: MetadataValue::Text(entity.provider.clone()), ..values[KEY_ENTITY_ID].clone() };
                     values.insert(KEY_ENTITY_PROVIDER.to_owned(), entry);
                     values
                 }
@@ -3629,10 +2866,7 @@ impl ControllerState {
                 }
             }
             for (key, entry) in current_values {
-                let identity = EntityId::Identity(MetadataIdentity {
-                    key: key.clone(),
-                    value: entry.value.clone(),
-                });
+                let identity = EntityId::Identity(MetadataIdentity { key: key.clone(), value: entry.value.clone() });
                 values.entry(key).or_insert(entry);
                 if !visited.contains(&identity) {
                     queue.push_back((identity, distance + 1));
@@ -3650,17 +2884,11 @@ impl ControllerState {
         self.tab_seed_metadata_entries_for(&HashSet::new())
     }
 
-    fn tab_seed_metadata_entries_for(
-        &self,
-        directory_tab_ids: &HashSet<WorkspaceId>,
-    ) -> TabSeedMetadata {
+    fn tab_seed_metadata_entries_for(&self, directory_tab_ids: &HashSet<WorkspaceId>) -> TabSeedMetadata {
         let cwd_entries = self
             .tabs
             .iter()
-            .filter_map(|tab| {
-                self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD)
-                    .map(|entry| (tab.tab_id, entry))
-            })
+            .filter_map(|tab| self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD).map(|entry| (tab.tab_id, entry)))
             .collect::<HashMap<_, _>>();
         let all_group_cwds = cwd_entries
             .iter()
@@ -3684,10 +2912,7 @@ impl ControllerState {
                 if let MetadataValue::Text(cwd) = &cwd_entry.value {
                     entries.insert(
                         KEY_PANE_CWD_LABEL.to_owned(),
-                        MetadataEntry {
-                            value: MetadataValue::Text(cwd_group_label(cwd, &all_group_cwds)),
-                            ..cwd_entry
-                        },
+                        MetadataEntry { value: MetadataValue::Text(cwd_group_label(cwd, &all_group_cwds)), ..cwd_entry },
                     );
                 }
                 (tab_id, entries)
@@ -3698,38 +2923,21 @@ impl ControllerState {
     fn refresh_pane_cwd_metadata(&mut self, pane_id: PaneTarget) -> bool {
         let entity_id = EntityId::Pane(pane_id);
         let Some(pane) = self.panes.get(&pane_id) else {
-            let changed = self
-                .metadata
-                .source_entry(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ, self.now())
-                .is_some();
+            let changed = self.metadata.source_entry(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ, self.now()).is_some();
             self.metadata.unset(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ);
             return changed;
         };
         let should_emit = matches!(pane_id, PaneTarget::Terminal(_)) && pane.is_selectable;
         let Some(cwd) = pane.cwd.clone().filter(|_| should_emit) else {
-            let changed = self
-                .metadata
-                .source_entry(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ, self.now())
-                .is_some();
+            let changed = self.metadata.source_entry(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ, self.now()).is_some();
             self.metadata.unset(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ);
             return changed;
         };
         let value = MetadataValue::Text(cwd);
-        let precedence = if pane.is_focused {
-            FOCUSED_CWD_PRECEDENCE
-        } else {
-            NORMAL_CWD_PRECEDENCE
-        };
-        if self
-            .metadata
-            .source_entry(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ, self.now())
-            .is_some_and(|entry| {
-                entry.value == value
-                    && entry.ttl_ms.is_none()
-                    && entry.precedence == precedence
-                    && entry.ordinal == pane.ordinal
-            })
-        {
+        let precedence = if pane.is_focused { FOCUSED_CWD_PRECEDENCE } else { NORMAL_CWD_PRECEDENCE };
+        if self.metadata.source_entry(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ, self.now()).is_some_and(|entry| {
+            entry.value == value && entry.ttl_ms.is_none() && entry.precedence == precedence && entry.ordinal == pane.ordinal
+        }) {
             return false;
         }
         self.receive_counter = self.receive_counter.saturating_add(1);
@@ -3737,13 +2945,7 @@ impl ControllerState {
             entity_id,
             KEY_PANE_CWD,
             SOURCE_ZELLIJ,
-            MetadataEntry {
-                value,
-                updated_at: self.now(),
-                ttl_ms: None,
-                precedence,
-                ordinal: pane.ordinal,
-            },
+            MetadataEntry { value, updated_at: self.now(), ttl_ms: None, precedence, ordinal: pane.ordinal },
         );
         true
     }
@@ -3753,11 +2955,7 @@ impl ControllerState {
             .iter()
             .filter(|(pane_id, _)| self.pane_to_tab.get(pane_id) == Some(&tab_id))
             .max_by_key(|(_, stored)| {
-                (
-                    stored.status.priority,
-                    stored.status.timestamp_ms.unwrap_or(stored.received_at),
-                    stored.received_at,
-                )
+                (stored.status.priority, stored.status.timestamp_ms.unwrap_or(stored.received_at), stored.received_at)
             })
             .map(|(pane_id, stored)| TabStatusSummary {
                 priority: stored.status.priority,
@@ -3781,10 +2979,7 @@ impl ControllerState {
     }
 }
 
-fn node_metadata(
-    node: &NodeKey,
-    resolved_metadata: &[ResolvedMetadata],
-) -> BTreeMap<String, MetadataValue> {
+fn node_metadata(node: &NodeKey, resolved_metadata: &[ResolvedMetadata]) -> BTreeMap<String, MetadataValue> {
     let target = match node {
         NodeKey::Root => crate::ResolvedMetadataTarget::Root,
         NodeKey::Tab(tab_id) => crate::ResolvedMetadataTarget::Tab(*tab_id),
@@ -3798,13 +2993,7 @@ fn node_metadata(
     resolved_metadata
         .iter()
         .find(|metadata| metadata.target == target)
-        .map(|metadata| {
-            metadata
-                .values
-                .iter()
-                .map(|(key, entry)| (key.clone(), entry.value.clone()))
-                .collect()
-        })
+        .map(|metadata| metadata.values.iter().map(|(key, entry)| (key.clone(), entry.value.clone())).collect())
         .unwrap_or_default()
 }
 
@@ -3822,34 +3011,15 @@ fn apply_variable_setter(
             history
         })
         .unwrap_or_default();
-    values.insert(
-        name.to_owned(),
-        EffectiveVariableValue {
-            value: value.to_owned(),
-            provenance,
-            overridden,
-        },
-    );
+    values.insert(name.to_owned(), EffectiveVariableValue { value: value.to_owned(), provenance, overridden });
 }
 
-fn entity_facts(
-    entity: &EntityRef,
-    values: &BTreeMap<String, MetadataEntry>,
-) -> BTreeMap<String, MetadataValue> {
-    let mut facts = values
-        .iter()
-        .map(|(key, entry)| (key.clone(), entry.value.clone()))
-        .collect::<BTreeMap<_, _>>();
+fn entity_facts(entity: &EntityRef, values: &BTreeMap<String, MetadataEntry>) -> BTreeMap<String, MetadataValue> {
+    let mut facts = values.iter().map(|(key, entry)| (key.clone(), entry.value.clone())).collect::<BTreeMap<_, _>>();
     // The target is the canonical entity identity. Producers must not have to
     // duplicate it in every patch's set map for placement queries and templates.
-    facts.insert(
-        KEY_ENTITY_KIND.to_owned(),
-        MetadataValue::Text(entity.kind.clone()),
-    );
-    facts.insert(
-        KEY_ENTITY_ID.to_owned(),
-        MetadataValue::Text(entity.id.clone()),
-    );
+    facts.insert(KEY_ENTITY_KIND.to_owned(), MetadataValue::Text(entity.kind.clone()));
+    facts.insert(KEY_ENTITY_ID.to_owned(), MetadataValue::Text(entity.id.clone()));
     facts
 }
 
@@ -3873,27 +3043,16 @@ fn host_entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Op
 /// `.host.provider`) with `provider`, wherever it names an entity by kind and
 /// ID on another target, so the entity is the patch's provider's.
 fn stamp_identity_providers(patch: &mut MetadataPatch, provider: &str) {
-    for (kind, id, key) in [
-        (KEY_ENTITY_KIND, KEY_ENTITY_ID, KEY_ENTITY_PROVIDER),
-        (
-            KEY_HOST_ENTITY_KIND,
-            KEY_HOST_ENTITY_ID,
-            KEY_HOST_ENTITY_PROVIDER,
-        ),
-    ] {
+    for (kind, id, key) in
+        [(KEY_ENTITY_KIND, KEY_ENTITY_ID, KEY_ENTITY_PROVIDER), (KEY_HOST_ENTITY_KIND, KEY_HOST_ENTITY_ID, KEY_HOST_ENTITY_PROVIDER)]
+    {
         patch.set.remove(key);
         patch.unset.retain(|unset| unset != key);
         if matches!(patch.target, MetadataTarget::Entity(_)) {
             continue;
         }
         if let Some(update) = patch.set.get(id).or_else(|| patch.set.get(kind)).cloned() {
-            patch.set.insert(
-                key.to_owned(),
-                MetadataValueUpdate {
-                    value: MetadataValue::Text(provider.to_owned()),
-                    ..update
-                },
-            );
+            patch.set.insert(key.to_owned(), MetadataValueUpdate { value: MetadataValue::Text(provider.to_owned()), ..update });
         } else if patch.unset.iter().any(|unset| unset == id || unset == kind) {
             patch.unset.push(key.to_owned());
         }
@@ -3905,33 +3064,12 @@ fn stamp_identity_providers(patch: &mut MetadataPatch, provider: &str) {
 fn saved_catalog_entity(entity: EntityRef, record: &SubjectRecord) -> CatalogEntity {
     const SOURCE_RECORD: &str = "andamento-record";
     let updated_at = record.last_seen_ms.unwrap_or_default();
-    let entry = |value| MetadataEntry {
-        value,
-        updated_at,
-        ttl_ms: None,
-        precedence: 0,
-        ordinal: 0,
-    };
-    let mut values: BTreeMap<_, _> = record
-        .facts
-        .iter()
-        .map(|(key, value)| (key.clone(), entry(value.clone())))
-        .collect();
+    let entry = |value| MetadataEntry { value, updated_at, ttl_ms: None, precedence: 0, ordinal: 0 };
+    let mut values: BTreeMap<_, _> = record.facts.iter().map(|(key, value)| (key.clone(), entry(value.clone()))).collect();
     if let Some(label) = &record.label {
-        values.insert(
-            KEY_DISPLAY_LABEL.to_owned(),
-            entry(MetadataValue::Text(label.clone())),
-        );
+        values.insert(KEY_DISPLAY_LABEL.to_owned(), entry(MetadataValue::Text(label.clone())));
     }
-    CatalogEntity {
-        entity,
-        sources: values
-            .keys()
-            .map(|key| (key.clone(), SOURCE_RECORD.to_owned()))
-            .collect(),
-        values,
-        ordinal: 0,
-    }
+    CatalogEntity { entity, sources: values.keys().map(|key| (key.clone(), SOURCE_RECORD.to_owned())).collect(), values, ordinal: 0 }
 }
 
 fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
@@ -3944,24 +3082,20 @@ fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<
 
 /// The tab facts that bind a workspace to `subject`, as the core owns them.
 fn subject_binding(subject: &EntityRef) -> BTreeMap<String, MetadataValueUpdate> {
-    [
-        (KEY_ENTITY_PROVIDER, &subject.provider),
-        (KEY_ENTITY_KIND, &subject.kind),
-        (KEY_ENTITY_ID, &subject.id),
-    ]
-    .into_iter()
-    .map(|(key, value)| {
-        (
-            key.to_owned(),
-            MetadataValueUpdate {
-                value: MetadataValue::Text(value.clone()),
-                ttl_ms: None,
-                precedence: Some(LATENT_MATERIALIZER_PRECEDENCE),
-                ordinal: None,
-            },
-        )
-    })
-    .collect()
+    [(KEY_ENTITY_PROVIDER, &subject.provider), (KEY_ENTITY_KIND, &subject.kind), (KEY_ENTITY_ID, &subject.id)]
+        .into_iter()
+        .map(|(key, value)| {
+            (
+                key.to_owned(),
+                MetadataValueUpdate {
+                    value: MetadataValue::Text(value.clone()),
+                    ttl_ms: None,
+                    precedence: Some(LATENT_MATERIALIZER_PRECEDENCE),
+                    ordinal: None,
+                },
+            )
+        })
+        .collect()
 }
 
 /// The `primary` slot's resolution, from the facts managed primary content
@@ -3985,10 +3119,7 @@ fn desired_primary(values: &BTreeMap<String, MetadataEntry>) -> Option<DesiredCo
     }
 }
 
-fn metadata_entry_text<'a>(
-    values: &'a BTreeMap<String, MetadataEntry>,
-    key: &str,
-) -> Option<&'a str> {
+fn metadata_entry_text<'a>(values: &'a BTreeMap<String, MetadataEntry>, key: &str) -> Option<&'a str> {
     match values.get(key).map(|entry| &entry.value) {
         Some(MetadataValue::Text(value)) => Some(value),
         _ => None,
@@ -3996,20 +3127,9 @@ fn metadata_entry_text<'a>(
 }
 
 fn cwd_group_label(cwd: &str, all_group_cwds: &[String]) -> String {
-    let basename = Path::new(cwd)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .unwrap_or(cwd);
-    let duplicate_basename_count = all_group_cwds
-        .iter()
-        .filter(|candidate| {
-            Path::new(candidate)
-                .file_name()
-                .and_then(|name| name.to_str())
-                == Some(basename)
-        })
-        .count();
+    let basename = Path::new(cwd).file_name().and_then(|name| name.to_str()).filter(|name| !name.is_empty()).unwrap_or(cwd);
+    let duplicate_basename_count =
+        all_group_cwds.iter().filter(|candidate| Path::new(candidate).file_name().and_then(|name| name.to_str()) == Some(basename)).count();
     if duplicate_basename_count <= 1 {
         return basename.to_owned();
     }
@@ -4021,28 +3141,19 @@ fn cwd_group_label(cwd: &str, all_group_cwds: &[String]) -> String {
         .unwrap_or_else(|| cwd.to_owned())
 }
 
-fn observed_metadata_identities(
-    resolved_metadata: &[ResolvedMetadata],
-) -> Vec<ObservedMetadataIdentity> {
+fn observed_metadata_identities(resolved_metadata: &[ResolvedMetadata]) -> Vec<ObservedMetadataIdentity> {
     let mut by_identity: BTreeMap<MetadataIdentity, (BTreeSet<EntityId>, usize)> = BTreeMap::new();
     for metadata in resolved_metadata {
         for reachable in &metadata.reachable_identities {
-            let (targets, nearest_distance) = by_identity
-                .entry(reachable.identity.clone())
-                .or_insert_with(|| (BTreeSet::new(), reachable.distance));
+            let (targets, nearest_distance) =
+                by_identity.entry(reachable.identity.clone()).or_insert_with(|| (BTreeSet::new(), reachable.distance));
             targets.insert(metadata.target.clone());
             *nearest_distance = (*nearest_distance).min(reachable.distance);
         }
     }
     by_identity
         .into_iter()
-        .map(
-            |(identity, (targets, nearest_distance))| ObservedMetadataIdentity {
-                identity,
-                target_count: targets.len(),
-                nearest_distance,
-            },
-        )
+        .map(|(identity, (targets, nearest_distance))| ObservedMetadataIdentity { identity, target_count: targets.len(), nearest_distance })
         .collect()
 }
 
@@ -4075,34 +3186,16 @@ mod tests {
         }
     }
     use crate::{
-        tab_workspace_id, PluginPaneKind, PluginPlacement, PluginRegistrationHello, RailStructure,
-        ResolvedMetadataTarget, StatusIcon,
+        tab_workspace_id, PluginPaneKind, PluginPlacement, PluginRegistrationHello, RailStructure, ResolvedMetadataTarget, StatusIcon,
     };
 
     type EntityId = crate::MetadataTarget;
-    fn status(
-        pane_id: PaneTarget,
-        priority: Priority,
-        title: &str,
-        timestamp_ms: u64,
-    ) -> SetPaneStatus {
-        SetPaneStatus {
-            pane_id,
-            priority,
-            title: title.to_owned(),
-            detail: None,
-            icon: None,
-            timestamp_ms: Some(timestamp_ms),
-        }
+    fn status(pane_id: PaneTarget, priority: Priority, title: &str, timestamp_ms: u64) -> SetPaneStatus {
+        SetPaneStatus { pane_id, priority, title: title.to_owned(), detail: None, icon: None, timestamp_ms: Some(timestamp_ms) }
     }
 
     fn tab_info(tab_id: usize, position: usize, name: &str, active: bool) -> ControllerTab {
-        ControllerTab {
-            tab_id: tab_workspace_id(tab_id as u64),
-            position,
-            name: name.into(),
-            active,
-        }
+        ControllerTab { tab_id: tab_workspace_id(tab_id as u64), position, name: name.into(), active }
     }
 
     fn entity_ref(kind: &str, id: &str) -> crate::EntityRef {
@@ -4116,29 +3209,16 @@ mod tests {
     fn subject_membership_is_index_only() {
         let mut state = ControllerState::default();
         let convoy = entity_ref("convoy", "same:id");
-        apply_entity(
-            &mut state,
-            "convoy",
-            &convoy.id,
-            0,
-            &[("display.label", "Convoy")],
-        );
-        for (id, refs) in [
-            ("match", vec![convoy.clone(), convoy.clone()]),
-            ("wrong-kind", vec![entity_ref("vessel", &convoy.id)]),
-            ("empty", vec![]),
-        ] {
+        apply_entity(&mut state, "convoy", &convoy.id, 0, &[("display.label", "Convoy")]);
+        for (id, refs) in
+            [("match", vec![convoy.clone(), convoy.clone()]), ("wrong-kind", vec![entity_ref("vessel", &convoy.id)]), ("empty", vec![])]
+        {
             state.apply_metadata_patch(crate::MetadataPatch {
                 target: crate::MetadataTarget::Entity(entity_ref("change_request", id)),
                 source_id: "test".into(),
                 set: BTreeMap::from([(
                     "flotilla.subject_of".into(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::EntityRefs(refs),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
+                    crate::MetadataValueUpdate { value: MetadataValue::EntityRefs(refs), ttl_ms: None, precedence: None, ordinal: None },
                 )]),
                 unset: vec![],
             });
@@ -4159,30 +3239,16 @@ mod tests {
         for entity in &mut entities {
             entity.values.clear();
         }
-        let bound = entities
-            .iter()
-            .find(|entity| entity.entity == convoy)
-            .unwrap();
+        let bound = entities.iter().find(|entity| entity.entity == convoy).unwrap();
         let bindings = BTreeMap::from([("convoy".into(), bound)]);
         let matched = state.placement_matches(query, &entities, &index, &bindings, &[]);
-        assert_eq!(
-            matched
-                .iter()
-                .map(|e| e.entity.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["match"]
-        );
+        assert_eq!(matched.iter().map(|e| e.entity.id.as_str()).collect::<Vec<_>>(), vec!["match"]);
     }
 
     fn forward_reference_lists() -> Vec<Vec<EntityRef>> {
         // Exhaustive generator: lengths 0..=3 over valid, missing, and wrong-kind
         // refs spans empty input, ordering permutations, and repeated identities.
-        let choices = [
-            entity_ref("convoy", "a"),
-            entity_ref("convoy", "z"),
-            entity_ref("vessel", "a"),
-            entity_ref("convoy", "missing"),
-        ];
+        let choices = [entity_ref("convoy", "a"), entity_ref("convoy", "z"), entity_ref("vessel", "a"), entity_ref("convoy", "missing")];
         let mut sequences = vec![vec![]];
         let mut level = vec![vec![]];
         for _ in 0..3 {
@@ -4206,20 +3272,11 @@ mod tests {
     #[test]
     fn forward_edges_preserve_order_and_filter_targets() {
         let mut state = ControllerState::default();
-        for (kind, id) in [
-            ("role", "r"),
-            ("convoy", "a"),
-            ("convoy", "z"),
-            ("vessel", "a"),
-        ] {
+        for (kind, id) in [("role", "r"), ("convoy", "a"), ("convoy", "z"), ("vessel", "a")] {
             apply_entity(&mut state, kind, id, 0, &[("display.label", id)]);
         }
         let configs = [false, true].map(|explicit_order| {
-            let order = if explicit_order {
-                r#"order "display.label";"#
-            } else {
-                ""
-            };
+            let order = if explicit_order { r#"order "display.label";"# } else { "" };
             crate::template_config::parse_template_config_kdl(&format!(
                 r#"
                 placement "tree" {{
@@ -4251,10 +3308,7 @@ mod tests {
             });
             let entities = state.catalog_entities();
             let index = PlacementIndex::build(&entities);
-            let role = entities
-                .iter()
-                .find(|e| e.entity == entity_ref("role", "r"))
-                .unwrap();
+            let role = entities.iter().find(|e| e.entity == entity_ref("role", "r")).unwrap();
             let bindings = BTreeMap::from([("role".into(), role)]);
             for (explicit_order, config) in [false, true].into_iter().zip(&configs) {
                 assert_eq!(config.placements[0].loops.len(), 2);
@@ -4279,33 +3333,23 @@ mod tests {
                     expected.sort();
                 }
                 assert_eq!(ids(&[]), expected, "{refs:?}");
-                assert_eq!(
-                    ids(&[entity_ref("convoy", "z")]),
-                    expected
-                        .into_iter()
-                        .filter(|id| *id != "z")
-                        .collect::<Vec<_>>()
-                );
+                assert_eq!(ids(&[entity_ref("convoy", "z")]), expected.into_iter().filter(|id| *id != "z").collect::<Vec<_>>());
             }
         }
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
-        let role = entities
-            .iter()
-            .find(|e| e.entity == entity_ref("role", "r"))
-            .unwrap();
+        let role = entities.iter().find(|e| e.entity == entity_ref("role", "r")).unwrap();
         let bindings = BTreeMap::from([("role".into(), role)]);
         let missing = BTreeMap::new();
-        let config = crate::template_config::parse_template_config_kdl(r#"
+        let config = crate::template_config::parse_template_config_kdl(
+            r#"
             placement "tree" { for "role" kind="role" { for "attempt" kind="convoy" in="absent" of="role"; }; }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let query = &config.placements[0].loops[0].loops[0];
-        assert!(state
-            .placement_matches(query, &entities, &index, &bindings, &[])
-            .is_empty());
-        assert!(state
-            .placement_matches(query, &entities, &index, &missing, &[])
-            .is_empty());
+        assert!(state.placement_matches(query, &entities, &index, &bindings, &[]).is_empty());
+        assert!(state.placement_matches(query, &entities, &index, &missing, &[]).is_empty());
     }
 
     // Forward detail fields bind their source by template name, remain fresh,
@@ -4313,10 +3357,9 @@ mod tests {
     #[test]
     fn forward_detail_template_uses_current_attempt() {
         let mut state = ControllerState::default();
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::from_config(
-                crate::template_config::parse_template_config_kdl(
-                    r#"
+        state.set_template_catalog(Some(crate::template_config::TemplateConfigCatalog::from_config(
+            crate::template_config::parse_template_config_kdl(
+                r#"
                 region "tree" root-template="heading" placement="tree"
                 template "heading" { field "label" source="literal" value="Roles"; }
                 placement "tree" { for "role" kind="role" { apply-template "role/native"; }; }
@@ -4328,18 +3371,11 @@ mod tests {
                     }
                 }
             "#,
-                )
-                .unwrap(),
-            ),
-        ));
+            )
+            .unwrap(),
+        )));
         apply_entity(&mut state, "role", "r", 0, &[("display.label", "Governor")]);
-        apply_entity(
-            &mut state,
-            "convoy",
-            "a",
-            0,
-            &[("display.label", "Attempt"), ("phase", "active")],
-        );
+        apply_entity(&mut state, "convoy", "a", 0, &[("display.label", "Attempt"), ("phase", "active")]);
         for refs in [vec![entity_ref("convoy", "a")], vec![]] {
             let present = !refs.is_empty();
             state.apply_metadata_patch(crate::MetadataPatch {
@@ -4347,12 +3383,7 @@ mod tests {
                 source_id: "test".into(),
                 set: BTreeMap::from([(
                     "current".into(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::EntityRefs(refs),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
+                    crate::MetadataValueUpdate { value: MetadataValue::EntityRefs(refs), ttl_ms: None, precedence: None, ordinal: None },
                 )]),
                 unset: vec![],
             });
@@ -4360,16 +3391,8 @@ mod tests {
             assert_eq!(model.sections[0].nodes.len(), 1);
             let detail = &model.sections[0].nodes[0].detail;
             assert_eq!(
-                detail
-                    .fields
-                    .iter()
-                    .map(|field| field.value.as_str())
-                    .collect::<Vec<_>>(),
-                if present {
-                    vec!["Governor", "Current: Attempt", "Phase: active"]
-                } else {
-                    vec!["Governor"]
-                }
+                detail.fields.iter().map(|field| field.value.as_str()).collect::<Vec<_>>(),
+                if present { vec!["Governor", "Current: Attempt", "Phase: active"] } else { vec!["Governor"] }
             );
         }
     }
@@ -4380,7 +3403,8 @@ mod tests {
     fn forward_self_edge_and_sibling_selectors_render_safely() {
         let mut state = ControllerState::default();
         state.set_template_catalog(Some(crate::template_config::TemplateConfigCatalog::from_config(
-            crate::template_config::parse_template_config_kdl(r#"
+            crate::template_config::parse_template_config_kdl(
+                r#"
                 region "tree" root-template="heading" placement="tree"
                 template "heading" { field "label" source="literal" value="Items"; }
                 placement "tree" {
@@ -4390,7 +3414,9 @@ mod tests {
                     }
                     for "vessel" kind="vessel"
                 }
-            "#).unwrap()
+            "#,
+            )
+            .unwrap(),
         )));
         for (kind, id) in [("role", "r"), ("role", "s"), ("vessel", "v")] {
             apply_entity(&mut state, kind, id, 0, &[("display.label", id)]);
@@ -4401,10 +3427,7 @@ mod tests {
             set: BTreeMap::from([(
                 "refs".into(),
                 crate::MetadataValueUpdate {
-                    value: MetadataValue::EntityRefs(vec![
-                        entity_ref("role", "r"),
-                        entity_ref("role", "s"),
-                    ]),
+                    value: MetadataValue::EntityRefs(vec![entity_ref("role", "r"), entity_ref("role", "s")]),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: None,
@@ -4413,22 +3436,8 @@ mod tests {
             unset: vec![],
         });
         let model = state.view_model().presentation.unwrap();
-        assert_eq!(
-            model.sections[0]
-                .nodes
-                .iter()
-                .map(|node| node.entity.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["r", "v"]
-        );
-        assert_eq!(
-            model.sections[0].nodes[0]
-                .children
-                .iter()
-                .map(|node| node.entity.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["s"]
-        );
+        assert_eq!(model.sections[0].nodes.iter().map(|node| node.entity.id.as_str()).collect::<Vec<_>>(), vec!["r", "v"]);
+        assert_eq!(model.sections[0].nodes[0].children.iter().map(|node| node.entity.id.as_str()).collect::<Vec<_>>(), vec!["s"]);
     }
 
     // Explicit generated space spans digit widths, leading zeroes, Unicode,
@@ -4444,11 +3453,7 @@ mod tests {
                         let right = format!("{prefix}{b}/run2");
                         assert_eq!(natural_text_order(&left, &right), a.cmp(&b));
                         assert_eq!(
-                            compare_order_values(
-                                &MetadataValue::Text(left.clone()),
-                                &MetadataValue::Text(right.clone()),
-                                true
-                            ),
+                            compare_order_values(&MetadataValue::Text(left.clone()), &MetadataValue::Text(right.clone()), true),
                             a.cmp(&b)
                         );
                         assert_eq!(natural_text_order(&right, &left), a.cmp(&b).reverse());
@@ -4458,26 +3463,13 @@ mod tests {
         }
         assert_eq!(natural_text_order("", ""), Ordering::Equal);
         assert_eq!(natural_text_order("a2b9", "a2b10"), Ordering::Less);
-        assert_eq!(
-            natural_text_order("999999999999999999999999", "1000000000000000000000000"),
-            Ordering::Less
-        );
-        assert_eq!(
-            compare_order_values(
-                &MetadataValue::Text("281".into()),
-                &MetadataValue::Text("1000".into()),
-                false
-            ),
-            Ordering::Greater
-        );
+        assert_eq!(natural_text_order("999999999999999999999999", "1000000000000000000000000"), Ordering::Less);
+        assert_eq!(compare_order_values(&MetadataValue::Text("281".into()), &MetadataValue::Text("1000".into()), false), Ordering::Greater);
     }
 
     #[test]
     fn cross_layer_variable_setter_warnings_reach_template_diagnostics() {
-        let user = crate::template_config::parse_template_config_kdl(
-            r#"set "child-layout" "compact-strip""#,
-        )
-        .expect("user setter");
+        let user = crate::template_config::parse_template_config_kdl(r#"set "child-layout" "compact-strip""#).expect("user setter");
         let bundled = crate::template_config::parse_template_config_kdl(
             r#"
             variable "child-layout" default="cards" {
@@ -4488,27 +3480,21 @@ mod tests {
         )
         .expect("bundled declaration");
         let mut state = ControllerState::default();
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::from_layers(vec![
-                crate::template_config::TemplateConfigLayer::user("user.kdl", user),
-                crate::template_config::TemplateConfigLayer::bundled("bundled.kdl", bundled),
-            ]),
-        ));
+        state.set_template_catalog(Some(crate::template_config::TemplateConfigCatalog::from_layers(vec![
+            crate::template_config::TemplateConfigLayer::user("user.kdl", user),
+            crate::template_config::TemplateConfigLayer::bundled("bundled.kdl", bundled),
+        ])));
 
         let model = state.view_model();
 
-        assert!(model.template_config.warnings.iter().any(|warning| {
-            warning.contains("child-layout") && warning.contains("disallowed value compact-strip")
-        }));
+        assert!(model
+            .template_config
+            .warnings
+            .iter()
+            .any(|warning| { warning.contains("child-layout") && warning.contains("disallowed value compact-strip") }));
     }
 
-    fn apply_entity(
-        state: &mut ControllerState,
-        kind: &str,
-        id: &str,
-        ordinal: i64,
-        facts: &[(&str, &str)],
-    ) {
+    fn apply_entity(state: &mut ControllerState, kind: &str, id: &str, ordinal: i64, facts: &[(&str, &str)]) {
         let entity = entity_ref(kind, id);
         let mut set = BTreeMap::from([
             (
@@ -4549,13 +3535,7 @@ mod tests {
         });
     }
 
-    fn apply_target_only_entity(
-        state: &mut ControllerState,
-        kind: &str,
-        id: &str,
-        ordinal: i64,
-        facts: &[(&str, &str)],
-    ) {
+    fn apply_target_only_entity(state: &mut ControllerState, kind: &str, id: &str, ordinal: i64, facts: &[(&str, &str)]) {
         state.apply_metadata_patch(crate::MetadataPatch {
             target: crate::MetadataTarget::Entity(entity_ref(kind, id)),
             source_id: "flotilla-connector".to_owned(),
@@ -4587,27 +3567,12 @@ mod tests {
     #[test]
     fn target_only_entities_keep_patch_ordinals_for_catalog_ordering() {
         let mut state = directory_entity_state();
-        apply_entity(
-            &mut state,
-            "issue",
-            "later",
-            10,
-            &[("flotilla.project", "dev"), ("flotilla.issue", "later")],
-        );
-        apply_target_only_entity(
-            &mut state,
-            "issue",
-            "earlier",
-            2,
-            &[("flotilla.project", "dev"), ("flotilla.issue", "earlier")],
-        );
+        apply_entity(&mut state, "issue", "later", 10, &[("flotilla.project", "dev"), ("flotilla.issue", "later")]);
+        apply_target_only_entity(&mut state, "issue", "earlier", 2, &[("flotilla.project", "dev"), ("flotilla.issue", "earlier")]);
 
         let entities = state.catalog_entities();
         assert_eq!(
-            entities
-                .iter()
-                .map(|entity| (entity.entity.id.as_str(), entity.ordinal))
-                .collect::<Vec<_>>(),
+            entities.iter().map(|entity| (entity.entity.id.as_str(), entity.ordinal)).collect::<Vec<_>>(),
             vec![("earlier", 2), ("later", 10)]
         );
     }
@@ -4635,13 +3600,8 @@ mod tests {
 
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
-        let placed = state.evaluate_placement(
-            &placement_loop(&[("entity.kind", "vessel")]),
-            &entities,
-            &index,
-            "full",
-            &mut BTreeMap::new(),
-        );
+        let placed =
+            state.evaluate_placement(&placement_loop(&[("entity.kind", "vessel")]), &entities, &index, "full", &mut BTreeMap::new());
 
         assert_eq!(
             placed.len(),
@@ -4654,24 +3614,12 @@ mod tests {
     #[test]
     fn a_loop_matching_nothing_places_nothing() {
         let mut state = directory_entity_state();
-        apply_entity(
-            &mut state,
-            "vessel",
-            "dev/focus/worker@lab",
-            1,
-            &[("flotilla.vessel", "dev/focus/worker@lab")],
-        );
+        apply_entity(&mut state, "vessel", "dev/focus/worker@lab", 1, &[("flotilla.vessel", "dev/focus/worker@lab")]);
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
 
         assert!(state
-            .evaluate_placement(
-                &placement_loop(&[("entity.kind", "convoy")]),
-                &entities,
-                &index,
-                "full",
-                &mut BTreeMap::new()
-            )
+            .evaluate_placement(&placement_loop(&[("entity.kind", "convoy")]), &entities, &index, "full", &mut BTreeMap::new())
             .is_empty());
         assert!(
             state
@@ -4721,33 +3669,16 @@ placement "identity-descending" {
             "vessel",
             "zeta-id",
             1,
-            &[
-                ("flotilla.vessel", "zeta-id"),
-                ("display.label", "alpha"),
-                ("status.rank", "1"),
-            ],
+            &[("flotilla.vessel", "zeta-id"), ("display.label", "alpha"), ("status.rank", "1")],
         );
         apply_entity(
             &mut state,
             "vessel",
             "alpha-id",
             1,
-            &[
-                ("flotilla.vessel", "alpha-id"),
-                ("display.label", "zeta"),
-                ("status.rank", "9"),
-            ],
+            &[("flotilla.vessel", "alpha-id"), ("display.label", "zeta"), ("status.rank", "9")],
         );
-        apply_entity(
-            &mut state,
-            "vessel",
-            "missing-id",
-            1,
-            &[
-                ("flotilla.vessel", "missing-id"),
-                ("display.label", "middle"),
-            ],
-        );
+        apply_entity(&mut state, "vessel", "missing-id", 1, &[("flotilla.vessel", "missing-id"), ("display.label", "middle")]);
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
         let labels = |placement: &crate::template_config::PlacementDefinition| {
@@ -4758,19 +3689,9 @@ placement "identity-descending" {
                 .collect::<Vec<_>>()
         };
 
-        assert_eq!(
-            labels(&config.placements[0]),
-            vec!["zeta", "alpha", "middle"]
-        );
-        assert_eq!(
-            labels(&config.placements[1]),
-            vec!["alpha", "middle", "zeta"]
-        );
-        assert_eq!(
-            labels(&config.placements[2]),
-            vec!["middle", "alpha", "zeta"],
-            "absent-first is independent of ascending direction"
-        );
+        assert_eq!(labels(&config.placements[0]), vec!["zeta", "alpha", "middle"]);
+        assert_eq!(labels(&config.placements[1]), vec!["alpha", "middle", "zeta"]);
+        assert_eq!(labels(&config.placements[2]), vec!["middle", "alpha", "zeta"], "absent-first is independent of ascending direction");
         assert_eq!(
             labels(&config.placements[3]),
             vec!["alpha", "middle", "zeta"],
@@ -4782,42 +3703,20 @@ placement "identity-descending" {
     fn undeclared_and_equal_order_falls_back_to_stable_entity_identity() {
         let mut state = directory_entity_state();
         for id in ["zeta-id", "alpha-id"] {
-            apply_entity(
-                &mut state,
-                "vessel",
-                id,
-                1,
-                &[("flotilla.vessel", id), ("display.label", "same")],
-            );
+            apply_entity(&mut state, "vessel", id, 1, &[("flotilla.vessel", id), ("display.label", "same")]);
         }
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
-        let placed = state.evaluate_placement(
-            &placement_loop(&[("entity.kind", "vessel")]),
-            &entities,
-            &index,
-            "full",
-            &mut BTreeMap::new(),
-        );
+        let placed =
+            state.evaluate_placement(&placement_loop(&[("entity.kind", "vessel")]), &entities, &index, "full", &mut BTreeMap::new());
 
-        assert_eq!(
-            placed
-                .into_iter()
-                .map(|item| item.entity.id)
-                .collect::<Vec<_>>(),
-            vec!["alpha-id", "zeta-id"]
-        );
+        assert_eq!(placed.into_iter().map(|item| item.entity.id).collect::<Vec<_>>(), vec!["alpha-id", "zeta-id"]);
     }
 
     #[test]
     fn placement_state_is_independent_per_appearance_and_survives_model_pushes() {
         let entity = EntityRef::local("vessel", "dev/focus/worker@lab");
-        let key = |loop_name: &str| {
-            PlacementKey(vec![PlacementSegment {
-                loop_name: loop_name.to_owned(),
-                entity: entity.clone(),
-            }])
-        };
+        let key = |loop_name: &str| PlacementKey(vec![PlacementSegment { loop_name: loop_name.to_owned(), entity: entity.clone() }]);
         let tree = key("tree-item");
         let attention = key("attention-item");
         let mut state = directory_entity_state();
@@ -4834,51 +3733,32 @@ placement "identity-descending" {
     fn placement_layout_variables_are_scoped_by_the_full_key() {
         let entity = EntityRef::local("vessel", "dev/focus/worker@lab");
         let placement = |loop_name: &str| {
-            NodeKey::Placement(PlacementKey(vec![PlacementSegment {
-                loop_name: loop_name.to_owned(),
-                entity: entity.clone(),
-            }]))
+            NodeKey::Placement(PlacementKey(vec![PlacementSegment { loop_name: loop_name.to_owned(), entity: entity.clone() }]))
         };
         let tree = placement("tree-item");
         let attention = placement("attention-item");
         let mut state = ControllerState::default();
-        assert!(state.set_node_variable(
-            tree.clone(),
-            "child-layout".to_owned(),
-            Some("cards".to_owned()),
-        ));
-        assert!(state.set_node_variable(
-            attention.clone(),
-            "child-layout".to_owned(),
-            Some("strip".to_owned()),
-        ));
+        assert!(state.set_node_variable(tree.clone(), "child-layout".to_owned(), Some("cards".to_owned()),));
+        assert!(state.set_node_variable(attention.clone(), "child-layout".to_owned(), Some("strip".to_owned()),));
 
         let overrides = state.bootstrap_snapshot().node_variable_overrides;
-        assert!(overrides.iter().any(|item| item.node == tree
-            && item.values.get("child-layout").map(String::as_str) == Some("cards")));
-        assert!(overrides.iter().any(|item| item.node == attention
-            && item.values.get("child-layout").map(String::as_str) == Some("strip")));
+        assert!(overrides.iter().any(|item| item.node == tree && item.values.get("child-layout").map(String::as_str) == Some("cards")));
+        assert!(overrides
+            .iter()
+            .any(|item| item.node == attention && item.values.get("child-layout").map(String::as_str) == Some("strip")));
     }
 
     #[test]
     fn renaming_a_loop_deliberately_resets_its_placement_subtree_state() {
         let entity = EntityRef::local("vessel", "dev/focus/worker@lab");
-        let key = |loop_name: &str| {
-            PlacementKey(vec![PlacementSegment {
-                loop_name: loop_name.to_owned(),
-                entity: entity.clone(),
-            }])
-        };
+        let key = |loop_name: &str| PlacementKey(vec![PlacementSegment { loop_name: loop_name.to_owned(), entity: entity.clone() }]);
         let old = key("vessel");
         let renamed = key("worker");
         let mut state = ControllerState::default();
         state.apply_rail_ui_action(RailUiAction::TogglePlacement { key: old.clone() });
 
         assert!(state.rail_ui_state().collapsed_placements.contains(&old));
-        assert!(!state
-            .rail_ui_state()
-            .collapsed_placements
-            .contains(&renamed));
+        assert!(!state.rail_ui_state().collapsed_placements.contains(&renamed));
     }
 
     #[test]
@@ -4901,17 +3781,10 @@ placement "identity-descending" {
 
         let issue = entity_ref("issue", "github/flotilla-org/andamento#61");
         assert!(
-            state
-                .catalog_entities()
-                .iter()
-                .any(|entity| entity.entity == issue),
+            state.catalog_entities().iter().any(|entity| entity.entity == issue),
             "the issue must be in the catalog for this test to mean anything"
         );
-        assert_eq!(
-            state.activation_for_entity(&issue),
-            None,
-            "an entity without a workspace or recipe cannot activate"
-        );
+        assert_eq!(state.activation_for_entity(&issue), None, "an entity without a workspace or recipe cannot activate");
     }
 
     #[test]
@@ -4926,33 +3799,16 @@ placement "identity-descending" {
     #[test]
     fn tab_update_change_is_a_controller_change() {
         let mut state = ControllerState::default();
-        state.observe_workspaces(vec![
-            tab_info(1, 0, "work", true),
-            tab_info(2, 1, "logs", false),
-        ]);
+        state.observe_workspaces(vec![tab_info(1, 0, "work", true), tab_info(2, 1, "logs", false)]);
 
-        assert!(state.observe_workspaces(vec![
-            tab_info(1, 0, "work", false),
-            tab_info(2, 1, "logs", true),
-        ]));
+        assert!(state.observe_workspaces(vec![tab_info(1, 0, "work", false), tab_info(2, 1, "logs", true),]));
     }
 
     #[test]
     fn setting_same_pane_cwd_is_not_a_metadata_change() {
         let mut state = ControllerState::default();
-        state.update_tabs(vec![ControllerTab {
-            tab_id: tab_workspace_id(1),
-            position: 0,
-            name: "work".into(),
-            active: true,
-        }]);
-        state.set_test_pane(
-            PaneTarget::Terminal(10),
-            tab_workspace_id(1),
-            true,
-            false,
-            0,
-        );
+        state.update_tabs(vec![ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "work".into(), active: true }]);
+        state.set_test_pane(PaneTarget::Terminal(10), tab_workspace_id(1), true, false, 0);
 
         assert!(state.set_pane_cwd(PaneTarget::Terminal(10), "/repo/a".into()));
         let receive_counter = state.receive_counter;
@@ -5012,12 +3868,7 @@ placement "identity-descending" {
     #[test]
     fn unchanged_pane_manifest_is_not_a_controller_change() {
         let mut state = ControllerState::default();
-        state.update_tabs(vec![ControllerTab {
-            tab_id: tab_workspace_id(1),
-            position: 0,
-            name: "work".into(),
-            active: true,
-        }]);
+        state.update_tabs(vec![ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "work".into(), active: true }]);
         let manifest = vec![PaneObservation {
             workspace_id: tab_workspace_id(1),
             pane_id: PaneTarget::Terminal(10),
@@ -5037,27 +3888,9 @@ placement "identity-descending" {
     #[test]
     fn cwd_refresh_only_requests_selectable_terminals_with_unknown_cwd() {
         let mut state = ControllerState::default();
-        state.set_test_pane(
-            PaneTarget::Terminal(10),
-            tab_workspace_id(1),
-            true,
-            false,
-            0,
-        );
-        state.set_test_pane(
-            PaneTarget::Terminal(11),
-            tab_workspace_id(1),
-            true,
-            false,
-            1,
-        );
-        state.set_test_pane(
-            PaneTarget::Terminal(12),
-            tab_workspace_id(1),
-            false,
-            false,
-            2,
-        );
+        state.set_test_pane(PaneTarget::Terminal(10), tab_workspace_id(1), true, false, 0);
+        state.set_test_pane(PaneTarget::Terminal(11), tab_workspace_id(1), true, false, 1);
+        state.set_test_pane(PaneTarget::Terminal(12), tab_workspace_id(1), false, false, 2);
         state.set_test_pane(PaneTarget::Plugin(20), tab_workspace_id(1), true, false, 3);
         state.set_pane_cwd(PaneTarget::Terminal(11), "/repo/known".into());
 
@@ -5067,12 +3900,7 @@ placement "identity-descending" {
     #[test]
     fn cwd_refresh_requests_each_pane_at_most_once() {
         let mut state = ControllerState::default();
-        state.update_tabs(vec![ControllerTab {
-            tab_id: tab_workspace_id(1),
-            position: 0,
-            name: "work".into(),
-            active: true,
-        }]);
+        state.update_tabs(vec![ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "work".into(), active: true }]);
         let manifest = vec![PaneObservation {
             workspace_id: tab_workspace_id(1),
             pane_id: PaneTarget::Terminal(10),
@@ -5098,12 +3926,7 @@ placement "identity-descending" {
     #[test]
     fn resolved_tab_metadata_follows_transitive_identity_facts() {
         let mut state = ControllerState::default();
-        state.update_tabs(vec![ControllerTab {
-            tab_id: tab_workspace_id(1),
-            position: 0,
-            name: "repo".into(),
-            active: true,
-        }]);
+        state.update_tabs(vec![ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "repo".into(), active: true }]);
         state.apply_metadata_patch(crate::MetadataPatch {
             target: EntityId::Tab(tab_workspace_id(1)),
             source_id: "dir-watcher".to_owned(),
@@ -5126,20 +3949,12 @@ placement "identity-descending" {
             source_id: "gh".to_owned(),
             set: BTreeMap::from([(
                 "vcs.pr".to_owned(),
-                crate::MetadataValueUpdate {
-                    value: MetadataValue::Text("#45".to_owned()),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: None,
-                },
+                crate::MetadataValueUpdate { value: MetadataValue::Text("#45".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
             )]),
             unset: vec![],
         });
         state.apply_metadata_patch(crate::MetadataPatch {
-            target: EntityId::Identity(crate::MetadataIdentity {
-                key: "vcs.pr".to_owned(),
-                value: MetadataValue::Text("#45".to_owned()),
-            }),
+            target: EntityId::Identity(crate::MetadataIdentity { key: "vcs.pr".to_owned(), value: MetadataValue::Text("#45".to_owned()) }),
             source_id: "ci".to_owned(),
             set: BTreeMap::from([(
                 "ci.status".to_owned(),
@@ -5161,23 +3976,11 @@ placement "identity-descending" {
             .expect("tab metadata");
 
         assert_eq!(
-            tab_metadata
-                .values
-                .get("git.repo")
-                .map(|entry| &entry.value),
+            tab_metadata.values.get("git.repo").map(|entry| &entry.value),
             Some(&MetadataValue::Text("rjwittams/katzensteg".to_owned()))
         );
-        assert_eq!(
-            tab_metadata.values.get("vcs.pr").map(|entry| &entry.value),
-            Some(&MetadataValue::Text("#45".to_owned()))
-        );
-        assert_eq!(
-            tab_metadata
-                .values
-                .get("ci.status")
-                .map(|entry| &entry.value),
-            Some(&MetadataValue::Text("failing".to_owned()))
-        );
+        assert_eq!(tab_metadata.values.get("vcs.pr").map(|entry| &entry.value), Some(&MetadataValue::Text("#45".to_owned())));
+        assert_eq!(tab_metadata.values.get("ci.status").map(|entry| &entry.value), Some(&MetadataValue::Text("failing".to_owned())));
         assert_eq!(
             tab_metadata.reachable_identities,
             vec![
@@ -5189,17 +3992,11 @@ placement "identity-descending" {
                     distance: 1,
                 },
                 ReachableMetadataIdentity {
-                    identity: MetadataIdentity {
-                        key: "vcs.pr".to_owned(),
-                        value: MetadataValue::Text("#45".to_owned()),
-                    },
+                    identity: MetadataIdentity { key: "vcs.pr".to_owned(), value: MetadataValue::Text("#45".to_owned()) },
                     distance: 2,
                 },
                 ReachableMetadataIdentity {
-                    identity: MetadataIdentity {
-                        key: "ci.status".to_owned(),
-                        value: MetadataValue::Text("failing".to_owned()),
-                    },
+                    identity: MetadataIdentity { key: "ci.status".to_owned(), value: MetadataValue::Text("failing".to_owned()) },
                     distance: 3,
                 },
             ]
@@ -5209,17 +4006,9 @@ placement "identity-descending" {
     #[test]
     fn resolved_tab_metadata_follows_selected_cwd_identity_facts() {
         let mut state = ControllerState::default();
-        state.update_tabs(vec![ControllerTab {
-            tab_id: tab_workspace_id(1),
-            position: 0,
-            name: "repo".into(),
-            active: true,
-        }]);
+        state.update_tabs(vec![ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "repo".into(), active: true }]);
         state.set_test_pane(PaneTarget::Terminal(1), tab_workspace_id(1), true, true, 0);
-        state.set_pane_cwd(
-            PaneTarget::Terminal(1),
-            "/Users/robert/dev/katzensteg".to_owned(),
-        );
+        state.set_pane_cwd(PaneTarget::Terminal(1), "/Users/robert/dev/katzensteg".to_owned());
         state.apply_metadata_patch(crate::MetadataPatch {
             target: EntityId::Identity(MetadataIdentity {
                 key: KEY_PANE_CWD.to_owned(),
@@ -5246,41 +4035,24 @@ placement "identity-descending" {
             .expect("tab metadata");
 
         assert_eq!(
-            tab_metadata
-                .values
-                .get("git.repo")
-                .map(|entry| &entry.value),
+            tab_metadata.values.get("git.repo").map(|entry| &entry.value),
             Some(&MetadataValue::Text("rjwittams/katzensteg".to_owned()))
         );
-        assert!(tab_metadata
-            .reachable_identities
-            .iter()
-            .any(|reachable| reachable.identity
-                == MetadataIdentity {
-                    key: KEY_PANE_CWD.to_owned(),
-                    value: MetadataValue::Text("/Users/robert/dev/katzensteg".to_owned()),
-                }
-                && reachable.distance == 1));
+        assert!(tab_metadata.reachable_identities.iter().any(|reachable| reachable.identity
+            == MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text("/Users/robert/dev/katzensteg".to_owned()) }
+            && reachable.distance == 1));
     }
 
     #[test]
     fn view_model_exposes_observed_metadata_identity_index() {
         let mut state = ControllerState::default();
         state.set_rail_config(RailConfig::default());
-        state.update_tabs(vec![ControllerTab {
-            tab_id: tab_workspace_id(1),
-            position: 0,
-            name: "repo".into(),
-            active: true,
-        }]);
+        state.update_tabs(vec![ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "repo".into(), active: true }]);
         state.set_test_pane(PaneTarget::Terminal(1), tab_workspace_id(1), true, true, 0);
         let cwd = "/Users/robert/dev/katzensteg".to_owned();
         state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
         state.apply_metadata_patch(crate::MetadataPatch {
-            target: EntityId::Identity(MetadataIdentity {
-                key: KEY_PANE_CWD.to_owned(),
-                value: MetadataValue::Text(cwd.clone()),
-            }),
+            target: EntityId::Identity(MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text(cwd.clone()) }),
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
@@ -5297,20 +4069,13 @@ placement "identity-descending" {
         let model = state.view_model();
 
         assert!(model.observed_identities.iter().any(|observed| {
-            observed.identity
-                == MetadataIdentity {
-                    key: KEY_PANE_CWD.to_owned(),
-                    value: MetadataValue::Text(cwd.clone()),
-                }
+            observed.identity == MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text(cwd.clone()) }
                 && observed.target_count == 1
                 && observed.nearest_distance == 1
         }));
         assert!(model.observed_identities.iter().any(|observed| {
             observed.identity
-                == MetadataIdentity {
-                    key: "git.repo".to_owned(),
-                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
-                }
+                == MetadataIdentity { key: "git.repo".to_owned(), value: MetadataValue::Text("rjwittams/katzensteg".to_owned()) }
                 && observed.target_count == 1
                 && observed.nearest_distance == 2
         }));
@@ -5319,12 +4084,7 @@ placement "identity-descending" {
     #[test]
     fn highest_priority_status_wins_for_tab() {
         let mut state = ControllerState::default();
-        state.update_tabs(vec![ControllerTab {
-            tab_id: tab_workspace_id(1),
-            position: 0,
-            name: "main".into(),
-            active: true,
-        }]);
+        state.update_tabs(vec![ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "main".into(), active: true }]);
         state.set_pane_tab(PaneTarget::Terminal(10), tab_workspace_id(1));
         state.set_pane_tab(PaneTarget::Terminal(11), tab_workspace_id(1));
         state.set_status(SetPaneStatus {
@@ -5353,12 +4113,7 @@ placement "identity-descending" {
     #[test]
     fn status_icon_is_carried_to_tab_summary() {
         let mut state = ControllerState::default();
-        state.update_tabs(vec![ControllerTab {
-            tab_id: tab_workspace_id(1),
-            position: 0,
-            name: "main".into(),
-            active: true,
-        }]);
+        state.update_tabs(vec![ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "main".into(), active: true }]);
         state.set_pane_tab(PaneTarget::Terminal(10), tab_workspace_id(1));
         let mut status = status(PaneTarget::Terminal(10), Priority::Waiting, "waiting", 10);
         status.icon = Some(StatusIcon::Builtin("waiting".to_owned()));
@@ -5366,35 +4121,17 @@ placement "identity-descending" {
 
         let model = state.view_model();
 
-        assert_eq!(
-            model.tabs[0]
-                .status
-                .as_ref()
-                .and_then(|status| status.icon.as_ref()),
-            Some(&StatusIcon::Builtin("waiting".to_owned()))
-        );
+        assert_eq!(model.tabs[0].status.as_ref().and_then(|status| status.icon.as_ref()), Some(&StatusIcon::Builtin("waiting".to_owned())));
     }
 
     #[test]
     fn bootstrap_snapshot_carries_external_state_without_zellij_tabs() {
         let mut source = ControllerState::default();
         source.set_sort_mode(SortMode::PinnedFirst);
-        source.set_rail_config(RailConfig {
-            structure: RailStructure::BoxPerTab,
-            segment_between_color: None,
-        });
+        source.set_rail_config(RailConfig { structure: RailStructure::BoxPerTab, segment_between_color: None });
         source.toggle_pin(tab_workspace_id(7));
-        source.set_status(status(
-            PaneTarget::Terminal(10),
-            Priority::Waiting,
-            "waiting",
-            10,
-        ));
-        source.set_node_variable(
-            NodeKey::Root,
-            "child-layout".to_owned(),
-            Some("strip".to_owned()),
-        );
+        source.set_status(status(PaneTarget::Terminal(10), Priority::Waiting, "waiting", 10));
+        source.set_node_variable(NodeKey::Root, "child-layout".to_owned(), Some("strip".to_owned()));
         source.apply_rail_ui_action(RailUiAction::ScrollBy { delta: 8 });
 
         let snapshot = source.bootstrap_snapshot();
@@ -5419,10 +4156,7 @@ placement "identity-descending" {
         assert_eq!(
             target_snapshot.rail_ui_state,
             RailUiState {
-                revision: RailUiRevision {
-                    sequence: 1,
-                    writer_client_id: 0,
-                },
+                revision: RailUiRevision { sequence: 1, writer_client_id: 0 },
                 collapsed_placements: vec![],
                 scroll_offset: 8,
                 variables: BTreeMap::new(),
@@ -5434,24 +4168,18 @@ placement "identity-descending" {
     #[test]
     fn bootstrap_snapshot_keeps_only_persistent_display_variables() {
         let mut state = ControllerState::default();
-        state.set_template_catalog(Some(
-            crate::template_config::TemplateConfigCatalog::from_config(
-                crate::template_config::parse_template_config_kdl(
-                    r#"
+        state.set_template_catalog(Some(crate::template_config::TemplateConfigCatalog::from_config(
+            crate::template_config::parse_template_config_kdl(
+                r#"
                     version 1
                     display-variable "persistent" type="bool" default=true label="Persistent" icon="P"
                     display-variable "ephemeral" type="bool" default=true label="Ephemeral" icon="E" persist=false
                     "#,
-                )
-                .unwrap(),
-            ),
-        ));
-        state.apply_rail_ui_action(RailUiAction::ToggleVariable {
-            name: "persistent".to_owned(),
-        });
-        state.apply_rail_ui_action(RailUiAction::ToggleVariable {
-            name: "ephemeral".to_owned(),
-        });
+            )
+            .unwrap(),
+        )));
+        state.apply_rail_ui_action(RailUiAction::ToggleVariable { name: "persistent".to_owned() });
+        state.apply_rail_ui_action(RailUiAction::ToggleVariable { name: "ephemeral".to_owned() });
 
         assert_eq!(
             state.bootstrap_snapshot().rail_ui_state.variables,
@@ -5466,10 +4194,7 @@ placement "identity-descending" {
         state.apply_rail_ui_action(RailUiAction::ScrollBy { delta: 2 });
 
         assert!(!state.apply_rail_ui_state(RailUiState {
-            revision: RailUiRevision {
-                sequence: 1,
-                writer_client_id: 9,
-            },
+            revision: RailUiRevision { sequence: 1, writer_client_id: 9 },
             collapsed_placements: vec![],
             scroll_offset: 99,
             variables: BTreeMap::new(),
@@ -5478,10 +4203,7 @@ placement "identity-descending" {
         assert_eq!(
             state.rail_ui_state(),
             RailUiState {
-                revision: RailUiRevision {
-                    sequence: 2,
-                    writer_client_id: 0,
-                },
+                revision: RailUiRevision { sequence: 2, writer_client_id: 0 },
                 collapsed_placements: vec![],
                 scroll_offset: 10,
                 variables: BTreeMap::new(),
@@ -5499,20 +4221,14 @@ placement "identity-descending" {
         };
         let vessel = |id: &str| EntityRef::local("vessel", id);
         let mut source = ControllerState::default();
-        source.apply_rail_ui_action(RailUiAction::SetSiblingOrder {
-            loop_key: key("vessel"),
-            order: vec![vessel("b"), vessel("a")],
-        });
+        source.apply_rail_ui_action(RailUiAction::SetSiblingOrder { loop_key: key("vessel"), order: vec![vessel("b"), vessel("a")] });
         let mut saved = source.rail_ui_state();
         // An empty order means data order, so restoring one stores nothing.
         saved.sibling_orders.push((key("other"), vec![]));
         let json = serde_json::to_string(&saved).unwrap();
         let mut target = ControllerState::default();
         assert!(target.apply_rail_ui_state(serde_json::from_str(&json).unwrap()));
-        assert_eq!(
-            target.rail_ui_state().sibling_orders,
-            vec![(key("vessel"), vec![vessel("b"), vessel("a")])]
-        );
+        assert_eq!(target.rail_ui_state().sibling_orders, vec![(key("vessel"), vec![vessel("b"), vessel("a")])]);
     }
 
     #[test]
@@ -5537,12 +4253,7 @@ placement "identity-descending" {
         let snapshot = source.bootstrap_snapshot();
         let mut target = ControllerState::default();
         target.apply_bootstrap_snapshot(snapshot);
-        target.update_tabs(vec![ControllerTab {
-            tab_id: tab_workspace_id(7),
-            position: 0,
-            name: "overview".into(),
-            active: true,
-        }]);
+        target.update_tabs(vec![ControllerTab { tab_id: tab_workspace_id(7), position: 0, name: "overview".into(), active: true }]);
 
         let model = target.view_model();
         let metadata = model
@@ -5552,10 +4263,7 @@ placement "identity-descending" {
             .expect("tab metadata");
 
         assert_eq!(
-            metadata
-                .values
-                .get(KEY)
-                .map(|entry| (&entry.value, entry.precedence, entry.ordinal)),
+            metadata.values.get(KEY).map(|entry| (&entry.value, entry.precedence, entry.ordinal)),
             Some((&MetadataValue::Text("project:zellij".to_owned()), 4, 2))
         );
     }
@@ -5563,12 +4271,7 @@ placement "identity-descending" {
     #[test]
     fn tab_update_does_not_drop_bootstrapped_status_before_pane_manifest() {
         let mut source = ControllerState::default();
-        source.set_status(status(
-            PaneTarget::Terminal(10),
-            Priority::Waiting,
-            "waiting",
-            10,
-        ));
+        source.set_status(status(PaneTarget::Terminal(10), Priority::Waiting, "waiting", 10));
 
         let mut target = ControllerState::default();
         target.apply_bootstrap_snapshot(source.bootstrap_snapshot());
@@ -5582,26 +4285,11 @@ placement "identity-descending" {
     #[test]
     fn recency_breaks_priority_ties() {
         let mut state = ControllerState::default();
-        state.update_tabs(vec![ControllerTab {
-            tab_id: tab_workspace_id(1),
-            position: 0,
-            name: "main".into(),
-            active: true,
-        }]);
+        state.update_tabs(vec![ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "main".into(), active: true }]);
         state.set_pane_tab(PaneTarget::Terminal(10), tab_workspace_id(1));
         state.set_pane_tab(PaneTarget::Terminal(11), tab_workspace_id(1));
-        state.set_status(status(
-            PaneTarget::Terminal(10),
-            Priority::Waiting,
-            "old",
-            10,
-        ));
-        state.set_status(status(
-            PaneTarget::Terminal(11),
-            Priority::Waiting,
-            "new",
-            20,
-        ));
+        state.set_status(status(PaneTarget::Terminal(10), Priority::Waiting, "old", 10));
+        state.set_status(status(PaneTarget::Terminal(11), Priority::Waiting, "new", 20));
 
         let model = state.view_model();
         assert_eq!(model.tabs[0].status.as_ref().unwrap().title, "new");
@@ -5611,12 +4299,7 @@ placement "identity-descending" {
     fn cleanup_removes_status_for_missing_panes() {
         let mut state = ControllerState::default();
         state.set_pane_tab(PaneTarget::Terminal(10), tab_workspace_id(1));
-        state.set_status(status(
-            PaneTarget::Terminal(10),
-            Priority::Error,
-            "gone",
-            10,
-        ));
+        state.set_status(status(PaneTarget::Terminal(10), Priority::Error, "gone", 10));
 
         state.retain_panes([PaneTarget::Terminal(99)].into_iter().collect());
 
@@ -5627,24 +4310,12 @@ placement "identity-descending" {
     fn cleanup_removes_missing_rail_renderers() {
         let mut state = ControllerState::default();
         state.register_rail(PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 7,
-                client_id: 1,
-            },
-            placement: PluginPlacement::Tab {
-                tab_id: tab_workspace_id(1),
-                pane_kind: PluginPaneKind::Tiled,
-            },
+            identity: RendererHello { plugin_id: 7, client_id: 1 },
+            placement: PluginPlacement::Tab { tab_id: tab_workspace_id(1), pane_kind: PluginPaneKind::Tiled },
         });
         state.register_rail(PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 8,
-                client_id: 1,
-            },
-            placement: PluginPlacement::Tab {
-                tab_id: tab_workspace_id(1),
-                pane_kind: PluginPaneKind::Tiled,
-            },
+            identity: RendererHello { plugin_id: 8, client_id: 1 },
+            placement: PluginPlacement::Tab { tab_id: tab_workspace_id(1), pane_kind: PluginPaneKind::Tiled },
         });
 
         state.retain_rails(&[8].into_iter().collect());
@@ -5658,128 +4329,62 @@ placement "identity-descending" {
     fn config_editor_target_prefers_same_client_and_tab() {
         let mut state = ControllerState::default();
         state.register_config_editor(PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 30,
-                client_id: 1,
-            },
-            placement: PluginPlacement::Tab {
-                tab_id: tab_workspace_id(1),
-                pane_kind: PluginPaneKind::Floating,
-            },
+            identity: RendererHello { plugin_id: 30, client_id: 1 },
+            placement: PluginPlacement::Tab { tab_id: tab_workspace_id(1), pane_kind: PluginPaneKind::Floating },
         });
         state.register_config_editor(PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 31,
-                client_id: 2,
-            },
-            placement: PluginPlacement::Tab {
-                tab_id: tab_workspace_id(2),
-                pane_kind: PluginPaneKind::Floating,
-            },
+            identity: RendererHello { plugin_id: 31, client_id: 2 },
+            placement: PluginPlacement::Tab { tab_id: tab_workspace_id(2), pane_kind: PluginPaneKind::Floating },
         });
         state.register_config_editor(PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 32,
-                client_id: 2,
-            },
-            placement: PluginPlacement::Tab {
-                tab_id: tab_workspace_id(1),
-                pane_kind: PluginPaneKind::Floating,
-            },
+            identity: RendererHello { plugin_id: 32, client_id: 2 },
+            placement: PluginPlacement::Tab { tab_id: tab_workspace_id(1), pane_kind: PluginPaneKind::Floating },
         });
 
-        assert_eq!(
-            state.config_editor_target_for_client_tab(2, tab_workspace_id(1)),
-            Some(RendererHello {
-                plugin_id: 32,
-                client_id: 2
-            })
-        );
-        assert_eq!(
-            state.config_editor_target_for_client_tab(2, tab_workspace_id(2)),
-            Some(RendererHello {
-                plugin_id: 31,
-                client_id: 2
-            })
-        );
-        assert_eq!(
-            state.config_editor_target_for_client_tab(2, tab_workspace_id(3)),
-            None
-        );
+        assert_eq!(state.config_editor_target_for_client_tab(2, tab_workspace_id(1)), Some(RendererHello { plugin_id: 32, client_id: 2 }));
+        assert_eq!(state.config_editor_target_for_client_tab(2, tab_workspace_id(2)), Some(RendererHello { plugin_id: 31, client_id: 2 }));
+        assert_eq!(state.config_editor_target_for_client_tab(2, tab_workspace_id(3)), None);
     }
 
     #[test]
     fn config_editor_target_does_not_reuse_other_tab_floating_editor() {
         let mut state = ControllerState::default();
         state.register_config_editor(PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 30,
-                client_id: 1,
-            },
-            placement: PluginPlacement::Tab {
-                tab_id: tab_workspace_id(1),
-                pane_kind: PluginPaneKind::Floating,
-            },
+            identity: RendererHello { plugin_id: 30, client_id: 1 },
+            placement: PluginPlacement::Tab { tab_id: tab_workspace_id(1), pane_kind: PluginPaneKind::Floating },
         });
         state.register_config_editor(PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 31,
-                client_id: 2,
-            },
-            placement: PluginPlacement::Tab {
-                tab_id: tab_workspace_id(9),
-                pane_kind: PluginPaneKind::Floating,
-            },
+            identity: RendererHello { plugin_id: 31, client_id: 2 },
+            placement: PluginPlacement::Tab { tab_id: tab_workspace_id(9), pane_kind: PluginPaneKind::Floating },
         });
 
-        assert_eq!(
-            state.config_editor_target_for_client_tab(2, tab_workspace_id(3)),
-            None
-        );
+        assert_eq!(state.config_editor_target_for_client_tab(2, tab_workspace_id(3)), None);
     }
 
     #[test]
     fn config_editor_target_does_not_reuse_other_tab_tiled_editor() {
         let mut state = ControllerState::default();
         state.register_config_editor(PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 30,
-                client_id: 2,
-            },
-            placement: PluginPlacement::Tab {
-                tab_id: tab_workspace_id(9),
-                pane_kind: PluginPaneKind::Tiled,
-            },
+            identity: RendererHello { plugin_id: 30, client_id: 2 },
+            placement: PluginPlacement::Tab { tab_id: tab_workspace_id(9), pane_kind: PluginPaneKind::Tiled },
         });
 
-        assert_eq!(
-            state.config_editor_target_for_client_tab(2, tab_workspace_id(3)),
-            None
-        );
+        assert_eq!(state.config_editor_target_for_client_tab(2, tab_workspace_id(3)), None);
     }
 
     #[test]
     fn config_editor_target_does_not_reuse_unknown_editor() {
         let mut state = ControllerState::default();
         state.register_config_editor(PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 30,
-                client_id: 1,
-            },
+            identity: RendererHello { plugin_id: 30, client_id: 1 },
             placement: PluginPlacement::Unknown,
         });
         state.register_config_editor(PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 31,
-                client_id: 2,
-            },
+            identity: RendererHello { plugin_id: 31, client_id: 2 },
             placement: PluginPlacement::Unknown,
         });
 
-        assert_eq!(
-            state.config_editor_target_for_client_tab(2, tab_workspace_id(3)),
-            None
-        );
+        assert_eq!(state.config_editor_target_for_client_tab(2, tab_workspace_id(3)), None);
     }
 
     #[test]
@@ -5788,36 +4393,21 @@ placement "identity-descending" {
         state.set_inspected_node(4, NodeKey::Tab(tab_workspace_id(7)));
         state.set_inspected_node(5, NodeKey::Root);
 
-        assert_eq!(
-            state.view_model_for_client(4).inspected_node,
-            Some(NodeKey::Tab(tab_workspace_id(7)))
-        );
-        assert_eq!(
-            state.view_model_for_client(5).inspected_node,
-            Some(NodeKey::Root)
-        );
+        assert_eq!(state.view_model_for_client(4).inspected_node, Some(NodeKey::Tab(tab_workspace_id(7))));
+        assert_eq!(state.view_model_for_client(5).inspected_node, Some(NodeKey::Root));
     }
 
     #[test]
     fn registering_rail_places_it_under_client_and_tab() {
         let mut state = ControllerState::default();
         let hello = PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 10,
-                client_id: 4,
-            },
-            placement: PluginPlacement::Tab {
-                tab_id: tab_workspace_id(7),
-                pane_kind: PluginPaneKind::Tiled,
-            },
+            identity: RendererHello { plugin_id: 10, client_id: 4 },
+            placement: PluginPlacement::Tab { tab_id: tab_workspace_id(7), pane_kind: PluginPaneKind::Tiled },
         };
 
         assert!(state.register_rail(hello));
         assert_eq!(
-            state
-                .client(4)
-                .and_then(|client| client.tabs.get(&tab_workspace_id(7)))
-                .map(|tab| tab.rails.contains_key(&10)),
+            state.client(4).and_then(|client| client.tabs.get(&tab_workspace_id(7))).map(|tab| tab.rails.contains_key(&10)),
             Some(true)
         );
     }
@@ -5826,22 +4416,13 @@ placement "identity-descending" {
     fn registering_config_places_it_under_client_and_tab() {
         let mut state = ControllerState::default();
         let hello = PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 11,
-                client_id: 4,
-            },
-            placement: PluginPlacement::Tab {
-                tab_id: tab_workspace_id(7),
-                pane_kind: PluginPaneKind::Floating,
-            },
+            identity: RendererHello { plugin_id: 11, client_id: 4 },
+            placement: PluginPlacement::Tab { tab_id: tab_workspace_id(7), pane_kind: PluginPaneKind::Floating },
         };
 
         assert!(state.register_config_editor(hello));
         assert_eq!(
-            state
-                .client(4)
-                .and_then(|client| client.tabs.get(&tab_workspace_id(7)))
-                .map(|tab| tab.config_editors.contains_key(&11)),
+            state.client(4).and_then(|client| client.tabs.get(&tab_workspace_id(7))).map(|tab| tab.config_editors.contains_key(&11)),
             Some(true)
         );
     }
@@ -5850,40 +4431,16 @@ placement "identity-descending" {
     fn rail_plugin_targets_include_rails_and_config_editors_across_clients() {
         let mut state = ControllerState::default();
         state.register_rail(PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 1,
-                client_id: 4,
-            },
-            placement: PluginPlacement::Tab {
-                tab_id: tab_workspace_id(7),
-                pane_kind: PluginPaneKind::Tiled,
-            },
+            identity: RendererHello { plugin_id: 1, client_id: 4 },
+            placement: PluginPlacement::Tab { tab_id: tab_workspace_id(7), pane_kind: PluginPaneKind::Tiled },
         });
         state.register_config_editor(PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 2,
-                client_id: 4,
-            },
-            placement: PluginPlacement::Tab {
-                tab_id: tab_workspace_id(7),
-                pane_kind: PluginPaneKind::Floating,
-            },
+            identity: RendererHello { plugin_id: 2, client_id: 4 },
+            placement: PluginPlacement::Tab { tab_id: tab_workspace_id(7), pane_kind: PluginPaneKind::Floating },
         });
 
         let targets = state.rail_plugin_targets();
 
-        assert_eq!(
-            targets,
-            vec![
-                RendererHello {
-                    plugin_id: 1,
-                    client_id: 4
-                },
-                RendererHello {
-                    plugin_id: 2,
-                    client_id: 4
-                },
-            ]
-        );
+        assert_eq!(targets, vec![RendererHello { plugin_id: 1, client_id: 4 }, RendererHello { plugin_id: 2, client_id: 4 },]);
     }
 }

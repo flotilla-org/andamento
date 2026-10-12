@@ -55,11 +55,7 @@ pub trait SegmentBarStyle {
     fn separator(&self) -> RenderedSegment;
 }
 
-pub fn render(
-    items: &[SegmentItem],
-    style: &dyn SegmentBarStyle,
-    width: usize,
-) -> (String, Vec<SegmentHit>) {
+pub fn render(items: &[SegmentItem], style: &dyn SegmentBarStyle, width: usize) -> (String, Vec<SegmentHit>) {
     let mut line = String::new();
     let mut hits = vec![];
     let mut col = 0usize;
@@ -76,11 +72,7 @@ pub fn render(
         let item_start = col;
         let (rendered_any, item_end) = append_segment(&mut line, &mut col, &rendered, width);
         if rendered_any && item_end > item_start {
-            hits.push(SegmentHit {
-                index,
-                col_start: item_start,
-                col_end: item_end.saturating_sub(1),
-            });
+            hits.push(SegmentHit { index, col_start: item_start, col_end: item_end.saturating_sub(1) });
         }
         if col >= width {
             break;
@@ -90,18 +82,9 @@ pub fn render(
     (pad_to_width(&line, width), hits)
 }
 
-pub fn render_wrapped(
-    items: &[SegmentItem],
-    style: &dyn SegmentBarStyle,
-    width: usize,
-) -> RenderedSegmentRun {
+pub fn render_wrapped(items: &[SegmentItem], style: &dyn SegmentBarStyle, width: usize) -> RenderedSegmentRun {
     if width == 0 || items.is_empty() {
-        return RenderedSegmentRun {
-            lines: vec![],
-            hits: vec![],
-            overflowed: false,
-            final_line_remaining_width: width,
-        };
+        return RenderedSegmentRun { lines: vec![], hits: vec![], overflowed: false, final_line_remaining_width: width };
     }
 
     let mut lines = vec![];
@@ -113,13 +96,8 @@ pub fn render_wrapped(
 
     for (index, item) in items.iter().enumerate() {
         let rendered = style.render_item(item);
-        let separator = if line.is_empty() {
-            None
-        } else {
-            Some(style.separator())
-        };
-        let needed_width =
-            separator.as_ref().map(RenderedSegment::width).unwrap_or(0) + rendered.width();
+        let separator = if line.is_empty() { None } else { Some(style.separator()) };
+        let needed_width = separator.as_ref().map(RenderedSegment::width).unwrap_or(0) + rendered.width();
 
         if !line.is_empty() && needed_width > width.saturating_sub(col) {
             lines.push(pad_to_width(&line, width));
@@ -135,12 +113,7 @@ pub fn render_wrapped(
         let item_start = col;
         let (rendered_any, item_end) = append_segment(&mut line, &mut col, &rendered, width);
         if rendered_any && item_end > item_start {
-            hits.push(SegmentHitBox {
-                index,
-                row,
-                col_start: item_start,
-                col_end: item_end.saturating_sub(1),
-            });
+            hits.push(SegmentHitBox { index, row, col_start: item_start, col_end: item_end.saturating_sub(1) });
         }
         overflowed |= rendered.width() > item_end.saturating_sub(item_start);
     }
@@ -148,28 +121,13 @@ pub fn render_wrapped(
     if !line.is_empty() {
         let line_width = line.width();
         lines.push(pad_to_width(&line, width));
-        RenderedSegmentRun {
-            lines,
-            hits,
-            overflowed,
-            final_line_remaining_width: width.saturating_sub(line_width),
-        }
+        RenderedSegmentRun { lines, hits, overflowed, final_line_remaining_width: width.saturating_sub(line_width) }
     } else {
-        RenderedSegmentRun {
-            lines,
-            hits,
-            overflowed,
-            final_line_remaining_width: width,
-        }
+        RenderedSegmentRun { lines, hits, overflowed, final_line_remaining_width: width }
     }
 }
 
-fn append_segment(
-    line: &mut String,
-    col: &mut usize,
-    segment: &RenderedSegment,
-    width: usize,
-) -> (bool, usize) {
+fn append_segment(line: &mut String, col: &mut usize, segment: &RenderedSegment, width: usize) -> (bool, usize) {
     if *col >= width || segment.width() == 0 {
         return (false, *col);
     }
@@ -189,11 +147,7 @@ pub struct ZellijRibbonStyle;
 impl SegmentBarStyle for ZellijRibbonStyle {
     fn render_item(&self, item: &SegmentItem) -> RenderedSegment {
         let _active = item.active;
-        RenderedSegment::from_parts(vec![
-            "".to_owned(),
-            format!(" {} ", item.label),
-            "".to_owned(),
-        ])
+        RenderedSegment::from_parts(vec!["".to_owned(), format!(" {} ", item.label), "".to_owned()])
     }
 
     fn separator(&self) -> RenderedSegment {
@@ -225,72 +179,31 @@ mod tests {
 
     #[test]
     fn render_returns_hits_from_rendered_segments() {
-        let items = vec![
-            SegmentItem {
-                label: "settings".to_owned(),
-                active: false,
-            },
-            SegmentItem {
-                label: "inspect".to_owned(),
-                active: true,
-            },
-        ];
+        let items =
+            vec![SegmentItem { label: "settings".to_owned(), active: false }, SegmentItem { label: "inspect".to_owned(), active: true }];
 
         let (line, hits) = render(&items, &ZellijRibbonStyle, 32);
 
         assert_eq!(line.trim_end(), " settings  inspect ");
-        assert_eq!(
-            hits,
-            vec![
-                SegmentHit {
-                    index: 0,
-                    col_start: 0,
-                    col_end: 11
-                },
-                SegmentHit {
-                    index: 1,
-                    col_start: 12,
-                    col_end: 22
-                }
-            ]
-        );
+        assert_eq!(hits, vec![SegmentHit { index: 0, col_start: 0, col_end: 11 }, SegmentHit { index: 1, col_start: 12, col_end: 22 }]);
     }
 
     #[test]
     fn render_truncates_last_segment_and_keeps_hit_to_visible_columns() {
-        let items = vec![SegmentItem {
-            label: "templates".to_owned(),
-            active: true,
-        }];
+        let items = vec![SegmentItem { label: "templates".to_owned(), active: true }];
 
         let (line, hits) = render(&items, &ZellijRibbonStyle, 6);
 
         assert_eq!(line, " temp");
-        assert_eq!(
-            hits,
-            vec![SegmentHit {
-                index: 0,
-                col_start: 0,
-                col_end: 5
-            }]
-        );
+        assert_eq!(hits, vec![SegmentHit { index: 0, col_start: 0, col_end: 5 }]);
     }
 
     #[test]
     fn render_wrapped_keeps_segments_inside_bounded_width() {
         let items = vec![
-            SegmentItem {
-                label: "main".to_owned(),
-                active: false,
-            },
-            SegmentItem {
-                label: "feat/rail".to_owned(),
-                active: true,
-            },
-            SegmentItem {
-                label: "docs".to_owned(),
-                active: false,
-            },
+            SegmentItem { label: "main".to_owned(), active: false },
+            SegmentItem { label: "feat/rail".to_owned(), active: true },
+            SegmentItem { label: "docs".to_owned(), active: false },
         ];
 
         let rendered = render_wrapped(&items, &ZellijRibbonStyle, 20);
@@ -301,24 +214,9 @@ mod tests {
         assert_eq!(
             rendered.hits,
             vec![
-                SegmentHitBox {
-                    index: 0,
-                    row: 0,
-                    col_start: 0,
-                    col_end: 7
-                },
-                SegmentHitBox {
-                    index: 1,
-                    row: 1,
-                    col_start: 0,
-                    col_end: 12
-                },
-                SegmentHitBox {
-                    index: 2,
-                    row: 2,
-                    col_start: 0,
-                    col_end: 7
-                }
+                SegmentHitBox { index: 0, row: 0, col_start: 0, col_end: 7 },
+                SegmentHitBox { index: 1, row: 1, col_start: 0, col_end: 12 },
+                SegmentHitBox { index: 2, row: 2, col_start: 0, col_end: 7 }
             ]
         );
         assert_eq!(rendered.final_line_remaining_width, 12);

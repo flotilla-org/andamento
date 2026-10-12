@@ -19,16 +19,8 @@ register_plugin!(State);
 impl ZellijPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
         set_selectable(false);
-        request_permission(&[
-            PermissionType::ReadApplicationState,
-            PermissionType::ChangeApplicationState,
-        ]);
-        subscribe(&[
-            EventType::TabUpdate,
-            EventType::ModeUpdate,
-            EventType::Mouse,
-            EventType::PermissionRequestResult,
-        ]);
+        request_permission(&[PermissionType::ReadApplicationState, PermissionType::ChangeApplicationState]);
+        subscribe(&[EventType::TabUpdate, EventType::ModeUpdate, EventType::Mouse, EventType::PermissionRequestResult]);
     }
 
     fn update(&mut self, event: Event) -> bool {
@@ -41,11 +33,7 @@ impl ZellijPlugin for State {
                 self.mode_info = mode_info;
             }
             Event::TabUpdate(tabs) => {
-                let next_active = tabs
-                    .iter()
-                    .position(|t| t.active)
-                    .map(|i| i + 1)
-                    .unwrap_or(1);
+                let next_active = tabs.iter().position(|t| t.active).map(|i| i + 1).unwrap_or(1);
                 if self.tabs != tabs || self.active_tab_idx != next_active {
                     should_render = true;
                 }
@@ -97,10 +85,7 @@ impl ZellijPlugin for State {
                     title.push(' ');
                     title.push_str(&status);
                 }
-                pad_to_width(
-                    &truncate_to_width(&format!("{} {}", prefix, title), cols),
-                    cols,
-                )
+                pad_to_width(&truncate_to_width(&format!("{} {}", prefix, title), cols), cols)
             } else {
                 " ".repeat(cols)
             };
@@ -117,11 +102,7 @@ impl State {
     fn render_message(&self, message: &str, rows: usize, cols: usize) {
         let mut out = String::new();
         for row in 0..rows {
-            let line = if row == 0 {
-                pad_to_width(&truncate_to_width(message, cols), cols)
-            } else {
-                " ".repeat(cols)
-            };
+            let line = if row == 0 { pad_to_width(&truncate_to_width(message, cols), cols) } else { " ".repeat(cols) };
             out.push_str(&line);
             if row + 1 < rows {
                 out.push('\n');
@@ -155,10 +136,7 @@ impl State {
         if rows >= total {
             return 0..total;
         }
-        let active_zero_idx = self
-            .active_tab_idx
-            .saturating_sub(1)
-            .min(total.saturating_sub(1));
+        let active_zero_idx = self.active_tab_idx.saturating_sub(1).min(total.saturating_sub(1));
         let half = rows / 2;
         let mut start = active_zero_idx.saturating_sub(half);
         let mut end = start + rows;

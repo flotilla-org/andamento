@@ -3,18 +3,11 @@ use andamento_core::tab_workspace_id;
 use andamento_ffi::*;
 use std::{mem::MaybeUninit, ptr};
 fn text(s: &str) -> Text {
-    Text {
-        data: s.as_ptr(),
-        len: s.len(),
-    }
+    Text { data: s.as_ptr(), len: s.len() }
 }
 const PROVIDER: &str = "sub-1";
 fn entity(kind: Text, id: Text) -> EntityView {
-    EntityView {
-        provider: text(PROVIDER),
-        kind,
-        id,
-    }
+    EntityView { provider: text(PROVIDER), kind, id }
 }
 unsafe fn read(t: Text) -> String {
     String::from_utf8(std::slice::from_raw_parts(t.data, t.len).to_vec()).unwrap()
@@ -24,10 +17,7 @@ unsafe fn field(s: *const AndamentoSnapshot, card: usize, name: &str) -> DetailF
     assert_eq!(andamento_snapshot_detail(s, card, d.as_mut_ptr()), 1);
     for i in 0..d.assume_init().field_count {
         let mut f = MaybeUninit::uninit();
-        assert_eq!(
-            andamento_snapshot_detail_field(s, card, i, f.as_mut_ptr()),
-            1
-        );
+        assert_eq!(andamento_snapshot_detail_field(s, card, i, f.as_mut_ptr()), 1);
         let f = f.assume_init();
         if read(f.name) == name {
             return f;
@@ -37,15 +27,7 @@ unsafe fn field(s: *const AndamentoSnapshot, card: usize, name: &str) -> DetailF
 }
 unsafe fn acquire_worktree(h: *mut Andamento) -> *mut AndamentoSnapshot {
     let s = andamento_snapshot_acquire(h, ptr::null_mut());
-    assert_ne!(
-        andamento_snapshot_detail_request(
-            h,
-            s,
-            entity(text("worktree"), text("w")),
-            ptr::null_mut()
-        ),
-        usize::MAX
-    );
+    assert_ne!(andamento_snapshot_detail_request(h, s, entity(text("worktree"), text("w")), ptr::null_mut()), usize::MAX);
     s
 }
 // Acceptance scenario: all six catalog kinds preserve typed roles, known-empty
@@ -56,36 +38,17 @@ fn six_kind_native_detail_contract() {
         let h = andamento_create(ptr::null(), 0, ptr::null_mut());
         assert!(!h.is_null());
         for line in include_str!("../../../fixtures/typed-detail.jsonl").lines() {
-            assert_eq!(
-                andamento_apply_patch_json(h, 42, text(PROVIDER), text(line), ptr::null_mut()),
-                1
-            );
+            assert_eq!(andamento_apply_patch_json(h, 42, text(PROVIDER), text(line), ptr::null_mut()), 1);
         }
         let legacy = andamento_snapshot_acquire(h, ptr::null_mut());
         assert_eq!(andamento_snapshot_detail_count(legacy), 0);
-        assert_eq!(
-            andamento_snapshot_detail_find(
-                legacy,
-                entity(text("worktree"), text("worktree:identity / #"))
-            ),
-            usize::MAX
-        );
+        assert_eq!(andamento_snapshot_detail_find(legacy, entity(text("worktree"), text("worktree:identity / #"))), usize::MAX);
         andamento_snapshot_release(legacy);
         let s = andamento_snapshot_acquire_details(h, ptr::null_mut());
         assert_eq!(andamento_abi_version(), 4);
         assert_eq!(andamento_snapshot_detail_count(s), 6);
-        for kind in [
-            "change_request",
-            "issue",
-            "convoy",
-            "role",
-            "project",
-            "worktree",
-        ] {
-            let card = andamento_snapshot_detail_find(
-                s,
-                entity(text(kind), text(&format!("{kind}:identity / #"))),
-            );
+        for kind in ["change_request", "issue", "convoy", "role", "project", "worktree"] {
+            let card = andamento_snapshot_detail_find(s, entity(text(kind), text(&format!("{kind}:identity / #"))));
             assert_ne!(card, usize::MAX);
             let f = field(s, card, "summary");
             assert_eq!(f.role, 3);
@@ -109,10 +72,7 @@ fn six_kind_native_detail_contract() {
             assert!(related.relation_count >= 1);
         }
         // Missing facts remain declared, without fabricating an empty observation.
-        let card = andamento_snapshot_detail_find(
-            s,
-            entity(text("worktree"), text("worktree:identity / #")),
-        );
+        let card = andamento_snapshot_detail_find(s, entity(text("worktree"), text("worktree:identity / #")));
         let missing = field(s, card, "branch");
         assert_eq!(missing.has_value, 0);
         assert_eq!(missing.has_observation, 0);
@@ -131,55 +91,19 @@ fn six_kind_native_detail_contract() {
         }
         let related_index = related_index.unwrap();
         let mut r = MaybeUninit::uninit();
-        assert_eq!(
-            andamento_snapshot_detail_relation(
-                s,
-                card,
-                related_index,
-                0,
-                ptr::null(),
-                0,
-                r.as_mut_ptr()
-            ),
-            1
-        );
+        assert_eq!(andamento_snapshot_detail_relation(s, card, related_index, 0, ptr::null(), 0, r.as_mut_ptr()), 1);
         let r = r.assume_init();
         assert_eq!(read(r.entity.kind), "issue");
         assert_eq!(read(r.entity.id), "issue:identity / #");
         assert_eq!(read(r.display_text), "Display issue");
         assert_ne!(r.detail, usize::MAX);
         let path = [r.entity];
-        assert_eq!(
-            andamento_snapshot_detail_relation(
-                s,
-                card,
-                related_index,
-                0,
-                path.as_ptr(),
-                1,
-                MaybeUninit::uninit().as_mut_ptr()
-            ),
-            0
-        );
+        assert_eq!(andamento_snapshot_detail_relation(s, card, related_index, 0, path.as_ptr(), 1, MaybeUninit::uninit().as_mut_ptr()), 0);
         let mut unavailable = MaybeUninit::uninit();
-        assert_eq!(
-            andamento_snapshot_detail_relation(
-                s,
-                card,
-                related_index,
-                1,
-                ptr::null(),
-                0,
-                unavailable.as_mut_ptr()
-            ),
-            1
-        );
+        assert_eq!(andamento_snapshot_detail_relation(s, card, related_index, 1, ptr::null(), 0, unavailable.as_mut_ptr()), 1);
         assert_eq!(unavailable.assume_init().detail, usize::MAX);
         let mut action = MaybeUninit::uninit();
-        assert_eq!(
-            andamento_snapshot_detail_action(s, card, 0, action.as_mut_ptr()),
-            1
-        );
+        assert_eq!(andamento_snapshot_detail_action(s, card, 0, action.as_mut_ptr()), 1);
         let action = action.assume_init();
         assert_eq!(read(action.intent), "inspect");
         assert_eq!(read(action.entity.id), "worktree:identity / #");
@@ -196,14 +120,8 @@ fn six_kind_native_detail_contract() {
         let expired = andamento_snapshot_acquire_details(h, ptr::null_mut());
         assert_eq!(field(expired, card, "summary").has_value, 0);
         assert_eq!(field(s, card, "summary").has_value, 1);
-        assert_eq!(
-            andamento_snapshot_detail_find(s, entity(text("unknown"), text(""))),
-            usize::MAX
-        );
-        assert_eq!(
-            andamento_snapshot_detail_field(s, usize::MAX, 0, ptr::null_mut()),
-            0
-        );
+        assert_eq!(andamento_snapshot_detail_find(s, entity(text("unknown"), text(""))), usize::MAX);
+        assert_eq!(andamento_snapshot_detail_field(s, usize::MAX, 0, ptr::null_mut()), 0);
         andamento_snapshot_release(expired);
         andamento_snapshot_release(boundary);
         andamento_snapshot_release(s);
@@ -225,17 +143,11 @@ fn native_controls_renewals_and_retained_expiry() {
         let h = andamento_create(config.as_ptr(), config.len(), ptr::null_mut());
         assert!(!h.is_null());
         let patch = r#"{"target":{"kind":"entity","value":{"kind":"worktree","id":"w"}},"source_id":"producer","set":{"display.label":{"value":{"type":"text","value":"Worker"},"ttl_ms":10},"summary.text":{"value":{"type":"text","value":"observed"},"ttl_ms":10},"action.primary.target":{"value":{"type":"text","value":"worktree:w"},"ttl_ms":10},"action.primary.recipe":{"value":{"type":"text","value":"exec sh"},"ttl_ms":10},"action.primary.label":{"value":{"type":"text","value":"Attach"},"ttl_ms":10}}}"#;
-        assert_eq!(
-            andamento_apply_patch_json(h, 100, text(PROVIDER), text(patch), ptr::null_mut()),
-            1
-        );
+        assert_eq!(andamento_apply_patch_json(h, 100, text(PROVIDER), text(patch), ptr::null_mut()), 1);
         let s = acquire_worktree(h);
         let card = andamento_snapshot_detail_find(s, entity(text("worktree"), text("w")));
         let mut action = MaybeUninit::uninit();
-        assert_eq!(
-            andamento_snapshot_detail_action(s, card, 0, action.as_mut_ptr()),
-            1
-        );
+        assert_eq!(andamento_snapshot_detail_action(s, card, 0, action.as_mut_ptr()), 1);
         let action = action.assume_init();
         assert_eq!(read(action.intent), "materialize-workspace");
         assert_eq!(read(action.label), "Attach");
@@ -246,31 +158,13 @@ fn native_controls_renewals_and_retained_expiry() {
         let effect = effect.assume_init();
         assert_eq!(effect.kind, 1);
         assert_eq!(
-            andamento_complete(
-                h,
-                effect.request_id,
-                ANDAMENTO_COMPLETE_MATERIALIZE,
-                tab_workspace_id(7).into(),
-                text(""),
-                ptr::null_mut()
-            ),
+            andamento_complete(h, effect.request_id, ANDAMENTO_COMPLETE_MATERIALIZE, tab_workspace_id(7).into(), text(""), ptr::null_mut()),
             1
         );
         andamento_effects_release(effects);
-        let workspace = WorkspaceInput {
-            id: tab_workspace_id(7).into(),
-            position: 0,
-            name: text("Worker"),
-            selected: 1,
-        };
-        assert_eq!(
-            andamento_observe(h, &workspace, 1, ptr::null(), 0, ptr::null_mut()),
-            1
-        );
-        assert_eq!(
-            andamento_apply_patch_json(h, 105, text(PROVIDER), text(patch), ptr::null_mut()),
-            1
-        );
+        let workspace = WorkspaceInput { id: tab_workspace_id(7).into(), position: 0, name: text("Worker"), selected: 1 };
+        assert_eq!(andamento_observe(h, &workspace, 1, ptr::null(), 0, ptr::null_mut()), 1);
+        assert_eq!(andamento_apply_patch_json(h, 105, text(PROVIDER), text(patch), ptr::null_mut()), 1);
         let fresh = acquire_worktree(h);
         assert_eq!(field(fresh, card, "summary").observed_at_ms, 105);
         assert_eq!(field(s, card, "summary").observed_at_ms, 100);
@@ -307,19 +201,13 @@ fn identical_producer_provenance() {
             let patch = format!(
                 r#"{{"target":{{"kind":"entity","value":{{"kind":"worktree","id":"w"}}}},"source_id":"{source}","set":{{"summary.text":{{"value":{{"type":"text","value":"same"}}}}}}}}"#
             );
-            assert_eq!(
-                andamento_apply_patch_json(h, 0, text(PROVIDER), text(&patch), ptr::null_mut()),
-                1
-            );
+            assert_eq!(andamento_apply_patch_json(h, 0, text(PROVIDER), text(&patch), ptr::null_mut()), 1);
         }
         let s = acquire_worktree(h);
         let card = andamento_snapshot_detail_find(s, entity(text("worktree"), text("w")));
         assert_eq!(read(field(s, card, "summary").source_id), "a-source");
         let unset = r#"{"target":{"kind":"entity","value":{"kind":"worktree","id":"w"}},"source_id":"a-source","unset":["summary.text"]}"#;
-        assert_eq!(
-            andamento_apply_patch_json(h, 1, text(PROVIDER), text(unset), ptr::null_mut()),
-            1
-        );
+        assert_eq!(andamento_apply_patch_json(h, 1, text(PROVIDER), text(unset), ptr::null_mut()), 1);
         let next = acquire_worktree(h);
         assert_eq!(read(field(next, card, "summary").source_id), "z-source");
         andamento_snapshot_release(next);
@@ -335,92 +223,42 @@ fn demand_details_equal_eager_and_keep_snapshot_owned_lifetimes() {
     unsafe {
         let h = andamento_create(ptr::null(), 0, ptr::null_mut());
         for line in include_str!("../../../fixtures/typed-detail.jsonl").lines() {
-            assert_eq!(
-                andamento_apply_patch_json(h, 42, text(PROVIDER), text(line), ptr::null_mut()),
-                1
-            );
+            assert_eq!(andamento_apply_patch_json(h, 42, text(PROVIDER), text(line), ptr::null_mut()), 1);
         }
         let plain = andamento_snapshot_acquire(h, ptr::null_mut());
         let eager = andamento_snapshot_acquire_details(h, ptr::null_mut());
         assert_eq!(andamento_snapshot_detail_count(plain), 0);
-        assert_eq!(
-            andamento_snapshot_node_count(plain),
-            andamento_snapshot_node_count(eager)
-        );
+        assert_eq!(andamento_snapshot_node_count(plain), andamento_snapshot_node_count(eager));
         // An unexpired tick leaves this revision current. Later demand still
         // renders all cards against the acquisition clock, not the new core clock.
         assert_eq!(andamento_tick(h, 43, ptr::null_mut()), 1);
         assert_eq!(andamento_snapshot_is_current(h, plain, ptr::null_mut()), 1);
         let mut held = None;
-        for kind in [
-            "worktree",
-            "issue",
-            "change_request",
-            "convoy",
-            "role",
-            "project",
-        ] {
+        for kind in ["worktree", "issue", "change_request", "convoy", "role", "project"] {
             let id = format!("{kind}:identity / #");
-            let index = andamento_snapshot_detail_request(
-                h,
-                plain,
-                entity(text(kind), text(&id)),
-                ptr::null_mut(),
-            );
+            let index = andamento_snapshot_detail_request(h, plain, entity(text(kind), text(&id)), ptr::null_mut());
             let original = andamento_snapshot_detail_find(eager, entity(text(kind), text(&id)));
             assert_ne!(index, usize::MAX);
-            assert_eq!(
-                andamento_snapshot_detail_request(
-                    h,
-                    plain,
-                    entity(text(kind), text(&id)),
-                    ptr::null_mut()
-                ),
-                index
-            );
+            assert_eq!(andamento_snapshot_detail_request(h, plain, entity(text(kind), text(&id)), ptr::null_mut()), index);
             let mut a = MaybeUninit::uninit();
             let mut b = MaybeUninit::uninit();
             assert_eq!(andamento_snapshot_detail(plain, index, a.as_mut_ptr()), 1);
-            assert_eq!(
-                andamento_snapshot_detail(eager, original, b.as_mut_ptr()),
-                1
-            );
+            assert_eq!(andamento_snapshot_detail(eager, original, b.as_mut_ptr()), 1);
             let a = a.assume_init();
             let b = b.assume_init();
             assert_eq!(a.now_ms, 42);
             assert_eq!(a.now_ms, b.now_ms);
-            assert_eq!(
-                (read(a.label), a.field_count, a.has_workspace),
-                (read(b.label), b.field_count, b.has_workspace)
-            );
+            assert_eq!((read(a.label), a.field_count, a.has_workspace), (read(b.label), b.field_count, b.has_workspace));
             for f in 0..a.field_count {
                 let mut x = MaybeUninit::uninit();
                 let mut y = MaybeUninit::uninit();
-                assert_eq!(
-                    andamento_snapshot_detail_field(plain, index, f, x.as_mut_ptr()),
-                    1
-                );
-                assert_eq!(
-                    andamento_snapshot_detail_field(eager, original, f, y.as_mut_ptr()),
-                    1
-                );
+                assert_eq!(andamento_snapshot_detail_field(plain, index, f, x.as_mut_ptr()), 1);
+                assert_eq!(andamento_snapshot_detail_field(eager, original, f, y.as_mut_ptr()), 1);
                 let x = x.assume_init();
                 let y = y.assume_init();
                 assert_eq!(
-                    (
-                        read(x.name),
-                        read(x.text),
-                        x.has_value,
-                        x.observed_at_ms,
-                        x.stale
-                    ),
-                    (
-                        read(y.name),
-                        read(y.text),
-                        y.has_value,
-                        y.observed_at_ms,
-                        y.stale
-                    )
+                    (read(x.name), read(x.text), x.has_value, x.observed_at_ms, x.stale),
+                    (read(y.name), read(y.text), y.has_value, y.observed_at_ms, y.stale)
                 );
             }
             if held.is_none() {
@@ -430,72 +268,26 @@ fn demand_details_equal_eager_and_keep_snapshot_owned_lifetimes() {
         let (borrowed, label, action) = held.unwrap();
         assert_eq!(read(borrowed), label);
         assert_eq!(andamento_snapshot_detail_count(plain), 6);
-        assert_eq!(
-            andamento_snapshot_detail_request(
-                h,
-                plain,
-                entity(text("missing"), text("")),
-                ptr::null_mut()
-            ),
-            usize::MAX
-        );
+        assert_eq!(andamento_snapshot_detail_request(h, plain, entity(text("missing"), text("")), ptr::null_mut()), usize::MAX);
         let patch = r#"{"target":{"kind":"entity","value":{"kind":"issue","id":"new"}},"source_id":"test","set":{"display.label":{"value":{"type":"text","value":"New"}}},"unset":[]}"#;
-        assert_eq!(
-            andamento_apply_patch_json(h, 43, text(PROVIDER), text(patch), ptr::null_mut()),
-            1
-        );
+        assert_eq!(andamento_apply_patch_json(h, 43, text(PROVIDER), text(patch), ptr::null_mut()), 1);
         assert_eq!(read(borrowed), label);
         let mut error = ptr::null_mut();
-        assert_eq!(
-            andamento_snapshot_detail_request(
-                h,
-                plain,
-                entity(text("issue"), text("new")),
-                &mut error
-            ),
-            usize::MAX
-        );
+        assert_eq!(andamento_snapshot_detail_request(h, plain, entity(text("issue"), text("new")), &mut error), usize::MAX);
         assert!(!error.is_null());
         andamento_string_free(error);
         assert_eq!(andamento_dispatch(h, plain, action, ptr::null_mut()), 0);
         let fresh = andamento_snapshot_acquire(h, ptr::null_mut());
-        assert_ne!(
-            andamento_snapshot_detail_request(
-                h,
-                fresh,
-                entity(text("issue"), text("new")),
-                ptr::null_mut()
-            ),
-            usize::MAX
-        );
+        assert_ne!(andamento_snapshot_detail_request(h, fresh, entity(text("issue"), text("new")), ptr::null_mut()), usize::MAX);
         let unset = r#"{"target":{"kind":"entity","value":{"kind":"issue","id":"new"}},"source_id":"test","unset":["display.label"]}"#;
-        assert_eq!(
-            andamento_apply_patch_json(h, 44, text(PROVIDER), text(unset), ptr::null_mut()),
-            1
-        );
+        assert_eq!(andamento_apply_patch_json(h, 44, text(PROVIDER), text(unset), ptr::null_mut()), 1);
         let removed = andamento_snapshot_acquire(h, ptr::null_mut());
-        assert_eq!(
-            andamento_snapshot_detail_request(
-                h,
-                removed,
-                entity(text("issue"), text("new")),
-                ptr::null_mut()
-            ),
-            usize::MAX
-        );
-        assert_ne!(
-            andamento_snapshot_detail_find(fresh, entity(text("issue"), text("new"))),
-            usize::MAX
-        );
+        assert_eq!(andamento_snapshot_detail_request(h, removed, entity(text("issue"), text("new")), ptr::null_mut()), usize::MAX);
+        assert_ne!(andamento_snapshot_detail_find(fresh, entity(text("issue"), text("new"))), usize::MAX);
         andamento_snapshot_release(removed);
         // Cached detail on the old snapshot remains readable after mutation.
         assert_ne!(
-            andamento_snapshot_detail_request(
-                h,
-                plain,
-                entity(text("worktree"), text("worktree:identity / #")),
-                ptr::null_mut()
-            ),
+            andamento_snapshot_detail_request(h, plain, entity(text("worktree"), text("worktree:identity / #")), ptr::null_mut()),
             usize::MAX
         );
         for snapshot in [fresh, eager, plain] {
@@ -513,10 +305,7 @@ fn nonplacement_region_reports_template_diagnostic() {
         let config = "region \"legacy\" root-template=\"missing-template\"";
         let h = andamento_create(config.as_ptr(), config.len(), ptr::null_mut());
         assert!(!h.is_null());
-        for snapshot in [
-            andamento_snapshot_acquire(h, ptr::null_mut()),
-            andamento_snapshot_acquire_details(h, ptr::null_mut()),
-        ] {
+        for snapshot in [andamento_snapshot_acquire(h, ptr::null_mut()), andamento_snapshot_acquire_details(h, ptr::null_mut())] {
             assert!(andamento_snapshot_diagnostic_count(snapshot) > 0);
             andamento_snapshot_release(snapshot);
         }
@@ -532,23 +321,11 @@ fn demand_rejects_invalid_text_and_foreign_snapshots() {
         let h = andamento_create(ptr::null(), 0, ptr::null_mut());
         let snapshot = andamento_snapshot_acquire(h, ptr::null_mut());
         let invalid_utf8 = [0xff];
-        let bad_texts = [
-            Text {
-                data: ptr::null(),
-                len: 1,
-            },
-            Text {
-                data: invalid_utf8.as_ptr(),
-                len: 1,
-            },
-        ];
+        let bad_texts = [Text { data: ptr::null(), len: 1 }, Text { data: invalid_utf8.as_ptr(), len: 1 }];
         for bad in bad_texts {
             for (kind, id) in [(bad, text("id")), (text("kind"), bad)] {
                 let mut error = ptr::null_mut();
-                assert_eq!(
-                    andamento_snapshot_detail_request(h, snapshot, entity(kind, id), &mut error),
-                    usize::MAX
-                );
+                assert_eq!(andamento_snapshot_detail_request(h, snapshot, entity(kind, id), &mut error), usize::MAX);
                 assert!(!error.is_null());
                 andamento_string_free(error);
                 assert_eq!(andamento_snapshot_detail_count(snapshot), 0);
@@ -556,31 +333,12 @@ fn demand_rejects_invalid_text_and_foreign_snapshots() {
         }
         let mut error = ptr::null_mut();
         assert_eq!(
-            andamento_snapshot_detail_request(
-                h,
-                snapshot,
-                entity(
-                    Text {
-                        data: ptr::null(),
-                        len: 0
-                    },
-                    text("")
-                ),
-                &mut error
-            ),
+            andamento_snapshot_detail_request(h, snapshot, entity(Text { data: ptr::null(), len: 0 }, text("")), &mut error),
             usize::MAX
         );
         assert!(error.is_null());
         let other = andamento_create(ptr::null(), 0, ptr::null_mut());
-        assert_eq!(
-            andamento_snapshot_detail_request(
-                other,
-                snapshot,
-                entity(text("kind"), text("id")),
-                &mut error
-            ),
-            usize::MAX
-        );
+        assert_eq!(andamento_snapshot_detail_request(other, snapshot, entity(text("kind"), text("id")), &mut error), usize::MAX);
         assert!(!error.is_null());
         andamento_string_free(error);
         andamento_destroy(other);

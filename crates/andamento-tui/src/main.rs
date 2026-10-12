@@ -23,13 +23,7 @@ mod native {
     impl TmuxHost {
         fn observe(&mut self) -> io::Result<Vec<Workspace>> {
             let output = Command::new("tmux")
-                .args([
-                    "list-windows",
-                    "-t",
-                    &self.target,
-                    "-F",
-                    "#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}",
-                ])
+                .args(["list-windows", "-t", &self.target, "-F", "#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}"])
                 .output()?;
             if !output.status.success() {
                 return Err(io::Error::other("tmux list-windows failed"));
@@ -47,27 +41,12 @@ mod native {
                         .find(|workspace| workspace.id == workspace_id)
                         .ok_or_else(|| io::Error::other("tmux window disappeared"))?
                         .position;
-                    tmux_status([
-                        "select-window",
-                        "-t",
-                        &format!("{}:{position}", self.target),
-                    ])?;
+                    tmux_status(["select-window", "-t", &format!("{}:{position}", self.target)])?;
                     Ok(None)
                 }
-                HostEffect::Materialize {
-                    name, recipe, cwd, ..
-                } => {
+                HostEffect::Materialize { name, recipe, cwd, .. } => {
                     let mut command = Command::new("tmux");
-                    command.args([
-                        "new-window",
-                        "-P",
-                        "-F",
-                        "#{window_id}",
-                        "-t",
-                        &self.target,
-                        "-n",
-                        &name,
-                    ]);
+                    command.args(["new-window", "-P", "-F", "#{window_id}", "-t", &self.target, "-n", &name]);
                     if let Some(cwd) = cwd.as_deref() {
                         command.args(["-c", cwd]);
                     }
@@ -84,11 +63,7 @@ mod native {
                     Ok(Some(window_workspace_id(id)))
                 }
                 HostEffect::OpenUrl { url } => {
-                    let opener = if cfg!(target_os = "macos") {
-                        "open"
-                    } else {
-                        "xdg-open"
-                    };
+                    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
                     let status = Command::new(opener).arg(url).status()?;
                     if !status.success() {
                         return Err(io::Error::other("opening URL failed"));
@@ -126,21 +101,14 @@ mod native {
 
     fn effect_request_id(effect: &HostEffect) -> Option<u64> {
         match effect {
-            HostEffect::Focus { request_id, .. } | HostEffect::Materialize { request_id, .. } => {
-                Some(*request_id)
-            }
-            HostEffect::Inspect { .. }
-            | HostEffect::OpenUrl { .. }
-            | HostEffect::CopyUrl { .. } => None,
+            HostEffect::Focus { request_id, .. } | HostEffect::Materialize { request_id, .. } => Some(*request_id),
+            HostEffect::Inspect { .. } | HostEffect::OpenUrl { .. } | HostEffect::CopyUrl { .. } => None,
         }
     }
 
     fn tmux_status<const N: usize>(args: [&str; N]) -> io::Result<()> {
         let status = Command::new("tmux").args(args).status()?;
-        status
-            .success()
-            .then_some(())
-            .ok_or_else(|| io::Error::other(format!("tmux exited with {status}")))
+        status.success().then_some(()).ok_or_else(|| io::Error::other(format!("tmux exited with {status}")))
     }
 
     pub fn main() -> ExitCode {
@@ -152,20 +120,13 @@ mod native {
 
     fn run() -> io::Result<()> {
         let mut args = env::args().skip(1);
-        let target = args.next().ok_or_else(|| {
-            io::Error::other("usage: andamento-tui TMUX_TARGET CONFIG_KDL FACTS_COMMAND...")
-        })?;
-        let config = args
-            .next()
-            .ok_or_else(|| io::Error::other("missing CONFIG_KDL"))?;
+        let target = args.next().ok_or_else(|| io::Error::other("usage: andamento-tui TMUX_TARGET CONFIG_KDL FACTS_COMMAND..."))?;
+        let config = args.next().ok_or_else(|| io::Error::other("missing CONFIG_KDL"))?;
         let facts_command = args.collect::<Vec<_>>();
         let mut sidebar = Sidebar::new(&fs::read_to_string(config)?).map_err(io::Error::other)?;
         let (sender, receiver) = mpsc::channel();
         let mut facts_child = spawn_facts_reader(facts_command, sender)?;
-        let mut host = TmuxHost {
-            target,
-            workspaces: vec![],
-        };
+        let mut host = TmuxHost { target, workspaces: vec![] };
         terminal::enable_raw_mode()?;
         let mut output = io::stdout();
         execute!(output, terminal::EnterAlternateScreen, cursor::Hide)?;
@@ -177,17 +138,9 @@ mod native {
         result
     }
 
-    fn spawn_facts_reader(
-        command: Vec<String>,
-        sender: mpsc::Sender<MetadataPatch>,
-    ) -> io::Result<Child> {
-        let program = command
-            .first()
-            .ok_or_else(|| io::Error::other("missing FACTS_COMMAND"))?;
-        let mut child = Command::new(program)
-            .args(&command[1..])
-            .stdout(Stdio::piped())
-            .spawn()?;
+    fn spawn_facts_reader(command: Vec<String>, sender: mpsc::Sender<MetadataPatch>) -> io::Result<Child> {
+        let program = command.first().ok_or_else(|| io::Error::other("missing FACTS_COMMAND"))?;
+        let mut child = Command::new(program).args(&command[1..]).stdout(Stdio::piped()).spawn()?;
         let stdout = child.stdout.take().unwrap();
         std::thread::spawn(move || {
             for line in io::BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -212,9 +165,7 @@ mod native {
         let mut selected = 0usize;
         loop {
             let patches = facts.try_iter().collect::<Vec<_>>();
-            sidebar
-                .apply(now_ms(), PROVIDER, patches)
-                .map_err(io::Error::other)?;
+            sidebar.apply(now_ms(), PROVIDER, patches).map_err(io::Error::other)?;
             let workspaces = match host.observe() {
                 Ok(workspaces) => workspaces,
                 Err(error) => {
@@ -225,36 +176,23 @@ mod native {
             sidebar.observe(workspaces, vec![]);
             let frame = surface::render(&sidebar.snapshot().surface, terminal::size()?.0 as usize);
             selected = selected.min(frame.hits.len().saturating_sub(1));
-            draw(
-                &frame.lines,
-                frame.hits.get(selected).map(|hit| hit.row),
-                output,
-            )?;
+            draw(&frame.lines, frame.hits.get(selected).map(|hit| hit.row), output)?;
             if event::poll(Duration::from_secs(1))? {
                 if let event::Event::Key(key) = event::read()? {
                     match key.code {
                         event::KeyCode::Char('q') => return Ok(()),
                         event::KeyCode::Up => selected = selected.saturating_sub(1),
-                        event::KeyCode::Down => {
-                            selected = (selected + 1).min(frame.hits.len().saturating_sub(1))
-                        }
+                        event::KeyCode::Down => selected = (selected + 1).min(frame.hits.len().saturating_sub(1)),
                         event::KeyCode::Enter => {
                             if let Some(hit) = frame.hits.get(selected) {
-                                let response = sidebar
-                                    .handle(Request::Dispatch {
-                                        action: hit.action.clone(),
-                                    })
-                                    .map_err(io::Error::other)?;
+                                let response =
+                                    sidebar.handle(Request::Dispatch { action: hit.action.clone() }).map_err(io::Error::other)?;
                                 for effect in response.effects {
                                     let request_id = effect_request_id(&effect);
                                     match host.execute(effect) {
                                         Ok(workspace_id) if request_id.is_some() => {
                                             sidebar
-                                                .handle(Request::Complete {
-                                                    request_id: request_id.unwrap(),
-                                                    workspace_id,
-                                                    error: None,
-                                                })
+                                                .handle(Request::Complete { request_id: request_id.unwrap(), workspace_id, error: None })
                                                 .map_err(io::Error::other)?;
                                         }
                                         Err(error) if request_id.is_some() => {
@@ -279,32 +217,17 @@ mod native {
         }
     }
 
-    fn draw(
-        lines: &[String],
-        selected_row: Option<usize>,
-        output: &mut impl Write,
-    ) -> io::Result<()> {
-        execute!(
-            output,
-            cursor::MoveTo(0, 0),
-            terminal::Clear(terminal::ClearType::All)
-        )?;
+    fn draw(lines: &[String], selected_row: Option<usize>, output: &mut impl Write) -> io::Result<()> {
+        execute!(output, cursor::MoveTo(0, 0), terminal::Clear(terminal::ClearType::All))?;
         for (row, line) in lines.iter().enumerate() {
-            writeln!(
-                output,
-                "{} {line}\r",
-                if Some(row) == selected_row { '>' } else { ' ' }
-            )?;
+            writeln!(output, "{} {line}\r", if Some(row) == selected_row { '>' } else { ' ' })?;
         }
         write!(output, "\r\n[↑/↓] select  [enter] activate  [q] quit")?;
         output.flush()
     }
 
     fn now_ms() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
     }
 
     #[cfg(test)]
@@ -315,14 +238,7 @@ mod native {
         fn parses_tmux_workspace_rows_and_skips_malformed_rows() {
             let workspaces = parse_workspaces("@7\t2\twork\t1\ninvalid\n@8\t3\tdocs\t0\n");
             assert_eq!(workspaces.len(), 2);
-            assert_eq!(
-                (
-                    workspaces[0].id,
-                    workspaces[0].position,
-                    workspaces[0].selected
-                ),
-                (tab_workspace_id(7), 2, true)
-            );
+            assert_eq!((workspaces[0].id, workspaces[0].position, workspaces[0].selected), (tab_workspace_id(7), 2, true));
             assert_eq!(workspaces[1].name, "docs");
         }
 

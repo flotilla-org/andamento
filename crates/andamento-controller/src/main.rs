@@ -14,15 +14,12 @@ use andamento_shared::PluginStatsRecorder;
 use andamento_shared::MSG_RAIL_SIZE_TARGET;
 use andamento_shared::MSG_VIEW_MODEL;
 use andamento_shared::{
-    host::tab_label, tab_workspace_id, ConfigInspectRequest, ControllerBootstrapSnapshot,
-    ExternalMessage, MetadataVisibilitySetRequest, NodeKey, NodeVariableSetRequest,
-    PluginRegistrationHello, RailConfig, RailRgbColor, RailSize, RailSizeObserved, RailSizeTarget,
-    RailStructure, RailUiAction, RailUiState, RendererHello, SortMode, StatsCollectRequest,
-    MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT,
-    MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_OBSERVED_IDENTITIES,
-    MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO,
-    MSG_REQUEST_RAIL_UI_STATE, MSG_REQUEST_STATE, MSG_SET_METADATA_VISIBILITY,
-    MSG_SET_NODE_VARIABLE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE,
+    host::tab_label, tab_workspace_id, ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage, MetadataVisibilitySetRequest,
+    NodeKey, NodeVariableSetRequest, PluginRegistrationHello, RailConfig, RailRgbColor, RailSize, RailSizeObserved, RailSizeTarget,
+    RailStructure, RailUiAction, RailUiState, RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH,
+    MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE,
+    MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO, MSG_REQUEST_RAIL_UI_STATE,
+    MSG_REQUEST_STATE, MSG_SET_METADATA_VISIBILITY, MSG_SET_NODE_VARIABLE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE,
     MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
@@ -47,17 +44,9 @@ const CONFIG_ORIGIN_TAB_ID: &str = "origin_tab_id";
 const CONFIG_PANE_KIND: &str = "pane_kind";
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
 
-fn command_for_materialize_recipe(
-    recipe: &str,
-    checkout_path: Option<&str>,
-    home_dir: Option<&std::path::Path>,
-) -> Option<CommandToRun> {
+fn command_for_materialize_recipe(recipe: &str, checkout_path: Option<&str>, home_dir: Option<&std::path::Path>) -> Option<CommandToRun> {
     let mut command = CommandToRun::new_with_args("/bin/sh", vec!["-c", recipe]);
-    command.cwd = Some(
-        checkout_path
-            .map(PathBuf::from)
-            .or_else(|| home_dir.map(std::path::Path::to_path_buf))?,
-    );
+    command.cwd = Some(checkout_path.map(PathBuf::from).or_else(|| home_dir.map(std::path::Path::to_path_buf))?);
     Some(command)
 }
 
@@ -99,22 +88,17 @@ fn run_harness() -> Result<(), String> {
         }
     }
     let template_kdl = match template_path {
-        Some(path) => std::fs::read_to_string(&path)
-            .map_err(|error| format!("read template {path}: {error}"))?,
+        Some(path) => std::fs::read_to_string(&path).map_err(|error| format!("read template {path}: {error}"))?,
         None => include_str!("../../../templates/flotilla-default.kdl").to_owned(),
     };
 
     let mut state = ControllerState::default();
     let templates = andamento_shared::template_config::parse_template_config_kdl(&template_kdl)
         .map_err(|error| format!("parse template KDL: {error:?}"))?;
-    state.set_template_catalog(Some(
-        andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(templates),
-    ));
-    let raw = std::fs::read_to_string(&patches_path)
-        .map_err(|error| format!("read patches {patches_path}: {error}"))?;
+    state.set_template_catalog(Some(andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(templates)));
+    let raw = std::fs::read_to_string(&patches_path).map_err(|error| format!("read patches {patches_path}: {error}"))?;
     let (mut applied, mut failed) = (0usize, 0usize);
-    let frames = andamento_shared::replay::read(std::io::Cursor::new(raw))
-        .map_err(|error| format!("parse replay stream: {error}"))?;
+    let frames = andamento_shared::replay::read(std::io::Cursor::new(raw)).map_err(|error| format!("parse replay stream: {error}"))?;
     for frame in frames {
         state.advance_time(frame.offset_ms);
         let target = frame.patch.target.clone();
@@ -133,11 +117,7 @@ fn run_harness() -> Result<(), String> {
         if let Some(surface) = &model.presentation {
             fn dump(nodes: &[andamento_shared::presentation::PlacementNode], slot: &str) {
                 for node in nodes {
-                    let content = if slot == "detail" {
-                        &node.detail
-                    } else {
-                        &node.content
-                    };
+                    let content = if slot == "detail" { &node.detail } else { &node.content };
                     std::println!("{}: {}", node.label, content.effective_kdl);
                     dump(&node.children, slot);
                 }
@@ -155,16 +135,10 @@ fn run_harness() -> Result<(), String> {
 /// questions are answerable here instead of only in a running zellij.
 #[cfg(not(target_family = "wasm"))]
 fn render_rail_lines(model: &andamento_shared::ControllerViewModel) {
-    let cols = std::env::var("HARNESS_COLS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(46usize);
+    let cols = std::env::var("HARNESS_COLS").ok().and_then(|v| v.parse().ok()).unwrap_or(46usize);
     let rows = 80;
     let rendered = andamento_rail::render::render_lines(Some(model), &[], rows, cols, true);
-    std::println!(
-        "=== rendered ({} lines @ {cols} cols) ===",
-        rendered.lines.len()
-    );
+    std::println!("=== rendered ({} lines @ {cols} cols) ===", rendered.lines.len());
     for line in &rendered.lines {
         std::println!("{line}");
     }
@@ -191,18 +165,11 @@ register_plugin!(PluginState);
 impl ZellijPlugin for PluginState {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         let ids = get_plugin_ids();
-        self.own_identity = Some(RendererHello {
-            plugin_id: ids.plugin_id,
-            client_id: ids.client_id,
-        });
+        self.own_identity = Some(RendererHello { plugin_id: ids.plugin_id, client_id: ids.client_id });
         self.state.set_rail_ui_writer_client_id(ids.client_id);
-        self.state
-            .set_rail_config(parse_rail_config(&configuration));
+        self.state.set_rail_config(parse_rail_config(&configuration));
         self.template_config_path = template_config_path_from_configuration(&configuration);
-        self.state
-            .set_template_config_diagnostics(initial_template_config_diagnostics(
-                self.template_config_path.clone(),
-            ));
+        self.state.set_template_config_diagnostics(initial_template_config_diagnostics(self.template_config_path.clone()));
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
@@ -240,21 +207,16 @@ impl ZellijPlugin for PluginState {
             Event::FailedToChangeHostFolder(error) => {
                 self.stats.increment("update.failed-host-folder");
                 self.template_reload_pending = false;
-                self.state
-                    .set_template_config_diagnostics(template_config_error_diagnostics(
-                        self.template_config_path.clone(),
-                        format!(
-                            "failed to set /host root: {}",
-                            error.unwrap_or_else(|| "unknown error".to_owned())
-                        ),
-                    ));
+                self.state.set_template_config_diagnostics(template_config_error_diagnostics(
+                    self.template_config_path.clone(),
+                    format!("failed to set /host root: {}", error.unwrap_or_else(|| "unknown error".to_owned())),
+                ));
                 self.push_view_model_to_rails_with_pending(ViewModelPushReason::UpdateHostFolder);
                 return true;
             }
             Event::Timer(seconds) => {
                 self.stats.increment("update.timer");
-                self.stats
-                    .add("update.timer.elapsed-ms", (seconds * 1000.0) as u64);
+                self.stats.add("update.timer.elapsed-ms", (seconds * 1000.0) as u64);
                 let mut should_render = false;
                 // Timer events carry elapsed wall time, not the requested timeout,
                 // so route them by pending controller state instead of by value.
@@ -289,13 +251,9 @@ impl ZellijPlugin for PluginState {
                     // Mark before the call: one attempt per pane lifetime. On
                     // failure (e.g. host-side timeout) we rely on
                     // Event::CwdChanged rather than retrying every PaneUpdate.
-                    self.state
-                        .mark_pane_cwd_requested(PaneTarget::Terminal(terminal_id));
+                    self.state.mark_pane_cwd_requested(PaneTarget::Terminal(terminal_id));
                     if let Ok(cwd) = get_pane_cwd(PaneId::Terminal(terminal_id)) {
-                        state_changed |= self.state.set_pane_cwd(
-                            PaneTarget::Terminal(terminal_id),
-                            cwd.display().to_string(),
-                        );
+                        state_changed |= self.state.set_pane_cwd(PaneTarget::Terminal(terminal_id), cwd.display().to_string());
                     }
                 }
                 if state_changed {
@@ -313,8 +271,7 @@ impl ZellijPlugin for PluginState {
             Event::CwdChanged(pane_id, cwd, _) => {
                 self.stats.increment("update.cwd");
                 let state_changed = if let PaneId::Terminal(id) = pane_id {
-                    self.state
-                        .set_pane_cwd(PaneTarget::Terminal(id), cwd.display().to_string())
+                    self.state.set_pane_cwd(PaneTarget::Terminal(id), cwd.display().to_string())
                 } else {
                     false
                 };
@@ -337,18 +294,14 @@ impl ZellijPlugin for PluginState {
                 format!("{}...({} bytes)", truncated, p.len())
             })
             .unwrap_or_else(|| "<no payload>".to_owned());
-        let entry = format!(
-            "pipe name={:?} src={:?} payload={}",
-            pipe_message.name, pipe_message.source, payload_preview,
-        );
+        let entry = format!("pipe name={:?} src={:?} payload={}", pipe_message.name, pipe_message.source, payload_preview,);
         if self.recent_pipe_log.len() >= RECENT_PIPE_LOG_CAPACITY {
             self.recent_pipe_log.pop_front();
         }
         self.recent_pipe_log.push_back(entry);
         let started_at = Instant::now();
         let mut result = handle_pipe_message(&mut self.state, pipe_message);
-        self.stats
-            .record_span_elapsed("pipe.handle-message", started_at);
+        self.stats.record_span_elapsed("pipe.handle-message", started_at);
         if let Some(entity) = result.activate_entity_request.take() {
             let state_changed = self.activate_entity(entity);
             result.state_changed |= state_changed;
@@ -388,9 +341,7 @@ impl ZellijPlugin for PluginState {
             self.broadcast_rail_ui_state();
         }
         if result.state_changed {
-            let reason = result
-                .view_model_push_reason
-                .unwrap_or(ViewModelPushReason::PipeUnknown);
+            let reason = result.view_model_push_reason.unwrap_or(ViewModelPushReason::PipeUnknown);
             match pipe_view_model_delivery(reason) {
                 PipeViewModelDelivery::Immediate => {
                     self.push_view_model_to_rails_with_pending(reason);
@@ -409,29 +360,13 @@ impl ZellijPlugin for PluginState {
         let diagnostics = self.state.template_config_diagnostics();
         let mut lines = vec![
             "andamento controller".to_owned(),
-            format!(
-                "permissions: {}",
-                if self.permissions_granted {
-                    "granted"
-                } else {
-                    "waiting"
-                }
-            ),
-            format!(
-                "template state: {}",
-                template_config_state_text(diagnostics.state)
-            ),
-            format!(
-                "template path: {}",
-                diagnostics.path.as_deref().unwrap_or("<not configured>")
-            ),
+            format!("permissions: {}", if self.permissions_granted { "granted" } else { "waiting" }),
+            format!("template state: {}", template_config_state_text(diagnostics.state)),
+            format!("template path: {}", diagnostics.path.as_deref().unwrap_or("<not configured>")),
             format!("template count: {}", diagnostics.template_count),
         ];
         if !diagnostics.template_names.is_empty() {
-            lines.push(format!(
-                "template names: {}",
-                diagnostics.template_names.join(", ")
-            ));
+            lines.push(format!("template names: {}", diagnostics.template_names.join(", ")));
         }
         if let Some(error) = diagnostics.last_error.as_ref() {
             lines.push(format!("template error: {error}"));
@@ -451,8 +386,7 @@ impl ZellijPlugin for PluginState {
             lines.push(String::new());
         }
         print!("{}", render_plain_lines(&lines, cols).join("\n"));
-        self.stats
-            .record_span_elapsed("render.controller-pane", started_at);
+        self.stats.record_span_elapsed("render.controller-pane", started_at);
     }
 }
 
@@ -465,10 +399,7 @@ impl PluginState {
         }
         self.template_reload_pending = true;
         self.template_reload_attempts = 0;
-        self.state
-            .set_template_config_diagnostics(initial_template_config_diagnostics(
-                self.template_config_path.clone(),
-            ));
+        self.state.set_template_config_diagnostics(initial_template_config_diagnostics(self.template_config_path.clone()));
         set_timeout(TEMPLATE_RELOAD_RETRY_SECS);
         self.push_view_model_to_rails_with_pending(ViewModelPushReason::UpdateTemplate);
     }
@@ -476,8 +407,7 @@ impl PluginState {
     fn retry_template_catalog_reload(&mut self) -> bool {
         self.template_reload_attempts = self.template_reload_attempts.saturating_add(1);
         let loaded = self.reload_template_catalog();
-        self.template_reload_pending =
-            should_retry_template_load(self.template_reload_attempts, loaded);
+        self.template_reload_pending = should_retry_template_load(self.template_reload_attempts, loaded);
         if self.template_reload_pending {
             set_timeout(TEMPLATE_RELOAD_RETRY_SECS);
         }
@@ -486,8 +416,7 @@ impl PluginState {
 
     fn reload_template_catalog(&mut self) -> bool {
         let Some(path) = self.template_config_path.as_deref() else {
-            self.state
-                .set_template_config_diagnostics(TemplateConfigDiagnostics::default());
+            self.state.set_template_config_diagnostics(TemplateConfigDiagnostics::default());
             self.state.set_template_catalog(None);
             return true;
         };
@@ -508,11 +437,7 @@ impl PluginState {
             }
             Err(error) => {
                 eprintln!("andamento-controller: failed to load template config: {error}");
-                self.state
-                    .set_template_config_diagnostics(template_config_error_diagnostics(
-                        Some(path.to_owned()),
-                        error.to_string(),
-                    ));
+                self.state.set_template_config_diagnostics(template_config_error_diagnostics(Some(path.to_owned()), error.to_string()));
                 self.state.set_template_catalog(None);
                 false
             }
@@ -530,9 +455,7 @@ impl PluginState {
             return;
         };
         self.bootstrap_requested = true;
-        pipe_message_to_plugin(
-            MessageToPlugin::new(MSG_CONTROLLER_BOOTSTRAP_REQUEST).with_payload(payload),
-        );
+        pipe_message_to_plugin(MessageToPlugin::new(MSG_CONTROLLER_BOOTSTRAP_REQUEST).with_payload(payload));
     }
 
     fn send_bootstrap_snapshot_to(&mut self, requester: RendererHello) {
@@ -543,8 +466,7 @@ impl PluginState {
         let Ok(payload) = serde_json::to_string(&self.state.bootstrap_snapshot()) else {
             return;
         };
-        self.stats
-            .record_span_elapsed("json.encode-bootstrap-snapshot", started_at);
+        self.stats.record_span_elapsed("json.encode-bootstrap-snapshot", started_at);
         pipe_message_to_plugin(
             MessageToPlugin::new(MSG_CONTROLLER_BOOTSTRAP_STATE)
                 .with_destination_plugin_id(requester.plugin_id)
@@ -582,8 +504,7 @@ impl PluginState {
             return;
         }
         if !self.permissions_granted {
-            self.stats
-                .increment("view-model.push.skipped.no-permission");
+            self.stats.increment("view-model.push.skipped.no-permission");
             return;
         }
         let rail_target_count = self.state.known_rail_count();
@@ -598,24 +519,15 @@ impl PluginState {
             self.stats.increment(reason.counter_name());
         }
         self.stats.add("view-model.targets", targets.len() as u64);
-        self.stats
-            .add("view-model.targets.rails", rail_target_count as u64);
-        self.stats.add(
-            "view-model.targets.config-editors",
-            config_editor_target_count as u64,
-        );
+        self.stats.add("view-model.targets.rails", rail_target_count as u64);
+        self.stats.add("view-model.targets.config-editors", config_editor_target_count as u64);
         for (client_id, client_targets) in group_view_model_targets(targets) {
             let started_at = Instant::now();
-            let Ok(payload) = serde_json::to_string(&self.state.view_model_for_client(client_id))
-            else {
+            let Ok(payload) = serde_json::to_string(&self.state.view_model_for_client(client_id)) else {
                 continue;
             };
-            self.stats
-                .record_span_elapsed("json.encode-view-model", started_at);
-            self.stats.add(
-                "view-model.payload-bytes",
-                (payload.len() as u64).saturating_mul(client_targets.len() as u64),
-            );
+            self.stats.record_span_elapsed("json.encode-view-model", started_at);
+            self.stats.add("view-model.payload-bytes", (payload.len() as u64).saturating_mul(client_targets.len() as u64));
             for target in client_targets {
                 pipe_message_to_plugin(
                     MessageToPlugin::new(MSG_VIEW_MODEL)
@@ -644,12 +556,7 @@ impl PluginState {
         let Ok(payload) = serde_json::to_string(&target) else {
             return;
         };
-        for rail in self
-            .state
-            .rail_plugin_targets()
-            .into_iter()
-            .filter(|rail| rail.client_id == target.client_id)
-        {
+        for rail in self.state.rail_plugin_targets().into_iter().filter(|rail| rail.client_id == target.client_id) {
             pipe_message_to_plugin(
                 MessageToPlugin::new(MSG_RAIL_SIZE_TARGET)
                     .with_destination_plugin_id(rail.plugin_id)
@@ -673,9 +580,7 @@ impl PluginState {
         let Some(identity) = self.own_identity.as_ref() else {
             return;
         };
-        let snapshot = self
-            .stats
-            .snapshot(collection_id, identity.clone(), "controller");
+        let snapshot = self.stats.snapshot(collection_id, identity.clone(), "controller");
         let Ok(payload) = serde_json::to_string(&snapshot) else {
             return;
         };
@@ -724,20 +629,9 @@ impl PluginState {
             self.stats.increment("latent.materialize.rejected-stale");
             return false;
         }
-        let home_dir = request
-            .checkout_path
-            .is_none()
-            .then(|| {
-                get_session_environment_variables()
-                    .get("HOME")
-                    .map(PathBuf::from)
-            })
-            .flatten();
-        let Some(command) = command_for_materialize_recipe(
-            &request.recipe,
-            request.checkout_path.as_deref(),
-            home_dir.as_deref(),
-        ) else {
+        let home_dir =
+            request.checkout_path.is_none().then(|| get_session_environment_variables().get("HOME").map(PathBuf::from)).flatten();
+        let Some(command) = command_for_materialize_recipe(&request.recipe, request.checkout_path.as_deref(), home_dir.as_deref()) else {
             self.stats.increment("latent.materialize.missing-home");
             return self.state.abort_latent_materialization(&request);
         };
@@ -748,10 +642,7 @@ impl PluginState {
             self.stats.increment("latent.materialize.open-failed");
             return self.state.abort_latent_materialization(&request);
         };
-        if !self
-            .state
-            .bind_materializing_tab(&request, tab_workspace_id(tab_id as u64))
-        {
+        if !self.state.bind_materializing_tab(&request, tab_workspace_id(tab_id as u64)) {
             self.stats.increment("latent.materialize.bind-failed");
             return self.state.abort_latent_materialization(&request);
         }
@@ -866,10 +757,7 @@ fn pipe_view_model_delivery(reason: ViewModelPushReason) -> PipeViewModelDeliver
 fn group_view_model_targets(targets: Vec<RendererHello>) -> Vec<(u16, Vec<RendererHello>)> {
     let mut grouped = Vec::<(u16, Vec<RendererHello>)>::new();
     for target in targets {
-        if let Some((_, client_targets)) = grouped
-            .iter_mut()
-            .find(|(client_id, _)| *client_id == target.client_id)
-        {
+        if let Some((_, client_targets)) = grouped.iter_mut().find(|(client_id, _)| *client_id == target.client_id) {
             client_targets.push(target);
         } else {
             grouped.push((target.client_id, vec![target]));
@@ -913,23 +801,14 @@ struct PendingRailSizeSync {
 
 impl PendingRailSizeSync {
     fn queue(&mut self, observed: RailSizeObserved) -> bool {
-        if self
-            .target_by_client
-            .get(&observed.rail.client_id)
-            .map(|target| target.size.within_tolerance(observed.size))
-            .unwrap_or(false)
-            || self
-                .pending_by_client
-                .get(&observed.rail.client_id)
-                .map(|pending| pending.within_tolerance(observed.size))
-                .unwrap_or(false)
+        if self.target_by_client.get(&observed.rail.client_id).map(|target| target.size.within_tolerance(observed.size)).unwrap_or(false)
+            || self.pending_by_client.get(&observed.rail.client_id).map(|pending| pending.within_tolerance(observed.size)).unwrap_or(false)
         {
             return false;
         }
         let should_schedule = !self.scheduled;
         self.scheduled = true;
-        self.pending_by_client
-            .insert(observed.rail.client_id, observed.size);
+        self.pending_by_client.insert(observed.rail.client_id, observed.size);
         should_schedule
     }
 
@@ -939,24 +818,11 @@ impl PendingRailSizeSync {
         pending
             .into_iter()
             .filter_map(|(client_id, size)| {
-                if self
-                    .target_by_client
-                    .get(&client_id)
-                    .map(|target| target.size.within_tolerance(size))
-                    .unwrap_or(false)
-                {
+                if self.target_by_client.get(&client_id).map(|target| target.size.within_tolerance(size)).unwrap_or(false) {
                     return None;
                 }
-                let version = self
-                    .target_by_client
-                    .get(&client_id)
-                    .map(|target| target.version.saturating_add(1))
-                    .unwrap_or(1);
-                let target = RailSizeTarget {
-                    client_id,
-                    size,
-                    version,
-                };
+                let version = self.target_by_client.get(&client_id).map(|target| target.version.saturating_add(1)).unwrap_or(1);
+                let target = RailSizeTarget { client_id, size, version };
                 self.target_by_client.insert(client_id, target.clone());
                 Some(target)
             })
@@ -1022,8 +888,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             HandlePipeResult {
                 state_changed,
                 broadcast_rail_ui_state: true,
-                view_model_push_reason: state_changed
-                    .then_some(ViewModelPushReason::PipeRendererHello),
+                view_model_push_reason: state_changed.then_some(ViewModelPushReason::PipeRendererHello),
                 ..HandlePipeResult::default()
             }
         }
@@ -1031,8 +896,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             let state_changed = state.register_config_editor(hello);
             HandlePipeResult {
                 state_changed,
-                view_model_push_reason: state_changed
-                    .then_some(ViewModelPushReason::PipeConfigEditorHello),
+                view_model_push_reason: state_changed.then_some(ViewModelPushReason::PipeConfigEditorHello),
                 ..HandlePipeResult::default()
             }
         }
@@ -1065,10 +929,9 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             view_model_push_reason: Some(ViewModelPushReason::PipeRequestState),
             ..HandlePipeResult::default()
         },
-        Ok(Some(ControllerMessage::BootstrapRequest(requester))) => HandlePipeResult {
-            bootstrap_request: Some(requester),
-            ..HandlePipeResult::default()
-        },
+        Ok(Some(ControllerMessage::BootstrapRequest(requester))) => {
+            HandlePipeResult { bootstrap_request: Some(requester), ..HandlePipeResult::default() }
+        }
         Ok(Some(ControllerMessage::BootstrapState(snapshot))) => {
             state.apply_bootstrap_snapshot(snapshot);
             HandlePipeResult {
@@ -1079,27 +942,17 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             }
         }
         Ok(Some(ControllerMessage::ObservedIdentitiesRequest(pipe_id))) => {
-            let output = serde_json::to_string(&state.view_model().observed_identities)
-                .unwrap_or_else(|_| "[]".to_owned());
-            HandlePipeResult {
-                cli_pipe_output: Some(CliPipeOutput { pipe_id, output }),
-                ..HandlePipeResult::default()
-            }
+            let output = serde_json::to_string(&state.view_model().observed_identities).unwrap_or_else(|_| "[]".to_owned());
+            HandlePipeResult { cli_pipe_output: Some(CliPipeOutput { pipe_id, output }), ..HandlePipeResult::default() }
         }
-        Ok(Some(ControllerMessage::StatsCollect(request))) => HandlePipeResult {
-            stats_collect_request: Some(request),
-            ..HandlePipeResult::default()
-        },
-        Ok(Some(ControllerMessage::RailSizeObserved(observed))) => HandlePipeResult {
-            rail_size_observed: Some(observed),
-            ..HandlePipeResult::default()
-        },
+        Ok(Some(ControllerMessage::StatsCollect(request))) => {
+            HandlePipeResult { stats_collect_request: Some(request), ..HandlePipeResult::default() }
+        }
+        Ok(Some(ControllerMessage::RailSizeObserved(observed))) => {
+            HandlePipeResult { rail_size_observed: Some(observed), ..HandlePipeResult::default() }
+        }
         Ok(Some(ControllerMessage::SetMetadataVisibility(request))) => {
-            state.set_metadata_visibility_for_client(
-                request.client_id,
-                request.node_key,
-                request.state,
-            );
+            state.set_metadata_visibility_for_client(request.client_id, request.node_key, request.state);
             HandlePipeResult {
                 state_changed: true,
                 view_model_push_reason: Some(ViewModelPushReason::PipeMetadataControls),
@@ -1113,8 +966,7 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             HandlePipeResult {
                 state_changed: display_variable_changed,
                 broadcast_rail_ui_state: changed,
-                view_model_push_reason: display_variable_changed
-                    .then_some(ViewModelPushReason::PipeDisplayVariable),
+                view_model_push_reason: display_variable_changed.then_some(ViewModelPushReason::PipeDisplayVariable),
                 ..HandlePipeResult::default()
             }
         }
@@ -1122,45 +974,35 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
             state.apply_rail_ui_state(snapshot);
             HandlePipeResult::default()
         }
-        Ok(Some(ControllerMessage::RequestRailUiState)) => HandlePipeResult {
-            broadcast_rail_ui_state: true,
-            ..HandlePipeResult::default()
-        },
+        Ok(Some(ControllerMessage::RequestRailUiState)) => {
+            HandlePipeResult { broadcast_rail_ui_state: true, ..HandlePipeResult::default() }
+        }
         Ok(Some(ControllerMessage::SetNodeVariable(request))) => {
-            let state_changed =
-                state.set_node_variable(request.node_key, request.name, request.value);
+            let state_changed = state.set_node_variable(request.node_key, request.name, request.value);
             HandlePipeResult {
                 state_changed,
-                view_model_push_reason: state_changed
-                    .then_some(ViewModelPushReason::PipeMetadataControls),
+                view_model_push_reason: state_changed.then_some(ViewModelPushReason::PipeMetadataControls),
                 ..HandlePipeResult::default()
             }
         }
         Ok(Some(ControllerMessage::ConfigInspect(request))) => {
-            let state_changed =
-                state.set_inspected_node(request.client_id, request.node_key.clone());
+            let state_changed = state.set_inspected_node(request.client_id, request.node_key.clone());
             HandlePipeResult {
                 state_changed,
-                view_model_push_reason: state_changed
-                    .then_some(ViewModelPushReason::PipeMetadataControls),
+                view_model_push_reason: state_changed.then_some(ViewModelPushReason::PipeMetadataControls),
                 config_inspect_request: Some(request),
                 ..HandlePipeResult::default()
             }
         }
-        Ok(Some(ControllerMessage::MaterializeLatent(request))) => HandlePipeResult {
-            materialize_latent_request: Some(request),
-            ..HandlePipeResult::default()
-        },
-        Ok(Some(ControllerMessage::ActivateEntity(entity))) => HandlePipeResult {
-            activate_entity_request: Some(entity),
-            ..HandlePipeResult::default()
-        },
+        Ok(Some(ControllerMessage::MaterializeLatent(request))) => {
+            HandlePipeResult { materialize_latent_request: Some(request), ..HandlePipeResult::default() }
+        }
+        Ok(Some(ControllerMessage::ActivateEntity(entity))) => {
+            HandlePipeResult { activate_entity_request: Some(entity), ..HandlePipeResult::default() }
+        }
         Ok(None) => HandlePipeResult::default(),
         Err(error) => {
-            let message = format!(
-                "andamento-controller: rejected pipe message {}: {error}",
-                pipe_message.name
-            );
+            let message = format!("andamento-controller: rejected pipe message {}: {error}", pipe_message.name);
             log::error!("{message}");
             eprintln!("{message}");
             HandlePipeResult::default()
@@ -1172,38 +1014,22 @@ fn handle_pipe_message(state: &mut ControllerState, pipe_message: PipeMessage) -
 
 fn parse_rail_config(configuration: &BTreeMap<String, String>) -> RailConfig {
     RailConfig {
-        structure: configuration
-            .get("rail_structure")
-            .and_then(|value| parse_rail_structure(value))
-            .unwrap_or_default(),
-        segment_between_color: configuration
-            .get("rail_segment_between_color")
-            .and_then(|value| parse_rail_rgb_color(value)),
+        structure: configuration.get("rail_structure").and_then(|value| parse_rail_structure(value)).unwrap_or_default(),
+        segment_between_color: configuration.get("rail_segment_between_color").and_then(|value| parse_rail_rgb_color(value)),
     }
 }
 
-fn template_config_path_from_configuration(
-    configuration: &BTreeMap<String, String>,
-) -> Option<String> {
+fn template_config_path_from_configuration(configuration: &BTreeMap<String, String>) -> Option<String> {
     path_from_configuration(configuration, "template_config_path")
 }
 
 fn path_from_configuration(configuration: &BTreeMap<String, String>, key: &str) -> Option<String> {
-    configuration
-        .get(key)
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(zellij_tile::vfs::expand_env)
+    configuration.get(key).map(String::as_str).map(str::trim).filter(|path| !path.is_empty()).map(zellij_tile::vfs::expand_env)
 }
 
 fn initial_template_config_diagnostics(path: Option<String>) -> TemplateConfigDiagnostics {
     TemplateConfigDiagnostics {
-        state: if path.is_some() {
-            TemplateConfigState::PendingPermission
-        } else {
-            TemplateConfigState::NotConfigured
-        },
+        state: if path.is_some() { TemplateConfigState::PendingPermission } else { TemplateConfigState::NotConfigured },
         path,
         template_count: 0,
         template_names: vec![],
@@ -1213,10 +1039,7 @@ fn initial_template_config_diagnostics(path: Option<String>) -> TemplateConfigDi
     }
 }
 
-fn template_config_error_diagnostics(
-    path: Option<String>,
-    error: String,
-) -> TemplateConfigDiagnostics {
+fn template_config_error_diagnostics(path: Option<String>, error: String) -> TemplateConfigDiagnostics {
     TemplateConfigDiagnostics {
         path,
         state: TemplateConfigState::Error,
@@ -1228,10 +1051,7 @@ fn template_config_error_diagnostics(
     }
 }
 
-fn config_inspect_message_for_existing_editor(
-    request: &ConfigInspectRequest,
-    target: RendererHello,
-) -> Option<MessageToPlugin> {
+fn config_inspect_message_for_existing_editor(request: &ConfigInspectRequest, target: RendererHello) -> Option<MessageToPlugin> {
     let payload = serde_json::to_string(request).ok()?;
     Some(
         MessageToPlugin::new(MSG_CONFIG_INSPECT)
@@ -1241,24 +1061,13 @@ fn config_inspect_message_for_existing_editor(
     )
 }
 
-fn config_inspect_message_for_new_editor(
-    request: &ConfigInspectRequest,
-) -> Option<MessageToPlugin> {
+fn config_inspect_message_for_new_editor(request: &ConfigInspectRequest) -> Option<MessageToPlugin> {
     let payload = serde_json::to_string(request).ok()?;
     let mut configuration = BTreeMap::new();
-    configuration.insert(
-        CONFIG_CONTROLLER_PLUGIN_URL.to_owned(),
-        request.controller_plugin_url.clone(),
-    );
-    configuration.insert(
-        CONFIG_RAIL_SCOPE.to_owned(),
-        inspect_scope_label(&request.node_key),
-    );
+    configuration.insert(CONFIG_CONTROLLER_PLUGIN_URL.to_owned(), request.controller_plugin_url.clone());
+    configuration.insert(CONFIG_RAIL_SCOPE.to_owned(), inspect_scope_label(&request.node_key));
     configuration.insert(CONFIG_CLOSE_ON_HIDDEN.to_owned(), "true".to_owned());
-    configuration.insert(
-        CONFIG_ORIGIN_TAB_ID.to_owned(),
-        tab_label(request.origin_tab_id),
-    );
+    configuration.insert(CONFIG_ORIGIN_TAB_ID.to_owned(), tab_label(request.origin_tab_id));
     configuration.insert(CONFIG_PANE_KIND.to_owned(), "floating".to_owned());
     Some(
         MessageToPlugin::new(MSG_CONFIG_INSPECT)
@@ -1284,10 +1093,7 @@ fn inspect_scope_label(key: &andamento_shared::NodeKey) -> String {
             "placement:{}",
             key.0
                 .iter()
-                .map(|segment| format!(
-                    "{}={}:{}",
-                    segment.loop_name, segment.entity.kind, segment.entity.id
-                ))
+                .map(|segment| format!("{}={}:{}", segment.loop_name, segment.entity.kind, segment.entity.id))
                 .collect::<Vec<_>>()
                 .join("/")
         ),
@@ -1324,9 +1130,7 @@ fn render_plain_lines(lines: &[String], cols: usize) -> Vec<String> {
 fn parse_rail_structure(value: &str) -> Option<RailStructure> {
     match value {
         "joined-cells" | "joined_cells" | "joined" => Some(RailStructure::JoinedCells),
-        "split-around-active" | "split_around_active" | "split" => {
-            Some(RailStructure::SplitAroundActive)
-        }
+        "split-around-active" | "split_around_active" | "split" => Some(RailStructure::SplitAroundActive),
         "box-per-tab" | "box_per_tab" | "boxes" => Some(RailStructure::BoxPerTab),
         _ => None,
     }
@@ -1368,35 +1172,24 @@ enum ControllerMessage {
     ActivateEntity(andamento_shared::EntityActivationRequest),
 }
 
-fn parse_controller_message(
-    pipe_message: &PipeMessage,
-) -> Result<Option<ControllerMessage>, String> {
+fn parse_controller_message(pipe_message: &PipeMessage) -> Result<Option<ControllerMessage>, String> {
     match pipe_message.name.as_str() {
         MSG_SET_PANE_STATUS | MSG_CLEAR_PANE_STATUS | MSG_APPLY_METADATA_PATCH => {
-            let payload = pipe_message
-                .payload
-                .as_deref()
-                .ok_or_else(|| format!("{} requires a JSON payload", pipe_message.name))?;
+            let payload = pipe_message.payload.as_deref().ok_or_else(|| format!("{} requires a JSON payload", pipe_message.name))?;
             serde_json::from_str::<ExternalMessage>(payload)
                 .map(ControllerMessage::External)
                 .map(Some)
                 .map_err(|e| format!("failed to parse external message: {e}"))
         }
         MSG_RENDERER_HELLO => {
-            let payload = pipe_message
-                .payload
-                .as_deref()
-                .ok_or_else(|| "renderer hello requires a JSON payload".to_owned())?;
+            let payload = pipe_message.payload.as_deref().ok_or_else(|| "renderer hello requires a JSON payload".to_owned())?;
             serde_json::from_str::<PluginRegistrationHello>(payload)
                 .map(ControllerMessage::RendererHello)
                 .map(Some)
                 .map_err(|e| format!("failed to parse renderer hello: {e}"))
         }
         MSG_CONFIG_EDITOR_HELLO => {
-            let payload = pipe_message
-                .payload
-                .as_deref()
-                .ok_or_else(|| "config editor hello requires a JSON payload".to_owned())?;
+            let payload = pipe_message.payload.as_deref().ok_or_else(|| "config editor hello requires a JSON payload".to_owned())?;
             serde_json::from_str::<PluginRegistrationHello>(payload)
                 .map(ControllerMessage::ConfigEditorHello)
                 .map(Some)
@@ -1406,31 +1199,21 @@ fn parse_controller_message(
             .args
             .get("tab_id")
             .ok_or_else(|| "toggle-pin requires tab_id arg".to_owned())
-            .and_then(|tab_id| {
-                tab_id
-                    .parse::<u64>()
-                    .map_err(|e| format!("invalid tab_id: {e}"))
-            })
+            .and_then(|tab_id| tab_id.parse::<u64>().map_err(|e| format!("invalid tab_id: {e}")))
             .map(ControllerMessage::TogglePin)
             .map(Some),
         MSG_SET_SORT_MODE => pipe_message
             .payload
             .as_deref()
             .ok_or_else(|| "set-sort-mode requires payload".to_owned())
-            .and_then(|payload| {
-                serde_json::from_str::<SortMode>(payload)
-                    .map_err(|e| format!("invalid sort mode: {e}"))
-            })
+            .and_then(|payload| serde_json::from_str::<SortMode>(payload).map_err(|e| format!("invalid sort mode: {e}")))
             .map(ControllerMessage::SetSortMode)
             .map(Some),
         MSG_SET_RAIL_CONFIG => pipe_message
             .payload
             .as_deref()
             .ok_or_else(|| "set-rail-config requires payload".to_owned())
-            .and_then(|payload| {
-                serde_json::from_str::<RailConfig>(payload)
-                    .map_err(|e| format!("invalid rail config: {e}"))
-            })
+            .and_then(|payload| serde_json::from_str::<RailConfig>(payload).map_err(|e| format!("invalid rail config: {e}")))
             .map(ControllerMessage::SetRailConfig)
             .map(Some),
 
@@ -1448,20 +1231,14 @@ fn parse_controller_message(
             .payload
             .as_deref()
             .ok_or_else(|| "rail UI action requires payload".to_owned())
-            .and_then(|payload| {
-                serde_json::from_str::<RailUiAction>(payload)
-                    .map_err(|e| format!("invalid rail UI action: {e}"))
-            })
+            .and_then(|payload| serde_json::from_str::<RailUiAction>(payload).map_err(|e| format!("invalid rail UI action: {e}")))
             .map(ControllerMessage::RailUiAction)
             .map(Some),
         MSG_RAIL_UI_STATE => pipe_message
             .payload
             .as_deref()
             .ok_or_else(|| "rail UI state requires payload".to_owned())
-            .and_then(|payload| {
-                serde_json::from_str::<RailUiState>(payload)
-                    .map_err(|e| format!("invalid rail UI state: {e}"))
-            })
+            .and_then(|payload| serde_json::from_str::<RailUiState>(payload).map_err(|e| format!("invalid rail UI state: {e}")))
             .map(ControllerMessage::RailUiState)
             .map(Some),
         MSG_REQUEST_RAIL_UI_STATE => Ok(Some(ControllerMessage::RequestRailUiState)),
@@ -1470,8 +1247,7 @@ fn parse_controller_message(
             .as_deref()
             .ok_or_else(|| "set node variable requires payload".to_owned())
             .and_then(|payload| {
-                serde_json::from_str::<NodeVariableSetRequest>(payload)
-                    .map_err(|e| format!("invalid node variable request: {e}"))
+                serde_json::from_str::<NodeVariableSetRequest>(payload).map_err(|e| format!("invalid node variable request: {e}"))
             })
             .map(ControllerMessage::SetNodeVariable)
             .map(Some),
@@ -1480,8 +1256,7 @@ fn parse_controller_message(
             .as_deref()
             .ok_or_else(|| "config inspect requires payload".to_owned())
             .and_then(|payload| {
-                serde_json::from_str::<ConfigInspectRequest>(payload)
-                    .map_err(|e| format!("invalid config inspect request: {e}"))
+                serde_json::from_str::<ConfigInspectRequest>(payload).map_err(|e| format!("invalid config inspect request: {e}"))
             })
             .map(ControllerMessage::ConfigInspect)
             .map(Some),
@@ -1507,46 +1282,32 @@ fn parse_controller_message(
             .map(Some),
         MSG_REQUEST_STATE => Ok(Some(ControllerMessage::RequestState)),
         MSG_OBSERVED_IDENTITIES => match &pipe_message.source {
-            PipeSource::Cli(pipe_id) => Ok(Some(ControllerMessage::ObservedIdentitiesRequest(
-                pipe_id.clone(),
-            ))),
+            PipeSource::Cli(pipe_id) => Ok(Some(ControllerMessage::ObservedIdentitiesRequest(pipe_id.clone()))),
             _ => Err("observed identities request requires a CLI pipe source".to_owned()),
         },
         MSG_STATS_COLLECT => {
-            let payload = pipe_message
-                .payload
-                .as_deref()
-                .ok_or_else(|| "stats collect requires payload".to_owned())?;
+            let payload = pipe_message.payload.as_deref().ok_or_else(|| "stats collect requires payload".to_owned())?;
             serde_json::from_str::<StatsCollectRequest>(payload)
                 .map(ControllerMessage::StatsCollect)
                 .map(Some)
                 .map_err(|e| format!("failed to parse stats collect request: {e}"))
         }
         MSG_RAIL_SIZE_OBSERVED => {
-            let payload = pipe_message
-                .payload
-                .as_deref()
-                .ok_or_else(|| "rail size observed requires payload".to_owned())?;
+            let payload = pipe_message.payload.as_deref().ok_or_else(|| "rail size observed requires payload".to_owned())?;
             serde_json::from_str::<RailSizeObserved>(payload)
                 .map(ControllerMessage::RailSizeObserved)
                 .map(Some)
                 .map_err(|e| format!("failed to parse rail size observation: {e}"))
         }
         MSG_CONTROLLER_BOOTSTRAP_REQUEST => {
-            let payload = pipe_message
-                .payload
-                .as_deref()
-                .ok_or_else(|| "bootstrap request requires payload".to_owned())?;
+            let payload = pipe_message.payload.as_deref().ok_or_else(|| "bootstrap request requires payload".to_owned())?;
             serde_json::from_str::<RendererHello>(payload)
                 .map(ControllerMessage::BootstrapRequest)
                 .map(Some)
                 .map_err(|e| format!("failed to parse bootstrap request: {e}"))
         }
         MSG_CONTROLLER_BOOTSTRAP_STATE => {
-            let payload = pipe_message
-                .payload
-                .as_deref()
-                .ok_or_else(|| "bootstrap state requires payload".to_owned())?;
+            let payload = pipe_message.payload.as_deref().ok_or_else(|| "bootstrap state requires payload".to_owned())?;
             serde_json::from_str::<ControllerBootstrapSnapshot>(payload)
                 .map(ControllerMessage::BootstrapState)
                 .map(Some)
@@ -1559,18 +1320,10 @@ fn parse_controller_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use andamento_shared::{
-        EntityRef, MetadataTarget, PaneTarget, Priority, ResolvedMetadataTarget, SetPaneStatus,
-    };
+    use andamento_shared::{EntityRef, MetadataTarget, PaneTarget, Priority, ResolvedMetadataTarget, SetPaneStatus};
 
     fn pipe(name: &str, payload: Option<String>, args: BTreeMap<String, String>) -> PipeMessage {
-        PipeMessage {
-            source: PipeSource::Keybind,
-            name: name.to_owned(),
-            payload,
-            args,
-            is_private: false,
-        }
+        PipeMessage { source: PipeSource::Keybind, name: name.to_owned(), payload, args, is_private: false }
     }
 
     fn cli_pipe(name: &str, payload: Option<String>, pipe_id: &str) -> PipeMessage {
@@ -1595,74 +1348,37 @@ mod tests {
         }))
         .unwrap();
 
-        let parsed =
-            parse_controller_message(&pipe(MSG_SET_PANE_STATUS, Some(payload), BTreeMap::new()))
-                .unwrap();
+        let parsed = parse_controller_message(&pipe(MSG_SET_PANE_STATUS, Some(payload), BTreeMap::new())).unwrap();
 
-        assert!(matches!(
-            parsed,
-            Some(ControllerMessage::External(ExternalMessage::SetPaneStatus(
-                _
-            )))
-        ));
+        assert!(matches!(parsed, Some(ControllerMessage::External(ExternalMessage::SetPaneStatus(_)))));
     }
 
     #[test]
     fn parses_clear_pane_status() {
-        let payload = serde_json::to_string(&ExternalMessage::ClearPaneStatus {
-            pane_id: PaneTarget::Terminal(1),
-        })
-        .unwrap();
+        let payload = serde_json::to_string(&ExternalMessage::ClearPaneStatus { pane_id: PaneTarget::Terminal(1) }).unwrap();
 
-        let parsed =
-            parse_controller_message(&pipe(MSG_CLEAR_PANE_STATUS, Some(payload), BTreeMap::new()))
-                .unwrap();
+        let parsed = parse_controller_message(&pipe(MSG_CLEAR_PANE_STATUS, Some(payload), BTreeMap::new())).unwrap();
 
-        assert_eq!(
-            parsed,
-            Some(ControllerMessage::External(
-                ExternalMessage::ClearPaneStatus {
-                    pane_id: PaneTarget::Terminal(1)
-                }
-            ))
-        );
+        assert_eq!(parsed, Some(ControllerMessage::External(ExternalMessage::ClearPaneStatus { pane_id: PaneTarget::Terminal(1) })));
     }
 
     #[test]
     fn parses_renderer_hello() {
-        let hello = PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 7,
-                client_id: 1,
-            },
-            placement: PluginPlacement::Unknown,
-        };
+        let hello = PluginRegistrationHello { identity: RendererHello { plugin_id: 7, client_id: 1 }, placement: PluginPlacement::Unknown };
         let payload = serde_json::to_string(&hello).unwrap();
 
-        let parsed =
-            parse_controller_message(&pipe(MSG_RENDERER_HELLO, Some(payload), BTreeMap::new()))
-                .unwrap();
+        let parsed = parse_controller_message(&pipe(MSG_RENDERER_HELLO, Some(payload), BTreeMap::new())).unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::RendererHello(hello)));
     }
 
     #[test]
     fn parses_config_editor_hello() {
-        let hello = PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 11,
-                client_id: 1,
-            },
-            placement: PluginPlacement::Unknown,
-        };
+        let hello =
+            PluginRegistrationHello { identity: RendererHello { plugin_id: 11, client_id: 1 }, placement: PluginPlacement::Unknown };
         let payload = serde_json::to_string(&hello).unwrap();
 
-        let parsed = parse_controller_message(&pipe(
-            MSG_CONFIG_EDITOR_HELLO,
-            Some(payload),
-            BTreeMap::new(),
-        ))
-        .unwrap();
+        let parsed = parse_controller_message(&pipe(MSG_CONFIG_EDITOR_HELLO, Some(payload), BTreeMap::new())).unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::ConfigEditorHello(hello)));
     }
@@ -1678,9 +1394,7 @@ mod tests {
         };
         let payload = serde_json::to_string(&request).unwrap();
 
-        let parsed =
-            parse_controller_message(&pipe(MSG_CONFIG_INSPECT, Some(payload), BTreeMap::new()))
-                .unwrap();
+        let parsed = parse_controller_message(&pipe(MSG_CONFIG_INSPECT, Some(payload), BTreeMap::new())).unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::ConfigInspect(request)));
     }
@@ -1700,24 +1414,14 @@ mod tests {
         };
         let payload = serde_json::to_string(&entity).unwrap();
 
-        let parsed = parse_controller_message(&pipe(
-            andamento_shared::MSG_ACTIVATE_ENTITY,
-            Some(payload),
-            BTreeMap::new(),
-        ))
-        .unwrap();
+        let parsed = parse_controller_message(&pipe(andamento_shared::MSG_ACTIVATE_ENTITY, Some(payload), BTreeMap::new())).unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::ActivateEntity(entity)));
     }
 
     #[test]
     fn materialize_recipe_uses_checkout_path_as_cwd() {
-        let command = command_for_materialize_recipe(
-            "flotilla attach 'latent tabs'",
-            Some("/work/andamento"),
-            None,
-        )
-        .unwrap();
+        let command = command_for_materialize_recipe("flotilla attach 'latent tabs'", Some("/work/andamento"), None).unwrap();
 
         assert_eq!(command.path.to_string_lossy(), "/bin/sh");
         assert_eq!(command.args, vec!["-c", "flotilla attach 'latent tabs'"]);
@@ -1726,12 +1430,8 @@ mod tests {
 
     #[test]
     fn materialize_recipe_uses_home_as_cwd_without_checkout_path() {
-        let command = command_for_materialize_recipe(
-            "flotilla attach 'latent tabs'",
-            None,
-            Some(std::path::Path::new("/home/robert")),
-        )
-        .unwrap();
+        let command =
+            command_for_materialize_recipe("flotilla attach 'latent tabs'", None, Some(std::path::Path::new("/home/robert"))).unwrap();
 
         assert_eq!(command.path.to_string_lossy(), "/bin/sh");
         assert_eq!(command.args, vec!["-c", "flotilla attach 'latent tabs'"]);
@@ -1740,9 +1440,7 @@ mod tests {
 
     #[test]
     fn materialize_recipe_requires_home_without_checkout_path() {
-        assert!(
-            command_for_materialize_recipe("flotilla attach latent-tabs", None, None).is_none()
-        );
+        assert!(command_for_materialize_recipe("flotilla attach latent-tabs", None, None).is_none());
     }
 
     #[test]
@@ -1754,10 +1452,7 @@ mod tests {
             config_plugin_url: "andamento-config".to_owned(),
             controller_plugin_url: "andamento-controller".to_owned(),
         };
-        let target = RendererHello {
-            plugin_id: 44,
-            client_id: 4,
-        };
+        let target = RendererHello { plugin_id: 44, client_id: 4 };
 
         let message = config_inspect_message_for_existing_editor(&request, target).unwrap();
 
@@ -1766,8 +1461,7 @@ mod tests {
         assert_eq!(message.destination_client_id, Some(4));
         assert_eq!(message.message_name, MSG_CONFIG_INSPECT);
         assert!(message.new_plugin_args.is_none());
-        let payload: ConfigInspectRequest =
-            serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
+        let payload: ConfigInspectRequest = serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
         assert_eq!(payload, request);
     }
 
@@ -1786,35 +1480,11 @@ mod tests {
         assert_eq!(message.plugin_url.as_deref(), Some("andamento-config"));
         assert_eq!(message.destination_client_id, Some(4));
         assert_eq!(message.message_name, MSG_CONFIG_INSPECT);
-        assert_eq!(
-            message
-                .plugin_config
-                .get("controller_plugin_url")
-                .map(String::as_str),
-            Some("andamento-controller")
-        );
-        assert_eq!(
-            message.plugin_config.get("rail_scope").map(String::as_str),
-            Some("tab:7")
-        );
-        assert_eq!(
-            message
-                .plugin_config
-                .get("close_on_hidden")
-                .map(String::as_str),
-            Some("true")
-        );
-        assert_eq!(
-            message
-                .plugin_config
-                .get("origin_tab_id")
-                .map(String::as_str),
-            Some("7")
-        );
-        assert_eq!(
-            message.plugin_config.get("pane_kind").map(String::as_str),
-            Some("floating")
-        );
+        assert_eq!(message.plugin_config.get("controller_plugin_url").map(String::as_str), Some("andamento-controller"));
+        assert_eq!(message.plugin_config.get("rail_scope").map(String::as_str), Some("tab:7"));
+        assert_eq!(message.plugin_config.get("close_on_hidden").map(String::as_str), Some("true"));
+        assert_eq!(message.plugin_config.get("origin_tab_id").map(String::as_str), Some("7"));
+        assert_eq!(message.plugin_config.get("pane_kind").map(String::as_str), Some("floating"));
         let new_plugin_args = message.new_plugin_args.as_ref().unwrap();
         assert_eq!(new_plugin_args.should_float, Some(true));
         assert_eq!(new_plugin_args.should_focus, Some(true));
@@ -1843,30 +1513,17 @@ mod tests {
     #[test]
     fn parses_segment_between_color_from_plugin_configuration() {
         let mut configuration = BTreeMap::new();
-        configuration.insert(
-            "rail_segment_between_color".to_owned(),
-            "#010203".to_owned(),
-        );
+        configuration.insert("rail_segment_between_color".to_owned(), "#010203".to_owned());
 
         let config = parse_rail_config(&configuration);
 
-        assert_eq!(
-            config.segment_between_color,
-            Some(andamento_shared::RailRgbColor {
-                red: 1,
-                green: 2,
-                blue: 3,
-            })
-        );
+        assert_eq!(config.segment_between_color, Some(andamento_shared::RailRgbColor { red: 1, green: 2, blue: 3 }));
     }
 
     #[test]
     fn parses_template_config_path_from_plugin_configuration() {
         let mut configuration = BTreeMap::new();
-        configuration.insert(
-            "template_config_path".to_owned(),
-            " /host/tmp/andamento.kdl ".to_owned(),
-        );
+        configuration.insert("template_config_path".to_owned(), " /host/tmp/andamento.kdl ".to_owned());
 
         let path = template_config_path_from_configuration(&configuration);
 
@@ -1875,33 +1532,20 @@ mod tests {
 
     #[test]
     fn parses_set_rail_config_payload() {
-        let config = RailConfig {
-            structure: RailStructure::SplitAroundActive,
-            segment_between_color: None,
-        };
+        let config = RailConfig { structure: RailStructure::SplitAroundActive, segment_between_color: None };
         let payload = serde_json::to_string(&config).unwrap();
 
-        let parsed =
-            parse_controller_message(&pipe(MSG_SET_RAIL_CONFIG, Some(payload), BTreeMap::new()))
-                .unwrap();
+        let parsed = parse_controller_message(&pipe(MSG_SET_RAIL_CONFIG, Some(payload), BTreeMap::new())).unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::SetRailConfig(config)));
     }
 
     #[test]
     fn parses_controller_bootstrap_request() {
-        let requester = RendererHello {
-            plugin_id: 21,
-            client_id: 2,
-        };
+        let requester = RendererHello { plugin_id: 21, client_id: 2 };
         let payload = serde_json::to_string(&requester).unwrap();
 
-        let parsed = parse_controller_message(&pipe(
-            MSG_CONTROLLER_BOOTSTRAP_REQUEST,
-            Some(payload),
-            BTreeMap::new(),
-        ))
-        .unwrap();
+        let parsed = parse_controller_message(&pipe(MSG_CONTROLLER_BOOTSTRAP_REQUEST, Some(payload), BTreeMap::new())).unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::BootstrapRequest(requester)));
     }
@@ -1910,10 +1554,7 @@ mod tests {
     fn parses_controller_bootstrap_state() {
         let snapshot = ControllerBootstrapSnapshot {
             sort_mode: SortMode::PinnedFirst,
-            config: RailConfig {
-                structure: RailStructure::BoxPerTab,
-                segment_between_color: None,
-            },
+            config: RailConfig { structure: RailStructure::BoxPerTab, segment_between_color: None },
             pinned_tabs: vec![tab_workspace_id(7)],
             pane_statuses: vec![SetPaneStatus {
                 pane_id: PaneTarget::Terminal(1),
@@ -1929,64 +1570,34 @@ mod tests {
         };
         let payload = serde_json::to_string(&snapshot).unwrap();
 
-        let parsed = parse_controller_message(&pipe(
-            MSG_CONTROLLER_BOOTSTRAP_STATE,
-            Some(payload),
-            BTreeMap::new(),
-        ))
-        .unwrap();
+        let parsed = parse_controller_message(&pipe(MSG_CONTROLLER_BOOTSTRAP_STATE, Some(payload), BTreeMap::new())).unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::BootstrapState(snapshot)));
     }
 
     #[test]
     fn parses_observed_identities_cli_request() {
-        let parsed =
-            parse_controller_message(&cli_pipe(MSG_OBSERVED_IDENTITIES, None, "pipe-1")).unwrap();
+        let parsed = parse_controller_message(&cli_pipe(MSG_OBSERVED_IDENTITIES, None, "pipe-1")).unwrap();
 
-        assert_eq!(
-            parsed,
-            Some(ControllerMessage::ObservedIdentitiesRequest(
-                "pipe-1".to_owned()
-            ))
-        );
+        assert_eq!(parsed, Some(ControllerMessage::ObservedIdentitiesRequest("pipe-1".to_owned())));
     }
 
     #[test]
     fn parses_stats_collect_request() {
-        let request = StatsCollectRequest {
-            requester: RendererHello {
-                plugin_id: 22,
-                client_id: 3,
-            },
-            collection_id: 44,
-        };
+        let request = StatsCollectRequest { requester: RendererHello { plugin_id: 22, client_id: 3 }, collection_id: 44 };
         let payload = serde_json::to_string(&request).unwrap();
 
-        let parsed =
-            parse_controller_message(&pipe(MSG_STATS_COLLECT, Some(payload), BTreeMap::new()))
-                .unwrap();
+        let parsed = parse_controller_message(&pipe(MSG_STATS_COLLECT, Some(payload), BTreeMap::new())).unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::StatsCollect(request)));
     }
 
     #[test]
     fn parses_rail_size_observed() {
-        let observed = RailSizeObserved {
-            rail: RendererHello {
-                plugin_id: 33,
-                client_id: 4,
-            },
-            size: RailSize::Percent(18.75),
-        };
+        let observed = RailSizeObserved { rail: RendererHello { plugin_id: 33, client_id: 4 }, size: RailSize::Percent(18.75) };
         let payload = serde_json::to_string(&observed).unwrap();
 
-        let parsed = parse_controller_message(&pipe(
-            MSG_RAIL_SIZE_OBSERVED,
-            Some(payload),
-            BTreeMap::new(),
-        ))
-        .unwrap();
+        let parsed = parse_controller_message(&pipe(MSG_RAIL_SIZE_OBSERVED, Some(payload), BTreeMap::new())).unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::RailSizeObserved(observed)));
     }
@@ -2000,17 +1611,10 @@ mod tests {
         };
         let payload = serde_json::to_string(&request).unwrap();
 
-        let parsed = parse_controller_message(&pipe(
-            andamento_shared::MSG_SET_METADATA_VISIBILITY,
-            Some(payload),
-            BTreeMap::new(),
-        ))
-        .unwrap();
+        let parsed =
+            parse_controller_message(&pipe(andamento_shared::MSG_SET_METADATA_VISIBILITY, Some(payload), BTreeMap::new())).unwrap();
 
-        assert_eq!(
-            parsed,
-            Some(ControllerMessage::SetMetadataVisibility(request))
-        );
+        assert_eq!(parsed, Some(ControllerMessage::SetMetadataVisibility(request)));
     }
 
     #[test]
@@ -2018,27 +1622,17 @@ mod tests {
         let mut state = ControllerState::default();
         let scroll = serde_json::to_string(&RailUiAction::ScrollBy { delta: 6 }).unwrap();
 
-        let result = handle_pipe_message(
-            &mut state,
-            pipe(MSG_RAIL_UI_ACTION, Some(scroll), BTreeMap::new()),
-        );
+        let result = handle_pipe_message(&mut state, pipe(MSG_RAIL_UI_ACTION, Some(scroll), BTreeMap::new()));
 
         assert!(result.broadcast_rail_ui_state);
         assert_eq!(state.rail_ui_state().scroll_offset, 6);
 
-        let ensure_visible =
-            serde_json::to_string(&RailUiAction::SetScrollOffset { offset: 19 }).unwrap();
-        handle_pipe_message(
-            &mut state,
-            pipe(MSG_RAIL_UI_ACTION, Some(ensure_visible), BTreeMap::new()),
-        );
+        let ensure_visible = serde_json::to_string(&RailUiAction::SetScrollOffset { offset: 19 }).unwrap();
+        handle_pipe_message(&mut state, pipe(MSG_RAIL_UI_ACTION, Some(ensure_visible), BTreeMap::new()));
         assert_eq!(state.rail_ui_state().scroll_offset, 19);
 
         let reset = serde_json::to_string(&RailUiAction::ResetScroll).unwrap();
-        handle_pipe_message(
-            &mut state,
-            pipe(MSG_RAIL_UI_ACTION, Some(reset), BTreeMap::new()),
-        );
+        handle_pipe_message(&mut state, pipe(MSG_RAIL_UI_ACTION, Some(reset), BTreeMap::new()));
 
         assert_eq!(state.rail_ui_state().scroll_offset, 0);
     }
@@ -2046,34 +1640,20 @@ mod tests {
     #[test]
     fn display_variable_action_broadcasts_state_and_pushes_a_new_view_model() {
         let mut state = ControllerState::default();
-        state.set_template_catalog(Some(
-            andamento_shared::template_config::TemplateConfigCatalog::from_config(
-                andamento_shared::template_config::parse_template_config_kdl(
-                    r#"display-variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
-                )
-                .unwrap(),
-            ),
-        ));
-        let action = serde_json::to_string(&RailUiAction::ToggleVariable {
-            name: "show-issues".to_owned(),
-        })
-        .unwrap();
+        state.set_template_catalog(Some(andamento_shared::template_config::TemplateConfigCatalog::from_config(
+            andamento_shared::template_config::parse_template_config_kdl(
+                r#"display-variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
+            )
+            .unwrap(),
+        )));
+        let action = serde_json::to_string(&RailUiAction::ToggleVariable { name: "show-issues".to_owned() }).unwrap();
 
-        let result = handle_pipe_message(
-            &mut state,
-            pipe(MSG_RAIL_UI_ACTION, Some(action), BTreeMap::new()),
-        );
+        let result = handle_pipe_message(&mut state, pipe(MSG_RAIL_UI_ACTION, Some(action), BTreeMap::new()));
 
         assert!(result.broadcast_rail_ui_state);
         assert!(result.state_changed);
-        assert_eq!(
-            result.view_model_push_reason,
-            Some(ViewModelPushReason::PipeDisplayVariable)
-        );
-        assert_eq!(
-            state.rail_ui_state().variables.get("show-issues"),
-            Some(&andamento_shared::DisplayVariableValue::Bool(false))
-        );
+        assert_eq!(result.view_model_push_reason, Some(ViewModelPushReason::PipeDisplayVariable));
+        assert_eq!(state.rail_ui_state().variables.get("show-issues"), Some(&andamento_shared::DisplayVariableValue::Bool(false)));
     }
 
     #[test]
@@ -2088,67 +1668,33 @@ mod tests {
         let mut state = ControllerState::default();
         state.set_template_catalog(None);
 
-        let changed = handle_pipe_message(
-            &mut state,
-            pipe(
-                andamento_shared::MSG_SET_NODE_VARIABLE,
-                Some(payload),
-                BTreeMap::new(),
-            ),
-        );
+        let changed = handle_pipe_message(&mut state, pipe(andamento_shared::MSG_SET_NODE_VARIABLE, Some(payload), BTreeMap::new()));
 
         let model = state.view_model();
-        let root_variables = model
-            .template_config
-            .effective_variables
-            .iter()
-            .find(|variables| variables.node == NodeKey::Root)
-            .expect("root variables");
+        let root_variables =
+            model.template_config.effective_variables.iter().find(|variables| variables.node == NodeKey::Root).expect("root variables");
         assert!(changed.state_changed);
-        assert_eq!(
-            changed.view_model_push_reason,
-            Some(ViewModelPushReason::PipeMetadataControls)
-        );
-        assert_eq!(
-            root_variables
-                .values
-                .get("convoy.tier")
-                .map(|entry| entry.value.as_str()),
-            Some("short")
-        );
+        assert_eq!(changed.view_model_push_reason, Some(ViewModelPushReason::PipeMetadataControls));
+        assert_eq!(root_variables.values.get("convoy.tier").map(|entry| entry.value.as_str()), Some("short"));
     }
 
     #[test]
     fn set_rail_config_message_updates_controller_state() {
-        let config = RailConfig {
-            structure: RailStructure::BoxPerTab,
-            segment_between_color: None,
-        };
+        let config = RailConfig { structure: RailStructure::BoxPerTab, segment_between_color: None };
         let payload = serde_json::to_string(&config).unwrap();
         let mut state = ControllerState::default();
 
-        let changed = handle_pipe_message(
-            &mut state,
-            pipe(MSG_SET_RAIL_CONFIG, Some(payload), BTreeMap::new()),
-        );
+        let changed = handle_pipe_message(&mut state, pipe(MSG_SET_RAIL_CONFIG, Some(payload), BTreeMap::new()));
 
         assert!(changed.state_changed);
-        assert_eq!(
-            changed.view_model_push_reason,
-            Some(ViewModelPushReason::PipeConfig)
-        );
+        assert_eq!(changed.view_model_push_reason, Some(ViewModelPushReason::PipeConfig));
         assert_eq!(state.view_model().config, config);
     }
 
     #[test]
     fn metadata_patch_message_updates_resolved_tab_metadata() {
         let mut state = ControllerState::default();
-        state.update_tabs(vec![state::ControllerTab {
-            tab_id: tab_workspace_id(1),
-            position: 0,
-            name: "main".to_owned(),
-            active: true,
-        }]);
+        state.update_tabs(vec![state::ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "main".to_owned(), active: true }]);
         let patch = andamento_shared::MetadataPatch {
             target: MetadataTarget::Tab(tab_workspace_id(1)),
             source_id: "test".to_owned(),
@@ -2165,10 +1711,7 @@ mod tests {
         };
         let payload = serde_json::to_string(&ExternalMessage::MetadataPatch(patch)).unwrap();
 
-        let result = handle_pipe_message(
-            &mut state,
-            pipe(MSG_APPLY_METADATA_PATCH, Some(payload), BTreeMap::new()),
-        );
+        let result = handle_pipe_message(&mut state, pipe(MSG_APPLY_METADATA_PATCH, Some(payload), BTreeMap::new()));
 
         let model = state.view_model();
         let tab_metadata = model
@@ -2177,25 +1720,13 @@ mod tests {
             .find(|metadata| metadata.target == ResolvedMetadataTarget::Tab(tab_workspace_id(1)))
             .expect("tab metadata");
         assert!(result.state_changed);
+        assert_eq!(result.view_model_push_reason, Some(ViewModelPushReason::PipeMetadata));
         assert_eq!(
-            result.view_model_push_reason,
-            Some(ViewModelPushReason::PipeMetadata)
+            tab_metadata.values.get("tab.subject").map(|entry| &entry.value),
+            Some(&andamento_shared::MetadataValue::Text("checkout".to_owned()))
         );
         assert_eq!(
-            tab_metadata
-                .values
-                .get("tab.subject")
-                .map(|entry| &entry.value),
-            Some(&andamento_shared::MetadataValue::Text(
-                "checkout".to_owned()
-            ))
-        );
-        assert_eq!(
-            tab_metadata
-                .source_entries
-                .get("tab.subject")
-                .and_then(|entries| entries.first())
-                .map(|entry| entry.source_id.as_str()),
+            tab_metadata.source_entries.get("tab.subject").and_then(|entries| entries.first()).map(|entry| entry.source_id.as_str()),
             Some("test")
         );
     }
@@ -2203,12 +1734,7 @@ mod tests {
     #[test]
     fn metadata_patch_cli_pipe_is_unblocked_without_output() {
         let mut state = ControllerState::default();
-        state.update_tabs(vec![state::ControllerTab {
-            tab_id: tab_workspace_id(1),
-            position: 0,
-            name: "main".to_owned(),
-            active: true,
-        }]);
+        state.update_tabs(vec![state::ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "main".to_owned(), active: true }]);
         let patch = andamento_shared::MetadataPatch {
             target: MetadataTarget::Tab(tab_workspace_id(1)),
             source_id: "test".to_owned(),
@@ -2225,10 +1751,7 @@ mod tests {
         };
         let payload = serde_json::to_string(&ExternalMessage::MetadataPatch(patch)).unwrap();
 
-        let result = handle_pipe_message(
-            &mut state,
-            cli_pipe(MSG_APPLY_METADATA_PATCH, Some(payload), "pipe-42"),
-        );
+        let result = handle_pipe_message(&mut state, cli_pipe(MSG_APPLY_METADATA_PATCH, Some(payload), "pipe-42"));
 
         assert!(result.state_changed);
         assert_eq!(result.cli_pipe_output, None);
@@ -2254,18 +1777,8 @@ mod tests {
         };
         let payload = serde_json::to_string(&ExternalMessage::MetadataPatch(patch)).unwrap();
 
-        let first = handle_pipe_message(
-            &mut state,
-            pipe(
-                MSG_APPLY_METADATA_PATCH,
-                Some(payload.clone()),
-                BTreeMap::new(),
-            ),
-        );
-        let second = handle_pipe_message(
-            &mut state,
-            pipe(MSG_APPLY_METADATA_PATCH, Some(payload), BTreeMap::new()),
-        );
+        let first = handle_pipe_message(&mut state, pipe(MSG_APPLY_METADATA_PATCH, Some(payload.clone()), BTreeMap::new()));
+        let second = handle_pipe_message(&mut state, pipe(MSG_APPLY_METADATA_PATCH, Some(payload), BTreeMap::new()));
 
         assert!(first.state_changed);
         assert!(!second.state_changed);
@@ -2275,23 +1788,14 @@ mod tests {
     fn observed_identities_cli_request_returns_json_output() {
         let mut state = ControllerState::default();
         state.set_rail_config(RailConfig::default());
-        state.update_tabs(vec![state::ControllerTab {
-            tab_id: tab_workspace_id(1),
-            position: 0,
-            name: "repo".to_owned(),
-            active: true,
-        }]);
+        state.update_tabs(vec![state::ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "repo".to_owned(), active: true }]);
         state.set_test_pane(PaneTarget::Terminal(1), tab_workspace_id(1), true, true, 0);
         let cwd = "/Users/robert/dev/katzensteg".to_owned();
         state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
 
-        let result = handle_pipe_message(
-            &mut state,
-            cli_pipe(MSG_OBSERVED_IDENTITIES, None, "pipe-1"),
-        );
+        let result = handle_pipe_message(&mut state, cli_pipe(MSG_OBSERVED_IDENTITIES, None, "pipe-1"));
         let output = result.cli_pipe_output.expect("cli pipe output");
-        let observed: Vec<andamento_shared::ObservedMetadataIdentity> =
-            serde_json::from_str(&output.output).unwrap();
+        let observed: Vec<andamento_shared::ObservedMetadataIdentity> = serde_json::from_str(&output.output).unwrap();
 
         assert!(!result.state_changed);
         assert_eq!(output.pipe_id, "pipe-1");
@@ -2307,21 +1811,11 @@ mod tests {
 
     #[test]
     fn bootstrap_request_does_not_mutate_controller_state() {
-        let requester = RendererHello {
-            plugin_id: 21,
-            client_id: 2,
-        };
+        let requester = RendererHello { plugin_id: 21, client_id: 2 };
         let payload = serde_json::to_string(&requester).unwrap();
         let mut state = ControllerState::default();
 
-        let result = handle_pipe_message(
-            &mut state,
-            pipe(
-                MSG_CONTROLLER_BOOTSTRAP_REQUEST,
-                Some(payload),
-                BTreeMap::new(),
-            ),
-        );
+        let result = handle_pipe_message(&mut state, pipe(MSG_CONTROLLER_BOOTSTRAP_REQUEST, Some(payload), BTreeMap::new()));
 
         assert!(!result.state_changed);
         assert_eq!(result.bootstrap_request, Some(requester));
@@ -2330,23 +1824,11 @@ mod tests {
     #[test]
     fn duplicate_renderer_hello_skips_full_model_push_but_replays_ui_state() {
         let mut state = ControllerState::default();
-        let hello = PluginRegistrationHello {
-            identity: RendererHello {
-                plugin_id: 9,
-                client_id: 1,
-            },
-            placement: PluginPlacement::Unknown,
-        };
+        let hello = PluginRegistrationHello { identity: RendererHello { plugin_id: 9, client_id: 1 }, placement: PluginPlacement::Unknown };
         let payload = serde_json::to_string(&hello).unwrap();
 
-        let first = handle_pipe_message(
-            &mut state,
-            pipe(MSG_RENDERER_HELLO, Some(payload.clone()), BTreeMap::new()),
-        );
-        let second = handle_pipe_message(
-            &mut state,
-            pipe(MSG_RENDERER_HELLO, Some(payload), BTreeMap::new()),
-        );
+        let first = handle_pipe_message(&mut state, pipe(MSG_RENDERER_HELLO, Some(payload.clone()), BTreeMap::new()));
+        let second = handle_pipe_message(&mut state, pipe(MSG_RENDERER_HELLO, Some(payload), BTreeMap::new()));
 
         assert!(first.state_changed);
         assert!(!second.state_changed);
@@ -2366,33 +1848,18 @@ mod tests {
         };
         let payload = serde_json::to_string(&request).unwrap();
 
-        let result = handle_pipe_message(
-            &mut state,
-            pipe(MSG_CONFIG_INSPECT, Some(payload), BTreeMap::new()),
-        );
+        let result = handle_pipe_message(&mut state, pipe(MSG_CONFIG_INSPECT, Some(payload), BTreeMap::new()));
 
         assert!(result.state_changed);
-        assert_eq!(
-            result.view_model_push_reason,
-            Some(ViewModelPushReason::PipeMetadataControls)
-        );
-        assert_eq!(
-            state.view_model_for_client(4).inspected_node,
-            Some(NodeKey::Tab(tab_workspace_id(7)))
-        );
+        assert_eq!(result.view_model_push_reason, Some(ViewModelPushReason::PipeMetadataControls));
+        assert_eq!(state.view_model_for_client(4).inspected_node, Some(NodeKey::Tab(tab_workspace_id(7))));
     }
 
     #[test]
     fn template_load_retries_until_loaded_or_attempt_limit() {
         assert!(should_retry_template_load(1, false));
-        assert!(should_retry_template_load(
-            MAX_TEMPLATE_RELOAD_ATTEMPTS - 1,
-            false
-        ));
-        assert!(!should_retry_template_load(
-            MAX_TEMPLATE_RELOAD_ATTEMPTS,
-            false
-        ));
+        assert!(should_retry_template_load(MAX_TEMPLATE_RELOAD_ATTEMPTS - 1, false));
+        assert!(!should_retry_template_load(MAX_TEMPLATE_RELOAD_ATTEMPTS, false));
         assert!(!should_retry_template_load(1, true));
     }
 
@@ -2404,13 +1871,7 @@ mod tests {
         assert!(!pending.queue(ViewModelPushReason::UpdatePane));
         assert!(!pending.queue(ViewModelPushReason::UpdateTab));
 
-        assert_eq!(
-            pending.take(),
-            vec![
-                ViewModelPushReason::UpdateTab,
-                ViewModelPushReason::UpdatePane
-            ]
-        );
+        assert_eq!(pending.take(), vec![ViewModelPushReason::UpdateTab, ViewModelPushReason::UpdatePane]);
         assert!(!pending.is_pending());
         assert!(pending.queue(ViewModelPushReason::UpdateCwd));
     }
@@ -2420,41 +1881,23 @@ mod tests {
         let mut pending = PendingViewModelPush::default();
         let timers_scheduled = (0..100)
             .filter(|_| {
-                assert_eq!(
-                    pipe_view_model_delivery(ViewModelPushReason::PipeMetadata),
-                    PipeViewModelDelivery::Coalesced
-                );
+                assert_eq!(pipe_view_model_delivery(ViewModelPushReason::PipeMetadata), PipeViewModelDelivery::Coalesced);
                 pending.queue(ViewModelPushReason::PipeMetadata)
             })
             .count();
 
         assert_eq!(timers_scheduled, 1);
         assert_eq!(pending.take(), vec![ViewModelPushReason::PipeMetadata]);
-        assert_eq!(
-            pipe_view_model_delivery(ViewModelPushReason::PipeRendererHello),
-            PipeViewModelDelivery::Immediate
-        );
-        assert_eq!(
-            pipe_view_model_delivery(ViewModelPushReason::PipeRequestState),
-            PipeViewModelDelivery::Immediate
-        );
+        assert_eq!(pipe_view_model_delivery(ViewModelPushReason::PipeRendererHello), PipeViewModelDelivery::Immediate);
+        assert_eq!(pipe_view_model_delivery(ViewModelPushReason::PipeRequestState), PipeViewModelDelivery::Immediate);
     }
 
     #[test]
     fn view_models_are_built_once_per_client() {
         let grouped = group_view_model_targets(vec![
-            RendererHello {
-                plugin_id: 10,
-                client_id: 1,
-            },
-            RendererHello {
-                plugin_id: 11,
-                client_id: 1,
-            },
-            RendererHello {
-                plugin_id: 20,
-                client_id: 2,
-            },
+            RendererHello { plugin_id: 10, client_id: 1 },
+            RendererHello { plugin_id: 11, client_id: 1 },
+            RendererHello { plugin_id: 20, client_id: 2 },
         ]);
 
         assert_eq!(grouped.len(), 2);
@@ -2467,62 +1910,23 @@ mod tests {
     #[test]
     fn pending_rail_size_sync_debounces_per_client_targets() {
         let mut pending = PendingRailSizeSync::default();
-        let rail = RendererHello {
-            plugin_id: 9,
-            client_id: 1,
-        };
+        let rail = RendererHello { plugin_id: 9, client_id: 1 };
 
-        assert!(pending.queue(RailSizeObserved {
-            rail: rail.clone(),
-            size: RailSize::Percent(20.0),
-        }));
-        assert!(!pending.queue(RailSizeObserved {
-            rail: rail.clone(),
-            size: RailSize::Percent(20.0005),
-        }));
+        assert!(pending.queue(RailSizeObserved { rail: rail.clone(), size: RailSize::Percent(20.0) }));
+        assert!(!pending.queue(RailSizeObserved { rail: rail.clone(), size: RailSize::Percent(20.0005) }));
 
         let targets = pending.take_targets();
-        assert_eq!(
-            targets,
-            vec![RailSizeTarget {
-                client_id: 1,
-                size: RailSize::Percent(20.0),
-                version: 1,
-            }]
-        );
+        assert_eq!(targets, vec![RailSizeTarget { client_id: 1, size: RailSize::Percent(20.0), version: 1 }]);
         assert!(!pending.is_pending());
-        assert!(!pending.queue(RailSizeObserved {
-            rail,
-            size: RailSize::Percent(20.0005),
-        }));
-        assert!(pending.queue(RailSizeObserved {
-            rail: RendererHello {
-                plugin_id: 11,
-                client_id: 1,
-            },
-            size: RailSize::Percent(25.0),
-        }));
-        assert!(!pending.queue(RailSizeObserved {
-            rail: RendererHello {
-                plugin_id: 12,
-                client_id: 2,
-            },
-            size: RailSize::Fixed(30),
-        }));
+        assert!(!pending.queue(RailSizeObserved { rail, size: RailSize::Percent(20.0005) }));
+        assert!(pending.queue(RailSizeObserved { rail: RendererHello { plugin_id: 11, client_id: 1 }, size: RailSize::Percent(25.0) }));
+        assert!(!pending.queue(RailSizeObserved { rail: RendererHello { plugin_id: 12, client_id: 2 }, size: RailSize::Fixed(30) }));
 
         assert_eq!(
             pending.take_targets(),
             vec![
-                RailSizeTarget {
-                    client_id: 1,
-                    size: RailSize::Percent(25.0),
-                    version: 2,
-                },
-                RailSizeTarget {
-                    client_id: 2,
-                    size: RailSize::Fixed(30),
-                    version: 1,
-                },
+                RailSizeTarget { client_id: 1, size: RailSize::Percent(25.0), version: 2 },
+                RailSizeTarget { client_id: 2, size: RailSize::Fixed(30), version: 1 },
             ]
         );
     }
