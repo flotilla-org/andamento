@@ -1,10 +1,11 @@
 mod common;
-use andamento_core::presentation::UNPLACED_WORKSPACES_SECTION;
+use andamento_core::presentation::{PlacementNode, PresentationState, SurfaceSnapshot, UNPLACED_WORKSPACES_SECTION};
 use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::suggested_layout::PRIMARY_SLOT;
 use andamento_core::{
     managed::{Resolved, SlotPlan},
-    tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar, WorkspaceId,
+    tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, PlacementKey, PlacementLoopKey,
+    PlacementSegment, Sidebar, WorkspaceId,
 };
 use common::{entity, patch, refs, text, Feed, CONFIG};
 use std::collections::BTreeMap;
@@ -89,7 +90,6 @@ fn workspace() -> Workspace {
 
 #[test]
 fn host_results_preserve_identity_and_closing_returns_to_latent() {
-    use andamento_core::presentation::PresentationState;
     let mut sidebar = sidebar();
     assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].children[0].state, PresentationState::Latent { openable: true });
     let request = open(&mut sidebar);
@@ -318,7 +318,7 @@ fn removing_last_expired_fact_invalidates_entity_membership() {
     assert!(sidebar.snapshot().surface.sections[0].nodes.is_empty());
 }
 
-fn fallback(sidebar: &Sidebar) -> Vec<andamento_core::presentation::PlacementNode> {
+fn fallback(sidebar: &Sidebar) -> Vec<PlacementNode> {
     sidebar.snapshot().surface.sections.into_iter().find(|s| s.name == UNPLACED_WORKSPACES_SECTION).map(|s| s.nodes).unwrap_or_default()
 }
 
@@ -349,7 +349,7 @@ fn unplaced_inventory_is_focusable_by_id_and_tracks_rename_selection_and_close()
     let nodes = fallback(&sidebar);
     assert_eq!(nodes[1].key, key);
     assert_eq!(nodes[1].label, "Renamed");
-    assert_eq!(nodes[1].state, andamento_core::presentation::PresentationState::Live { workspace_id: W43, selected: true });
+    assert_eq!(nodes[1].state, PresentationState::Live { workspace_id: W43, selected: true });
     sidebar.observe(vec![first], vec![]);
     assert_eq!(fallback(&sidebar).len(), 1);
     assert!(sidebar.dispatch(Action::ActivatePlacement { key }).is_err());
@@ -698,11 +698,8 @@ fn retracted_and_expired_entities_leave_the_catalog() {
     assert!(!placed(&mut sidebar, "stale"), "expired facts retract the entity");
 }
 
-fn directory_state(sidebar: &Sidebar, subject: &EntityRef) -> andamento_core::presentation::PresentationState {
-    fn find(
-        nodes: &[andamento_core::presentation::PlacementNode],
-        subject: &EntityRef,
-    ) -> Option<andamento_core::presentation::PresentationState> {
+fn directory_state(sidebar: &Sidebar, subject: &EntityRef) -> PresentationState {
+    fn find(nodes: &[PlacementNode], subject: &EntityRef) -> Option<PresentationState> {
         nodes.iter().find_map(|n| if &n.entity == subject { Some(n.state.clone()) } else { find(&n.children, subject) })
     }
     sidebar.snapshot().surface.sections.iter().find_map(|s| find(&s.nodes, subject)).unwrap()
@@ -796,13 +793,10 @@ fn retained_sidebar() -> Sidebar {
     sidebar
 }
 
-fn workspace_nodes(surface: &andamento_core::presentation::SurfaceSnapshot) -> Vec<&andamento_core::presentation::PlacementNode> {
-    fn collect<'a>(
-        nodes: &'a [andamento_core::presentation::PlacementNode],
-        result: &mut Vec<&'a andamento_core::presentation::PlacementNode>,
-    ) {
+fn workspace_nodes(surface: &SurfaceSnapshot) -> Vec<&PlacementNode> {
+    fn collect<'a>(nodes: &'a [PlacementNode], result: &mut Vec<&'a PlacementNode>) {
         for node in nodes {
-            if matches!(node.state, andamento_core::presentation::PresentationState::Live { workspace_id: W42, .. }) {
+            if matches!(node.state, PresentationState::Live { workspace_id: W42, .. }) {
                 result.push(node);
             }
             collect(&node.children, result);
@@ -1156,7 +1150,7 @@ fn shared_ancestor_survives_one_child_end_and_close() {
     assert!(!project.facts.contains_key("presentation.ended"));
     assert!(!workspace_nodes(&snapshot.surface).is_empty());
     assert!(project.children.iter().any(|n| n.entity.id == "sibling"
-        && matches!(n.state, andamento_core::presentation::PresentationState::Live { workspace_id: W80, .. })
+        && matches!(n.state, PresentationState::Live { workspace_id: W80, .. })
         && !n.facts.contains_key("presentation.ended")));
     sidebar.dispatch(Action::ToggleDisplayVariable { name: "show-finished".into() }).unwrap();
     assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
@@ -1405,18 +1399,15 @@ fn host_sibling_order_reorders_a_run_and_merges_changes_by_data_order() {
 
 #[test]
 fn placement_loop_keys_round_trip_through_their_host_text() {
-    let key = andamento_core::PlacementLoopKey {
+    let key = PlacementLoopKey {
         region: "tree".into(),
-        parent: andamento_core::PlacementKey(vec![andamento_core::PlacementSegment {
-            loop_name: "project".into(),
-            entity: entity("project", "a:b 3:x é"),
-        }]),
+        parent: PlacementKey(vec![PlacementSegment { loop_name: "project".into(), entity: entity("project", "a:b 3:x é") }]),
         binding: "vessel".into(),
     };
     let text = key.encode();
-    assert_eq!(andamento_core::PlacementLoopKey::decode(&text), Some(key));
+    assert_eq!(PlacementLoopKey::decode(&text), Some(key));
     for bad in ["", "4:tree", "x:tree", "9:tree5:vessel", "4:tree1:a1:b5:vessel", "99999999999999999999:tree5:vessel"] {
-        assert_eq!(andamento_core::PlacementLoopKey::decode(bad), None, "{bad}");
+        assert_eq!(PlacementLoopKey::decode(bad), None, "{bad}");
     }
 }
 
@@ -1448,7 +1439,7 @@ fn tab_patch(tab: u64, facts: &[(&str, MetadataValue)]) -> MetadataPatch {
     patch
 }
 
-fn project_children(sidebar: &Sidebar) -> Vec<andamento_core::presentation::PlacementNode> {
+fn project_children(sidebar: &Sidebar) -> Vec<PlacementNode> {
     sidebar
         .snapshot()
         .surface
@@ -1476,7 +1467,7 @@ fn host_entities_place_and_cover_their_workspace_without_subject_lifecycle() {
         ],
     );
     sidebar.observe(vec![workspace()], vec![]);
-    let live = andamento_core::presentation::PresentationState::Live { workspace_id: W42, selected: true };
+    let live = PresentationState::Live { workspace_id: W42, selected: true };
     // Homed with its project: placed there, live, and so not left over.
     let children = project_children(&sidebar);
     assert_eq!(children.len(), 1);
@@ -1560,7 +1551,7 @@ fn a_tab_with_a_subject_and_a_host_entity_makes_both_live() {
         ],
     );
     sidebar.observe(vec![workspace()], vec![]);
-    let live = andamento_core::presentation::PresentationState::Live { workspace_id: W42, selected: true };
+    let live = PresentationState::Live { workspace_id: W42, selected: true };
     let children = project_children(&sidebar);
     for wanted in [&subject, &local] {
         let node = children.iter().find(|n| &n.entity == wanted).expect("placed");
@@ -1674,13 +1665,9 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
     // Homed workspace, both ghosts (one entity, two refs), then the leftover tab.
     assert_eq!(entities, vec![local.clone(), entity(".ref", "r1"), entity(".ref", "r2"), common::fallback(43)]);
     assert_eq!(items[1].label, "Worker", "a ref presents its target's label");
-    assert_eq!(
-        items[1].state,
-        andamento_core::presentation::PresentationState::Latent { openable: true },
-        "a ref of an openable target is openable"
-    );
+    assert_eq!(items[1].state, PresentationState::Latent { openable: true }, "a ref of an openable target is openable");
     assert_ne!(items[1].key, items[2].key, "each ghost keeps its own key");
-    assert_eq!(items[0].state, andamento_core::presentation::PresentationState::Live { workspace_id: W42, selected: true });
+    assert_eq!(items[0].state, PresentationState::Live { workspace_id: W42, selected: true });
     assert!(fallback(&sidebar).is_empty(), "the default group covers leftover tabs");
     // Attention places the vessel once; its ghosts aren't placed by its facts.
     let attention = snapshot.surface.sections.iter().find(|s| s.name == "attention").unwrap();
@@ -1708,7 +1695,7 @@ fn local_sections_groups_and_refs_nest_and_present_their_targets() {
     let snapshot = sidebar.snapshot();
     let local_section = snapshot.surface.sections.iter().find(|s| s.name == "local").unwrap();
     let ghost = local_section.nodes[0].children[0].children.iter().find(|n| n.entity == entity(".ref", "r1")).unwrap();
-    assert_eq!(ghost.state, andamento_core::presentation::PresentationState::Live { workspace_id: tab_workspace_id(44), selected: false });
+    assert_eq!(ghost.state, PresentationState::Live { workspace_id: tab_workspace_id(44), selected: false });
 }
 
 /// With several default groups, the first placed one covers leftover tabs;

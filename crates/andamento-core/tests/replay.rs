@@ -1,7 +1,8 @@
 use andamento_core::{
     presentation::PlacementNode,
     replay::{self, read, Frame, Recorder, Replay},
-    MetadataValue, Sidebar,
+    sidebar::Snapshot,
+    MetadataTarget, MetadataValue, Sidebar,
 };
 use std::io::Cursor;
 const CONFIG: &str = r#"
@@ -132,7 +133,7 @@ fn advancing_over_a_gap_does_not_refresh_old_facts() {
         .iter()
         .position(|frame| {
             matches!(&frame.patch.target,
-        andamento_core::MetadataTarget::Entity(entity) if entity.kind == "project")
+        MetadataTarget::Entity(entity) if entity.kind == "project")
         })
         .unwrap();
     let mut late = input.remove(index);
@@ -150,7 +151,7 @@ fn advancing_over_a_gap_does_not_refresh_old_facts() {
     let snapshot = sidebar.snapshot();
     let nodes = &snapshot.surface.sections[0].nodes;
     assert_eq!(nodes.len(), 1);
-    assert_eq!(andamento_core::MetadataTarget::Entity(nodes[0].entity.clone()), target);
+    assert_eq!(MetadataTarget::Entity(nodes[0].entity.clone()), target);
     assert!(snapshot.surface.sections[1..].iter().all(|s| s.nodes.is_empty()));
     replay.advance_to(&mut sidebar, 70_001).unwrap();
     assert!(sidebar.snapshot().surface.sections.iter().all(|s| s.nodes.is_empty()));
@@ -207,7 +208,7 @@ fn cli_emit_snapshot_and_usage() {
         .output()
         .unwrap();
     assert!(snapshot.status.success());
-    let snapshot: andamento_core::sidebar::Snapshot = serde_json::from_slice(&snapshot.stdout).unwrap();
+    let snapshot: Snapshot = serde_json::from_slice(&snapshot.stdout).unwrap();
     assert!(snapshot.surface.sections.iter().all(|s| s.nodes.is_empty()));
     let invalid = Command::new(binary).arg("unknown").output().unwrap();
     assert!(!invalid.status.success());
@@ -274,7 +275,7 @@ fn declared_role_parent_retained_control_stays_on_project() {
     input.retain(|frame| {
         !(frame.offset_ms == 1000
             && matches!(&frame.patch.target,
-                andamento_core::MetadataTarget::Entity(entity) if entity.kind == "project")
+                MetadataTarget::Entity(entity) if entity.kind == "project")
             && frame.patch.unset.iter().any(|key| key == "flotilla.project")
             && !frame.patch.set.contains_key("flotilla.project"))
     });

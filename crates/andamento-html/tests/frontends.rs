@@ -1,4 +1,6 @@
 use andamento_core::{replay, sidebar::Action, MetadataPatch, Sidebar};
+use andamento_html::{escape, render};
+use andamento_terminal::surface;
 
 #[test]
 fn native_and_terminal_geometry_share_actions_and_placement_state() {
@@ -9,8 +11,8 @@ fn native_and_terminal_geometry_share_actions_and_placement_state() {
         .collect::<Vec<_>>();
     sidebar.apply(0, replay::PROVIDER, patches).unwrap();
     let before = sidebar.snapshot();
-    let terminal = andamento_terminal::surface::render(&before.surface, 32);
-    let html = andamento_html::render(&before);
+    let terminal = surface::render(&before.surface, 32);
+    let html = render(&before);
     assert!(terminal.lines.iter().any(|l| l.contains("Worker <one>")));
     assert!(html.contains("Worker &lt;one&gt;"));
     assert!(!html.contains("Worker <one>"));
@@ -21,11 +23,11 @@ fn native_and_terminal_geometry_share_actions_and_placement_state() {
     assert!(!html.contains("Other workspaces"));
     assert!(!terminal.lines.iter().any(|l| l.contains("Other workspaces")));
     let action = terminal.hits.iter().map(|hit| &hit.action).find(|a| matches!(a, Action::TogglePlacement { .. })).unwrap().clone();
-    assert!(html.contains(&andamento_html::escape(&serde_json::to_string(&action).unwrap())));
+    assert!(html.contains(&escape(&serde_json::to_string(&action).unwrap())));
     sidebar.dispatch(action).unwrap();
     let after = sidebar.snapshot();
-    let collapsed = andamento_terminal::surface::render(&after.surface, 32);
+    let collapsed = surface::render(&after.surface, 32);
     assert!(collapsed.lines.len() < terminal.lines.len());
     assert_eq!(after.surface.sections[1].nodes, before.surface.sections[1].nodes);
-    assert!(andamento_html::render(&after).contains("<details  data-toggle="));
+    assert!(render(&after).contains("<details  data-toggle="));
 }

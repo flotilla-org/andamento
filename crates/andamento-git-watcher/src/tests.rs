@@ -3,6 +3,7 @@ use andamento_core::{
     replay::{self, Frame, Replay},
     Sidebar,
 };
+use andamento_terminal::surface;
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -125,7 +126,7 @@ fn emitted_patches_replay_under_git_placement_and_expire() {
         let snapshot = sidebar.snapshot();
         let section = snapshot.surface.sections.iter().find(|s| s.nodes.iter().any(|n| n.entity.kind == "repo")).unwrap();
         for width in [24, 80] {
-            let rendered = andamento_terminal::surface::render(&snapshot.surface, width);
+            let rendered = surface::render(&snapshot.surface, width);
             let lines = rendered.lines.join("\n");
             assert!(lines.contains("Git"), "{lines}");
             assert!(lines.contains("alpha"));

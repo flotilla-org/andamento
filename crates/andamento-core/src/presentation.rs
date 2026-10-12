@@ -3,13 +3,14 @@ use std::{collections::BTreeMap, ops::ControlFlow};
 
 use serde::{Deserialize, Serialize};
 
+use crate::state::{ControllerTab, EvaluatedPlacement, EvaluatedSection, PlacementAnnotation};
 use crate::template_config::{
-    ChromeSpec, TemplateConfigFieldClass, TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigRenderedField,
-    TemplateConfigSlot, TemplateControlSpec, TemplateVariableDefinition,
+    AbbreviationTier, ChromeSpec, SurfaceRegionDefinition, TemplateConfigFieldClass, TemplateConfigMatchContext, TemplateConfigNodeKind,
+    TemplateConfigRenderedField, TemplateConfigSlot, TemplateControlSpec, TemplateVariableDefinition,
 };
 use crate::{
-    ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EntityRef, MetadataValue, NodeKey, PlacementKey,
-    ResolvedTemplateSlot, WorkspaceId,
+    ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EntityRef, MetadataValue, NodeKey, PlacementKey, PlacementLoopKey,
+    PlacementSegment, ResolvedTemplateSlot, WorkspaceId, DISPLAY_FORM_COMPACT,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,7 +81,7 @@ impl Section {
 pub struct PlacementNode {
     pub key: PlacementKey,
     /// Loop invocation shared by sibling items, independent of their entity IDs.
-    pub loop_key: crate::PlacementLoopKey,
+    pub loop_key: PlacementLoopKey,
     pub entity: EntityRef,
     pub label: String,
     /// Logical intent declared on the loop, interpreted by each frontend.
@@ -191,7 +192,7 @@ impl SurfaceSnapshot {
     /// first placed one (in catalog order) covers them.
     pub(crate) fn cover_workspaces(
         &mut self,
-        workspaces: &[crate::state::ControllerTab],
+        workspaces: &[ControllerTab],
         host_entities: &BTreeMap<WorkspaceId, EntityRef>,
         default_groups: &[EntityRef],
     ) {
@@ -215,7 +216,7 @@ impl SurfaceSnapshot {
                 .filter(|host| hosts_used.insert((*host).clone()))
                 .cloned()
                 .unwrap_or_else(|| EntityRef::local(system::WORKSPACE, workspace.tab_id.to_string()));
-            let key = PlacementKey(vec![crate::PlacementSegment { loop_name: UNPLACED_WORKSPACES_SECTION.into(), entity: entity.clone() }]);
+            let key = PlacementKey(vec![PlacementSegment { loop_name: UNPLACED_WORKSPACES_SECTION.into(), entity: entity.clone() }]);
             nodes.push(PlacementNode {
                 loop_key: key.loop_key(UNPLACED_WORKSPACES_SECTION).expect("a cover key has its one segment"),
                 key,
@@ -248,8 +249,7 @@ impl SurfaceSnapshot {
                 if let Some(parent) = find_node_mut(&mut section.nodes, group) {
                     for mut node in std::mem::take(&mut nodes) {
                         let mut segments = parent.key.0.clone();
-                        segments
-                            .push(crate::PlacementSegment { loop_name: UNPLACED_WORKSPACES_SECTION.into(), entity: node.entity.clone() });
+                        segments.push(PlacementSegment { loop_name: UNPLACED_WORKSPACES_SECTION.into(), entity: node.entity.clone() });
                         node.key = PlacementKey(segments);
                         node.loop_key = node.key.loop_key(&section.name).expect("a cover key has the default group's segment and its own");
                         parent.children.push(node);
@@ -278,8 +278,8 @@ impl SurfaceSnapshot {
 
     pub(crate) fn resolve(
         model: &ControllerViewModel,
-        sections: &[crate::state::EvaluatedSection],
-        layouts: &BTreeMap<PlacementKey, crate::state::PlacementAnnotation>,
+        sections: &[EvaluatedSection],
+        layouts: &BTreeMap<PlacementKey, PlacementAnnotation>,
         states: &BTreeMap<EntityRef, PresentationState>,
     ) -> Self {
         let mut snapshot = Self {
@@ -318,7 +318,7 @@ impl SurfaceSnapshot {
 pub fn apply_declared_abbreviation(
     metadata: &mut BTreeMap<String, MetadataValue>,
     binding: &str,
-    explicit: Option<crate::template_config::AbbreviationTier>,
+    explicit: Option<AbbreviationTier>,
 ) -> bool {
     let tier = explicit.map(|tier| tier.as_str()).or_else(|| metadata_text(metadata, &format!("var.{binding}.tier"))).unwrap_or("full");
     let full = metadata_text(metadata, "display.label").map(str::to_owned);
@@ -360,7 +360,7 @@ fn effective_metadata(
 /// invocation. Named entities come first in the saved order; an entity the
 /// order doesn't name goes after its nearest data-order predecessor already
 /// placed, or first; names that no longer match are skipped.
-fn apply_sibling_orders(nodes: Vec<PlacementNode>, orders: &BTreeMap<crate::PlacementLoopKey, Vec<EntityRef>>) -> Vec<PlacementNode> {
+fn apply_sibling_orders(nodes: Vec<PlacementNode>, orders: &BTreeMap<PlacementLoopKey, Vec<EntityRef>>) -> Vec<PlacementNode> {
     if orders.is_empty() {
         return nodes;
     }
@@ -402,11 +402,11 @@ fn order_run(data: Vec<PlacementNode>, order: &[EntityRef]) -> Vec<PlacementNode
 
 fn resolve_node(
     model: &ControllerViewModel,
-    entity: &crate::state::EvaluatedPlacement,
-    region: &crate::template_config::SurfaceRegionDefinition,
-    layouts: &BTreeMap<PlacementKey, crate::state::PlacementAnnotation>,
+    entity: &EvaluatedPlacement,
+    region: &SurfaceRegionDefinition,
+    layouts: &BTreeMap<PlacementKey, PlacementAnnotation>,
     states: &BTreeMap<EntityRef, PresentationState>,
-    orders: &BTreeMap<crate::PlacementLoopKey, Vec<EntityRef>>,
+    orders: &BTreeMap<PlacementLoopKey, Vec<EntityRef>>,
 ) -> Option<PlacementNode> {
     let key = entity.placement.clone()?;
     let mut facts = entity.metadata.clone();
@@ -419,7 +419,7 @@ fn resolve_node(
         .unwrap_or(&region.form)
         .clone();
     let collapsed = model.collapsed_placements.contains(&key);
-    let slot = if form == crate::DISPLAY_FORM_COMPACT { entity.templates.compact.as_ref() } else { entity.templates.detail.as_ref() };
+    let slot = if form == DISPLAY_FORM_COMPACT { entity.templates.compact.as_ref() } else { entity.templates.detail.as_ref() };
     let mut display_facts = facts.clone();
     apply_declared_abbreviation(&mut display_facts, &key.0.last()?.loop_name, entity.tier);
     Some(PlacementNode {

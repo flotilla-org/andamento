@@ -6,9 +6,11 @@ use std::time::Instant;
 use andamento_shared::segment_bar;
 use andamento_shared::{
     host::{parse_tab_label, tab_label},
+    presentation::PlacementNode,
     tab_workspace_id, ConfigInspectRequest, ControllerViewModel, MetadataEntry, MetadataSourceEntry, MetadataTriState, MetadataValue,
-    MetadataVisibilitySetRequest, NodeKey, NodeVariableSetRequest, PluginPaneKind, PluginPlacement, PluginRegistrationHello,
-    PluginStatsSnapshot, RailConfig, RailStructure, ResolvedMetadataTarget, TabCard, WorkspaceId, NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
+    MetadataVisibilitySetRequest, NodeKey, NodeVariableSetRequest, PaneTarget, PluginPaneKind, PluginPlacement, PluginRegistrationHello,
+    PluginStatsSnapshot, RailConfig, RailStructure, ResolvedMetadata, ResolvedMetadataTarget, TabCard, TemplateConfigState, WorkspaceId,
+    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -632,7 +634,7 @@ struct InspectTargetView<'a> {
     kind: InspectTargetKind,
     node_key: NodeKey,
     tab: Option<&'a TabCard>,
-    placement: Option<&'a andamento_shared::presentation::PlacementNode>,
+    placement: Option<&'a PlacementNode>,
     metadata: BTreeMap<String, MetadataEntry>,
     sources: BTreeMap<String, Vec<MetadataSourceEntry>>,
 }
@@ -714,7 +716,7 @@ fn sources_for_node(model: &ControllerViewModel, node_key: &NodeKey) -> BTreeMap
     resolved_metadata_for_node(model, node_key).map(|metadata| metadata.source_entries.clone()).unwrap_or_default()
 }
 
-fn resolved_metadata_for_node<'a>(model: &'a ControllerViewModel, node_key: &NodeKey) -> Option<&'a andamento_shared::ResolvedMetadata> {
+fn resolved_metadata_for_node<'a>(model: &'a ControllerViewModel, node_key: &NodeKey) -> Option<&'a ResolvedMetadata> {
     let target = match node_key {
         NodeKey::Root => ResolvedMetadataTarget::Root,
         NodeKey::Tab(tab_id) => ResolvedMetadataTarget::Tab(*tab_id),
@@ -1048,10 +1050,10 @@ fn format_ttl(ttl_ms: Option<u64>) -> String {
     }
 }
 
-fn format_pane_target(target: &andamento_shared::PaneTarget) -> String {
+fn format_pane_target(target: &PaneTarget) -> String {
     match target {
-        andamento_shared::PaneTarget::Terminal(id) => format!("terminal:{id}"),
-        andamento_shared::PaneTarget::Plugin(id) => format!("plugin:{id}"),
+        PaneTarget::Terminal(id) => format!("terminal:{id}"),
+        PaneTarget::Plugin(id) => format!("plugin:{id}"),
     }
 }
 
@@ -1128,7 +1130,7 @@ fn push_templates_page(frame: &mut ConfigUiFrame, model: Option<&ControllerViewM
     }
     frame.push_blank();
     frame.push_plain("resolved templates");
-    fn show(frame: &mut ConfigUiFrame, nodes: &[andamento_shared::presentation::PlacementNode]) {
+    fn show(frame: &mut ConfigUiFrame, nodes: &[PlacementNode]) {
         for node in nodes {
             frame.push_plain(&format!("{}: {}", node.label, node.content.template_name.as_deref().unwrap_or("<none>")));
             show(frame, &node.children);
@@ -1141,12 +1143,12 @@ fn push_templates_page(frame: &mut ConfigUiFrame, model: Option<&ControllerViewM
     }
 }
 
-fn template_config_state_text(state: andamento_shared::TemplateConfigState) -> &'static str {
+fn template_config_state_text(state: TemplateConfigState) -> &'static str {
     match state {
-        andamento_shared::TemplateConfigState::NotConfigured => "not configured",
-        andamento_shared::TemplateConfigState::PendingPermission => "pending permission",
-        andamento_shared::TemplateConfigState::Loaded => "loaded",
-        andamento_shared::TemplateConfigState::Error => "error",
+        TemplateConfigState::NotConfigured => "not configured",
+        TemplateConfigState::PendingPermission => "pending permission",
+        TemplateConfigState::Loaded => "loaded",
+        TemplateConfigState::Error => "error",
     }
 }
 
@@ -1300,7 +1302,7 @@ mod tests {
             unmatched_entities: vec![],
             sort_mode: SortMode::Position,
             config: RailConfig::default(),
-            template_config: andamento_shared::TemplateConfigDiagnostics::default(),
+            template_config: TemplateConfigDiagnostics::default(),
             tabs: vec![TabCard {
                 tab_id,
                 position: 0,
@@ -1309,14 +1311,14 @@ mod tests {
                 pinned: false,
                 status: None,
 
-                templates: andamento_shared::ResolvedTemplateSlots::default(),
+                templates: ResolvedTemplateSlots::default(),
                 active_pane: None,
             }],
 
             resolved_metadata: vec![],
             observed_identities: vec![],
 
-            metadata_controls: andamento_shared::MetadataControls::default(),
+            metadata_controls: MetadataControls::default(),
             inspected_node: None,
 
             collapsed_placements: vec![],
@@ -1328,21 +1330,20 @@ mod tests {
         }
     }
 
-    fn placement_model_with_declarations(
-        declarations: Vec<andamento_shared::template_config::NodeVariableDefinition>,
-    ) -> ControllerViewModel {
+    fn placement_model_with_declarations(declarations: Vec<NodeVariableDefinition>) -> ControllerViewModel {
         let mut model = model_with_tab(tab_workspace_id(1), "fixture");
-        let key = andamento_shared::PlacementKey(vec![andamento_shared::PlacementSegment {
-            loop_name: "project".into(),
-            entity: EntityRef::local("project", "p"),
-        }]);
+        let key = PlacementKey(vec![PlacementSegment { loop_name: "project".into(), entity: EntityRef::local("project", "p") }]);
         model.inspected_node = Some(NodeKey::Placement(key.clone()));
         model.template_config.effective_variables =
-            vec![andamento_shared::EffectiveNodeVariables { node: NodeKey::Placement(key), values: BTreeMap::new(), declarations }];
+            vec![EffectiveNodeVariables { node: NodeKey::Placement(key), values: BTreeMap::new(), declarations }];
         model
     }
 
-    use andamento_shared::{EntityRef, MetadataValue, SortMode};
+    use andamento_shared::template_config::{NodeVariableDefinition, TemplateConfigLayerKind, TemplateConfigOrigin};
+    use andamento_shared::{
+        EffectiveNodeVariables, EffectiveVariableValue, EntityRef, MetadataControls, MetadataValue, PlacementKey, PlacementSegment,
+        ResolvedTemplateSlots, SortMode, TemplateConfigDiagnostics, VariableSetterProvenance,
+    };
 
     #[test]
     fn inspect_lists_unmatched_catalog_count_and_ids() {
@@ -1595,8 +1596,8 @@ mod tests {
         assert_eq!(target.tab.map(|tab| tab.tab_id), Some(tab_workspace_id(7)));
     }
 
-    fn child_layout_declaration() -> andamento_shared::template_config::NodeVariableDefinition {
-        andamento_shared::template_config::NodeVariableDefinition {
+    fn child_layout_declaration() -> NodeVariableDefinition {
+        NodeVariableDefinition {
             name: "child-layout".to_owned(),
             default: "cards".to_owned(),
             values: vec!["cards".to_owned(), "strip".to_owned()],
@@ -1632,7 +1633,7 @@ mod tests {
 
         // The same click against a model whose declarations have changed under
         // it resolves to the new declaration or to nothing, never to the old one.
-        plugin.model = Some(placement_model_with_declarations(vec![andamento_shared::template_config::NodeVariableDefinition {
+        plugin.model = Some(placement_model_with_declarations(vec![NodeVariableDefinition {
             name: "caption".to_owned(),
             default: "none".to_owned(),
             values: vec![],
@@ -1671,7 +1672,7 @@ mod tests {
         // control further right than the Metadata row and its siblings.
         let model = placement_model_with_declarations(vec![
             child_layout_declaration(),
-            andamento_shared::template_config::NodeVariableDefinition {
+            NodeVariableDefinition {
                 name: "attention.density.preference".to_owned(),
                 default: "roomy".to_owned(),
                 values: vec!["roomy".to_owned(), "tight".to_owned()],
@@ -1692,7 +1693,7 @@ mod tests {
         // finite set of segments to offer. It renders inherit alone rather than
         // an empty row. Setting a free-form value from the inspector needs a
         // different control — see the follow-up issue.
-        let model = placement_model_with_declarations(vec![andamento_shared::template_config::NodeVariableDefinition {
+        let model = placement_model_with_declarations(vec![NodeVariableDefinition {
             name: "caption".to_owned(),
             default: "none".to_owned(),
             values: vec![],
@@ -1713,26 +1714,26 @@ mod tests {
     fn inspect_root_options_expose_inheritable_child_layout_actions() {
         let mut model = model_with_tab(tab_workspace_id(7), "repo");
         model.inspected_node = Some(NodeKey::Root);
-        model.template_config.effective_variables = vec![andamento_shared::EffectiveNodeVariables {
+        model.template_config.effective_variables = vec![EffectiveNodeVariables {
             node: NodeKey::Root,
             values: BTreeMap::from([(
                 "child-layout".to_owned(),
-                andamento_shared::EffectiveVariableValue {
+                EffectiveVariableValue {
                     value: "strip".to_owned(),
-                    provenance: andamento_shared::VariableSetterProvenance {
+                    provenance: VariableSetterProvenance {
                         setter: "config".to_owned(),
                         ancestor: NodeKey::Root,
-                        origin: andamento_shared::template_config::TemplateConfigOrigin {
-                            layer: andamento_shared::template_config::TemplateConfigLayerKind::User,
+                        origin: TemplateConfigOrigin {
+                            layer: TemplateConfigLayerKind::User,
                             membership: None,
                             source: "user.kdl".to_owned(),
                         },
                     },
-                    overridden: vec![andamento_shared::VariableSetterProvenance {
+                    overridden: vec![VariableSetterProvenance {
                         setter: "default".to_owned(),
                         ancestor: NodeKey::Root,
-                        origin: andamento_shared::template_config::TemplateConfigOrigin {
-                            layer: andamento_shared::template_config::TemplateConfigLayerKind::Bundled,
+                        origin: TemplateConfigOrigin {
+                            layer: TemplateConfigLayerKind::Bundled,
                             membership: None,
                             source: "templates/flotilla-default.kdl".to_owned(),
                         },
@@ -1770,7 +1771,7 @@ mod tests {
             precedence: 4,
             ordinal: 2,
         };
-        model.resolved_metadata = vec![andamento_shared::ResolvedMetadata {
+        model.resolved_metadata = vec![ResolvedMetadata {
             target: ResolvedMetadataTarget::Tab(tab_workspace_id(7)),
             values: BTreeMap::from([("git.repo".to_owned(), entry.clone())]),
             source_entries: BTreeMap::from([(
@@ -1809,7 +1810,7 @@ mod tests {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        model.resolved_metadata = vec![andamento_shared::ResolvedMetadata {
+        model.resolved_metadata = vec![ResolvedMetadata {
             target: ResolvedMetadataTarget::Tab(tab_workspace_id(7)),
             values,
             source_entries: BTreeMap::new(),

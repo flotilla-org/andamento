@@ -4,44 +4,52 @@ pub(crate) struct EvaluatedPlacement {
     pub placement: Option<PlacementKey>,
     pub label: String,
     pub form: String,
-    pub tier: Option<crate::template_config::AbbreviationTier>,
+    pub tier: Option<AbbreviationTier>,
     pub metadata: BTreeMap<String, MetadataValue>,
     pub templates: ResolvedTemplateSlots,
     pub children: Vec<EvaluatedPlacement>,
 }
 #[derive(Debug)]
 pub(crate) struct EvaluatedSection {
-    pub definition: crate::template_config::SurfaceRegionDefinition,
+    pub definition: SurfaceRegionDefinition,
     pub root: Option<ResolvedTemplateSlot>,
     pub entities: Vec<EvaluatedPlacement>,
 }
 #[derive(Debug, Default)]
 pub(crate) struct PlacementAnnotation {
     pub layout: Option<String>,
-    pub related_detail: Vec<crate::template_config::TemplateConfigRenderedField>,
+    pub related_detail: Vec<TemplateConfigRenderedField>,
 }
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
+use crate::detail::{resolve_field, DetailCard};
 use crate::host::PaneObservation;
 use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataStore};
+use crate::profile;
+use crate::template_config::{
+    placement_index_text, AbbreviationTier, NodeVariableDefinition, PlacementDefinition, PlacementOrder, PlacementOrderAbsent,
+    PlacementOrderDirection, PlacementVisibilityRule, SurfaceRegionDefinition, TemplateConfigCatalog, TemplateConfigLayerKind,
+    TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigOrigin, TemplateConfigRenderReady, TemplateConfigRenderedField,
+    TemplateConfigSlot,
+};
 use crate::WorkspaceId;
 use crate::{
     managed::{DesiredContent, Resolved},
-    presentation::{system, PlacementNode, Section},
+    presentation::{system, PlacementNode, PresentationState, Section, SurfaceSnapshot},
     records::{recordable, DashboardState, SubjectRecord},
     sidebar_arrangement::RegionHints,
     suggested_layout::{self, LayoutError, SuggestedLayout},
     template_config::{PlacementLoop, TemplateVariableType},
     ControllerBootstrapSnapshot, ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EffectiveVariableValue, EntityRef,
-    LatentMaterializationState, LatentTab, MetadataControls, MetadataEntry, MetadataIdentity, MetadataPatch, MetadataSourceEntry,
-    MetadataTarget, MetadataTriState, MetadataValue, MetadataValueUpdate, NodeKey, ObservedMetadataIdentity, PaneTarget, PlacementKey,
-    PlacementLoopKey, PlacementSegment, PluginPlacement, PluginRegistrationHello, Priority, RailConfig, RailUiAction, RailUiRevision,
-    RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus,
-    SortMode, TabCard, TabStatusSummary, TemplateConfigDiagnostics, VariableSetterProvenance, DISPLAY_FORM_COMPACT, LOCAL_PROVIDER,
-    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
+    LatentMaterializationState, LatentTab, MaterializeLatentRequest, MetadataControls, MetadataEntry, MetadataIdentity, MetadataPatch,
+    MetadataSourceEntry, MetadataTarget, MetadataTriState, MetadataValue, MetadataValueUpdate, NodeKey, NodeVariableOverrides,
+    ObservedMetadataIdentity, PaneTarget, PlacementKey, PlacementLoopKey, PlacementSegment, PluginPlacement, PluginRegistrationHello,
+    Priority, RailConfig, RailUiAction, RailUiRevision, RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata,
+    ResolvedMetadataTarget, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabStatusSummary,
+    TemplateConfigDiagnostics, VariableSetterProvenance, DISPLAY_FORM_COMPACT, LOCAL_PROVIDER, NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 
 const SOURCE_ZELLIJ: &str = "zellij";
@@ -59,8 +67,8 @@ const KEY_ENTITY_PROVIDER: &str = "entity.provider";
 /// the host gives its own identity. Its rows are live for the tab, as a
 /// subject's are, but it is not the tab's subject: closing the tab retains no
 /// path, and the host retracts the entity.
-const KEY_HOST_ENTITY_KIND: &str = crate::presentation::system::HOST_KIND;
-const KEY_HOST_ENTITY_ID: &str = crate::presentation::system::HOST_ID;
+const KEY_HOST_ENTITY_KIND: &str = system::HOST_KIND;
+const KEY_HOST_ENTITY_ID: &str = system::HOST_ID;
 const KEY_HOST_ENTITY_PROVIDER: &str = system::HOST_PROVIDER;
 const KEY_ACTION_TARGET: &str = "action.primary.target";
 const KEY_MATERIALIZE_RECIPE: &str = "action.primary.recipe";
@@ -130,9 +138,9 @@ impl PlacementIndex {
             // A `.ref` carries its target's facts for presentation, but rules
             // reach it only through its own placement facts, so a query on the
             // target's facts (say, needs attention) never places the ghost too.
-            let is_ref = entity.entity.kind == crate::presentation::system::REF;
+            let is_ref = entity.entity.kind == system::REF;
             for (key, entry) in &entity.values {
-                if is_ref && key != crate::presentation::system::GROUP && key != crate::presentation::system::TARGET {
+                if is_ref && key != system::GROUP && key != system::TARGET {
                     continue;
                 }
                 if let MetadataValue::EntityRefs(refs) = &entry.value {
@@ -142,7 +150,7 @@ impl PlacementIndex {
                     }
                     continue;
                 }
-                let Some(text) = crate::template_config::placement_index_text(&entry.value) else {
+                let Some(text) = placement_index_text(&entry.value) else {
                     continue;
                 };
                 insert(key.clone(), IndexedValue::Scalar(text));
@@ -156,8 +164,8 @@ impl PlacementIndex {
     fn evaluate_visibility(
         &mut self,
         entities: &[CatalogEntity],
-        catalog: &crate::template_config::TemplateConfigCatalog,
-        variables: &BTreeMap<String, crate::DisplayVariableValue>,
+        catalog: &TemplateConfigCatalog,
+        variables: &BTreeMap<String, DisplayVariableValue>,
     ) -> Vec<String> {
         let mut warnings = BTreeSet::new();
         for policy in catalog.visibility() {
@@ -169,13 +177,13 @@ impl PlacementIndex {
                         let value = variables.get(name).or_else(|| {
                             catalog.display_variables().iter().find(|variable| &variable.name == name).map(|variable| &variable.default)
                         });
-                        if !matches!(value, Some(crate::DisplayVariableValue::Bool(_))) {
+                        if !matches!(value, Some(DisplayVariableValue::Bool(_))) {
                             warnings.insert(format!(
                                 "visibility {} requires boolean display variable {}; matching entities are hidden",
                                 policy.name, name
                             ));
                         }
-                        enabled & matches!(value, Some(crate::DisplayVariableValue::Bool(true)))
+                        enabled & matches!(value, Some(DisplayVariableValue::Bool(true)))
                     })
                 })
                 .collect();
@@ -200,7 +208,7 @@ impl PlacementIndex {
     }
 }
 
-fn visibility_rule_matches(entity: &CatalogEntity, rule: &crate::template_config::PlacementVisibilityRule) -> bool {
+fn visibility_rule_matches(entity: &CatalogEntity, rule: &PlacementVisibilityRule) -> bool {
     rule.predicates.iter().all(|predicate| {
         let identity = match predicate.key.as_str() {
             "entity.kind" => Some(entity.entity.kind.as_str()),
@@ -229,13 +237,13 @@ fn visibility_rule_matches(entity: &CatalogEntity, rule: &crate::template_config
 #[derive(Debug, Clone, Default)]
 struct ResolvedNodeVariables {
     values: BTreeMap<String, EffectiveVariableValue>,
-    declarations: Vec<crate::template_config::NodeVariableDefinition>,
+    declarations: Vec<NodeVariableDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntityActivation {
     FocusTab { position: usize },
-    Materialize(crate::MaterializeLatentRequest),
+    Materialize(MaterializeLatentRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,7 +267,7 @@ struct ControllerPane {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingLatentMaterialization {
-    request: crate::MaterializeLatentRequest,
+    request: MaterializeLatentRequest,
     tab_id: Option<WorkspaceId>,
     subject: Option<EntityRef>,
 }
@@ -306,7 +314,7 @@ pub(crate) struct RevisionEvaluation {
     catalog: CatalogEvaluation,
     latents: Vec<LatentTab>,
     resolved_workspaces: Vec<ResolvedMetadata>,
-    live: BTreeMap<String, crate::presentation::PresentationState>,
+    live: BTreeMap<String, PresentationState>,
     materializable: BTreeMap<EntityRef, bool>,
 }
 
@@ -345,27 +353,23 @@ fn natural_text_order(mut left: &str, mut right: &str) -> Ordering {
     left.len().cmp(&right.len())
 }
 
-fn placement_entity_order(left: &CatalogEntity, right: &CatalogEntity, order: &[crate::template_config::PlacementOrder]) -> Ordering {
+fn placement_entity_order(left: &CatalogEntity, right: &CatalogEntity, order: &[PlacementOrder]) -> Ordering {
     for key in order {
         let left_value = placement_sort_fact(left, &key.key);
         let right_value = placement_sort_fact(right, &key.key);
         let compared = match (left_value, right_value) {
             (Some(left), Some(right)) => match key.direction {
-                crate::template_config::PlacementOrderDirection::Ascending => {
-                    compare_order_values(left.as_ref(), right.as_ref(), key.natural)
-                }
-                crate::template_config::PlacementOrderDirection::Descending => {
-                    compare_order_values(right.as_ref(), left.as_ref(), key.natural)
-                }
+                PlacementOrderDirection::Ascending => compare_order_values(left.as_ref(), right.as_ref(), key.natural),
+                PlacementOrderDirection::Descending => compare_order_values(right.as_ref(), left.as_ref(), key.natural),
             },
             (None, None) => Ordering::Equal,
             (None, Some(_)) => match key.absent {
-                crate::template_config::PlacementOrderAbsent::First => Ordering::Less,
-                crate::template_config::PlacementOrderAbsent::Last => Ordering::Greater,
+                PlacementOrderAbsent::First => Ordering::Less,
+                PlacementOrderAbsent::Last => Ordering::Greater,
             },
             (Some(_), None) => match key.absent {
-                crate::template_config::PlacementOrderAbsent::First => Ordering::Greater,
-                crate::template_config::PlacementOrderAbsent::Last => Ordering::Less,
+                PlacementOrderAbsent::First => Ordering::Greater,
+                PlacementOrderAbsent::Last => Ordering::Less,
             },
         };
         if compared != Ordering::Equal {
@@ -387,7 +391,7 @@ fn placement_sort_fact<'a>(entity: &'a CatalogEntity, key: &str) -> Option<Cow<'
 struct ControllerRailUiState {
     revision: RailUiRevision,
     collapsed_placements: BTreeSet<PlacementKey>,
-    sibling_orders: BTreeMap<crate::PlacementLoopKey, Vec<crate::EntityRef>>,
+    sibling_orders: BTreeMap<PlacementLoopKey, Vec<EntityRef>>,
     scroll_offset: isize,
     variables: BTreeMap<String, DisplayVariableValue>,
 }
@@ -430,7 +434,7 @@ pub struct ControllerState {
     clients: BTreeMap<u16, ControllerClientState>,
     sort_mode: SortMode,
     rail_config: RailConfig,
-    template_catalog: Option<crate::template_config::TemplateConfigCatalog>,
+    template_catalog: Option<TemplateConfigCatalog>,
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
     clock_ms: Option<u64>,
@@ -713,10 +717,8 @@ impl ControllerState {
                 let definition = toggle_definition.expect("toggle definition resolved above");
                 let current = self.rail_ui.variables.get(&name).unwrap_or(&definition.default);
                 let next = match (&definition.variable_type, current) {
-                    (crate::template_config::TemplateVariableType::Bool, DisplayVariableValue::Bool(value)) => {
-                        DisplayVariableValue::Bool(!value)
-                    }
-                    (crate::template_config::TemplateVariableType::Enum { values }, DisplayVariableValue::Enum(value)) => {
+                    (TemplateVariableType::Bool, DisplayVariableValue::Bool(value)) => DisplayVariableValue::Bool(!value),
+                    (TemplateVariableType::Enum { values }, DisplayVariableValue::Enum(value)) => {
                         let next =
                             values.iter().position(|candidate| candidate == value).map(|index| (index + 1) % values.len()).unwrap_or(0);
                         DisplayVariableValue::Enum(values.get(next).cloned().unwrap_or_else(|| value.clone()))
@@ -769,7 +771,7 @@ impl ControllerState {
         true
     }
 
-    pub fn set_template_catalog(&mut self, catalog: Option<crate::template_config::TemplateConfigCatalog>) {
+    pub fn set_template_catalog(&mut self, catalog: Option<TemplateConfigCatalog>) {
         self.template_catalog = Some(catalog.unwrap_or_default());
         if let Some(catalog) = self.template_catalog.as_ref() {
             for variable in catalog.display_variables() {
@@ -833,7 +835,7 @@ impl ControllerState {
         // A producer removes an entity by unsetting both identity facts. TTL
         // expiry and reassertion after a connection loss never take this path.
         let removed = match &patch.target {
-            crate::MetadataTarget::Entity(entity)
+            MetadataTarget::Entity(entity)
                 if patch.unset.iter().any(|key| key == KEY_ENTITY_ID)
                     && patch.unset.iter().any(|key| key == KEY_ENTITY_KIND)
                     && !patch.set.contains_key(KEY_ENTITY_ID)
@@ -845,7 +847,7 @@ impl ControllerState {
             _ => None,
         };
         let retained_target = match &patch.target {
-            crate::MetadataTarget::Entity(entity) => Some(entity.clone()),
+            MetadataTarget::Entity(entity) => Some(entity.clone()),
             _ => None,
         };
         let unset_keys: Vec<_> = patch
@@ -900,7 +902,7 @@ impl ControllerState {
             node_variable_overrides: self
                 .node_variable_overrides
                 .iter()
-                .map(|(node, values)| crate::NodeVariableOverrides { node: node.clone(), values: values.clone() })
+                .map(|(node, values)| NodeVariableOverrides { node: node.clone(), values: values.clone() })
                 .collect(),
             metadata_patches: self.metadata.snapshot_patches(self.now()),
             rail_ui_state: RailUiState {
@@ -1096,13 +1098,13 @@ impl ControllerState {
     }
 
     pub fn view_model(&self) -> ControllerViewModel {
-        let _phase = crate::profile::span("presentation");
+        let _phase = profile::span("presentation");
         let evaluation = self.evaluate_revision();
         self.view_model_in(&evaluation, ModelOutputs::Controller)
     }
 
     pub(crate) fn evaluate_revision(&self) -> RevisionEvaluation {
-        let _phase = crate::profile::span("revision-evaluation");
+        let _phase = profile::span("revision-evaluation");
         let catalog = CatalogEvaluation::new(self.catalog_entities());
         let latents = self.latent_tabs_in(&catalog);
         let seeds = self.tab_seed_metadata_entries();
@@ -1126,8 +1128,8 @@ impl ControllerState {
         RevisionEvaluation { catalog, latents, resolved_workspaces, live, materializable }
     }
 
-    pub(crate) fn presentation_in(&self, evaluation: &RevisionEvaluation) -> crate::presentation::SurfaceSnapshot {
-        let _phase = crate::profile::span("presentation");
+    pub(crate) fn presentation_in(&self, evaluation: &RevisionEvaluation) -> SurfaceSnapshot {
+        let _phase = profile::span("presentation");
         self.view_model_in(evaluation, ModelOutputs::Presentation).presentation.unwrap_or_default()
     }
 
@@ -1214,11 +1216,7 @@ impl ControllerState {
                         };
                         EvaluatedSection {
                             definition,
-                            root: self.resolve_template_slot(
-                                crate::template_config::TemplateConfigSlot::Compact,
-                                crate::template_config::TemplateConfigNodeKind::Entity,
-                                &metadata,
-                            ),
+                            root: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
                             entities,
                         }
                     })
@@ -1278,7 +1276,6 @@ impl ControllerState {
         };
         // Reuse this build's resolved facts. Re-running activation resolution for
         // every displayed entity would rebuild the catalog once per node.
-        use crate::presentation::PresentationState;
         let live = &evaluation.live;
         // Selection belongs to the workspace subject, not shared action targets.
         let WorkspaceIdentities { subjects, hosts: host_entities } = self.workspace_identities();
@@ -1321,14 +1318,14 @@ impl ControllerState {
                 (entity.entity.clone(), state)
             })
             .collect();
-        model.presentation = Some(crate::presentation::SurfaceSnapshot::resolve(&model, &surface_regions, &placement_layouts, &states));
+        model.presentation = Some(SurfaceSnapshot::resolve(&model, &surface_regions, &placement_layouts, &states));
         if let Some(surface) = &mut model.presentation {
             // Default groups (`.default`) cover tabs nothing else places.
             let default_groups = region_catalog_entities
                 .iter()
                 .filter(|e| {
-                    e.entity.kind == crate::presentation::system::GROUP
-                        && matches!(e.values.get(crate::presentation::system::DEFAULT).map(|v| &v.value), Some(MetadataValue::Bool(true)))
+                    e.entity.kind == system::GROUP
+                        && matches!(e.values.get(system::DEFAULT).map(|v| &v.value), Some(MetadataValue::Bool(true)))
                 })
                 .map(|e| e.entity.clone())
                 .collect::<Vec<_>>();
@@ -1369,11 +1366,10 @@ impl ControllerState {
     }
 
     fn alias_presentation_state(
-        state: &crate::presentation::PresentationState,
+        state: &PresentationState,
         subjects: &BTreeMap<WorkspaceId, EntityRef>,
         entity: &EntityRef,
-    ) -> crate::presentation::PresentationState {
-        use crate::presentation::PresentationState;
+    ) -> PresentationState {
         let mut state = state.clone();
         if let PresentationState::Live { workspace_id, selected } = &mut state {
             if subjects.get(workspace_id).is_some_and(|subject| subject != entity) {
@@ -1388,8 +1384,7 @@ impl ControllerState {
         &self,
         catalog: &CatalogEvaluation,
         tab_metadata: &BTreeMap<WorkspaceId, &BTreeMap<String, MetadataEntry>>,
-    ) -> BTreeMap<String, crate::presentation::PresentationState> {
-        use crate::presentation::PresentationState;
+    ) -> BTreeMap<String, PresentationState> {
         let mut live = BTreeMap::new();
         for workspace in &self.tabs {
             if let Some(values) = tab_metadata.get(&workspace.tab_id) {
@@ -1426,15 +1421,14 @@ impl ControllerState {
     /// Resolve every catalog entity, including identities with no placement.
     /// Builds one catalog and resolves detail templates and observations for it;
     /// native hosts opt in with snapshot_acquire_details, keeping flat acquire cheap.
-    pub fn detail_cards(&self) -> (u64, Vec<crate::detail::DetailCard>) {
-        let _phase = crate::profile::span("details");
+    pub fn detail_cards(&self) -> (u64, Vec<DetailCard>) {
+        let _phase = profile::span("details");
         let evaluation = self.evaluate_revision();
         (self.now(), self.detail_cards_in(&evaluation, None))
     }
 
-    pub(crate) fn detail_cards_in(&self, evaluation: &RevisionEvaluation, target: Option<&EntityRef>) -> Vec<crate::detail::DetailCard> {
-        let _phase = crate::profile::span("detail-generation");
-        use crate::template_config::{TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigSlot};
+    pub(crate) fn detail_cards_in(&self, evaluation: &RevisionEvaluation, target: Option<&EntityRef>) -> Vec<DetailCard> {
+        let _phase = profile::span("detail-generation");
         let catalog = &evaluation.catalog;
         let live = &evaluation.live;
         let materializable = &evaluation.materializable;
@@ -1463,7 +1457,7 @@ impl ControllerState {
                             .fields
                             .iter()
                             .filter_map(|spec| {
-                                let mut field = crate::detail::resolve_field(spec, context, &entity.values)?;
+                                let mut field = resolve_field(spec, context, &entity.values)?;
                                 field.source_id = field.observation.as_ref().and_then(|_| entity.sources.get(&field.source_key)).cloned();
                                 field.relations.retain(|target| target != &entity.entity);
                                 Some(field)
@@ -1475,7 +1469,7 @@ impl ControllerState {
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity.entity.action_target());
                 let workspace_id = match live.get(&action_target) {
-                    Some(crate::presentation::PresentationState::Live { workspace_id, .. }) => Some(*workspace_id),
+                    Some(PresentationState::Live { workspace_id, .. }) => Some(*workspace_id),
                     _ => None,
                 };
                 use crate::detail::DetailIntent;
@@ -1488,7 +1482,7 @@ impl ControllerState {
                 } else {
                     DetailIntent::Inspect
                 };
-                crate::detail::DetailCard {
+                DetailCard {
                     entity: entity.entity.clone(),
                     label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL).unwrap_or(&entity.entity.id).to_owned(),
                     workspace_id,
@@ -1511,16 +1505,8 @@ impl ControllerState {
     fn display_entity(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
         let metadata = entity_facts(&entity.entity, &entity.values);
         let templates = ResolvedTemplateSlots {
-            compact: self.resolve_template_slot(
-                crate::template_config::TemplateConfigSlot::Compact,
-                crate::template_config::TemplateConfigNodeKind::Entity,
-                &metadata,
-            ),
-            detail: self.resolve_template_slot(
-                crate::template_config::TemplateConfigSlot::Detail,
-                crate::template_config::TemplateConfigNodeKind::Entity,
-                &metadata,
-            ),
+            compact: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
+            detail: self.resolve_template_slot(TemplateConfigSlot::Detail, TemplateConfigNodeKind::Entity, &metadata),
             ..Default::default()
         };
         EvaluatedPlacement {
@@ -1542,7 +1528,7 @@ impl ControllerState {
     /// catalog size.
     fn evaluate_placement(
         &self,
-        placement: &crate::template_config::PlacementDefinition,
+        placement: &PlacementDefinition,
         entities: &[CatalogEntity],
         index: &PlacementIndex,
         form: &str,
@@ -1570,11 +1556,11 @@ impl ControllerState {
     /// Entities a loop selects under the given bindings, in its declared order.
     fn placement_matches<'a>(
         &self,
-        loop_definition: &crate::template_config::PlacementLoop,
+        loop_definition: &PlacementLoop,
         entities: &'a [CatalogEntity],
         index: &PlacementIndex,
         bindings: &BTreeMap<String, &'a CatalogEntity>,
-        ancestors: &[crate::EntityRef],
+        ancestors: &[EntityRef],
     ) -> Vec<&'a CatalogEntity> {
         let mut postings = loop_definition
             .predicates
@@ -1595,7 +1581,7 @@ impl ControllerState {
                     } else if predicate.key == "entity.id" {
                         Some(bound.entity.id.clone())
                     } else {
-                        bound.values.get(&predicate.key).and_then(|entry| crate::template_config::placement_index_text(&entry.value))
+                        bound.values.get(&predicate.key).and_then(|entry| placement_index_text(&entry.value))
                     }
                 });
                 value.map(|value| index.lookup_value(&predicate.key, &value)).unwrap_or_default()
@@ -1669,7 +1655,7 @@ impl ControllerState {
         entity: &'a CatalogEntity,
         entities: &'a [CatalogEntity],
         index: &PlacementIndex,
-    ) -> Vec<crate::template_config::TemplateConfigRenderedField> {
+    ) -> Vec<TemplateConfigRenderedField> {
         let (Some(catalog), Some(detail)) = (self.template_catalog.as_ref(), display.templates.detail.as_ref()) else {
             return vec![];
         };
@@ -1685,9 +1671,9 @@ impl ControllerState {
             .flat_map(|related_loop| {
                 self.placement_matches(related_loop, entities, index, &bindings, &ancestors).into_iter().flat_map(move |related| {
                     let metadata = entity_facts(&related.entity, &related.values);
-                    let context = crate::template_config::TemplateConfigMatchContext {
-                        slot: crate::template_config::TemplateConfigSlot::Detail,
-                        node_kind: crate::template_config::TemplateConfigNodeKind::Entity,
+                    let context = TemplateConfigMatchContext {
+                        slot: TemplateConfigSlot::Detail,
+                        node_kind: TemplateConfigNodeKind::Entity,
                         metadata: &metadata,
                         collapsed: false,
                         collapsible: false,
@@ -1702,12 +1688,12 @@ impl ControllerState {
     #[allow(clippy::too_many_arguments)]
     fn evaluate_placement_loop<'a>(
         &self,
-        loop_definition: &crate::template_config::PlacementLoop,
+        loop_definition: &PlacementLoop,
         entities: &'a [CatalogEntity],
         index: &PlacementIndex,
         form: &str,
         bindings: &BTreeMap<String, &'a CatalogEntity>,
-        ancestors: &[crate::EntityRef],
+        ancestors: &[EntityRef],
         parent_placement: &PlacementKey,
         depth: usize,
         layouts: &mut BTreeMap<PlacementKey, PlacementAnnotation>,
@@ -1730,7 +1716,7 @@ impl ControllerState {
                         setters: vec![],
                         effective_kdl: String::new(),
                         resolve_error: None,
-                        render_ready: Some(crate::template_config::TemplateConfigRenderReady {
+                        render_ready: Some(TemplateConfigRenderReady {
                             fields: loop_definition.fields.clone(),
                             controls: vec![],
                             chrome: Default::default(),
@@ -1837,7 +1823,7 @@ impl ControllerState {
 
     fn resolve_placement_variables(
         &self,
-        catalog: &crate::template_config::TemplateConfigCatalog,
+        catalog: &TemplateConfigCatalog,
         entity: &EvaluatedPlacement,
         parent: &NodeKey,
         inherited_by_node: &mut BTreeMap<NodeKey, BTreeMap<String, EffectiveVariableValue>>,
@@ -1860,7 +1846,7 @@ impl ControllerState {
 
     fn resolve_variables_at_node(
         &self,
-        catalog: &crate::template_config::TemplateConfigCatalog,
+        catalog: &TemplateConfigCatalog,
         node: &NodeKey,
         inherited: Option<&BTreeMap<String, EffectiveVariableValue>>,
         metadata: &BTreeMap<String, MetadataValue>,
@@ -1942,8 +1928,8 @@ impl ControllerState {
                     VariableSetterProvenance {
                         setter: NODE_VARIABLE_CONFIG_OVERRIDE_SETTER.to_owned(),
                         ancestor: node.clone(),
-                        origin: crate::template_config::TemplateConfigOrigin {
-                            layer: crate::template_config::TemplateConfigLayerKind::User,
+                        origin: TemplateConfigOrigin {
+                            layer: TemplateConfigLayerKind::User,
                             membership: None,
                             source: "andamento-inspector".to_owned(),
                         },
@@ -1959,7 +1945,7 @@ impl ControllerState {
     }
 
     fn latent_tabs_in(&self, catalog: &CatalogEvaluation) -> Vec<LatentTab> {
-        let _phase = crate::profile::span("latents");
+        let _phase = profile::span("latents");
         let entities = &catalog.entities;
         let live_targets = self.materialized_action_targets(catalog);
         entities
@@ -2253,7 +2239,7 @@ impl ControllerState {
     /// Each tab's subject (`entity.kind`/`id`) and host entity
     /// (`.host.kind`/`.host.id`), from one metadata resolution per tab.
     pub(crate) fn workspace_identities(&self) -> WorkspaceIdentities {
-        let _phase = crate::profile::span("workspace-subjects");
+        let _phase = profile::span("workspace-subjects");
         let seeds = self.tab_seed_metadata_entries();
         let mut identities = WorkspaceIdentities::default();
         for tab in &self.tabs {
@@ -2287,7 +2273,7 @@ impl ControllerState {
     }
 
     fn catalog_entities(&self) -> Vec<CatalogEntity> {
-        let _phase = crate::profile::span("catalog");
+        let _phase = profile::span("catalog");
         #[cfg(test)]
         CATALOG_BUILDS.with(|count| count.set(count.get() + 1));
         let mut entities = self
@@ -2418,7 +2404,7 @@ impl ControllerState {
 
     /// The entity a placement presents: a `.ref`'s target, otherwise itself.
     pub(crate) fn presented_entity(&self, entity: &EntityRef) -> EntityRef {
-        if entity.kind != crate::presentation::system::REF {
+        if entity.kind != system::REF {
             return entity.clone();
         }
         let (values, _) = self.metadata.resolved_entries_with_sources_for(&EntityId::Entity(entity.clone()), self.now());
@@ -2488,13 +2474,13 @@ impl ControllerState {
         entity_ref_from_entries(&values)
     }
 
-    pub fn can_materialize_latent(&self, request: &crate::MaterializeLatentRequest) -> bool {
+    pub fn can_materialize_latent(&self, request: &MaterializeLatentRequest) -> bool {
         // This exact equality check is the security boundary for controller pipe callers:
         // accepting an action target alone would let a caller substitute its own recipe or path.
         self.latent_tabs().iter().filter_map(LatentTab::materialize_request).any(|candidate| candidate == *request)
     }
 
-    pub fn begin_latent_materialization(&mut self, request: &crate::MaterializeLatentRequest) -> bool {
+    pub fn begin_latent_materialization(&mut self, request: &MaterializeLatentRequest) -> bool {
         if self.materialized_tab_position(request).is_some()
             || self.pending_latent_materializations.contains_key(&request.action_target)
             || !self.can_materialize_latent(request)
@@ -2506,7 +2492,7 @@ impl ControllerState {
         true
     }
 
-    pub fn bind_materializing_tab(&mut self, request: &crate::MaterializeLatentRequest, tab_id: WorkspaceId) -> bool {
+    pub fn bind_materializing_tab(&mut self, request: &MaterializeLatentRequest, tab_id: WorkspaceId) -> bool {
         let Some(pending) = self.pending_latent_materializations.get_mut(&request.action_target) else {
             return false;
         };
@@ -2520,7 +2506,7 @@ impl ControllerState {
 
     pub(crate) fn bind_materializing_subject(
         &mut self,
-        request: &crate::MaterializeLatentRequest,
+        request: &MaterializeLatentRequest,
         tab_id: WorkspaceId,
         subject: EntityRef,
     ) -> bool {
@@ -2534,7 +2520,7 @@ impl ControllerState {
         false
     }
 
-    pub fn abort_latent_materialization(&mut self, request: &crate::MaterializeLatentRequest) -> bool {
+    pub fn abort_latent_materialization(&mut self, request: &MaterializeLatentRequest) -> bool {
         let Some(pending) = self.pending_latent_materializations.get(&request.action_target) else {
             return false;
         };
@@ -2548,7 +2534,7 @@ impl ControllerState {
         true
     }
 
-    pub fn materialized_tab_position(&self, request: &crate::MaterializeLatentRequest) -> Option<usize> {
+    pub fn materialized_tab_position(&self, request: &MaterializeLatentRequest) -> Option<usize> {
         self.materialized_tab_position_for_action_target(&request.action_target)
     }
 
@@ -2640,7 +2626,7 @@ impl ControllerState {
         suggested_layout::parse(entity, &facts)
     }
 
-    fn desired_content(&self, target: &EntityId) -> Option<crate::managed::DesiredContent> {
+    fn desired_content(&self, target: &EntityId) -> Option<DesiredContent> {
         desired_primary(&self.metadata.resolved_entries_for(target, self.now()))
     }
 
@@ -2732,12 +2718,7 @@ impl ControllerState {
         !claims.is_empty()
     }
 
-    fn apply_materialized_identity(
-        &mut self,
-        tab_id: WorkspaceId,
-        request: &crate::MaterializeLatentRequest,
-        subject: Option<EntityRef>,
-    ) -> bool {
+    fn apply_materialized_identity(&mut self, tab_id: WorkspaceId, request: &MaterializeLatentRequest, subject: Option<EntityRef>) -> bool {
         let Some(entity) = subject.or_else(|| {
             self.catalog_entities()
                 .into_iter()
@@ -2751,8 +2732,8 @@ impl ControllerState {
         }) else {
             return false;
         };
-        self.apply_metadata_patch(crate::MetadataPatch {
-            target: crate::MetadataTarget::Tab(tab_id),
+        self.apply_metadata_patch(MetadataPatch {
+            target: MetadataTarget::Tab(tab_id),
             source_id: SOURCE_LATENT_MATERIALIZER.to_owned(),
             set: subject_binding(&entity),
             unset: vec![],
@@ -2761,19 +2742,12 @@ impl ControllerState {
 
     fn resolve_template_slot(
         &self,
-        slot: crate::template_config::TemplateConfigSlot,
-        node_kind: crate::template_config::TemplateConfigNodeKind,
+        slot: TemplateConfigSlot,
+        node_kind: TemplateConfigNodeKind,
         metadata: &BTreeMap<String, MetadataValue>,
     ) -> Option<ResolvedTemplateSlot> {
         let catalog = self.template_catalog.as_ref()?;
-        let context = crate::template_config::TemplateConfigMatchContext {
-            slot,
-            node_kind,
-            metadata,
-            collapsed: false,
-            collapsible: true,
-            active_tab_name: None,
-        };
+        let context = TemplateConfigMatchContext { slot, node_kind, metadata, collapsed: false, collapsible: true, active_tab_name: None };
         let resolved = match catalog.resolve(context) {
             Ok(Some(resolved)) => resolved,
             Ok(None) => return None,
@@ -2827,7 +2801,7 @@ impl ControllerState {
         target: &EntityId,
         seed_values: BTreeMap<String, MetadataEntry>,
     ) -> (BTreeMap<String, MetadataEntry>, BTreeMap<String, Vec<MetadataSourceEntry>>, Vec<ReachableMetadataIdentity>) {
-        let _phase = crate::profile::span("metadata-resolution");
+        let _phase = profile::span("metadata-resolution");
         let mut values = BTreeMap::new();
         let mut source_entries = BTreeMap::<String, Vec<MetadataSourceEntry>>::new();
         let mut reachable_identities = vec![];
@@ -2981,14 +2955,12 @@ impl ControllerState {
 
 fn node_metadata(node: &NodeKey, resolved_metadata: &[ResolvedMetadata]) -> BTreeMap<String, MetadataValue> {
     let target = match node {
-        NodeKey::Root => crate::ResolvedMetadataTarget::Root,
-        NodeKey::Tab(tab_id) => crate::ResolvedMetadataTarget::Tab(*tab_id),
-        NodeKey::Entity(entity) => crate::ResolvedMetadataTarget::Entity(entity.clone()),
-        NodeKey::Placement(key) => key
-            .0
-            .last()
-            .map(|segment| crate::ResolvedMetadataTarget::Entity(segment.entity.clone()))
-            .unwrap_or(crate::ResolvedMetadataTarget::Root),
+        NodeKey::Root => ResolvedMetadataTarget::Root,
+        NodeKey::Tab(tab_id) => ResolvedMetadataTarget::Tab(*tab_id),
+        NodeKey::Entity(entity) => ResolvedMetadataTarget::Entity(entity.clone()),
+        NodeKey::Placement(key) => {
+            key.0.last().map(|segment| ResolvedMetadataTarget::Entity(segment.entity.clone())).unwrap_or(ResolvedMetadataTarget::Root)
+        }
     };
     resolved_metadata
         .iter()
@@ -3025,7 +2997,7 @@ fn entity_facts(entity: &EntityRef, values: &BTreeMap<String, MetadataEntry>) ->
 
 /// A `.ref`'s `.target`: a single entity reference.
 fn ref_target(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
-    match &entries.get(crate::presentation::system::TARGET)?.value {
+    match &entries.get(system::TARGET)?.value {
         MetadataValue::EntityRefs(refs) if refs.len() == 1 => refs.first().cloned(),
         _ => None,
     }
@@ -3160,21 +3132,17 @@ fn observed_metadata_identities(resolved_metadata: &[ResolvedMetadata]) -> Vec<O
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn placement_loop(predicates: &[(&str, &str)]) -> crate::template_config::PlacementDefinition {
-        crate::template_config::PlacementDefinition {
+    fn placement_loop(predicates: &[(&str, &str)]) -> PlacementDefinition {
+        PlacementDefinition {
             name: "section".to_owned(),
-            loops: vec![crate::template_config::PlacementLoop {
+            loops: vec![PlacementLoop {
                 binding: "item".to_owned(),
                 in_key: None,
                 of: None,
                 visibility: None,
                 predicates: predicates
                     .iter()
-                    .map(|(key, value)| crate::template_config::PlacementPredicate {
-                        key: (*key).to_owned(),
-                        value: Some((*value).to_owned()),
-                        of: None,
-                    })
+                    .map(|(key, value)| PlacementPredicate { key: (*key).to_owned(), value: Some((*value).to_owned()), of: None })
                     .collect(),
                 order: vec![],
                 fields: vec![],
@@ -3185,11 +3153,12 @@ mod tests {
             }],
         }
     }
+    use crate::template_config::{parse_template_config_kdl, PlacementPredicate, TemplateConfigLayer};
     use crate::{
         tab_workspace_id, PluginPaneKind, PluginPlacement, PluginRegistrationHello, RailStructure, ResolvedMetadataTarget, StatusIcon,
     };
 
-    type EntityId = crate::MetadataTarget;
+    type EntityId = MetadataTarget;
     fn status(pane_id: PaneTarget, priority: Priority, title: &str, timestamp_ms: u64) -> SetPaneStatus {
         SetPaneStatus { pane_id, priority, title: title.to_owned(), detail: None, icon: None, timestamp_ms: Some(timestamp_ms) }
     }
@@ -3198,7 +3167,7 @@ mod tests {
         ControllerTab { tab_id: tab_workspace_id(tab_id as u64), position, name: name.into(), active }
     }
 
-    fn entity_ref(kind: &str, id: &str) -> crate::EntityRef {
+    fn entity_ref(kind: &str, id: &str) -> EntityRef {
         EntityRef::local(kind, id)
     }
 
@@ -3213,19 +3182,19 @@ mod tests {
         for (id, refs) in
             [("match", vec![convoy.clone(), convoy.clone()]), ("wrong-kind", vec![entity_ref("vessel", &convoy.id)]), ("empty", vec![])]
         {
-            state.apply_metadata_patch(crate::MetadataPatch {
-                target: crate::MetadataTarget::Entity(entity_ref("change_request", id)),
+            state.apply_metadata_patch(MetadataPatch {
+                target: MetadataTarget::Entity(entity_ref("change_request", id)),
                 source_id: "test".into(),
                 set: BTreeMap::from([(
                     "flotilla.subject_of".into(),
-                    crate::MetadataValueUpdate { value: MetadataValue::EntityRefs(refs), ttl_ms: None, precedence: None, ordinal: None },
+                    MetadataValueUpdate { value: MetadataValue::EntityRefs(refs), ttl_ms: None, precedence: None, ordinal: None },
                 )]),
                 unset: vec![],
             });
         }
         let mut entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
-        let config = crate::template_config::parse_template_config_kdl(
+        let config = parse_template_config_kdl(
             r#"
             placement "subjects" {
                 for "convoy" kind="convoy" {
@@ -3277,7 +3246,7 @@ mod tests {
         }
         let configs = [false, true].map(|explicit_order| {
             let order = if explicit_order { r#"order "display.label";"# } else { "" };
-            crate::template_config::parse_template_config_kdl(&format!(
+            parse_template_config_kdl(&format!(
                 r#"
                 placement "tree" {{
                     for "role" kind="role" {{
@@ -3292,17 +3261,12 @@ mod tests {
             .unwrap()
         });
         for refs in forward_reference_lists() {
-            state.apply_metadata_patch(crate::MetadataPatch {
-                target: crate::MetadataTarget::Entity(entity_ref("role", "r")),
+            state.apply_metadata_patch(MetadataPatch {
+                target: MetadataTarget::Entity(entity_ref("role", "r")),
                 source_id: "test".into(),
                 set: BTreeMap::from([(
                     "attempts".into(),
-                    crate::MetadataValueUpdate {
-                        value: MetadataValue::EntityRefs(refs.clone()),
-                        ttl_ms: None,
-                        precedence: None,
-                        ordinal: None,
-                    },
+                    MetadataValueUpdate { value: MetadataValue::EntityRefs(refs.clone()), ttl_ms: None, precedence: None, ordinal: None },
                 )]),
                 unset: vec![],
             });
@@ -3341,7 +3305,7 @@ mod tests {
         let role = entities.iter().find(|e| e.entity == entity_ref("role", "r")).unwrap();
         let bindings = BTreeMap::from([("role".into(), role)]);
         let missing = BTreeMap::new();
-        let config = crate::template_config::parse_template_config_kdl(
+        let config = parse_template_config_kdl(
             r#"
             placement "tree" { for "role" kind="role" { for "attempt" kind="convoy" in="absent" of="role"; }; }
         "#,
@@ -3357,8 +3321,8 @@ mod tests {
     #[test]
     fn forward_detail_template_uses_current_attempt() {
         let mut state = ControllerState::default();
-        state.set_template_catalog(Some(crate::template_config::TemplateConfigCatalog::from_config(
-            crate::template_config::parse_template_config_kdl(
+        state.set_template_catalog(Some(TemplateConfigCatalog::from_config(
+            parse_template_config_kdl(
                 r#"
                 region "tree" root-template="heading" placement="tree"
                 template "heading" { field "label" source="literal" value="Roles"; }
@@ -3378,12 +3342,12 @@ mod tests {
         apply_entity(&mut state, "convoy", "a", 0, &[("display.label", "Attempt"), ("phase", "active")]);
         for refs in [vec![entity_ref("convoy", "a")], vec![]] {
             let present = !refs.is_empty();
-            state.apply_metadata_patch(crate::MetadataPatch {
-                target: crate::MetadataTarget::Entity(entity_ref("role", "r")),
+            state.apply_metadata_patch(MetadataPatch {
+                target: MetadataTarget::Entity(entity_ref("role", "r")),
                 source_id: "test".into(),
                 set: BTreeMap::from([(
                     "current".into(),
-                    crate::MetadataValueUpdate { value: MetadataValue::EntityRefs(refs), ttl_ms: None, precedence: None, ordinal: None },
+                    MetadataValueUpdate { value: MetadataValue::EntityRefs(refs), ttl_ms: None, precedence: None, ordinal: None },
                 )]),
                 unset: vec![],
             });
@@ -3402,8 +3366,8 @@ mod tests {
     #[test]
     fn forward_self_edge_and_sibling_selectors_render_safely() {
         let mut state = ControllerState::default();
-        state.set_template_catalog(Some(crate::template_config::TemplateConfigCatalog::from_config(
-            crate::template_config::parse_template_config_kdl(
+        state.set_template_catalog(Some(TemplateConfigCatalog::from_config(
+            parse_template_config_kdl(
                 r#"
                 region "tree" root-template="heading" placement="tree"
                 template "heading" { field "label" source="literal" value="Items"; }
@@ -3421,12 +3385,12 @@ mod tests {
         for (kind, id) in [("role", "r"), ("role", "s"), ("vessel", "v")] {
             apply_entity(&mut state, kind, id, 0, &[("display.label", id)]);
         }
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: crate::MetadataTarget::Entity(entity_ref("role", "r")),
+        state.apply_metadata_patch(MetadataPatch {
+            target: MetadataTarget::Entity(entity_ref("role", "r")),
             source_id: "test".into(),
             set: BTreeMap::from([(
                 "refs".into(),
-                crate::MetadataValueUpdate {
+                MetadataValueUpdate {
                     value: MetadataValue::EntityRefs(vec![entity_ref("role", "r"), entity_ref("role", "s")]),
                     ttl_ms: None,
                     precedence: None,
@@ -3469,8 +3433,8 @@ mod tests {
 
     #[test]
     fn cross_layer_variable_setter_warnings_reach_template_diagnostics() {
-        let user = crate::template_config::parse_template_config_kdl(r#"set "child-layout" "compact-strip""#).expect("user setter");
-        let bundled = crate::template_config::parse_template_config_kdl(
+        let user = parse_template_config_kdl(r#"set "child-layout" "compact-strip""#).expect("user setter");
+        let bundled = parse_template_config_kdl(
             r#"
             variable "child-layout" default="cards" {
               value "cards"
@@ -3480,9 +3444,9 @@ mod tests {
         )
         .expect("bundled declaration");
         let mut state = ControllerState::default();
-        state.set_template_catalog(Some(crate::template_config::TemplateConfigCatalog::from_layers(vec![
-            crate::template_config::TemplateConfigLayer::user("user.kdl", user),
-            crate::template_config::TemplateConfigLayer::bundled("bundled.kdl", bundled),
+        state.set_template_catalog(Some(TemplateConfigCatalog::from_layers(vec![
+            TemplateConfigLayer::user("user.kdl", user),
+            TemplateConfigLayer::bundled("bundled.kdl", bundled),
         ])));
 
         let model = state.view_model();
@@ -3499,27 +3463,17 @@ mod tests {
         let mut set = BTreeMap::from([
             (
                 KEY_ENTITY_KIND.to_owned(),
-                crate::MetadataValueUpdate {
-                    value: MetadataValue::Text(kind.to_owned()),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: Some(ordinal),
-                },
+                MetadataValueUpdate { value: MetadataValue::Text(kind.to_owned()), ttl_ms: None, precedence: None, ordinal: Some(ordinal) },
             ),
             (
                 KEY_ENTITY_ID.to_owned(),
-                crate::MetadataValueUpdate {
-                    value: MetadataValue::Text(id.to_owned()),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: Some(ordinal),
-                },
+                MetadataValueUpdate { value: MetadataValue::Text(id.to_owned()), ttl_ms: None, precedence: None, ordinal: Some(ordinal) },
             ),
         ]);
         set.extend(facts.iter().map(|(key, value)| {
             (
                 (*key).to_owned(),
-                crate::MetadataValueUpdate {
+                MetadataValueUpdate {
                     value: MetadataValue::Text((*value).to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -3527,8 +3481,8 @@ mod tests {
                 },
             )
         }));
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: crate::MetadataTarget::Entity(entity),
+        state.apply_metadata_patch(MetadataPatch {
+            target: MetadataTarget::Entity(entity),
             source_id: "flotilla-connector".to_owned(),
             set,
             unset: vec![],
@@ -3536,15 +3490,15 @@ mod tests {
     }
 
     fn apply_target_only_entity(state: &mut ControllerState, kind: &str, id: &str, ordinal: i64, facts: &[(&str, &str)]) {
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: crate::MetadataTarget::Entity(entity_ref(kind, id)),
+        state.apply_metadata_patch(MetadataPatch {
+            target: MetadataTarget::Entity(entity_ref(kind, id)),
             source_id: "flotilla-connector".to_owned(),
             set: facts
                 .iter()
                 .map(|(key, value)| {
                     (
                         (*key).to_owned(),
-                        crate::MetadataValueUpdate {
+                        MetadataValueUpdate {
                             value: MetadataValue::Text((*value).to_owned()),
                             ttl_ms: None,
                             precedence: None,
@@ -3637,7 +3591,7 @@ mod tests {
 
     #[test]
     fn loops_over_the_same_kind_choose_independent_total_orders() {
-        let config = crate::template_config::parse_template_config_kdl(
+        let config = parse_template_config_kdl(
             r#"
 version 1
 placement "urgent" {
@@ -3681,7 +3635,7 @@ placement "identity-descending" {
         apply_entity(&mut state, "vessel", "missing-id", 1, &[("flotilla.vessel", "missing-id"), ("display.label", "middle")]);
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
-        let labels = |placement: &crate::template_config::PlacementDefinition| {
+        let labels = |placement: &PlacementDefinition| {
             state
                 .evaluate_placement(placement, &entities, &index, "full", &mut BTreeMap::new())
                 .into_iter()
@@ -3820,12 +3774,12 @@ placement "identity-descending" {
     #[test]
     fn duplicate_metadata_patch_is_not_a_model_change() {
         let mut state = ControllerState::default();
-        let patch = crate::MetadataPatch {
+        let patch = MetadataPatch {
             target: MetadataTarget::Tab(tab_workspace_id(1)),
             source_id: "watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
-                crate::MetadataValueUpdate {
+                MetadataValueUpdate {
                     value: MetadataValue::Text("zellij-org/zellij".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -3844,12 +3798,12 @@ placement "identity-descending" {
     #[test]
     fn duplicate_ttl_metadata_patch_refreshes_without_model_change() {
         let mut state = ControllerState::default();
-        let patch = crate::MetadataPatch {
+        let patch = MetadataPatch {
             target: MetadataTarget::Tab(tab_workspace_id(1)),
             source_id: "watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
-                crate::MetadataValueUpdate {
+                MetadataValueUpdate {
                     value: MetadataValue::Text("zellij-org/zellij".to_owned()),
                     ttl_ms: Some(10_000),
                     precedence: None,
@@ -3927,12 +3881,12 @@ placement "identity-descending" {
     fn resolved_tab_metadata_follows_transitive_identity_facts() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "repo".into(), active: true }]);
-        state.apply_metadata_patch(crate::MetadataPatch {
+        state.apply_metadata_patch(MetadataPatch {
             target: EntityId::Tab(tab_workspace_id(1)),
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
-                crate::MetadataValueUpdate {
+                MetadataValueUpdate {
                     value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -3941,29 +3895,24 @@ placement "identity-descending" {
             )]),
             unset: vec![],
         });
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: EntityId::Identity(crate::MetadataIdentity {
+        state.apply_metadata_patch(MetadataPatch {
+            target: EntityId::Identity(MetadataIdentity {
                 key: "git.repo".to_owned(),
                 value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
             }),
             source_id: "gh".to_owned(),
             set: BTreeMap::from([(
                 "vcs.pr".to_owned(),
-                crate::MetadataValueUpdate { value: MetadataValue::Text("#45".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
+                MetadataValueUpdate { value: MetadataValue::Text("#45".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
             )]),
             unset: vec![],
         });
-        state.apply_metadata_patch(crate::MetadataPatch {
-            target: EntityId::Identity(crate::MetadataIdentity { key: "vcs.pr".to_owned(), value: MetadataValue::Text("#45".to_owned()) }),
+        state.apply_metadata_patch(MetadataPatch {
+            target: EntityId::Identity(MetadataIdentity { key: "vcs.pr".to_owned(), value: MetadataValue::Text("#45".to_owned()) }),
             source_id: "ci".to_owned(),
             set: BTreeMap::from([(
                 "ci.status".to_owned(),
-                crate::MetadataValueUpdate {
-                    value: MetadataValue::Text("failing".to_owned()),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: None,
-                },
+                MetadataValueUpdate { value: MetadataValue::Text("failing".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
             )]),
             unset: vec![],
         });
@@ -4009,7 +3958,7 @@ placement "identity-descending" {
         state.update_tabs(vec![ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "repo".into(), active: true }]);
         state.set_test_pane(PaneTarget::Terminal(1), tab_workspace_id(1), true, true, 0);
         state.set_pane_cwd(PaneTarget::Terminal(1), "/Users/robert/dev/katzensteg".to_owned());
-        state.apply_metadata_patch(crate::MetadataPatch {
+        state.apply_metadata_patch(MetadataPatch {
             target: EntityId::Identity(MetadataIdentity {
                 key: KEY_PANE_CWD.to_owned(),
                 value: MetadataValue::Text("/Users/robert/dev/katzensteg".to_owned()),
@@ -4017,7 +3966,7 @@ placement "identity-descending" {
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
-                crate::MetadataValueUpdate {
+                MetadataValueUpdate {
                     value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -4051,12 +4000,12 @@ placement "identity-descending" {
         state.set_test_pane(PaneTarget::Terminal(1), tab_workspace_id(1), true, true, 0);
         let cwd = "/Users/robert/dev/katzensteg".to_owned();
         state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
-        state.apply_metadata_patch(crate::MetadataPatch {
+        state.apply_metadata_patch(MetadataPatch {
             target: EntityId::Identity(MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text(cwd.clone()) }),
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
-                crate::MetadataValueUpdate {
+                MetadataValueUpdate {
                     value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
                     ttl_ms: None,
                     precedence: None,
@@ -4168,8 +4117,8 @@ placement "identity-descending" {
     #[test]
     fn bootstrap_snapshot_keeps_only_persistent_display_variables() {
         let mut state = ControllerState::default();
-        state.set_template_catalog(Some(crate::template_config::TemplateConfigCatalog::from_config(
-            crate::template_config::parse_template_config_kdl(
+        state.set_template_catalog(Some(TemplateConfigCatalog::from_config(
+            parse_template_config_kdl(
                 r#"
                     version 1
                     display-variable "persistent" type="bool" default=true label="Persistent" icon="P"
@@ -4214,11 +4163,7 @@ placement "identity-descending" {
 
     #[test]
     fn sibling_orders_round_trip_through_rail_ui_state_json() {
-        let key = |binding: &str| crate::PlacementLoopKey {
-            region: "tree".to_owned(),
-            parent: PlacementKey(vec![]),
-            binding: binding.to_owned(),
-        };
+        let key = |binding: &str| PlacementLoopKey { region: "tree".to_owned(), parent: PlacementKey(vec![]), binding: binding.to_owned() };
         let vessel = |id: &str| EntityRef::local("vessel", id);
         let mut source = ControllerState::default();
         source.apply_rail_ui_action(RailUiAction::SetSiblingOrder { loop_key: key("vessel"), order: vec![vessel("b"), vessel("a")] });
@@ -4235,12 +4180,12 @@ placement "identity-descending" {
     fn bootstrap_snapshot_carries_metadata_patches() {
         const KEY: &str = "tab.subject";
         let mut source = ControllerState::default();
-        source.apply_metadata_patch(crate::MetadataPatch {
+        source.apply_metadata_patch(MetadataPatch {
             target: EntityId::Tab(tab_workspace_id(7)),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 KEY.to_owned(),
-                crate::MetadataValueUpdate {
+                MetadataValueUpdate {
                     value: MetadataValue::Text("project:zellij".to_owned()),
                     ttl_ms: None,
                     precedence: Some(4),

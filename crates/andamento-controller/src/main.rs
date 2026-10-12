@@ -14,22 +14,28 @@ use andamento_shared::PluginStatsRecorder;
 use andamento_shared::MSG_RAIL_SIZE_TARGET;
 use andamento_shared::MSG_VIEW_MODEL;
 use andamento_shared::{
-    host::tab_label, tab_workspace_id, ConfigInspectRequest, ControllerBootstrapSnapshot, ExternalMessage, MetadataVisibilitySetRequest,
-    NodeKey, NodeVariableSetRequest, PluginRegistrationHello, RailConfig, RailRgbColor, RailSize, RailSizeObserved, RailSizeTarget,
-    RailStructure, RailUiAction, RailUiState, RendererHello, SortMode, StatsCollectRequest, MSG_APPLY_METADATA_PATCH,
-    MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO, MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE,
-    MSG_OBSERVED_IDENTITIES, MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO, MSG_REQUEST_RAIL_UI_STATE,
-    MSG_REQUEST_STATE, MSG_SET_METADATA_VISIBILITY, MSG_SET_NODE_VARIABLE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE,
-    MSG_STATS_COLLECT, MSG_TOGGLE_PIN,
+    host::tab_label, tab_workspace_id, template_config, ConfigInspectRequest, ControllerBootstrapSnapshot, EntityActivationRequest,
+    ExternalMessage, MaterializeLatentRequest, MetadataVisibilitySetRequest, NodeKey, NodeVariableSetRequest, PluginRegistrationHello,
+    RailConfig, RailRgbColor, RailSize, RailSizeObserved, RailSizeTarget, RailStructure, RailUiAction, RailUiState, RendererHello,
+    SortMode, StatsCollectRequest, MSG_ACTIVATE_ENTITY, MSG_APPLY_METADATA_PATCH, MSG_CLEAR_PANE_STATUS, MSG_CONFIG_EDITOR_HELLO,
+    MSG_CONFIG_INSPECT, MSG_CONTROLLER_BOOTSTRAP_REQUEST, MSG_CONTROLLER_BOOTSTRAP_STATE, MSG_MATERIALIZE_LATENT, MSG_OBSERVED_IDENTITIES,
+    MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO, MSG_REQUEST_RAIL_UI_STATE, MSG_REQUEST_STATE,
+    MSG_SET_METADATA_VISIBILITY, MSG_SET_NODE_VARIABLE, MSG_SET_PANE_STATUS, MSG_SET_RAIL_CONFIG, MSG_SET_SORT_MODE, MSG_STATS_COLLECT,
+    MSG_TOGGLE_PIN,
 };
 use andamento_shared::{TemplateConfigDiagnostics, TemplateConfigState};
 use andamento_shared::{MSG_STATS_REPORT, MSG_STATS_REQUEST};
 use state::{ControllerState, EntityActivation, ZellijObservations};
 use zellij_tile::output::print;
 use zellij_tile::prelude::*;
+use zellij_tile::vfs::expand_env;
 
+#[cfg(not(target_family = "wasm"))]
+use andamento_rail::render::render_lines;
 #[cfg(test)]
 use andamento_shared::PluginPlacement;
+#[cfg(not(target_family = "wasm"))]
+use andamento_shared::{presentation::PlacementNode, replay, ControllerViewModel};
 
 #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
 const TEMPLATE_RELOAD_RETRY_SECS: f64 = 0.25;
@@ -93,12 +99,11 @@ fn run_harness() -> Result<(), String> {
     };
 
     let mut state = ControllerState::default();
-    let templates = andamento_shared::template_config::parse_template_config_kdl(&template_kdl)
-        .map_err(|error| format!("parse template KDL: {error:?}"))?;
-    state.set_template_catalog(Some(andamento_shared::template_config::TemplateConfigCatalog::with_bundled_defaults(templates)));
+    let templates = template_config::parse_template_config_kdl(&template_kdl).map_err(|error| format!("parse template KDL: {error:?}"))?;
+    state.set_template_catalog(Some(template_config::TemplateConfigCatalog::with_bundled_defaults(templates)));
     let raw = std::fs::read_to_string(&patches_path).map_err(|error| format!("read patches {patches_path}: {error}"))?;
     let (mut applied, mut failed) = (0usize, 0usize);
-    let frames = andamento_shared::replay::read(std::io::Cursor::new(raw)).map_err(|error| format!("parse replay stream: {error}"))?;
+    let frames = replay::read(std::io::Cursor::new(raw)).map_err(|error| format!("parse replay stream: {error}"))?;
     for frame in frames {
         state.advance_time(frame.offset_ms);
         let target = frame.patch.target.clone();
@@ -115,7 +120,7 @@ fn run_harness() -> Result<(), String> {
     render_rail_lines(&model);
     if let Some(slot) = dump_template.as_deref() {
         if let Some(surface) = &model.presentation {
-            fn dump(nodes: &[andamento_shared::presentation::PlacementNode], slot: &str) {
+            fn dump(nodes: &[PlacementNode], slot: &str) {
                 for node in nodes {
                     let content = if slot == "detail" { &node.detail } else { &node.content };
                     std::println!("{}: {}", node.label, content.effective_kdl);
@@ -134,10 +139,10 @@ fn run_harness() -> Result<(), String> {
 /// selection, actual field composition, actual truncation — so template-level
 /// questions are answerable here instead of only in a running zellij.
 #[cfg(not(target_family = "wasm"))]
-fn render_rail_lines(model: &andamento_shared::ControllerViewModel) {
+fn render_rail_lines(model: &ControllerViewModel) {
     let cols = std::env::var("HARNESS_COLS").ok().and_then(|v| v.parse().ok()).unwrap_or(46usize);
     let rows = 80;
-    let rendered = andamento_rail::render::render_lines(Some(model), &[], rows, cols, true);
+    let rendered = render_lines(Some(model), &[], rows, cols, true);
     std::println!("=== rendered ({} lines @ {cols} cols) ===", rendered.lines.len());
     for line in &rendered.lines {
         std::println!("{line}");
@@ -420,7 +425,7 @@ impl PluginState {
             self.state.set_template_catalog(None);
             return true;
         };
-        match andamento_shared::template_config::load_template_catalog_from_file(path) {
+        match template_config::load_template_catalog_from_file(path) {
             Ok(catalog) => {
                 let diagnostics = TemplateConfigDiagnostics {
                     path: Some(path.to_owned()),
@@ -618,7 +623,7 @@ impl PluginState {
         pipe_message_to_plugin(message);
     }
 
-    fn materialize_latent(&mut self, request: andamento_shared::MaterializeLatentRequest) -> bool {
+    fn materialize_latent(&mut self, request: MaterializeLatentRequest) -> bool {
         self.stats.increment("latent.materialize.request");
         if let Some(tab_position) = self.state.materialized_tab_position(&request) {
             self.stats.increment("latent.materialize.focus-existing");
@@ -657,7 +662,7 @@ impl PluginState {
         false
     }
 
-    fn activate_entity(&mut self, request: andamento_shared::EntityActivationRequest) -> bool {
+    fn activate_entity(&mut self, request: EntityActivationRequest) -> bool {
         self.stats.increment("entity.activate.request");
         match self.state.activation_for_entity(&request.entity) {
             Some(EntityActivation::FocusTab { position }) => {
@@ -689,8 +694,8 @@ struct HandlePipeResult {
     stats_collect_request: Option<StatsCollectRequest>,
     rail_size_observed: Option<RailSizeObserved>,
     config_inspect_request: Option<ConfigInspectRequest>,
-    materialize_latent_request: Option<andamento_shared::MaterializeLatentRequest>,
-    activate_entity_request: Option<andamento_shared::EntityActivationRequest>,
+    materialize_latent_request: Option<MaterializeLatentRequest>,
+    activate_entity_request: Option<EntityActivationRequest>,
     broadcast_rail_ui_state: bool,
 }
 
@@ -1024,7 +1029,7 @@ fn template_config_path_from_configuration(configuration: &BTreeMap<String, Stri
 }
 
 fn path_from_configuration(configuration: &BTreeMap<String, String>, key: &str) -> Option<String> {
-    configuration.get(key).map(String::as_str).map(str::trim).filter(|path| !path.is_empty()).map(zellij_tile::vfs::expand_env)
+    configuration.get(key).map(String::as_str).map(str::trim).filter(|path| !path.is_empty()).map(expand_env)
 }
 
 fn initial_template_config_diagnostics(path: Option<String>) -> TemplateConfigDiagnostics {
@@ -1080,16 +1085,16 @@ fn config_inspect_message_for_new_editor(request: &ConfigInspectRequest) -> Opti
     )
 }
 
-fn inspect_scope_label(key: &andamento_shared::NodeKey) -> String {
+fn inspect_scope_label(key: &NodeKey) -> String {
     match key {
-        andamento_shared::NodeKey::Root => "root".to_owned(),
+        NodeKey::Root => "root".to_owned(),
         NodeKey::Tab(tab_id) => {
             format!("tab:{}", tab_label(*tab_id))
         }
-        andamento_shared::NodeKey::Entity(entity) => {
+        NodeKey::Entity(entity) => {
             format!("entity:{}:{}", entity.kind, entity.id)
         }
-        andamento_shared::NodeKey::Placement(key) => format!(
+        NodeKey::Placement(key) => format!(
             "placement:{}",
             key.0
                 .iter()
@@ -1168,8 +1173,8 @@ enum ControllerMessage {
     RequestRailUiState,
     SetNodeVariable(NodeVariableSetRequest),
     ConfigInspect(ConfigInspectRequest),
-    MaterializeLatent(andamento_shared::MaterializeLatentRequest),
-    ActivateEntity(andamento_shared::EntityActivationRequest),
+    MaterializeLatent(MaterializeLatentRequest),
+    ActivateEntity(EntityActivationRequest),
 }
 
 fn parse_controller_message(pipe_message: &PipeMessage) -> Result<Option<ControllerMessage>, String> {
@@ -1260,23 +1265,21 @@ fn parse_controller_message(pipe_message: &PipeMessage) -> Result<Option<Control
             })
             .map(ControllerMessage::ConfigInspect)
             .map(Some),
-        andamento_shared::MSG_MATERIALIZE_LATENT => pipe_message
+        MSG_MATERIALIZE_LATENT => pipe_message
             .payload
             .as_deref()
             .ok_or_else(|| "materialize latent requires payload".to_owned())
             .and_then(|payload| {
-                serde_json::from_str::<andamento_shared::MaterializeLatentRequest>(payload)
-                    .map_err(|e| format!("invalid materialize latent request: {e}"))
+                serde_json::from_str::<MaterializeLatentRequest>(payload).map_err(|e| format!("invalid materialize latent request: {e}"))
             })
             .map(ControllerMessage::MaterializeLatent)
             .map(Some),
-        andamento_shared::MSG_ACTIVATE_ENTITY => pipe_message
+        MSG_ACTIVATE_ENTITY => pipe_message
             .payload
             .as_deref()
             .ok_or_else(|| "activate entity requires payload".to_owned())
             .and_then(|payload| {
-                serde_json::from_str::<andamento_shared::EntityActivationRequest>(payload)
-                    .map_err(|e| format!("invalid activate entity request: {e}"))
+                serde_json::from_str::<EntityActivationRequest>(payload).map_err(|e| format!("invalid activate entity request: {e}"))
             })
             .map(ControllerMessage::ActivateEntity)
             .map(Some),
@@ -1320,7 +1323,10 @@ fn parse_controller_message(pipe_message: &PipeMessage) -> Result<Option<Control
 #[cfg(test)]
 mod tests {
     use super::*;
-    use andamento_shared::{EntityRef, MetadataTarget, PaneTarget, Priority, ResolvedMetadataTarget, SetPaneStatus};
+    use andamento_shared::{
+        DisplayVariableValue, EntityRef, MetadataIdentity, MetadataPatch, MetadataTarget, MetadataTriState, MetadataValue,
+        MetadataValueUpdate, ObservedMetadataIdentity, PaneTarget, Priority, ResolvedMetadataTarget, SetPaneStatus,
+    };
 
     fn pipe(name: &str, payload: Option<String>, args: BTreeMap<String, String>) -> PipeMessage {
         PipeMessage { source: PipeSource::Keybind, name: name.to_owned(), payload, args, is_private: false }
@@ -1402,7 +1408,7 @@ mod tests {
     #[test]
     fn parses_activate_entity_request() {
         let entity = EntityRef::local("vessel", "dev/focus/worker@lab");
-        let entity = andamento_shared::EntityActivationRequest {
+        let entity = EntityActivationRequest {
             entity: entity.clone(),
             inspect_fallback: ConfigInspectRequest {
                 client_id: 1,
@@ -1414,7 +1420,7 @@ mod tests {
         };
         let payload = serde_json::to_string(&entity).unwrap();
 
-        let parsed = parse_controller_message(&pipe(andamento_shared::MSG_ACTIVATE_ENTITY, Some(payload), BTreeMap::new())).unwrap();
+        let parsed = parse_controller_message(&pipe(MSG_ACTIVATE_ENTITY, Some(payload), BTreeMap::new())).unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::ActivateEntity(entity)));
     }
@@ -1517,7 +1523,7 @@ mod tests {
 
         let config = parse_rail_config(&configuration);
 
-        assert_eq!(config.segment_between_color, Some(andamento_shared::RailRgbColor { red: 1, green: 2, blue: 3 }));
+        assert_eq!(config.segment_between_color, Some(RailRgbColor { red: 1, green: 2, blue: 3 }));
     }
 
     #[test]
@@ -1604,15 +1610,14 @@ mod tests {
 
     #[test]
     fn parses_metadata_visibility_set_request() {
-        let request = andamento_shared::MetadataVisibilitySetRequest {
+        let request = MetadataVisibilitySetRequest {
             client_id: 4,
             node_key: NodeKey::Tab(tab_workspace_id(7)),
-            state: Some(andamento_shared::MetadataTriState::MetaChildren),
+            state: Some(MetadataTriState::MetaChildren),
         };
         let payload = serde_json::to_string(&request).unwrap();
 
-        let parsed =
-            parse_controller_message(&pipe(andamento_shared::MSG_SET_METADATA_VISIBILITY, Some(payload), BTreeMap::new())).unwrap();
+        let parsed = parse_controller_message(&pipe(MSG_SET_METADATA_VISIBILITY, Some(payload), BTreeMap::new())).unwrap();
 
         assert_eq!(parsed, Some(ControllerMessage::SetMetadataVisibility(request)));
     }
@@ -1640,8 +1645,8 @@ mod tests {
     #[test]
     fn display_variable_action_broadcasts_state_and_pushes_a_new_view_model() {
         let mut state = ControllerState::default();
-        state.set_template_catalog(Some(andamento_shared::template_config::TemplateConfigCatalog::from_config(
-            andamento_shared::template_config::parse_template_config_kdl(
+        state.set_template_catalog(Some(template_config::TemplateConfigCatalog::from_config(
+            template_config::parse_template_config_kdl(
                 r#"display-variable "show-issues" type="bool" default=true label="Issues" icon="I""#,
             )
             .unwrap(),
@@ -1653,12 +1658,12 @@ mod tests {
         assert!(result.broadcast_rail_ui_state);
         assert!(result.state_changed);
         assert_eq!(result.view_model_push_reason, Some(ViewModelPushReason::PipeDisplayVariable));
-        assert_eq!(state.rail_ui_state().variables.get("show-issues"), Some(&andamento_shared::DisplayVariableValue::Bool(false)));
+        assert_eq!(state.rail_ui_state().variables.get("show-issues"), Some(&DisplayVariableValue::Bool(false)));
     }
 
     #[test]
     fn node_variable_request_sets_root_config_override() {
-        let request = andamento_shared::NodeVariableSetRequest {
+        let request = NodeVariableSetRequest {
             client_id: 4,
             node_key: NodeKey::Root,
             name: "convoy.tier".to_owned(),
@@ -1668,7 +1673,7 @@ mod tests {
         let mut state = ControllerState::default();
         state.set_template_catalog(None);
 
-        let changed = handle_pipe_message(&mut state, pipe(andamento_shared::MSG_SET_NODE_VARIABLE, Some(payload), BTreeMap::new()));
+        let changed = handle_pipe_message(&mut state, pipe(MSG_SET_NODE_VARIABLE, Some(payload), BTreeMap::new()));
 
         let model = state.view_model();
         let root_variables =
@@ -1695,17 +1700,12 @@ mod tests {
     fn metadata_patch_message_updates_resolved_tab_metadata() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![state::ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "main".to_owned(), active: true }]);
-        let patch = andamento_shared::MetadataPatch {
+        let patch = MetadataPatch {
             target: MetadataTarget::Tab(tab_workspace_id(1)),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 "tab.subject".to_owned(),
-                andamento_shared::MetadataValueUpdate {
-                    value: andamento_shared::MetadataValue::Text("checkout".to_owned()),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: None,
-                },
+                MetadataValueUpdate { value: MetadataValue::Text("checkout".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
             )]),
             unset: vec![],
         };
@@ -1721,10 +1721,7 @@ mod tests {
             .expect("tab metadata");
         assert!(result.state_changed);
         assert_eq!(result.view_model_push_reason, Some(ViewModelPushReason::PipeMetadata));
-        assert_eq!(
-            tab_metadata.values.get("tab.subject").map(|entry| &entry.value),
-            Some(&andamento_shared::MetadataValue::Text("checkout".to_owned()))
-        );
+        assert_eq!(tab_metadata.values.get("tab.subject").map(|entry| &entry.value), Some(&MetadataValue::Text("checkout".to_owned())));
         assert_eq!(
             tab_metadata.source_entries.get("tab.subject").and_then(|entries| entries.first()).map(|entry| entry.source_id.as_str()),
             Some("test")
@@ -1735,17 +1732,12 @@ mod tests {
     fn metadata_patch_cli_pipe_is_unblocked_without_output() {
         let mut state = ControllerState::default();
         state.update_tabs(vec![state::ControllerTab { tab_id: tab_workspace_id(1), position: 0, name: "main".to_owned(), active: true }]);
-        let patch = andamento_shared::MetadataPatch {
+        let patch = MetadataPatch {
             target: MetadataTarget::Tab(tab_workspace_id(1)),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 "tab.subject".to_owned(),
-                andamento_shared::MetadataValueUpdate {
-                    value: andamento_shared::MetadataValue::Text("checkout".to_owned()),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: None,
-                },
+                MetadataValueUpdate { value: MetadataValue::Text("checkout".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
             )]),
             unset: vec![],
         };
@@ -1761,13 +1753,13 @@ mod tests {
     #[test]
     fn duplicate_metadata_patch_message_does_not_request_state_broadcast() {
         let mut state = ControllerState::default();
-        let patch = andamento_shared::MetadataPatch {
+        let patch = MetadataPatch {
             target: MetadataTarget::Tab(tab_workspace_id(1)),
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
-                andamento_shared::MetadataValueUpdate {
-                    value: andamento_shared::MetadataValue::Text("zellij-org/zellij".to_owned()),
+                MetadataValueUpdate {
+                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
                     ttl_ms: Some(10_000),
                     precedence: None,
                     ordinal: None,
@@ -1795,17 +1787,13 @@ mod tests {
 
         let result = handle_pipe_message(&mut state, cli_pipe(MSG_OBSERVED_IDENTITIES, None, "pipe-1"));
         let output = result.cli_pipe_output.expect("cli pipe output");
-        let observed: Vec<andamento_shared::ObservedMetadataIdentity> = serde_json::from_str(&output.output).unwrap();
+        let observed: Vec<ObservedMetadataIdentity> = serde_json::from_str(&output.output).unwrap();
 
         assert!(!result.state_changed);
         assert_eq!(output.pipe_id, "pipe-1");
         assert_eq!(result.cli_pipe_unblock, Some("pipe-1".to_owned()));
         assert!(observed.iter().any(|identity| {
-            identity.identity
-                == andamento_shared::MetadataIdentity {
-                    key: "zellij.pane.cwd".to_owned(),
-                    value: andamento_shared::MetadataValue::Text(cwd.clone()),
-                }
+            identity.identity == MetadataIdentity { key: "zellij.pane.cwd".to_owned(), value: MetadataValue::Text(cwd.clone()) }
         }));
     }
 

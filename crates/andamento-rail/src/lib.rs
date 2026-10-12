@@ -192,10 +192,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 use andamento_shared::{
-    tab_workspace_id, ConfigInspectRequest, ControllerViewModel, NodeKey, PluginPaneKind, PluginPlacement, PluginRegistrationHello,
-    PluginStatsRecorder, RailSizeObserved, RailUiAction, RailUiState, RendererHello, StatsCollectRequest, MSG_CONFIG_INSPECT,
-    MSG_RAIL_SIZE_OBSERVED, MSG_RAIL_SIZE_TARGET, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO, MSG_REQUEST_RAIL_UI_STATE,
-    MSG_REQUEST_STATE, MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
+    tab_workspace_id, ConfigInspectRequest, ControllerViewModel, EntityActivationRequest, EntityRef, MaterializeLatentRequest, NodeKey,
+    PluginPaneKind, PluginPlacement, PluginRegistrationHello, PluginStatsRecorder, RailSizeObserved, RailUiAction, RailUiState,
+    RendererHello, StatsCollectRequest, MSG_ACTIVATE_ENTITY, MSG_CONFIG_INSPECT, MSG_MATERIALIZE_LATENT, MSG_RAIL_SIZE_OBSERVED,
+    MSG_RAIL_SIZE_TARGET, MSG_RAIL_UI_ACTION, MSG_RAIL_UI_STATE, MSG_RENDERER_HELLO, MSG_REQUEST_RAIL_UI_STATE, MSG_REQUEST_STATE,
+    MSG_STATS_REPORT, MSG_STATS_REQUEST, MSG_TOGGLE_PIN, MSG_VIEW_MODEL,
 };
 use andamento_shared::{RailSize, RailSizeTarget};
 use andamento_shared::{StatusIcon, WorkspaceId};
@@ -236,11 +237,10 @@ fn build_config_inspect_message(
 fn build_materialize_latent_message(
     controller_plugin_url: &str,
     client_id: u16,
-    request: &andamento_shared::MaterializeLatentRequest,
+    request: &MaterializeLatentRequest,
 ) -> Option<MessageToPlugin> {
     let payload = serde_json::to_string(request).ok()?;
-    let message =
-        MessageToPlugin::new(andamento_shared::MSG_MATERIALIZE_LATENT).with_destination_client_id(client_id).with_payload(payload);
+    let message = MessageToPlugin::new(MSG_MATERIALIZE_LATENT).with_destination_client_id(client_id).with_payload(payload);
     Some(if controller_plugin_url.trim().is_empty() { message } else { message.with_plugin_url(controller_plugin_url.to_owned()) })
 }
 
@@ -249,9 +249,9 @@ fn build_activate_entity_message(
     config_plugin_url: &str,
     client_id: u16,
     origin_tab_id: WorkspaceId,
-    entity: &andamento_shared::EntityRef,
+    entity: &EntityRef,
 ) -> Option<MessageToPlugin> {
-    let request = andamento_shared::EntityActivationRequest {
+    let request = EntityActivationRequest {
         entity: entity.clone(),
         // The controller cannot build this itself — it only ever learns the
         // plugin urls from a request.
@@ -264,7 +264,7 @@ fn build_activate_entity_message(
         },
     };
     let payload = serde_json::to_string(&request).ok()?;
-    let message = MessageToPlugin::new(andamento_shared::MSG_ACTIVATE_ENTITY).with_destination_client_id(client_id).with_payload(payload);
+    let message = MessageToPlugin::new(MSG_ACTIVATE_ENTITY).with_destination_client_id(client_id).with_payload(payload);
     Some(if controller_plugin_url.trim().is_empty() { message } else { message.with_plugin_url(controller_plugin_url.to_owned()) })
 }
 
@@ -516,7 +516,7 @@ impl ZellijPlugin for PluginState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use andamento_shared::EntityRef;
+    use andamento_shared::{EntityRef, PlacementKey, PlacementSegment};
     use render::{VisibleCard, VisibleIconRect};
     use std::cell::Cell;
 
@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn placement_hit_targets_drive_hover_detail_state() {
-        let target = NodeKey::Placement(andamento_shared::PlacementKey(vec![andamento_shared::PlacementSegment {
+        let target = NodeKey::Placement(PlacementKey(vec![PlacementSegment {
             loop_name: "attention".to_owned(),
             entity: EntityRef::local("vessel", "worker"),
         }]));
@@ -921,8 +921,8 @@ mod tests {
 
         assert_eq!(message.plugin_url.as_deref(), Some("andamento-controller"));
         assert_eq!(message.destination_client_id, Some(4));
-        assert_eq!(message.message_name, andamento_shared::MSG_ACTIVATE_ENTITY);
-        let payload: andamento_shared::EntityActivationRequest = serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
+        assert_eq!(message.message_name, MSG_ACTIVATE_ENTITY);
+        let payload: EntityActivationRequest = serde_json::from_str(message.message_payload.as_deref().unwrap()).unwrap();
         assert_eq!(payload.entity, entity);
         assert_eq!(
             payload.inspect_fallback.node_key,

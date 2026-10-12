@@ -1,4 +1,5 @@
 //! Release C-ABI update-stream probe, using the same scripted stream for each run.
+use andamento_core::profile;
 use andamento_ffi::*;
 use std::{ptr, time::Instant};
 fn text(s: &str) -> Text {
@@ -16,7 +17,7 @@ fn main() {
         unsafe {
             let h = andamento_create(config.as_ptr(), config.len(), ptr::null_mut());
             assert!(!h.is_null());
-            andamento_core::profile::start();
+            profile::start();
             for line in fixture.lines().filter(|l| !l.trim().is_empty()) {
                 assert_eq!(andamento_apply_patch_json(h, 100, text("bench"), text(line), ptr::null_mut()), 1);
             }
@@ -26,12 +27,12 @@ fn main() {
                 );
                 assert_eq!(andamento_apply_patch_json(h, 100, text("bench"), text(&patch), ptr::null_mut()), 1);
             }
-            println!("load entities={n} phases={}", serde_json::to_string(&andamento_core::profile::take()).unwrap());
+            println!("load entities={n} phases={}", serde_json::to_string(&profile::take()).unwrap());
             let warm = andamento_snapshot_acquire_details(h, ptr::null_mut());
             assert!(!warm.is_null());
             let nodes = andamento_snapshot_node_count(warm);
             andamento_snapshot_release(warm);
-            andamento_core::profile::take();
+            profile::take();
             let mut plain = vec![];
             let mut detailed = vec![];
             for iteration in 0..10 {
@@ -60,7 +61,7 @@ fn main() {
                 "updates entities={n} nodes={nodes} plain_median_ms={:.3} detailed_median_ms={:.3} phases={}",
                 plain[2],
                 detailed[2],
-                serde_json::to_string(&andamento_core::profile::take()).unwrap()
+                serde_json::to_string(&profile::take()).unwrap()
             );
             let mut demand = vec![];
             for iteration in 10..15 {
@@ -97,7 +98,7 @@ fn main() {
             println!(
                 "demand entities={n} two_cards_median_ms={:.3} phases={}",
                 demand[2],
-                serde_json::to_string(&andamento_core::profile::take()).unwrap()
+                serde_json::to_string(&profile::take()).unwrap()
             );
             let mut clicks = vec![];
             for _ in 0..5 {
@@ -113,11 +114,11 @@ fn main() {
                     }
                 }
                 assert_ne!(toggle, usize::MAX);
-                andamento_core::profile::take();
+                profile::take();
                 let start = Instant::now();
                 assert_eq!(andamento_dispatch(h, s, toggle, ptr::null_mut()), 1);
                 // Validation should consume the rendered revision without rebuilding.
-                assert!(!andamento_core::profile::take().contains_key("catalog"));
+                assert!(!profile::take().contains_key("catalog"));
                 let next = andamento_snapshot_acquire(h, ptr::null_mut());
                 clicks.push(start.elapsed().as_secs_f64() * 1000.);
                 andamento_snapshot_release(next);
@@ -127,7 +128,7 @@ fn main() {
             println!(
                 "clicks entities={n} median_ms={:.3} last_output_phases={}",
                 clicks[2],
-                serde_json::to_string(&andamento_core::profile::take()).unwrap()
+                serde_json::to_string(&profile::take()).unwrap()
             );
             // Arrangement commits (#144): one per docking gesture. They move
             // the content revision, not the sidebar's, so the rendered
@@ -144,7 +145,7 @@ fn main() {
                 assert_eq!(andamento_slot_set(h, ws, text(key), &spec, 0, ptr::null_mut()), 1);
             }
             let rendered = andamento_snapshot_acquire(h, ptr::null_mut());
-            andamento_core::profile::take();
+            profile::take();
             let tabs: Vec<Text> = keys.iter().map(|key| text(key)).collect();
             let mut commits = vec![];
             let mut generation = 0;
@@ -171,7 +172,7 @@ fn main() {
                 commits.push(start.elapsed().as_secs_f64() * 1000.);
             }
             commits.sort_by(f64::total_cmp);
-            let phases = andamento_core::profile::take();
+            let phases = profile::take();
             assert!(!phases.contains_key("revision-evaluation"));
             println!(
                 "arrangements entities={n} commits=20 generation={generation} median_ms={:.4} max_ms={:.4} snapshot_current=20/20 phases={}",

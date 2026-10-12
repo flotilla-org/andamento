@@ -1,8 +1,8 @@
-use andamento_core::presentation::{Content, PlacementNode, PresentationState, SurfaceSnapshot};
+use andamento_core::presentation::{Content, PlacementNode, PresentationState, Section, SurfaceSnapshot};
 use andamento_core::template_config::{TemplateConfigCatalog, TemplateConfigFieldClass, TemplateControlKind};
 use andamento_core::{
-    tab_workspace_id, ControllerViewModel, MaterializeLatentRequest, MetadataControls, NodeKey, PlacementKey, Priority, StatusIcon,
-    WorkspaceId,
+    tab_workspace_id, ControllerViewModel, DisplayVariableValue, MaterializeLatentRequest, MetadataControls, NodeKey, PlacementKey,
+    Priority, StatusIcon, WorkspaceId,
 };
 use ansi_term::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -224,7 +224,7 @@ pub fn status_icon_is_renderable(icon: &StatusIcon) -> bool {
     matches!(icon, StatusIcon::PngFile(_))
 }
 
-fn semantic_fields(content: &andamento_core::presentation::Content) -> Vec<TemplateField> {
+fn semantic_fields(content: &Content) -> Vec<TemplateField> {
     content
         .fields
         .iter()
@@ -515,7 +515,7 @@ fn control_line(content: &Content, surface: &SurfaceSnapshot, cols: usize, can_s
                     continue;
                 };
                 let v = &surface.display_variables[index];
-                let glyph = if surface.display_values.get(&v.name) == Some(&andamento_core::DisplayVariableValue::Bool(false)) {
+                let glyph = if surface.display_values.get(&v.name) == Some(&DisplayVariableValue::Bool(false)) {
                     '·'
                 } else {
                     v.icon.chars().next().unwrap_or('·')
@@ -572,7 +572,7 @@ fn show_metadata(model: &ControllerViewModel, node: &PlacementNode) -> bool {
     controls.effective_show(&target, inherited)
 }
 
-fn buffer_section<'a>(model: &ControllerViewModel, section: &'a andamento_core::presentation::Section, cols: usize) -> Vec<BufferedLine> {
+fn buffer_section<'a>(model: &ControllerViewModel, section: &'a Section, cols: usize) -> Vec<BufferedLine> {
     let mut lines = render_placement_lines(section.content.text(), &section.nodes, cols);
     if lines.first().is_some_and(|l| l.text.is_empty() && l.inline_hits.is_empty()) {
         lines.remove(0);

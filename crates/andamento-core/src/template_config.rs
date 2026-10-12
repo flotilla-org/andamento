@@ -5,7 +5,7 @@ use std::fmt;
 use kdl::{KdlDocument, KdlNode, KdlValue};
 use serde::{Deserialize, Serialize};
 
-use crate::{MetadataValue, ResolvedTemplateFieldSource};
+use crate::{DisplayVariableValue, MetadataValue, ResolvedTemplateFieldSource};
 
 pub fn parse_template_config_json(input: &str) -> Result<ExternalTemplateConfig, TemplateConfigError> {
     let config = serde_json::from_str::<ExternalTemplateConfig>(input).map_err(|source| TemplateConfigError::Parse(source.to_string()))?;
@@ -1589,7 +1589,7 @@ pub struct TemplateVariableDefinition {
     pub name: String,
     #[serde(rename = "type")]
     pub variable_type: TemplateVariableType,
-    pub default: crate::DisplayVariableValue,
+    pub default: DisplayVariableValue,
     pub label: String,
     pub icon: String,
     #[serde(default = "default_true")]
@@ -1599,10 +1599,8 @@ pub struct TemplateVariableDefinition {
 impl TemplateVariableDefinition {
     fn validate(&self) -> Result<(), TemplateConfigError> {
         let valid_default = match (&self.variable_type, &self.default) {
-            (TemplateVariableType::Bool, crate::DisplayVariableValue::Bool(_)) => true,
-            (TemplateVariableType::Enum { values }, crate::DisplayVariableValue::Enum(value)) => {
-                !values.is_empty() && values.contains(value)
-            }
+            (TemplateVariableType::Bool, DisplayVariableValue::Bool(_)) => true,
+            (TemplateVariableType::Enum { values }, DisplayVariableValue::Enum(value)) => !values.is_empty() && values.contains(value),
             _ => false,
         };
         if !valid_default {
@@ -2292,7 +2290,7 @@ fn parse_kdl_display_variable(node: &KdlNode) -> Result<TemplateVariableDefiniti
     let (variable_type, default) = match variable_type_name.as_str() {
         "bool" => (
             TemplateVariableType::Bool,
-            crate::DisplayVariableValue::Bool(
+            DisplayVariableValue::Bool(
                 node.get("default")
                     .and_then(|entry| entry.value().as_bool())
                     .ok_or_else(|| TemplateConfigError::Validation(format!("variable {name} must have a boolean default")))?,
@@ -2311,7 +2309,7 @@ fn parse_kdl_display_variable(node: &KdlNode) -> Result<TemplateVariableDefiniti
                 })
                 .unwrap_or_default();
             let default = kdl_required_prop_string(node, "default")?;
-            (TemplateVariableType::Enum { values }, crate::DisplayVariableValue::Enum(default))
+            (TemplateVariableType::Enum { values }, DisplayVariableValue::Enum(default))
         }
         other => return Err(TemplateConfigError::Validation(format!("unsupported variable type: {other}"))),
     };
@@ -3343,6 +3341,7 @@ region "attention" root-template="r" form="full"
 
 #[cfg(test)]
 mod compatibility_tests {
+    use crate::detail::resolve_field;
     use crate::{template_config::*, MetadataValue};
     use std::collections::BTreeMap;
     // Structured-only fields are additive declarations: every frontend's old
@@ -3379,7 +3378,7 @@ mod compatibility_tests {
         let decoded = parse_template_config_kdl(&resolved.dump_kdl()).unwrap();
         let TemplateConfigFieldOperation::Set { field } = &decoded.templates[0].operations[1] else { panic!("field expected") };
         assert!(field.structured_only);
-        assert_eq!(crate::detail::resolve_field(field, context, &BTreeMap::new()).unwrap().text.as_deref(), Some("id"));
+        assert_eq!(resolve_field(field, context, &BTreeMap::new()).unwrap().text.as_deref(), Some("id"));
         assert!(parse_template_config_kdl(r#"template "item/detail" { field "x" structured-only="true" literal="x"; }"#).is_err());
     }
 }

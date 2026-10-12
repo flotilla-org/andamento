@@ -1,5 +1,5 @@
 //! Transport adapters. Only Zellij publishes identity/tab targets.
-use crate::{patch, Worktree};
+use crate::{checkout, patch, Worktree};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -149,7 +149,7 @@ impl Transport for Zellij {
             let Some(cwd_text) = cwd.to_str() else {
                 continue;
             };
-            if let Some(root) = super::checkout(cwd) {
+            if let Some(root) = checkout(cwd) {
                 if let Some(tree) = trees.iter().find(|t| t.root == root) {
                     let result = self.publish(&patch(
                         json!({"kind":"identity","value":{"key":"zellij.pane.cwd","value":{"type":"text","value":cwd_text}}}),
