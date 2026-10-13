@@ -32,8 +32,9 @@ use std::rc::Rc;
 #[cfg(test)]
 use crate::census::Census;
 use crate::detail::{resolve_field, DetailCard};
+use crate::facts::Entries;
 use crate::host::PaneObservation;
-use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataStore, ResolvedFacts};
+use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, Fact, MetadataStore, ResolvedFacts};
 use crate::profile;
 #[cfg(test)]
 use crate::template_config::PlacementDefinition;
@@ -315,16 +316,16 @@ fn entity_postings(entity: &CatalogEntity) -> Vec<(String, IndexedValue)> {
     // reach it only through its own placement facts, so a query on the
     // target's facts (say, needs attention) never places the ghost too.
     let is_ref = entity.entity.kind == system::REF;
-    for (key, entry) in &entity.values {
+    for (key, entry) in entity.facts.iter() {
         if is_ref && key != system::GROUP && key != system::TARGET {
             continue;
         }
         if let MetadataValue::EntityRefs(refs) = &entry.value {
-            postings.extend(refs.iter().map(|reference| (key.clone(), IndexedValue::Entity(reference.clone()))));
+            postings.extend(refs.iter().map(|reference| (key.to_owned(), IndexedValue::Entity(reference.clone()))));
             continue;
         }
         if let Some(text) = placement_index_text(&entry.value) {
-            postings.push((key.clone(), IndexedValue::Scalar(text)));
+            postings.push((key.to_owned(), IndexedValue::Scalar(text)));
         }
     }
     postings.sort();
@@ -536,7 +537,7 @@ fn visibility_rule_matches(entity: &CatalogEntity, rule: &PlacementVisibilityRul
             "entity.id" => Some(entity.entity.id.as_str()),
             _ => None,
         };
-        let fact = entity.values.get(&predicate.key);
+        let fact = entity.facts.get(&predicate.key);
         if let Some(exists) = predicate.exists {
             return exists == (identity.is_some() || fact.is_some());
         }
@@ -797,7 +798,7 @@ fn placement_sort_fact<'a>(entity: &'a CatalogEntity, key: &str) -> Option<Cow<'
     match key {
         KEY_ENTITY_KIND => Some(Cow::Owned(MetadataValue::Text(entity.entity.kind.clone()))),
         KEY_ENTITY_ID => Some(Cow::Owned(MetadataValue::Text(entity.entity.id.clone()))),
-        _ => entity.values.get(key).map(|entry| Cow::Borrowed(&entry.value)),
+        _ => entity.facts.get(key).map(|entry| Cow::Borrowed(&entry.value)),
     }
 }
 
@@ -1368,10 +1369,10 @@ impl ControllerState {
         if !is_removal {
             if let Some(entity) = retained_target.as_ref() {
                 let current = self.metadata.resolved(&EntityId::Entity(entity.clone()), self.now());
-                if current.values.contains_key(KEY_ENTITY_ID) || current.values.contains_key(KEY_DISPLAY_LABEL) {
+                if current.contains_key(KEY_ENTITY_ID) || current.contains_key(KEY_DISPLAY_LABEL) {
                     if let Some(retained) = self.retained_subjects.get_mut(entity) {
                         for key in unset_keys {
-                            ended_changed |= retained.values.remove(&key).is_some();
+                            ended_changed |= retained.remove(&key).is_some();
                         }
                     }
                 }
@@ -1791,7 +1792,7 @@ impl ControllerState {
         let stale = |entity: &EntityRef| {
             any_stale && {
                 let target =
-                    (entity.kind == system::REF).then(|| catalog.entity(entity)).flatten().and_then(|entity| ref_target(&entity.values));
+                    (entity.kind == system::REF).then(|| catalog.entity(entity)).flatten().and_then(|entity| ref_target(&entity.facts));
                 self.metadata.is_stale(&target.as_ref().unwrap_or(entity).provider)
             }
         };
@@ -1806,7 +1807,7 @@ impl ControllerState {
                 .iter()
                 .filter(|e| {
                     e.entity.kind == system::GROUP
-                        && matches!(e.values.get(system::DEFAULT).map(|v| &v.value), Some(MetadataValue::Bool(true)))
+                        && matches!(e.facts.get(system::DEFAULT).map(|v| &v.value), Some(MetadataValue::Bool(true)))
                 })
                 .map(|e| e.entity.clone())
                 .collect::<Vec<_>>();
@@ -1853,7 +1854,7 @@ impl ControllerState {
                 let target_of = |entity: EntityRef| {
                     catalog
                         .entity(&entity)
-                        .and_then(|e| metadata_entry_text(&e.values, KEY_ACTION_TARGET))
+                        .and_then(|e| metadata_entry_text(&e.facts, KEY_ACTION_TARGET))
                         .map(str::to_owned)
                         .unwrap_or_else(|| entity.action_target())
                 };
@@ -1870,7 +1871,7 @@ impl ControllerState {
         for (entity, id) in self.directory_bindings(&catalog.entities) {
             if let Some(candidate) = catalog.entity(&entity) {
                 let action_target =
-                    metadata_entry_text(&candidate.values, KEY_ACTION_TARGET).map(str::to_owned).unwrap_or_else(|| entity.action_target());
+                    metadata_entry_text(&candidate.facts, KEY_ACTION_TARGET).map(str::to_owned).unwrap_or_else(|| entity.action_target());
                 let selected = self.tabs.iter().any(|tab| tab.tab_id == id && tab.active);
                 live.entry(action_target).or_insert(PresentationState::Live { workspace_id: id, selected });
             }
@@ -1898,7 +1899,7 @@ impl ControllerState {
         let cards = entities
             .into_iter()
             .map(|entity| {
-                let facts = entity_facts(&entity.entity, &entity.values);
+                let facts = entity_facts(&entity.entity, &entity.facts);
                 let slot = self.resolve_template_slot(TemplateConfigSlot::Detail, TemplateConfigNodeKind::Entity, &facts);
                 let context = TemplateConfigMatchContext {
                     slot: TemplateConfigSlot::Detail,
@@ -1916,15 +1917,16 @@ impl ControllerState {
                             .fields
                             .iter()
                             .filter_map(|spec| {
-                                let mut field = resolve_field(spec, context, &entity.values)?;
-                                field.source_id = field.observation.as_ref().and_then(|_| entity.sources.get(&field.source_key)).cloned();
+                                let mut field = resolve_field(spec, context, &entity.facts)?;
+                                field.source_id =
+                                    field.observation.as_ref().and_then(|_| entity.source(&field.source_key)).map(str::to_owned);
                                 field.relations.retain(|target| target != &entity.entity);
                                 Some(field)
                             })
                             .collect()
                     })
                     .unwrap_or_default();
-                let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
+                let action_target = metadata_entry_text(&entity.facts, KEY_ACTION_TARGET)
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity.entity.action_target());
                 let workspace_id = match live.get(&action_target) {
@@ -1938,7 +1940,7 @@ impl ControllerState {
                     DetailIntent::FocusWorkspace
                 } else if !evaluation.live_targets.contains(&action_target)
                     && !self.pending_latent_materializations.contains_key(&action_target)
-                    && metadata_entry_text(&entity.values, KEY_MATERIALIZE_RECIPE).is_some()
+                    && metadata_entry_text(&entity.facts, KEY_MATERIALIZE_RECIPE).is_some()
                 {
                     DetailIntent::MaterializeWorkspace
                 } else {
@@ -1946,9 +1948,9 @@ impl ControllerState {
                 };
                 DetailCard {
                     entity: entity.entity.clone(),
-                    label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL).unwrap_or(&entity.entity.id).to_owned(),
+                    label: metadata_entry_text(&entity.facts, KEY_DISPLAY_LABEL).unwrap_or(&entity.entity.id).to_owned(),
                     workspace_id,
-                    primary_label: metadata_entry_text(&entity.values, "action.primary.label")
+                    primary_label: metadata_entry_text(&entity.facts, "action.primary.label")
                         .unwrap_or(primary_intent.default_label())
                         .to_owned(),
                     primary_intent,
@@ -2027,7 +2029,7 @@ impl ControllerState {
     }
 
     fn display_entity_uncached(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
-        let metadata = entity_facts(&entity.entity, &entity.values);
+        let metadata = entity_facts(&entity.entity, &entity.facts);
         let templates = ResolvedTemplateSlots {
             compact: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata).map(Rc::new),
             detail: self.resolve_template_slot(TemplateConfigSlot::Detail, TemplateConfigNodeKind::Entity, &metadata).map(Rc::new),
@@ -2037,7 +2039,7 @@ impl ControllerState {
             entity: entity.entity.clone(),
             placement: None,
             tier: None,
-            label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL).map(str::to_owned).unwrap_or_else(|| entity.entity.id.clone()),
+            label: metadata_entry_text(&entity.facts, KEY_DISPLAY_LABEL).map(str::to_owned).unwrap_or_else(|| entity.entity.id.clone()),
             form: DISPLAY_FORM_COMPACT.into(),
             metadata: Rc::new(metadata),
             templates,
@@ -2338,7 +2340,7 @@ impl ControllerState {
                     } else if predicate.key == "entity.id" {
                         Some(bound.entity.id.clone())
                     } else {
-                        bound.values.get(&predicate.key).and_then(|entry| placement_index_text(&entry.value))
+                        bound.facts.get(&predicate.key).and_then(|entry| placement_index_text(&entry.value))
                     }
                 });
                 let Some(value) = value else {
@@ -2395,7 +2397,7 @@ impl ControllerState {
                 .of
                 .as_ref()
                 .and_then(|name| reads.bind(scope, name))
-                .and_then(|entity| entity.values.get(key))
+                .and_then(|entity| entity.facts.get(key))
                 .map(|entry| &entry.value)
             else {
                 return vec![];
@@ -2437,7 +2439,7 @@ impl ControllerState {
             let mut loop_reads = LoopReads::default();
             for position in self.placement_matches(related_loop, entities, index, &scope, &mut loop_reads) {
                 let related = &entities[position];
-                let metadata = entity_facts(&related.entity, &related.values);
+                let metadata = entity_facts(&related.entity, &related.facts);
                 let context = TemplateConfigMatchContext {
                     slot: TemplateConfigSlot::Detail,
                     node_kind: TemplateConfigNodeKind::Entity,
@@ -2643,14 +2645,14 @@ impl ControllerState {
         entities
             .iter()
             .filter_map(|entity| {
-                let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
+                let action_target = metadata_entry_text(&entity.facts, KEY_ACTION_TARGET)
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity.entity.action_target());
                 if live_targets.contains(&action_target) {
                     return None;
                 }
                 let name =
-                    metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL).map(str::to_owned).unwrap_or_else(|| entity.entity.id.clone());
+                    metadata_entry_text(&entity.facts, KEY_DISPLAY_LABEL).map(str::to_owned).unwrap_or_else(|| entity.entity.id.clone());
                 Some(LatentTab {
                     entity: entity.entity.clone(),
                     materialization: if self.pending_latent_materializations.contains_key(&action_target) {
@@ -2660,8 +2662,8 @@ impl ControllerState {
                     },
                     action_target,
                     name,
-                    materialize_recipe: metadata_entry_text(&entity.values, KEY_MATERIALIZE_RECIPE).map(str::to_owned),
-                    checkout_path: metadata_entry_text(&entity.values, KEY_CHECKOUT_PATH).map(str::to_owned),
+                    materialize_recipe: metadata_entry_text(&entity.facts, KEY_MATERIALIZE_RECIPE).map(str::to_owned),
+                    checkout_path: metadata_entry_text(&entity.facts, KEY_CHECKOUT_PATH).map(str::to_owned),
                 })
             })
             .collect()
@@ -2680,8 +2682,8 @@ impl ControllerState {
         for subject in subjects {
             if !self.retained_subjects.contains_key(&subject) {
                 let target = EntityId::Entity(subject.clone());
-                let (values, sources) = self.metadata.resolved_entries_with_sources_for(&target, self.now());
-                if values.is_empty() {
+                let facts = self.metadata.resolved(&target, self.now());
+                if facts.is_empty() {
                     if let Some(record) = saved.get(&subject) {
                         changed = true;
                         self.retained_subjects.insert(subject.clone(), saved_catalog_entity(subject, record));
@@ -2690,11 +2692,7 @@ impl ControllerState {
                     changed = true;
                     self.retained_subjects.insert(
                         subject.clone(),
-                        CatalogEntity {
-                            entity: subject,
-                            facts: Rc::new(ResolvedFacts { values, sources }),
-                            ordinal: self.metadata.target_ordinal(&target).unwrap_or_default(),
-                        },
+                        CatalogEntity { entity: subject, facts, ordinal: self.metadata.target_ordinal(&target).unwrap_or_default() },
                     );
                 }
             }
@@ -2723,18 +2721,17 @@ impl ControllerState {
             None => (Bound::Unbounded, Bound::Unbounded),
         };
         for (subject, retained) in self.retained_subjects.range_mut::<EntityRef, _>(range) {
-            let (values, sources) = self.metadata.resolved_entries_with_sources_for(&EntityId::Entity(subject.clone()), now);
+            let facts = self.metadata.resolved(&EntityId::Entity(subject.clone()), now);
             // While identity remains observed, individual facts keep their ordinary
             // freshness. Only unobserved identities need the last known record.
-            if values.contains_key(KEY_ENTITY_ID) || values.contains_key(KEY_DISPLAY_LABEL) {
-                changed |= retained.values != values || retained.sources != sources;
-                retained.values = values;
-                retained.sources = sources;
+            if facts.contains_key(KEY_ENTITY_ID) || facts.contains_key(KEY_DISPLAY_LABEL) {
+                changed |= retained.facts != facts;
+                retained.facts = facts;
             }
             // TODO(#122): consume a producer-declared lifecycle-ended fact.
             let terminal = matches!(subject.kind.as_str(), "convoy" | "vessel")
-                && (matches!(metadata_entry_text(&retained.values, KEY_CONVOY_PHASE), Some("landed" | "abandoned" | "cancelled"))
-                    || matches!(retained.values.get(KEY_CONVOY_SUPERSEDED).map(|e| &e.value), Some(MetadataValue::Bool(true))));
+                && (matches!(metadata_entry_text(&retained.facts, KEY_CONVOY_PHASE), Some("landed" | "abandoned" | "cancelled"))
+                    || matches!(retained.get(KEY_CONVOY_SUPERSEDED).map(|e| &e.value), Some(MetadataValue::Bool(true))));
             if terminal {
                 changed |= self.ended_subjects.insert(subject.clone());
             }
@@ -2764,14 +2761,14 @@ impl ControllerState {
         let retained = self.retained_subjects.get(subject)?;
         let observed = !self.metadata.resolved_entries_for(&EntityId::Entity(subject.clone()), self.now()).is_empty();
         let record = SubjectRecord {
-            label: metadata_entry_text(&retained.values, KEY_DISPLAY_LABEL).map(str::to_owned),
+            label: metadata_entry_text(&retained.facts, KEY_DISPLAY_LABEL).map(str::to_owned),
             ended: self.ended_subjects.contains(subject),
             last_seen_ms: None,
             facts: retained
-                .values
+                .facts
                 .iter()
                 .filter(|(key, entry)| keys.contains(*key) && *key != KEY_DISPLAY_LABEL && recordable(&entry.value))
-                .map(|(key, entry)| (key.clone(), entry.value.clone()))
+                .map(|(key, entry)| (key.to_owned(), entry.value.clone()))
                 .collect(),
         };
         Some((record, observed))
@@ -2985,7 +2982,7 @@ impl ControllerState {
     fn catalog_entity(&self, entity: &EntityRef, now: u64) -> Option<CatalogEntity> {
         let target = EntityId::Entity(entity.clone());
         let facts = self.metadata.resolved(&target, now);
-        let mut current = (!facts.values.is_empty()).then(|| CatalogEntity {
+        let mut current = (!facts.is_empty()).then(|| CatalogEntity {
             entity: entity.clone(),
             facts,
             ordinal: self.metadata.target_ordinal(&target).unwrap_or_default(),
@@ -2993,12 +2990,7 @@ impl ControllerState {
         if let Some(retained) = self.retained_subjects.get(entity) {
             current = Some(match current {
                 Some(mut current) => {
-                    let mut values = retained.values.clone();
-                    values.extend(std::mem::take(&mut current.values));
-                    current.values = values;
-                    let mut sources = retained.sources.clone();
-                    sources.extend(std::mem::take(&mut current.sources));
-                    current.sources = sources;
+                    current.facts = Rc::new(current.facts.over(&retained.facts));
                     current
                 }
                 None => retained.clone(),
@@ -3006,16 +2998,9 @@ impl ControllerState {
         }
         if let Some(entity) = current.as_mut().filter(|entity| self.ended_subjects.contains(&entity.entity)) {
             let ordinal = entity.ordinal;
-            entity.sources.remove(KEY_STATUS_STATE);
-            entity.sources.remove("presentation.ended");
-            entity.values.insert(
-                KEY_STATUS_STATE.to_owned(),
-                MetadataEntry { value: MetadataValue::Text("ended".to_owned()), updated_at: now, ttl_ms: None, precedence: 0, ordinal },
-            );
-            entity.values.insert(
-                "presentation.ended".to_owned(),
-                MetadataEntry { value: MetadataValue::Bool(true), updated_at: now, ttl_ms: None, precedence: 0, ordinal },
-            );
+            let made = |value| Fact { entry: MetadataEntry { value, updated_at: now, ttl_ms: None, precedence: 0, ordinal }, source: None };
+            entity.insert(KEY_STATUS_STATE, made(MetadataValue::Text("ended".to_owned())));
+            entity.insert("presentation.ended", made(MetadataValue::Bool(true)));
         }
         current
     }
@@ -3060,7 +3045,7 @@ impl ControllerState {
         let mut structural = false;
         for entity in refs {
             let next = self.catalog_entity(&entity, now).map(|mut entity| {
-                if let Some(target) = ref_target(&entity.values).and_then(|target| catalog.entity(&target)) {
+                if let Some(target) = ref_target(&entity.facts).and_then(|target| catalog.entity(&target)) {
                     if target.entity.kind != system::REF {
                         Self::present_ref(&mut entity, target);
                     }
@@ -3099,7 +3084,7 @@ impl ControllerState {
         let targets = entities
             .iter()
             .filter(|e| e.entity.kind == system::REF)
-            .filter_map(|e| Some((e.entity.clone(), ref_target(&e.values)?)))
+            .filter_map(|e| Some((e.entity.clone(), ref_target(&e.facts)?)))
             .collect::<BTreeMap<_, _>>();
         if targets.is_empty() {
             return;
@@ -3120,33 +3105,25 @@ impl ControllerState {
     /// Give a ref its target's facts and sources, keeping its own
     /// `.`-prefixed ones (see `present_refs`).
     fn present_ref(entity: &mut CatalogEntity, target: &CatalogEntity) {
-        let own = std::mem::replace(&mut entity.values, target.values.clone());
-        let own_sources = std::mem::replace(&mut entity.sources, target.sources.clone());
-        entity.values.retain(|key, _| !system::is_system(key));
-        entity.sources.retain(|key, _| !system::is_system(key));
-        for (key, value) in own.iter().filter(|(key, _)| system::is_system(key)) {
-            entity.values.insert(key.clone(), value.clone());
-        }
-        for (key, source) in own_sources.iter().filter(|(key, _)| system::is_system(key)) {
-            entity.sources.insert(key.clone(), source.clone());
-        }
+        let mut own = (*entity.facts).clone();
+        own.retain(|key, _| system::is_system(key));
+        let mut presented = (*target.facts).clone();
+        presented.retain(|key, _| !system::is_system(key));
         // Live state and activation key on the action target: the
         // target's own, else one made from its identity. The made entry
         // dates from the ref's `.target`, so it is as fresh as the
         // reference; it never expires and loses to any real one.
-        if !entity.values.contains_key(KEY_ACTION_TARGET) {
-            let ordinal = entity.ordinal;
-            entity.values.insert(
-                KEY_ACTION_TARGET.to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text(target.entity.action_target()),
-                    updated_at: own.get(system::TARGET).map(|e| e.updated_at).unwrap_or_default(),
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal,
-                },
-            );
+        if !presented.contains_key(KEY_ACTION_TARGET) {
+            let entry = MetadataEntry {
+                value: MetadataValue::Text(target.entity.action_target()),
+                updated_at: own.get(system::TARGET).map(|e| e.updated_at).unwrap_or_default(),
+                ttl_ms: None,
+                precedence: 0,
+                ordinal: entity.ordinal,
+            };
+            presented.insert(KEY_ACTION_TARGET, Fact { entry, source: None });
         }
+        entity.facts = Rc::new(own.over(&presented));
     }
 
     /// The entity a placement presents: a `.ref`'s target, otherwise itself.
@@ -3154,8 +3131,7 @@ impl ControllerState {
         if entity.kind != system::REF {
             return entity.clone();
         }
-        let (values, _) = self.metadata.resolved_entries_with_sources_for(&EntityId::Entity(entity.clone()), self.now());
-        ref_target(&values).unwrap_or_else(|| entity.clone())
+        ref_target(&self.metadata.resolved(&EntityId::Entity(entity.clone()), self.now())).unwrap_or_else(|| entity.clone())
     }
 
     /// Full replacement of ephemeral host directory observations. These are
@@ -3191,7 +3167,7 @@ impl ControllerState {
         entities
             .iter()
             .filter_map(|entity| {
-                let cwd = metadata_entry_text(&entity.values, KEY_CHECKOUT_PATH).filter(|s| !s.is_empty())?;
+                let cwd = metadata_entry_text(&entity.facts, KEY_CHECKOUT_PATH).filter(|s| !s.is_empty())?;
                 let tab = unbound.iter().find(|tab| self.observed_workdirs.get(&tab.tab_id).is_some_and(|dirs| dirs.contains(cwd)))?;
                 Some((entity.entity.clone(), tab.tab_id))
             })
@@ -3207,7 +3183,7 @@ impl ControllerState {
             .map(|entity| {
                 catalog
                     .entity(&entity)
-                    .and_then(|candidate| metadata_entry_text(&candidate.values, KEY_ACTION_TARGET))
+                    .and_then(|candidate| metadata_entry_text(&candidate.facts, KEY_ACTION_TARGET))
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity.action_target())
             })
@@ -3312,7 +3288,7 @@ impl ControllerState {
                 let entities = self.catalog_entities();
                 let bindings = self.directory_bindings(&entities);
                 entities.iter().find_map(|entity| {
-                    let target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
+                    let target = metadata_entry_text(&entity.facts, KEY_ACTION_TARGET)
                         .map(str::to_owned)
                         .unwrap_or_else(|| entity.entity.action_target());
                     if target != action_target {
@@ -3437,7 +3413,7 @@ impl ControllerState {
         let entities = self.catalog_entities();
         let entity = entities.iter().find(|entity| &entity.entity == subject)?;
         let action_target =
-            metadata_entry_text(&entity.values, KEY_ACTION_TARGET).map(str::to_owned).unwrap_or_else(|| entity.entity.action_target());
+            metadata_entry_text(&entity.facts, KEY_ACTION_TARGET).map(str::to_owned).unwrap_or_else(|| entity.entity.action_target());
         if let Some(position) = self.materialized_tab_position_for_action_target(&action_target) {
             return Some(EntityActivation::FocusTab { position });
         }
@@ -3473,7 +3449,7 @@ impl ControllerState {
             self.catalog_entities()
                 .into_iter()
                 .find(|entity| {
-                    metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
+                    metadata_entry_text(&entity.facts, KEY_ACTION_TARGET)
                         .map(str::to_owned)
                         .unwrap_or_else(|| entity.entity.action_target())
                         == request.action_target
@@ -3736,8 +3712,8 @@ fn apply_variable_setter(
     values.insert(name.to_owned(), EffectiveVariableValue { value: value.to_owned(), provenance, overridden });
 }
 
-fn entity_facts(entity: &EntityRef, values: &BTreeMap<String, MetadataEntry>) -> BTreeMap<String, MetadataValue> {
-    let mut facts = values.iter().map(|(key, entry)| (key.clone(), entry.value.clone())).collect::<BTreeMap<_, _>>();
+fn entity_facts(entity: &EntityRef, values: &impl Entries) -> BTreeMap<String, MetadataValue> {
+    let mut facts = values.entries().map(|(key, entry)| (key.to_owned(), entry.value.clone())).collect::<BTreeMap<_, _>>();
     // The target is the canonical entity identity. Producers must not have to
     // duplicate it in every patch's set map for placement queries and templates.
     facts.insert(KEY_ENTITY_KIND.to_owned(), MetadataValue::Text(entity.kind.clone()));
@@ -3746,14 +3722,14 @@ fn entity_facts(entity: &EntityRef, values: &BTreeMap<String, MetadataEntry>) ->
 }
 
 /// A `.ref`'s `.target`: a single entity reference.
-fn ref_target(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
-    match &entries.get(system::TARGET)?.value {
+fn ref_target(entries: &impl Entries) -> Option<EntityRef> {
+    match &entries.entry_at(system::TARGET)?.value {
         MetadataValue::EntityRefs(refs) if refs.len() == 1 => refs.first().cloned(),
         _ => None,
     }
 }
 
-fn host_entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
+fn host_entity_ref_from_entries(entries: &impl Entries) -> Option<EntityRef> {
     Some(EntityRef::new(
         metadata_entry_text(entries, KEY_HOST_ENTITY_PROVIDER).unwrap_or(LOCAL_PROVIDER),
         metadata_entry_text(entries, KEY_HOST_ENTITY_KIND)?,
@@ -3792,10 +3768,10 @@ fn saved_catalog_entity(entity: EntityRef, record: &SubjectRecord) -> CatalogEnt
         values.insert(KEY_DISPLAY_LABEL.to_owned(), entry(MetadataValue::Text(label.clone())));
     }
     let sources = values.keys().map(|key| (key.clone(), SOURCE_RECORD.to_owned())).collect();
-    CatalogEntity { entity, facts: Rc::new(ResolvedFacts { values, sources }), ordinal: 0 }
+    CatalogEntity { entity, facts: Rc::new(ResolvedFacts::from_maps(values, &sources)), ordinal: 0 }
 }
 
-fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
+fn entity_ref_from_entries(entries: &impl Entries) -> Option<EntityRef> {
     Some(EntityRef::new(
         metadata_entry_text(entries, KEY_ENTITY_PROVIDER).unwrap_or(LOCAL_PROVIDER),
         metadata_entry_text(entries, KEY_ENTITY_KIND)?,
@@ -3823,7 +3799,7 @@ fn subject_binding(subject: &EntityRef) -> BTreeMap<String, MetadataValueUpdate>
 
 /// The `primary` slot's resolution, from the facts managed primary content
 /// has always read.
-fn desired_primary(values: &BTreeMap<String, MetadataEntry>) -> Option<DesiredContent> {
+fn desired_primary(values: &impl Entries) -> Option<DesiredContent> {
     use crate::managed::TerminalContent;
     let text = |key| metadata_entry_text(values, key).map(str::to_owned);
     match text("workspace.primary.state").as_deref()? {
@@ -3842,8 +3818,8 @@ fn desired_primary(values: &BTreeMap<String, MetadataEntry>) -> Option<DesiredCo
     }
 }
 
-fn metadata_entry_text<'a>(values: &'a BTreeMap<String, MetadataEntry>, key: &str) -> Option<&'a str> {
-    match values.get(key).map(|entry| &entry.value) {
+fn metadata_entry_text<'a>(values: &'a impl Entries, key: &str) -> Option<&'a str> {
+    match values.entry_at(key).map(|entry| &entry.value) {
         Some(MetadataValue::Text(value)) => Some(value),
         _ => None,
     }
@@ -3957,7 +3933,7 @@ mod tests {
         .unwrap();
         let query = &config.placements[0].loops[0].loops[0];
         for entity in &mut entities {
-            entity.values.clear();
+            entity.facts = Rc::new(ResolvedFacts::default());
         }
         let bound = entities.iter().find(|entity| entity.entity == convoy).unwrap();
         let root = Scope::default();

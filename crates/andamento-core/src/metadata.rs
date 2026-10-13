@@ -1,5 +1,6 @@
 #[cfg(test)]
 use crate::census::Census;
+use crate::facts::Shapes;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -110,13 +111,7 @@ pub struct Changed {
     pub targets: HashSet<EntityId>,
 }
 
-/// An entity's facts resolved: each key's winning entry, and the source it
-/// came from.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ResolvedFacts {
-    pub values: BTreeMap<String, MetadataEntry>,
-    pub sources: BTreeMap<String, String>,
-}
+pub use crate::facts::{Fact, ResolvedFacts};
 
 /// A resolution and when it holds: from `at` through `until`, the earliest
 /// deadline among the facts live at `at` (none: no TTL fact can expire).
@@ -129,15 +124,17 @@ struct Cached {
 
 #[derive(Debug, Default)]
 pub struct MetadataStore {
-    entries: HashMap<EntityId, HashMap<String, Contributions>>,
+    entries: HashMap<EntityId, HashMap<Rc<str>, Contributions>>,
+    /// Key names and the spines of resolved records.
+    shapes: RefCell<Shapes>,
     target_ordinals: HashMap<EntityId, i64>,
     /// Deadlines of the TTL facts that can expire: every one whose provider
     /// is not stale.
     expiry_counts: BTreeMap<u64, usize>,
     providers: Vec<String>,
     provider_ixs: HashMap<String, ProviderIx>,
-    sources: Vec<String>,
-    source_ixs: HashMap<String, SourceIx>,
+    sources: Vec<Rc<str>>,
+    source_ixs: HashMap<Rc<str>, SourceIx>,
     /// Stale providers, with the time each became stale. Their facts are
     /// judged live as of that time, so none expires while it stays stale.
     stale: BTreeMap<ProviderIx, u64>,
@@ -204,10 +201,11 @@ impl MetadataStore {
     }
 
     fn intern_source(&mut self, source: String) -> SourceIx {
-        if let Some(ix) = self.source_ixs.get(&source) {
+        if let Some(ix) = self.source_ixs.get(source.as_str()) {
             return *ix;
         }
         let ix = SourceIx::try_from(self.sources.len()).expect("fewer than 2^32 sources");
+        let source: Rc<str> = Rc::from(source);
         self.sources.push(source.clone());
         self.source_ixs.insert(source, ix);
         ix
@@ -258,6 +256,7 @@ impl MetadataStore {
         self.target_ordinals.entry(entity_id.clone()).or_insert(entry.ordinal);
         let indexed = self.indexed(&contributor);
         let deadline = entry.ttl_ms.map(|ttl| entry.updated_at.saturating_add(ttl));
+        let key = self.shapes.get_mut().key(&key);
         let previous = self.entries.entry(entity_id).or_default().entry(key).or_default().insert(contributor, entry);
         if indexed {
             if let Some(previous) = previous {
@@ -472,7 +471,7 @@ impl MetadataStore {
             let existing_entry = self
                 .entries
                 .get(&target)
-                .and_then(|entity_entries| entity_entries.get(&key))
+                .and_then(|entity_entries| entity_entries.get(key.as_str()))
                 .and_then(|source_entries| source_entries.get(&contributor))
                 .cloned();
 
@@ -519,7 +518,7 @@ impl MetadataStore {
         }
         #[cfg(test)]
         count_resolution();
-        let mut resolved = ResolvedFacts::default();
+        let mut facts = vec![];
         let mut until: Option<u64> = None;
         if let Some(entries) = self.entries.get(entity_id) {
             for (key, contributions) in entries {
@@ -536,28 +535,19 @@ impl MetadataStore {
                     candidates.push(CandidateEntry::new(self.source(contributor), entry.clone()));
                 }
                 if let Some(candidate) = select_primary_entry(&candidates) {
-                    resolved.sources.insert(key.clone(), candidate.source_id);
-                    resolved.values.insert(key.clone(), candidate.entry);
+                    let source = self.source_ixs.get_key_value(candidate.source_id.as_str()).map(|(source, _)| source.clone());
+                    facts.push((key.clone(), Fact { entry: candidate.entry, source }));
                 }
             }
         }
-        let resolved = Rc::new(resolved);
+        let resolved = Rc::new(self.shapes.borrow_mut().record(facts));
         self.resolved.borrow_mut().insert(entity_id.clone(), Cached { resolved: resolved.clone(), at: now, until });
         resolved
     }
 
     /// Preserve the winning producer alongside each selected entry in one pass.
-    pub fn resolved_entries_with_sources_for(
-        &self,
-        entity_id: &EntityId,
-        now: u64,
-    ) -> (BTreeMap<String, MetadataEntry>, BTreeMap<String, String>) {
-        let resolved = self.resolved(entity_id, now);
-        (resolved.values.clone(), resolved.sources.clone())
-    }
-
     pub fn resolved_entries_for(&self, entity_id: &EntityId, now: u64) -> BTreeMap<String, MetadataEntry> {
-        self.resolved(entity_id, now).values.clone()
+        self.resolved(entity_id, now).to_values()
     }
 
     pub fn source_entries_for(&self, entity_id: &EntityId, now: u64) -> BTreeMap<String, Vec<MetadataSourceEntry>> {
@@ -572,7 +562,7 @@ impl MetadataStore {
                             .into_iter()
                             .map(|candidate| MetadataSourceEntry { source_id: candidate.source_id, entry: candidate.entry })
                             .collect::<Vec<_>>();
-                        (!entries.is_empty()).then_some((key.clone(), entries))
+                        (!entries.is_empty()).then_some((key.to_string(), entries))
                     })
                     .collect()
             })
@@ -588,7 +578,7 @@ impl MetadataStore {
                         continue;
                     }
                     patches.entry((target.clone(), self.source(contributor).to_owned())).or_default().insert(
-                        key.clone(),
+                        key.to_string(),
                         MetadataValueUpdate {
                             value: entry.value.clone(),
                             ttl_ms: entry.ttl_ms,
@@ -955,7 +945,12 @@ impl MetadataStore {
             if let EntityId::Entity(entity) = target {
                 census.entity("store: entity ids", entity);
             }
-            census.map("store: facts per entity", "store: fact keys", keys.keys());
+            census.shape("store: facts per entity", keys.keys());
+            for key in keys.keys() {
+                if census.first(key) {
+                    census.string("store: fact keys (interned)", key);
+                }
+            }
             for contributions in keys.values() {
                 for (_, entry) in contributions.iter() {
                     census.value("store: fact values", &entry.value);
@@ -979,13 +974,13 @@ impl MetadataStore {
 #[cfg(test)]
 impl ResolvedFacts {
     pub(crate) fn census(&self, census: &mut Census, prefix: &str) {
-        census.map(&format!("{prefix}: values"), &format!("{prefix}: keys"), self.values.keys());
-        for entry in self.values.values() {
-            census.value(&format!("{prefix}: values"), &entry.value);
+        // Keys and sources are shared (a spine, interned sources); count
+        // each spine once, and the facts each record holds.
+        if census.first(self.shape()) {
+            census.map(&format!("{prefix}: spines"), &format!("{prefix}: spine keys"), self.keys());
         }
-        census.map(&format!("{prefix}: sources"), &format!("{prefix}: source keys"), self.sources.keys());
-        for source in self.sources.values() {
-            census.string(&format!("{prefix}: sources"), source);
+        for (_, fact) in self.facts() {
+            census.value(&format!("{prefix}: values"), &fact.entry.value);
         }
     }
 }

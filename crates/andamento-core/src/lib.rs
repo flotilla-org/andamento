@@ -6,6 +6,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 pub mod detail;
+mod facts;
 pub mod host;
 pub mod managed;
 mod metadata;

@@ -1,6 +1,6 @@
 //! Structured detail content keyed by catalog identity, independent of placements.
-use std::collections::BTreeMap;
 
+use crate::facts::Entries;
 use crate::template_config::{DetailRole, TemplateConfigFieldSpec, TemplateConfigMatchContext};
 use crate::{EntityRef, MetadataEntry, MetadataValue, WorkspaceId};
 
@@ -62,7 +62,7 @@ pub struct DetailCard {
 pub(crate) fn resolve_field(
     spec: &TemplateConfigFieldSpec,
     context: TemplateConfigMatchContext<'_>,
-    entries: &BTreeMap<String, MetadataEntry>,
+    entries: &impl Entries,
 ) -> Option<DetailField> {
     use crate::template_config::{TemplateConfigResolvedValue, TemplateConfigValueSource as Source};
     let role = spec.role?;
@@ -78,7 +78,7 @@ pub(crate) fn resolve_field(
     let source = resolved.as_ref().and_then(|value| value.source.as_ref());
     // A missing field has no winning source; do not guess one from fallback order.
     let source_key = source.map(|source| source.key.clone()).unwrap_or_default();
-    let observation = source.and_then(|source| entries.get(&source.key)).cloned();
+    let observation = source.and_then(|source| entries.entry_at(&source.key)).cloned();
     let relations = if role == DetailRole::Relation {
         match source.map(|source| &source.value) {
             Some(MetadataValue::EntityRefs(refs)) => {
@@ -226,15 +226,18 @@ mod edge_tests {
                 field
             })
             .collect();
-        assert!(resolve_field(fields[0], context, &BTreeMap::new()).is_none());
+        assert!(resolve_field(fields[0], context, &BTreeMap::<String, MetadataEntry>::new()).is_none());
         assert_eq!(
-            resolve_field(fields[0], TemplateConfigMatchContext { collapsed: true, ..context }, &BTreeMap::new()).unwrap().text.as_deref(),
+            resolve_field(fields[0], TemplateConfigMatchContext { collapsed: true, ..context }, &BTreeMap::<String, MetadataEntry>::new())
+                .unwrap()
+                .text
+                .as_deref(),
             Some("value")
         );
-        let missing = resolve_field(fields[1], context, &BTreeMap::new()).unwrap();
+        let missing = resolve_field(fields[1], context, &BTreeMap::<String, MetadataEntry>::new()).unwrap();
         assert_eq!(missing.text, None);
         assert_eq!(missing.source_key, "");
-        assert_eq!(resolve_field(fields[2], context, &BTreeMap::new()).unwrap().relations, targets);
+        assert_eq!(resolve_field(fields[2], context, &BTreeMap::<String, MetadataEntry>::new()).unwrap().relations, targets);
         assert_eq!(
             [DetailRole::Identity, DetailRole::Title, DetailRole::State, DetailRole::Fact, DetailRole::Relation].map(|role| role as u32),
             [0, 1, 2, 3, 4]

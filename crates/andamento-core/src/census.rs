@@ -36,7 +36,7 @@ const STRING_HEADER: usize = 24;
 
 impl Census {
     /// Whether `rc`'s allocation is seen for the first time (count it then).
-    pub(crate) fn first<T>(&mut self, rc: &Rc<T>) -> bool {
+    pub(crate) fn first<T: ?Sized>(&mut self, rc: &Rc<T>) -> bool {
         self.seen.insert(Rc::as_ptr(rc) as *const () as usize)
     }
 
@@ -48,11 +48,17 @@ impl Census {
     }
 
     /// A string-keyed map: its shape, and each key as a string of `kind`.
-    pub(crate) fn map<'k>(&mut self, kind: &str, keys_kind: &str, keys: impl Iterator<Item = &'k String>) {
-        let keys: Vec<String> = keys.cloned().collect();
+    pub(crate) fn map(&mut self, kind: &str, keys_kind: &str, keys: impl IntoIterator<Item = impl AsRef<str>>) {
+        let keys: Vec<String> = keys.into_iter().map(|key| key.as_ref().to_owned()).collect();
         for key in &keys {
             self.string(keys_kind, key);
         }
+        self.shape(kind, keys);
+    }
+
+    /// A map's shape alone, its keys counted elsewhere (shared ones, once).
+    pub(crate) fn shape(&mut self, kind: &str, keys: impl IntoIterator<Item = impl AsRef<str>>) {
+        let keys: Vec<String> = keys.into_iter().map(|key| key.as_ref().to_owned()).collect();
         let maps = self.maps.entry(kind.to_owned()).or_default();
         maps.count += 1;
         maps.entries += keys.len();
