@@ -5,7 +5,7 @@ pub(crate) struct EvaluatedPlacement {
     pub label: String,
     pub form: String,
     pub tier: Option<AbbreviationTier>,
-    pub metadata: BTreeMap<String, MetadataValue>,
+    pub metadata: Rc<BTreeMap<String, MetadataValue>>,
     pub templates: ResolvedTemplateSlots,
     pub children: Vec<EvaluatedPlacement>,
 }
@@ -571,7 +571,7 @@ pub struct ControllerState {
     /// facts and the template catalog stay the same.
     displays: RefCell<HashMap<EntityRef, (Rc<ResolvedFacts>, u64, EvaluatedPlacement)>>,
     /// Each applied template's resolution for an entity, kept likewise.
-    applied: RefCell<HashMap<(EntityRef, String), (Rc<ResolvedFacts>, u64, Option<ResolvedTemplateSlot>)>>,
+    applied: RefCell<HashMap<(EntityRef, String), (Rc<ResolvedFacts>, u64, Option<Rc<ResolvedTemplateSlot>>)>>,
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
     clock_ms: Option<u64>,
@@ -1701,7 +1701,7 @@ impl ControllerState {
         entity: &CatalogEntity,
         template_name: &str,
         metadata: &BTreeMap<String, MetadataValue>,
-    ) -> Option<ResolvedTemplateSlot> {
+    ) -> Option<Rc<ResolvedTemplateSlot>> {
         let generation = self.template_generation;
         let key = (entity.entity.clone(), template_name.to_owned());
         if let Some((facts, at, slot)) = self.applied.borrow().get(&key) {
@@ -1728,6 +1728,7 @@ impl ControllerState {
                 resolve_error: Some(error.to_string()),
             }),
         };
+        let slot = slot.map(Rc::new);
         let mut applied = self.applied.borrow_mut();
         if applied.len() > 64 && applied.len() > 4 * self.metadata.targets().count() {
             applied.retain(|_, (facts, _, _)| Rc::strong_count(facts) > 1);
@@ -1739,8 +1740,8 @@ impl ControllerState {
     fn display_entity_uncached(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
         let metadata = entity_facts(&entity.entity, &entity.values);
         let templates = ResolvedTemplateSlots {
-            compact: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
-            detail: self.resolve_template_slot(TemplateConfigSlot::Detail, TemplateConfigNodeKind::Entity, &metadata),
+            compact: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata).map(Rc::new),
+            detail: self.resolve_template_slot(TemplateConfigSlot::Detail, TemplateConfigNodeKind::Entity, &metadata).map(Rc::new),
             ..Default::default()
         };
         EvaluatedPlacement {
@@ -1749,7 +1750,7 @@ impl ControllerState {
             tier: None,
             label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL).map(str::to_owned).unwrap_or_else(|| entity.entity.id.clone()),
             form: DISPLAY_FORM_COMPACT.into(),
-            metadata,
+            metadata: Rc::new(metadata),
             templates,
             children: vec![],
         }
@@ -1948,7 +1949,7 @@ impl ControllerState {
                 display.form = form.to_owned();
                 display.tier = loop_definition.tier;
                 if !loop_definition.fields.is_empty() {
-                    display.templates.compact = Some(ResolvedTemplateSlot {
+                    display.templates.compact = Some(Rc::new(ResolvedTemplateSlot {
                         template_name: format!("placement:{}", loop_definition.binding),
                         fields: vec![],
                         setters: vec![],
@@ -1959,7 +1960,7 @@ impl ControllerState {
                             controls: vec![],
                             chrome: Default::default(),
                         }),
-                    });
+                    }));
                     if form != DISPLAY_FORM_COMPACT {
                         display.templates.detail = display.templates.compact.clone();
                     }
@@ -1995,14 +1996,14 @@ impl ControllerState {
                             let own_binding = template_name.split('/').next().unwrap_or(&template_name).to_owned();
                             nested_bindings.insert(own_binding, entity);
                         } else if !requested.is_empty() {
-                            let slot = ResolvedTemplateSlot {
+                            let slot = Rc::new(ResolvedTemplateSlot {
                                 template_name: "<resolve-error>".to_owned(),
                                 fields: vec![],
                                 render_ready: None,
                                 setters: vec![],
                                 effective_kdl: String::new(),
                                 resolve_error: Some(format!("unknown applied template {template_name}")),
-                            };
+                            });
                             display.templates.compact = Some(slot.clone());
                             display.templates.detail = Some(slot);
                             child_loops = &[];
@@ -2059,7 +2060,7 @@ impl ControllerState {
         };
         let node = NodeKey::Placement(key);
         let template =
-            if entity.form == DISPLAY_FORM_COMPACT { entity.templates.compact.as_ref() } else { entity.templates.detail.as_ref() };
+            if entity.form == DISPLAY_FORM_COMPACT { entity.templates.compact.as_deref() } else { entity.templates.detail.as_deref() };
         let resolved = self.resolve_variables_at_node(catalog, &node, inherited_by_node.get(parent), &entity.metadata, template, warnings);
         inherited_by_node.insert(node.clone(), resolved.values.clone());
         output.push(EffectiveNodeVariables { node: node.clone(), values: resolved.values, declarations: resolved.declarations });

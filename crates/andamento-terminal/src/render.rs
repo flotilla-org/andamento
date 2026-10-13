@@ -629,7 +629,7 @@ fn buffer_section<'a>(model: &ControllerViewModel, section: &'a Section, cols: u
                 }
             }
             if show_metadata(model, node) {
-                for (key, value) in &node.facts {
+                for (key, value) in node.facts.iter() {
                     buffered.push(BufferedLine { text: format!("    {key}: {value:?}"), hits: vec![], active: false, card: None });
                 }
             }

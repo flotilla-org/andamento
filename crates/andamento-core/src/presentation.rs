@@ -2,6 +2,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     ops::ControlFlow,
+    rc::Rc,
 };
 
 use serde::{Deserialize, Serialize};
@@ -93,7 +94,7 @@ pub struct PlacementNode {
     pub state: PresentationState,
     pub content: Content,
     pub detail: Content,
-    pub facts: BTreeMap<String, MetadataValue>,
+    pub facts: Rc<BTreeMap<String, MetadataValue>>,
     pub variables: Option<EffectiveNodeVariables>,
     pub collapsed: bool,
     /// The provider of the entity this node presents (a ref's target) is
@@ -238,7 +239,7 @@ impl SurfaceSnapshot {
                     ..Content::default()
                 },
                 detail: Content::default(),
-                facts: BTreeMap::new(),
+                facts: Default::default(),
                 variables: None,
                 collapsed: false,
                 stale: false,
@@ -330,21 +331,29 @@ pub fn apply_declared_abbreviation(
     binding: &str,
     explicit: Option<AbbreviationTier>,
 ) -> bool {
-    let tier = explicit.map(|tier| tier.as_str()).or_else(|| metadata_text(metadata, &format!("var.{binding}.tier"))).unwrap_or("full");
-    let full = metadata_text(metadata, "display.label").map(str::to_owned);
-    let medium = metadata_text(metadata, "display.label.medium").map(str::to_owned);
-    let short = metadata_text(metadata, "display.label.short").map(str::to_owned);
-    let Some((selected, producer_supplied)) = (match tier {
-        "short" => {
-            short.map(|label| (label, true)).or_else(|| medium.map(|label| (label, true))).or_else(|| full.map(|label| (label, false)))
-        }
-        "medium" => medium.map(|label| (label, true)).or_else(|| full.map(|label| (label, false))),
-        _ => full.map(|label| (label, true)),
-    }) else {
+    let Some((selected, producer_supplied)) = declared_abbreviation(metadata, binding, explicit) else {
         return false;
     };
+    let selected = selected.to_owned();
     metadata.insert("display.label".to_owned(), MetadataValue::Text(selected));
     !producer_supplied
+}
+
+/// The label `binding`'s tier selects, and whether its producer supplied it.
+fn declared_abbreviation<'a>(
+    metadata: &'a BTreeMap<String, MetadataValue>,
+    binding: &str,
+    explicit: Option<AbbreviationTier>,
+) -> Option<(&'a str, bool)> {
+    let tier = explicit.map(|tier| tier.as_str()).or_else(|| metadata_text(metadata, &format!("var.{binding}.tier"))).unwrap_or("full");
+    let full = metadata_text(metadata, "display.label");
+    let medium = metadata_text(metadata, "display.label.medium");
+    let short = metadata_text(metadata, "display.label.short");
+    match tier {
+        "short" => short.or(medium).map(|label| (label, true)).or_else(|| full.map(|label| (label, false))),
+        "medium" => medium.map(|label| (label, true)).or_else(|| full.map(|label| (label, false))),
+        _ => full.map(|label| (label, true)),
+    }
 }
 
 fn metadata_text<'a>(metadata: &'a BTreeMap<String, MetadataValue>, key: &str) -> Option<&'a str> {
@@ -421,7 +430,9 @@ fn resolve_node(
 ) -> Option<PlacementNode> {
     let key = entity.placement.clone()?;
     let mut facts = entity.metadata.clone();
-    let variables = effective_metadata(node_variables, &NodeKey::Placement(key.clone()), &mut facts);
+    let node = NodeKey::Placement(key.clone());
+    let variables =
+        if node_variables.contains_key(&node) { effective_metadata(node_variables, &node, Rc::make_mut(&mut facts)) } else { None };
     let form = region
         .promotions
         .iter()
@@ -430,13 +441,19 @@ fn resolve_node(
         .unwrap_or(&region.form)
         .clone();
     let collapsed = model.collapsed_placements.contains(&key);
-    let slot = if form == DISPLAY_FORM_COMPACT { entity.templates.compact.as_ref() } else { entity.templates.detail.as_ref() };
+    let slot = if form == DISPLAY_FORM_COMPACT { entity.templates.compact.as_deref() } else { entity.templates.detail.as_deref() };
     let mut display_facts = facts.clone();
-    apply_declared_abbreviation(&mut display_facts, &key.0.last()?.loop_name, entity.tier);
+    let declared = declared_abbreviation(&display_facts, &key.0.last()?.loop_name, entity.tier)
+        .map(|(label, _)| label)
+        .filter(|label| metadata_text(&display_facts, "display.label") != Some(label))
+        .map(str::to_owned);
+    if let Some(label) = declared {
+        Rc::make_mut(&mut display_facts).insert("display.label".to_owned(), MetadataValue::Text(label));
+    }
     Some(PlacementNode {
         content: resolve_content(slot, &display_facts, collapsed, !entity.children.is_empty(), true),
         detail: {
-            let mut detail = resolve_content(entity.templates.detail.as_ref(), &facts, collapsed, !entity.children.is_empty(), false);
+            let mut detail = resolve_content(entity.templates.detail.as_deref(), &facts, collapsed, !entity.children.is_empty(), false);
             if let Some(annotation) = layouts.get(&key) {
                 detail.fields.extend(annotation.related_detail.iter().cloned());
             }

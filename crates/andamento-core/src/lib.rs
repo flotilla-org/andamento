@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -750,9 +751,9 @@ pub const DISPLAY_FORM_FULL: &str = "full";
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedTemplateSlots {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compact: Option<ResolvedTemplateSlot>,
+    pub compact: Option<Rc<ResolvedTemplateSlot>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<ResolvedTemplateSlot>,
+    pub detail: Option<Rc<ResolvedTemplateSlot>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
