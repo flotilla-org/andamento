@@ -7,15 +7,16 @@ pub(crate) struct EvaluatedPlacement {
     pub tier: Option<AbbreviationTier>,
     pub metadata: Rc<BTreeMap<String, MetadataValue>>,
     pub templates: ResolvedTemplateSlots,
-    pub children: Vec<EvaluatedPlacement>,
+    pub annotation: PlacementAnnotation,
+    pub children: Vec<Rc<EvaluatedPlacement>>,
 }
 #[derive(Debug)]
 pub(crate) struct EvaluatedSection {
     pub definition: SurfaceRegionDefinition,
     pub root: Option<ResolvedTemplateSlot>,
-    pub entities: Vec<EvaluatedPlacement>,
+    pub entities: Vec<Rc<EvaluatedPlacement>>,
 }
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct PlacementAnnotation {
     pub layout: Option<String>,
     pub related_detail: Vec<TemplateConfigRenderedField>,
@@ -32,11 +33,13 @@ use crate::detail::{resolve_field, DetailCard};
 use crate::host::PaneObservation;
 use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataStore, ResolvedFacts};
 use crate::profile;
+#[cfg(test)]
+use crate::template_config::PlacementDefinition;
 use crate::template_config::{
-    placement_index_text, AbbreviationTier, NodeVariableDefinition, PlacementDefinition, PlacementOrder, PlacementOrderAbsent,
-    PlacementOrderDirection, PlacementVisibility, PlacementVisibilityRule, SurfaceRegionDefinition, TemplateConfigCatalog,
-    TemplateConfigLayerKind, TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigOrigin, TemplateConfigRenderReady,
-    TemplateConfigRenderedField, TemplateConfigSlot,
+    placement_index_text, AbbreviationTier, NodeVariableDefinition, PlacementOrder, PlacementOrderAbsent, PlacementOrderDirection,
+    PlacementVisibility, PlacementVisibilityRule, SurfaceRegionDefinition, TemplateAddress, TemplateConfigCatalog, TemplateConfigLayerKind,
+    TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigOrigin, TemplateConfigRenderReady, TemplateConfigRenderedField,
+    TemplateConfigSlot,
 };
 use crate::WorkspaceId;
 use crate::{
@@ -115,9 +118,18 @@ enum IndexedValue {
 /// lists the same entities in the same order, only positions whose facts
 /// changed (a new `Rc` from the metadata store) are re-indexed, and their
 /// visibility re-evaluated. Placement predicates perform posting lookups only.
+///
+/// Each posting has a generation, moved whenever an entity in it (before or
+/// after) changes facts, so a loop can tell whether what it matched could
+/// differ now (see `LoopReads`). Anything else that changes what lookups
+/// return, such as a rebuild or new visibility, moves the epoch.
 #[derive(Debug, Default)]
 struct PlacementIndex {
-    by_fact: BTreeMap<(String, IndexedValue), Vec<usize>>,
+    by_fact: BTreeMap<Rc<(String, IndexedValue)>, usize>,
+    /// Postings by ID; an emptied posting keeps its ID and generation.
+    postings: Vec<Posting>,
+    clock: u64,
+    epoch: u64,
     visibility: BTreeMap<String, Vec<bool>>,
     ref_keys: BTreeSet<String>,
     /// Keys whose facts hold entity references, with how many positions do.
@@ -125,11 +137,140 @@ struct PlacementIndex {
     /// What each position was indexed from, and the postings it added.
     entities: Vec<EntityRef>,
     facts: Vec<Rc<ResolvedFacts>>,
-    postings: Vec<Vec<(String, IndexedValue)>>,
+    indexed: Vec<Vec<usize>>,
     /// What visibility was evaluated with: the template catalog's
     /// generation and the display variables; and the warnings it gave.
     visibility_inputs: Option<(u64, BTreeMap<String, DisplayVariableValue>)>,
     visibility_warnings: Vec<String>,
+}
+
+#[derive(Debug)]
+struct Posting {
+    key: Rc<(String, IndexedValue)>,
+    positions: Vec<usize>,
+    generation: u64,
+}
+
+/// A posting a loop looked up: one that exists, at the generation it had,
+/// or one that didn't.
+#[derive(Debug)]
+enum PostingRead {
+    Present { id: usize, generation: u64 },
+    Absent(Rc<(String, IndexedValue)>),
+}
+
+/// What placement evaluation reads besides the catalog's facts. When any of
+/// it changes, nothing placed earlier is kept.
+#[derive(Debug, PartialEq)]
+struct PlacementInputs {
+    template_generation: u64,
+    index_epoch: u64,
+    show_finished: bool,
+    ended: BTreeSet<EntityRef>,
+    retained: Vec<EntityRef>,
+}
+
+/// Where a loop is evaluated: each enclosing match, bound under its loop's
+/// name. An applied template starts a new lexical environment: names bound
+/// outside it are not visible in it, but enclosing matches stay ancestors.
+#[derive(Clone, Copy, Default)]
+struct Scope<'s, 'a> {
+    entity: Option<&'a CatalogEntity>,
+    name: Option<&'s str>,
+    outer: Option<&'s Scope<'s, 'a>>,
+    parent: Option<&'s Scope<'s, 'a>>,
+}
+
+impl<'s, 'a> Scope<'s, 'a> {
+    /// The scope inside a match of `entity`, bound as `name`; `fresh` when
+    /// it starts a new lexical environment.
+    fn within(&'s self, name: &'s str, entity: &'a CatalogEntity, fresh: bool) -> Self {
+        Scope { entity: Some(entity), name: Some(name), outer: (!fresh).then_some(self), parent: Some(self) }
+    }
+
+    fn bound(&self, name: &str) -> Option<&'a CatalogEntity> {
+        if self.name == Some(name) {
+            return self.entity;
+        }
+        self.outer?.bound(name)
+    }
+
+    fn is_ancestor(&self, entity: &EntityRef) -> bool {
+        self.entity.is_some_and(|own| own.entity == *entity) || self.parent.is_some_and(|parent| parent.is_ancestor(entity))
+    }
+}
+
+/// What evaluating a loop read: the entities bound to the names it used, and
+/// the postings it intersected. While the bound entities' facts are the
+/// same and any one of those postings is unchanged, it matches the same
+/// entities in the same order: whatever matched, or would match now, is in
+/// every one of them, and a change to it moves them all.
+#[derive(Debug, Default)]
+struct LoopReads {
+    bound: Vec<(String, Option<Rc<ResolvedFacts>>)>,
+    postings: Vec<PostingRead>,
+}
+
+impl LoopReads {
+    fn bind<'a>(&mut self, scope: &Scope<'_, 'a>, name: &str) -> Option<&'a CatalogEntity> {
+        let bound = scope.bound(name);
+        if !self.bound.iter().any(|(read, _)| read == name) {
+            self.bound.push((name.to_owned(), bound.map(|entity| entity.facts.clone())));
+        }
+        bound
+    }
+
+    fn valid(&self, scope: &Scope, index: &PlacementIndex) -> bool {
+        self.bound.iter().all(|(name, facts)| match (scope.bound(name), facts) {
+            (Some(entity), Some(facts)) => Rc::ptr_eq(&entity.facts, facts),
+            (None, None) => true,
+            _ => false,
+        }) && (self.postings.is_empty() || self.postings.iter().any(|read| index.unchanged(read)))
+    }
+}
+
+/// A loop's evaluation in one place, kept for the next.
+#[derive(Debug, Default)]
+struct LoopMemo {
+    reads: LoopReads,
+    nodes: Vec<NodeMemo>,
+}
+
+impl LoopMemo {
+    fn placed(&self) -> impl Iterator<Item = Rc<EvaluatedPlacement>> + '_ {
+        self.nodes.iter().map(|node| node.placement.clone())
+    }
+}
+
+/// One match's evaluation, kept for the next: its placement, what its
+/// related detail read, and its nested loops'.
+#[derive(Debug)]
+struct NodeMemo {
+    position: usize,
+    facts: Rc<ResolvedFacts>,
+    placement: Rc<EvaluatedPlacement>,
+    related: Vec<LoopReads>,
+    related_binding: String,
+    /// The name nested loops see this match as, and whether they see only it.
+    binding: String,
+    fresh: bool,
+    child_loops: ChildLoops,
+    children: Vec<LoopMemo>,
+}
+
+/// Which loops nest under a match: its loop's own, an applied template's, or
+/// none (an applied template that doesn't exist).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildLoops {
+    Own,
+    Template(TemplateAddress),
+    None,
+}
+
+struct PlacementContext<'a, 'f> {
+    entities: &'a [CatalogEntity],
+    index: &'a PlacementIndex,
+    form: &'f str,
 }
 
 /// The `(key, value)` postings an entity is indexed under.
@@ -175,64 +316,81 @@ impl PlacementIndex {
     fn update(&mut self, entities: &[CatalogEntity]) -> Option<Vec<usize>> {
         let same_list = self.entities.len() == entities.len() && self.entities.iter().zip(entities).all(|(old, new)| *old == new.entity);
         if !same_list {
-            *self = Self { visibility_inputs: None, ..Self::default() };
+            *self = Self { epoch: self.epoch + 1, ..Self::default() };
             for (position, entity) in entities.iter().enumerate() {
                 self.entities.push(entity.entity.clone());
                 self.facts.push(entity.facts.clone());
-                self.postings.push(vec![]);
-                self.index(position, entity_postings(entity));
+                self.indexed.push(vec![]);
+                let postings = entity_postings(entity);
+                self.index(position, &postings);
             }
             return None;
         }
+        self.clock += 1;
         let mut changed = vec![];
         for (position, entity) in entities.iter().enumerate() {
             if Rc::ptr_eq(&self.facts[position], &entity.facts) {
                 continue;
             }
             self.facts[position] = entity.facts.clone();
+            for &id in &self.indexed[position] {
+                self.postings[id].generation = self.clock;
+            }
             let next = entity_postings(entity);
-            if next == self.postings[position] {
+            if self.indexed[position].iter().map(|&id| &*self.postings[id].key).eq(next.iter()) {
                 continue;
             }
             self.unindex(position);
-            self.index(position, next);
+            self.index(position, &next);
             changed.push(position);
         }
         Some(changed)
     }
 
-    fn index(&mut self, position: usize, postings: Vec<(String, IndexedValue)>) {
-        for posting in &postings {
+    fn index(&mut self, position: usize, postings: &[(String, IndexedValue)]) {
+        let mut ids = Vec::with_capacity(postings.len());
+        for posting in postings {
             if let IndexedValue::Entity(_) = posting.1 {
                 *self.ref_key_counts.entry(posting.0.clone()).or_default() += 1;
-                self.ref_keys.insert(posting.0.clone());
+                if self.ref_keys.insert(posting.0.clone()) {
+                    self.epoch += 1;
+                }
             }
-            let positions = self.by_fact.entry(posting.clone()).or_default();
-            if let Err(at) = positions.binary_search(&position) {
-                positions.insert(at, position);
+            let id = match self.by_fact.get(posting) {
+                Some(&id) => id,
+                None => {
+                    let key = Rc::new(posting.clone());
+                    self.by_fact.insert(key.clone(), self.postings.len());
+                    self.postings.push(Posting { key, positions: vec![], generation: self.clock });
+                    self.postings.len() - 1
+                }
+            };
+            let entry = &mut self.postings[id];
+            entry.generation = self.clock;
+            if let Err(at) = entry.positions.binary_search(&position) {
+                entry.positions.insert(at, position);
             }
+            ids.push(id);
         }
-        self.postings[position] = postings;
+        self.indexed[position] = ids;
     }
 
     fn unindex(&mut self, position: usize) {
-        for posting in std::mem::take(&mut self.postings[position]) {
-            if let IndexedValue::Entity(_) = posting.1 {
-                if let Some(count) = self.ref_key_counts.get_mut(&posting.0) {
+        for id in std::mem::take(&mut self.indexed[position]) {
+            let entry = &mut self.postings[id];
+            entry.generation = self.clock;
+            if let IndexedValue::Entity(_) = entry.key.1 {
+                if let Some(count) = self.ref_key_counts.get_mut(&entry.key.0) {
                     *count -= 1;
                     if *count == 0 {
-                        self.ref_key_counts.remove(&posting.0);
-                        self.ref_keys.remove(&posting.0);
+                        self.ref_key_counts.remove(&entry.key.0);
+                        self.ref_keys.remove(&entry.key.0);
+                        self.epoch += 1;
                     }
                 }
             }
-            if let Some(positions) = self.by_fact.get_mut(&posting) {
-                if let Ok(at) = positions.binary_search(&position) {
-                    positions.remove(at);
-                }
-                if positions.is_empty() {
-                    self.by_fact.remove(&posting);
-                }
+            if let Ok(at) = entry.positions.binary_search(&position) {
+                entry.positions.remove(at);
             }
         }
     }
@@ -279,6 +437,7 @@ impl PlacementIndex {
                     self.visibility.insert(policy.name.clone(), visible);
                 }
                 self.visibility_inputs = Some((generation, variables.clone()));
+                self.epoch += 1;
                 self.visibility_warnings = warnings.into_iter().collect();
             }
         }
@@ -313,12 +472,24 @@ impl PlacementIndex {
             .collect()
     }
 
-    fn lookup_ref(&self, key: &str, reference: &EntityRef) -> &[usize] {
-        self.by_fact.get(&(key.to_owned(), IndexedValue::Entity(reference.clone()))).map(Vec::as_slice).unwrap_or_default()
+    /// The positions under `(key, value)`, and the read to record.
+    fn lookup(&self, key: &str, value: IndexedValue) -> (&[usize], PostingRead) {
+        let key = (key.to_owned(), value);
+        match self.by_fact.get(&key) {
+            Some(&id) => {
+                let posting = &self.postings[id];
+                (&posting.positions, PostingRead::Present { id, generation: posting.generation })
+            }
+            None => (&[], PostingRead::Absent(Rc::new(key))),
+        }
     }
 
-    fn lookup_value(&self, key: &str, value: &str) -> &[usize] {
-        self.by_fact.get(&(key.to_owned(), IndexedValue::Scalar(value.to_owned()))).map(Vec::as_slice).unwrap_or_default()
+    /// Whether no entity in a posting read earlier has changed since.
+    fn unchanged(&self, read: &PostingRead) -> bool {
+        match read {
+            PostingRead::Present { id, generation } => self.postings[*id].generation == *generation,
+            PostingRead::Absent(key) => !self.by_fact.contains_key(&**key),
+        }
     }
 }
 
@@ -559,6 +730,9 @@ struct Kept {
     displays: RefCell<HashMap<EntityRef, (Rc<ResolvedFacts>, u64, EvaluatedPlacement)>>,
     /// Each applied template's resolution for an entity, kept likewise.
     applied: RefCell<HashMap<(EntityRef, String), (Rc<ResolvedFacts>, u64, Option<Rc<ResolvedTemplateSlot>>)>>,
+    /// Each region's loops as last evaluated (`evaluate_regions`), with
+    /// what they were evaluated under.
+    placements: RefCell<Option<(PlacementInputs, Vec<Vec<LoopMemo>>)>>,
 }
 
 impl Kept {
@@ -567,6 +741,7 @@ impl Kept {
         self.placement_index.swap(&other.placement_index);
         self.displays.swap(&other.displays);
         self.applied.swap(&other.applied);
+        self.placements.swap(&other.placements);
     }
 }
 
@@ -1386,38 +1561,7 @@ impl ControllerState {
         let placement_index: &PlacementIndex = &index;
         drop(index_phase);
         let placements_phase = profile::span("placements");
-        let mut placement_layouts = BTreeMap::new();
-        let surface_regions: Vec<EvaluatedSection> = self
-            .template_catalog
-            .as_ref()
-            .map(|catalog| {
-                catalog
-                    .regions()
-                    .iter()
-                    .cloned()
-                    .map(|definition| {
-                        let metadata =
-                            BTreeMap::from([("presentation.template".to_owned(), MetadataValue::Text(definition.root_template.clone()))]);
-                        let entities = if let Some(placement) = definition.placement.as_deref().and_then(|name| catalog.placement(name)) {
-                            self.evaluate_placement(
-                                placement,
-                                region_catalog_entities,
-                                &placement_index,
-                                &definition.form,
-                                &mut placement_layouts,
-                            )
-                        } else {
-                            vec![]
-                        };
-                        EvaluatedSection {
-                            definition,
-                            root: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
-                            entities,
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let surface_regions = self.evaluate_regions(region_catalog_entities, placement_index);
         drop(placements_phase);
         let variables_phase = profile::span("placement-variables");
         if let Some(catalog) = self.template_catalog.as_ref() {
@@ -1440,7 +1584,7 @@ impl ControllerState {
         }
 
         drop(variables_phase);
-        fn collect_matched(nodes: &[EvaluatedPlacement], matched: &mut BTreeSet<EntityRef>) {
+        fn collect_matched(nodes: &[Rc<EvaluatedPlacement>], matched: &mut BTreeSet<EntityRef>) {
             for node in nodes {
                 matched.insert(node.entity.clone());
                 collect_matched(&node.children, matched);
@@ -1517,7 +1661,7 @@ impl ControllerState {
             })
             .collect();
         let surface_phase = profile::span("surface");
-        model.presentation = Some(SurfaceSnapshot::resolve(&model, &surface_regions, &placement_layouts, &states));
+        model.presentation = Some(SurfaceSnapshot::resolve(&model, &surface_regions, &states));
         drop(surface_phase);
         if let Some(surface) = &mut model.presentation {
             // Default groups (`.default`) cover tabs nothing else places.
@@ -1779,65 +1923,298 @@ impl ControllerState {
             form: DISPLAY_FORM_COMPACT.into(),
             metadata: Rc::new(metadata),
             templates,
+            annotation: Default::default(),
             children: vec![],
         }
     }
 
-    /// Evaluate a placement's single loop into the entities it places.
-    ///
-    /// Predicates intersect: the smallest posting list is taken first and the
-    /// rest filter it, so cost tracks the most selective fact rather than the
-    /// catalog size.
+    /// Evaluate a placement's loops into the entities they place, with
+    /// nothing kept from earlier evaluations.
+    #[cfg(test)]
     fn evaluate_placement(
         &self,
         placement: &PlacementDefinition,
         entities: &[CatalogEntity],
         index: &PlacementIndex,
         form: &str,
-        layouts: &mut BTreeMap<PlacementKey, PlacementAnnotation>,
-    ) -> Vec<EvaluatedPlacement> {
+    ) -> Vec<Rc<EvaluatedPlacement>> {
+        let cx = PlacementContext { entities, index, form };
         placement
             .loops
             .iter()
-            .flat_map(|loop_definition| {
-                self.evaluate_placement_loop(
-                    loop_definition,
-                    entities,
-                    index,
-                    form,
-                    &BTreeMap::new(),
-                    &[],
-                    &PlacementKey::default(),
-                    0,
-                    layouts,
-                )
+            .flat_map(|definition| {
+                self.evaluate_loop(&cx, definition, &Scope::default(), &PlacementKey::default(), 0, None).0.placed().collect::<Vec<_>>()
             })
             .collect()
     }
 
-    /// Entities a loop selects under the given bindings, in its declared order.
+    /// Each region's placed entities. What an earlier evaluation placed is
+    /// kept: a loop whose reads are unchanged keeps its matches, and an entity
+    /// whose facts are unchanged keeps its display, so only paths to what
+    /// changed are evaluated again.
+    fn evaluate_regions(&self, entities: &[CatalogEntity], index: &PlacementIndex) -> Vec<EvaluatedSection> {
+        let Some(catalog) = self.template_catalog.as_ref() else {
+            return vec![];
+        };
+        let inputs = PlacementInputs {
+            template_generation: self.template_generation,
+            index_epoch: index.epoch,
+            show_finished: self.show_finished(),
+            ended: self.ended_subjects.clone(),
+            retained: self.retained_subjects.keys().cloned().collect(),
+        };
+        let mut kept = self.kept.placements.borrow_mut();
+        let previous = match kept.take() {
+            Some((at, regions)) if at == inputs => regions,
+            _ => vec![],
+        };
+        let mut previous = previous.into_iter();
+        let mut memos = Vec::with_capacity(catalog.regions().len());
+        let sections = catalog
+            .regions()
+            .iter()
+            .map(|definition| {
+                let mut prior = previous.next().unwrap_or_default().into_iter();
+                let mut loops = vec![];
+                if let Some(placement) = definition.placement.as_deref().and_then(|name| catalog.placement(name)) {
+                    let cx = PlacementContext { entities, index, form: &definition.form };
+                    for loop_definition in &placement.loops {
+                        let (memo, _) =
+                            self.evaluate_loop(&cx, loop_definition, &Scope::default(), &PlacementKey::default(), 0, prior.next());
+                        loops.push(memo);
+                    }
+                }
+                let metadata =
+                    BTreeMap::from([("presentation.template".to_owned(), MetadataValue::Text(definition.root_template.clone()))]);
+                let section = EvaluatedSection {
+                    definition: definition.clone(),
+                    root: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
+                    entities: loops.iter().flat_map(LoopMemo::placed).collect(),
+                };
+                memos.push(loops);
+                section
+            })
+            .collect();
+        *kept = Some((inputs, memos));
+        sections
+    }
+
+    /// Evaluate one loop in `scope`, reusing `prior` (this loop's evaluation
+    /// in the same place last time) where what it read is unchanged. Returns
+    /// whether what it places differs from `prior`.
+    fn evaluate_loop<'a>(
+        &self,
+        cx: &PlacementContext<'a, '_>,
+        definition: &PlacementLoop,
+        scope: &Scope<'_, 'a>,
+        parent: &PlacementKey,
+        depth: usize,
+        prior: Option<LoopMemo>,
+    ) -> (LoopMemo, bool) {
+        const MAX_PLACEMENT_DEPTH: usize = 64;
+        if depth >= MAX_PLACEMENT_DEPTH {
+            return (LoopMemo::default(), prior.is_some_and(|memo| !memo.nodes.is_empty()));
+        }
+        match prior {
+            Some(memo) if memo.reads.valid(scope, cx.index) => {
+                let mut changed = false;
+                let nodes = memo
+                    .nodes
+                    .into_iter()
+                    .map(|node| {
+                        let (node, node_changed) = self.evaluate_node(cx, definition, scope, parent, depth, node.position, Some(node));
+                        changed |= node_changed;
+                        node
+                    })
+                    .collect();
+                (LoopMemo { reads: memo.reads, nodes }, changed)
+            }
+            prior => {
+                let mut earlier: HashMap<EntityRef, NodeMemo> = prior
+                    .map(|memo| memo.nodes.into_iter().map(|node| (node.placement.entity.clone(), node)).collect())
+                    .unwrap_or_default();
+                let matching = profile::span("placement-matches");
+                let mut reads = LoopReads::default();
+                let matches = self.placement_matches(definition, cx.entities, cx.index, scope, &mut reads);
+                drop(matching);
+                let nodes = matches
+                    .into_iter()
+                    .map(|position| {
+                        let prior = earlier.remove(&cx.entities[position].entity);
+                        self.evaluate_node(cx, definition, scope, parent, depth, position, prior).0
+                    })
+                    .collect();
+                (LoopMemo { reads, nodes }, true)
+            }
+        }
+    }
+
+    /// Evaluate the entity at `position` as a match of `definition`, reusing
+    /// `prior` while its facts and its related reads are unchanged. Returns
+    /// whether its placement differs from `prior`'s.
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_node<'a>(
+        &self,
+        cx: &PlacementContext<'a, '_>,
+        definition: &PlacementLoop,
+        scope: &Scope<'_, 'a>,
+        parent: &PlacementKey,
+        depth: usize,
+        position: usize,
+        prior: Option<NodeMemo>,
+    ) -> (NodeMemo, bool) {
+        let entity = &cx.entities[position];
+        let reusable = prior.as_ref().is_some_and(|node| {
+            Rc::ptr_eq(&node.facts, &entity.facts) && {
+                let related = Scope::default();
+                let related = related.within(&node.related_binding, entity, true);
+                node.related.iter().all(|reads| reads.valid(&related, cx.index))
+            }
+        });
+        if reusable {
+            let mut node = prior.expect("reusable implies prior");
+            let loops = self.child_loops(definition, node.child_loops);
+            let child_scope = scope.within(&node.binding, entity, node.fresh);
+            let key = node.placement.placement.clone().expect("a placed entity has a key");
+            let mut changed = false;
+            let children = std::mem::take(&mut node.children);
+            node.children = loops
+                .iter()
+                .zip(children)
+                .map(|(nested, memo)| {
+                    let (memo, loop_changed) = self.evaluate_loop(cx, nested, &child_scope, &key, depth + 1, Some(memo));
+                    changed |= loop_changed;
+                    memo
+                })
+                .collect();
+            if changed {
+                let mut placement = (*node.placement).clone();
+                placement.children = node.children.iter().flat_map(LoopMemo::placed).collect();
+                node.placement = Rc::new(placement);
+            }
+            return (node, changed);
+        }
+
+        let display_phase = profile::span("placement-display");
+        let mut display = self.display_entity(entity);
+        drop(display_phase);
+        display.form = cx.form.to_owned();
+        display.tier = definition.tier;
+        if !definition.fields.is_empty() {
+            display.templates.compact = Some(Rc::new(ResolvedTemplateSlot {
+                template_name: format!("placement:{}", definition.binding),
+                fields: vec![],
+                setters: vec![],
+                effective_kdl: String::new(),
+                resolve_error: None,
+                render_ready: Some(TemplateConfigRenderReady {
+                    fields: definition.fields.clone(),
+                    controls: vec![],
+                    chrome: Default::default(),
+                }),
+            }));
+            if cx.form != DISPLAY_FORM_COMPACT {
+                display.templates.detail = display.templates.compact.clone();
+            }
+        }
+        let mut key = parent.clone();
+        key.0.push(PlacementSegment { loop_name: definition.binding.clone(), entity: entity.entity.clone() });
+        let related_phase = profile::span("placement-related-detail");
+        let (related_detail, related, related_binding) = self.related_detail_fields(&display, entity, cx.entities, cx.index);
+        drop(related_phase);
+        display.annotation = PlacementAnnotation { layout: definition.layout.clone(), related_detail };
+        display.placement = Some(key.clone());
+
+        let mut child_loops = ChildLoops::Own;
+        let mut binding = definition.binding.clone();
+        let mut fresh = false;
+        let applied_phase = profile::span("placement-applied-template");
+        if let Some(requested) = definition.apply_template.as_deref() {
+            let template_name = if requested.is_empty() { format!("{}/line", entity.entity.kind) } else { requested.to_owned() };
+            if let Some(catalog) = self.template_catalog.as_ref() {
+                if let Some(address) = catalog.placement_template_address(&template_name, &display.metadata) {
+                    let resolved_slot = self.applied_template(catalog, entity, &template_name, &display.metadata);
+                    if let Some(slot) = resolved_slot {
+                        display.templates.compact = Some(slot.clone());
+                        if cx.form != DISPLAY_FORM_COMPACT {
+                            display.templates.detail = Some(slot);
+                        }
+                    }
+                    child_loops = ChildLoops::Template(address);
+                    // Applied templates intentionally start a new lexical environment.
+                    fresh = true;
+                    binding = template_name.split('/').next().unwrap_or(&template_name).to_owned();
+                } else if !requested.is_empty() {
+                    let slot = Rc::new(ResolvedTemplateSlot {
+                        template_name: "<resolve-error>".to_owned(),
+                        fields: vec![],
+                        render_ready: None,
+                        setters: vec![],
+                        effective_kdl: String::new(),
+                        resolve_error: Some(format!("unknown applied template {template_name}")),
+                    });
+                    display.templates.compact = Some(slot.clone());
+                    display.templates.detail = Some(slot);
+                    child_loops = ChildLoops::None;
+                }
+            }
+        }
+        drop(applied_phase);
+        let mut earlier = prior.filter(|node| node.child_loops == child_loops).map(|node| node.children.into_iter()).into_iter().flatten();
+        let child_scope = scope.within(&binding, entity, fresh);
+        let children: Vec<LoopMemo> = self
+            .child_loops(definition, child_loops)
+            .iter()
+            .map(|nested| self.evaluate_loop(cx, nested, &child_scope, &key, depth + 1, earlier.next()).0)
+            .collect();
+        display.children = children.iter().flat_map(LoopMemo::placed).collect();
+        let node = NodeMemo {
+            position,
+            facts: entity.facts.clone(),
+            placement: Rc::new(display),
+            related,
+            related_binding,
+            binding,
+            fresh,
+            child_loops,
+            children,
+        };
+        (node, true)
+    }
+
+    /// The loops nested under a match of `definition`.
+    fn child_loops<'d>(&'d self, definition: &'d PlacementLoop, loops: ChildLoops) -> &'d [PlacementLoop] {
+        match (loops, self.template_catalog.as_ref()) {
+            (ChildLoops::Own, _) => &definition.loops,
+            (ChildLoops::Template(address), Some(catalog)) => &catalog.template_at(address).loops,
+            (ChildLoops::Template(_), None) | (ChildLoops::None, _) => &[],
+        }
+    }
+
+    /// Positions of the entities a loop selects in `scope`, in its declared
+    /// order, recording what it read in `reads`.
     fn placement_matches<'a>(
         &self,
         loop_definition: &PlacementLoop,
         entities: &'a [CatalogEntity],
         index: &PlacementIndex,
-        bindings: &BTreeMap<String, &'a CatalogEntity>,
-        ancestors: &[EntityRef],
-    ) -> Vec<&'a CatalogEntity> {
+        scope: &Scope<'_, 'a>,
+        reads: &mut LoopReads,
+    ) -> Vec<usize> {
         let mut postings = loop_definition
             .predicates
             .iter()
             .map(|predicate| {
                 if predicate.value.is_none() && index.ref_keys.contains(&predicate.key) {
-                    return predicate
-                        .of
-                        .as_ref()
-                        .and_then(|name| bindings.get(name))
-                        .map(|bound| index.lookup_ref(&predicate.key, &bound.entity))
-                        .unwrap_or_default();
+                    let Some(bound) = predicate.of.as_ref().and_then(|name| reads.bind(scope, name)) else {
+                        return &[][..];
+                    };
+                    let (positions, read) = index.lookup(&predicate.key, IndexedValue::Entity(bound.entity.clone()));
+                    reads.postings.push(read);
+                    return positions;
                 }
                 let value = predicate.value.clone().or_else(|| {
-                    let bound = bindings.get(predicate.of.as_deref()?)?;
+                    let bound = reads.bind(scope, predicate.of.as_deref()?)?;
                     if predicate.key == "entity.kind" {
                         Some(bound.entity.kind.clone())
                     } else if predicate.key == "entity.id" {
@@ -1846,7 +2223,12 @@ impl ControllerState {
                         bound.values.get(&predicate.key).and_then(|entry| placement_index_text(&entry.value))
                     }
                 });
-                value.map(|value| index.lookup_value(&predicate.key, &value)).unwrap_or_default()
+                let Some(value) = value else {
+                    return &[][..];
+                };
+                let (positions, read) = index.lookup(&predicate.key, IndexedValue::Scalar(value));
+                reads.postings.push(read);
+                positions
             })
             .collect::<Vec<_>>();
         // A join on a provider's entity (`of`) stays within that provider:
@@ -1856,7 +2238,7 @@ impl ControllerState {
         let joined_providers = loop_definition
             .predicates
             .iter()
-            .filter_map(|predicate| bindings.get(predicate.of.as_deref()?))
+            .filter_map(|predicate| scope.bound(predicate.of.as_deref()?))
             .map(|bound| bound.entity.provider.as_str())
             .filter(|provider| *provider != LOCAL_PROVIDER)
             .collect::<BTreeSet<_>>();
@@ -1867,43 +2249,46 @@ impl ControllerState {
         };
         let mut matches = seed
             .iter()
+            .copied()
             .filter(|position| rest.iter().all(|matches| matches.binary_search(position).is_ok()))
             .filter(|position| {
                 // An open ended workspace keeps its retained subject path reachable
                 // even while Show finished is off (wheelhouse#188 owner ruling).
                 // This deliberately overrides all visibility policies: open ended
                 // subjects must remain reachable on their retained path.
-                entities.get(**position).is_some_and(|entity| {
+                entities.get(*position).is_some_and(|entity| {
                     self.ended_subjects.contains(&entity.entity) && self.retained_subjects.contains_key(&entity.entity)
                 }) || loop_definition.visibility.as_ref().is_none_or(|name| {
                     debug_assert!(index.visibility.contains_key(name), "validated visibility policy {name} was not evaluated");
-                    index.visibility.get(name).and_then(|visible| visible.get(**position)).copied().unwrap_or(false)
+                    index.visibility.get(name).and_then(|visible| visible.get(*position)).copied().unwrap_or(false)
                 })
             })
-            .filter_map(|position| entities.get(*position))
-            .filter(|entity| joined_providers.iter().all(|provider| entity.entity.provider == *provider))
-            .filter(|entity| !ancestors.contains(&entity.entity))
-            .filter(|entity| {
-                show_finished || !self.ended_subjects.contains(&entity.entity) || self.retained_subjects.contains_key(&entity.entity)
+            .filter(|position| {
+                let entity = &entities[*position];
+                joined_providers.iter().all(|provider| entity.entity.provider == *provider)
+                    && !scope.is_ancestor(&entity.entity)
+                    && (show_finished
+                        || !self.ended_subjects.contains(&entity.entity)
+                        || self.retained_subjects.contains_key(&entity.entity))
             })
             .collect::<Vec<_>>();
         if let Some(key) = &loop_definition.in_key {
             let Some(MetadataValue::EntityRefs(refs)) = loop_definition
                 .of
                 .as_ref()
-                .and_then(|name| bindings.get(name))
+                .and_then(|name| reads.bind(scope, name))
                 .and_then(|entity| entity.values.get(key))
                 .map(|entry| &entry.value)
             else {
                 return vec![];
             };
-            let eligible: BTreeMap<_, _> = matches.iter().map(|entity| (&entity.entity, *entity)).collect();
+            let eligible: BTreeMap<_, _> = matches.iter().map(|&position| (&entities[position].entity, position)).collect();
             let mut seen = BTreeSet::new();
             matches =
                 refs.iter().filter(|reference| seen.insert(*reference)).filter_map(|reference| eligible.get(reference).copied()).collect();
         }
         if loop_definition.in_key.is_none() || !loop_definition.order.is_empty() {
-            matches.sort_by(|left, right| placement_entity_order(left, right, &loop_definition.order));
+            matches.sort_by(|&left, &right| placement_entity_order(&entities[left], &entities[right], &loop_definition.order));
         }
         matches
     }
@@ -1911,153 +2296,43 @@ impl ControllerState {
     /// Fields contributed to a placed entity's detail by loops declared in its
     /// detail template. The template binds the entity under its own name, as an
     /// applied template does, and each loop renders its fields per match.
-    fn related_detail_fields<'a>(
+    /// Returns them with what each loop read and the name it bound.
+    fn related_detail_fields(
         &self,
         display: &EvaluatedPlacement,
-        entity: &'a CatalogEntity,
-        entities: &'a [CatalogEntity],
+        entity: &CatalogEntity,
+        entities: &[CatalogEntity],
         index: &PlacementIndex,
-    ) -> Vec<TemplateConfigRenderedField> {
+    ) -> (Vec<TemplateConfigRenderedField>, Vec<LoopReads>, String) {
         let (Some(catalog), Some(detail)) = (self.template_catalog.as_ref(), display.templates.detail.as_ref()) else {
-            return vec![];
+            return (vec![], vec![], String::new());
         };
         let Some(template) = catalog.placement_template(&detail.template_name, &display.metadata) else {
-            return vec![];
+            return (vec![], vec![], String::new());
         };
         let binding = detail.template_name.split('/').next().unwrap_or(&detail.template_name).to_owned();
-        let bindings = BTreeMap::from([(binding, entity)]);
-        let ancestors = [entity.entity.clone()];
-        template
-            .loops
-            .iter()
-            .flat_map(|related_loop| {
-                self.placement_matches(related_loop, entities, index, &bindings, &ancestors).into_iter().flat_map(move |related| {
-                    let metadata = entity_facts(&related.entity, &related.values);
-                    let context = TemplateConfigMatchContext {
-                        slot: TemplateConfigSlot::Detail,
-                        node_kind: TemplateConfigNodeKind::Entity,
-                        metadata: &metadata,
-                        collapsed: false,
-                        collapsible: false,
-                        active_tab_name: None,
-                    };
-                    related_loop.fields.iter().filter_map(|spec| spec.render(context)).collect::<Vec<_>>()
-                })
-            })
-            .collect()
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn evaluate_placement_loop<'a>(
-        &self,
-        loop_definition: &PlacementLoop,
-        entities: &'a [CatalogEntity],
-        index: &PlacementIndex,
-        form: &str,
-        bindings: &BTreeMap<String, &'a CatalogEntity>,
-        ancestors: &[EntityRef],
-        parent_placement: &PlacementKey,
-        depth: usize,
-        layouts: &mut BTreeMap<PlacementKey, PlacementAnnotation>,
-    ) -> Vec<EvaluatedPlacement> {
-        const MAX_PLACEMENT_DEPTH: usize = 64;
-        if depth >= MAX_PLACEMENT_DEPTH {
-            return vec![];
+        let root = Scope::default();
+        let scope = root.within(&binding, entity, true);
+        let mut fields = vec![];
+        let mut reads = vec![];
+        for related_loop in &template.loops {
+            let mut loop_reads = LoopReads::default();
+            for position in self.placement_matches(related_loop, entities, index, &scope, &mut loop_reads) {
+                let related = &entities[position];
+                let metadata = entity_facts(&related.entity, &related.values);
+                let context = TemplateConfigMatchContext {
+                    slot: TemplateConfigSlot::Detail,
+                    node_kind: TemplateConfigNodeKind::Entity,
+                    metadata: &metadata,
+                    collapsed: false,
+                    collapsible: false,
+                    active_tab_name: None,
+                };
+                fields.extend(related_loop.fields.iter().filter_map(|spec| spec.render(context)));
+            }
+            reads.push(loop_reads);
         }
-        let matching = profile::span("placement-matches");
-        let matches = self.placement_matches(loop_definition, entities, index, bindings, ancestors);
-        drop(matching);
-        matches
-            .into_iter()
-            .map(|entity| {
-                let display_phase = profile::span("placement-display");
-                let mut display = self.display_entity(entity);
-                drop(display_phase);
-                display.form = form.to_owned();
-                display.tier = loop_definition.tier;
-                if !loop_definition.fields.is_empty() {
-                    display.templates.compact = Some(Rc::new(ResolvedTemplateSlot {
-                        template_name: format!("placement:{}", loop_definition.binding),
-                        fields: vec![],
-                        setters: vec![],
-                        effective_kdl: String::new(),
-                        resolve_error: None,
-                        render_ready: Some(TemplateConfigRenderReady {
-                            fields: loop_definition.fields.clone(),
-                            controls: vec![],
-                            chrome: Default::default(),
-                        }),
-                    }));
-                    if form != DISPLAY_FORM_COMPACT {
-                        display.templates.detail = display.templates.compact.clone();
-                    }
-                }
-                let mut placement = parent_placement.clone();
-                placement.0.push(PlacementSegment { loop_name: loop_definition.binding.clone(), entity: entity.entity.clone() });
-                let related_phase = profile::span("placement-related-detail");
-                let related_detail = self.related_detail_fields(&display, entity, entities, index);
-                drop(related_phase);
-                layouts.insert(placement.clone(), PlacementAnnotation { layout: loop_definition.layout.clone(), related_detail });
-                display.placement = Some(placement.clone());
-                let mut nested_bindings = bindings.clone();
-                nested_bindings.insert(loop_definition.binding.clone(), entity);
-                let mut nested_ancestors = ancestors.to_vec();
-                nested_ancestors.push(entity.entity.clone());
-
-                let mut child_loops = loop_definition.loops.as_slice();
-                let applied_phase = profile::span("placement-applied-template");
-                if let Some(requested) = loop_definition.apply_template.as_deref() {
-                    let template_name = if requested.is_empty() { format!("{}/line", entity.entity.kind) } else { requested.to_owned() };
-                    if let Some(catalog) = self.template_catalog.as_ref() {
-                        if let Some(template) = catalog.placement_template(&template_name, &display.metadata) {
-                            let resolved_slot = self.applied_template(catalog, entity, &template_name, &display.metadata);
-                            if let Some(slot) = resolved_slot {
-                                display.templates.compact = Some(slot.clone());
-                                if form != DISPLAY_FORM_COMPACT {
-                                    display.templates.detail = Some(slot);
-                                }
-                            }
-                            child_loops = template.loops.as_slice();
-                            // Applied templates intentionally start a new lexical environment.
-                            nested_bindings.clear();
-                            let own_binding = template_name.split('/').next().unwrap_or(&template_name).to_owned();
-                            nested_bindings.insert(own_binding, entity);
-                        } else if !requested.is_empty() {
-                            let slot = Rc::new(ResolvedTemplateSlot {
-                                template_name: "<resolve-error>".to_owned(),
-                                fields: vec![],
-                                render_ready: None,
-                                setters: vec![],
-                                effective_kdl: String::new(),
-                                resolve_error: Some(format!("unknown applied template {template_name}")),
-                            });
-                            display.templates.compact = Some(slot.clone());
-                            display.templates.detail = Some(slot);
-                            child_loops = &[];
-                            nested_bindings.clear();
-                        }
-                    }
-                }
-                drop(applied_phase);
-                display.children = child_loops
-                    .iter()
-                    .flat_map(|nested| {
-                        self.evaluate_placement_loop(
-                            nested,
-                            entities,
-                            index,
-                            form,
-                            &nested_bindings,
-                            &nested_ancestors,
-                            &placement,
-                            depth + 1,
-                            layouts,
-                        )
-                    })
-                    .collect();
-                display
-            })
-            .collect()
+        (fields, reads, binding)
     }
 
     fn resolve_effective_variables(&self, resolved_metadata: &[ResolvedMetadata]) -> (Vec<EffectiveNodeVariables>, Vec<String>) {
@@ -3444,9 +3719,10 @@ mod tests {
             entity.values.clear();
         }
         let bound = entities.iter().find(|entity| entity.entity == convoy).unwrap();
-        let bindings = BTreeMap::from([("convoy".into(), bound)]);
-        let matched = state.placement_matches(query, &entities, &index, &bindings, &[]);
-        assert_eq!(matched.iter().map(|e| e.entity.id.as_str()).collect::<Vec<_>>(), vec!["match"]);
+        let root = Scope::default();
+        let scope = root.within("convoy", bound, true);
+        let matched = state.placement_matches(query, &entities, &index, &scope, &mut LoopReads::default());
+        assert_eq!(matched.iter().map(|&p| entities[p].entity.id.as_str()).collect::<Vec<_>>(), vec!["match"]);
     }
 
     fn forward_reference_lists() -> Vec<Vec<EntityRef>> {
@@ -3508,15 +3784,18 @@ mod tests {
             let entities = state.catalog_entities();
             let index = PlacementIndex::build(&entities);
             let role = entities.iter().find(|e| e.entity == entity_ref("role", "r")).unwrap();
-            let bindings = BTreeMap::from([("role".into(), role)]);
             for (explicit_order, config) in [false, true].into_iter().zip(&configs) {
                 assert_eq!(config.placements[0].loops.len(), 2);
                 let query = &config.placements[0].loops[0].loops[0];
+                // `role` bound, under an ancestor bound to no name.
                 let ids = |ancestors: &[EntityRef]| {
+                    let ancestor = ancestors.first().and_then(|a| entities.iter().find(|e| e.entity == *a));
+                    let outside = Scope { entity: ancestor, ..Scope::default() };
+                    let scope = Scope { entity: Some(role), name: Some("role"), outer: None, parent: Some(&outside) };
                     state
-                        .placement_matches(query, &entities, &index, &bindings, ancestors)
+                        .placement_matches(query, &entities, &index, &scope, &mut LoopReads::default())
                         .iter()
-                        .map(|e| e.entity.id.as_str())
+                        .map(|&p| entities[p].entity.id.as_str())
                         .collect::<Vec<_>>()
                 };
                 let mut expected = vec![];
@@ -3538,8 +3817,9 @@ mod tests {
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
         let role = entities.iter().find(|e| e.entity == entity_ref("role", "r")).unwrap();
-        let bindings = BTreeMap::from([("role".into(), role)]);
-        let missing = BTreeMap::new();
+        let root = Scope::default();
+        let bindings = root.within("role", role, true);
+        let missing = Scope::default();
         let config = parse_template_config_kdl(
             r#"
             placement "tree" { for "role" kind="role" { for "attempt" kind="convoy" in="absent" of="role"; }; }
@@ -3547,8 +3827,8 @@ mod tests {
         )
         .unwrap();
         let query = &config.placements[0].loops[0].loops[0];
-        assert!(state.placement_matches(query, &entities, &index, &bindings, &[]).is_empty());
-        assert!(state.placement_matches(query, &entities, &index, &missing, &[]).is_empty());
+        assert!(state.placement_matches(query, &entities, &index, &bindings, &mut LoopReads::default()).is_empty());
+        assert!(state.placement_matches(query, &entities, &index, &missing, &mut LoopReads::default()).is_empty());
     }
 
     // Forward detail fields bind their source by template name, remain fresh,
@@ -3789,8 +4069,7 @@ mod tests {
 
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
-        let placed =
-            state.evaluate_placement(&placement_loop(&[("entity.kind", "vessel")]), &entities, &index, "full", &mut BTreeMap::new());
+        let placed = state.evaluate_placement(&placement_loop(&[("entity.kind", "vessel")]), &entities, &index, "full");
 
         assert_eq!(
             placed.len(),
@@ -3807,18 +4086,10 @@ mod tests {
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
 
-        assert!(state
-            .evaluate_placement(&placement_loop(&[("entity.kind", "convoy")]), &entities, &index, "full", &mut BTreeMap::new())
-            .is_empty());
+        assert!(state.evaluate_placement(&placement_loop(&[("entity.kind", "convoy")]), &entities, &index, "full").is_empty());
         assert!(
             state
-                .evaluate_placement(
-                    &placement_loop(&[("entity.kind", "vessel"), ("status.attention", "true")]),
-                    &entities,
-                    &index,
-                    "full",
-                    &mut BTreeMap::new()
-                )
+                .evaluate_placement(&placement_loop(&[("entity.kind", "vessel"), ("status.attention", "true")]), &entities, &index, "full")
                 .is_empty(),
             "predicates intersect: an unmatched one empties the result"
         );
@@ -3872,9 +4143,9 @@ placement "identity-descending" {
         let index = PlacementIndex::build(&entities);
         let labels = |placement: &PlacementDefinition| {
             state
-                .evaluate_placement(placement, &entities, &index, "full", &mut BTreeMap::new())
+                .evaluate_placement(placement, &entities, &index, "full")
                 .into_iter()
-                .map(|entity| entity.label)
+                .map(|entity| entity.label.clone())
                 .collect::<Vec<_>>()
         };
 
@@ -3896,10 +4167,9 @@ placement "identity-descending" {
         }
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
-        let placed =
-            state.evaluate_placement(&placement_loop(&[("entity.kind", "vessel")]), &entities, &index, "full", &mut BTreeMap::new());
+        let placed = state.evaluate_placement(&placement_loop(&[("entity.kind", "vessel")]), &entities, &index, "full");
 
-        assert_eq!(placed.into_iter().map(|item| item.entity.id).collect::<Vec<_>>(), vec!["alpha-id", "zeta-id"]);
+        assert_eq!(placed.into_iter().map(|item| item.entity.id.clone()).collect::<Vec<_>>(), vec!["alpha-id", "zeta-id"]);
     }
 
     #[test]

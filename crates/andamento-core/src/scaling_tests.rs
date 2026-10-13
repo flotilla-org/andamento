@@ -157,6 +157,8 @@ fn fleet(shape: Shape, limit: usize) -> Vec<MetadataPatch> {
                 ("flotilla.role.state".into(), text("active")),
                 ("flotilla.project".into(), text(project(c))),
                 ("related.entities".into(), MetadataValue::EntityRefs(vec![EntityRef::new(PROVIDER, "convoy", &id)])),
+                ("flotilla.role.attempts".into(), MetadataValue::EntityRefs(vec![EntityRef::new(PROVIDER, "convoy", &id)])),
+                ("flotilla.role.current_attempt".into(), MetadataValue::EntityRefs(vec![EntityRef::new(PROVIDER, "convoy", &id)])),
             ]);
             patches.push(patch("role", &role, facts));
         }
@@ -409,6 +411,31 @@ fn kept_matches_cold_through_a_session(config: &str) {
             }),
         ),
         ("add", Box::new(|s: &mut Sidebar| s.apply(10, PROVIDER, catalog(64)[catalog(60).len()..].to_vec()).unwrap())),
+        (
+            "rename a role's attempt",
+            // Convoy 35's role shows it in its detail.
+            Box::new(move |s: &mut Sidebar| {
+                s.apply(10, PROVIDER, [change("convoy", 35, vec![("display.label", text("attempt renamed"))], vec![])]).unwrap()
+            }),
+        ),
+        (
+            "rekey a project",
+            Box::new(|s: &mut Sidebar| {
+                // Its nested loops now look up convoys of a project there are none of.
+                let mut patch = patch("project", "fleet/p0@fleet", vec![("flotilla.project".into(), text("fleet/elsewhere"))]);
+                patch.set.retain(|key, _| key == "flotilla.project");
+                s.apply(10, PROVIDER, [patch]).unwrap();
+            }),
+        ),
+        (
+            "restore its key",
+            Box::new(|s: &mut Sidebar| {
+                // And back.
+                let mut patch = patch("project", "fleet/p0@fleet", vec![("flotilla.project".into(), text("fleet/p0@fleet"))]);
+                patch.set.retain(|key, _| key == "flotilla.project");
+                s.apply(10, PROVIDER, [patch]).unwrap();
+            }),
+        ),
         (
             "supersede bound",
             Box::new(move |s: &mut Sidebar| {

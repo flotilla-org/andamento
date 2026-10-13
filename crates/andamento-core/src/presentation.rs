@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::{ControllerTab, EvaluatedPlacement, EvaluatedSection, PlacementAnnotation};
+use crate::state::{ControllerTab, EvaluatedPlacement, EvaluatedSection};
 use crate::template_config::{
     AbbreviationTier, ChromeSpec, SurfaceRegionDefinition, TemplateConfigFieldClass, TemplateConfigMatchContext, TemplateConfigNodeKind,
     TemplateConfigRenderedField, TemplateConfigSlot, TemplateControlSpec, TemplateVariableDefinition,
@@ -283,7 +283,6 @@ impl SurfaceSnapshot {
     pub(crate) fn resolve(
         model: &ControllerViewModel,
         sections: &[EvaluatedSection],
-        layouts: &BTreeMap<PlacementKey, PlacementAnnotation>,
         states: &BTreeMap<EntityRef, PresentationState>,
     ) -> Self {
         let mut snapshot = Self {
@@ -313,7 +312,7 @@ impl SurfaceSnapshot {
                     region
                         .entities
                         .iter()
-                        .filter_map(|entity| resolve_node(model, &variables, entity, definition, layouts, states, &orders))
+                        .filter_map(|entity| resolve_node(model, &variables, entity, definition, states, &orders))
                         .collect(),
                     &orders,
                 ),
@@ -424,7 +423,6 @@ fn resolve_node(
     node_variables: &HashMap<&NodeKey, &EffectiveNodeVariables>,
     entity: &EvaluatedPlacement,
     region: &SurfaceRegionDefinition,
-    layouts: &BTreeMap<PlacementKey, PlacementAnnotation>,
     states: &BTreeMap<EntityRef, PresentationState>,
     orders: &BTreeMap<PlacementLoopKey, Vec<EntityRef>>,
 ) -> Option<PlacementNode> {
@@ -454,12 +452,10 @@ fn resolve_node(
         content: resolve_content(slot, &display_facts, collapsed, !entity.children.is_empty(), true),
         detail: {
             let mut detail = resolve_content(entity.templates.detail.as_deref(), &facts, collapsed, !entity.children.is_empty(), false);
-            if let Some(annotation) = layouts.get(&key) {
-                detail.fields.extend(annotation.related_detail.iter().cloned());
-            }
+            detail.fields.extend(entity.annotation.related_detail.iter().cloned());
             detail
         },
-        layout: layouts.get(&key).and_then(|annotation| annotation.layout.clone()),
+        layout: entity.annotation.layout.clone(),
         state: states.get(&entity.entity).cloned().unwrap_or_default(),
         loop_key: key.loop_key(&region.name)?,
         key,
@@ -471,11 +467,7 @@ fn resolve_node(
         collapsed,
         stale: false,
         children: apply_sibling_orders(
-            entity
-                .children
-                .iter()
-                .filter_map(|child| resolve_node(model, node_variables, child, region, layouts, states, orders))
-                .collect(),
+            entity.children.iter().filter_map(|child| resolve_node(model, node_variables, child, region, states, orders)).collect(),
             orders,
         ),
     })
