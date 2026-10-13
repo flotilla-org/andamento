@@ -2,6 +2,7 @@ mod state;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
+#[cfg(not(target_family = "wasm"))]
 use std::rc::Rc;
 use std::time::Instant;
 

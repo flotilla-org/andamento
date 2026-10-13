@@ -273,12 +273,15 @@ pub(crate) struct VariablesMemo {
     warnings: Vec<String>,
 }
 
+/// The inspector's variable settings, by node.
+type VariableOverrides = BTreeMap<NodeKey, BTreeMap<String, String>>;
+
 /// Placed nodes' variables, with what they were resolved under: the
 /// template catalog's generation and the inspector's overrides, and the
 /// root's variables.
 #[derive(Debug, Default)]
 struct VariablesKept {
-    inputs: Option<(u64, BTreeMap<NodeKey, BTreeMap<String, String>>)>,
+    inputs: Option<(u64, VariableOverrides)>,
     root: Option<Rc<EffectiveNodeVariables>>,
     nodes: NodeVariables,
 }
@@ -828,6 +831,11 @@ pub struct PluginRegistration {
     pub placement: PluginPlacement,
 }
 
+/// An entity's display, with the facts and template generation it was made from.
+type KeptDisplay = (Rc<ResolvedFacts>, u64, EvaluatedPlacement);
+/// An applied template's resolution for an entity, likewise.
+type KeptAppliedTemplate = (Rc<ResolvedFacts>, u64, Option<Rc<ResolvedTemplateSlot>>);
+
 /// What evaluation keeps between revisions, each part valid only while
 /// what it was derived from stays the same. Everything kept lives here, so
 /// a test can evaluate without it and compare.
@@ -837,9 +845,9 @@ struct Kept {
     placement_index: RefCell<PlacementIndex>,
     /// Each entity's display (`display_entity`), kept while its resolved
     /// facts and the template catalog stay the same.
-    displays: RefCell<HashMap<EntityRef, (Rc<ResolvedFacts>, u64, EvaluatedPlacement)>>,
+    displays: RefCell<HashMap<EntityRef, KeptDisplay>>,
     /// Each applied template's resolution for an entity, kept likewise.
-    applied: RefCell<HashMap<(EntityRef, String), (Rc<ResolvedFacts>, u64, Option<Rc<ResolvedTemplateSlot>>)>>,
+    applied: RefCell<HashMap<(EntityRef, String), KeptAppliedTemplate>>,
     /// Each region's loops as last evaluated (`evaluate_regions`), with
     /// what they were evaluated under.
     placements: RefCell<Option<(PlacementInputs, Vec<Vec<LoopMemo>>)>>,
@@ -891,7 +899,7 @@ pub struct ControllerState {
     pending_latent_materializations: BTreeMap<String, PendingLatentMaterialization>,
     rail_ui: ControllerRailUiState,
     rail_ui_writer_client_id: u16,
-    node_variable_overrides: BTreeMap<NodeKey, BTreeMap<String, String>>,
+    node_variable_overrides: VariableOverrides,
 }
 impl Default for ControllerState {
     fn default() -> Self {

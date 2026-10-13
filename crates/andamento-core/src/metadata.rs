@@ -477,12 +477,12 @@ impl MetadataStore {
             match existing_entry {
                 Some(existing) if metadata_entry_payload_matches(&existing, &next_entry) && self.is_live(&contributor, &existing, now) => {
                     if existing.ttl_ms.is_some() {
-                        self.set_contribution(target.clone(), key, contributor.clone(), next_entry);
+                        self.set_contribution(target.clone(), key, contributor, next_entry);
                         outcome.touched = true;
                     }
                 }
                 _ => {
-                    self.set_contribution(target.clone(), key, contributor.clone(), next_entry);
+                    self.set_contribution(target.clone(), key, contributor, next_entry);
                     outcome.touched = true;
                     outcome.view_changed = true;
                 }

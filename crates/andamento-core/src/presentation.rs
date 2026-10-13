@@ -365,11 +365,13 @@ pub(crate) struct SurfaceMemo {
     node: Rc<PlacementNode>,
 }
 
+type SiblingOrders = Vec<(PlacementLoopKey, Vec<EntityRef>)>;
+
 /// Resolved nodes, by the address of their placements, with what they were
 /// resolved under: the template catalog's generation and the sibling orders.
 #[derive(Debug, Default)]
 pub(crate) struct SurfaceKept {
-    inputs: Option<(u64, Vec<(PlacementLoopKey, Vec<EntityRef>)>)>,
+    inputs: Option<(u64, SiblingOrders)>,
     nodes: HashMap<*const EvaluatedPlacement, SurfaceMemo>,
 }
 
