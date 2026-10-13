@@ -24,7 +24,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::ops::{Deref, DerefMut};
+use std::ops::{Bound, Deref, DerefMut};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -1036,8 +1036,8 @@ impl ControllerState {
         // history. Keep the old record only for authoritative removal/loss.
         if !is_removal {
             if let Some(entity) = retained_target.as_ref() {
-                let current = self.metadata.resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
-                if current.contains_key(KEY_ENTITY_ID) || current.contains_key(KEY_DISPLAY_LABEL) {
+                let current = self.metadata.resolved(&EntityId::Entity(entity.clone()), self.now());
+                if current.values.contains_key(KEY_ENTITY_ID) || current.values.contains_key(KEY_DISPLAY_LABEL) {
                     if let Some(retained) = self.retained_subjects.get_mut(entity) {
                         for key in unset_keys {
                             ended_changed |= retained.values.remove(&key).is_some();
@@ -2251,10 +2251,11 @@ impl ControllerState {
     fn refresh_retained_subjects_for(&mut self, target: Option<&EntityRef>) -> bool {
         let now = self.now();
         let mut changed = false;
-        for (subject, retained) in &mut self.retained_subjects {
-            if target.is_some_and(|target| target != subject) {
-                continue;
-            }
+        let range = match target {
+            Some(target) => (Bound::Included(target), Bound::Included(target)),
+            None => (Bound::Unbounded, Bound::Unbounded),
+        };
+        for (subject, retained) in self.retained_subjects.range_mut::<EntityRef, _>(range) {
             let (values, sources) = self.metadata.resolved_entries_with_sources_for(&EntityId::Entity(subject.clone()), now);
             // While identity remains observed, individual facts keep their ordinary
             // freshness. Only unobserved identities need the last known record.

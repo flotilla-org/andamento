@@ -343,6 +343,7 @@ fn stress_shapes() {
         ("busy 100x100 all active", Shape { projects: 100, convoys_per_project: 100, active_every: 1, attention_every: 3, ..base }),
     ];
     let only = std::env::var("STRESS_ONLY").ok();
+    let phases_shown = std::env::var("STRESS_PHASES").ok().and_then(|n| n.parse().ok()).unwrap_or(5);
     let time = |f: &mut dyn FnMut()| {
         let started = std::time::Instant::now();
         f();
@@ -376,7 +377,7 @@ fn stress_shapes() {
         phases.sort_by(|a, b| b.1.nanos.cmp(&a.1.nanos));
         let top: Vec<String> = phases
             .iter()
-            .take(5)
+            .take(phases_shown)
             .map(|(phase, stats)| format!("{phase} {:.2}ms", stats.nanos as f64 / 1e6 / applies.len() as f64))
             .collect();
         println!(
