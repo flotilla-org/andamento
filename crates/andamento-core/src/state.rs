@@ -1217,6 +1217,7 @@ impl ControllerState {
                 template_config.warnings.push(warning);
             }
         }
+        let index_phase = profile::span("placement-index");
         let mut placement_index = PlacementIndex::build(region_catalog_entities);
         if let Some(config) = self.template_catalog.as_ref() {
             for warning in placement_index.evaluate_visibility(region_catalog_entities, config, &self.rail_ui.variables) {
@@ -1225,6 +1226,8 @@ impl ControllerState {
                 }
             }
         }
+        drop(index_phase);
+        let placements_phase = profile::span("placements");
         let mut placement_layouts = BTreeMap::new();
         let surface_regions: Vec<EvaluatedSection> = self
             .template_catalog
@@ -1257,6 +1260,8 @@ impl ControllerState {
                     .collect()
             })
             .unwrap_or_default();
+        drop(placements_phase);
+        let variables_phase = profile::span("placement-variables");
         if let Some(catalog) = self.template_catalog.as_ref() {
             let mut inherited = template_config
                 .effective_variables
@@ -1276,6 +1281,7 @@ impl ControllerState {
             }
         }
 
+        drop(variables_phase);
         fn collect_matched(nodes: &[EvaluatedPlacement], matched: &mut BTreeSet<EntityRef>) {
             for node in nodes {
                 matched.insert(node.entity.clone());
@@ -1352,7 +1358,9 @@ impl ControllerState {
                 (entity.entity.clone(), state)
             })
             .collect();
+        let surface_phase = profile::span("surface");
         model.presentation = Some(SurfaceSnapshot::resolve(&model, &surface_regions, &placement_layouts, &states));
+        drop(surface_phase);
         if let Some(surface) = &mut model.presentation {
             // Default groups (`.default`) cover tabs nothing else places.
             let default_groups = region_catalog_entities

@@ -177,7 +177,9 @@ fn a_snapshot_applied_at_once_resolves_each_entity_a_bounded_number_of_times() {
 /// Timings against a real catalog, kept out of the repository:
 /// `ANDAMENTO_CATALOG_FIXTURE=<snapshot.json> cargo test --release -p andamento-core
 /// real_catalog -- --ignored --nocapture`. The file is the JSON array a
-/// Flotilla connector posts to `/v1/metadata/snapshot`.
+/// Flotilla connector posts to `/v1/metadata/snapshot`; a `deltas.jsonl`
+/// beside it is replayed after it. ANDAMENTO_CATALOG_TEMPLATE names the
+/// template to place it with (a host's, say), else the test fixture's.
 #[test]
 #[ignore]
 fn real_catalog_timings() {
@@ -189,14 +191,16 @@ fn real_catalog_timings() {
         f();
         started.elapsed()
     };
-    let mut sidebar = Sidebar::new(CONFIG).unwrap();
+    let template = std::env::var("ANDAMENTO_CATALOG_TEMPLATE").map(|path| std::fs::read_to_string(path).unwrap());
+    let config = template.as_deref().unwrap_or(CONFIG);
+    let mut sidebar = Sidebar::new(config).unwrap();
     let mut each = vec![];
     for patch in &patches {
         each.push(time(&mut || sidebar.apply(1, PROVIDER, [patch.clone()]).unwrap()));
     }
     let total: std::time::Duration = each.iter().sum();
     println!("one at a time: {} patches {:?} (first {:?}, last {:?})", patches.len(), total, each.first().unwrap(), each.last().unwrap());
-    let mut batched = Sidebar::new(CONFIG).unwrap();
+    let mut batched = Sidebar::new(config).unwrap();
     println!("one batch: {:?}", time(&mut || batched.apply(1, PROVIDER, patches.clone()).unwrap()));
     println!("evaluation: {:?}", time(&mut || drop(batched.snapshot())));
     let first = patches.iter().find(|p| matches!(&p.target, MetadataTarget::Entity(e) if e.kind == "convoy")).unwrap().clone();
