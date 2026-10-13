@@ -3,7 +3,10 @@
 //! with ~25 facts each) arrives as one snapshot and then as small deltas;
 //! neither may cost work in proportion to everything already stored.
 use crate::metadata::ENTITY_RESOLUTIONS;
+use crate::presentation::SurfaceSnapshot;
 use crate::sidebar::{Action, Sidebar, Workspace};
+use crate::state::ControllerState;
+use crate::template_config::{parse_template_config_kdl, TemplateConfigCatalog, TemplateConfigLayer};
 use crate::{tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, WorkspaceId};
 use std::collections::BTreeMap;
 
@@ -525,6 +528,50 @@ fn kept_matches_cold_through_a_session(config: &str) {
         let kept = sidebar.snapshot_shared().surface.clone();
         assert!(kept == sidebar.cold_surface(), "after {name:?}, the kept surface differs from a cold evaluation");
     }
+}
+
+/// A node inherits its parent's variables. When a parent's change (here, its
+/// project joining a layer that sets a variable) changes them, its children
+/// inherit the new values, though their own placements are kept.
+#[test]
+fn kept_variables_follow_a_parents_change() {
+    let user = parse_template_config_kdl(
+        r#"
+        variable "density" default="roomy" {
+          value "roomy"
+          value "compact"
+        }
+        region "tree" root-template="title" form="compact" placement="tree"
+        template "title" slot="compact" node-kind="entity" { field "label" source="literal" value="Tree"; }
+        placement "tree" {
+          for "project" kind="project" {
+            for "vessel" kind="vessel" {
+              match "group" of="project"
+              apply-template "row"
+            }
+          }
+        }
+        template "row" { field "density" key="var.density"; }
+        "#,
+    )
+    .unwrap();
+    let special = parse_template_config_kdl(r#"set "density" "compact""#).unwrap();
+    let mut state = ControllerState::default();
+    state.set_template_catalog(Some(TemplateConfigCatalog::from_layers(vec![
+        TemplateConfigLayer::user("user", user),
+        TemplateConfigLayer::project("special", "special", special),
+    ])));
+    let project =
+        |membership: &str| patch("project", "p", vec![("group".into(), text("g")), ("flotilla.project".into(), text(membership))]);
+    state.apply_provider_patch(PROVIDER, project("ordinary"));
+    state.apply_provider_patch(PROVIDER, patch("vessel", "v", vec![("group".into(), text("g"))]));
+    let surface = |state: &ControllerState| state.presentation_in(&state.evaluate_revision());
+    let density = |surface: &SurfaceSnapshot| surface.sections[0].nodes[0].children[0].content.fields[0].value.clone();
+    assert_eq!(density(&surface(&state)), "roomy");
+    state.apply_provider_patch(PROVIDER, project("special"));
+    let kept = surface(&state);
+    assert_eq!(kept, state.cold(surface));
+    assert_eq!(density(&kept), "compact");
 }
 
 /// Where scaling breaks: generated fleets from the real catalog's size up

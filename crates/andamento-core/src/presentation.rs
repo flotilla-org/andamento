@@ -1,13 +1,9 @@
 //! Semantic placement snapshots shared by all frontends.
-use std::{
-    collections::{BTreeMap, HashMap},
-    ops::ControlFlow,
-    rc::Rc,
-};
+use std::{collections::BTreeMap, ops::ControlFlow, rc::Rc};
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::{ControllerTab, EvaluatedPlacement, EvaluatedSection};
+use crate::state::{ControllerTab, EvaluatedPlacement, EvaluatedSection, NodeVariables};
 use crate::template_config::{
     AbbreviationTier, ChromeSpec, SurfaceRegionDefinition, TemplateConfigFieldClass, TemplateConfigMatchContext, TemplateConfigNodeKind,
     TemplateConfigRenderedField, TemplateConfigSlot, TemplateControlSpec, TemplateVariableDefinition,
@@ -284,6 +280,7 @@ impl SurfaceSnapshot {
         model: &ControllerViewModel,
         sections: &[EvaluatedSection],
         states: &BTreeMap<EntityRef, PresentationState>,
+        node_variables: &NodeVariables,
     ) -> Self {
         let mut snapshot = Self {
             display_variables: model.display_variables.clone(),
@@ -291,13 +288,11 @@ impl SurfaceSnapshot {
             ..Self::default()
         };
         let orders: BTreeMap<_, _> = model.sibling_orders.iter().cloned().collect();
-        // Each node's variables, found by key rather than by a scan per node.
-        let variables: HashMap<&NodeKey, &EffectiveNodeVariables> =
-            model.template_config.effective_variables.iter().map(|variables| (&variables.node, variables)).collect();
+        let root = model.template_config.effective_variables.iter().find(|variables| variables.node == NodeKey::Root);
         for region in sections {
             let definition = &region.definition;
             let mut metadata = BTreeMap::new();
-            effective_metadata(&variables, &NodeKey::Root, &mut metadata);
+            effective_metadata(root, &mut metadata);
             let content = resolve_content(region.root.as_ref(), &metadata, false, false, false);
             if let Some(error) = &content.error {
                 snapshot.diagnostics.push(format!("region {}: {error}", definition.name));
@@ -312,7 +307,7 @@ impl SurfaceSnapshot {
                     region
                         .entities
                         .iter()
-                        .filter_map(|entity| resolve_node(model, &variables, entity, definition, states, &orders))
+                        .filter_map(|entity| resolve_node(model, node_variables, entity, definition, states, &orders))
                         .collect(),
                     &orders,
                 ),
@@ -363,11 +358,10 @@ fn metadata_text<'a>(metadata: &'a BTreeMap<String, MetadataValue>, key: &str) -
 }
 
 fn effective_metadata(
-    variables: &HashMap<&NodeKey, &EffectiveNodeVariables>,
-    target: &NodeKey,
+    variables: Option<&EffectiveNodeVariables>,
     metadata: &mut BTreeMap<String, MetadataValue>,
 ) -> Option<EffectiveNodeVariables> {
-    let variables = *variables.get(target)?;
+    let variables = variables?;
     for (name, value) in &variables.values {
         metadata.insert(format!("var.{name}"), MetadataValue::Text(value.value.clone()));
     }
@@ -420,7 +414,7 @@ fn order_run(data: Vec<PlacementNode>, order: &[EntityRef]) -> Vec<PlacementNode
 
 fn resolve_node(
     model: &ControllerViewModel,
-    node_variables: &HashMap<&NodeKey, &EffectiveNodeVariables>,
+    node_variables: &NodeVariables,
     entity: &EvaluatedPlacement,
     region: &SurfaceRegionDefinition,
     states: &BTreeMap<EntityRef, PresentationState>,
@@ -428,9 +422,10 @@ fn resolve_node(
 ) -> Option<PlacementNode> {
     let key = entity.placement.clone()?;
     let mut facts = entity.metadata.clone();
-    let node = NodeKey::Placement(key.clone());
-    let variables =
-        if node_variables.contains_key(&node) { effective_metadata(node_variables, &node, Rc::make_mut(&mut facts)) } else { None };
+    let variables = match node_variables.get(&(entity as *const EvaluatedPlacement)) {
+        Some(memo) => effective_metadata(Some(&memo.resolved), Rc::make_mut(&mut facts)),
+        None => None,
+    };
     let form = region
         .promotions
         .iter()

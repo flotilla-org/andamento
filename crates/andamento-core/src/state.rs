@@ -258,6 +258,29 @@ struct NodeMemo {
     children: Vec<LoopMemo>,
 }
 
+/// Each placed node's variables, by the address of its placement.
+pub(crate) type NodeVariables = HashMap<*const EvaluatedPlacement, VariablesMemo>;
+
+/// A node's variables, kept while its placement and its parent's variables
+/// stay the same.
+#[derive(Debug)]
+pub(crate) struct VariablesMemo {
+    placement: Rc<EvaluatedPlacement>,
+    parent: Rc<EffectiveNodeVariables>,
+    pub(crate) resolved: Rc<EffectiveNodeVariables>,
+    warnings: Vec<String>,
+}
+
+/// Placed nodes' variables, with what they were resolved under: the
+/// template catalog's generation and the inspector's overrides, and the
+/// root's variables.
+#[derive(Debug, Default)]
+struct VariablesKept {
+    inputs: Option<(u64, BTreeMap<NodeKey, BTreeMap<String, String>>)>,
+    root: Option<Rc<EffectiveNodeVariables>>,
+    nodes: NodeVariables,
+}
+
 /// Which loops nest under a match: its loop's own, an applied template's, or
 /// none (an applied template that doesn't exist).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -733,6 +756,8 @@ struct Kept {
     /// Each region's loops as last evaluated (`evaluate_regions`), with
     /// what they were evaluated under.
     placements: RefCell<Option<(PlacementInputs, Vec<Vec<LoopMemo>>)>>,
+    /// Each placed node's variables (`placement_variables`).
+    variables: RefCell<VariablesKept>,
 }
 
 impl Kept {
@@ -742,6 +767,7 @@ impl Kept {
         self.displays.swap(&other.displays);
         self.applied.swap(&other.applied);
         self.placements.swap(&other.placements);
+        self.variables.swap(&other.variables);
     }
 }
 
@@ -1564,25 +1590,26 @@ impl ControllerState {
         let surface_regions = self.evaluate_regions(region_catalog_entities, placement_index);
         drop(placements_phase);
         let variables_phase = profile::span("placement-variables");
-        if let Some(catalog) = self.template_catalog.as_ref() {
-            let mut inherited = template_config
-                .effective_variables
-                .iter()
-                .map(|entry| (entry.node.clone(), entry.values.clone()))
-                .collect::<BTreeMap<_, _>>();
-            let mut placement_variables = vec![];
-            let mut warnings = BTreeSet::new();
-            for entity in surface_regions.iter().flat_map(|region| &region.entities) {
-                self.resolve_placement_variables(catalog, entity, &NodeKey::Root, &mut inherited, &mut placement_variables, &mut warnings);
-            }
-            template_config.effective_variables.extend(placement_variables);
-            for warning in warnings {
-                if !template_config.warnings.contains(&warning) {
-                    template_config.warnings.push(warning);
-                }
+        let root = template_config.effective_variables.iter().find(|variables| variables.node == NodeKey::Root).cloned();
+        for warning in self.resolve_placement_variables(&surface_regions, root.as_ref()) {
+            if !template_config.warnings.contains(&warning) {
+                template_config.warnings.push(warning);
             }
         }
-
+        let node_variables = self.kept.variables.borrow();
+        if !presentation_only {
+            fn collect(placements: &[Rc<EvaluatedPlacement>], variables: &NodeVariables, out: &mut Vec<EffectiveNodeVariables>) {
+                for placement in placements {
+                    if let Some(memo) = variables.get(&Rc::as_ptr(placement)) {
+                        out.push((*memo.resolved).clone());
+                    }
+                    collect(&placement.children, variables, out);
+                }
+            }
+            for region in &surface_regions {
+                collect(&region.entities, &node_variables.nodes, &mut template_config.effective_variables);
+            }
+        }
         drop(variables_phase);
         fn collect_matched(nodes: &[Rc<EvaluatedPlacement>], matched: &mut BTreeSet<EntityRef>) {
             for node in nodes {
@@ -1661,7 +1688,7 @@ impl ControllerState {
             })
             .collect();
         let surface_phase = profile::span("surface");
-        model.presentation = Some(SurfaceSnapshot::resolve(&model, &surface_regions, &states));
+        model.presentation = Some(SurfaceSnapshot::resolve(&model, &surface_regions, &states, &node_variables.nodes));
         drop(surface_phase);
         if let Some(surface) = &mut model.presentation {
             // Default groups (`.default`) cover tabs nothing else places.
@@ -2348,26 +2375,73 @@ impl ControllerState {
         )
     }
 
-    fn resolve_placement_variables(
+    /// Resolve each placed node's variables, inheriting from `root` down.
+    /// A node whose placement and parent's variables are unchanged keeps
+    /// its variables. Returns the warnings, kept with them.
+    fn resolve_placement_variables(&self, regions: &[EvaluatedSection], root: Option<&EffectiveNodeVariables>) -> BTreeSet<String> {
+        let mut kept = self.kept.variables.borrow_mut();
+        let (Some(catalog), Some(root)) = (self.template_catalog.as_ref(), root) else {
+            *kept = VariablesKept::default();
+            return BTreeSet::new();
+        };
+        let inputs = (self.template_generation, self.node_variable_overrides.clone());
+        let mut prior = std::mem::take(&mut kept.nodes);
+        if kept.inputs.as_ref() != Some(&inputs) {
+            prior.clear();
+            kept.inputs = Some(inputs);
+        }
+        let root = match kept.root.take() {
+            Some(kept) if *kept == *root => kept,
+            _ => Rc::new(root.clone()),
+        };
+        let mut nodes = HashMap::with_capacity(prior.len());
+        let mut warnings = BTreeSet::new();
+        for placement in regions.iter().flat_map(|region| &region.entities) {
+            self.node_variables(catalog, placement, &root, &mut prior, &mut nodes, &mut warnings);
+        }
+        kept.root = Some(root);
+        kept.nodes = nodes;
+        warnings
+    }
+
+    fn node_variables(
         &self,
         catalog: &TemplateConfigCatalog,
-        entity: &EvaluatedPlacement,
-        parent: &NodeKey,
-        inherited_by_node: &mut BTreeMap<NodeKey, BTreeMap<String, EffectiveVariableValue>>,
-        output: &mut Vec<EffectiveNodeVariables>,
+        placement: &Rc<EvaluatedPlacement>,
+        parent: &Rc<EffectiveNodeVariables>,
+        prior: &mut NodeVariables,
+        nodes: &mut NodeVariables,
         warnings: &mut BTreeSet<String>,
     ) {
-        let Some(key) = entity.placement.clone() else {
+        let Some(key) = placement.placement.as_ref() else {
             return;
         };
-        let node = NodeKey::Placement(key);
-        let template =
-            if entity.form == DISPLAY_FORM_COMPACT { entity.templates.compact.as_deref() } else { entity.templates.detail.as_deref() };
-        let resolved = self.resolve_variables_at_node(catalog, &node, inherited_by_node.get(parent), &entity.metadata, template, warnings);
-        inherited_by_node.insert(node.clone(), resolved.values.clone());
-        output.push(EffectiveNodeVariables { node: node.clone(), values: resolved.values, declarations: resolved.declarations });
-        for child in &entity.children {
-            self.resolve_placement_variables(catalog, child, &node, inherited_by_node, output, warnings);
+        let address = Rc::as_ptr(placement);
+        let memo = match prior.remove(&address) {
+            Some(memo) if Rc::ptr_eq(&memo.placement, placement) && Rc::ptr_eq(&memo.parent, parent) => memo,
+            _ => {
+                let node = NodeKey::Placement(key.clone());
+                let template = if placement.form == DISPLAY_FORM_COMPACT {
+                    placement.templates.compact.as_deref()
+                } else {
+                    placement.templates.detail.as_deref()
+                };
+                let mut own = BTreeSet::new();
+                let resolved =
+                    self.resolve_variables_at_node(catalog, &node, Some(&parent.values), &placement.metadata, template, &mut own);
+                VariablesMemo {
+                    placement: placement.clone(),
+                    parent: parent.clone(),
+                    resolved: Rc::new(EffectiveNodeVariables { node, values: resolved.values, declarations: resolved.declarations }),
+                    warnings: own.into_iter().collect(),
+                }
+            }
+        };
+        warnings.extend(memo.warnings.iter().cloned());
+        let resolved = memo.resolved.clone();
+        nodes.insert(address, memo);
+        for child in &placement.children {
+            self.node_variables(catalog, child, &resolved, prior, nodes, warnings);
         }
     }
 
