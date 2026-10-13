@@ -393,7 +393,7 @@ unsafe fn scalar_patch(target: MetadataTarget, source: Text, facts: *const Fact,
 }
 unsafe fn scalar(kind: u32, text: Text, integer: i64) -> Result<MetadataValue, String> {
     Ok(match kind {
-        ANDAMENTO_FACT_TEXT => MetadataValue::Text(text.read()?),
+        ANDAMENTO_FACT_TEXT => MetadataValue::Text(text.read()?.into()),
         ANDAMENTO_FACT_BOOL if integer == 0 || integer == 1 => MetadataValue::Bool(integer != 0),
         ANDAMENTO_FACT_INTEGER => MetadataValue::Integer(integer),
         _ => return Err("invalid fact kind or boolean".into()),

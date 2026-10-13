@@ -28,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::{Bound, Deref, DerefMut};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
 #[cfg(test)]
 use crate::census::Census;
@@ -540,7 +541,7 @@ fn visibility_rule_matches(entity: &CatalogEntity, rule: &PlacementVisibilityRul
             return Some(identity) == expected;
         }
         match fact.map(|entry| &entry.value) {
-            Some(MetadataValue::Text(text)) => Some(text.as_str()) == expected,
+            Some(MetadataValue::Text(text)) => Some(&**text) == expected,
             Some(MetadataValue::Bool(value)) => Some(if *value { "true" } else { "false" }) == expected,
             Some(MetadataValue::Integer(value)) => Some(value.to_string().as_str()) == expected,
             _ => false,
@@ -801,8 +802,8 @@ fn placement_entity_order(left: &CatalogEntity, right: &CatalogEntity, order: &[
 
 fn placement_sort_fact<'a>(entity: &'a CatalogEntity, key: &str) -> Option<Cow<'a, MetadataValue>> {
     match key {
-        KEY_ENTITY_KIND => Some(Cow::Owned(MetadataValue::Text(entity.entity.kind.clone()))),
-        KEY_ENTITY_ID => Some(Cow::Owned(MetadataValue::Text(entity.entity.id.clone()))),
+        KEY_ENTITY_KIND => Some(Cow::Owned(MetadataValue::Text(entity.entity.kind.as_str().into()))),
+        KEY_ENTITY_ID => Some(Cow::Owned(MetadataValue::Text(entity.entity.id.as_str().into()))),
         _ => entity.facts.get(key).map(|entry| Cow::Borrowed(&entry.value)),
     }
 }
@@ -1777,7 +1778,7 @@ impl ControllerState {
                 return state.clone();
             }
             let own = match facts.get(KEY_ACTION_TARGET) {
-                Some(MetadataValue::Text(target)) => Some(target.as_str()),
+                Some(MetadataValue::Text(target)) => Some(&**target),
                 _ => None,
             };
             if let Some((_, state)) = live.iter().find(|(target, _)| is_action_target(entity, own, target)) {
@@ -2110,7 +2111,7 @@ impl ControllerState {
                     }
                 }
                 let metadata =
-                    BTreeMap::from([("presentation.template".to_owned(), MetadataValue::Text(definition.root_template.clone()))]);
+                    BTreeMap::from([("presentation.template".to_owned(), MetadataValue::Text(definition.root_template.as_str().into()))]);
                 let section = EvaluatedSection {
                     definition: definition.clone(),
                     root: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
@@ -3007,7 +3008,7 @@ impl ControllerState {
                 entry: Rc::new(MetadataEntry { value, updated_at: now, ttl_ms: None, precedence: 0, ordinal }),
                 source: None,
             };
-            entity.insert(KEY_STATUS_STATE, made(MetadataValue::Text("ended".to_owned())));
+            entity.insert(KEY_STATUS_STATE, made(MetadataValue::Text("ended".into())));
             entity.insert("presentation.ended", made(MetadataValue::Bool(true)));
         }
         current
@@ -3123,7 +3124,7 @@ impl ControllerState {
         // reference; it never expires and loses to any real one.
         if !presented.contains_key(KEY_ACTION_TARGET) {
             let entry = MetadataEntry {
-                value: MetadataValue::Text(target.entity.action_target()),
+                value: MetadataValue::Text(target.entity.action_target().into()),
                 updated_at: own.get(system::TARGET).map(|e| e.updated_at).unwrap_or_default(),
                 ttl_ms: None,
                 precedence: 0,
@@ -3561,7 +3562,8 @@ impl ControllerState {
                     if !current_values.contains_key(KEY_ENTITY_PROVIDER) && current_values.contains_key(KEY_ENTITY_ID) =>
                 {
                     let mut values = current_values;
-                    let entry = MetadataEntry { value: MetadataValue::Text(entity.provider.clone()), ..values[KEY_ENTITY_ID].clone() };
+                    let entry =
+                        MetadataEntry { value: MetadataValue::Text(entity.provider.as_str().into()), ..values[KEY_ENTITY_ID].clone() };
                     values.insert(KEY_ENTITY_PROVIDER.to_owned(), entry);
                     values
                 }
@@ -3620,7 +3622,7 @@ impl ControllerState {
                 if let MetadataValue::Text(cwd) = &cwd_entry.value {
                     entries.insert(
                         KEY_PANE_CWD_LABEL.to_owned(),
-                        MetadataEntry { value: MetadataValue::Text(cwd_group_label(cwd, &all_group_cwds)), ..cwd_entry },
+                        MetadataEntry { value: MetadataValue::Text(cwd_group_label(cwd, &all_group_cwds).into()), ..cwd_entry },
                     );
                 }
                 (tab_id, entries)
@@ -3641,7 +3643,7 @@ impl ControllerState {
             self.metadata.unset(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ);
             return changed;
         };
-        let value = MetadataValue::Text(cwd);
+        let value = MetadataValue::Text(cwd.into());
         let precedence = if pane.is_focused { FOCUSED_CWD_PRECEDENCE } else { NORMAL_CWD_PRECEDENCE };
         if self.metadata.source_entry(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ, self.now()).is_some_and(|entry| {
             entry.value == value && entry.ttl_ms.is_none() && entry.precedence == precedence && entry.ordinal == pane.ordinal
@@ -3724,8 +3726,8 @@ fn entity_facts(entity: &EntityRef, values: &impl Entries) -> BTreeMap<String, M
     let mut facts = values.entries().map(|(key, entry)| (key.to_owned(), entry.value.clone())).collect::<BTreeMap<_, _>>();
     // The target is the canonical entity identity. Producers must not have to
     // duplicate it in every patch's set map for placement queries and templates.
-    facts.insert(KEY_ENTITY_KIND.to_owned(), MetadataValue::Text(entity.kind.clone()));
-    facts.insert(KEY_ENTITY_ID.to_owned(), MetadataValue::Text(entity.id.clone()));
+    facts.insert(KEY_ENTITY_KIND.to_owned(), MetadataValue::Text(entity.kind.as_str().into()));
+    facts.insert(KEY_ENTITY_ID.to_owned(), MetadataValue::Text(entity.id.as_str().into()));
     facts
 }
 
@@ -3758,7 +3760,7 @@ fn stamp_identity_providers(patch: &mut MetadataPatch, provider: &str) {
             continue;
         }
         if let Some(update) = patch.set.get(id).or_else(|| patch.set.get(kind)).cloned() {
-            patch.set.insert(key.to_owned(), MetadataValueUpdate { value: MetadataValue::Text(provider.to_owned()), ..update });
+            patch.set.insert(key.to_owned(), MetadataValueUpdate { value: MetadataValue::Text(provider.into()), ..update });
         } else if patch.unset.iter().any(|unset| unset == id || unset == kind) {
             patch.unset.push(key.to_owned());
         }
@@ -3773,7 +3775,7 @@ fn saved_catalog_entity(entity: EntityRef, record: &SubjectRecord) -> CatalogEnt
     let entry = |value| MetadataEntry { value, updated_at, ttl_ms: None, precedence: 0, ordinal: 0 };
     let mut values: BTreeMap<_, _> = record.facts.iter().map(|(key, value)| (key.clone(), entry(value.clone()))).collect();
     if let Some(label) = &record.label {
-        values.insert(KEY_DISPLAY_LABEL.to_owned(), entry(MetadataValue::Text(label.clone())));
+        values.insert(KEY_DISPLAY_LABEL.to_owned(), entry(MetadataValue::Text(label.as_str().into())));
     }
     let sources = values.keys().map(|key| (key.clone(), SOURCE_RECORD.to_owned())).collect();
     CatalogEntity { entity, facts: Rc::new(ResolvedFacts::from_maps(values, &sources)), ordinal: 0 }
@@ -3795,7 +3797,7 @@ fn subject_binding(subject: &EntityRef) -> BTreeMap<String, MetadataValueUpdate>
             (
                 key.to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text(value.clone()),
+                    value: MetadataValue::Text(value.as_str().into()),
                     ttl_ms: None,
                     precedence: Some(LATENT_MATERIALIZER_PRECEDENCE),
                     ordinal: None,
@@ -3833,10 +3835,12 @@ fn metadata_entry_text<'a>(values: &'a impl Entries, key: &str) -> Option<&'a st
     }
 }
 
-fn cwd_group_label(cwd: &str, all_group_cwds: &[String]) -> String {
+fn cwd_group_label(cwd: &str, all_group_cwds: &[Arc<str>]) -> String {
     let basename = Path::new(cwd).file_name().and_then(|name| name.to_str()).filter(|name| !name.is_empty()).unwrap_or(cwd);
-    let duplicate_basename_count =
-        all_group_cwds.iter().filter(|candidate| Path::new(candidate).file_name().and_then(|name| name.to_str()) == Some(basename)).count();
+    let duplicate_basename_count = all_group_cwds
+        .iter()
+        .filter(|candidate| Path::new(&***candidate).file_name().and_then(|name| name.to_str()) == Some(basename))
+        .count();
     if duplicate_basename_count <= 1 {
         return basename.to_owned();
     }
@@ -4157,7 +4161,11 @@ mod tests {
                         let right = format!("{prefix}{b}/run2");
                         assert_eq!(natural_text_order(&left, &right), a.cmp(&b));
                         assert_eq!(
-                            compare_order_values(&MetadataValue::Text(left.clone()), &MetadataValue::Text(right.clone()), true),
+                            compare_order_values(
+                                &MetadataValue::Text(left.as_str().into()),
+                                &MetadataValue::Text(right.as_str().into()),
+                                true
+                            ),
                             a.cmp(&b)
                         );
                         assert_eq!(natural_text_order(&right, &left), a.cmp(&b).reverse());
@@ -4203,22 +4211,17 @@ mod tests {
         let mut set = BTreeMap::from([
             (
                 KEY_ENTITY_KIND.to_owned(),
-                MetadataValueUpdate { value: MetadataValue::Text(kind.to_owned()), ttl_ms: None, precedence: None, ordinal: Some(ordinal) },
+                MetadataValueUpdate { value: MetadataValue::Text(kind.into()), ttl_ms: None, precedence: None, ordinal: Some(ordinal) },
             ),
             (
                 KEY_ENTITY_ID.to_owned(),
-                MetadataValueUpdate { value: MetadataValue::Text(id.to_owned()), ttl_ms: None, precedence: None, ordinal: Some(ordinal) },
+                MetadataValueUpdate { value: MetadataValue::Text(id.into()), ttl_ms: None, precedence: None, ordinal: Some(ordinal) },
             ),
         ]);
         set.extend(facts.iter().map(|(key, value)| {
             (
                 (*key).to_owned(),
-                MetadataValueUpdate {
-                    value: MetadataValue::Text((*value).to_owned()),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: Some(ordinal),
-                },
+                MetadataValueUpdate { value: MetadataValue::Text((*value).into()), ttl_ms: None, precedence: None, ordinal: Some(ordinal) },
             )
         }));
         state.apply_metadata_patch(MetadataPatch {
@@ -4239,7 +4242,7 @@ mod tests {
                     (
                         (*key).to_owned(),
                         MetadataValueUpdate {
-                            value: MetadataValue::Text((*value).to_owned()),
+                            value: MetadataValue::Text((*value).into()),
                             ttl_ms: None,
                             precedence: None,
                             ordinal: Some(ordinal),
@@ -4527,7 +4530,7 @@ placement "identity-descending" {
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    value: MetadataValue::Text("zellij-org/zellij".into()),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: None,
@@ -4551,7 +4554,7 @@ placement "identity-descending" {
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    value: MetadataValue::Text("zellij-org/zellij".into()),
                     ttl_ms: Some(10_000),
                     precedence: None,
                     ordinal: None,
@@ -4634,7 +4637,7 @@ placement "identity-descending" {
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                    value: MetadataValue::Text("rjwittams/katzensteg".into()),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: None,
@@ -4645,21 +4648,21 @@ placement "identity-descending" {
         state.apply_metadata_patch(MetadataPatch {
             target: EntityId::Identity(MetadataIdentity {
                 key: "git.repo".to_owned(),
-                value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                value: MetadataValue::Text("rjwittams/katzensteg".into()),
             }),
             source_id: "gh".to_owned(),
             set: BTreeMap::from([(
                 "vcs.pr".to_owned(),
-                MetadataValueUpdate { value: MetadataValue::Text("#45".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
+                MetadataValueUpdate { value: MetadataValue::Text("#45".into()), ttl_ms: None, precedence: None, ordinal: None },
             )]),
             unset: vec![],
         });
         state.apply_metadata_patch(MetadataPatch {
-            target: EntityId::Identity(MetadataIdentity { key: "vcs.pr".to_owned(), value: MetadataValue::Text("#45".to_owned()) }),
+            target: EntityId::Identity(MetadataIdentity { key: "vcs.pr".to_owned(), value: MetadataValue::Text("#45".into()) }),
             source_id: "ci".to_owned(),
             set: BTreeMap::from([(
                 "ci.status".to_owned(),
-                MetadataValueUpdate { value: MetadataValue::Text("failing".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
+                MetadataValueUpdate { value: MetadataValue::Text("failing".into()), ttl_ms: None, precedence: None, ordinal: None },
             )]),
             unset: vec![],
         });
@@ -4673,26 +4676,23 @@ placement "identity-descending" {
 
         assert_eq!(
             tab_metadata.values.get("git.repo").map(|entry| &entry.value),
-            Some(&MetadataValue::Text("rjwittams/katzensteg".to_owned()))
+            Some(&MetadataValue::Text("rjwittams/katzensteg".into()))
         );
-        assert_eq!(tab_metadata.values.get("vcs.pr").map(|entry| &entry.value), Some(&MetadataValue::Text("#45".to_owned())));
-        assert_eq!(tab_metadata.values.get("ci.status").map(|entry| &entry.value), Some(&MetadataValue::Text("failing".to_owned())));
+        assert_eq!(tab_metadata.values.get("vcs.pr").map(|entry| &entry.value), Some(&MetadataValue::Text("#45".into())));
+        assert_eq!(tab_metadata.values.get("ci.status").map(|entry| &entry.value), Some(&MetadataValue::Text("failing".into())));
         assert_eq!(
             tab_metadata.reachable_identities,
             vec![
                 ReachableMetadataIdentity {
-                    identity: MetadataIdentity {
-                        key: "git.repo".to_owned(),
-                        value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
-                    },
+                    identity: MetadataIdentity { key: "git.repo".to_owned(), value: MetadataValue::Text("rjwittams/katzensteg".into()) },
                     distance: 1,
                 },
                 ReachableMetadataIdentity {
-                    identity: MetadataIdentity { key: "vcs.pr".to_owned(), value: MetadataValue::Text("#45".to_owned()) },
+                    identity: MetadataIdentity { key: "vcs.pr".to_owned(), value: MetadataValue::Text("#45".into()) },
                     distance: 2,
                 },
                 ReachableMetadataIdentity {
-                    identity: MetadataIdentity { key: "ci.status".to_owned(), value: MetadataValue::Text("failing".to_owned()) },
+                    identity: MetadataIdentity { key: "ci.status".to_owned(), value: MetadataValue::Text("failing".into()) },
                     distance: 3,
                 },
             ]
@@ -4708,13 +4708,13 @@ placement "identity-descending" {
         state.apply_metadata_patch(MetadataPatch {
             target: EntityId::Identity(MetadataIdentity {
                 key: KEY_PANE_CWD.to_owned(),
-                value: MetadataValue::Text("/Users/robert/dev/katzensteg".to_owned()),
+                value: MetadataValue::Text("/Users/robert/dev/katzensteg".into()),
             }),
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                    value: MetadataValue::Text("rjwittams/katzensteg".into()),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: None,
@@ -4732,10 +4732,10 @@ placement "identity-descending" {
 
         assert_eq!(
             tab_metadata.values.get("git.repo").map(|entry| &entry.value),
-            Some(&MetadataValue::Text("rjwittams/katzensteg".to_owned()))
+            Some(&MetadataValue::Text("rjwittams/katzensteg".into()))
         );
         assert!(tab_metadata.reachable_identities.iter().any(|reachable| reachable.identity
-            == MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text("/Users/robert/dev/katzensteg".to_owned()) }
+            == MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text("/Users/robert/dev/katzensteg".into()) }
             && reachable.distance == 1));
     }
 
@@ -4748,12 +4748,12 @@ placement "identity-descending" {
         let cwd = "/Users/robert/dev/katzensteg".to_owned();
         state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
         state.apply_metadata_patch(MetadataPatch {
-            target: EntityId::Identity(MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text(cwd.clone()) }),
+            target: EntityId::Identity(MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text(cwd.as_str().into()) }),
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                    value: MetadataValue::Text("rjwittams/katzensteg".into()),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: None,
@@ -4765,13 +4765,12 @@ placement "identity-descending" {
         let model = state.view_model();
 
         assert!(model.observed_identities.iter().any(|observed| {
-            observed.identity == MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text(cwd.clone()) }
+            observed.identity == MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text(cwd.as_str().into()) }
                 && observed.target_count == 1
                 && observed.nearest_distance == 1
         }));
         assert!(model.observed_identities.iter().any(|observed| {
-            observed.identity
-                == MetadataIdentity { key: "git.repo".to_owned(), value: MetadataValue::Text("rjwittams/katzensteg".to_owned()) }
+            observed.identity == MetadataIdentity { key: "git.repo".to_owned(), value: MetadataValue::Text("rjwittams/katzensteg".into()) }
                 && observed.target_count == 1
                 && observed.nearest_distance == 2
         }));
@@ -4933,7 +4932,7 @@ placement "identity-descending" {
             set: BTreeMap::from([(
                 KEY.to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("project:zellij".to_owned()),
+                    value: MetadataValue::Text("project:zellij".into()),
                     ttl_ms: None,
                     precedence: Some(4),
                     ordinal: Some(2),
@@ -4956,7 +4955,7 @@ placement "identity-descending" {
 
         assert_eq!(
             metadata.values.get(KEY).map(|entry| (&entry.value, entry.precedence, entry.ordinal)),
-            Some((&MetadataValue::Text("project:zellij".to_owned()), 4, 2))
+            Some((&MetadataValue::Text("project:zellij".into()), 4, 2))
         );
     }
 

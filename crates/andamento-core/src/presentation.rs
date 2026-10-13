@@ -433,7 +433,7 @@ pub fn apply_declared_abbreviation(
         return false;
     };
     let selected = selected.to_owned();
-    metadata.insert("display.label".to_owned(), MetadataValue::Text(selected));
+    metadata.insert("display.label".to_owned(), MetadataValue::Text(selected.into()));
     !producer_supplied
 }
 
@@ -467,7 +467,7 @@ fn effective_metadata(
 ) -> Option<EffectiveNodeVariables> {
     let variables = variables?;
     for (name, value) in &variables.values {
-        metadata.insert(format!("var.{name}"), MetadataValue::Text(value.value.clone()));
+        metadata.insert(format!("var.{name}"), MetadataValue::Text(value.value.as_str().into()));
     }
     Some(variables.clone())
 }
@@ -542,7 +542,7 @@ fn resolve_node(
         .filter(|label| metadata_text(&display_facts, "display.label") != Some(label))
         .map(str::to_owned);
     if let Some(label) = declared {
-        Rc::make_mut(&mut display_facts).insert("display.label".to_owned(), MetadataValue::Text(label));
+        Rc::make_mut(&mut display_facts).insert("display.label".to_owned(), MetadataValue::Text(label.into()));
     }
     Some(PlacementNode {
         content: resolve_content(slot, &display_facts, collapsed, !entity.children.is_empty(), true),

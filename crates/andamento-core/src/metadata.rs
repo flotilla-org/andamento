@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::{
     EntityRef, MetadataEntry, MetadataPatch, MetadataSourceEntry, MetadataTarget, MetadataValue, MetadataValueUpdate,
@@ -136,6 +137,9 @@ pub struct MetadataStore {
     entries: HashMap<EntityId, Stored>,
     /// Key names and the spines of resolved records.
     shapes: RefCell<Shapes>,
+    /// Text values, one copy of each while a fact holds it (`intern_text`).
+    texts: HashSet<Arc<str>>,
+    texts_swept: usize,
     target_ordinals: HashMap<EntityId, i64>,
     /// Deadlines of the TTL facts that can expire: every one whose provider
     /// is not stale.
@@ -187,6 +191,23 @@ impl MetadataStore {
         }
         self.catalog_changed.replace(changed);
         result
+    }
+
+    /// Hold `value`'s text as the one copy of it. Whenever the copies have
+    /// doubled since, forget those no fact (or anything else) holds now.
+    fn intern_text(&mut self, value: &mut MetadataValue) {
+        let MetadataValue::Text(text) = value else {
+            return;
+        };
+        if let Some(held) = self.texts.get(&**text) {
+            *text = held.clone();
+            return;
+        }
+        self.texts.insert(text.clone());
+        if self.texts.len() > 2 * self.texts_swept.max(512) {
+            self.texts.retain(|text| Arc::strong_count(text) > 1);
+            self.texts_swept = self.texts.len();
+        }
     }
 
     fn touch(&mut self, target: &EntityId) {
@@ -291,6 +312,8 @@ impl MetadataStore {
         let indexed = self.indexed(&contributor);
         let deadline = entry.ttl_ms.map(|ttl| entry.updated_at.saturating_add(ttl));
         let key = self.shapes.get_mut().key(&key);
+        let mut entry = entry;
+        self.intern_text(&mut entry.value);
         let previous = self.entries.entry(entity_id).or_default().entry(key).or_default().insert(contributor, entry);
         if indexed {
             if let Some(previous) = previous {
@@ -703,10 +726,31 @@ mod tests {
     fn select_primary_value(entries: &[CandidateEntry]) -> Option<MetadataValue> {
         select_primary_entry(entries).map(|candidate| candidate.entry.value)
     }
-    use crate::{MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate, PaneTarget};
+    use crate::{EntityRef, MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate, PaneTarget};
 
     fn entry(value: &str, precedence: i64, ordinal: i64, updated_at: u64) -> MetadataEntry {
-        MetadataEntry { value: MetadataValue::Text(value.to_owned()), updated_at, ttl_ms: None, precedence, ordinal }
+        MetadataEntry { value: MetadataValue::Text(value.into()), updated_at, ttl_ms: None, precedence, ordinal }
+    }
+
+    /// Equal text held by many facts is one copy; text no fact holds any
+    /// more is forgotten, however much has come and gone.
+    #[test]
+    fn text_values_are_held_once_while_a_fact_holds_them() {
+        let mut store = MetadataStore::default();
+        let target = |id: &str| EntityId::Entity(EntityRef::new("p", "convoy", id));
+        for id in ["a", "b"] {
+            store.set(target(id), "status", "source", entry("running", 0, 0, 0));
+        }
+        let text = |store: &MetadataStore, id: &str| match &store.resolved(&target(id), 0).get("status").unwrap().value {
+            MetadataValue::Text(text) => text.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(Arc::ptr_eq(&text(&store, "a"), &text(&store, "b")));
+        for n in 0..10_000 {
+            store.set(target("a"), "summary", "source", entry(&format!("summary {n}"), 0, 0, 0));
+        }
+        assert!(store.texts.len() < 1100, "{} texts kept", store.texts.len());
+        assert_eq!(&*text(&store, "a"), "running");
     }
 
     #[test]
@@ -790,7 +834,7 @@ mod tests {
             CandidateEntry::new("c", entry("/focused", 10, 2, 1)),
         ];
 
-        assert_eq!(select_primary_value(&entries), Some(MetadataValue::Text("/focused".to_owned())));
+        assert_eq!(select_primary_value(&entries), Some(MetadataValue::Text("/focused".into())));
     }
 
     #[test]
@@ -801,14 +845,14 @@ mod tests {
             CandidateEntry::new("c", entry("/two", 0, 2, 1)),
         ];
 
-        assert_eq!(select_primary_value(&entries), Some(MetadataValue::Text("/two".to_owned())));
+        assert_eq!(select_primary_value(&entries), Some(MetadataValue::Text("/two".into())));
     }
 
     #[test]
     fn selector_uses_ordinal_after_count() {
         let entries = vec![CandidateEntry::new("a", entry("/later", 0, 10, 1)), CandidateEntry::new("b", entry("/earlier", 0, 2, 1))];
 
-        assert_eq!(select_primary_value(&entries), Some(MetadataValue::Text("/earlier".to_owned())));
+        assert_eq!(select_primary_value(&entries), Some(MetadataValue::Text("/earlier".into())));
     }
 
     #[test]
@@ -833,7 +877,7 @@ mod tests {
                 set: BTreeMap::from([(
                     "summary.local_llm".to_owned(),
                     MetadataValueUpdate {
-                        value: MetadataValue::Text("running tests".to_owned()),
+                        value: MetadataValue::Text("running tests".into()),
                         ttl_ms: Some(30_000),
                         precedence: Some(10),
                         ordinal: Some(2),
@@ -866,7 +910,7 @@ mod tests {
                 source_id: "flotilla".to_owned(),
                 set: BTreeMap::from([(
                     "display.label".to_owned(),
-                    MetadataValueUpdate { value: MetadataValue::Text("#37".to_owned()), ttl_ms: None, precedence: None, ordinal: Some(7) },
+                    MetadataValueUpdate { value: MetadataValue::Text("#37".into()), ttl_ms: None, precedence: None, ordinal: Some(7) },
                 )]),
                 unset: vec![],
             },
@@ -886,7 +930,7 @@ mod tests {
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    value: MetadataValue::Text("zellij-org/zellij".into()),
                     ttl_ms: None,
                     precedence: Some(10),
                     ordinal: Some(2),
@@ -916,7 +960,7 @@ mod tests {
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    value: MetadataValue::Text("zellij-org/zellij".into()),
                     ttl_ms: Some(10_000),
                     precedence: None,
                     ordinal: None,
@@ -948,7 +992,7 @@ mod tests {
                 source_id: "zellij".to_owned(),
                 set: BTreeMap::from([(
                     "zellij.pane.title".to_owned(),
-                    MetadataValueUpdate { value: MetadataValue::Text("server".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
+                    MetadataValueUpdate { value: MetadataValue::Text("server".into()), ttl_ms: None, precedence: None, ordinal: None },
                 )]),
                 unset: vec![],
             },

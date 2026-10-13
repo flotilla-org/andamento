@@ -5,6 +5,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::{EntityRef, MetadataValue, NodeKey, PlacementKey};
 
@@ -38,6 +39,10 @@ impl Census {
     /// Whether `rc`'s allocation is seen for the first time (count it then).
     pub(crate) fn first<T: ?Sized>(&mut self, rc: &Rc<T>) -> bool {
         self.seen.insert(Rc::as_ptr(rc) as *const () as usize)
+    }
+
+    pub(crate) fn first_shared<T: ?Sized>(&mut self, arc: &Arc<T>) -> bool {
+        self.seen.insert(Arc::as_ptr(arc) as *const () as usize)
     }
 
     pub(crate) fn string(&mut self, kind: &str, value: &str) {
@@ -97,7 +102,11 @@ impl Census {
 
     pub(crate) fn value(&mut self, kind: &str, value: &MetadataValue) {
         match value {
-            MetadataValue::Text(text) => self.string(kind, text),
+            MetadataValue::Text(text) => {
+                if self.first_shared(text) {
+                    self.string(kind, text)
+                }
+            }
             MetadataValue::StringList(list) => list.iter().for_each(|text| self.string(kind, text)),
             MetadataValue::EntityRefs(refs) => refs.iter().for_each(|entity| self.entity(kind, entity)),
             MetadataValue::GroupPath(path) => {

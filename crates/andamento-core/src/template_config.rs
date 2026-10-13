@@ -928,7 +928,7 @@ pub struct PlacementPredicate {
 /// separately, one typed entity identity per posting, by PlacementIndex.
 pub fn placement_index_text(value: &MetadataValue) -> Option<String> {
     match value {
-        MetadataValue::Text(text) => Some(text.clone()),
+        MetadataValue::Text(text) => Some(text.to_string()),
         MetadataValue::Bool(flag) => Some(flag.to_string()),
         MetadataValue::Integer(number) => Some(number.to_string()),
         MetadataValue::StringList(_) | MetadataValue::GroupPath(_) | MetadataValue::EntityRefs(_) => None,
@@ -1649,7 +1649,7 @@ fn metadata_text<'a>(metadata: &'a BTreeMap<String, MetadataValue>, key: &str) -
 
 fn format_metadata_value(value: &MetadataValue) -> String {
     match value {
-        MetadataValue::Text(value) => value.clone(),
+        MetadataValue::Text(value) => value.to_string(),
         MetadataValue::Bool(value) => value.to_string(),
         MetadataValue::Integer(value) => value.to_string(),
         MetadataValue::StringList(values) => values.join(", "),
@@ -1842,7 +1842,7 @@ impl TemplateConfigValueSource {
         let value = match self {
             TemplateConfigValueSource::Literal { value } => value.clone(),
             TemplateConfigValueSource::MetadataText { key } => {
-                let value = MetadataValue::Text(metadata_text(context.metadata, key)?.to_owned());
+                let value = MetadataValue::Text(metadata_text(context.metadata, key)?.into());
                 return Some(TemplateConfigResolvedValue {
                     value: format_metadata_value(&value),
                     source: Some(ResolvedTemplateFieldSource { key: key.clone(), value }),
@@ -2530,10 +2530,10 @@ mod tests {
         )
         .expect("templates parse");
         let catalog = TemplateConfigCatalog::from_config(config);
-        let convention_metadata = BTreeMap::from([("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned()))]);
+        let convention_metadata = BTreeMap::from([("entity.kind".to_owned(), MetadataValue::Text("issue".into()))]);
         let declared_metadata = BTreeMap::from([
-            ("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned())),
-            ("presentation.template".to_owned(), MetadataValue::Text("special/compact".to_owned())),
+            ("entity.kind".to_owned(), MetadataValue::Text("issue".into())),
+            ("presentation.template".to_owned(), MetadataValue::Text("special/compact".into())),
         ]);
 
         assert_eq!(
@@ -2561,9 +2561,9 @@ mod tests {
     fn novel_entity_kind_uses_bundled_generic_form_fallback() {
         let catalog = TemplateConfigCatalog::default();
         let metadata = BTreeMap::from([
-            ("entity.kind".to_owned(), MetadataValue::Text("deployment".to_owned())),
-            ("entity.id".to_owned(), MetadataValue::Text("prod/api".to_owned())),
-            ("display.label".to_owned(), MetadataValue::Text("api".to_owned())),
+            ("entity.kind".to_owned(), MetadataValue::Text("deployment".into())),
+            ("entity.id".to_owned(), MetadataValue::Text("prod/api".into())),
+            ("display.label".to_owned(), MetadataValue::Text("api".into())),
         ]);
 
         let resolved = catalog.resolve(entity_context(&metadata)).expect("resolution succeeds").expect("generic entity template resolves");
@@ -2585,7 +2585,7 @@ mod tests {
         )
         .expect("user template parses");
         let catalog = TemplateConfigCatalog::with_bundled_defaults(user);
-        let metadata = BTreeMap::from([("entity.kind".to_owned(), MetadataValue::Text("deployment".to_owned()))]);
+        let metadata = BTreeMap::from([("entity.kind".to_owned(), MetadataValue::Text("deployment".into()))]);
 
         let resolved = catalog.resolve(entity_context(&metadata)).expect("resolution succeeds").expect("user template resolves");
 
@@ -2621,7 +2621,7 @@ mod tests {
             TemplateConfigLayer::user("user.kdl", user),
             TemplateConfigLayer::bundled("templates/flotilla-default.kdl", bundled),
         ]);
-        let metadata = BTreeMap::from([("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned()))]);
+        let metadata = BTreeMap::from([("entity.kind".to_owned(), MetadataValue::Text("issue".into()))]);
 
         let resolved = catalog.resolve(entity_context(&metadata)).expect("resolution succeeds").expect("template resolves");
 
@@ -2716,12 +2716,12 @@ mod tests {
             TemplateConfigLayer::fleet("fleet.kdl", fleet),
         ]);
         let project_a = BTreeMap::from([
-            ("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned())),
-            ("flotilla.project".to_owned(), MetadataValue::Text("project-a".to_owned())),
+            ("entity.kind".to_owned(), MetadataValue::Text("issue".into())),
+            ("flotilla.project".to_owned(), MetadataValue::Text("project-a".into())),
         ]);
         let project_b = BTreeMap::from([
-            ("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned())),
-            ("flotilla.project".to_owned(), MetadataValue::Text("project-b".to_owned())),
+            ("entity.kind".to_owned(), MetadataValue::Text("issue".into())),
+            ("flotilla.project".to_owned(), MetadataValue::Text("project-b".into())),
         ]);
 
         let a = catalog.resolve(entity_context(&project_a)).expect("project A resolves").expect("project A template");
@@ -2999,8 +2999,8 @@ region "attention" root-template="r" form="full"
             TemplateConfigLayer::user("user.kdl", empty()),
         ]);
         let metadata = BTreeMap::from([
-            ("vcs.repo".to_owned(), MetadataValue::Text("org/repo".to_owned())),
-            ("flotilla.project".to_owned(), MetadataValue::Text("project-a".to_owned())),
+            ("vcs.repo".to_owned(), MetadataValue::Text("org/repo".into())),
+            ("flotilla.project".to_owned(), MetadataValue::Text("project-a".into())),
         ]);
 
         assert_eq!(
@@ -3011,7 +3011,7 @@ region "attention" root-template="r" form="full"
 
     #[test]
     fn inheritance_failures_are_visible_resolution_errors() {
-        let metadata = BTreeMap::from([("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned()))]);
+        let metadata = BTreeMap::from([("entity.kind".to_owned(), MetadataValue::Text("issue".into()))]);
 
         let unknown_parent = TemplateConfigCatalog::from_config(
             parse_template_config_kdl(
@@ -3229,8 +3229,8 @@ region "attention" root-template="r" form="full"
         .expect("node variables parse");
         let catalog = TemplateConfigCatalog::from_config(config);
         let metadata = BTreeMap::from([
-            ("entity.kind".to_owned(), MetadataValue::Text("issue".to_owned())),
-            ("var.child-layout".to_owned(), MetadataValue::Text("strip".to_owned())),
+            ("entity.kind".to_owned(), MetadataValue::Text("issue".into())),
+            ("var.child-layout".to_owned(), MetadataValue::Text("strip".into())),
         ]);
 
         assert_eq!(catalog.variables(&metadata)[0].definition.default, "cards");
@@ -3279,7 +3279,7 @@ region "attention" root-template="r" form="full"
             TemplateConfigLayer::project("flotilla-org/andamento", "project.kdl", project),
             TemplateConfigLayer::bundled("bundled.kdl", bundled),
         ]);
-        let metadata = BTreeMap::from([("flotilla.project".to_owned(), MetadataValue::Text("flotilla-org/andamento".to_owned()))]);
+        let metadata = BTreeMap::from([("flotilla.project".to_owned(), MetadataValue::Text("flotilla-org/andamento".into()))]);
 
         let scope = catalog.variable_scope(&metadata);
 
@@ -3338,7 +3338,7 @@ region "attention" root-template="r" form="full"
         )
         .expect("a section template does not require a loop or field");
         let catalog = TemplateConfigCatalog::from_config(config);
-        let metadata = BTreeMap::from([("presentation.template".to_owned(), MetadataValue::Text("region/controls".to_owned()))]);
+        let metadata = BTreeMap::from([("presentation.template".to_owned(), MetadataValue::Text("region/controls".into()))]);
         let resolved = catalog
             .resolve(TemplateConfigMatchContext {
                 slot: TemplateConfigSlot::Compact,

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -380,7 +381,7 @@ impl Default for RailStructure {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "kebab-case")]
 pub enum MetadataValue {
-    Text(String),
+    Text(Arc<str>),
     Bool(bool),
     Integer(i64),
     StringList(Vec<String>),
@@ -425,7 +426,7 @@ pub enum MetadataPathValue {
 impl From<MetadataPathValue> for MetadataValue {
     fn from(value: MetadataPathValue) -> Self {
         match value {
-            MetadataPathValue::Text(value) => MetadataValue::Text(value),
+            MetadataPathValue::Text(value) => MetadataValue::Text(value.into()),
             MetadataPathValue::Bool(value) => MetadataValue::Bool(value),
             MetadataPathValue::Integer(value) => MetadataValue::Integer(value),
             MetadataPathValue::StringList(values) => MetadataValue::StringList(values),
@@ -1264,7 +1265,7 @@ mod tests {
     fn metadata_target_identity_round_trips_json() {
         let target = MetadataTarget::Identity(MetadataIdentity {
             key: "git.repo".to_owned(),
-            value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+            value: MetadataValue::Text("rjwittams/katzensteg".into()),
         });
 
         let encoded = serde_json::to_string(&target).unwrap();
@@ -1281,7 +1282,7 @@ mod tests {
             set: std::collections::BTreeMap::from([(
                 "summary.local_llm".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("running tests".to_owned()),
+                    value: MetadataValue::Text("running tests".into()),
                     ttl_ms: Some(30_000),
                     precedence: Some(10),
                     ordinal: Some(2),
@@ -1303,7 +1304,7 @@ mod tests {
             source_id: "flotilla".to_owned(),
             set: std::collections::BTreeMap::from([(
                 "tab.subject".to_owned(),
-                MetadataValueUpdate { value: MetadataValue::Text("checkout".to_owned()), ttl_ms: None, precedence: Some(1), ordinal: None },
+                MetadataValueUpdate { value: MetadataValue::Text("checkout".into()), ttl_ms: None, precedence: Some(1), ordinal: None },
             )]),
             unset: vec![],
         };

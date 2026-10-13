@@ -16,7 +16,7 @@ const PROVIDER: &str = "subscription";
 const CONFIG: &str = include_str!("../tests/fixtures/sidebar.kdl");
 
 fn text(value: impl Into<String>) -> MetadataValue {
-    MetadataValue::Text(value.into())
+    MetadataValue::Text(value.into().into())
 }
 
 fn patch(kind: &str, id: &str, facts: Vec<(String, MetadataValue)>) -> MetadataPatch {

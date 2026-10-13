@@ -290,8 +290,11 @@ fn primary_slot(entity: &EntityRef, facts: &BTreeMap<String, MetadataValue>) -> 
         Some("held") => SlotResolution::Held,
         Some("ready") => match (text(KEY_PRIMARY_TARGET).filter(|s| !s.is_empty()), text(KEY_PRIMARY_RECIPE).filter(|s| !s.is_empty())) {
             (Some(target), Some(command)) => SlotResolution::Ready {
-                target: Some(target),
-                recipe: LocalRecipe::Command { line: CommandLine::Shell(command), cwd: text(KEY_PRIMARY_CWD) },
+                target: Some(target.to_string()),
+                recipe: LocalRecipe::Command {
+                    line: CommandLine::Shell(command.to_string()),
+                    cwd: text(KEY_PRIMARY_CWD).map(|cwd| cwd.to_string()),
+                },
             },
             _ => SlotResolution::Unavailable,
         },
@@ -397,7 +400,7 @@ fn argv(f: &Facts, key: &str) -> Result<Vec<String>, LayoutError> {
     if indexed.keys().copied().ne(0..indexed.len()) {
         return Err(LayoutError::ArgvGap { slot: key.to_owned() });
     }
-    Ok(indexed.into_values().collect())
+    Ok(indexed.into_values().map(|value| value.to_string()).collect())
 }
 
 fn arrangement(f: &Facts, known: &BTreeSet<&str>) -> Result<Option<Arrangement>, LayoutError> {
