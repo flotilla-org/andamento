@@ -567,6 +567,11 @@ pub struct ControllerState {
     template_generation: u64,
     /// The placement index, kept between evaluations (see `PlacementIndex`).
     placement_index: RefCell<PlacementIndex>,
+    /// Each entity's display (`display_entity`), kept while its resolved
+    /// facts and the template catalog stay the same.
+    displays: RefCell<HashMap<EntityRef, (Rc<ResolvedFacts>, u64, EvaluatedPlacement)>>,
+    /// Each applied template's resolution for an entity, kept likewise.
+    applied: RefCell<HashMap<(EntityRef, String), (Rc<ResolvedFacts>, u64, Option<ResolvedTemplateSlot>)>>,
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
     clock_ms: Option<u64>,
@@ -594,6 +599,8 @@ impl Default for ControllerState {
             template_catalog: Some(Default::default()),
             template_generation: 0,
             placement_index: Default::default(),
+            displays: Default::default(),
+            applied: Default::default(),
             template_config: Default::default(),
             receive_counter: Default::default(),
             clock_ms: Default::default(),
@@ -1669,6 +1676,67 @@ impl ControllerState {
     }
 
     fn display_entity(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
+        let generation = self.template_generation;
+        if let Some((facts, at, display)) = self.displays.borrow().get(&entity.entity) {
+            if *at == generation && Rc::ptr_eq(facts, &entity.facts) {
+                return display.clone();
+            }
+        }
+        let display = self.display_entity_uncached(entity);
+        let mut displays = self.displays.borrow_mut();
+        // Forget entities whose facts nothing else holds any more (gone, or
+        // superseded), so the cache stays the size of the catalog.
+        if displays.len() > 64 && displays.len() > 2 * self.metadata.targets().count() {
+            displays.retain(|_, (facts, _, _)| Rc::strong_count(facts) > 1);
+        }
+        displays.insert(entity.entity.clone(), (entity.facts.clone(), generation, display.clone()));
+        display
+    }
+
+    /// `template_name` applied to `entity`, kept while its resolved facts
+    /// and the template catalog stay the same.
+    fn applied_template(
+        &self,
+        catalog: &TemplateConfigCatalog,
+        entity: &CatalogEntity,
+        template_name: &str,
+        metadata: &BTreeMap<String, MetadataValue>,
+    ) -> Option<ResolvedTemplateSlot> {
+        let generation = self.template_generation;
+        let key = (entity.entity.clone(), template_name.to_owned());
+        if let Some((facts, at, slot)) = self.applied.borrow().get(&key) {
+            if *at == generation && Rc::ptr_eq(facts, &entity.facts) {
+                return slot.clone();
+            }
+        }
+        let slot = match catalog.resolve_placement_template(template_name, metadata) {
+            Ok(Some(resolved)) => Some(ResolvedTemplateSlot {
+                template_name: resolved.name.clone(),
+                fields: vec![],
+                render_ready: Some(resolved.render_ready()),
+                setters: resolved.setters.clone(),
+                effective_kdl: resolved.dump_kdl(),
+                resolve_error: None,
+            }),
+            Ok(None) => None,
+            Err(error) => Some(ResolvedTemplateSlot {
+                template_name: "<resolve-error>".to_owned(),
+                fields: vec![],
+                render_ready: None,
+                setters: vec![],
+                effective_kdl: String::new(),
+                resolve_error: Some(error.to_string()),
+            }),
+        };
+        let mut applied = self.applied.borrow_mut();
+        if applied.len() > 64 && applied.len() > 4 * self.metadata.targets().count() {
+            applied.retain(|_, (facts, _, _)| Rc::strong_count(facts) > 1);
+        }
+        applied.insert(key, (entity.facts.clone(), generation, slot.clone()));
+        slot
+    }
+
+    fn display_entity_uncached(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
         let metadata = entity_facts(&entity.entity, &entity.values);
         let templates = ResolvedTemplateSlots {
             compact: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
@@ -1868,11 +1936,15 @@ impl ControllerState {
         if depth >= MAX_PLACEMENT_DEPTH {
             return vec![];
         }
+        let matching = profile::span("placement-matches");
         let matches = self.placement_matches(loop_definition, entities, index, bindings, ancestors);
+        drop(matching);
         matches
             .into_iter()
             .map(|entity| {
+                let display_phase = profile::span("placement-display");
                 let mut display = self.display_entity(entity);
+                drop(display_phase);
                 display.form = form.to_owned();
                 display.tier = loop_definition.tier;
                 if !loop_definition.fields.is_empty() {
@@ -1894,7 +1966,9 @@ impl ControllerState {
                 }
                 let mut placement = parent_placement.clone();
                 placement.0.push(PlacementSegment { loop_name: loop_definition.binding.clone(), entity: entity.entity.clone() });
+                let related_phase = profile::span("placement-related-detail");
                 let related_detail = self.related_detail_fields(&display, entity, entities, index);
+                drop(related_phase);
                 layouts.insert(placement.clone(), PlacementAnnotation { layout: loop_definition.layout.clone(), related_detail });
                 display.placement = Some(placement.clone());
                 let mut nested_bindings = bindings.clone();
@@ -1903,29 +1977,12 @@ impl ControllerState {
                 nested_ancestors.push(entity.entity.clone());
 
                 let mut child_loops = loop_definition.loops.as_slice();
+                let applied_phase = profile::span("placement-applied-template");
                 if let Some(requested) = loop_definition.apply_template.as_deref() {
                     let template_name = if requested.is_empty() { format!("{}/line", entity.entity.kind) } else { requested.to_owned() };
                     if let Some(catalog) = self.template_catalog.as_ref() {
                         if let Some(template) = catalog.placement_template(&template_name, &display.metadata) {
-                            let resolved_slot = match catalog.resolve_placement_template(&template_name, &display.metadata) {
-                                Ok(Some(resolved)) => Some(ResolvedTemplateSlot {
-                                    template_name: resolved.name.clone(),
-                                    fields: vec![],
-                                    render_ready: Some(resolved.render_ready()),
-                                    setters: resolved.setters.clone(),
-                                    effective_kdl: resolved.dump_kdl(),
-                                    resolve_error: None,
-                                }),
-                                Ok(None) => None,
-                                Err(error) => Some(ResolvedTemplateSlot {
-                                    template_name: "<resolve-error>".to_owned(),
-                                    fields: vec![],
-                                    render_ready: None,
-                                    setters: vec![],
-                                    effective_kdl: String::new(),
-                                    resolve_error: Some(error.to_string()),
-                                }),
-                            };
+                            let resolved_slot = self.applied_template(catalog, entity, &template_name, &display.metadata);
                             if let Some(slot) = resolved_slot {
                                 display.templates.compact = Some(slot.clone());
                                 if form != DISPLAY_FORM_COMPACT {
@@ -1953,6 +2010,7 @@ impl ControllerState {
                         }
                     }
                 }
+                drop(applied_phase);
                 display.children = child_loops
                     .iter()
                     .flat_map(|nested| {
