@@ -866,9 +866,26 @@ struct Kept {
     surface: RefCell<SurfaceKept>,
     /// The catalog (`catalog`).
     catalog: RefCell<KeptCatalog>,
+    /// Templates' effective KDL, one copy of each while a slot holds it.
+    kdl: RefCell<HashSet<Rc<str>>>,
 }
 
 impl Kept {
+    /// The one copy of `kdl`. Whenever the copies have grown past twice
+    /// those held, forget those nothing holds.
+    fn kdl(&self, kdl: String) -> Rc<str> {
+        let mut held = self.kdl.borrow_mut();
+        if let Some(kdl) = held.get(kdl.as_str()) {
+            return kdl.clone();
+        }
+        let kdl: Rc<str> = Rc::from(kdl);
+        held.insert(kdl.clone());
+        if held.len() > 64 && held.len() > 2 * held.iter().filter(|kdl| Rc::strong_count(kdl) > 1).count() {
+            held.retain(|kdl| Rc::strong_count(kdl) > 1);
+        }
+        kdl
+    }
+
     #[cfg(test)]
     fn swap(&self, other: &Kept) {
         self.placement_index.swap(&other.placement_index);
@@ -878,6 +895,7 @@ impl Kept {
         self.variables.swap(&other.variables);
         self.surface.swap(&other.surface);
         self.catalog.swap(&other.catalog);
+        self.kdl.swap(&other.kdl);
     }
 }
 
@@ -2012,7 +2030,7 @@ impl ControllerState {
                 fields: vec![],
                 render_ready: Some(resolved.render_ready()),
                 setters: resolved.setters.clone(),
-                effective_kdl: resolved.dump_kdl(),
+                effective_kdl: self.kept.kdl(resolved.dump_kdl()),
                 resolve_error: None,
             }),
             Ok(None) => None,
@@ -2021,7 +2039,7 @@ impl ControllerState {
                 fields: vec![],
                 render_ready: None,
                 setters: vec![],
-                effective_kdl: String::new(),
+                effective_kdl: Default::default(),
                 resolve_error: Some(error.to_string()),
             }),
         };
@@ -2231,7 +2249,7 @@ impl ControllerState {
                 template_name: format!("placement:{}", definition.binding),
                 fields: vec![],
                 setters: vec![],
-                effective_kdl: String::new(),
+                effective_kdl: Default::default(),
                 resolve_error: None,
                 render_ready: Some(TemplateConfigRenderReady {
                     fields: definition.fields.clone(),
@@ -2276,7 +2294,7 @@ impl ControllerState {
                         fields: vec![],
                         render_ready: None,
                         setters: vec![],
-                        effective_kdl: String::new(),
+                        effective_kdl: Default::default(),
                         resolve_error: Some(format!("unknown applied template {template_name}")),
                     });
                     display.templates.compact = Some(slot.clone());
@@ -3492,7 +3510,7 @@ impl ControllerState {
                     fields: vec![],
                     render_ready: None,
                     setters: vec![],
-                    effective_kdl: format!("// error: {error}\n"),
+                    effective_kdl: format!("// error: {error}\n").into(),
                     resolve_error: Some(error.to_string()),
                 });
             }
@@ -3502,7 +3520,7 @@ impl ControllerState {
             fields: vec![],
             render_ready: Some(resolved.render_ready()),
             setters: resolved.setters.clone(),
-            effective_kdl: resolved.dump_kdl(),
+            effective_kdl: self.kept.kdl(resolved.dump_kdl()),
             resolve_error: None,
         })
     }
@@ -5255,7 +5273,9 @@ impl EvaluatedPlacement {
 #[cfg(test)]
 pub(crate) fn slot_census(census: &mut Census, prefix: &str, slot: &ResolvedTemplateSlot) {
     census.string(&format!("{prefix}: names"), &slot.template_name);
-    census.string(&format!("{prefix}: effective KDL"), &slot.effective_kdl);
+    if census.first(&slot.effective_kdl) {
+        census.string(&format!("{prefix}: effective KDL"), &slot.effective_kdl);
+    }
     for field in &slot.fields {
         census.string(&format!("{prefix}: field text"), &field.text);
     }

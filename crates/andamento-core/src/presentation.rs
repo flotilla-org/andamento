@@ -130,7 +130,7 @@ pub struct Content {
     pub controls: Vec<TemplateControlSpec>,
     pub chrome: ChromeSpec,
     pub template_name: Option<String>,
-    pub effective_kdl: String,
+    pub effective_kdl: Rc<str>,
     pub error: Option<String>,
 }
 
@@ -650,7 +650,9 @@ impl PlacementNode {
                     census.value(&format!("{prefix}: {what} field sources"), &source.value);
                 }
             }
-            census.string(&format!("{prefix}: {what} effective KDL"), &content.effective_kdl);
+            if census.first(&content.effective_kdl) {
+                census.string(&format!("{prefix}: {what} effective KDL"), &content.effective_kdl);
+            }
             if let Some(name) = &content.template_name {
                 census.string(&format!("{prefix}: {what} template names"), name);
             }

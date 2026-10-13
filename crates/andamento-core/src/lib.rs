@@ -773,7 +773,7 @@ pub struct ResolvedTemplateSlot {
     pub setters: Vec<template_config::ResolvedVariableSetter>,
     /// Flattened template evidence shown by inspect.
     #[serde(default)]
-    pub effective_kdl: String,
+    pub effective_kdl: Rc<str>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolve_error: Option<String>,
 }
