@@ -14,6 +14,13 @@ pub struct Shape {
     keys: Box<[Rc<str>]>,
 }
 
+#[cfg(test)]
+impl Shape {
+    pub(crate) fn keys(&self) -> &[Rc<str>] {
+        &self.keys
+    }
+}
+
 /// One resolved fact: its winning entry, and the source it came from (none
 /// for a fact Andamento made itself).
 #[derive(Debug, Clone, PartialEq)]

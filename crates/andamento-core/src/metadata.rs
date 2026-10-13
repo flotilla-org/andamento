@@ -3,6 +3,7 @@ use crate::census::Census;
 use crate::facts::Shapes;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use crate::{
@@ -132,7 +133,7 @@ struct Cached {
 
 #[derive(Debug, Default)]
 pub struct MetadataStore {
-    entries: HashMap<EntityId, HashMap<Rc<str>, Contributions>>,
+    entries: HashMap<EntityId, Stored>,
     /// Key names and the spines of resolved records.
     shapes: RefCell<Shapes>,
     target_ordinals: HashMap<EntityId, i64>,
@@ -150,25 +151,48 @@ pub struct MetadataStore {
     /// The same, for the catalog (`take_catalog_changes`), which reads it
     /// when it evaluates rather than when facts arrive.
     catalog_changed: RefCell<Changed>,
-    /// Each entity's resolution, made when first read and dropped when its
-    /// facts change, everything may have changed, or a fact in it expires.
-    resolved: RefCell<HashMap<EntityId, Cached>>,
+}
+
+/// One entity's facts, by key, and its resolution: made when first read
+/// and dropped when its facts change, everything may have changed, or a
+/// fact in it expires.
+#[derive(Debug, Default)]
+struct Stored {
+    facts: HashMap<Rc<str>, Contributions>,
+    resolved: RefCell<Option<Cached>>,
+}
+
+impl Deref for Stored {
+    type Target = HashMap<Rc<str>, Contributions>;
+    fn deref(&self) -> &Self::Target {
+        &self.facts
+    }
+}
+
+impl DerefMut for Stored {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.facts
+    }
 }
 
 impl MetadataStore {
     /// Run `f` with no resolutions kept, leaving those kept as they were.
     #[cfg(test)]
     pub(crate) fn cold<R>(&self, f: impl FnOnce() -> R) -> R {
-        let kept = self.resolved.take();
+        let kept: Vec<_> = self.entries.values().map(|stored| stored.resolved.take()).collect();
         let changed = self.catalog_changed.take();
         let result = f();
-        self.resolved.replace(kept);
+        for (stored, kept) in self.entries.values().zip(kept) {
+            stored.resolved.replace(kept);
+        }
         self.catalog_changed.replace(changed);
         result
     }
 
     fn touch(&mut self, target: &EntityId) {
-        self.resolved.get_mut().remove(target);
+        if let Some(stored) = self.entries.get_mut(target) {
+            *stored.resolved.get_mut() = None;
+        }
         for changed in [&mut self.changed, self.catalog_changed.get_mut()] {
             if !changed.all {
                 changed.targets.insert(target.clone());
@@ -179,7 +203,9 @@ impl MetadataStore {
     /// Everything may resolve differently: facts expired, or a provider
     /// went stale or fresh.
     pub fn change_all(&mut self) {
-        self.resolved.get_mut().clear();
+        for stored in self.entries.values_mut() {
+            *stored.resolved.get_mut() = None;
+        }
         self.changed = Changed { all: true, targets: HashSet::new() };
         *self.catalog_changed.get_mut() = Changed { all: true, targets: HashSet::new() };
     }
@@ -519,7 +545,10 @@ impl MetadataStore {
 
     /// `entity_id`'s facts resolved at `now`, shared until they change.
     pub fn resolved(&self, entity_id: &EntityId, now: u64) -> Rc<ResolvedFacts> {
-        if let Some(cached) = self.resolved.borrow().get(entity_id) {
+        let Some(stored) = self.entries.get(entity_id) else {
+            return Rc::default();
+        };
+        if let Some(cached) = stored.resolved.borrow().as_ref() {
             if cached.at <= now && cached.until.is_none_or(|until| now <= until) {
                 return cached.resolved.clone();
             }
@@ -528,41 +557,39 @@ impl MetadataStore {
         count_resolution();
         let mut facts = vec![];
         let mut until: Option<u64> = None;
-        if let Some(entries) = self.entries.get(entity_id) {
-            for (key, contributions) in entries {
-                let mut candidates = Vec::with_capacity(contributions.len());
-                let mut shared = Vec::with_capacity(contributions.len());
-                for (contributor, entry) in contributions.shared() {
-                    if !self.is_live(contributor, entry, now) {
-                        continue;
-                    }
-                    // A stale provider's facts don't expire while it stays stale.
-                    if let (Some(ttl), true) = (entry.ttl_ms, self.indexed(contributor)) {
-                        let deadline = entry.updated_at.saturating_add(ttl);
-                        until = Some(until.map_or(deadline, |until| until.min(deadline)));
-                    }
-                    candidates.push(CandidateEntry::new(self.source(contributor), (**entry).clone()));
-                    shared.push((contributor, entry));
+        for (key, contributions) in stored.iter() {
+            let mut candidates = Vec::with_capacity(contributions.len());
+            let mut shared = Vec::with_capacity(contributions.len());
+            for (contributor, entry) in contributions.shared() {
+                if !self.is_live(contributor, entry, now) {
+                    continue;
                 }
-                if let Some(candidate) = select_primary_entry(&candidates) {
-                    // The store's own entry, shared, when the winner is one as held.
-                    let held = shared
-                        .iter()
-                        .find(|(contributor, entry)| self.source(contributor) == candidate.source_id && ***entry == candidate.entry)
-                        .map(|(contributor, entry)| (self.sources[contributor.source as usize].clone(), Rc::clone(entry)));
-                    let (source, entry) = match held {
-                        Some((source, entry)) => (Some(source), entry),
-                        None => {
-                            let source = self.source_ixs.get_key_value(candidate.source_id.as_str()).map(|(source, _)| source.clone());
-                            (source, Rc::new(candidate.entry))
-                        }
-                    };
-                    facts.push((key.clone(), Fact { entry, source }));
+                // A stale provider's facts don't expire while it stays stale.
+                if let (Some(ttl), true) = (entry.ttl_ms, self.indexed(contributor)) {
+                    let deadline = entry.updated_at.saturating_add(ttl);
+                    until = Some(until.map_or(deadline, |until| until.min(deadline)));
                 }
+                candidates.push(CandidateEntry::new(self.source(contributor), (**entry).clone()));
+                shared.push((contributor, entry));
+            }
+            if let Some(candidate) = select_primary_entry(&candidates) {
+                // The store's own entry, shared, when the winner is one as held.
+                let held = shared
+                    .iter()
+                    .find(|(contributor, entry)| self.source(contributor) == candidate.source_id && ***entry == candidate.entry)
+                    .map(|(contributor, entry)| (self.sources[contributor.source as usize].clone(), Rc::clone(entry)));
+                let (source, entry) = match held {
+                    Some((source, entry)) => (Some(source), entry),
+                    None => {
+                        let source = self.source_ixs.get_key_value(candidate.source_id.as_str()).map(|(source, _)| source.clone());
+                        (source, Rc::new(candidate.entry))
+                    }
+                };
+                facts.push((key.clone(), Fact { entry, source }));
             }
         }
         let resolved = Rc::new(self.shapes.borrow_mut().record(facts));
-        self.resolved.borrow_mut().insert(entity_id.clone(), Cached { resolved: resolved.clone(), at: now, until });
+        *stored.resolved.borrow_mut() = Some(Cached { resolved: resolved.clone(), at: now, until });
         resolved
     }
 
@@ -593,7 +620,7 @@ impl MetadataStore {
     pub fn snapshot_patches(&self, now: u64) -> Vec<MetadataPatch> {
         let mut patches: BTreeMap<(EntityId, String), BTreeMap<String, MetadataValueUpdate>> = BTreeMap::new();
         for (target, target_entries) in &self.entries {
-            for (key, source_entries) in target_entries {
+            for (key, source_entries) in target_entries.iter() {
                 for (contributor, entry) in source_entries.iter() {
                     if !self.is_live(contributor, entry, now) {
                         continue;
@@ -983,11 +1010,8 @@ impl MetadataStore {
         for source in &self.sources {
             census.string("store: sources (interned)", source);
         }
-        for (target, cached) in self.resolved.borrow().iter() {
-            if let EntityId::Entity(entity) = target {
-                census.entity("resolutions: entity ids", entity);
-            }
-            if census.first(&cached.resolved) {
+        for stored in self.entries.values() {
+            if let Some(cached) = stored.resolved.borrow().as_ref().filter(|cached| census.first(&cached.resolved)) {
                 cached.resolved.census(census, "resolved facts");
             }
         }
@@ -1000,7 +1024,12 @@ impl ResolvedFacts {
         // Keys and sources are shared (a spine, interned sources); count
         // each spine once, and the facts each record holds.
         if census.first(self.shape()) {
-            census.map(&format!("{prefix}: spines"), &format!("{prefix}: spine keys"), self.keys());
+            census.shape(&format!("{prefix}: spines"), self.keys());
+            for key in self.shape().keys() {
+                if census.first(key) {
+                    census.string(&format!("{prefix}: spine keys"), key);
+                }
+            }
         }
         for (_, fact) in self.facts() {
             if census.first(&fact.entry) {

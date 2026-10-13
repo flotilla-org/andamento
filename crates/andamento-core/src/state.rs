@@ -140,7 +140,6 @@ struct PlacementIndex {
     /// Keys whose facts hold entity references, with how many positions do.
     ref_key_counts: BTreeMap<String, usize>,
     /// What each position was indexed from, and the postings it added.
-    entities: Vec<EntityRef>,
     facts: Vec<Rc<ResolvedFacts>>,
     indexed: Vec<Vec<usize>>,
     /// What visibility was evaluated with: the template catalog's
@@ -344,18 +343,13 @@ impl PlacementIndex {
     /// Bring the index up to date with `entities`, re-indexing the positions
     /// whose facts changed, or every position when the list itself changed.
     /// Returns the positions re-indexed (all of them: `None`).
-    /// `list` is the catalog's generation, when it has one: while it is the
-    /// same, so is the list.
+    /// `list` is the catalog's generation: while it is the same, so is the
+    /// list. Without one, the list is taken to have changed.
     fn update(&mut self, entities: &[CatalogEntity], list: Option<u64>) -> Option<Vec<usize>> {
-        let same_list = self.entities.len() == entities.len()
-            && match list {
-                Some(list) => self.list == Some(list),
-                None => self.entities.iter().zip(entities).all(|(old, new)| *old == new.entity),
-            };
+        let same_list = self.facts.len() == entities.len() && list.is_some() && self.list == list;
         if !same_list {
             *self = Self { epoch: self.epoch + 1, list, ..Self::default() };
             for (position, entity) in entities.iter().enumerate() {
-                self.entities.push(entity.entity.clone());
                 self.facts.push(entity.facts.clone());
                 self.indexed.push(vec![]);
                 let postings = entity_postings(entity);
@@ -625,7 +619,8 @@ impl DerefMut for CatalogEntity {
 #[derive(Debug, Clone)]
 struct CatalogEvaluation {
     entities: Vec<CatalogEntity>,
-    by_entity: BTreeMap<EntityRef, usize>,
+    /// Positions, ordered by their entities, to find one by identity.
+    by_entity: Vec<usize>,
     /// Moves when the list of entities or their order changes.
     generation: u64,
     /// Entities derived from others (retained subjects, refs), built again
@@ -639,20 +634,30 @@ struct CatalogEvaluation {
 
 impl CatalogEvaluation {
     fn new(entities: Vec<CatalogEntity>, generation: u64) -> Self {
-        let by_entity = entities.iter().enumerate().map(|(i, e)| (e.entity.clone(), i)).collect();
+        let by_entity = Self::by_entity(&entities);
         let derived = entities.iter().filter(|e| e.entity.kind == system::REF).map(|e| e.entity.clone()).collect();
         Self { entities, by_entity, generation, derived, removed: BTreeSet::new(), added: vec![], structure_changed: false }
     }
 
+    fn by_entity(entities: &[CatalogEntity]) -> Vec<usize> {
+        let mut positions: Vec<usize> = (0..entities.len()).collect();
+        positions.sort_by(|&left, &right| entities[left].entity.cmp(&entities[right].entity));
+        positions
+    }
+
+    fn position(&self, target: &EntityRef) -> Option<usize> {
+        self.by_entity.binary_search_by(|&position| self.entities[position].entity.cmp(target)).ok().map(|at| self.by_entity[at])
+    }
+
     fn entity(&self, target: &EntityRef) -> Option<&CatalogEntity> {
-        self.by_entity.get(target).map(|index| &self.entities[*index])
+        self.position(target).map(|position| &self.entities[position])
     }
 
     /// Make `entity` `next` (None: absent). One whose facts are the same
     /// keeps its own. Returns whether the list or its order changes, which
     /// `reorder` then makes.
     fn replace(&mut self, entity: &EntityRef, next: Option<CatalogEntity>) -> bool {
-        match (self.by_entity.get(entity).copied(), next) {
+        match (self.position(entity), next) {
             (Some(at), Some(next)) => {
                 let current = &mut self.entities[at];
                 if current.ordinal != next.ordinal {
@@ -682,7 +687,7 @@ impl CatalogEvaluation {
         self.entities.retain(|entity| !removed.contains(&entity.entity));
         self.entities.append(&mut self.added);
         self.entities.sort_by(catalog_order);
-        self.by_entity = self.entities.iter().enumerate().map(|(i, e)| (e.entity.clone(), i)).collect();
+        self.by_entity = Self::by_entity(&self.entities);
         self.structure_changed = true;
     }
 }
@@ -5145,9 +5150,6 @@ impl ControllerState {
                     entity.facts.census(census, "catalog facts (not shared)");
                 }
             }
-            for entity in catalog.by_entity.keys() {
-                census.entity("catalog: by entity", entity);
-            }
         }
         let index = kept.placement_index.borrow();
         for key in index.by_fact.keys() {
@@ -5156,9 +5158,6 @@ impl ControllerState {
                 IndexedValue::Scalar(value) => census.string("index: posting values", value),
                 IndexedValue::Entity(entity) => census.entity("index: posting values", entity),
             }
-        }
-        for entity in &index.entities {
-            census.entity("index: entity refs", entity);
         }
         drop(index);
         for (entity, (_, _, display)) in kept.displays.borrow().iter() {
