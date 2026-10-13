@@ -140,6 +140,9 @@ pub struct MetadataStore {
     /// judged live as of that time, so none expires while it stays stale.
     stale: BTreeMap<ProviderIx, u64>,
     changed: Changed,
+    /// The same, for the catalog (`take_catalog_changes`), which reads it
+    /// when it evaluates rather than when facts arrive.
+    catalog_changed: RefCell<Changed>,
     /// Each entity's resolution, made when first read and dropped when its
     /// facts change, everything may have changed, or a fact in it expires.
     resolved: RefCell<HashMap<EntityId, Cached>>,
@@ -150,15 +153,19 @@ impl MetadataStore {
     #[cfg(test)]
     pub(crate) fn cold<R>(&self, f: impl FnOnce() -> R) -> R {
         let kept = self.resolved.take();
+        let changed = self.catalog_changed.take();
         let result = f();
         self.resolved.replace(kept);
+        self.catalog_changed.replace(changed);
         result
     }
 
     fn touch(&mut self, target: &EntityId) {
         self.resolved.get_mut().remove(target);
-        if !self.changed.all {
-            self.changed.targets.insert(target.clone());
+        for changed in [&mut self.changed, self.catalog_changed.get_mut()] {
+            if !changed.all {
+                changed.targets.insert(target.clone());
+            }
         }
     }
 
@@ -167,6 +174,12 @@ impl MetadataStore {
     pub fn change_all(&mut self) {
         self.resolved.get_mut().clear();
         self.changed = Changed { all: true, targets: HashSet::new() };
+        *self.catalog_changed.get_mut() = Changed { all: true, targets: HashSet::new() };
+    }
+
+    /// What changed since the catalog last read it.
+    pub(crate) fn take_catalog_changes(&self) -> Changed {
+        self.catalog_changed.take()
     }
 
     /// What changed since the last call.

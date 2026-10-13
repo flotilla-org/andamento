@@ -416,6 +416,51 @@ fn kept_matches_cold_through_a_session(config: &str) {
         ),
         ("add", Box::new(|s: &mut Sidebar| s.apply(10, PROVIDER, catalog(64)[catalog(60).len()..].to_vec()).unwrap())),
         (
+            "local refs",
+            Box::new(move |s: &mut Sidebar| {
+                let (section, group) = (EntityRef::local(".section", "s"), EntityRef::local(".group", "g"));
+                let refs = |entity: EntityRef| MetadataValue::EntityRefs(vec![entity]);
+                s.set_local(section.clone(), BTreeMap::from([("display.label".into(), text("Pinned"))])).unwrap();
+                s.set_local(group.clone(), BTreeMap::from([(".section".into(), refs(section))])).unwrap();
+                s.set_local(
+                    EntityRef::local(".ref", "r"),
+                    BTreeMap::from([(".group".into(), refs(group)), (".target".into(), refs(convoy(4)))]),
+                )
+                .unwrap();
+            }),
+        ),
+        (
+            "rename a ref's target",
+            Box::new(move |s: &mut Sidebar| {
+                s.apply(10, PROVIDER, [change("convoy", 4, vec![("display.label", text("referenced"))], vec![])]).unwrap()
+            }),
+        ),
+        (
+            "retarget a ref",
+            Box::new(move |s: &mut Sidebar| {
+                let refs = |entity: EntityRef| MetadataValue::EntityRefs(vec![entity]);
+                s.set_local(
+                    EntityRef::local(".ref", "r"),
+                    BTreeMap::from([(".group".into(), refs(EntityRef::local(".group", "g"))), (".target".into(), refs(convoy(8)))]),
+                )
+                .unwrap();
+            }),
+        ),
+        (
+            "replace entities, keeping the count",
+            Box::new(move |s: &mut Sidebar| {
+                let mut patches = vec![
+                    change("convoy", 13, vec![], vec!["entity.id", "entity.kind"]),
+                    change("vessel", 13, vec![], vec!["entity.id", "entity.kind"]),
+                ];
+                patches.extend(
+                    catalog(65).into_iter().filter(|p| matches!(&p.target, MetadataTarget::Entity(e) if e.id.ends_with("00000040"))),
+                );
+                assert_eq!(patches.len(), 4, "two removed, two added");
+                s.apply(10, PROVIDER, patches).unwrap();
+            }),
+        ),
+        (
             "rename a role's attempt",
             // Convoy 35's role shows it in its detail.
             Box::new(move |s: &mut Sidebar| {

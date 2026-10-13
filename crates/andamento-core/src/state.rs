@@ -130,6 +130,8 @@ struct PlacementIndex {
     postings: Vec<Posting>,
     clock: u64,
     epoch: u64,
+    /// The generation of the catalog indexed, if it had one.
+    list: Option<u64>,
     visibility: BTreeMap<String, Vec<bool>>,
     ref_keys: BTreeSet<String>,
     /// Keys whose facts hold entity references, with how many positions do.
@@ -329,17 +331,23 @@ impl PlacementIndex {
     #[cfg(test)]
     fn build(entities: &[CatalogEntity]) -> Self {
         let mut index = Self::default();
-        index.update(entities);
+        index.update(entities, None);
         index
     }
 
     /// Bring the index up to date with `entities`, re-indexing the positions
     /// whose facts changed, or every position when the list itself changed.
     /// Returns the positions re-indexed (all of them: `None`).
-    fn update(&mut self, entities: &[CatalogEntity]) -> Option<Vec<usize>> {
-        let same_list = self.entities.len() == entities.len() && self.entities.iter().zip(entities).all(|(old, new)| *old == new.entity);
+    /// `list` is the catalog's generation, when it has one: while it is the
+    /// same, so is the list.
+    fn update(&mut self, entities: &[CatalogEntity], list: Option<u64>) -> Option<Vec<usize>> {
+        let same_list = self.entities.len() == entities.len()
+            && match list {
+                Some(list) => self.list == Some(list),
+                None => self.entities.iter().zip(entities).all(|(old, new)| *old == new.entity),
+            };
         if !same_list {
-            *self = Self { epoch: self.epoch + 1, ..Self::default() };
+            *self = Self { epoch: self.epoch + 1, list, ..Self::default() };
             for (position, entity) in entities.iter().enumerate() {
                 self.entities.push(entity.entity.clone());
                 self.facts.push(entity.facts.clone());
@@ -608,20 +616,98 @@ impl DerefMut for CatalogEntity {
 /// Resolved catalog and lookup tables shared by every pass of one model build.
 /// Its lifetime is the evaluation, so metadata/configuration/time changes cannot
 /// leave stale derived state behind between snapshots.
+#[derive(Debug, Clone)]
 struct CatalogEvaluation {
     entities: Vec<CatalogEntity>,
     by_entity: BTreeMap<EntityRef, usize>,
+    /// Moves when the list of entities or their order changes.
+    generation: u64,
+    /// Entities derived from others (retained subjects, refs), built again
+    /// each time the catalog is brought up to date.
+    derived: BTreeSet<EntityRef>,
+    /// What `replace` will remove and add when `reorder` runs.
+    removed: BTreeSet<EntityRef>,
+    added: Vec<CatalogEntity>,
+    structure_changed: bool,
 }
 
 impl CatalogEvaluation {
-    fn new(entities: Vec<CatalogEntity>) -> Self {
+    fn new(entities: Vec<CatalogEntity>, generation: u64) -> Self {
         let by_entity = entities.iter().enumerate().map(|(i, e)| (e.entity.clone(), i)).collect();
-        Self { entities, by_entity }
+        let derived = entities.iter().filter(|e| e.entity.kind == system::REF).map(|e| e.entity.clone()).collect();
+        Self { entities, by_entity, generation, derived, removed: BTreeSet::new(), added: vec![], structure_changed: false }
     }
 
     fn entity(&self, target: &EntityRef) -> Option<&CatalogEntity> {
         self.by_entity.get(target).map(|index| &self.entities[*index])
     }
+
+    /// Make `entity` `next` (None: absent). One whose facts are the same
+    /// keeps its own. Returns whether the list or its order changes, which
+    /// `reorder` then makes.
+    fn replace(&mut self, entity: &EntityRef, next: Option<CatalogEntity>) -> bool {
+        match (self.by_entity.get(entity).copied(), next) {
+            (Some(at), Some(next)) => {
+                let current = &mut self.entities[at];
+                if current.ordinal != next.ordinal {
+                    self.removed.insert(entity.clone());
+                    self.added.push(next);
+                    return true;
+                }
+                if !Rc::ptr_eq(&current.facts, &next.facts) && *current.facts != *next.facts {
+                    *current = next;
+                }
+                false
+            }
+            (Some(_), None) => {
+                self.removed.insert(entity.clone());
+                true
+            }
+            (None, Some(next)) => {
+                self.added.push(next);
+                true
+            }
+            (None, None) => false,
+        }
+    }
+
+    fn reorder(&mut self) {
+        let removed = std::mem::take(&mut self.removed);
+        self.entities.retain(|entity| !removed.contains(&entity.entity));
+        self.entities.append(&mut self.added);
+        self.entities.sort_by(catalog_order);
+        self.by_entity = self.entities.iter().enumerate().map(|(i, e)| (e.entity.clone(), i)).collect();
+        self.structure_changed = true;
+    }
+}
+
+/// Whether `candidate` is the action target of `entity`, given its own
+/// (`action.target`): that, else one made from its identity, as
+/// `EntityRef::action_target` makes it, compared without making it.
+fn is_action_target(entity: &EntityRef, own: Option<&str>, candidate: &str) -> bool {
+    if let Some(own) = own {
+        return own == candidate;
+    }
+    let Some(rest) = candidate.strip_prefix(entity.kind.as_str()).and_then(|rest| rest.strip_prefix(':')) else {
+        return false;
+    };
+    if entity.provider == LOCAL_PROVIDER {
+        rest == entity.id
+    } else {
+        rest.strip_prefix(entity.id.as_str()).and_then(|rest| rest.strip_prefix('@')) == Some(entity.provider.as_str())
+    }
+}
+
+/// The catalog's order: by ordinal, then identity.
+fn catalog_order(a: &CatalogEntity, b: &CatalogEntity) -> Ordering {
+    a.ordinal.cmp(&b.ordinal).then_with(|| a.entity.cmp(&b.entity))
+}
+
+/// The catalog as last built (`ControllerState::catalog`).
+#[derive(Debug, Default)]
+struct KeptCatalog {
+    evaluation: Option<Rc<CatalogEvaluation>>,
+    generation: u64,
 }
 
 /// Which controller outputs the caller consumes; semantic presentation is
@@ -633,11 +719,12 @@ enum ModelOutputs {
 
 /// Immutable catalog and activation inputs owned by a Sidebar revision.
 pub(crate) struct RevisionEvaluation {
-    catalog: CatalogEvaluation,
-    latents: Vec<LatentTab>,
+    catalog: Rc<CatalogEvaluation>,
+    /// Action targets open in a workspace: an entity with any other is
+    /// latent (see `latent_tabs_in`).
+    live_targets: BTreeSet<String>,
     resolved_workspaces: Vec<ResolvedMetadata>,
     live: BTreeMap<String, PresentationState>,
-    materializable: BTreeMap<EntityRef, bool>,
 }
 
 fn compare_order_values(left: &MetadataValue, right: &MetadataValue, natural: bool) -> Ordering {
@@ -760,6 +847,8 @@ struct Kept {
     variables: RefCell<VariablesKept>,
     /// Each placed node's resolution (`SurfaceSnapshot::resolve`).
     surface: RefCell<SurfaceKept>,
+    /// The catalog (`catalog`).
+    catalog: RefCell<KeptCatalog>,
 }
 
 impl Kept {
@@ -771,6 +860,7 @@ impl Kept {
         self.placements.swap(&other.placements);
         self.variables.swap(&other.variables);
         self.surface.swap(&other.surface);
+        self.catalog.swap(&other.catalog);
     }
 }
 
@@ -1498,8 +1588,8 @@ impl ControllerState {
 
     pub(crate) fn evaluate_revision(&self) -> RevisionEvaluation {
         let _phase = profile::span("revision-evaluation");
-        let catalog = CatalogEvaluation::new(self.catalog_entities());
-        let latents = self.latent_tabs_in(&catalog);
+        let catalog = self.catalog();
+        let live_targets = self.materialized_action_targets(&catalog);
         let seeds = self.tab_seed_metadata_entries();
         let resolved_workspaces: Vec<ResolvedMetadata> = std::iter::once(EntityId::Root)
             .chain(self.tabs.iter().map(|tab| EntityId::Tab(tab.tab_id)))
@@ -1517,8 +1607,7 @@ impl ControllerState {
             .filter_map(|m| if let EntityId::Tab(id) = m.target { Some((id, &m.values)) } else { None })
             .collect();
         let live = self.live_presentation_states(&catalog, &tab_metadata);
-        let materializable = latents.iter().map(|l| (l.entity.clone(), l.materialize_request().is_some())).collect();
-        RevisionEvaluation { catalog, latents, resolved_workspaces, live, materializable }
+        RevisionEvaluation { catalog, live_targets, resolved_workspaces, live }
     }
 
     pub(crate) fn presentation_in(&self, evaluation: &RevisionEvaluation) -> SurfaceSnapshot {
@@ -1563,7 +1652,6 @@ impl ControllerState {
             }
         }
 
-        let latent_tabs = &evaluation.latents;
         let resolved_metadata =
             if presentation_only { evaluation.resolved_workspaces.clone() } else { self.resolved_metadata_for_tabs(&tabs, catalog) };
         let observed_identities = if presentation_only { vec![] } else { observed_metadata_identities(&resolved_metadata) };
@@ -1578,7 +1666,7 @@ impl ControllerState {
         }
         let index_phase = profile::span("placement-index");
         let mut index = self.kept.placement_index.borrow_mut();
-        let reindexed = index.update(region_catalog_entities);
+        let reindexed = index.update(region_catalog_entities, Some(catalog.generation));
         if let Some(config) = self.template_catalog.as_ref() {
             let generation = self.template_generation;
             for warning in index.update_visibility(region_catalog_entities, config, generation, &self.rail_ui.variables, reindexed) {
@@ -1664,32 +1752,29 @@ impl ControllerState {
                 }
             }
         }
-        let latents = latent_tabs.iter().map(|latent| (&latent.entity, latent)).collect::<BTreeMap<_, _>>();
-        let states = region_catalog_entities
-            .iter()
-            .map(|entity| {
-                let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| entity.entity.action_target());
-                let state = exact
-                    .get(&entity.entity)
-                    .cloned()
-                    .or_else(|| live.get(&action_target).map(|state| Self::alias_presentation_state(state, &subjects, &entity.entity)))
-                    .unwrap_or_else(|| {
-                        latents
-                            .get(&entity.entity)
-                            .map(|latent| {
-                                if latent.materialization == LatentMaterializationState::Opening {
-                                    PresentationState::Opening
-                                } else {
-                                    PresentationState::Latent { openable: latent.materialize_request().is_some() }
-                                }
-                            })
-                            .unwrap_or_default()
-                    });
-                (entity.entity.clone(), state)
-            })
-            .collect();
+        // What a node presenting an entity shows it as: live in its exact
+        // workspace, or where its action target is open; else latent, unless
+        // its action target is materialized.
+        let live_targets = &evaluation.live_targets;
+        let state = |entity: &EntityRef, facts: &BTreeMap<String, MetadataValue>| {
+            if let Some(state) = exact.get(entity) {
+                return state.clone();
+            }
+            let own = match facts.get(KEY_ACTION_TARGET) {
+                Some(MetadataValue::Text(target)) => Some(target.as_str()),
+                _ => None,
+            };
+            if let Some((_, state)) = live.iter().find(|(target, _)| is_action_target(entity, own, target)) {
+                return Self::alias_presentation_state(state, &subjects, entity);
+            }
+            if live_targets.iter().any(|target| is_action_target(entity, own, target)) {
+                return PresentationState::default();
+            }
+            if self.pending_latent_materializations.keys().any(|target| is_action_target(entity, own, target)) {
+                return PresentationState::Opening;
+            }
+            PresentationState::Latent { openable: matches!(facts.get(KEY_MATERIALIZE_RECIPE), Some(MetadataValue::Text(_))) }
+        };
         // A node is stale when the entity it presents (a ref's target) has a
         // stale provider.
         let any_stale = self.metadata.has_stale();
@@ -1701,7 +1786,7 @@ impl ControllerState {
             }
         };
         let surface_phase = profile::span("surface");
-        let cx = SurfaceContext { generation: self.template_generation, variables: &node_variables.nodes, states: &states, stale: &stale };
+        let cx = SurfaceContext { generation: self.template_generation, variables: &node_variables.nodes, state: &state, stale: &stale };
         let presentation = SurfaceSnapshot::resolve(&model, &surface_regions, cx, &mut self.kept.surface.borrow_mut());
         model.presentation = Some(presentation);
         drop(surface_phase);
@@ -1796,7 +1881,6 @@ impl ControllerState {
         let _phase = profile::span("detail-generation");
         let catalog = &evaluation.catalog;
         let live = &evaluation.live;
-        let materializable = &evaluation.materializable;
         let entities: Vec<_> = match target {
             Some(target) => catalog.entity(target).into_iter().collect(),
             None => catalog.entities.iter().collect(),
@@ -1842,7 +1926,10 @@ impl ControllerState {
                     DetailIntent::OpenUrl
                 } else if workspace_id.is_some() {
                     DetailIntent::FocusWorkspace
-                } else if materializable.get(&entity.entity).copied().unwrap_or(false) {
+                } else if !evaluation.live_targets.contains(&action_target)
+                    && !self.pending_latent_materializations.contains_key(&action_target)
+                    && metadata_entry_text(&entity.values, KEY_MATERIALIZE_RECIPE).is_some()
+                {
                     DetailIntent::MaterializeWorkspace
                 } else {
                     DetailIntent::Inspect
@@ -2536,7 +2623,7 @@ impl ControllerState {
     }
 
     fn latent_tabs(&self) -> Vec<LatentTab> {
-        self.latent_tabs_in(&CatalogEvaluation::new(self.catalog_entities()))
+        self.latent_tabs_in(&self.catalog())
     }
 
     fn latent_tabs_in(&self, catalog: &CatalogEvaluation) -> Vec<LatentTab> {
@@ -2866,53 +2953,127 @@ impl ControllerState {
         let _phase = profile::span("catalog");
         #[cfg(test)]
         CATALOG_BUILDS.with(|count| count.set(count.get() + 1));
+        let now = self.now();
         let mut entities = self
             .metadata
             .targets()
-            .filter_map(|target| {
-                let EntityId::Entity(entity) = target else {
-                    return None;
-                };
-                let facts = self.metadata.resolved(target, self.now());
-                if facts.values.is_empty() {
-                    return None;
-                }
-                Some(CatalogEntity { entity: entity.clone(), facts, ordinal: self.metadata.target_ordinal(target).unwrap_or_default() })
+            .filter_map(|target| match target {
+                EntityId::Entity(entity) if !self.retained_subjects.contains_key(entity) => self.catalog_entity(entity, now),
+                _ => None,
             })
+            .chain(self.retained_subjects.keys().filter_map(|subject| self.catalog_entity(subject, now)))
             .collect::<Vec<_>>();
-        let positions: BTreeMap<_, _> = entities.iter().enumerate().map(|(index, entity)| (entity.entity.clone(), index)).collect();
-        for (subject, retained) in &self.retained_subjects {
-            if let Some(index) = positions.get(subject) {
-                let current = &mut entities[*index];
-                let mut values = retained.values.clone();
-                values.extend(std::mem::take(&mut current.values));
-                current.values = values;
-                let mut sources = retained.sources.clone();
-                sources.extend(std::mem::take(&mut current.sources));
-                current.sources = sources;
-            } else {
-                entities.push(retained.clone());
-            }
-        }
-        let now = self.now();
-        for entity in &mut entities {
-            if self.ended_subjects.contains(&entity.entity) {
-                let ordinal = entity.ordinal;
-                entity.sources.remove(KEY_STATUS_STATE);
-                entity.sources.remove("presentation.ended");
-                entity.values.insert(
-                    KEY_STATUS_STATE.to_owned(),
-                    MetadataEntry { value: MetadataValue::Text("ended".to_owned()), updated_at: now, ttl_ms: None, precedence: 0, ordinal },
-                );
-                entity.values.insert(
-                    "presentation.ended".to_owned(),
-                    MetadataEntry { value: MetadataValue::Bool(true), updated_at: now, ttl_ms: None, precedence: 0, ordinal },
-                );
-            }
-        }
         Self::present_refs(&mut entities);
-        entities.sort_by(|a, b| a.ordinal.cmp(&b.ordinal).then_with(|| a.entity.cmp(&b.entity)));
+        entities.sort_by(catalog_order);
         entities
+    }
+
+    /// One entity as the catalog presents it, but for a ref's target's facts
+    /// (`present_refs`): its resolved facts, over what is retained of it if
+    /// it is a retained subject, and marked as ended if it is an ended one.
+    /// None if it has no facts.
+    fn catalog_entity(&self, entity: &EntityRef, now: u64) -> Option<CatalogEntity> {
+        let target = EntityId::Entity(entity.clone());
+        let facts = self.metadata.resolved(&target, now);
+        let mut current = (!facts.values.is_empty()).then(|| CatalogEntity {
+            entity: entity.clone(),
+            facts,
+            ordinal: self.metadata.target_ordinal(&target).unwrap_or_default(),
+        });
+        if let Some(retained) = self.retained_subjects.get(entity) {
+            current = Some(match current {
+                Some(mut current) => {
+                    let mut values = retained.values.clone();
+                    values.extend(std::mem::take(&mut current.values));
+                    current.values = values;
+                    let mut sources = retained.sources.clone();
+                    sources.extend(std::mem::take(&mut current.sources));
+                    current.sources = sources;
+                    current
+                }
+                None => retained.clone(),
+            });
+        }
+        if let Some(entity) = current.as_mut().filter(|entity| self.ended_subjects.contains(&entity.entity)) {
+            let ordinal = entity.ordinal;
+            entity.sources.remove(KEY_STATUS_STATE);
+            entity.sources.remove("presentation.ended");
+            entity.values.insert(
+                KEY_STATUS_STATE.to_owned(),
+                MetadataEntry { value: MetadataValue::Text("ended".to_owned()), updated_at: now, ttl_ms: None, precedence: 0, ordinal },
+            );
+            entity.values.insert(
+                "presentation.ended".to_owned(),
+                MetadataEntry { value: MetadataValue::Bool(true), updated_at: now, ttl_ms: None, precedence: 0, ordinal },
+            );
+        }
+        current
+    }
+
+    /// The catalog, brought up to date from the one built last time: only
+    /// entities whose facts changed are built again, and those derived from
+    /// others (retained subjects, refs) each time. An entity whose facts are
+    /// the same as before keeps them, shared, so what is kept from them stays.
+    fn catalog(&self) -> Rc<CatalogEvaluation> {
+        let changed = self.metadata.take_catalog_changes();
+        let mut kept = self.kept.catalog.borrow_mut();
+        let previous = kept.evaluation.take().filter(|_| !changed.all);
+        let Some(previous) = previous else {
+            kept.generation += 1;
+            let catalog = Rc::new(CatalogEvaluation::new(self.catalog_entities(), kept.generation));
+            kept.evaluation = Some(catalog.clone());
+            return catalog;
+        };
+        let _phase = profile::span("catalog");
+        let now = self.now();
+        let mut catalog = Rc::try_unwrap(previous).unwrap_or_else(|shared| (*shared).clone());
+        let mut again: BTreeSet<EntityRef> = changed
+            .targets
+            .into_iter()
+            .filter_map(|target| match target {
+                EntityId::Entity(entity) => Some(entity),
+                _ => None,
+            })
+            .collect();
+        again.extend(self.retained_subjects.keys().cloned());
+        again.extend(std::mem::take(&mut catalog.derived));
+        let (refs, others): (Vec<_>, Vec<_>) = again.into_iter().partition(|entity| entity.kind == system::REF);
+        let mut structural = false;
+        for entity in others {
+            let next = self.catalog_entity(&entity, now);
+            structural |= catalog.replace(&entity, next);
+        }
+        if structural {
+            catalog.reorder();
+        }
+        // Refs present their targets as now in the catalog.
+        let mut structural = false;
+        for entity in refs {
+            let next = self.catalog_entity(&entity, now).map(|mut entity| {
+                if let Some(target) = ref_target(&entity.values).and_then(|target| catalog.entity(&target)) {
+                    if target.entity.kind != system::REF {
+                        Self::present_ref(&mut entity, target);
+                    }
+                }
+                entity
+            });
+            structural |= catalog.replace(&entity, next);
+        }
+        if structural {
+            catalog.reorder();
+        }
+        if catalog.structure_changed {
+            kept.generation += 1;
+            catalog.generation = kept.generation;
+            catalog.structure_changed = false;
+        }
+        catalog.derived = self.retained_subjects.keys().cloned().collect();
+        catalog
+            .derived
+            .extend(catalog.entities.iter().filter(|entity| entity.entity.kind == system::REF).map(|entity| entity.entity.clone()));
+        let catalog = Rc::new(catalog);
+        kept.evaluation = Some(catalog.clone());
+        catalog
     }
 
     /// A `.ref` (a ghost) presents its `.target`: it takes the target's facts
@@ -2937,42 +3098,44 @@ impl ControllerState {
         let resolved = entities
             .iter()
             .filter(|e| e.entity.kind != system::REF && wanted.contains(&e.entity))
-            .map(|e| (e.entity.clone(), (e.values.clone(), e.sources.clone())))
+            .map(|e| (e.entity.clone(), e.clone()))
             .collect::<BTreeMap<_, _>>();
         for entity in entities.iter_mut().filter(|e| e.entity.kind == system::REF) {
-            let Some(target) = targets.get(&entity.entity) else {
-                continue;
-            };
-            let Some((values, sources)) = resolved.get(target) else {
-                continue;
-            };
-            let own = std::mem::replace(&mut entity.values, values.clone());
-            let own_sources = std::mem::replace(&mut entity.sources, sources.clone());
-            entity.values.retain(|key, _| !system::is_system(key));
-            entity.sources.retain(|key, _| !system::is_system(key));
-            for (key, value) in own.iter().filter(|(key, _)| system::is_system(key)) {
-                entity.values.insert(key.clone(), value.clone());
+            if let Some(target) = targets.get(&entity.entity).and_then(|target| resolved.get(target)) {
+                Self::present_ref(entity, target);
             }
-            for (key, source) in own_sources.iter().filter(|(key, _)| system::is_system(key)) {
-                entity.sources.insert(key.clone(), source.clone());
-            }
-            // Live state and activation key on the action target: the
-            // target's own, else one made from its identity. The made entry
-            // dates from the ref's `.target`, so it is as fresh as the
-            // reference; it never expires and loses to any real one.
-            if !entity.values.contains_key(KEY_ACTION_TARGET) {
-                let ordinal = entity.ordinal;
-                entity.values.insert(
-                    KEY_ACTION_TARGET.to_owned(),
-                    MetadataEntry {
-                        value: MetadataValue::Text(target.action_target()),
-                        updated_at: own.get(system::TARGET).map(|e| e.updated_at).unwrap_or_default(),
-                        ttl_ms: None,
-                        precedence: 0,
-                        ordinal,
-                    },
-                );
-            }
+        }
+    }
+
+    /// Give a ref its target's facts and sources, keeping its own
+    /// `.`-prefixed ones (see `present_refs`).
+    fn present_ref(entity: &mut CatalogEntity, target: &CatalogEntity) {
+        let own = std::mem::replace(&mut entity.values, target.values.clone());
+        let own_sources = std::mem::replace(&mut entity.sources, target.sources.clone());
+        entity.values.retain(|key, _| !system::is_system(key));
+        entity.sources.retain(|key, _| !system::is_system(key));
+        for (key, value) in own.iter().filter(|(key, _)| system::is_system(key)) {
+            entity.values.insert(key.clone(), value.clone());
+        }
+        for (key, source) in own_sources.iter().filter(|(key, _)| system::is_system(key)) {
+            entity.sources.insert(key.clone(), source.clone());
+        }
+        // Live state and activation key on the action target: the
+        // target's own, else one made from its identity. The made entry
+        // dates from the ref's `.target`, so it is as fresh as the
+        // reference; it never expires and loses to any real one.
+        if !entity.values.contains_key(KEY_ACTION_TARGET) {
+            let ordinal = entity.ordinal;
+            entity.values.insert(
+                KEY_ACTION_TARGET.to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text(target.entity.action_target()),
+                    updated_at: own.get(system::TARGET).map(|e| e.updated_at).unwrap_or_default(),
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal,
+                },
+            );
         }
     }
 
@@ -4145,6 +4308,23 @@ mod tests {
             "restating identity in facts must not duplicate the placement: {:?}",
             placed.iter().map(|e| &e.entity).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn action_targets_are_recognised_without_being_made() {
+        for entity in [
+            EntityRef::local(".group", "g"),
+            EntityRef::new("sub", "convoy", "fleet/convoy-1"),
+            EntityRef::new("sub@x", "kind:odd", "id@with:sep"),
+        ] {
+            let made = entity.action_target();
+            assert!(is_action_target(&entity, None, &made), "{made}");
+            for other in [format!("{made}x"), made[..made.len() - 1].to_owned(), String::new()] {
+                assert!(!is_action_target(&entity, None, &other), "{other} for {made}");
+            }
+            assert!(is_action_target(&entity, Some("own"), "own"));
+            assert!(!is_action_target(&entity, Some("own"), &made));
+        }
     }
 
     #[test]

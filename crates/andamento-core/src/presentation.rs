@@ -348,7 +348,8 @@ impl SurfaceSnapshot {
 pub(crate) struct SurfaceContext<'a> {
     pub(crate) generation: u64,
     pub(crate) variables: &'a NodeVariables,
-    pub(crate) states: &'a BTreeMap<EntityRef, PresentationState>,
+    /// How a node presenting an entity with these facts shows it.
+    pub(crate) state: &'a dyn Fn(&EntityRef, &BTreeMap<String, MetadataValue>) -> PresentationState,
     /// Whether the entity a node presents has a stale provider.
     pub(crate) stale: &'a dyn Fn(&EntityRef) -> bool,
 }
@@ -387,7 +388,7 @@ impl Resolver<'_> {
         let children = apply_sibling_orders(children, &self.orders);
         let address = Rc::as_ptr(entity);
         let variables = self.cx.variables.get(&address).map(|memo| memo.resolved.clone());
-        let state = self.cx.states.get(&entity.entity).cloned().unwrap_or_default();
+        let state = (self.cx.state)(&entity.entity, &entity.metadata);
         let collapsed = self.model.collapsed_placements.contains(key);
         let stale = (self.cx.stale)(&entity.entity);
         if let Some(memo) = self.prior.remove(&address) {
