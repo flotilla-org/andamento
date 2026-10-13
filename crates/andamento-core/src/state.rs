@@ -2998,7 +2998,10 @@ impl ControllerState {
         }
         if let Some(entity) = current.as_mut().filter(|entity| self.ended_subjects.contains(&entity.entity)) {
             let ordinal = entity.ordinal;
-            let made = |value| Fact { entry: MetadataEntry { value, updated_at: now, ttl_ms: None, precedence: 0, ordinal }, source: None };
+            let made = |value| Fact {
+                entry: Rc::new(MetadataEntry { value, updated_at: now, ttl_ms: None, precedence: 0, ordinal }),
+                source: None,
+            };
             entity.insert(KEY_STATUS_STATE, made(MetadataValue::Text("ended".to_owned())));
             entity.insert("presentation.ended", made(MetadataValue::Bool(true)));
         }
@@ -3121,7 +3124,7 @@ impl ControllerState {
                 precedence: 0,
                 ordinal: entity.ordinal,
             };
-            presented.insert(KEY_ACTION_TARGET, Fact { entry, source: None });
+            presented.insert(KEY_ACTION_TARGET, Fact { entry: Rc::new(entry), source: None });
         }
         entity.facts = Rc::new(own.over(&presented));
     }

@@ -43,7 +43,7 @@ type SourceIx = u32;
 /// One key's contributions, by contributor. Nearly always one, so a sorted
 /// Vec: a map would allocate a whole node per fact.
 #[derive(Debug, Default)]
-struct Contributions(Vec<(Contributor, MetadataEntry)>);
+struct Contributions(Vec<(Contributor, Rc<MetadataEntry>)>);
 
 impl Contributions {
     fn position(&self, contributor: &Contributor) -> Result<usize, usize> {
@@ -51,8 +51,9 @@ impl Contributions {
     }
 
     fn insert(&mut self, contributor: Contributor, entry: MetadataEntry) -> Option<MetadataEntry> {
+        let entry = Rc::new(entry);
         match self.position(&contributor) {
-            Ok(at) => Some(std::mem::replace(&mut self.0[at].1, entry)),
+            Ok(at) => Some(Rc::unwrap_or_clone(std::mem::replace(&mut self.0[at].1, entry))),
             Err(at) => {
                 self.0.insert(at, (contributor, entry));
                 None
@@ -61,11 +62,11 @@ impl Contributions {
     }
 
     fn remove(&mut self, contributor: &Contributor) -> Option<MetadataEntry> {
-        self.position(contributor).ok().map(|at| self.0.remove(at).1)
+        self.position(contributor).ok().map(|at| Rc::unwrap_or_clone(self.0.remove(at).1))
     }
 
     fn get(&self, contributor: &Contributor) -> Option<&MetadataEntry> {
-        self.position(contributor).ok().map(|at| &self.0[at].1)
+        self.position(contributor).ok().map(|at| &*self.0[at].1)
     }
 
     fn contains_key(&self, contributor: &Contributor) -> bool {
@@ -81,15 +82,22 @@ impl Contributions {
     }
 
     fn iter(&self) -> impl Iterator<Item = (&Contributor, &MetadataEntry)> {
+        self.0.iter().map(|(contributor, entry)| (contributor, &**entry))
+    }
+
+    /// Entries as held, to share rather than copy.
+    fn shared(&self) -> impl Iterator<Item = (&Contributor, &Rc<MetadataEntry>)> {
         self.0.iter().map(|(contributor, entry)| (contributor, entry))
     }
 
-    fn iter_mut(&mut self) -> impl Iterator<Item = (&Contributor, &mut MetadataEntry)> {
+    /// Entries to change: `Rc::make_mut` one to change it, copying it only
+    /// if a resolution shares it.
+    fn iter_mut(&mut self) -> impl Iterator<Item = (&Contributor, &mut Rc<MetadataEntry>)> {
         self.0.iter_mut().map(|(contributor, entry)| (&*contributor, entry))
     }
 
-    fn retain(&mut self, mut keep: impl FnMut(&Contributor, &mut MetadataEntry) -> bool) {
-        self.0.retain_mut(|(contributor, entry)| keep(contributor, entry));
+    fn retain(&mut self, mut keep: impl FnMut(&Contributor, &MetadataEntry) -> bool) {
+        self.0.retain(|(contributor, entry)| keep(contributor, entry));
     }
 }
 
@@ -373,7 +381,7 @@ impl MetadataStore {
                         None => self.remove_expiry(entry),
                         Some(since) => {
                             if entry_is_live(entry, since) {
-                                entry.updated_at = now;
+                                Rc::make_mut(entry).updated_at = now;
                             }
                             self.add_expiry(entry);
                         }
@@ -523,7 +531,8 @@ impl MetadataStore {
         if let Some(entries) = self.entries.get(entity_id) {
             for (key, contributions) in entries {
                 let mut candidates = Vec::with_capacity(contributions.len());
-                for (contributor, entry) in contributions.iter() {
+                let mut shared = Vec::with_capacity(contributions.len());
+                for (contributor, entry) in contributions.shared() {
                     if !self.is_live(contributor, entry, now) {
                         continue;
                     }
@@ -532,11 +541,23 @@ impl MetadataStore {
                         let deadline = entry.updated_at.saturating_add(ttl);
                         until = Some(until.map_or(deadline, |until| until.min(deadline)));
                     }
-                    candidates.push(CandidateEntry::new(self.source(contributor), entry.clone()));
+                    candidates.push(CandidateEntry::new(self.source(contributor), (**entry).clone()));
+                    shared.push((contributor, entry));
                 }
                 if let Some(candidate) = select_primary_entry(&candidates) {
-                    let source = self.source_ixs.get_key_value(candidate.source_id.as_str()).map(|(source, _)| source.clone());
-                    facts.push((key.clone(), Fact { entry: candidate.entry, source }));
+                    // The store's own entry, shared, when the winner is one as held.
+                    let held = shared
+                        .iter()
+                        .find(|(contributor, entry)| self.source(contributor) == candidate.source_id && ***entry == candidate.entry)
+                        .map(|(contributor, entry)| (self.sources[contributor.source as usize].clone(), Rc::clone(entry)));
+                    let (source, entry) = match held {
+                        Some((source, entry)) => (Some(source), entry),
+                        None => {
+                            let source = self.source_ixs.get_key_value(candidate.source_id.as_str()).map(|(source, _)| source.clone());
+                            (source, Rc::new(candidate.entry))
+                        }
+                    };
+                    facts.push((key.clone(), Fact { entry, source }));
                 }
             }
         }
@@ -952,8 +973,10 @@ impl MetadataStore {
                 }
             }
             for contributions in keys.values() {
-                for (_, entry) in contributions.iter() {
-                    census.value("store: fact values", &entry.value);
+                for (_, entry) in contributions.shared() {
+                    if census.first(entry) {
+                        census.value("store: fact values", &entry.value);
+                    }
                 }
             }
         }
@@ -980,7 +1003,9 @@ impl ResolvedFacts {
             census.map(&format!("{prefix}: spines"), &format!("{prefix}: spine keys"), self.keys());
         }
         for (_, fact) in self.facts() {
-            census.value(&format!("{prefix}: values"), &fact.entry.value);
+            if census.first(&fact.entry) {
+                census.value(&format!("{prefix}: values (not shared)"), &fact.entry.value);
+            }
         }
     }
 }

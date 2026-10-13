@@ -18,7 +18,8 @@ pub struct Shape {
 /// for a fact Andamento made itself).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fact {
-    pub entry: MetadataEntry,
+    /// Shared with the store when it is a producer's entry as held.
+    pub entry: Rc<MetadataEntry>,
     pub source: Option<Rc<str>>,
 }
 
@@ -76,7 +77,7 @@ impl ResolvedFacts {
         let mut keys = Vec::with_capacity(values.len());
         let mut facts = Vec::with_capacity(values.len());
         for (key, entry) in values {
-            facts.push(Fact { entry, source: sources.get(&key).map(|source| Rc::from(source.as_str())) });
+            facts.push(Fact { entry: Rc::new(entry), source: sources.get(&key).map(|source| Rc::from(source.as_str())) });
             keys.push(Rc::from(key));
         }
         Self { shape: Rc::new(Shape { keys: keys.into_boxed_slice() }), facts }
@@ -92,7 +93,7 @@ impl ResolvedFacts {
     }
 
     pub fn get(&self, key: &str) -> Option<&MetadataEntry> {
-        self.fact(key).map(|fact| &fact.entry)
+        self.fact(key).map(|fact| &*fact.entry)
     }
 
     pub fn fact(&self, key: &str) -> Option<&Fact> {
@@ -113,7 +114,7 @@ impl ResolvedFacts {
 
     /// Entries by key, in key order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &MetadataEntry)> {
-        self.facts().map(|(key, fact)| (key, &fact.entry))
+        self.facts().map(|(key, fact)| (key, &*fact.entry))
     }
 
     #[cfg(test)]
