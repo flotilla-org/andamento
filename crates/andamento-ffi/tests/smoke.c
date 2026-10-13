@@ -410,11 +410,44 @@ static void check_handles(void) {
     andamento_destroy(h);
 }
 
+/* A stale sidebar commit names every section placed since the host last
+   committed, not only what the last reconcile placed (wheelhouse#372): the
+   host's retry would otherwise close a section placed mid-gesture. */
+static int placed(const AndamentoSidebarArrangement *a, const char *key) {
+    for (size_t i = 0; i < a->note_count; ++i)
+        if (a->notes[i].kind == ANDAMENTO_NOTE_PLACED && eq(a->notes[i].key, key)) return 1;
+    return 0;
+}
+static void check_stale_sidebar_placements(void) {
+    const char *tree = "region \"tree\" root-template=\"flotilla/region/tree\" placement=\"tree\" order=10\n"
+                       "placement \"tree\" { for \"p\" kind=\"project\"; }\n";
+    const char *more = "region \"tree\" root-template=\"flotilla/region/tree\" placement=\"tree\" order=10\n"
+                       "placement \"tree\" { for \"p\" kind=\"project\"; }\n"
+                       "region \"more\" root-template=\"flotilla/region/tree\" placement=\"more\" order=20\n"
+                       "placement \"more\" { for \"p\" kind=\"project\"; }\n";
+    Andamento *h = create(tree);
+    AndamentoSidebarArrangement *a = andamento_sidebar_arrangement_get(h, &error);
+    assert(a && !error);
+    AndamentoSidebarArrangement *host = andamento_sidebar_arrangement_commit(h, &a->doc, a->generation, &error);
+    assert(host && !error && host->status == ANDAMENTO_COMMITTED && !placed(host, "more"));
+    andamento_sidebar_arrangement_free(a);
+    /* Mid-gesture: "more" is declared and placed, then a reconcile that
+       places nothing. */
+    ok(andamento_configure(h, text(more), &error));
+    ok(andamento_configure(h, text(more), &error));
+    AndamentoSidebarArrangement *stale = andamento_sidebar_arrangement_commit(h, &host->doc, host->generation, &error);
+    assert(stale && !error && stale->status == ANDAMENTO_STALE && placed(stale, "more"));
+    andamento_sidebar_arrangement_free(stale);
+    andamento_sidebar_arrangement_free(host);
+    andamento_destroy(h);
+}
+
 int main(int argc, char **argv) {
     assert(argc == 3);
     check_sidebar(argv[1], argv[2]);
     check_dashboard(argv[1], argv[2]);
     check_providers();
+    check_stale_sidebar_placements();
     check_workspace(argv[1]);
     check_handles();
     puts("C ABI smoke test passed");

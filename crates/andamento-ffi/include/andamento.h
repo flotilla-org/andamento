@@ -565,8 +565,10 @@ typedef struct {
   // The host has committed since the last reset.
   uint32_t owned;
   AndamentoSidebarDoc doc;
-  // Every CLOSED section and UNRESOLVED key, and what the last
-  // reconciliation or call did: PLACED, RESTORED and DUPLICATE.
+  // Every CLOSED section and UNRESOLVED key, every section PLACED since
+  // the host last committed (so a stale commit still names what was
+  // placed meanwhile), and what the last reconciliation or call did:
+  // RESTORED and DUPLICATE.
   const AndamentoNote *notes;
   size_t note_count;
 } AndamentoSidebarArrangement;
