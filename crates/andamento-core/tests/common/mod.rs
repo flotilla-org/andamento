@@ -5,6 +5,7 @@ use andamento_core::{
     tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, Sidebar, WorkspaceId,
 };
 use std::collections::BTreeSet;
+use std::rc::Rc;
 
 /// The subscription test facts come from.
 pub const PROVIDER: &str = "test";
@@ -56,7 +57,7 @@ pub fn patch(subject: EntityRef, facts: &[(&str, MetadataValue)]) -> MetadataPat
 
 /// Every node, in preorder.
 pub fn nodes(surface: &SurfaceSnapshot) -> Vec<&PlacementNode> {
-    fn collect<'a>(nodes: &'a [PlacementNode], out: &mut Vec<&'a PlacementNode>) {
+    fn collect<'a>(nodes: &'a [Rc<PlacementNode>], out: &mut Vec<&'a PlacementNode>) {
         for node in nodes {
             out.push(node);
             collect(&node.children, out);

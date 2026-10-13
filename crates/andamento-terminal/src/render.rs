@@ -5,6 +5,7 @@ use andamento_core::{
     Priority, StatusIcon, WorkspaceId,
 };
 use ansi_term::{Color, Style};
+use std::rc::Rc;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// Terminal-owned colors; the host adapter translates its theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,7 +263,7 @@ struct PlacementRenderLine<'a> {
 /// scope. The controller has already materialized the loop tree; the final
 /// placement segment identifies sibling loop instances, and `placement_layout`
 /// carries the declaration that selected their geometry.
-fn render_placement_lines<'a>(root: String, entities: &'a [PlacementNode], cols: usize) -> Vec<PlacementRenderLine<'a>> {
+fn render_placement_lines<'a>(root: String, entities: &'a [Rc<PlacementNode>], cols: usize) -> Vec<PlacementRenderLine<'a>> {
     let mut lines = vec![PlacementRenderLine { text: root, entity: None, inline_hits: vec![] }];
     append_placement_loop_instance(&mut lines, 0, entities, 0, cols);
     lines
@@ -272,7 +273,7 @@ fn render_placement_lines<'a>(root: String, entities: &'a [PlacementNode], cols:
 fn append_placement_loop_instance<'a>(
     lines: &mut Vec<PlacementRenderLine<'a>>,
     parent_row: usize,
-    entities: &'a [PlacementNode],
+    entities: &'a [Rc<PlacementNode>],
     depth: usize,
     cols: usize,
 ) {
@@ -341,7 +342,7 @@ fn append_placement_loop_instance<'a>(
                     }
                     let start = indent.width() + current.width();
                     current.push_str(&item);
-                    current_hits.push((entity, start..start + item.width()));
+                    current_hits.push((&**entity, start..start + item.width()));
                 }
                 if !current.is_empty() {
                     rows.push((current, current_hits));
@@ -358,7 +359,7 @@ fn append_placement_loop_instance<'a>(
                     }
                     let item_parent = item_parent_rows
                         .iter()
-                        .find_map(|(candidate, row)| std::ptr::eq(*candidate, entity).then_some(*row))
+                        .find_map(|(candidate, row)| std::ptr::eq(*candidate, &**entity).then_some(*row))
                         .unwrap_or(parent_row);
                     append_placement_loop_instance(lines, item_parent, &entity.children, depth + 1, cols);
                 }
@@ -377,7 +378,7 @@ fn append_placement_loop_instance<'a>(
     }
 }
 
-fn resolve_placement_loop_fields(entities: &[PlacementNode], cols: usize) -> Vec<String> {
+fn resolve_placement_loop_fields(entities: &[Rc<PlacementNode>], cols: usize) -> Vec<String> {
     let rows = entities
         .iter()
         .map(|entity| {
@@ -558,7 +559,7 @@ struct BufferedLine {
 }
 
 fn contains_selected(node: &PlacementNode) -> bool {
-    matches!(node.state, PresentationState::Live { selected: true, .. }) || node.children.iter().any(contains_selected)
+    matches!(node.state, PresentationState::Live { selected: true, .. }) || node.children.iter().any(|child| contains_selected(child))
 }
 
 fn show_metadata(model: &ControllerViewModel, node: &PlacementNode) -> bool {

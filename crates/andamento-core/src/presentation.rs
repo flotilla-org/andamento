@@ -1,5 +1,9 @@
 //! Semantic placement snapshots shared by all frontends.
-use std::{collections::BTreeMap, ops::ControlFlow, rc::Rc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    ops::ControlFlow,
+    rc::Rc,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +35,7 @@ pub struct Section {
     pub order: Option<i64>,
     pub pinned: bool,
     pub content: Content,
-    pub nodes: Vec<PlacementNode>,
+    pub nodes: Vec<Rc<PlacementNode>>,
 }
 
 /// Andamento's own system kinds and facts start with `.`; conventions that
@@ -98,7 +102,7 @@ pub struct PlacementNode {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
     /// Retained even when collapsed, for inspection and native input handling.
-    pub children: Vec<PlacementNode>,
+    pub children: Vec<Rc<PlacementNode>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,21 +139,34 @@ impl Content {
 
 /// The first placement of `entity`, depth first. A default group placed more
 /// than once covers leftover tabs under its first placement only.
-fn find_node_mut<'a>(nodes: &'a mut [PlacementNode], entity: &EntityRef) -> Option<&'a mut PlacementNode> {
-    for node in nodes {
-        if &node.entity == entity {
-            return Some(node);
+/// The node presenting `entity`, made exclusively this snapshot's (copying
+/// the nodes on the way to it that are shared) so it can be changed.
+fn find_node_mut<'a>(nodes: &'a mut [Rc<PlacementNode>], entity: &EntityRef) -> Option<&'a mut PlacementNode> {
+    fn path(nodes: &[Rc<PlacementNode>], entity: &EntityRef, out: &mut Vec<usize>) -> bool {
+        for (index, node) in nodes.iter().enumerate() {
+            out.push(index);
+            if &node.entity == entity || path(&node.children, entity, out) {
+                return true;
+            }
+            out.pop();
         }
-        if let Some(found) = find_node_mut(&mut node.children, entity) {
-            return Some(found);
-        }
+        false
     }
-    None
+    let mut indices = vec![];
+    if !path(nodes, entity, &mut indices) {
+        return None;
+    }
+    let (&first, rest) = indices.split_first()?;
+    let mut node = Rc::make_mut(&mut nodes[first]);
+    for &index in rest {
+        node = Rc::make_mut(&mut node.children[index]);
+    }
+    Some(node)
 }
 
 // Inspection and coverage both traverse collapsed descendants. The callback can
 // stop early for lookup, without allocating an intermediate list of nodes.
-fn visit_nodes<'a, B>(nodes: &'a [PlacementNode], visit: &mut impl FnMut(&'a PlacementNode) -> ControlFlow<B>) -> ControlFlow<B> {
+fn visit_nodes<'a, B>(nodes: &'a [Rc<PlacementNode>], visit: &mut impl FnMut(&'a PlacementNode) -> ControlFlow<B>) -> ControlFlow<B> {
     for node in nodes {
         visit(node)?;
         visit_nodes(&node.children, visit)?;
@@ -195,6 +212,7 @@ impl SurfaceSnapshot {
         workspaces: &[ControllerTab],
         host_entities: &BTreeMap<WorkspaceId, EntityRef>,
         default_groups: &[EntityRef],
+        stale: &dyn Fn(&EntityRef) -> bool,
     ) {
         let mut covered = std::collections::BTreeSet::new();
         for section in &self.sections {
@@ -217,7 +235,8 @@ impl SurfaceSnapshot {
                 .cloned()
                 .unwrap_or_else(|| EntityRef::local(system::WORKSPACE, workspace.tab_id.to_string()));
             let key = PlacementKey(vec![PlacementSegment { loop_name: UNPLACED_WORKSPACES_SECTION.into(), entity: entity.clone() }]);
-            nodes.push(PlacementNode {
+            let is_stale = stale(&entity);
+            nodes.push(Rc::new(PlacementNode {
                 loop_key: key.loop_key(UNPLACED_WORKSPACES_SECTION).expect("a cover key has its one segment"),
                 key,
                 entity,
@@ -238,9 +257,9 @@ impl SurfaceSnapshot {
                 facts: Default::default(),
                 variables: None,
                 collapsed: false,
-                stale: false,
+                stale: is_stale,
                 children: Vec::new(),
-            });
+            }));
         }
         // The first default group (in catalog order) that is placed covers
         // them; an unplaced default doesn't hide a placed one.
@@ -248,10 +267,12 @@ impl SurfaceSnapshot {
             for section in &mut self.sections {
                 if let Some(parent) = find_node_mut(&mut section.nodes, group) {
                     for mut node in std::mem::take(&mut nodes) {
+                        let node_mut = Rc::make_mut(&mut node);
                         let mut segments = parent.key.0.clone();
-                        segments.push(PlacementSegment { loop_name: UNPLACED_WORKSPACES_SECTION.into(), entity: node.entity.clone() });
-                        node.key = PlacementKey(segments);
-                        node.loop_key = node.key.loop_key(&section.name).expect("a cover key has the default group's segment and its own");
+                        segments.push(PlacementSegment { loop_name: UNPLACED_WORKSPACES_SECTION.into(), entity: node_mut.entity.clone() });
+                        node_mut.key = PlacementKey(segments);
+                        node_mut.loop_key =
+                            node_mut.key.loop_key(&section.name).expect("a cover key has the default group's segment and its own");
                         parent.children.push(node);
                     }
                     break 'groups;
@@ -276,18 +297,29 @@ impl SurfaceSnapshot {
         });
     }
 
-    pub(crate) fn resolve(
-        model: &ControllerViewModel,
-        sections: &[EvaluatedSection],
-        states: &BTreeMap<EntityRef, PresentationState>,
-        node_variables: &NodeVariables,
-    ) -> Self {
+    /// Resolve each section's placed entities into nodes. A node whose
+    /// placement, variables, state, collapse, staleness and children are
+    /// what they were last time is the same node, shared with the snapshot
+    /// before; `kept` holds those, with what they were resolved under.
+    pub(crate) fn resolve(model: &ControllerViewModel, sections: &[EvaluatedSection], cx: SurfaceContext, kept: &mut SurfaceKept) -> Self {
         let mut snapshot = Self {
             display_variables: model.display_variables.clone(),
             display_values: model.display_variable_values.clone(),
             ..Self::default()
         };
-        let orders: BTreeMap<_, _> = model.sibling_orders.iter().cloned().collect();
+        let inputs = (cx.generation, model.sibling_orders.clone());
+        let mut prior = std::mem::take(&mut kept.nodes);
+        if kept.inputs.as_ref() != Some(&inputs) {
+            prior.clear();
+            kept.inputs = Some(inputs);
+        }
+        let mut resolver = Resolver {
+            model,
+            cx,
+            orders: model.sibling_orders.iter().cloned().collect(),
+            next: HashMap::with_capacity(prior.len()),
+            prior,
+        };
         let root = model.template_config.effective_variables.iter().find(|variables| variables.node == NodeKey::Root);
         for region in sections {
             let definition = &region.definition;
@@ -297,23 +329,88 @@ impl SurfaceSnapshot {
             if let Some(error) = &content.error {
                 snapshot.diagnostics.push(format!("region {}: {error}", definition.name));
             }
+            let nodes = region.entities.iter().filter_map(|entity| resolver.node(entity, definition)).collect();
             snapshot.sections.push(Section {
                 name: definition.name.clone(),
                 default_host: definition.default_host.clone(),
                 order: definition.order,
                 pinned: definition.pinned,
                 content,
-                nodes: apply_sibling_orders(
-                    region
-                        .entities
-                        .iter()
-                        .filter_map(|entity| resolve_node(model, node_variables, entity, definition, states, &orders))
-                        .collect(),
-                    &orders,
-                ),
+                nodes: apply_sibling_orders(nodes, &resolver.orders),
             });
         }
+        kept.nodes = resolver.next;
         snapshot
+    }
+}
+
+/// What resolving nodes reads besides their placements.
+pub(crate) struct SurfaceContext<'a> {
+    pub(crate) generation: u64,
+    pub(crate) variables: &'a NodeVariables,
+    pub(crate) states: &'a BTreeMap<EntityRef, PresentationState>,
+    /// Whether the entity a node presents has a stale provider.
+    pub(crate) stale: &'a dyn Fn(&EntityRef) -> bool,
+}
+
+/// A node's resolution, kept while what it was resolved from is the same.
+#[derive(Debug)]
+pub(crate) struct SurfaceMemo {
+    placement: Rc<EvaluatedPlacement>,
+    variables: Option<Rc<EffectiveNodeVariables>>,
+    state: PresentationState,
+    collapsed: bool,
+    stale: bool,
+    node: Rc<PlacementNode>,
+}
+
+/// Resolved nodes, by the address of their placements, with what they were
+/// resolved under: the template catalog's generation and the sibling orders.
+#[derive(Debug, Default)]
+pub(crate) struct SurfaceKept {
+    inputs: Option<(u64, Vec<(PlacementLoopKey, Vec<EntityRef>)>)>,
+    nodes: HashMap<*const EvaluatedPlacement, SurfaceMemo>,
+}
+
+struct Resolver<'a> {
+    model: &'a ControllerViewModel,
+    cx: SurfaceContext<'a>,
+    orders: BTreeMap<PlacementLoopKey, Vec<EntityRef>>,
+    prior: HashMap<*const EvaluatedPlacement, SurfaceMemo>,
+    next: HashMap<*const EvaluatedPlacement, SurfaceMemo>,
+}
+
+impl Resolver<'_> {
+    fn node(&mut self, entity: &Rc<EvaluatedPlacement>, region: &SurfaceRegionDefinition) -> Option<Rc<PlacementNode>> {
+        let key = entity.placement.as_ref()?;
+        let children: Vec<_> = entity.children.iter().filter_map(|child| self.node(child, region)).collect();
+        let children = apply_sibling_orders(children, &self.orders);
+        let address = Rc::as_ptr(entity);
+        let variables = self.cx.variables.get(&address).map(|memo| memo.resolved.clone());
+        let state = self.cx.states.get(&entity.entity).cloned().unwrap_or_default();
+        let collapsed = self.model.collapsed_placements.contains(key);
+        let stale = (self.cx.stale)(&entity.entity);
+        if let Some(memo) = self.prior.remove(&address) {
+            let same = Rc::ptr_eq(&memo.placement, entity)
+                && match (&memo.variables, &variables) {
+                    (Some(before), Some(now)) => Rc::ptr_eq(before, now),
+                    (None, None) => true,
+                    _ => false,
+                }
+                && memo.state == state
+                && memo.collapsed == collapsed
+                && memo.stale == stale
+                && memo.node.children.len() == children.len()
+                && memo.node.children.iter().zip(&children).all(|(before, now)| Rc::ptr_eq(before, now));
+            if same {
+                let node = memo.node.clone();
+                self.next.insert(address, memo);
+                return Some(node);
+            }
+        }
+        let node = Rc::new(resolve_node(entity, variables.as_deref(), region, state.clone(), collapsed, stale, children)?);
+        self.next.insert(address, SurfaceMemo { placement: entity.clone(), variables, state, collapsed, stale, node: node.clone() });
+        Some(node)
     }
 }
 
@@ -372,7 +469,7 @@ fn effective_metadata(
 /// invocation. Named entities come first in the saved order; an entity the
 /// order doesn't name goes after its nearest data-order predecessor already
 /// placed, or first; names that no longer match are skipped.
-fn apply_sibling_orders(nodes: Vec<PlacementNode>, orders: &BTreeMap<PlacementLoopKey, Vec<EntityRef>>) -> Vec<PlacementNode> {
+fn apply_sibling_orders(nodes: Vec<Rc<PlacementNode>>, orders: &BTreeMap<PlacementLoopKey, Vec<EntityRef>>) -> Vec<Rc<PlacementNode>> {
     if orders.is_empty() {
         return nodes;
     }
@@ -391,7 +488,7 @@ fn apply_sibling_orders(nodes: Vec<PlacementNode>, orders: &BTreeMap<PlacementLo
     out
 }
 
-fn order_run(data: Vec<PlacementNode>, order: &[EntityRef]) -> Vec<PlacementNode> {
+fn order_run(data: Vec<Rc<PlacementNode>>, order: &[EntityRef]) -> Vec<Rc<PlacementNode>> {
     // Data indices in display order: saved names first, once each, then each
     // unnamed index after its nearest data-order predecessor already placed.
     let index_of = |entity: &EntityRef| data.iter().position(|n| &n.entity == entity);
@@ -408,24 +505,22 @@ fn order_run(data: Vec<PlacementNode>, order: &[EntityRef]) -> Vec<PlacementNode
         let at = (0..index).rev().find_map(|before| placed.iter().position(|&p| p == before)).map_or(0, |position| position + 1);
         placed.insert(at, index);
     }
-    let mut data: Vec<Option<PlacementNode>> = data.into_iter().map(Some).collect();
+    let mut data: Vec<Option<Rc<PlacementNode>>> = data.into_iter().map(Some).collect();
     placed.into_iter().filter_map(|index| data[index].take()).collect()
 }
 
 fn resolve_node(
-    model: &ControllerViewModel,
-    node_variables: &NodeVariables,
     entity: &EvaluatedPlacement,
+    variables: Option<&EffectiveNodeVariables>,
     region: &SurfaceRegionDefinition,
-    states: &BTreeMap<EntityRef, PresentationState>,
-    orders: &BTreeMap<PlacementLoopKey, Vec<EntityRef>>,
+    state: PresentationState,
+    collapsed: bool,
+    stale: bool,
+    children: Vec<Rc<PlacementNode>>,
 ) -> Option<PlacementNode> {
     let key = entity.placement.clone()?;
     let mut facts = entity.metadata.clone();
-    let variables = match node_variables.get(&(entity as *const EvaluatedPlacement)) {
-        Some(memo) => effective_metadata(Some(&memo.resolved), Rc::make_mut(&mut facts)),
-        None => None,
-    };
+    let variables = variables.and_then(|variables| effective_metadata(Some(variables), Rc::make_mut(&mut facts)));
     let form = region
         .promotions
         .iter()
@@ -433,7 +528,6 @@ fn resolve_node(
         .map(|p| &p.form)
         .unwrap_or(&region.form)
         .clone();
-    let collapsed = model.collapsed_placements.contains(&key);
     let slot = if form == DISPLAY_FORM_COMPACT { entity.templates.compact.as_deref() } else { entity.templates.detail.as_deref() };
     let mut display_facts = facts.clone();
     let declared = declared_abbreviation(&display_facts, &key.0.last()?.loop_name, entity.tier)
@@ -451,7 +545,7 @@ fn resolve_node(
             detail
         },
         layout: entity.annotation.layout.clone(),
-        state: states.get(&entity.entity).cloned().unwrap_or_default(),
+        state,
         loop_key: key.loop_key(&region.name)?,
         key,
         entity: entity.entity.clone(),
@@ -460,11 +554,8 @@ fn resolve_node(
         facts,
         variables,
         collapsed,
-        stale: false,
-        children: apply_sibling_orders(
-            entity.children.iter().filter_map(|child| resolve_node(model, node_variables, child, region, states, orders)).collect(),
-            orders,
-        ),
+        stale,
+        children,
     })
 }
 

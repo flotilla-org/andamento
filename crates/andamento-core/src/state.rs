@@ -44,7 +44,7 @@ use crate::template_config::{
 use crate::WorkspaceId;
 use crate::{
     managed::{DesiredContent, Resolved},
-    presentation::{system, PlacementNode, PresentationState, Section, SurfaceSnapshot},
+    presentation::{system, PresentationState, SurfaceContext, SurfaceKept, SurfaceSnapshot},
     records::{recordable, DashboardState, SubjectRecord},
     sidebar_arrangement::RegionHints,
     suggested_layout::{self, LayoutError, SuggestedLayout},
@@ -756,8 +756,10 @@ struct Kept {
     /// Each region's loops as last evaluated (`evaluate_regions`), with
     /// what they were evaluated under.
     placements: RefCell<Option<(PlacementInputs, Vec<Vec<LoopMemo>>)>>,
-    /// Each placed node's variables (`placement_variables`).
+    /// Each placed node's variables (`resolve_placement_variables`).
     variables: RefCell<VariablesKept>,
+    /// Each placed node's resolution (`SurfaceSnapshot::resolve`).
+    surface: RefCell<SurfaceKept>,
 }
 
 impl Kept {
@@ -768,6 +770,7 @@ impl Kept {
         self.applied.swap(&other.applied);
         self.placements.swap(&other.placements);
         self.variables.swap(&other.variables);
+        self.surface.swap(&other.surface);
     }
 }
 
@@ -1687,8 +1690,20 @@ impl ControllerState {
                 (entity.entity.clone(), state)
             })
             .collect();
+        // A node is stale when the entity it presents (a ref's target) has a
+        // stale provider.
+        let any_stale = self.metadata.has_stale();
+        let stale = |entity: &EntityRef| {
+            any_stale && {
+                let target =
+                    (entity.kind == system::REF).then(|| catalog.entity(entity)).flatten().and_then(|entity| ref_target(&entity.values));
+                self.metadata.is_stale(&target.as_ref().unwrap_or(entity).provider)
+            }
+        };
         let surface_phase = profile::span("surface");
-        model.presentation = Some(SurfaceSnapshot::resolve(&model, &surface_regions, &states, &node_variables.nodes));
+        let cx = SurfaceContext { generation: self.template_generation, variables: &node_variables.nodes, states: &states, stale: &stale };
+        let presentation = SurfaceSnapshot::resolve(&model, &surface_regions, cx, &mut self.kept.surface.borrow_mut());
+        model.presentation = Some(presentation);
         drop(surface_phase);
         if let Some(surface) = &mut model.presentation {
             // Default groups (`.default`) cover tabs nothing else places.
@@ -1700,31 +1715,10 @@ impl ControllerState {
                 })
                 .map(|e| e.entity.clone())
                 .collect::<Vec<_>>();
-            surface.cover_workspaces(&self.tabs, &host_entities, &default_groups);
-            if self.metadata.has_stale() {
-                self.mark_stale(&mut surface.sections, catalog);
-            }
+            surface.cover_workspaces(&self.tabs, &host_entities, &default_groups, &stale);
             surface.diagnostics.extend(model.template_config.warnings.iter().cloned());
         }
         model
-    }
-
-    /// Flag nodes whose presented entity (a ref's target) has a stale provider.
-    fn mark_stale(&self, sections: &mut [Section], catalog: &CatalogEvaluation) {
-        fn mark(state: &ControllerState, nodes: &mut [PlacementNode], catalog: &CatalogEvaluation) {
-            for node in nodes {
-                let target = (node.entity.kind == system::REF)
-                    .then(|| catalog.entity(&node.entity))
-                    .flatten()
-                    .and_then(|entity| ref_target(&entity.values));
-                let presented = target.as_ref().unwrap_or(&node.entity);
-                node.stale = state.metadata.is_stale(&presented.provider);
-                mark(state, &mut node.children, catalog);
-            }
-        }
-        for section in sections {
-            mark(self, &mut section.nodes, catalog);
-        }
     }
 
     pub fn view_model_for_client(&self, client_id: u16) -> ControllerViewModel {

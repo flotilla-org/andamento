@@ -5,6 +5,7 @@ use andamento_core::{
     MetadataTarget, MetadataValue, Sidebar,
 };
 use std::io::Cursor;
+use std::rc::Rc;
 const CONFIG: &str = r#"
 region "tree" root-template="heading" form="compact" placement="tree"
 region "convoys" root-template="heading" form="compact" placement="convoys"
@@ -42,7 +43,7 @@ fn frames(name: &str) -> Vec<Frame> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures").join(name);
     read(Cursor::new(std::fs::read(path).unwrap())).unwrap()
 }
-fn catalog(nodes: &[PlacementNode]) -> serde_json::Value {
+fn catalog(nodes: &[Rc<PlacementNode>]) -> serde_json::Value {
     serde_json::Value::Array(
         nodes
             .iter()

@@ -9,6 +9,7 @@ use andamento_core::{
 };
 use common::{entity, patch, refs, text, Feed, CONFIG};
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 // Workspace IDs, named for use in patterns.
 const W7: WorkspaceId = tab_workspace_id(7);
@@ -318,7 +319,7 @@ fn removing_last_expired_fact_invalidates_entity_membership() {
     assert!(sidebar.snapshot().surface.sections[0].nodes.is_empty());
 }
 
-fn fallback(sidebar: &Sidebar) -> Vec<PlacementNode> {
+fn fallback(sidebar: &Sidebar) -> Vec<Rc<PlacementNode>> {
     sidebar.snapshot().surface.sections.into_iter().find(|s| s.name == UNPLACED_WORKSPACES_SECTION).map(|s| s.nodes).unwrap_or_default()
 }
 
@@ -699,7 +700,7 @@ fn retracted_and_expired_entities_leave_the_catalog() {
 }
 
 fn directory_state(sidebar: &Sidebar, subject: &EntityRef) -> PresentationState {
-    fn find(nodes: &[PlacementNode], subject: &EntityRef) -> Option<PresentationState> {
+    fn find(nodes: &[Rc<PlacementNode>], subject: &EntityRef) -> Option<PresentationState> {
         nodes.iter().find_map(|n| if &n.entity == subject { Some(n.state.clone()) } else { find(&n.children, subject) })
     }
     sidebar.snapshot().surface.sections.iter().find_map(|s| find(&s.nodes, subject)).unwrap()
@@ -794,7 +795,7 @@ fn retained_sidebar() -> Sidebar {
 }
 
 fn workspace_nodes(surface: &SurfaceSnapshot) -> Vec<&PlacementNode> {
-    fn collect<'a>(nodes: &'a [PlacementNode], result: &mut Vec<&'a PlacementNode>) {
+    fn collect<'a>(nodes: &'a [Rc<PlacementNode>], result: &mut Vec<&'a PlacementNode>) {
         for node in nodes {
             if matches!(node.state, PresentationState::Live { workspace_id: W42, .. }) {
                 result.push(node);
@@ -1439,7 +1440,7 @@ fn tab_patch(tab: u64, facts: &[(&str, MetadataValue)]) -> MetadataPatch {
     patch
 }
 
-fn project_children(sidebar: &Sidebar) -> Vec<PlacementNode> {
+fn project_children(sidebar: &Sidebar) -> Vec<Rc<PlacementNode>> {
     sidebar
         .snapshot()
         .surface
@@ -1447,7 +1448,7 @@ fn project_children(sidebar: &Sidebar) -> Vec<PlacementNode> {
         .into_iter()
         .find(|s| s.name == "tree")
         .and_then(|s| s.nodes.into_iter().next())
-        .map(|project| project.children)
+        .map(|project| project.children.clone())
         .unwrap_or_default()
 }
 

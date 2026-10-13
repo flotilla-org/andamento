@@ -2,6 +2,7 @@ use crate::presentation::PlacementNode;
 use crate::state::ControllerState;
 use crate::{EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, NodeKey, RailUiAction};
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 fn state() -> ControllerState {
     let mut state = ControllerState::default();
@@ -10,7 +11,7 @@ fn state() -> ControllerState {
     }
     state
 }
-fn outline(nodes: &[PlacementNode], depth: usize, out: &mut String) {
+fn outline(nodes: &[Rc<PlacementNode>], depth: usize, out: &mut String) {
     for node in nodes {
         out.push_str(&format!(
             "{}{}:{} [{}] {}\n",

@@ -3,12 +3,13 @@
 //! with ~25 facts each) arrives as one snapshot and then as small deltas;
 //! neither may cost work in proportion to everything already stored.
 use crate::metadata::ENTITY_RESOLUTIONS;
-use crate::presentation::SurfaceSnapshot;
+use crate::presentation::{PlacementNode, SurfaceSnapshot};
 use crate::sidebar::{Action, Sidebar, Workspace};
 use crate::state::ControllerState;
 use crate::template_config::{parse_template_config_kdl, TemplateConfigCatalog, TemplateConfigLayer};
 use crate::{tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, WorkspaceId};
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 const PROVIDER: &str = "subscription";
 const CONFIG: &str = include_str!("../tests/fixtures/sidebar.kdl");
@@ -647,6 +648,6 @@ fn stress_shapes() {
     }
 }
 
-fn count_nodes(nodes: &[crate::presentation::PlacementNode]) -> usize {
+fn count_nodes(nodes: &[Rc<PlacementNode>]) -> usize {
     nodes.iter().map(|node| 1 + count_nodes(&node.children)).sum()
 }

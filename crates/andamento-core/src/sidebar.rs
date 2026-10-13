@@ -1,5 +1,6 @@
 //! One presentation client's runtime. Hosts supply time and observations and
 //! execute returned effects. Transport and rendering do not run inside it.
+use std::rc::Rc;
 use std::{
     cell::{OnceCell, RefCell},
     collections::{BTreeMap, BTreeSet},
@@ -392,7 +393,7 @@ impl Sidebar {
     }
 
     fn retain_workspace_paths(&mut self, subjects: &BTreeMap<WorkspaceId, EntityRef>) -> bool {
-        fn collect(nodes: &[PlacementNode], ancestors: &mut Vec<EntityRef>, paths: &mut BTreeMap<WorkspaceId, BTreeSet<EntityRef>>) {
+        fn collect(nodes: &[Rc<PlacementNode>], ancestors: &mut Vec<EntityRef>, paths: &mut BTreeMap<WorkspaceId, BTreeSet<EntityRef>>) {
             for node in nodes {
                 // Andamento's own kinds (`.`-prefixed: workspaces, sections,
                 // groups, refs) are never retained: the host retracts them, and

@@ -3,6 +3,7 @@ use andamento_core::{
     state::{ControllerState, ControllerTab},
     tab_workspace_id, MetadataControls, NodeKey, RailUiAction,
 };
+use std::rc::Rc;
 use unicode_width::UnicodeWidthStr;
 
 fn state() -> ControllerState {
@@ -139,9 +140,11 @@ fn collapsed_ancestor_is_revealed_for_a_selected_descendant() {
     use andamento_core::presentation::PresentationState;
     let mut model = state().view_model();
     let surface = model.presentation.as_mut().unwrap();
-    let project = &mut surface.sections[1].nodes[0];
+    let project = Rc::make_mut(&mut surface.sections[1].nodes[0]);
     project.collapsed = true;
-    project.children[2].children[0].children[0].state = PresentationState::Live { workspace_id: tab_workspace_id(42), selected: true };
+    let child = Rc::make_mut(&mut project.children[2]);
+    let grandchild = Rc::make_mut(&mut child.children[0]);
+    Rc::make_mut(&mut grandchild.children[0]).state = PresentationState::Live { workspace_id: tab_workspace_id(42), selected: true };
     let frame =
         render_lines_with_rail_viewport(Some(&model), &[], 3, 48, true, None, None, &[], None, &MetadataControls::default(), 100, true);
     assert!(frame.ensure_active_resolved);

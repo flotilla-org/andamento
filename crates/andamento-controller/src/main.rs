@@ -2,6 +2,7 @@ mod state;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Instant;
 
 /// Most recent debug-trace entries the controller will surface in its render
@@ -120,7 +121,7 @@ fn run_harness() -> Result<(), String> {
     render_rail_lines(&model);
     if let Some(slot) = dump_template.as_deref() {
         if let Some(surface) = &model.presentation {
-            fn dump(nodes: &[PlacementNode], slot: &str) {
+            fn dump(nodes: &[Rc<PlacementNode>], slot: &str) {
                 for node in nodes {
                     let content = if slot == "detail" { &node.detail } else { &node.content };
                     std::println!("{}: {}", node.label, content.effective_kdl);

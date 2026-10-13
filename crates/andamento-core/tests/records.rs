@@ -8,6 +8,7 @@ use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::workspace::WorkspaceRecord;
 use andamento_core::{tab_workspace_id, DisplayVariableValue, EntityRef, MetadataPatch, MetadataValue, Sidebar};
 use common::{entity, nodes, refs, text, worker, Feed, WORKER};
+use std::rc::Rc;
 
 /// A patch setting `facts` on `subject`, each with `ttl`.
 fn patch(subject: EntityRef, facts: &[(&str, MetadataValue)], ttl: Option<u64>) -> MetadataPatch {
@@ -79,7 +80,7 @@ fn workspace(selected: bool) -> Workspace {
     Workspace { id: worker(), position: 0, name: "Worker".into(), selected }
 }
 
-fn tree(sidebar: &Sidebar) -> PlacementNode {
+fn tree(sidebar: &Sidebar) -> Rc<PlacementNode> {
     sidebar
         .snapshot()
         .surface
@@ -112,7 +113,7 @@ fn arranged_session() -> Sidebar {
     let vessels = project_row.children[0].loop_key.clone();
     sidebar.set_sibling_order(vessels, vec![entity("vessel", "w"), entity("vessel", "v")]).unwrap();
     sidebar.dispatch(Action::SetVariable { key: project_row.key.clone(), name: "density".into(), value: Some("compact".into()) }).unwrap();
-    sidebar.dispatch(Action::TogglePlacement { key: project_row.key }).unwrap();
+    sidebar.dispatch(Action::TogglePlacement { key: project_row.key.clone() }).unwrap();
     sidebar.set_display_variable("show-issues", Some(DisplayVariableValue::Bool(false))).unwrap();
     sidebar.set_display_variable("show-finished", Some(DisplayVariableValue::Bool(true))).unwrap();
     sidebar.set_local(EntityRef::local(".section", "s1"), BTreeMap::from([("display.label".into(), text("Mine"))])).unwrap();
