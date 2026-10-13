@@ -53,10 +53,10 @@ impl Contributions {
         self.0.binary_search_by(|(c, _)| c.cmp(contributor))
     }
 
-    fn insert(&mut self, contributor: Contributor, entry: MetadataEntry) -> Option<MetadataEntry> {
+    fn insert(&mut self, contributor: Contributor, entry: MetadataEntry) -> Option<Rc<MetadataEntry>> {
         let entry = Rc::new(entry);
         match self.position(&contributor) {
-            Ok(at) => Some(Rc::unwrap_or_clone(std::mem::replace(&mut self.0[at].1, entry))),
+            Ok(at) => Some(std::mem::replace(&mut self.0[at].1, entry)),
             Err(at) => {
                 self.0.insert(at, (contributor, entry));
                 None
@@ -304,18 +304,31 @@ impl MetadataStore {
     /// Set a fact the core or host owns (no provider).
     pub fn set(&mut self, entity_id: EntityId, key: impl Into<String>, source_id: impl Into<String>, entry: MetadataEntry) {
         let contributor = self.contributor(None, source_id);
-        self.set_contribution(entity_id, key.into(), contributor, entry);
+        self.touch(&entity_id);
+        self.record_ordinal(&entity_id, entry.ordinal);
+        self.set_contribution(&entity_id, &key.into(), contributor, entry);
     }
 
-    fn set_contribution(&mut self, entity_id: EntityId, key: String, contributor: Contributor, entry: MetadataEntry) {
-        self.touch(&entity_id);
-        self.target_ordinals.entry(entity_id.clone()).or_insert(entry.ordinal);
+    /// The order `entity_id` takes in the catalog: the ordinal of its first fact.
+    fn record_ordinal(&mut self, entity_id: &EntityId, ordinal: i64) {
+        if !self.target_ordinals.contains_key(entity_id) {
+            self.target_ordinals.insert(entity_id.clone(), ordinal);
+        }
+    }
+
+    /// Set one contribution. The caller touches the entity and records its
+    /// ordinal, once for all it sets.
+    fn set_contribution(&mut self, entity_id: &EntityId, key: &str, contributor: Contributor, entry: MetadataEntry) {
         let indexed = self.indexed(&contributor);
         let deadline = entry.ttl_ms.map(|ttl| entry.updated_at.saturating_add(ttl));
-        let key = self.shapes.get_mut().key(&key);
+        let key = self.shapes.get_mut().key(key);
         let mut entry = entry;
         self.intern_text(&mut entry.value);
-        let previous = self.entries.entry(entity_id).or_default().entry(key).or_default().insert(contributor, entry);
+        if !self.entries.contains_key(entity_id) {
+            self.entries.insert(entity_id.clone(), Stored::default());
+        }
+        let stored = self.entries.get_mut(entity_id).expect("just inserted");
+        let previous = stored.entry(key).or_default().insert(contributor, entry);
         if indexed {
             if let Some(previous) = previous {
                 self.remove_expiry(&previous);
@@ -518,6 +531,7 @@ impl MetadataStore {
                 self.target_ordinals.insert(target.clone(), ordinal);
             }
         }
+        let mut set_any = None;
         for (key, update) in patch.set {
             let next_entry = MetadataEntry {
                 value: update.value,
@@ -526,26 +540,28 @@ impl MetadataStore {
                 precedence: update.precedence.unwrap_or_default(),
                 ordinal: update.ordinal.unwrap_or_default(),
             };
-            let existing_entry = self
+            // The same payload, still live, needs setting only to renew a TTL.
+            let (set, changes) = match self
                 .entries
                 .get(&target)
                 .and_then(|entity_entries| entity_entries.get(key.as_str()))
                 .and_then(|source_entries| source_entries.get(&contributor))
-                .cloned();
-
-            match existing_entry {
-                Some(existing) if metadata_entry_payload_matches(&existing, &next_entry) && self.is_live(&contributor, &existing, now) => {
-                    if existing.ttl_ms.is_some() {
-                        self.set_contribution(target.clone(), key, contributor, next_entry);
-                        outcome.touched = true;
-                    }
+            {
+                Some(existing) if metadata_entry_payload_matches(existing, &next_entry) && self.is_live(&contributor, existing, now) => {
+                    (existing.ttl_ms.is_some(), false)
                 }
-                _ => {
-                    self.set_contribution(target.clone(), key, contributor, next_entry);
-                    outcome.touched = true;
-                    outcome.view_changed = true;
-                }
+                _ => (true, true),
+            };
+            if set {
+                set_any.get_or_insert(next_entry.ordinal);
+                self.set_contribution(&target, &key, contributor, next_entry);
+                outcome.touched = true;
+                outcome.view_changed |= changes;
             }
+        }
+        if let Some(ordinal) = set_any {
+            self.touch(&target);
+            self.record_ordinal(&target, ordinal);
         }
         // Entity identity can itself participate in placement queries even after all
         // its facts expire. Removing the last expired contribution removes it.
