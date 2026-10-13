@@ -36,30 +36,68 @@ fn labels(label: &str) -> Vec<(String, MetadataValue)> {
     ]
 }
 
+/// The shape of a generated fleet.
+#[derive(Debug, Clone, Copy)]
+struct Shape {
+    projects: usize,
+    convoys_per_project: usize,
+    /// A change request for one convoy in this many (0: none).
+    change_request_every: usize,
+    /// A role for one convoy in this many (0: none).
+    role_every: usize,
+    /// One convoy in this many is active, the rest landed.
+    active_every: usize,
+    /// One vessel in this many needs attention (0: none).
+    attention_every: usize,
+}
+
+impl Shape {
+    /// The real catalog's proportions, at `convoys` convoys.
+    fn like_the_fleet(convoys: usize) -> Self {
+        let projects = (convoys / 46).max(1);
+        Self {
+            projects,
+            convoys_per_project: convoys.div_ceil(projects),
+            change_request_every: 14,
+            role_every: 35,
+            active_every: 5,
+            attention_every: 0,
+        }
+    }
+}
+
 /// A fleet of `convoys` convoys, each with a vessel, in a handful of
-/// projects, with roles, change requests and repository memberships in the
-/// proportions of the real catalog.
+/// projects, with roles and change requests in the proportions of the real
+/// catalog.
 fn catalog(convoys: usize) -> Vec<MetadataPatch> {
-    let projects = (convoys / 46).max(1);
-    let project = |i: usize| format!("fleet/p{}@fleet", i % projects);
+    fleet(Shape::like_the_fleet(convoys), convoys)
+}
+
+/// `limit` convoys (at most the shape's) of a fleet shaped like `shape`.
+/// Convoy `c` belongs to project `c / convoys_per_project`.
+fn fleet(shape: Shape, limit: usize) -> Vec<MetadataPatch> {
+    let convoys = limit.min(shape.projects * shape.convoys_per_project);
+    let projects = convoys.div_ceil(shape.convoys_per_project).max(1);
+    let project = |c: usize| format!("fleet/p{}@fleet", c / shape.convoys_per_project);
+    let every = |n: usize, c: usize| n != 0 && c % n == 0;
     let mut patches = vec![];
     for p in 0..projects {
-        let id = project(p);
+        let id = format!("fleet/p{p}@fleet");
         let mut facts = labels(&format!("project {p}"));
         facts.extend([
             ("flotilla.project".into(), text(&id)),
             ("flotilla.project.name".into(), text(format!("p{p}"))),
             ("action.primary.recipe".into(), text("flotilla workspace open")),
             ("action.primary.target".into(), text(format!("view:project/{id}"))),
-            ("count.convoys".into(), MetadataValue::Integer(convoys as i64)),
+            ("count.convoys".into(), MetadataValue::Integer(shape.convoys_per_project as i64)),
             ("status.state".into(), text("active")),
-            ("summary.text".into(), text(format!("{convoys} entries"))),
+            ("summary.text".into(), text(format!("{} entries", shape.convoys_per_project))),
         ]);
         patches.push(patch("project", &id, facts));
     }
     for c in 0..convoys {
         let id = format!("fleet/convoy-{c:08x}");
-        let phase = if c % 5 == 0 { "active" } else { "landed" };
+        let phase = if every(shape.active_every, c) { "active" } else { "landed" };
         let mut convoy = labels(&format!("convoy {c}"));
         convoy.extend([
             ("flotilla.convoy".into(), text(&id)),
@@ -96,8 +134,11 @@ fn catalog(convoys: usize) -> Vec<MetadataPatch> {
             ("status.state".into(), text("done")),
             ("vcs.repo".into(), text("example/repo")),
         ]);
+        if every(shape.attention_every, c) {
+            vessel.push(("status.attention".into(), MetadataValue::Bool(true)));
+        }
         patches.push(patch("vessel", &id, vessel));
-        if c % 14 == 0 {
+        if every(shape.change_request_every, c) {
             let cr = format!("github.com/example/repo!{c}");
             let mut facts = labels(&format!("repo!{c}"));
             facts.extend([
@@ -108,7 +149,7 @@ fn catalog(convoys: usize) -> Vec<MetadataPatch> {
             ]);
             patches.push(patch("change_request", &cr, facts));
         }
-        if c % 35 == 0 {
+        if every(shape.role_every, c) {
             let role = format!("{}/governor{c}", project(c));
             let mut facts = labels("governor");
             facts.extend([
@@ -278,4 +319,79 @@ fn kept_state_presents_what_a_fresh_evaluation_does() {
     let mut fresh = Sidebar::new(config).unwrap();
     fresh.apply(1, PROVIDER, patches).unwrap();
     assert_eq!(kept.snapshot().surface, fresh.snapshot().surface);
+}
+
+/// Where scaling breaks: generated fleets from the real catalog's size up
+/// to hundreds of projects of hundreds of convoys, and lopsided shapes.
+/// `cargo test --release -p andamento-core stress_shapes -- --ignored
+/// --nocapture`; ANDAMENTO_CATALOG_TEMPLATE as for `real_catalog_timings`.
+#[test]
+#[ignore]
+fn stress_shapes() {
+    let template = std::env::var("ANDAMENTO_CATALOG_TEMPLATE").map(|path| std::fs::read_to_string(path).unwrap());
+    let config = template.as_deref().unwrap_or(CONFIG);
+    let base =
+        Shape { projects: 0, convoys_per_project: 0, change_request_every: 14, role_every: 35, active_every: 5, attention_every: 50 };
+    let shapes = [
+        ("real-size 12x46", Shape { projects: 12, convoys_per_project: 46, ..base }),
+        ("30x100", Shape { projects: 30, convoys_per_project: 100, ..base }),
+        ("100x100", Shape { projects: 100, convoys_per_project: 100, ..base }),
+        ("100x300", Shape { projects: 100, convoys_per_project: 300, ..base }),
+        ("300x300", Shape { projects: 300, convoys_per_project: 300, ..base }),
+        ("deep 3x10000", Shape { projects: 3, convoys_per_project: 10000, ..base }),
+        ("wide 3000x10", Shape { projects: 3000, convoys_per_project: 10, ..base }),
+        ("busy 100x100 all active", Shape { projects: 100, convoys_per_project: 100, active_every: 1, attention_every: 3, ..base }),
+    ];
+    let only = std::env::var("STRESS_ONLY").ok();
+    let time = |f: &mut dyn FnMut()| {
+        let started = std::time::Instant::now();
+        f();
+        started.elapsed()
+    };
+    for (name, shape) in shapes {
+        if only.as_deref().is_some_and(|only| !name.contains(only)) {
+            continue;
+        }
+        let patches = fleet(shape, usize::MAX);
+        let mut sidebar = Sidebar::new(config).unwrap();
+        let snapshot = time(&mut || sidebar.apply(1, PROVIDER, patches.clone()).unwrap());
+        let first = time(&mut || {
+            sidebar.snapshot_shared();
+        });
+        let nodes = sidebar.snapshot_shared().surface.sections.iter().map(|s| count_nodes(&s.nodes)).sum::<usize>();
+        crate::profile::start();
+        let (mut applies, mut evaluations) = (vec![], vec![]);
+        let convoys = shape.projects * shape.convoys_per_project;
+        for i in 0..40 {
+            let c = (i * 7919) % convoys;
+            let change = if i % 2 == 0 { delta(c, "active") } else { delta(c, "landed") };
+            applies.push(time(&mut || sidebar.apply(2 + i as u64, PROVIDER, [change.clone()]).unwrap()));
+            evaluations.push(time(&mut || {
+                sidebar.snapshot_shared();
+            }));
+        }
+        applies.sort();
+        evaluations.sort();
+        let mut phases: Vec<_> = crate::profile::take().into_iter().collect();
+        phases.sort_by(|a, b| b.1.nanos.cmp(&a.1.nanos));
+        let top: Vec<String> = phases
+            .iter()
+            .take(5)
+            .map(|(phase, stats)| format!("{phase} {:.2}ms", stats.nanos as f64 / 1e6 / applies.len() as f64))
+            .collect();
+        println!(
+            "{name:24} {:>7} patches {:>6} nodes | snapshot {:>9.1?} first eval {:>9.1?} | delta apply {:>8.1?} eval {:>8.1?} | per delta: {}",
+            patches.len(),
+            nodes,
+            snapshot,
+            first,
+            applies[applies.len() / 2],
+            evaluations[evaluations.len() / 2],
+            top.join(", ")
+        );
+    }
+}
+
+fn count_nodes(nodes: &[crate::presentation::PlacementNode]) -> usize {
+    nodes.iter().map(|node| 1 + count_nodes(&node.children)).sum()
 }

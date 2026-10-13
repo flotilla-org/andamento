@@ -1,5 +1,8 @@
 //! Semantic placement snapshots shared by all frontends.
-use std::{collections::BTreeMap, ops::ControlFlow};
+use std::{
+    collections::{BTreeMap, HashMap},
+    ops::ControlFlow,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -288,10 +291,13 @@ impl SurfaceSnapshot {
             ..Self::default()
         };
         let orders: BTreeMap<_, _> = model.sibling_orders.iter().cloned().collect();
+        // Each node's variables, found by key rather than by a scan per node.
+        let variables: HashMap<&NodeKey, &EffectiveNodeVariables> =
+            model.template_config.effective_variables.iter().map(|variables| (&variables.node, variables)).collect();
         for region in sections {
             let definition = &region.definition;
             let mut metadata = BTreeMap::new();
-            effective_metadata(model, &NodeKey::Root, &mut metadata);
+            effective_metadata(&variables, &NodeKey::Root, &mut metadata);
             let content = resolve_content(region.root.as_ref(), &metadata, false, false, false);
             if let Some(error) = &content.error {
                 snapshot.diagnostics.push(format!("region {}: {error}", definition.name));
@@ -303,7 +309,11 @@ impl SurfaceSnapshot {
                 pinned: definition.pinned,
                 content,
                 nodes: apply_sibling_orders(
-                    region.entities.iter().filter_map(|entity| resolve_node(model, entity, definition, layouts, states, &orders)).collect(),
+                    region
+                        .entities
+                        .iter()
+                        .filter_map(|entity| resolve_node(model, &variables, entity, definition, layouts, states, &orders))
+                        .collect(),
                     &orders,
                 ),
             });
@@ -345,11 +355,11 @@ fn metadata_text<'a>(metadata: &'a BTreeMap<String, MetadataValue>, key: &str) -
 }
 
 fn effective_metadata(
-    model: &ControllerViewModel,
+    variables: &HashMap<&NodeKey, &EffectiveNodeVariables>,
     target: &NodeKey,
     metadata: &mut BTreeMap<String, MetadataValue>,
 ) -> Option<EffectiveNodeVariables> {
-    let variables = model.template_config.effective_variables.iter().find(|v| &v.node == target)?;
+    let variables = *variables.get(target)?;
     for (name, value) in &variables.values {
         metadata.insert(format!("var.{name}"), MetadataValue::Text(value.value.clone()));
     }
@@ -402,6 +412,7 @@ fn order_run(data: Vec<PlacementNode>, order: &[EntityRef]) -> Vec<PlacementNode
 
 fn resolve_node(
     model: &ControllerViewModel,
+    node_variables: &HashMap<&NodeKey, &EffectiveNodeVariables>,
     entity: &EvaluatedPlacement,
     region: &SurfaceRegionDefinition,
     layouts: &BTreeMap<PlacementKey, PlacementAnnotation>,
@@ -410,7 +421,7 @@ fn resolve_node(
 ) -> Option<PlacementNode> {
     let key = entity.placement.clone()?;
     let mut facts = entity.metadata.clone();
-    let variables = effective_metadata(model, &NodeKey::Placement(key.clone()), &mut facts);
+    let variables = effective_metadata(node_variables, &NodeKey::Placement(key.clone()), &mut facts);
     let form = region
         .promotions
         .iter()
@@ -443,7 +454,11 @@ fn resolve_node(
         collapsed,
         stale: false,
         children: apply_sibling_orders(
-            entity.children.iter().filter_map(|child| resolve_node(model, child, region, layouts, states, orders)).collect(),
+            entity
+                .children
+                .iter()
+                .filter_map(|child| resolve_node(model, node_variables, child, region, layouts, states, orders))
+                .collect(),
             orders,
         ),
     })
