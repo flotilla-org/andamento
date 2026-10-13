@@ -71,7 +71,7 @@ static int same(AndamentoWorkspaceId a, AndamentoWorkspaceId b) {
 
 /* Facts, topology, the snapshot, dispatch, effects and completion. */
 static void check_sidebar(const char *config_path, const char *patches_path) {
-    assert(andamento_abi_version() == 4);
+    assert(andamento_abi_version() == 5);
     char *config = read_file(config_path);
     Andamento *h = create(config);
     ok(andamento_configure(h, text(config), &error));
@@ -336,6 +336,7 @@ static void check_workspace(const char *config_path) {
     AndamentoOverlay *overlay = andamento_overlay_get(h, ws, &error);
     assert(overlay && !error && !overlay->has_baseline && eq(overlay->name, "Build"));
     assert(!overlay->has_mood && overlay->mood.data && overlay->note_count == 0);
+    assert(!overlay->has_subject_name && overlay->subject_name.data); /* No subject. */
     andamento_overlay_free(overlay);
     assert(!andamento_overlay_get(h, uuid(0x01), &error));
     fails(0);

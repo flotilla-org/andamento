@@ -219,8 +219,9 @@ impl WorkspaceRecord {
         Arrangement::view(&self.arrangement, &self.slots.get().slots())
     }
 
-    pub fn overlay(&self) -> OverlayView {
-        OverlayView::new(self.slots.get(), self.arrangement.get().as_ref())
+    /// The overlay, with the subject's name the caller resolved.
+    pub fn overlay(&self, subject_name: Option<String>) -> OverlayView {
+        OverlayView::new(self.slots.get(), self.arrangement.get().as_ref(), subject_name)
     }
 
     /// The saved resolution for a slot, if any.

@@ -9,7 +9,7 @@ use andamento_core::slots::{flag, ArrangementDoc, Panel, PanelNode, Resolve, Slo
 use andamento_core::suggested_layout::{Axis, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec};
 use andamento_core::versioned::CommitError;
 use andamento_core::{EntityRef, MetadataPatch, MetadataTarget, MetadataValue, Sidebar};
-use common::{entity, list, set, text, update, worker, Feed, CONFIG, WORKER};
+use common::{entity, list, set, text, update, worker, Feed, CONFIG, PROVIDER, WORKER};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn patch(subject: EntityRef, facts: Vec<(String, MetadataValue)>) -> MetadataPatch {
@@ -485,7 +485,9 @@ fn the_overlay_survives_a_restart_through_the_record() {
     let record = sidebar.export_record(&name).unwrap();
     let mut fresh = Sidebar::new(CONFIG).unwrap();
     fresh.import_record(&name, &record).unwrap();
+    // The subject's name too, from the record, before its provider publishes.
     assert_eq!(fresh.overlay(worker()), sidebar.overlay(worker()));
+    assert_eq!(fresh.overlay(worker()).unwrap().subject_name.as_deref(), Some("Vee"));
     // The same arrangement, at a generation of the fresh sidebar's own.
     let (mut imported, live) = (fresh.arrangement(worker()).unwrap(), sidebar.arrangement(worker()).unwrap());
     assert_ne!(imported.generation, 0);
@@ -562,4 +564,23 @@ fn dashboard_keys_that_no_longer_resolve_are_flagged_and_kept() {
     // Back on template A, they resolve again.
     sidebar.configure(&template_a).unwrap();
     assert!(unresolved(&sidebar).is_empty());
+}
+
+#[test]
+fn a_workspace_is_named_by_its_subject_until_the_user_names_it() {
+    const A: &[(&str, &str, &str)] = &[("a", "top", "replace")];
+    let mut sidebar = session(&Layout { version: "1", slots: A, hint: &[] });
+    let overlay = sidebar.overlay(worker()).unwrap();
+    assert_eq!((overlay.name, overlay.subject_name.as_deref()), (None, Some("Vee")));
+    // The provider renames its subject: the subject's name follows.
+    sidebar.feed(200, [patch(subject(), vec![("display.label".into(), text("Vee 2"))])]);
+    assert_eq!(sidebar.overlay(worker()).unwrap().subject_name.as_deref(), Some("Vee 2"));
+    // The user's name is kept beside it, not in place of it.
+    sidebar.set_workspace_name(worker(), Some("Mine".into())).unwrap();
+    let overlay = sidebar.overlay(worker()).unwrap();
+    assert_eq!((overlay.name.as_deref(), overlay.subject_name.as_deref()), (Some("Mine"), Some("Vee 2")));
+    // The provider goes away while the workspace is open: the record keeps
+    // the subject's last name.
+    assert!(sidebar.retract_provider(PROVIDER));
+    assert_eq!(sidebar.overlay(worker()).unwrap().subject_name.as_deref(), Some("Vee 2"));
 }

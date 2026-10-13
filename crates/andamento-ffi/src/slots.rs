@@ -664,6 +664,11 @@ pub struct OverlayView {
     pub name: Text,
     pub has_mood: u32,
     pub mood: Text,
+    /// The provider's name: its subject's display label now (has_subject_name
+    /// 0: no subject, or it has none). A workspace is named by the user's
+    /// name if it has one, else this.
+    pub has_subject_name: u32,
+    pub subject_name: Text,
     /// The overlay owns the arrangement.
     pub owned: u32,
     pub notes: *const OverlayNoteView,
@@ -708,6 +713,8 @@ pub unsafe extern "C" fn andamento_overlay_get(
             name: text(&view.name),
             has_mood: view.mood.is_some() as u32,
             mood: text(&view.mood),
+            has_subject_name: view.subject_name.is_some() as u32,
+            subject_name: text(&view.subject_name),
             owned: view.owned as u32,
             notes: notes.as_ptr(),
             note_count: notes.len(),

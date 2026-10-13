@@ -2642,6 +2642,12 @@ impl ControllerState {
         }
     }
 
+    /// A subject's display label as its provider gives it now.
+    pub fn subject_label(&self, subject: &EntityRef) -> Option<String> {
+        let values = self.metadata.resolved_entries_for(&EntityId::Entity(subject.clone()), self.now());
+        metadata_entry_text(&values, KEY_DISPLAY_LABEL).map(str::to_owned)
+    }
+
     /// Resolve the producer's forge relationship at action time, so changed
     /// identity and forge templates never leave stale row URLs behind.
     pub fn subject_url(&self, subject: &EntityRef) -> Option<String> {

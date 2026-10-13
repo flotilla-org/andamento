@@ -914,6 +914,9 @@ pub struct OverlayView {
     /// The user's name and mood for the workspace, over the provider's.
     pub name: Option<String>,
     pub mood: Option<String>,
+    /// The provider's name: its subject's display label now. A workspace is
+    /// named by the user's name if it has one, else this.
+    pub subject_name: Option<String>,
     /// The overlay owns the arrangement.
     pub owned: bool,
     /// Baseline slots the user removed, hidden while the provider's content
@@ -925,11 +928,12 @@ pub struct OverlayView {
 }
 
 impl OverlayView {
-    pub fn new(slots: &WorkspaceSlots, arrangement: Option<&Arrangement>) -> Self {
+    pub fn new(slots: &WorkspaceSlots, arrangement: Option<&Arrangement>, subject_name: Option<String>) -> Self {
         Self {
             baseline: slots.baseline.as_ref().map(|b| b.version.clone()),
             name: slots.name.clone(),
             mood: slots.mood.clone(),
+            subject_name,
             owned: arrangement.is_some_and(|a| a.owned),
             tombstoned: slots.hidden(),
             departed: slots.departed.clone(),
