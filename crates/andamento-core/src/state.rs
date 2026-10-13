@@ -1400,7 +1400,7 @@ impl ControllerState {
         // Explicit single-fact unsets on a still-observed subject are not
         // history. Keep the old record only for authoritative removal/loss.
         if !is_removal {
-            if let Some(entity) = retained_target.as_ref() {
+            if let Some(entity) = retained_target.as_ref().filter(|entity| self.retained_subjects.contains_key(*entity)) {
                 let current = self.metadata.resolved(&EntityId::Entity(entity.clone()), self.now());
                 if current.contains_key(KEY_ENTITY_ID) || current.contains_key(KEY_DISPLAY_LABEL) {
                     if let Some(retained) = self.retained_subjects.get_mut(entity) {

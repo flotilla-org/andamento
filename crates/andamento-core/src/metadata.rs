@@ -598,7 +598,6 @@ impl MetadataStore {
         let mut facts = vec![];
         let mut until: Option<u64> = None;
         for (key, contributions) in stored.iter() {
-            let mut candidates = Vec::with_capacity(contributions.len());
             let mut shared = Vec::with_capacity(contributions.len());
             for (contributor, entry) in contributions.shared() {
                 if !self.is_live(contributor, entry, now) {
@@ -609,9 +608,16 @@ impl MetadataStore {
                     let deadline = entry.updated_at.saturating_add(ttl);
                     until = Some(until.map_or(deadline, |until| until.min(deadline)));
                 }
-                candidates.push(CandidateEntry::new(self.source(contributor), (**entry).clone()));
                 shared.push((contributor, entry));
             }
+            // Nearly every key has one contributor, and it wins.
+            if let [(contributor, entry)] = shared.as_slice() {
+                let source = self.sources[contributor.source as usize].clone();
+                facts.push((key.clone(), Fact { entry: Rc::clone(entry), source: Some(source) }));
+                continue;
+            }
+            let candidates: Vec<_> =
+                shared.iter().map(|(contributor, entry)| CandidateEntry::new(self.source(contributor), (***entry).clone())).collect();
             if let Some(candidate) = select_primary_entry(&candidates) {
                 // The store's own entry, shared, when the winner is one as held.
                 let held = shared
