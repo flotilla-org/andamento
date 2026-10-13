@@ -113,7 +113,7 @@ pub struct ControllerTab {
 }
 
 // Keep scalar text distinct from structured entity identities.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum IndexedValue {
     Scalar(Arc<str>),
     Entity(EntityRef),
@@ -131,7 +131,7 @@ enum IndexedValue {
 /// return, such as a rebuild or new visibility, moves the epoch.
 #[derive(Debug, Default)]
 struct PlacementIndex {
-    by_fact: BTreeMap<Rc<PostingKey>, usize>,
+    by_fact: FastHashMap<Rc<PostingKey>, usize>,
     /// The fact names postings are under, to look one up without making it.
     names: FastHashSet<Rc<str>>,
     /// Postings by ID; an emptied posting keeps its ID and generation.
@@ -2792,7 +2792,7 @@ impl ControllerState {
     /// recordable facts among `keys`, and whether a producer publishes it now.
     pub(crate) fn retained_subject_record(&self, subject: &EntityRef, keys: &BTreeSet<String>) -> Option<(SubjectRecord, bool)> {
         let retained = self.retained_subjects.get(subject)?;
-        let observed = !self.metadata.resolved_entries_for(&EntityId::Entity(subject.clone()), self.now()).is_empty();
+        let observed = !self.metadata.resolved(&EntityId::Entity(subject.clone()), self.now()).is_empty();
         let record = SubjectRecord {
             label: metadata_entry_text(&retained.facts, KEY_DISPLAY_LABEL).map(str::to_owned),
             ended: self.ended_subjects.contains(subject),
@@ -3300,7 +3300,7 @@ impl ControllerState {
     /// The action target an entity is matched by: its own
     /// `action.primary.target`, else one made from its identity.
     fn action_target_of(&self, entity: &EntityRef) -> String {
-        let values = self.metadata.resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
+        let values = self.metadata.resolved(&EntityId::Entity(entity.clone()), self.now());
         metadata_entry_text(&values, KEY_ACTION_TARGET).map(str::to_owned).unwrap_or_else(|| entity.action_target())
     }
 
@@ -3346,14 +3346,14 @@ impl ControllerState {
     pub(crate) fn entity_slot_resolutions(&self, entity: &EntityRef) -> BTreeMap<String, DesiredContent> {
         use crate::suggested_layout::{SlotResolution, PRIMARY_SLOT};
         let mut resolutions = BTreeMap::new();
-        let values = self.metadata.resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
+        let values = self.metadata.resolved(&EntityId::Entity(entity.clone()), self.now());
         if let Some(desired) = desired_primary(&values) {
             resolutions.insert(PRIMARY_SLOT.to_owned(), desired);
         }
-        if !values.keys().any(|key| key.starts_with("layout.")) {
+        if !values.iter().any(|(key, _)| key.starts_with("layout.")) {
             return resolutions;
         }
-        let facts = values.into_iter().map(|(key, entry)| (key, entry.value)).collect();
+        let facts = values.iter().map(|(key, entry)| (key.to_owned(), entry.value.clone())).collect();
         let Ok(Some(layout)) = suggested_layout::parse(entity, &facts) else {
             return resolutions;
         };
@@ -3383,7 +3383,7 @@ impl ControllerState {
     }
 
     fn desired_content(&self, target: &EntityId) -> Option<DesiredContent> {
-        desired_primary(&self.metadata.resolved_entries_for(target, self.now()))
+        desired_primary(&self.metadata.resolved(target, self.now()))
     }
 
     /// The managed target a materialization of `recipe` would install, if the
@@ -3400,7 +3400,7 @@ impl ControllerState {
 
     /// A subject's display label as its provider gives it now.
     pub fn subject_label(&self, subject: &EntityRef) -> Option<String> {
-        let values = self.metadata.resolved_entries_for(&EntityId::Entity(subject.clone()), self.now());
+        let values = self.metadata.resolved(&EntityId::Entity(subject.clone()), self.now());
         metadata_entry_text(&values, KEY_DISPLAY_LABEL).map(str::to_owned)
     }
 
@@ -3412,7 +3412,7 @@ impl ControllerState {
             "issue" => "flotilla.forge.issue_url_template",
             _ => return None,
         };
-        let values = self.metadata.resolved_entries_for(&EntityId::Entity(subject.clone()), self.now());
+        let values = self.metadata.resolved(&EntityId::Entity(subject.clone()), self.now());
         let MetadataValue::EntityRefs(refs) = &values.get("flotilla.forge")?.value else {
             return None;
         };
@@ -3422,7 +3422,7 @@ impl ControllerState {
         if forge.kind != "forge" {
             return None;
         }
-        let forge_values = self.metadata.resolved_entries_for(&EntityId::Entity(forge.clone()), self.now());
+        let forge_values = self.metadata.resolved(&EntityId::Entity(forge.clone()), self.now());
         let template = metadata_entry_text(&forge_values, template_key)?;
         let web_url = metadata_entry_text(&forge_values, "flotilla.forge.web_url")?;
         let scope = metadata_entry_text(&values, "flotilla.subject.scope")?;
