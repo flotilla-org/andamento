@@ -9,7 +9,7 @@ use andamento_core::slots::{flag, ArrangementDoc, Panel, PanelNode, Resolve, Slo
 use andamento_core::suggested_layout::{Axis, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec};
 use andamento_core::versioned::CommitError;
 use andamento_core::{EntityRef, MetadataPatch, MetadataTarget, MetadataValue, Sidebar};
-use common::{entity, list, set, text, update, worker, Feed, CONFIG, WORKER};
+use common::{entity, list, set, text, update, worker, Feed, CONFIG, PROVIDER, WORKER};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn patch(subject: EntityRef, facts: Vec<(String, MetadataValue)>) -> MetadataPatch {
@@ -579,4 +579,8 @@ fn a_workspace_is_named_by_its_subject_until_the_user_names_it() {
     sidebar.set_workspace_name(worker(), Some("Mine".into())).unwrap();
     let overlay = sidebar.overlay(worker()).unwrap();
     assert_eq!((overlay.name.as_deref(), overlay.subject_name.as_deref()), (Some("Mine"), Some("Vee 2")));
+    // The provider goes away while the workspace is open: the record keeps
+    // the subject's last name.
+    assert!(sidebar.retract_provider(PROVIDER));
+    assert_eq!(sidebar.overlay(worker()).unwrap().subject_name.as_deref(), Some("Vee 2"));
 }
