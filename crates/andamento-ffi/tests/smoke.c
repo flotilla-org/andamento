@@ -432,7 +432,8 @@ static void check_stale_sidebar_placements(void) {
     assert(host && !error && host->status == ANDAMENTO_COMMITTED && !placed(host, "more"));
     andamento_sidebar_arrangement_free(a);
     /* Mid-gesture: "more" is declared and placed, then a reconcile that
-       places nothing. */
+       places nothing (configure always reconciles; the second has nothing
+       new to place, so its report's placed set is empty). */
     ok(andamento_configure(h, text(more), &error));
     ok(andamento_configure(h, text(more), &error));
     AndamentoSidebarArrangement *stale = andamento_sidebar_arrangement_commit(h, &host->doc, host->generation, &error);
