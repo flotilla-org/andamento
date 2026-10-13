@@ -7,6 +7,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use crate::census::Census;
+#[cfg(test)]
+use crate::state::variables_census;
 use crate::state::{ControllerTab, EvaluatedPlacement, EvaluatedSection, NodeVariables};
 use crate::template_config::{
     AbbreviationTier, ChromeSpec, SurfaceRegionDefinition, TemplateConfigFieldClass, TemplateConfigMatchContext, TemplateConfigNodeKind,
@@ -614,5 +618,54 @@ fn resolve_content(
         template_name: Some(slot.template_name.clone()),
         effective_kdl: slot.effective_kdl.clone(),
         error: slot.resolve_error.clone(),
+    }
+}
+
+#[cfg(test)]
+impl SurfaceKept {
+    pub(crate) fn nodes_census(&self) -> Vec<&Rc<PlacementNode>> {
+        self.nodes.values().map(|memo| &memo.node).collect()
+    }
+}
+
+#[cfg(test)]
+impl PlacementNode {
+    /// Count what a node holds, and its children not counted yet.
+    pub(crate) fn census(&self, census: &mut Census, prefix: &str) {
+        census.key(&format!("{prefix}: keys"), &self.key);
+        census.string(&format!("{prefix}: loop keys"), &self.loop_key.region);
+        census.key(&format!("{prefix}: loop keys"), &self.loop_key.parent);
+        census.string(&format!("{prefix}: loop keys"), &self.loop_key.binding);
+        census.entity(&format!("{prefix}: entity refs"), &self.entity);
+        census.string(&format!("{prefix}: labels"), &self.label);
+        census.string(&format!("{prefix}: forms"), &self.form);
+        if let Some(layout) = &self.layout {
+            census.string(&format!("{prefix}: layouts"), layout);
+        }
+        for (what, content) in [("content", &self.content), ("detail", &self.detail)] {
+            for field in &content.fields {
+                census.string(&format!("{prefix}: {what} field values"), &field.value);
+                if let Some(source) = &field.source {
+                    census.string(&format!("{prefix}: {what} field sources"), &source.key);
+                    census.value(&format!("{prefix}: {what} field sources"), &source.value);
+                }
+            }
+            census.string(&format!("{prefix}: {what} effective KDL"), &content.effective_kdl);
+            if let Some(name) = &content.template_name {
+                census.string(&format!("{prefix}: {what} template names"), name);
+            }
+        }
+        if census.first(&self.facts) {
+            census.map(&format!("{prefix}: facts"), &format!("{prefix}: fact keys"), self.facts.keys());
+            self.facts.values().for_each(|value| census.value(&format!("{prefix}: fact values"), value));
+        }
+        if let Some(variables) = &self.variables {
+            variables_census(census, &format!("{prefix}: variables"), variables);
+        }
+        for child in &self.children {
+            if census.first(child) {
+                child.census(census, prefix);
+            }
+        }
     }
 }

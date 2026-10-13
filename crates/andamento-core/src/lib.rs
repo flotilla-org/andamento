@@ -1333,4 +1333,6 @@ mod cutover_tests;
 mod visibility_tests;
 
 #[cfg(test)]
+mod census;
+#[cfg(test)]
 mod scaling_tests;

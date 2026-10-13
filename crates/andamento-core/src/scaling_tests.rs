@@ -2,6 +2,7 @@
 //! working Flotilla fleet's (about 580 entities, mostly convoys and vessels
 //! with ~25 facts each) arrives as one snapshot and then as small deltas;
 //! neither may cost work in proportion to everything already stored.
+use crate::census::Census;
 use crate::metadata::ENTITY_RESOLUTIONS;
 use crate::presentation::{PlacementNode, SurfaceSnapshot};
 use crate::sidebar::{Action, Sidebar, Workspace};
@@ -695,4 +696,42 @@ fn stress_shapes() {
 
 fn count_nodes(nodes: &[Rc<PlacementNode>]) -> usize {
     nodes.iter().map(|node| 1 + count_nodes(&node.children)).sum()
+}
+
+/// What the sidebar holds, by kind: strings and their copies, and
+/// string-keyed maps by shape. On the real catalog and its recorded deltas
+/// (ANDAMENTO_CATALOG_FIXTURE, ANDAMENTO_CATALOG_TEMPLATE as for
+/// `real_catalog_timings`), else a generated fleet (CENSUS_CONVOYS, 580).
+/// `cargo test -p andamento-core census -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn census() {
+    let template = std::env::var("ANDAMENTO_CATALOG_TEMPLATE").map(|path| std::fs::read_to_string(path).unwrap());
+    let mut sidebar = Sidebar::new(template.as_deref().unwrap_or(CONFIG)).unwrap();
+    match std::env::var("ANDAMENTO_CATALOG_FIXTURE") {
+        Ok(path) => {
+            let patches: Vec<MetadataPatch> = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            sidebar.apply(1, PROVIDER, patches).unwrap();
+            let _ = sidebar.snapshot_shared();
+            let deltas = std::path::Path::new(&path).with_file_name("deltas.jsonl");
+            for (i, line) in std::fs::read_to_string(deltas).unwrap_or_default().lines().enumerate() {
+                let request: serde_json::Value = serde_json::from_str(line).unwrap();
+                let patches: Vec<MetadataPatch> = serde_json::from_value(request["patches"].clone()).unwrap();
+                sidebar.apply(10 + i as u64, PROVIDER, patches).unwrap();
+                let _ = sidebar.snapshot_shared();
+            }
+        }
+        Err(_) => {
+            let convoys = std::env::var("CENSUS_CONVOYS").ok().and_then(|n| n.parse().ok()).unwrap_or(580);
+            sidebar.apply(1, PROVIDER, catalog(convoys)).unwrap();
+            let _ = sidebar.snapshot_shared();
+            for i in 0..20 {
+                sidebar.apply(2 + i as u64, PROVIDER, [delta(i * 7 % convoys, "active")]).unwrap();
+                let _ = sidebar.snapshot_shared();
+            }
+        }
+    }
+    let mut census = Census::default();
+    sidebar.census(&mut census);
+    println!("{}", census.report());
 }

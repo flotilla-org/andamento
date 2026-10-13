@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::census::Census;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -942,5 +944,48 @@ mod tests {
         let entries = store.entries_for(&target, "zellij.pane.cwd", 2);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].source_id, "shell");
+    }
+}
+
+#[cfg(test)]
+impl MetadataStore {
+    /// Count what the store holds: facts by entity, and the resolutions kept.
+    pub(crate) fn census(&self, census: &mut Census) {
+        for (target, keys) in &self.entries {
+            if let EntityId::Entity(entity) = target {
+                census.entity("store: entity ids", entity);
+            }
+            census.map("store: facts per entity", "store: fact keys", keys.keys());
+            for contributions in keys.values() {
+                for (_, entry) in contributions.iter() {
+                    census.value("store: fact values", &entry.value);
+                }
+            }
+        }
+        for source in &self.sources {
+            census.string("store: sources (interned)", source);
+        }
+        for (target, cached) in self.resolved.borrow().iter() {
+            if let EntityId::Entity(entity) = target {
+                census.entity("resolutions: entity ids", entity);
+            }
+            if census.first(&cached.resolved) {
+                cached.resolved.census(census, "resolved facts");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+impl ResolvedFacts {
+    pub(crate) fn census(&self, census: &mut Census, prefix: &str) {
+        census.map(&format!("{prefix}: values"), &format!("{prefix}: keys"), self.values.keys());
+        for entry in self.values.values() {
+            census.value(&format!("{prefix}: values"), &entry.value);
+        }
+        census.map(&format!("{prefix}: sources"), &format!("{prefix}: source keys"), self.sources.keys());
+        for source in self.sources.values() {
+            census.string(&format!("{prefix}: sources"), source);
+        }
     }
 }

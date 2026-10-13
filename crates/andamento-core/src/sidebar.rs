@@ -1,5 +1,7 @@
 //! One presentation client's runtime. Hosts supply time and observations and
 //! execute returned effects. Transport and rendering do not run inside it.
+#[cfg(test)]
+use crate::census::Census;
 use std::rc::Rc;
 use std::{
     cell::{OnceCell, RefCell},
@@ -1566,5 +1568,22 @@ mod evaluation_tests {
         assert!(sidebar.detail_card(&entity()).is_none());
         sidebar.apply(100, PROVIDER, [patch("base", "appeared", None, 0)]).unwrap();
         assert_eq!(sidebar.detail_card(&entity()).unwrap().label, "appeared");
+    }
+}
+
+#[cfg(test)]
+impl Sidebar {
+    /// Count what the sidebar holds: its snapshot's nodes first, then its
+    /// state and what that keeps (counting only what the snapshot doesn't
+    /// share).
+    pub(crate) fn census(&self, census: &mut Census) {
+        for section in &self.snapshot_shared().surface.sections {
+            for node in &section.nodes {
+                if census.first(node) {
+                    node.census(census, "snapshot nodes");
+                }
+            }
+        }
+        self.state.census(census);
     }
 }
