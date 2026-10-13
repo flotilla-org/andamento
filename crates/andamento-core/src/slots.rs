@@ -928,12 +928,12 @@ pub struct OverlayView {
 }
 
 impl OverlayView {
-    pub fn new(slots: &WorkspaceSlots, arrangement: Option<&Arrangement>) -> Self {
+    pub fn new(slots: &WorkspaceSlots, arrangement: Option<&Arrangement>, subject_name: Option<String>) -> Self {
         Self {
             baseline: slots.baseline.as_ref().map(|b| b.version.clone()),
             name: slots.name.clone(),
             mood: slots.mood.clone(),
-            subject_name: None,
+            subject_name,
             owned: arrangement.is_some_and(|a| a.owned),
             tombstoned: slots.hidden(),
             departed: slots.departed.clone(),

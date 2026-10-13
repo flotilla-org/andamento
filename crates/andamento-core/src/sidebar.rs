@@ -918,12 +918,13 @@ impl Sidebar {
     /// the host should know about it (removed slots, departed instances).
     pub fn overlay(&self, workspace: WorkspaceId) -> Result<OverlayView, String> {
         let record = self.workspace(workspace)?;
-        let mut view = record.overlay();
-        // The subject's label now, else as the record kept it (before its
-        // provider publishes after a restart).
+        // The subject's label now, else as the record kept it: the record
+        // follows the label while the workspace is open, so it is the one
+        // fallback, after a restart before the provider publishes, or once
+        // the subject ends.
         let saved = |subject: &EntityRef| record.subject.get().retained.get(subject).and_then(|saved| saved.label.clone());
-        view.subject_name = record.subject().and_then(|subject| self.state.subject_label(subject).or_else(|| saved(subject)));
-        Ok(view)
+        let subject_name = record.subject().and_then(|subject| self.state.subject_label(subject).or_else(|| saved(subject)));
+        Ok(record.overlay(subject_name))
     }
 
     /// Plan one slot, given the identity of the resolution the host applied

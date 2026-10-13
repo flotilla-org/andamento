@@ -2642,14 +2642,10 @@ impl ControllerState {
         }
     }
 
-    /// A subject's display label: as its provider gives it now, else as its
-    /// workspace record kept it (after a restart, or once it ended).
+    /// A subject's display label as its provider gives it now.
     pub fn subject_label(&self, subject: &EntityRef) -> Option<String> {
         let values = self.metadata.resolved_entries_for(&EntityId::Entity(subject.clone()), self.now());
-        let retained = self.retained_subjects.get(subject).map(|retained| &retained.values);
-        metadata_entry_text(&values, KEY_DISPLAY_LABEL)
-            .or_else(|| retained.and_then(|values| metadata_entry_text(values, KEY_DISPLAY_LABEL)))
-            .map(str::to_owned)
+        metadata_entry_text(&values, KEY_DISPLAY_LABEL).map(str::to_owned)
     }
 
     /// Resolve the producer's forge relationship at action time, so changed

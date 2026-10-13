@@ -156,7 +156,9 @@ Committing an arrangement never changes the snapshot's revision.
 
 ## From ABI 4
 
-ABI 5 adds `has_subject_name` and `subject_name` to `AndamentoOverlay`.
+ABI 5 adds `has_subject_name` and `subject_name` to `AndamentoOverlay`,
+after `mood`: the change is additive, but the struct's layout changed, so a
+host built against ABI 4 must be rebuilt.
 
 ## From ABI 3
 

@@ -336,6 +336,7 @@ static void check_workspace(const char *config_path) {
     AndamentoOverlay *overlay = andamento_overlay_get(h, ws, &error);
     assert(overlay && !error && !overlay->has_baseline && eq(overlay->name, "Build"));
     assert(!overlay->has_mood && overlay->mood.data && overlay->note_count == 0);
+    assert(!overlay->has_subject_name && overlay->subject_name.data); /* No subject. */
     andamento_overlay_free(overlay);
     assert(!andamento_overlay_get(h, uuid(0x01), &error));
     fails(0);
