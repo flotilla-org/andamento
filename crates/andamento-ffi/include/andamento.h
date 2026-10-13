@@ -689,6 +689,11 @@ typedef struct {
   AndamentoText name;
   uint32_t has_mood;
   AndamentoText mood;
+  // The provider's name: its subject's display label now (has_subject_name
+  // 0: no subject, or it has none). A workspace is named by the user's
+  // name if it has one, else this.
+  uint32_t has_subject_name;
+  AndamentoText subject_name;
   // The overlay owns the arrangement.
   uint32_t owned;
   const AndamentoOverlayNote *notes;

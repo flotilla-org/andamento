@@ -1,4 +1,4 @@
-# The host interface (ABI 4)
+# The host interface (ABI 5)
 
 What a host such as Wheelhouse uses to drive Andamento through its C ABI.
 `crates/andamento-ffi/include/andamento.h` is generated from the FFI crate
@@ -111,7 +111,7 @@ ABI 4 is not imported.
 | `andamento_slot_valid` / `_complete` / `_retry` / `_release_previous` | The plan protocol. |
 | `andamento_slot_resolution_set` / `_clear` | Compare-and-set of a slot's saved portable resolution, at the slot's generation (0 for none). |
 | `andamento_workspace_set_name` / `_set_mood` | The user's name and mood over the provider's. |
-| `andamento_overlay_get` / `_free` | `AndamentoOverlay`: baseline version, name, mood, `owned`, and TOMBSTONED and DEPARTED notes. |
+| `andamento_overlay_get` / `_free` | `AndamentoOverlay`: baseline version, the user's name and mood, the subject's name (its display label now), `owned`, and TOMBSTONED and DEPARTED notes. A workspace is named by the user's name if it has one, else the subject's. |
 | `andamento_workspace_content_revision` | Poll to learn when to read slots, plans and arrangements again. |
 
 ## Arrangements
@@ -153,6 +153,10 @@ single pass, appending each panel to its parent.
   `variable:` and the key.
 
 Committing an arrangement never changes the snapshot's revision.
+
+## From ABI 4
+
+ABI 5 adds `has_subject_name` and `subject_name` to `AndamentoOverlay`.
 
 ## From ABI 3
 
