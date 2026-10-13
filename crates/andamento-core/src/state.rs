@@ -54,13 +54,14 @@ use crate::{
     sidebar_arrangement::RegionHints,
     suggested_layout::{self, LayoutError, SuggestedLayout},
     template_config::{PlacementLoop, TemplateVariableType},
-    ControllerBootstrapSnapshot, ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EffectiveVariableValue, EntityRef,
-    LatentMaterializationState, LatentTab, MaterializeLatentRequest, MetadataControls, MetadataEntry, MetadataIdentity, MetadataPatch,
-    MetadataSourceEntry, MetadataTarget, MetadataTriState, MetadataValue, MetadataValueUpdate, NodeKey, NodeVariableOverrides,
-    ObservedMetadataIdentity, PaneTarget, PlacementKey, PlacementLoopKey, PlacementSegment, PluginPlacement, PluginRegistrationHello,
-    Priority, RailConfig, RailUiAction, RailUiRevision, RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata,
-    ResolvedMetadataTarget, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabStatusSummary,
-    TemplateConfigDiagnostics, VariableSetterProvenance, DISPLAY_FORM_COMPACT, LOCAL_PROVIDER, NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
+    ControllerBootstrapSnapshot, ControllerViewModel, DisplayVariableValue, EffectiveKdl, EffectiveNodeVariables, EffectiveVariableValue,
+    EntityRef, LatentMaterializationState, LatentTab, MaterializeLatentRequest, MetadataControls, MetadataEntry, MetadataIdentity,
+    MetadataPatch, MetadataSourceEntry, MetadataTarget, MetadataTriState, MetadataValue, MetadataValueUpdate, NodeKey,
+    NodeVariableOverrides, ObservedMetadataIdentity, PaneTarget, PlacementKey, PlacementLoopKey, PlacementSegment, PluginPlacement,
+    PluginRegistrationHello, Priority, RailConfig, RailUiAction, RailUiRevision, RailUiState, ReachableMetadataIdentity, RendererHello,
+    ResolvedMetadata, ResolvedMetadataTarget, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard,
+    TabStatusSummary, TemplateConfigDiagnostics, VariableSetterProvenance, DISPLAY_FORM_COMPACT, LOCAL_PROVIDER,
+    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 
 const SOURCE_ZELLIJ: &str = "zellij";
@@ -892,26 +893,9 @@ struct Kept {
     surface: RefCell<SurfaceKept>,
     /// The catalog (`catalog`).
     catalog: RefCell<KeptCatalog>,
-    /// Templates' effective KDL, one copy of each while a slot holds it.
-    kdl: RefCell<FastHashSet<Rc<str>>>,
 }
 
 impl Kept {
-    /// The one copy of `kdl`. Whenever the copies have grown past twice
-    /// those held, forget those nothing holds.
-    fn kdl(&self, kdl: String) -> Rc<str> {
-        let mut held = self.kdl.borrow_mut();
-        if let Some(kdl) = held.get(kdl.as_str()) {
-            return kdl.clone();
-        }
-        let kdl: Rc<str> = Rc::from(kdl);
-        held.insert(kdl.clone());
-        if held.len() > 64 && held.len() > 2 * held.iter().filter(|kdl| Rc::strong_count(kdl) > 1).count() {
-            held.retain(|kdl| Rc::strong_count(kdl) > 1);
-        }
-        kdl
-    }
-
     #[cfg(test)]
     fn swap(&self, other: &Kept) {
         self.placement_index.swap(&other.placement_index);
@@ -921,7 +905,6 @@ impl Kept {
         self.variables.swap(&other.variables);
         self.surface.swap(&other.surface);
         self.catalog.swap(&other.catalog);
-        self.kdl.swap(&other.kdl);
     }
 }
 
@@ -2056,7 +2039,7 @@ impl ControllerState {
                 fields: vec![],
                 render_ready: Some(resolved.render_ready()),
                 setters: resolved.setters.clone(),
-                effective_kdl: self.kept.kdl(resolved.dump_kdl()),
+                effective_kdl: EffectiveKdl::of(resolved),
                 resolve_error: None,
             }),
             Ok(None) => None,
@@ -3536,7 +3519,7 @@ impl ControllerState {
                     fields: vec![],
                     render_ready: None,
                     setters: vec![],
-                    effective_kdl: format!("// error: {error}\n").into(),
+                    effective_kdl: EffectiveKdl::text(format!("// error: {error}\n")),
                     resolve_error: Some(error.to_string()),
                 });
             }
@@ -3546,7 +3529,7 @@ impl ControllerState {
             fields: vec![],
             render_ready: Some(resolved.render_ready()),
             setters: resolved.setters.clone(),
-            effective_kdl: self.kept.kdl(resolved.dump_kdl()),
+            effective_kdl: EffectiveKdl::of(resolved),
             resolve_error: None,
         })
     }
@@ -5305,8 +5288,8 @@ impl EvaluatedPlacement {
 #[cfg(test)]
 pub(crate) fn slot_census(census: &mut Census, prefix: &str, slot: &ResolvedTemplateSlot) {
     census.string(&format!("{prefix}: names"), &slot.template_name);
-    if census.first(&slot.effective_kdl) {
-        census.string(&format!("{prefix}: effective KDL"), &slot.effective_kdl);
+    if let Some(kdl) = slot.effective_kdl.written().filter(|kdl| census.first(kdl)) {
+        census.string(&format!("{prefix}: effective KDL"), kdl);
     }
     for field in &slot.fields {
         census.string(&format!("{prefix}: field text"), &field.text);

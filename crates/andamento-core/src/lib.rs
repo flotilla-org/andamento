@@ -1,4 +1,7 @@
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -756,6 +759,78 @@ pub const DISPLAY_FORM_COMPACT: &str = "compact";
 /// Conventional name for the default full surface.
 pub const DISPLAY_FORM_FULL: &str = "full";
 
+/// A resolved template's effective KDL, for inspection: written out when
+/// first read, since presenting never reads it. Clones share it.
+#[derive(Clone, Default)]
+pub struct EffectiveKdl(Rc<LazyKdl>);
+
+#[derive(Default)]
+struct LazyKdl {
+    template: Option<template_config::TemplateConfigResolved>,
+    text: OnceCell<Rc<str>>,
+}
+
+impl EffectiveKdl {
+    /// `template`'s, written out when first read.
+    pub fn of(template: template_config::TemplateConfigResolved) -> Self {
+        Self(Rc::new(LazyKdl { template: Some(template), text: OnceCell::new() }))
+    }
+
+    /// Text given as it is, such as an error.
+    pub fn text(text: impl Into<Rc<str>>) -> Self {
+        Self(Rc::new(LazyKdl { template: None, text: OnceCell::from(text.into()) }))
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.text.get_or_init(|| self.0.template.as_ref().map(|template| template.dump_kdl().into()).unwrap_or_default())
+    }
+
+    /// The shared text, if written out yet.
+    #[cfg(test)]
+    pub(crate) fn written(&self) -> Option<&Rc<str>> {
+        self.0.text.get()
+    }
+}
+
+impl Deref for EffectiveKdl {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for EffectiveKdl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl fmt::Debug for EffectiveKdl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl PartialEq for EffectiveKdl {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0) || self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for EffectiveKdl {}
+
+impl Serialize for EffectiveKdl {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for EffectiveKdl {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::text)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedTemplateSlots {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -779,7 +854,7 @@ pub struct ResolvedTemplateSlot {
     pub setters: Vec<template_config::ResolvedVariableSetter>,
     /// Flattened template evidence shown by inspect.
     #[serde(default)]
-    pub effective_kdl: Rc<str>,
+    pub effective_kdl: EffectiveKdl,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolve_error: Option<String>,
 }

@@ -14,8 +14,8 @@ use crate::template_config::{
     TemplateConfigRenderedField, TemplateConfigSlot, TemplateControlSpec, TemplateVariableDefinition,
 };
 use crate::{
-    ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EntityRef, MetadataValue, NodeKey, PlacementKey, PlacementLoopKey,
-    PlacementSegment, ResolvedTemplateSlot, WorkspaceId, DISPLAY_FORM_COMPACT,
+    ControllerViewModel, DisplayVariableValue, EffectiveKdl, EffectiveNodeVariables, EntityRef, MetadataValue, NodeKey, PlacementKey,
+    PlacementLoopKey, PlacementSegment, ResolvedTemplateSlot, WorkspaceId, DISPLAY_FORM_COMPACT,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,7 +127,7 @@ pub struct Content {
     pub controls: Vec<TemplateControlSpec>,
     pub chrome: ChromeSpec,
     pub template_name: Option<String>,
-    pub effective_kdl: Rc<str>,
+    pub effective_kdl: EffectiveKdl,
     pub error: Option<String>,
 }
 
@@ -647,8 +647,8 @@ impl PlacementNode {
                     census.value(&format!("{prefix}: {what} field sources"), &source.value);
                 }
             }
-            if census.first(&content.effective_kdl) {
-                census.string(&format!("{prefix}: {what} effective KDL"), &content.effective_kdl);
+            if let Some(kdl) = content.effective_kdl.written().filter(|kdl| census.first(kdl)) {
+                census.string(&format!("{prefix}: {what} effective KDL"), kdl);
             }
             if let Some(name) = &content.template_name {
                 census.string(&format!("{prefix}: {what} template names"), name);
