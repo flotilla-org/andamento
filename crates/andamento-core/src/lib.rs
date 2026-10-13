@@ -318,18 +318,9 @@ pub struct LatentTab {
     #[serde(default)]
     pub materialization: LatentMaterializationState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status_state: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary: Option<String>,
-    /// Producer provenance rendered as a compact source badge.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub materialize_recipe: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout_path: Option<String>,
-    #[serde(default)]
-    pub templates: ResolvedTemplateSlots,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

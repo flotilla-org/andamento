@@ -76,8 +76,6 @@ const KEY_ACTION_TARGET: &str = "action.primary.target";
 const KEY_MATERIALIZE_RECIPE: &str = "action.primary.recipe";
 const KEY_CHECKOUT_PATH: &str = "git.root";
 const KEY_STATUS_STATE: &str = "status.state";
-const KEY_SUMMARY_TEXT: &str = "summary.text";
-const KEY_SOURCE: &str = "source";
 const KEY_DISPLAY_LABEL: &str = "display.label";
 const DISPLAY_SHOW_FINISHED: &str = "show-finished";
 const KEY_CONVOY_PHASE: &str = "flotilla.convoy.phase";
@@ -1987,7 +1985,6 @@ impl ControllerState {
         entities
             .iter()
             .filter_map(|entity| {
-                let display = self.display_entity(entity);
                 let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity.entity.action_target());
@@ -2005,12 +2002,8 @@ impl ControllerState {
                     },
                     action_target,
                     name,
-                    status_state: metadata_entry_text(&entity.values, KEY_STATUS_STATE).map(str::to_owned),
-                    summary: metadata_entry_text(&entity.values, KEY_SUMMARY_TEXT).map(str::to_owned),
-                    source: metadata_entry_text(&entity.values, KEY_SOURCE).map(str::to_owned),
                     materialize_recipe: metadata_entry_text(&entity.values, KEY_MATERIALIZE_RECIPE).map(str::to_owned),
                     checkout_path: metadata_entry_text(&entity.values, KEY_CHECKOUT_PATH).map(str::to_owned),
-                    templates: display.templates,
                 })
             })
             .collect()
