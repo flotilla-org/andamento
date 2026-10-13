@@ -478,7 +478,27 @@ impl ControllerState {
         let before = self.now();
         let now = self.clock_ms.unwrap_or(0).max(now_ms);
         self.clock_ms = Some(now);
-        self.metadata.expires_between(before, now)
+        let expired = self.metadata.expires_between(before, now);
+        if expired {
+            self.metadata.change_all();
+        }
+        expired
+    }
+
+    /// What changed in the facts since the last call.
+    pub(crate) fn take_metadata_changes(&mut self) -> crate::metadata::Changed {
+        self.metadata.take_changed()
+    }
+
+    /// Every entity with facts.
+    pub(crate) fn metadata_entities(&self) -> Vec<EntityRef> {
+        self.metadata
+            .targets()
+            .filter_map(|target| match target {
+                EntityId::Entity(entity) => Some(entity.clone()),
+                _ => None,
+            })
+            .collect()
     }
     fn now(&self) -> u64 {
         self.clock_ms.unwrap_or(self.receive_counter)
@@ -2582,35 +2602,32 @@ impl ControllerState {
     /// `workspace.primary.*` facts, independently of any `layout.*` facts)
     /// and the slots of its valid Suggested Layout. Unavailable resolutions
     /// are absent.
-    pub(crate) fn slot_resolutions(&self) -> BTreeMap<(EntityRef, String), DesiredContent> {
+    /// What `entity`'s facts resolve its Slots to: the primary from its
+    /// `workspace.primary.*` facts, the others from its Suggested Layout.
+    pub(crate) fn entity_slot_resolutions(&self, entity: &EntityRef) -> BTreeMap<String, DesiredContent> {
         use crate::suggested_layout::{SlotResolution, PRIMARY_SLOT};
         let mut resolutions = BTreeMap::new();
-        for target in self.metadata.targets() {
-            let EntityId::Entity(entity) = target else {
+        let values = self.metadata.resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
+        if let Some(desired) = desired_primary(&values) {
+            resolutions.insert(PRIMARY_SLOT.to_owned(), desired);
+        }
+        if !values.keys().any(|key| key.starts_with("layout.")) {
+            return resolutions;
+        }
+        let facts = values.into_iter().map(|(key, entry)| (key, entry.value)).collect();
+        let Ok(Some(layout)) = suggested_layout::parse(entity, &facts) else {
+            return resolutions;
+        };
+        for slot in layout.slots {
+            if slot.key == PRIMARY_SLOT {
                 continue;
+            }
+            let desired = match slot.resolution {
+                SlotResolution::Ready { target, recipe } => DesiredContent::Ready(Resolved { target, recipe }),
+                SlotResolution::Held => DesiredContent::Held,
+                SlotResolution::Unavailable => continue,
             };
-            let values = self.metadata.resolved_entries_for(target, self.now());
-            if let Some(desired) = desired_primary(&values) {
-                resolutions.insert((entity.clone(), PRIMARY_SLOT.to_owned()), desired);
-            }
-            if !values.keys().any(|key| key.starts_with("layout.")) {
-                continue;
-            }
-            let facts = values.into_iter().map(|(key, entry)| (key, entry.value)).collect();
-            let Ok(Some(layout)) = suggested_layout::parse(entity, &facts) else {
-                continue;
-            };
-            for slot in layout.slots {
-                if slot.key == PRIMARY_SLOT {
-                    continue;
-                }
-                let desired = match slot.resolution {
-                    SlotResolution::Ready { target, recipe } => DesiredContent::Ready(Resolved { target, recipe }),
-                    SlotResolution::Held => DesiredContent::Held,
-                    SlotResolution::Unavailable => continue,
-                };
-                resolutions.insert((entity.clone(), slot.key), desired);
-            }
+            resolutions.insert(slot.key, desired);
         }
         resolutions
     }

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::{
     EntityRef, MetadataEntry, MetadataPatch, MetadataSourceEntry, MetadataTarget, MetadataValue, MetadataValueUpdate,
@@ -32,6 +32,24 @@ struct Contributor {
     source: String,
 }
 
+// Entity resolutions (one entity's facts, every key resolved), for tests
+// that bound the work a patch costs.
+#[cfg(test)]
+thread_local! { pub(crate) static ENTITY_RESOLUTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+fn count_resolution() {
+    ENTITY_RESOLUTIONS.with(|count| count.set(count.get() + 1));
+}
+
+/// What changed since it was last taken: the targets whose facts changed,
+/// or everything (a provider went stale or fresh, or facts expired).
+#[derive(Debug, Default)]
+pub struct Changed {
+    pub all: bool,
+    pub targets: HashSet<EntityId>,
+}
+
 #[derive(Debug, Default)]
 pub struct MetadataStore {
     entries: HashMap<EntityId, HashMap<String, BTreeMap<Contributor, MetadataEntry>>>,
@@ -44,9 +62,27 @@ pub struct MetadataStore {
     /// Stale providers, with the time each became stale. Their facts are
     /// judged live as of that time, so none expires while it stays stale.
     stale: BTreeMap<ProviderIx, u64>,
+    changed: Changed,
 }
 
 impl MetadataStore {
+    fn touch(&mut self, target: &EntityId) {
+        if !self.changed.all {
+            self.changed.targets.insert(target.clone());
+        }
+    }
+
+    /// Everything may resolve differently: facts expired, or a provider
+    /// went stale or fresh.
+    pub fn change_all(&mut self) {
+        self.changed = Changed { all: true, targets: HashSet::new() };
+    }
+
+    /// What changed since the last call.
+    pub fn take_changed(&mut self) -> Changed {
+        std::mem::take(&mut self.changed)
+    }
+
     pub fn targets(&self) -> impl Iterator<Item = &EntityId> {
         self.entries.keys()
     }
@@ -98,6 +134,7 @@ impl MetadataStore {
     }
 
     fn set_contribution(&mut self, entity_id: EntityId, key: String, contributor: Contributor, entry: MetadataEntry) {
+        self.touch(&entity_id);
         self.target_ordinals.entry(entity_id.clone()).or_insert(entry.ordinal);
         let indexed = self.indexed(&contributor);
         let deadline = entry.ttl_ms.map(|ttl| entry.updated_at.saturating_add(ttl));
@@ -130,6 +167,7 @@ impl MetadataStore {
             self.target_ordinals.remove(entity_id);
         }
         if let Some(entry) = &removed {
+            self.touch(entity_id);
             if self.indexed(contributor) {
                 self.remove_expiry(entry);
             }
@@ -204,6 +242,7 @@ impl MetadataStore {
         } else {
             self.stale.remove(&ix)
         };
+        self.change_all();
         let mut entries = std::mem::take(&mut self.entries);
         for keys in entries.values_mut() {
             for contributions in keys.values_mut() {
@@ -252,6 +291,9 @@ impl MetadataStore {
                 !contributions.is_empty()
             });
             removed |= lost;
+            if lost {
+                self.touch(target);
+            }
             if let (true, EntityId::Entity(entity)) = (lost, target) {
                 affected.insert(entity.clone());
             }
@@ -354,6 +396,8 @@ impl MetadataStore {
         entity_id: &EntityId,
         now: u64,
     ) -> (BTreeMap<String, MetadataEntry>, BTreeMap<String, String>) {
+        #[cfg(test)]
+        count_resolution();
         let mut values = BTreeMap::new();
         let mut sources = BTreeMap::new();
         if let Some(entries) = self.entries.get(entity_id) {
@@ -368,6 +412,8 @@ impl MetadataStore {
     }
 
     pub fn resolved_entries_for(&self, entity_id: &EntityId, now: u64) -> BTreeMap<String, MetadataEntry> {
+        #[cfg(test)]
+        count_resolution();
         self.entries
             .get(entity_id)
             .map(|entity_entries| {

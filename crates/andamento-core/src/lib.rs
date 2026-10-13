@@ -1339,3 +1339,6 @@ mod cutover_tests;
 
 #[cfg(test)]
 mod visibility_tests;
+
+#[cfg(test)]
+mod scaling_tests;
