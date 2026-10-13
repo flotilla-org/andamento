@@ -113,7 +113,7 @@ pub struct ControllerTab {
 // Keep scalar text distinct from structured entity identities.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum IndexedValue {
-    Scalar(String),
+    Scalar(Arc<str>),
     Entity(EntityRef),
 }
 
@@ -129,7 +129,9 @@ enum IndexedValue {
 /// return, such as a rebuild or new visibility, moves the epoch.
 #[derive(Debug, Default)]
 struct PlacementIndex {
-    by_fact: BTreeMap<Rc<(String, IndexedValue)>, usize>,
+    by_fact: BTreeMap<Rc<PostingKey>, usize>,
+    /// The fact names postings are under, to look one up without making it.
+    names: HashSet<Rc<str>>,
     /// Postings by ID; an emptied posting keeps its ID and generation.
     postings: Vec<Posting>,
     clock: u64,
@@ -151,7 +153,7 @@ struct PlacementIndex {
 
 #[derive(Debug)]
 struct Posting {
-    key: Rc<(String, IndexedValue)>,
+    key: Rc<PostingKey>,
     positions: Vec<usize>,
     generation: u64,
 }
@@ -161,7 +163,7 @@ struct Posting {
 #[derive(Debug)]
 enum PostingRead {
     Present { id: usize, generation: u64 },
-    Absent(Rc<(String, IndexedValue)>),
+    Absent(Rc<PostingKey>),
 }
 
 /// What placement evaluation reads besides the catalog's facts. When any of
@@ -304,33 +306,16 @@ struct PlacementContext<'a, 'f> {
     form: &'f str,
 }
 
-/// The `(key, value)` postings an entity is indexed under.
-fn entity_postings(entity: &CatalogEntity) -> Vec<(String, IndexedValue)> {
-    // An entity's kind and id come from its ref, not from whatever the
-    // producer happened to echo into its facts, so `kind=` always works.
-    let mut postings = vec![
-        ("entity.kind".to_owned(), IndexedValue::Scalar(entity.entity.kind.clone())),
-        ("entity.id".to_owned(), IndexedValue::Scalar(entity.entity.id.clone())),
-    ];
-    // A `.ref` carries its target's facts for presentation, but rules
-    // reach it only through its own placement facts, so a query on the
-    // target's facts (say, needs attention) never places the ghost too.
-    let is_ref = entity.entity.kind == system::REF;
-    for (key, entry) in entity.facts.iter() {
-        if is_ref && key != system::GROUP && key != system::TARGET {
-            continue;
-        }
-        if let MetadataValue::EntityRefs(refs) = &entry.value {
-            postings.extend(refs.iter().map(|reference| (key.to_owned(), IndexedValue::Entity(reference.clone()))));
-            continue;
-        }
-        if let Some(text) = placement_index_text(&entry.value) {
-            postings.push((key.to_owned(), IndexedValue::Scalar(text)));
-        }
+/// A posting's key: a fact's name, shared with the records' spines, and a
+/// value.
+type PostingKey = (Rc<str>, IndexedValue);
+
+/// A fact's value as placement predicates match it, sharing its text.
+fn indexed_text(value: &MetadataValue) -> Option<Arc<str>> {
+    match value {
+        MetadataValue::Text(text) => Some(text.clone()),
+        other => placement_index_text(other).map(Arc::from),
     }
-    postings.sort();
-    postings.dedup();
-    postings
 }
 
 impl PlacementIndex {
@@ -353,7 +338,7 @@ impl PlacementIndex {
             for (position, entity) in entities.iter().enumerate() {
                 self.facts.push(entity.facts.clone());
                 self.indexed.push(vec![]);
-                let postings = entity_postings(entity);
+                let postings = self.postings_of(entity);
                 self.index(position, &postings);
             }
             return None;
@@ -368,7 +353,7 @@ impl PlacementIndex {
             for &id in &self.indexed[position] {
                 self.postings[id].generation = self.clock;
             }
-            let next = entity_postings(entity);
+            let next = self.postings_of(entity);
             if self.indexed[position].iter().map(|&id| &*self.postings[id].key).eq(next.iter()) {
                 continue;
             }
@@ -379,12 +364,51 @@ impl PlacementIndex {
         Some(changed)
     }
 
-    fn index(&mut self, position: usize, postings: &[(String, IndexedValue)]) {
+    /// The postings `entity` is indexed under.
+    fn postings_of(&mut self, entity: &CatalogEntity) -> Vec<PostingKey> {
+        // An entity's kind and id come from its ref, not from whatever the
+        // producer happened to echo into its facts, so `kind=` always works.
+        let mut postings = vec![
+            (self.name(KEY_ENTITY_KIND), IndexedValue::Scalar(Arc::from(entity.entity.kind.as_str()))),
+            (self.name(KEY_ENTITY_ID), IndexedValue::Scalar(Arc::from(entity.entity.id.as_str()))),
+        ];
+        // A `.ref` carries its target's facts for presentation, but rules
+        // reach it only through its own placement facts, so a query on the
+        // target's facts (say, needs attention) never places the ghost too.
+        let is_ref = entity.entity.kind == system::REF;
+        for (key, fact) in entity.facts.named() {
+            if is_ref && &**key != system::GROUP && &**key != system::TARGET {
+                continue;
+            }
+            if let MetadataValue::EntityRefs(refs) = &fact.entry.value {
+                postings.extend(refs.iter().map(|reference| (key.clone(), IndexedValue::Entity(reference.clone()))));
+                continue;
+            }
+            if let Some(text) = indexed_text(&fact.entry.value) {
+                postings.push((key.clone(), IndexedValue::Scalar(text)));
+            }
+        }
+        postings.sort();
+        postings.dedup();
+        postings
+    }
+
+    fn name(&mut self, name: &str) -> Rc<str> {
+        if let Some(name) = self.names.get(name) {
+            return name.clone();
+        }
+        let name: Rc<str> = Rc::from(name);
+        self.names.insert(name.clone());
+        name
+    }
+
+    fn index(&mut self, position: usize, postings: &[PostingKey]) {
         let mut ids = Vec::with_capacity(postings.len());
         for posting in postings {
+            self.names.insert(posting.0.clone());
             if let IndexedValue::Entity(_) = posting.1 {
-                *self.ref_key_counts.entry(posting.0.clone()).or_default() += 1;
-                if self.ref_keys.insert(posting.0.clone()) {
+                *self.ref_key_counts.entry(posting.0.to_string()).or_default() += 1;
+                if self.ref_keys.insert(posting.0.to_string()) {
                     self.epoch += 1;
                 }
             }
@@ -412,11 +436,11 @@ impl PlacementIndex {
             let entry = &mut self.postings[id];
             entry.generation = self.clock;
             if let IndexedValue::Entity(_) = entry.key.1 {
-                if let Some(count) = self.ref_key_counts.get_mut(&entry.key.0) {
+                if let Some(count) = self.ref_key_counts.get_mut(&*entry.key.0) {
                     *count -= 1;
                     if *count == 0 {
-                        self.ref_key_counts.remove(&entry.key.0);
-                        self.ref_keys.remove(&entry.key.0);
+                        self.ref_key_counts.remove(&*entry.key.0);
+                        self.ref_keys.remove(&*entry.key.0);
                         self.epoch += 1;
                     }
                 }
@@ -506,7 +530,8 @@ impl PlacementIndex {
 
     /// The positions under `(key, value)`, and the read to record.
     fn lookup(&self, key: &str, value: IndexedValue) -> (&[usize], PostingRead) {
-        let key = (key.to_owned(), value);
+        let name = self.names.get(key).cloned().unwrap_or_else(|| Rc::from(key));
+        let key = (name, value);
         match self.by_fact.get(&key) {
             Some(&id) => {
                 let posting = &self.postings[id];
@@ -2357,14 +2382,14 @@ impl ControllerState {
                     reads.postings.push(read);
                     return positions;
                 }
-                let value = predicate.value.clone().or_else(|| {
+                let value = predicate.value.as_deref().map(Arc::from).or_else(|| {
                     let bound = reads.bind(scope, predicate.of.as_deref()?)?;
                     if predicate.key == "entity.kind" {
-                        Some(bound.entity.kind.clone())
+                        Some(Arc::from(bound.entity.kind.as_str()))
                     } else if predicate.key == "entity.id" {
-                        Some(bound.entity.id.clone())
+                        Some(Arc::from(bound.entity.id.as_str()))
                     } else {
-                        bound.facts.get(&predicate.key).and_then(|entry| placement_index_text(&entry.value))
+                        bound.facts.get(&predicate.key).and_then(|entry| indexed_text(&entry.value))
                     }
                 });
                 let Some(value) = value else {
@@ -5170,9 +5195,15 @@ impl ControllerState {
         }
         let index = kept.placement_index.borrow();
         for key in index.by_fact.keys() {
-            census.string("index: posting keys", &key.0);
+            if census.first(&key.0) {
+                census.string("index: posting keys (not shared)", &key.0);
+            }
             match &key.1 {
-                IndexedValue::Scalar(value) => census.string("index: posting values", value),
+                IndexedValue::Scalar(value) => {
+                    if census.first_shared(value) {
+                        census.string("index: posting values (not shared)", value)
+                    }
+                }
                 IndexedValue::Entity(entity) => census.entity("index: posting values", entity),
             }
         }

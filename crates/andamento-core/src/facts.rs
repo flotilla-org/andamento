@@ -134,6 +134,11 @@ impl ResolvedFacts {
         self.shape.keys.iter().map(|key| &**key).zip(&self.facts)
     }
 
+    /// Facts by their shared key names, in key order.
+    pub fn named(&self) -> impl Iterator<Item = (&Rc<str>, &Fact)> {
+        self.shape.keys.iter().zip(&self.facts)
+    }
+
     /// Entries as a map, for what reads one.
     pub fn to_values(&self) -> BTreeMap<String, MetadataEntry> {
         self.iter().map(|(key, entry)| (key.to_owned(), entry.clone())).collect()
