@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::{
     EntityRef, MetadataEntry, MetadataPatch, MetadataSourceEntry, MetadataTarget, MetadataValue, MetadataValueUpdate,
@@ -50,6 +52,23 @@ pub struct Changed {
     pub targets: HashSet<EntityId>,
 }
 
+/// An entity's facts resolved: each key's winning entry, and the source it
+/// came from.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ResolvedFacts {
+    pub values: BTreeMap<String, MetadataEntry>,
+    pub sources: BTreeMap<String, String>,
+}
+
+/// A resolution and when it holds: from `at` through `until`, the earliest
+/// deadline among the facts live at `at` (none: no TTL fact can expire).
+#[derive(Debug)]
+struct Cached {
+    resolved: Rc<ResolvedFacts>,
+    at: u64,
+    until: Option<u64>,
+}
+
 #[derive(Debug, Default)]
 pub struct MetadataStore {
     entries: HashMap<EntityId, HashMap<String, BTreeMap<Contributor, MetadataEntry>>>,
@@ -63,10 +82,14 @@ pub struct MetadataStore {
     /// judged live as of that time, so none expires while it stays stale.
     stale: BTreeMap<ProviderIx, u64>,
     changed: Changed,
+    /// Each entity's resolution, made when first read and dropped when its
+    /// facts change, everything may have changed, or a fact in it expires.
+    resolved: RefCell<HashMap<EntityId, Cached>>,
 }
 
 impl MetadataStore {
     fn touch(&mut self, target: &EntityId) {
+        self.resolved.get_mut().remove(target);
         if !self.changed.all {
             self.changed.targets.insert(target.clone());
         }
@@ -75,6 +98,7 @@ impl MetadataStore {
     /// Everything may resolve differently: facts expired, or a provider
     /// went stale or fresh.
     pub fn change_all(&mut self) {
+        self.resolved.get_mut().clear();
         self.changed = Changed { all: true, targets: HashSet::new() };
     }
 
@@ -390,41 +414,54 @@ impl MetadataStore {
             .unwrap_or_default()
     }
 
+    /// `entity_id`'s facts resolved at `now`, shared until they change.
+    pub fn resolved(&self, entity_id: &EntityId, now: u64) -> Rc<ResolvedFacts> {
+        if let Some(cached) = self.resolved.borrow().get(entity_id) {
+            if cached.at <= now && cached.until.is_none_or(|until| now <= until) {
+                return cached.resolved.clone();
+            }
+        }
+        #[cfg(test)]
+        count_resolution();
+        let mut resolved = ResolvedFacts::default();
+        let mut until: Option<u64> = None;
+        if let Some(entries) = self.entries.get(entity_id) {
+            for (key, contributions) in entries {
+                let mut candidates = Vec::with_capacity(contributions.len());
+                for (contributor, entry) in contributions {
+                    if !self.is_live(contributor, entry, now) {
+                        continue;
+                    }
+                    // A stale provider's facts don't expire while it stays stale.
+                    if let (Some(ttl), true) = (entry.ttl_ms, self.indexed(contributor)) {
+                        let deadline = entry.updated_at.saturating_add(ttl);
+                        until = Some(until.map_or(deadline, |until| until.min(deadline)));
+                    }
+                    candidates.push(CandidateEntry::new(contributor.source.clone(), entry.clone()));
+                }
+                if let Some(candidate) = select_primary_entry(&candidates) {
+                    resolved.sources.insert(key.clone(), candidate.source_id);
+                    resolved.values.insert(key.clone(), candidate.entry);
+                }
+            }
+        }
+        let resolved = Rc::new(resolved);
+        self.resolved.borrow_mut().insert(entity_id.clone(), Cached { resolved: resolved.clone(), at: now, until });
+        resolved
+    }
+
     /// Preserve the winning producer alongside each selected entry in one pass.
     pub fn resolved_entries_with_sources_for(
         &self,
         entity_id: &EntityId,
         now: u64,
     ) -> (BTreeMap<String, MetadataEntry>, BTreeMap<String, String>) {
-        #[cfg(test)]
-        count_resolution();
-        let mut values = BTreeMap::new();
-        let mut sources = BTreeMap::new();
-        if let Some(entries) = self.entries.get(entity_id) {
-            for key in entries.keys() {
-                if let Some(candidate) = select_primary_entry(&self.entries_for(entity_id, key, now)) {
-                    sources.insert(key.clone(), candidate.source_id);
-                    values.insert(key.clone(), candidate.entry);
-                }
-            }
-        }
-        (values, sources)
+        let resolved = self.resolved(entity_id, now);
+        (resolved.values.clone(), resolved.sources.clone())
     }
 
     pub fn resolved_entries_for(&self, entity_id: &EntityId, now: u64) -> BTreeMap<String, MetadataEntry> {
-        #[cfg(test)]
-        count_resolution();
-        self.entries
-            .get(entity_id)
-            .map(|entity_entries| {
-                entity_entries
-                    .iter()
-                    .filter_map(|(key, _)| {
-                        select_primary_entry(&self.entries_for(entity_id, key, now)).map(|candidate| (key.clone(), candidate.entry))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.resolved(entity_id, now).values.clone()
     }
 
     pub fn source_entries_for(&self, entity_id: &EntityId, now: u64) -> BTreeMap<String, Vec<MetadataSourceEntry>> {

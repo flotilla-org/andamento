@@ -207,4 +207,33 @@ fn real_catalog_timings() {
         let applied = time(&mut || batched.apply(2 + i as u64, PROVIDER, [one.clone()]).unwrap());
         println!("a delta: {applied:?}, then evaluation {:?}", time(&mut || drop(batched.snapshot())));
     }
+    // The recorded deltas beside the snapshot (`deltas.jsonl`: one request's
+    // patches per line), each followed by the evaluation a frame then pays.
+    let deltas = std::path::Path::new(&std::env::var("ANDAMENTO_CATALOG_FIXTURE").unwrap()).with_file_name("deltas.jsonl");
+    let Ok(lines) = std::fs::read_to_string(deltas) else {
+        return;
+    };
+    crate::profile::start();
+    let (mut applies, mut evaluations) = (vec![], vec![]);
+    for (i, line) in lines.lines().enumerate() {
+        let request: serde_json::Value = serde_json::from_str(line).unwrap();
+        let patches: Vec<MetadataPatch> = serde_json::from_value(request["patches"].clone()).unwrap();
+        applies.push(time(&mut || batched.apply(10 + i as u64, PROVIDER, patches.clone()).unwrap()));
+        evaluations.push(time(&mut || drop(batched.snapshot())));
+    }
+    let median = |v: &mut Vec<std::time::Duration>| {
+        v.sort();
+        v[v.len() / 2]
+    };
+    println!(
+        "{} recorded deltas: apply median {:?}, evaluation median {:?}",
+        applies.len(),
+        median(&mut applies),
+        median(&mut evaluations)
+    );
+    let mut phases: Vec<_> = crate::profile::take().into_iter().collect();
+    phases.sort_by(|a, b| b.1.nanos.cmp(&a.1.nanos));
+    for (name, phase) in phases.iter().take(12) {
+        println!("  {name:28} {:?} over {} calls", std::time::Duration::from_nanos(phase.nanos as u64), phase.calls);
+    }
 }

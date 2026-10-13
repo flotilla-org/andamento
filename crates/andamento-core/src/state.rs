@@ -23,11 +23,13 @@ pub(crate) struct PlacementAnnotation {
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
+use std::rc::Rc;
 
 use crate::detail::{resolve_field, DetailCard};
 use crate::host::PaneObservation;
-use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataStore};
+use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataStore, ResolvedFacts};
 use crate::profile;
 use crate::template_config::{
     placement_index_text, AbbreviationTier, NodeVariableDefinition, PlacementDefinition, PlacementOrder, PlacementOrderAbsent,
@@ -275,12 +277,26 @@ struct PendingLatentMaterialization {
 #[cfg(test)]
 thread_local! { static CATALOG_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
+/// An entity in the catalog: its resolved facts (`values`, `sources`),
+/// shared with the metadata store's resolution until an edit here copies them.
 #[derive(Debug, Clone)]
 struct CatalogEntity {
     entity: EntityRef,
-    sources: BTreeMap<String, String>,
-    values: BTreeMap<String, MetadataEntry>,
+    facts: Rc<ResolvedFacts>,
     ordinal: i64,
+}
+
+impl Deref for CatalogEntity {
+    type Target = ResolvedFacts;
+    fn deref(&self) -> &ResolvedFacts {
+        &self.facts
+    }
+}
+
+impl DerefMut for CatalogEntity {
+    fn deref_mut(&mut self) -> &mut ResolvedFacts {
+        Rc::make_mut(&mut self.facts)
+    }
 }
 
 /// Resolved catalog and lookup tables shared by every pass of one model build.
@@ -2025,8 +2041,7 @@ impl ControllerState {
                         subject.clone(),
                         CatalogEntity {
                             entity: subject,
-                            sources,
-                            values,
+                            facts: Rc::new(ResolvedFacts { values, sources }),
                             ordinal: self.metadata.target_ordinal(&target).unwrap_or_default(),
                         },
                     );
@@ -2303,16 +2318,11 @@ impl ControllerState {
                 let EntityId::Entity(entity) = target else {
                     return None;
                 };
-                let (values, sources) = self.metadata.resolved_entries_with_sources_for(target, self.now());
-                if values.is_empty() {
+                let facts = self.metadata.resolved(target, self.now());
+                if facts.values.is_empty() {
                     return None;
                 }
-                Some(CatalogEntity {
-                    entity: entity.clone(),
-                    sources,
-                    values,
-                    ordinal: self.metadata.target_ordinal(target).unwrap_or_default(),
-                })
+                Some(CatalogEntity { entity: entity.clone(), facts, ordinal: self.metadata.target_ordinal(target).unwrap_or_default() })
             })
             .collect::<Vec<_>>();
         let positions: BTreeMap<_, _> = entities.iter().enumerate().map(|(index, entity)| (entity.entity.clone(), index)).collect();
@@ -2332,27 +2342,16 @@ impl ControllerState {
         let now = self.now();
         for entity in &mut entities {
             if self.ended_subjects.contains(&entity.entity) {
+                let ordinal = entity.ordinal;
                 entity.sources.remove(KEY_STATUS_STATE);
                 entity.sources.remove("presentation.ended");
                 entity.values.insert(
                     KEY_STATUS_STATE.to_owned(),
-                    MetadataEntry {
-                        value: MetadataValue::Text("ended".to_owned()),
-                        updated_at: now,
-                        ttl_ms: None,
-                        precedence: 0,
-                        ordinal: entity.ordinal,
-                    },
+                    MetadataEntry { value: MetadataValue::Text("ended".to_owned()), updated_at: now, ttl_ms: None, precedence: 0, ordinal },
                 );
                 entity.values.insert(
                     "presentation.ended".to_owned(),
-                    MetadataEntry {
-                        value: MetadataValue::Bool(true),
-                        updated_at: now,
-                        ttl_ms: None,
-                        precedence: 0,
-                        ordinal: entity.ordinal,
-                    },
+                    MetadataEntry { value: MetadataValue::Bool(true), updated_at: now, ttl_ms: None, precedence: 0, ordinal },
                 );
             }
         }
@@ -3064,7 +3063,8 @@ fn saved_catalog_entity(entity: EntityRef, record: &SubjectRecord) -> CatalogEnt
     if let Some(label) = &record.label {
         values.insert(KEY_DISPLAY_LABEL.to_owned(), entry(MetadataValue::Text(label.clone())));
     }
-    CatalogEntity { entity, sources: values.keys().map(|key| (key.clone(), SOURCE_RECORD.to_owned())).collect(), values, ordinal: 0 }
+    let sources = values.keys().map(|key| (key.clone(), SOURCE_RECORD.to_owned())).collect();
+    CatalogEntity { entity, facts: Rc::new(ResolvedFacts { values, sources }), ordinal: 0 }
 }
 
 fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
