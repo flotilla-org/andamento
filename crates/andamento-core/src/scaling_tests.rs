@@ -3,8 +3,8 @@
 //! with ~25 facts each) arrives as one snapshot and then as small deltas;
 //! neither may cost work in proportion to everything already stored.
 use crate::metadata::ENTITY_RESOLUTIONS;
-use crate::sidebar::Sidebar;
-use crate::{EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate};
+use crate::sidebar::{Action, Sidebar, Workspace};
+use crate::{tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, WorkspaceId};
 use std::collections::BTreeMap;
 
 const PROVIDER: &str = "subscription";
@@ -321,6 +321,185 @@ fn kept_state_presents_what_a_fresh_evaluation_does() {
     assert_eq!(kept.snapshot().surface, fresh.snapshot().surface);
 }
 
+/// Everything evaluation keeps between revisions must present exactly what
+/// a first evaluation of the same state does. After each step of a session
+/// that changes facts, workspaces, focus, collapse, variables, display
+/// variables, sibling order, staleness and time, the kept surface equals a
+/// cold one, for the fixture template and for Wheelhouse's daily driver.
+#[test]
+fn kept_evaluation_matches_a_cold_one_at_every_step() {
+    for config in [CONFIG, include_str!("../tests/fixtures/daily-driver.kdl")] {
+        kept_matches_cold_through_a_session(config);
+    }
+}
+
+fn kept_matches_cold_through_a_session(config: &str) {
+    let convoy = |c: usize| EntityRef::new(PROVIDER, "convoy", format!("fleet/convoy-{c:08x}"));
+    let change = move |kind: &str, c: usize, facts: Vec<(&str, MetadataValue)>, unset: Vec<&str>| {
+        let id = format!("fleet/convoy-{c:08x}");
+        let mut patch = patch(kind, &id, facts.into_iter().map(|(k, v)| (k.to_owned(), v)).collect());
+        patch.set.retain(|key, _| !matches!(key.as_str(), "entity.kind" | "entity.id" | "source"));
+        patch.unset = unset.into_iter().map(str::to_owned).collect();
+        patch
+    };
+    let bind = |workspace: WorkspaceId, entity: &EntityRef| {
+        let mut patch = patch(&entity.kind, &entity.id, vec![]);
+        patch.target = MetadataTarget::Tab(workspace);
+        patch.source_id = "host".into();
+        patch
+    };
+    let (w1, w2) = (tab_workspace_id(1), tab_workspace_id(2));
+    let workspaces = move |selected: WorkspaceId| {
+        [w1, w2]
+            .into_iter()
+            .enumerate()
+            .map(|(position, id)| Workspace { id, position, name: format!("w{position}"), selected: id == selected })
+            .collect::<Vec<_>>()
+    };
+    // The first placed node with children, and one of its children.
+    let keys = |sidebar: &Sidebar| {
+        let surface = &sidebar.snapshot_shared().surface;
+        let parent = surface.sections.iter().flat_map(|s| &s.nodes).find(|n| !n.children.is_empty()).expect("a nested node");
+        (parent.key.clone(), parent.children[0].key.clone(), parent.children[0].loop_key.clone())
+    };
+
+    type Step = Box<dyn Fn(&mut Sidebar)>;
+    let steps: Vec<(&str, Step)> = vec![
+        ("snapshot", Box::new(|s: &mut Sidebar| s.apply(1, PROVIDER, catalog(60)).unwrap())),
+        ("open workspaces", Box::new(move |s: &mut Sidebar| s.observe(workspaces(w1), vec![]))),
+        ("bind workspaces", Box::new(move |s: &mut Sidebar| s.apply(2, PROVIDER, [bind(w1, &convoy(3)), bind(w2, &convoy(10))]).unwrap())),
+        (
+            "attention",
+            Box::new(move |s: &mut Sidebar| {
+                s.apply(3, PROVIDER, [change("vessel", 7, vec![("status.attention", MetadataValue::Bool(true))], vec![])]).unwrap()
+            }),
+        ),
+        (
+            "rename",
+            Box::new(move |s: &mut Sidebar| {
+                s.apply(4, PROVIDER, [change("convoy", 3, vec![("display.label", text("renamed"))], vec![])]).unwrap()
+            }),
+        ),
+        (
+            "land",
+            Box::new(move |s: &mut Sidebar| {
+                s.apply(5, PROVIDER, [change("convoy", 10, vec![("flotilla.convoy.phase", text("landed"))], vec![])]).unwrap()
+            }),
+        ),
+        (
+            "reactivate",
+            Box::new(move |s: &mut Sidebar| {
+                s.apply(6, PROVIDER, [change("convoy", 1, vec![("flotilla.convoy.phase", text("active"))], vec![])]).unwrap()
+            }),
+        ),
+        (
+            "move project",
+            Box::new(move |s: &mut Sidebar| {
+                s.apply(7, PROVIDER, [change("convoy", 5, vec![("flotilla.project", text("fleet/p0@fleet"))], vec![])]).unwrap()
+            }),
+        ),
+        (
+            "unset project",
+            Box::new(move |s: &mut Sidebar| s.apply(8, PROVIDER, [change("vessel", 6, vec![], vec!["flotilla.project"])]).unwrap()),
+        ),
+        (
+            "remove",
+            Box::new(move |s: &mut Sidebar| {
+                s.apply(9, PROVIDER, [change("vessel", 12, vec![], vec!["entity.id", "entity.kind"])]).unwrap()
+            }),
+        ),
+        ("add", Box::new(|s: &mut Sidebar| s.apply(10, PROVIDER, catalog(64)[catalog(60).len()..].to_vec()).unwrap())),
+        (
+            "supersede bound",
+            Box::new(move |s: &mut Sidebar| {
+                s.apply(11, PROVIDER, [change("convoy", 3, vec![("flotilla.convoy.superseded", MetadataValue::Bool(true))], vec![])])
+                    .unwrap()
+            }),
+        ),
+        ("focus", Box::new(move |s: &mut Sidebar| s.observe(workspaces(w2), vec![]))),
+        (
+            "collapse",
+            Box::new(move |s: &mut Sidebar| {
+                let (parent, _, _) = keys(s);
+                s.dispatch(Action::TogglePlacement { key: parent }).unwrap();
+            }),
+        ),
+        (
+            "node variable",
+            Box::new(move |s: &mut Sidebar| {
+                let (_, child, _) = keys(s);
+                for name in ["density", "convoy.tier"] {
+                    let _ = s.dispatch(Action::SetVariable { key: child.clone(), name: name.into(), value: Some("short".into()) });
+                    let _ = s.dispatch(Action::SetVariable { key: child.clone(), name: name.into(), value: Some("compact".into()) });
+                }
+            }),
+        ),
+        (
+            "sibling order",
+            Box::new(move |s: &mut Sidebar| {
+                let (_, _, loop_key) = keys(s);
+                s.set_sibling_order(loop_key, vec![convoy(2), convoy(1)]).unwrap();
+            }),
+        ),
+        (
+            "show finished",
+            Box::new(|s: &mut Sidebar| {
+                let _ = s.dispatch(Action::ToggleDisplayVariable { name: "show-finished".into() });
+            }),
+        ),
+        (
+            "show issues",
+            Box::new(|s: &mut Sidebar| {
+                let _ = s.dispatch(Action::ToggleDisplayVariable { name: "show-issues".into() });
+            }),
+        ),
+        (
+            "expiring fact",
+            Box::new(move |s: &mut Sidebar| {
+                let mut patch = change("vessel", 9, vec![("status.attention", MetadataValue::Bool(true))], vec![]);
+                patch.set.values_mut().for_each(|update| update.ttl_ms = Some(50));
+                s.apply(12, PROVIDER, [patch]).unwrap();
+            }),
+        ),
+        ("expire", Box::new(|s: &mut Sidebar| s.tick(100))),
+        (
+            "stale",
+            Box::new(|s: &mut Sidebar| {
+                s.set_provider_stale(PROVIDER, true);
+            }),
+        ),
+        (
+            "delta while stale",
+            Box::new(move |s: &mut Sidebar| {
+                s.apply(101, PROVIDER, [change("convoy", 2, vec![("display.label", text("while stale"))], vec![])]).unwrap()
+            }),
+        ),
+        (
+            "fresh",
+            Box::new(|s: &mut Sidebar| {
+                s.set_provider_stale(PROVIDER, false);
+            }),
+        ),
+        (
+            "close a workspace",
+            Box::new(move |s: &mut Sidebar| s.observe(workspaces(w2).into_iter().filter(|w| w.id == w2).collect(), vec![])),
+        ),
+        (
+            "retract",
+            Box::new(|s: &mut Sidebar| {
+                s.retract_provider(PROVIDER);
+            }),
+        ),
+        ("snapshot again", Box::new(|s: &mut Sidebar| s.apply(200, PROVIDER, catalog(60)).unwrap())),
+    ];
+    let mut sidebar = Sidebar::new(config).unwrap();
+    for (name, step) in steps {
+        step(&mut sidebar);
+        let kept = sidebar.snapshot_shared().surface.clone();
+        assert!(kept == sidebar.cold_surface(), "after {name:?}, the kept surface differs from a cold evaluation");
+    }
+}
+
 /// Where scaling breaks: generated fleets from the real catalog's size up
 /// to hundreds of projects of hundreds of convoys, and lopsided shapes.
 /// `cargo test --release -p andamento-core stress_shapes -- --ignored
@@ -343,6 +522,7 @@ fn stress_shapes() {
         ("busy 100x100 all active", Shape { projects: 100, convoys_per_project: 100, active_every: 1, attention_every: 3, ..base }),
     ];
     let only = std::env::var("STRESS_ONLY").ok();
+    let deltas = std::env::var("STRESS_DELTAS").ok().and_then(|n| n.parse().ok()).unwrap_or(40);
     let phases_shown = std::env::var("STRESS_PHASES").ok().and_then(|n| n.parse().ok()).unwrap_or(5);
     let time = |f: &mut dyn FnMut()| {
         let started = std::time::Instant::now();
@@ -363,7 +543,7 @@ fn stress_shapes() {
         crate::profile::start();
         let (mut applies, mut evaluations) = (vec![], vec![]);
         let convoys = shape.projects * shape.convoys_per_project;
-        for i in 0..40 {
+        for i in 0..deltas {
             let c = (i * 7919) % convoys;
             let change = if i % 2 == 0 { delta(c, "active") } else { delta(c, "landed") };
             applies.push(time(&mut || sidebar.apply(2 + i as u64, PROVIDER, [change.clone()]).unwrap()));

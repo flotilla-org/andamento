@@ -1183,6 +1183,13 @@ impl Sidebar {
         })
     }
 
+    /// The surface a first evaluation of the current state presents, with
+    /// nothing kept from earlier evaluations. Kept state must not change it.
+    #[cfg(test)]
+    pub(crate) fn cold_surface(&self) -> SurfaceSnapshot {
+        self.state.cold(|state| state.presentation_in(&state.evaluate_revision()))
+    }
+
     pub fn detail_cards(&self) -> (u64, Vec<DetailCard>) {
         (self.state.evaluation_time(), self.state.detail_cards_in(self.evaluation(), None))
     }

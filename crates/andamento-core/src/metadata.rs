@@ -146,6 +146,15 @@ pub struct MetadataStore {
 }
 
 impl MetadataStore {
+    /// Run `f` with no resolutions kept, leaving those kept as they were.
+    #[cfg(test)]
+    pub(crate) fn cold<R>(&self, f: impl FnOnce() -> R) -> R {
+        let kept = self.resolved.take();
+        let result = f();
+        self.resolved.replace(kept);
+        result
+    }
+
     fn touch(&mut self, target: &EntityId) {
         self.resolved.get_mut().remove(target);
         if !self.changed.all {

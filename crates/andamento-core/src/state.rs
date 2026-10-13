@@ -547,6 +547,29 @@ pub struct PluginRegistration {
     pub placement: PluginPlacement,
 }
 
+/// What evaluation keeps between revisions, each part valid only while
+/// what it was derived from stays the same. Everything kept lives here, so
+/// a test can evaluate without it and compare.
+#[derive(Debug, Default)]
+struct Kept {
+    /// The placement index (see `PlacementIndex`).
+    placement_index: RefCell<PlacementIndex>,
+    /// Each entity's display (`display_entity`), kept while its resolved
+    /// facts and the template catalog stay the same.
+    displays: RefCell<HashMap<EntityRef, (Rc<ResolvedFacts>, u64, EvaluatedPlacement)>>,
+    /// Each applied template's resolution for an entity, kept likewise.
+    applied: RefCell<HashMap<(EntityRef, String), (Rc<ResolvedFacts>, u64, Option<Rc<ResolvedTemplateSlot>>)>>,
+}
+
+impl Kept {
+    #[cfg(test)]
+    fn swap(&self, other: &Kept) {
+        self.placement_index.swap(&other.placement_index);
+        self.displays.swap(&other.displays);
+        self.applied.swap(&other.applied);
+    }
+}
+
 #[derive(Debug)]
 pub struct ControllerState {
     tabs: Vec<ControllerTab>,
@@ -565,13 +588,8 @@ pub struct ControllerState {
     template_catalog: Option<TemplateConfigCatalog>,
     /// Moves whenever the template catalog is set, for what is derived from it.
     template_generation: u64,
-    /// The placement index, kept between evaluations (see `PlacementIndex`).
-    placement_index: RefCell<PlacementIndex>,
-    /// Each entity's display (`display_entity`), kept while its resolved
-    /// facts and the template catalog stay the same.
-    displays: RefCell<HashMap<EntityRef, (Rc<ResolvedFacts>, u64, EvaluatedPlacement)>>,
-    /// Each applied template's resolution for an entity, kept likewise.
-    applied: RefCell<HashMap<(EntityRef, String), (Rc<ResolvedFacts>, u64, Option<Rc<ResolvedTemplateSlot>>)>>,
+    /// What evaluation keeps from one revision to the next.
+    kept: Kept,
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
     clock_ms: Option<u64>,
@@ -598,9 +616,7 @@ impl Default for ControllerState {
             rail_config: Default::default(),
             template_catalog: Some(Default::default()),
             template_generation: 0,
-            placement_index: Default::default(),
-            displays: Default::default(),
-            applied: Default::default(),
+            kept: Default::default(),
             template_config: Default::default(),
             receive_counter: Default::default(),
             clock_ms: Default::default(),
@@ -614,6 +630,17 @@ impl Default for ControllerState {
 }
 
 impl ControllerState {
+    /// Run `f` as a first evaluation would, with nothing kept from earlier
+    /// ones, leaving what is kept as it was.
+    #[cfg(test)]
+    pub(crate) fn cold<R>(&self, f: impl FnOnce(&Self) -> R) -> R {
+        let kept = Kept::default();
+        self.kept.swap(&kept);
+        let result = self.metadata.cold(|| f(self));
+        self.kept.swap(&kept);
+        result
+    }
+
     /// Opt into host-supplied monotonic time. Legacy adapters retain receipt-clock behavior.
     pub fn advance_time(&mut self, now_ms: u64) -> bool {
         let before = self.now();
@@ -1346,7 +1373,7 @@ impl ControllerState {
             }
         }
         let index_phase = profile::span("placement-index");
-        let mut index = self.placement_index.borrow_mut();
+        let mut index = self.kept.placement_index.borrow_mut();
         let reindexed = index.update(region_catalog_entities);
         if let Some(config) = self.template_catalog.as_ref() {
             let generation = self.template_generation;
@@ -1677,13 +1704,13 @@ impl ControllerState {
 
     fn display_entity(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
         let generation = self.template_generation;
-        if let Some((facts, at, display)) = self.displays.borrow().get(&entity.entity) {
+        if let Some((facts, at, display)) = self.kept.displays.borrow().get(&entity.entity) {
             if *at == generation && Rc::ptr_eq(facts, &entity.facts) {
                 return display.clone();
             }
         }
         let display = self.display_entity_uncached(entity);
-        let mut displays = self.displays.borrow_mut();
+        let mut displays = self.kept.displays.borrow_mut();
         // Forget entities whose facts nothing else holds any more (gone, or
         // superseded), so the cache stays the size of the catalog.
         if displays.len() > 64 && displays.len() > 2 * self.metadata.targets().count() {
@@ -1704,7 +1731,7 @@ impl ControllerState {
     ) -> Option<Rc<ResolvedTemplateSlot>> {
         let generation = self.template_generation;
         let key = (entity.entity.clone(), template_name.to_owned());
-        if let Some((facts, at, slot)) = self.applied.borrow().get(&key) {
+        if let Some((facts, at, slot)) = self.kept.applied.borrow().get(&key) {
             if *at == generation && Rc::ptr_eq(facts, &entity.facts) {
                 return slot.clone();
             }
@@ -1729,7 +1756,7 @@ impl ControllerState {
             }),
         };
         let slot = slot.map(Rc::new);
-        let mut applied = self.applied.borrow_mut();
+        let mut applied = self.kept.applied.borrow_mut();
         if applied.len() > 64 && applied.len() > 4 * self.metadata.targets().count() {
             applied.retain(|_, (facts, _, _)| Rc::strong_count(facts) > 1);
         }
