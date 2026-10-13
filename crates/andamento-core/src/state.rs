@@ -21,10 +21,11 @@ pub(crate) struct PlacementAnnotation {
     pub layout: Option<String>,
     pub related_detail: Vec<TemplateConfigRenderedField>,
 }
+use crate::{FastHashMap, FastHashSet};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::ops::{Bound, Deref, DerefMut};
 use std::path::Path;
 use std::rc::Rc;
@@ -93,7 +94,7 @@ const NORMAL_CWD_PRECEDENCE: i64 = 0;
 // Opener-owned identity must outrank observational discovery such as cwd-derived associations.
 const LATENT_MATERIALIZER_PRECEDENCE: i64 = 1_000;
 
-type TabSeedMetadata = HashMap<WorkspaceId, BTreeMap<String, MetadataEntry>>;
+type TabSeedMetadata = FastHashMap<WorkspaceId, BTreeMap<String, MetadataEntry>>;
 
 /// Per tab: its subject, and the host entity the host published for it.
 #[derive(Debug, Default)]
@@ -131,7 +132,7 @@ enum IndexedValue {
 struct PlacementIndex {
     by_fact: BTreeMap<Rc<PostingKey>, usize>,
     /// The fact names postings are under, to look one up without making it.
-    names: HashSet<Rc<str>>,
+    names: FastHashSet<Rc<str>>,
     /// Postings by ID; an emptied posting keeps its ID and generation.
     postings: Vec<Posting>,
     clock: u64,
@@ -266,7 +267,7 @@ struct NodeMemo {
 }
 
 /// Each placed node's variables, by the address of its placement.
-pub(crate) type NodeVariables = HashMap<*const EvaluatedPlacement, VariablesMemo>;
+pub(crate) type NodeVariables = FastHashMap<*const EvaluatedPlacement, VariablesMemo>;
 
 /// A node's variables, kept while its placement and its parent's variables
 /// stay the same.
@@ -879,9 +880,9 @@ struct Kept {
     placement_index: RefCell<PlacementIndex>,
     /// Each entity's display (`display_entity`), kept while its resolved
     /// facts and the template catalog stay the same.
-    displays: RefCell<HashMap<EntityRef, KeptDisplay>>,
+    displays: RefCell<FastHashMap<EntityRef, KeptDisplay>>,
     /// Each applied template's resolution for an entity, kept likewise.
-    applied: RefCell<HashMap<(EntityRef, String), KeptAppliedTemplate>>,
+    applied: RefCell<FastHashMap<(EntityRef, String), KeptAppliedTemplate>>,
     /// Each region's loops as last evaluated (`evaluate_regions`), with
     /// what they were evaluated under.
     placements: RefCell<Option<(PlacementInputs, Vec<Vec<LoopMemo>>)>>,
@@ -892,7 +893,7 @@ struct Kept {
     /// The catalog (`catalog`).
     catalog: RefCell<KeptCatalog>,
     /// Templates' effective KDL, one copy of each while a slot holds it.
-    kdl: RefCell<HashSet<Rc<str>>>,
+    kdl: RefCell<FastHashSet<Rc<str>>>,
 }
 
 impl Kept {
@@ -928,14 +929,14 @@ impl Kept {
 pub struct ControllerState {
     tabs: Vec<ControllerTab>,
     observed_workdirs: BTreeMap<WorkspaceId, BTreeSet<String>>,
-    pane_to_tab: HashMap<PaneTarget, WorkspaceId>,
-    panes: HashMap<PaneTarget, ControllerPane>,
+    pane_to_tab: FastHashMap<PaneTarget, WorkspaceId>,
+    panes: FastHashMap<PaneTarget, ControllerPane>,
     metadata: MetadataStore,
     retained_subjects: BTreeMap<EntityRef, CatalogEntity>,
     // Authoritative ends are terminal for an identity; new attempts use new IDs.
     ended_subjects: BTreeSet<EntityRef>,
-    pane_statuses: HashMap<PaneTarget, StoredPaneStatus>,
-    pinned_tabs: HashSet<WorkspaceId>,
+    pane_statuses: FastHashMap<PaneTarget, StoredPaneStatus>,
+    pinned_tabs: FastHashSet<WorkspaceId>,
     clients: BTreeMap<u16, ControllerClientState>,
     sort_mode: SortMode,
     rail_config: RailConfig,
@@ -947,7 +948,7 @@ pub struct ControllerState {
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
     clock_ms: Option<u64>,
-    pending_materialized_tab_names: HashMap<WorkspaceId, String>,
+    pending_materialized_tab_names: FastHashMap<WorkspaceId, String>,
     pending_latent_materializations: BTreeMap<String, PendingLatentMaterialization>,
     rail_ui: ControllerRailUiState,
     rail_ui_writer_client_id: u16,
@@ -1067,7 +1068,7 @@ impl ControllerState {
             next_tabs.push(ControllerTab { tab_id: tab.tab_id, position: tab.position, name, active: tab.active });
         }
         next_tabs.sort_by_key(|tab| tab.position);
-        let live_tab_ids: HashSet<WorkspaceId> = next_tabs.iter().map(|tab| tab.tab_id).collect();
+        let live_tab_ids: FastHashSet<WorkspaceId> = next_tabs.iter().map(|tab| tab.tab_id).collect();
         pending_materialized_tab_names.retain(|tab_id, _| live_tab_ids.contains(tab_id));
         self.pending_materialized_tab_names = pending_materialized_tab_names;
         self.observed_workdirs.retain(|id, _| live_tab_ids.contains(id));
@@ -1090,7 +1091,7 @@ impl ControllerState {
 
     #[allow(dead_code)]
     pub fn observe_panes(&mut self, observations: Vec<PaneObservation>) -> bool {
-        let mut live_panes = HashSet::new();
+        let mut live_panes = FastHashSet::default();
         let previous_pane_to_tab = self.pane_to_tab.clone();
         self.pane_to_tab.clear();
         let previous_panes = self.panes.clone();
@@ -1179,7 +1180,7 @@ impl ControllerState {
         self.pane_statuses.remove(&pane_id);
     }
 
-    pub fn retain_panes(&mut self, live_panes: HashSet<PaneTarget>) {
+    pub fn retain_panes(&mut self, live_panes: FastHashSet<PaneTarget>) {
         self.pane_to_tab.retain(|pane_id, _| live_panes.contains(pane_id));
         self.panes.retain(|pane_id, _| live_panes.contains(pane_id));
         self.pane_statuses.retain(|pane_id, _| live_panes.contains(pane_id));
@@ -2199,7 +2200,7 @@ impl ControllerState {
                 (LoopMemo { reads: memo.reads, nodes }, changed)
             }
             prior => {
-                let mut earlier: HashMap<EntityRef, NodeMemo> = prior
+                let mut earlier: FastHashMap<EntityRef, NodeMemo> = prior
                     .map(|memo| memo.nodes.into_iter().map(|node| (node.placement.entity.clone(), node)).collect())
                     .unwrap_or_default();
                 let matching = profile::span("placement-matches");
@@ -2536,7 +2537,7 @@ impl ControllerState {
             Some(kept) if *kept == *root => kept,
             _ => Rc::new(root.clone()),
         };
-        let mut nodes = HashMap::with_capacity(prior.len());
+        let mut nodes = FastHashMap::with_capacity_and_hasher(prior.len(), Default::default());
         let mut warnings = BTreeSet::new();
         for placement in regions.iter().flat_map(|region| &region.entities) {
             self.node_variables(catalog, placement, &root, &mut prior, &mut nodes, &mut warnings);
@@ -3477,7 +3478,7 @@ impl ControllerState {
     }
 
     fn claim_materializing_tabs(&mut self) -> bool {
-        let live_tab_ids = self.tabs.iter().map(|tab| tab.tab_id).collect::<HashSet<_>>();
+        let live_tab_ids = self.tabs.iter().map(|tab| tab.tab_id).collect::<FastHashSet<_>>();
         let claims = self
             .pending_latent_materializations
             .iter()
@@ -3634,15 +3635,15 @@ impl ControllerState {
     }
 
     fn tab_seed_metadata_entries(&self) -> TabSeedMetadata {
-        self.tab_seed_metadata_entries_for(&HashSet::new())
+        self.tab_seed_metadata_entries_for(&FastHashSet::default())
     }
 
-    fn tab_seed_metadata_entries_for(&self, directory_tab_ids: &HashSet<WorkspaceId>) -> TabSeedMetadata {
+    fn tab_seed_metadata_entries_for(&self, directory_tab_ids: &FastHashSet<WorkspaceId>) -> TabSeedMetadata {
         let cwd_entries = self
             .tabs
             .iter()
             .filter_map(|tab| self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD).map(|entry| (tab.tab_id, entry)))
-            .collect::<HashMap<_, _>>();
+            .collect::<FastHashMap<_, _>>();
         let all_group_cwds = cwd_entries
             .iter()
             .filter_map(|(tab_id, entry)| {

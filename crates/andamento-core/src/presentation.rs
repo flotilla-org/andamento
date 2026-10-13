@@ -1,9 +1,6 @@
 //! Semantic placement snapshots shared by all frontends.
-use std::{
-    collections::{BTreeMap, HashMap},
-    ops::ControlFlow,
-    rc::Rc,
-};
+use crate::FastHashMap;
+use std::{collections::BTreeMap, ops::ControlFlow, rc::Rc};
 
 use serde::{Deserialize, Serialize};
 
@@ -321,7 +318,7 @@ impl SurfaceSnapshot {
             model,
             cx,
             orders: model.sibling_orders.iter().cloned().collect(),
-            next: HashMap::with_capacity(prior.len()),
+            next: FastHashMap::with_capacity_and_hasher(prior.len(), Default::default()),
             prior,
         };
         let root = model.template_config.effective_variables.iter().find(|variables| variables.node == NodeKey::Root);
@@ -376,15 +373,15 @@ type SiblingOrders = Vec<(PlacementLoopKey, Vec<EntityRef>)>;
 #[derive(Debug, Default)]
 pub(crate) struct SurfaceKept {
     inputs: Option<(u64, SiblingOrders)>,
-    nodes: HashMap<*const EvaluatedPlacement, SurfaceMemo>,
+    nodes: FastHashMap<*const EvaluatedPlacement, SurfaceMemo>,
 }
 
 struct Resolver<'a> {
     model: &'a ControllerViewModel,
     cx: SurfaceContext<'a>,
     orders: BTreeMap<PlacementLoopKey, Vec<EntityRef>>,
-    prior: HashMap<*const EvaluatedPlacement, SurfaceMemo>,
-    next: HashMap<*const EvaluatedPlacement, SurfaceMemo>,
+    prior: FastHashMap<*const EvaluatedPlacement, SurfaceMemo>,
+    next: FastHashMap<*const EvaluatedPlacement, SurfaceMemo>,
 }
 
 impl Resolver<'_> {

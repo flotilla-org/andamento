@@ -2,6 +2,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+
+/// Hash maps and sets of Andamento's own data, with a fast hasher rather
+/// than std's DoS-resistant one: their keys come from local producers and
+/// Andamento itself, and hashing is a measurable part of applying facts.
+pub(crate) type FastHashMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
+pub(crate) type FastHashSet<T> = std::collections::HashSet<T, foldhash::fast::RandomState>;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};

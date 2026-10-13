@@ -656,7 +656,8 @@ fn stress_shapes() {
         }
         let patches = fleet(shape, usize::MAX);
         let mut sidebar = Sidebar::new(config).unwrap();
-        let snapshot = time(&mut || sidebar.apply(1, PROVIDER, patches.clone()).unwrap());
+        let mut given = Some(patches.clone());
+        let snapshot = time(&mut || sidebar.apply(1, PROVIDER, given.take().unwrap()).unwrap());
         let first = time(&mut || {
             sidebar.snapshot_shared();
         });

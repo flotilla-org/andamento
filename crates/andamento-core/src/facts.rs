@@ -2,8 +2,9 @@
 //! every record with the same keys, and the facts in the spine's order.
 //! Entities of a kind publish the same keys, so a catalog has a handful of
 //! spines however many entities it holds.
+use crate::{FastHashMap, FastHashSet};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::MetadataEntry;
@@ -47,8 +48,8 @@ impl Default for ResolvedFacts {
 /// one spine, and spines share their key names.
 #[derive(Debug, Default)]
 pub struct Shapes {
-    keys: HashSet<Rc<str>>,
-    shapes: HashMap<Box<[Rc<str>]>, Rc<Shape>>,
+    keys: FastHashSet<Rc<str>>,
+    shapes: FastHashMap<Box<[Rc<str>]>, Rc<Shape>>,
 }
 
 impl Shapes {

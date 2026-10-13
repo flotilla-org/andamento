@@ -1,8 +1,9 @@
 #[cfg(test)]
 use crate::census::Census;
 use crate::facts::Shapes;
+use crate::{FastHashMap, FastHashSet};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -118,7 +119,7 @@ fn count_resolution() {
 #[derive(Debug, Default)]
 pub struct Changed {
     pub all: bool,
-    pub targets: HashSet<EntityId>,
+    pub targets: FastHashSet<EntityId>,
 }
 
 pub use crate::facts::{Fact, ResolvedFacts};
@@ -134,20 +135,20 @@ struct Cached {
 
 #[derive(Debug, Default)]
 pub struct MetadataStore {
-    entries: HashMap<EntityId, Stored>,
+    entries: FastHashMap<EntityId, Stored>,
     /// Key names and the spines of resolved records.
     shapes: RefCell<Shapes>,
     /// Text values, one copy of each while a fact holds it (`intern_text`).
-    texts: HashSet<Arc<str>>,
+    texts: FastHashSet<Arc<str>>,
     texts_swept: usize,
-    target_ordinals: HashMap<EntityId, i64>,
+    target_ordinals: FastHashMap<EntityId, i64>,
     /// Deadlines of the TTL facts that can expire: every one whose provider
     /// is not stale.
     expiry_counts: BTreeMap<u64, usize>,
     providers: Vec<String>,
-    provider_ixs: HashMap<String, ProviderIx>,
+    provider_ixs: FastHashMap<String, ProviderIx>,
     sources: Vec<Rc<str>>,
-    source_ixs: HashMap<Rc<str>, SourceIx>,
+    source_ixs: FastHashMap<Rc<str>, SourceIx>,
     /// Stale providers, with the time each became stale. Their facts are
     /// judged live as of that time, so none expires while it stays stale.
     stale: BTreeMap<ProviderIx, u64>,
@@ -162,12 +163,12 @@ pub struct MetadataStore {
 /// fact in it expires.
 #[derive(Debug, Default)]
 struct Stored {
-    facts: HashMap<Rc<str>, Contributions>,
+    facts: FastHashMap<Rc<str>, Contributions>,
     resolved: RefCell<Option<Cached>>,
 }
 
 impl Deref for Stored {
-    type Target = HashMap<Rc<str>, Contributions>;
+    type Target = FastHashMap<Rc<str>, Contributions>;
     fn deref(&self) -> &Self::Target {
         &self.facts
     }
@@ -227,8 +228,8 @@ impl MetadataStore {
         for stored in self.entries.values_mut() {
             *stored.resolved.get_mut() = None;
         }
-        self.changed = Changed { all: true, targets: HashSet::new() };
-        *self.catalog_changed.get_mut() = Changed { all: true, targets: HashSet::new() };
+        self.changed = Changed { all: true, targets: FastHashSet::default() };
+        *self.catalog_changed.get_mut() = Changed { all: true, targets: FastHashSet::default() };
     }
 
     /// What changed since the catalog last read it.
