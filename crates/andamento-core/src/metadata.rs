@@ -28,10 +28,66 @@ type ProviderIx = u32;
 /// producer's source ID. Facts with no provider are the core's or the host's
 /// own; neither retraction nor staleness touches them. The same source ID
 /// under two providers is two contributors.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Contributor {
     provider: Option<ProviderIx>,
-    source: String,
+    source: SourceIx,
+}
+
+/// A producer's source ID, interned by the store.
+type SourceIx = u32;
+
+/// One key's contributions, by contributor. Nearly always one, so a sorted
+/// Vec: a map would allocate a whole node per fact.
+#[derive(Debug, Default)]
+struct Contributions(Vec<(Contributor, MetadataEntry)>);
+
+impl Contributions {
+    fn position(&self, contributor: &Contributor) -> Result<usize, usize> {
+        self.0.binary_search_by(|(c, _)| c.cmp(contributor))
+    }
+
+    fn insert(&mut self, contributor: Contributor, entry: MetadataEntry) -> Option<MetadataEntry> {
+        match self.position(&contributor) {
+            Ok(at) => Some(std::mem::replace(&mut self.0[at].1, entry)),
+            Err(at) => {
+                self.0.insert(at, (contributor, entry));
+                None
+            }
+        }
+    }
+
+    fn remove(&mut self, contributor: &Contributor) -> Option<MetadataEntry> {
+        self.position(contributor).ok().map(|at| self.0.remove(at).1)
+    }
+
+    fn get(&self, contributor: &Contributor) -> Option<&MetadataEntry> {
+        self.position(contributor).ok().map(|at| &self.0[at].1)
+    }
+
+    fn contains_key(&self, contributor: &Contributor) -> bool {
+        self.position(contributor).is_ok()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Contributor, &MetadataEntry)> {
+        self.0.iter().map(|(contributor, entry)| (contributor, entry))
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = (&Contributor, &mut MetadataEntry)> {
+        self.0.iter_mut().map(|(contributor, entry)| (&*contributor, entry))
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&Contributor, &mut MetadataEntry) -> bool) {
+        self.0.retain_mut(|(contributor, entry)| keep(contributor, entry));
+    }
 }
 
 // Entity resolutions (one entity's facts, every key resolved), for tests
@@ -71,13 +127,15 @@ struct Cached {
 
 #[derive(Debug, Default)]
 pub struct MetadataStore {
-    entries: HashMap<EntityId, HashMap<String, BTreeMap<Contributor, MetadataEntry>>>,
+    entries: HashMap<EntityId, HashMap<String, Contributions>>,
     target_ordinals: HashMap<EntityId, i64>,
     /// Deadlines of the TTL facts that can expire: every one whose provider
     /// is not stale.
     expiry_counts: BTreeMap<u64, usize>,
     providers: Vec<String>,
     provider_ixs: HashMap<String, ProviderIx>,
+    sources: Vec<String>,
+    source_ixs: HashMap<String, SourceIx>,
     /// Stale providers, with the time each became stale. Their facts are
     /// judged live as of that time, so none expires while it stays stale.
     stale: BTreeMap<ProviderIx, u64>,
@@ -121,8 +179,22 @@ impl MetadataStore {
         ix
     }
 
+    fn intern_source(&mut self, source: String) -> SourceIx {
+        if let Some(ix) = self.source_ixs.get(&source) {
+            return *ix;
+        }
+        let ix = SourceIx::try_from(self.sources.len()).expect("fewer than 2^32 sources");
+        self.sources.push(source.clone());
+        self.source_ixs.insert(source, ix);
+        ix
+    }
+
+    fn source(&self, contributor: &Contributor) -> &str {
+        &self.sources[contributor.source as usize]
+    }
+
     fn contributor(&mut self, provider: Option<&str>, source: impl Into<String>) -> Contributor {
-        Contributor { provider: provider.map(|p| self.intern(p)), source: source.into() }
+        Contributor { provider: provider.map(|p| self.intern(p)), source: self.intern_source(source.into()) }
     }
 
     /// The contributor if its provider is known; an unknown provider has
@@ -133,7 +205,7 @@ impl MetadataStore {
                 Some(p) => Some(*self.provider_ixs.get(p)?),
                 None => None,
             },
-            source: source.to_owned(),
+            source: *self.source_ixs.get(source)?,
         })
     }
 
@@ -338,7 +410,7 @@ impl MetadataStore {
             .get(entity_id)?
             .get(key)?
             .iter()
-            .find(|(contributor, entry)| contributor.source == source_id && self.is_live(contributor, entry, now))
+            .find(|(contributor, entry)| self.source(contributor) == source_id && self.is_live(contributor, entry, now))
             .map(|(_, entry)| entry)
     }
 
@@ -408,7 +480,7 @@ impl MetadataStore {
                 source_entries
                     .iter()
                     .filter(|(contributor, entry)| self.is_live(contributor, entry, now))
-                    .map(|(contributor, entry)| CandidateEntry::new(contributor.source.clone(), entry.clone()))
+                    .map(|(contributor, entry)| CandidateEntry::new(self.source(contributor), entry.clone()))
                     .collect()
             })
             .unwrap_or_default()
@@ -428,7 +500,7 @@ impl MetadataStore {
         if let Some(entries) = self.entries.get(entity_id) {
             for (key, contributions) in entries {
                 let mut candidates = Vec::with_capacity(contributions.len());
-                for (contributor, entry) in contributions {
+                for (contributor, entry) in contributions.iter() {
                     if !self.is_live(contributor, entry, now) {
                         continue;
                     }
@@ -437,7 +509,7 @@ impl MetadataStore {
                         let deadline = entry.updated_at.saturating_add(ttl);
                         until = Some(until.map_or(deadline, |until| until.min(deadline)));
                     }
-                    candidates.push(CandidateEntry::new(contributor.source.clone(), entry.clone()));
+                    candidates.push(CandidateEntry::new(self.source(contributor), entry.clone()));
                 }
                 if let Some(candidate) = select_primary_entry(&candidates) {
                     resolved.sources.insert(key.clone(), candidate.source_id);
@@ -487,11 +559,11 @@ impl MetadataStore {
         let mut patches: BTreeMap<(EntityId, String), BTreeMap<String, MetadataValueUpdate>> = BTreeMap::new();
         for (target, target_entries) in &self.entries {
             for (key, source_entries) in target_entries {
-                for (contributor, entry) in source_entries {
+                for (contributor, entry) in source_entries.iter() {
                     if !self.is_live(contributor, entry, now) {
                         continue;
                     }
-                    patches.entry((target.clone(), contributor.source.clone())).or_default().insert(
+                    patches.entry((target.clone(), self.source(contributor).to_owned())).or_default().insert(
                         key.clone(),
                         MetadataValueUpdate {
                             value: entry.value.clone(),
