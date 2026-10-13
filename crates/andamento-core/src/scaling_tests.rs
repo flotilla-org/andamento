@@ -241,3 +241,41 @@ fn real_catalog_timings() {
         println!("  {name:28} {:?} over {} calls", std::time::Duration::from_nanos(phase.nanos as u64), phase.calls);
     }
 }
+
+/// What stays between evaluations (the store's resolutions, the placement
+/// index) must place exactly what a fresh evaluation would: after deltas
+/// that change, move, add and remove entities, evaluated one at a time, the
+/// surface equals that of a sidebar given every patch at once.
+#[test]
+fn kept_state_presents_what_a_fresh_evaluation_does() {
+    let vessel = |c: usize, facts: Vec<(&str, MetadataValue)>, unset: Vec<&str>| {
+        let id = format!("fleet/convoy-{c:08x}");
+        let mut patch = patch("vessel", &id, facts.into_iter().map(|(k, v)| (k.to_owned(), v)).collect());
+        patch.set.retain(|key, _| !matches!(key.as_str(), "entity.kind" | "entity.id" | "source"));
+        patch.unset = unset.into_iter().map(str::to_owned).collect();
+        patch
+    };
+    let mut patches = catalog(60);
+    // Entities come and go first (the catalog's list changes), then facts
+    // change on entities already listed (only their positions change).
+    patches.push(catalog(61).into_iter().rev().find(|p| matches!(&p.target, MetadataTarget::Entity(e) if e.kind == "vessel")).unwrap());
+    patches.push(vessel(5, vec![], vec!["entity.id", "entity.kind"]));
+    patches.extend([
+        vessel(1, vec![("status.attention", MetadataValue::Bool(true))], vec![]),
+        vessel(2, vec![("status.attention", MetadataValue::Bool(true)), ("display.label", text("renamed"))], vec![]),
+        vessel(3, vec![("flotilla.project", text("fleet/p0@fleet"))], vec![]),
+        vessel(1, vec![("status.attention", MetadataValue::Bool(false))], vec![]),
+        vessel(4, vec![], vec!["flotilla.project"]),
+        vessel(3, vec![("status.state", text("running"))], vec![]),
+    ]);
+
+    let config = include_str!("../tests/fixtures/sidebar.kdl");
+    let mut kept = Sidebar::new(config).unwrap();
+    for patch in &patches {
+        kept.apply(1, PROVIDER, [patch.clone()]).unwrap();
+        drop(kept.snapshot());
+    }
+    let mut fresh = Sidebar::new(config).unwrap();
+    fresh.apply(1, PROVIDER, patches).unwrap();
+    assert_eq!(kept.snapshot().surface, fresh.snapshot().surface);
+}

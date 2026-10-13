@@ -21,6 +21,7 @@ pub(crate) struct PlacementAnnotation {
     pub related_detail: Vec<TemplateConfigRenderedField>,
 }
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::{Deref, DerefMut};
@@ -33,9 +34,9 @@ use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataSt
 use crate::profile;
 use crate::template_config::{
     placement_index_text, AbbreviationTier, NodeVariableDefinition, PlacementDefinition, PlacementOrder, PlacementOrderAbsent,
-    PlacementOrderDirection, PlacementVisibilityRule, SurfaceRegionDefinition, TemplateConfigCatalog, TemplateConfigLayerKind,
-    TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigOrigin, TemplateConfigRenderReady, TemplateConfigRenderedField,
-    TemplateConfigSlot,
+    PlacementOrderDirection, PlacementVisibility, PlacementVisibilityRule, SurfaceRegionDefinition, TemplateConfigCatalog,
+    TemplateConfigLayerKind, TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigOrigin, TemplateConfigRenderReady,
+    TemplateConfigRenderedField, TemplateConfigSlot,
 };
 use crate::WorkspaceId;
 use crate::{
@@ -109,94 +110,207 @@ enum IndexedValue {
     Entity(EntityRef),
 }
 
-/// Catalog entities indexed by `(fact key, scalar or entity identity)`.
-/// Built once per model; placement predicates perform posting lookups only.
+/// Catalog entities indexed by `(fact key, scalar or entity identity)`, by
+/// position in the catalog. It is kept between evaluations: while the catalog
+/// lists the same entities in the same order, only positions whose facts
+/// changed (a new `Rc` from the metadata store) are re-indexed, and their
+/// visibility re-evaluated. Placement predicates perform posting lookups only.
 #[derive(Debug, Default)]
 struct PlacementIndex {
     by_fact: BTreeMap<(String, IndexedValue), Vec<usize>>,
     visibility: BTreeMap<String, Vec<bool>>,
     ref_keys: BTreeSet<String>,
+    /// Keys whose facts hold entity references, with how many positions do.
+    ref_key_counts: BTreeMap<String, usize>,
+    /// What each position was indexed from, and the postings it added.
+    entities: Vec<EntityRef>,
+    facts: Vec<Rc<ResolvedFacts>>,
+    postings: Vec<Vec<(String, IndexedValue)>>,
+    /// What visibility was evaluated with: the template catalog's
+    /// generation and the display variables; and the warnings it gave.
+    visibility_inputs: Option<(u64, BTreeMap<String, DisplayVariableValue>)>,
+    visibility_warnings: Vec<String>,
+}
+
+/// The `(key, value)` postings an entity is indexed under.
+fn entity_postings(entity: &CatalogEntity) -> Vec<(String, IndexedValue)> {
+    // An entity's kind and id come from its ref, not from whatever the
+    // producer happened to echo into its facts, so `kind=` always works.
+    let mut postings = vec![
+        ("entity.kind".to_owned(), IndexedValue::Scalar(entity.entity.kind.clone())),
+        ("entity.id".to_owned(), IndexedValue::Scalar(entity.entity.id.clone())),
+    ];
+    // A `.ref` carries its target's facts for presentation, but rules
+    // reach it only through its own placement facts, so a query on the
+    // target's facts (say, needs attention) never places the ghost too.
+    let is_ref = entity.entity.kind == system::REF;
+    for (key, entry) in &entity.values {
+        if is_ref && key != system::GROUP && key != system::TARGET {
+            continue;
+        }
+        if let MetadataValue::EntityRefs(refs) = &entry.value {
+            postings.extend(refs.iter().map(|reference| (key.clone(), IndexedValue::Entity(reference.clone()))));
+            continue;
+        }
+        if let Some(text) = placement_index_text(&entry.value) {
+            postings.push((key.clone(), IndexedValue::Scalar(text)));
+        }
+    }
+    postings.sort();
+    postings.dedup();
+    postings
 }
 
 impl PlacementIndex {
+    #[cfg(test)]
     fn build(entities: &[CatalogEntity]) -> Self {
-        let mut by_fact = BTreeMap::<(String, IndexedValue), Vec<usize>>::new();
-        let mut ref_keys = BTreeSet::new();
-        for (position, entity) in entities.iter().enumerate() {
-            let mut insert = |key: String, text: IndexedValue| {
-                let postings = by_fact.entry((key, text)).or_default();
-                // Positions arrive ascending, so binary_search stays valid; the
-                // guard only stops an entity appearing twice under one fact.
-                if postings.last() != Some(&position) {
-                    postings.push(position);
-                }
-            };
-            // An entity's kind and id come from its ref, not from whatever the
-            // producer happened to echo into its facts, so `kind=` always works.
-            insert("entity.kind".to_owned(), IndexedValue::Scalar(entity.entity.kind.clone()));
-            insert("entity.id".to_owned(), IndexedValue::Scalar(entity.entity.id.clone()));
-            // A `.ref` carries its target's facts for presentation, but rules
-            // reach it only through its own placement facts, so a query on the
-            // target's facts (say, needs attention) never places the ghost too.
-            let is_ref = entity.entity.kind == system::REF;
-            for (key, entry) in &entity.values {
-                if is_ref && key != system::GROUP && key != system::TARGET {
-                    continue;
-                }
-                if let MetadataValue::EntityRefs(refs) = &entry.value {
-                    ref_keys.insert(key.clone());
-                    for reference in refs {
-                        insert(key.clone(), IndexedValue::Entity(reference.clone()));
-                    }
-                    continue;
-                }
-                let Some(text) = placement_index_text(&entry.value) else {
-                    continue;
-                };
-                insert(key.clone(), IndexedValue::Scalar(text));
-            }
-        }
-        Self { by_fact, ref_keys, visibility: BTreeMap::new() }
+        let mut index = Self::default();
+        index.update(entities);
+        index
     }
 
-    /// Each policy is evaluated once over the catalog, never once per nested
-    /// loop. Query evaluation then checks a bit alongside its posting position.
-    fn evaluate_visibility(
+    /// Bring the index up to date with `entities`, re-indexing the positions
+    /// whose facts changed, or every position when the list itself changed.
+    /// Returns the positions re-indexed (all of them: `None`).
+    fn update(&mut self, entities: &[CatalogEntity]) -> Option<Vec<usize>> {
+        let same_list = self.entities.len() == entities.len() && self.entities.iter().zip(entities).all(|(old, new)| *old == new.entity);
+        if !same_list {
+            *self = Self { visibility_inputs: None, ..Self::default() };
+            for (position, entity) in entities.iter().enumerate() {
+                self.entities.push(entity.entity.clone());
+                self.facts.push(entity.facts.clone());
+                self.postings.push(vec![]);
+                self.index(position, entity_postings(entity));
+            }
+            return None;
+        }
+        let mut changed = vec![];
+        for (position, entity) in entities.iter().enumerate() {
+            if Rc::ptr_eq(&self.facts[position], &entity.facts) {
+                continue;
+            }
+            self.facts[position] = entity.facts.clone();
+            let next = entity_postings(entity);
+            if next == self.postings[position] {
+                continue;
+            }
+            self.unindex(position);
+            self.index(position, next);
+            changed.push(position);
+        }
+        Some(changed)
+    }
+
+    fn index(&mut self, position: usize, postings: Vec<(String, IndexedValue)>) {
+        for posting in &postings {
+            if let IndexedValue::Entity(_) = posting.1 {
+                *self.ref_key_counts.entry(posting.0.clone()).or_default() += 1;
+                self.ref_keys.insert(posting.0.clone());
+            }
+            let positions = self.by_fact.entry(posting.clone()).or_default();
+            if let Err(at) = positions.binary_search(&position) {
+                positions.insert(at, position);
+            }
+        }
+        self.postings[position] = postings;
+    }
+
+    fn unindex(&mut self, position: usize) {
+        for posting in std::mem::take(&mut self.postings[position]) {
+            if let IndexedValue::Entity(_) = posting.1 {
+                if let Some(count) = self.ref_key_counts.get_mut(&posting.0) {
+                    *count -= 1;
+                    if *count == 0 {
+                        self.ref_key_counts.remove(&posting.0);
+                        self.ref_keys.remove(&posting.0);
+                    }
+                }
+            }
+            if let Some(positions) = self.by_fact.get_mut(&posting) {
+                if let Ok(at) = positions.binary_search(&position) {
+                    positions.remove(at);
+                }
+                if positions.is_empty() {
+                    self.by_fact.remove(&posting);
+                }
+            }
+        }
+    }
+
+    /// Evaluate visibility after `update`: every position when the
+    /// policies, the display variables or the list changed, else only the
+    /// re-indexed positions. Each policy is evaluated once per entity, never
+    /// once per nested loop; query evaluation then checks a bit alongside its
+    /// posting position.
+    fn update_visibility(
         &mut self,
         entities: &[CatalogEntity],
         catalog: &TemplateConfigCatalog,
+        generation: u64,
         variables: &BTreeMap<String, DisplayVariableValue>,
+        reindexed: Option<Vec<usize>>,
     ) -> Vec<String> {
-        let mut warnings = BTreeSet::new();
-        for policy in catalog.visibility() {
-            let enabled: Vec<bool> = policy
-                .rules
-                .iter()
-                .map(|rule| {
-                    std::iter::once(&rule.visible_when).chain(rule.and_visible_when.iter()).fold(true, |enabled, name| {
-                        let value = variables.get(name).or_else(|| {
-                            catalog.display_variables().iter().find(|variable| &variable.name == name).map(|variable| &variable.default)
-                        });
-                        if !matches!(value, Some(DisplayVariableValue::Bool(_))) {
-                            warnings.insert(format!(
-                                "visibility {} requires boolean display variable {}; matching entities are hidden",
-                                policy.name, name
-                            ));
-                        }
-                        enabled & matches!(value, Some(DisplayVariableValue::Bool(true)))
-                    })
-                })
-                .collect();
-            let visible = entities
-                .iter()
-                .map(|entity| {
-                    let rule = policy.rules.iter().position(|rule| visibility_rule_matches(entity, rule));
-                    rule.is_none_or(|position| enabled[position])
-                })
-                .collect();
-            self.visibility.insert(policy.name.clone(), visible);
+        let unchanged = self.visibility_inputs.as_ref().is_some_and(|(at, vars)| *at == generation && vars == variables);
+        match reindexed {
+            Some(positions) if unchanged => {
+                for policy in catalog.visibility() {
+                    let enabled = Self::enabled_rules(policy, catalog, variables, &mut BTreeSet::new());
+                    let Some(visible) = self.visibility.get_mut(&policy.name) else {
+                        continue;
+                    };
+                    for &position in &positions {
+                        let rule = policy.rules.iter().position(|rule| visibility_rule_matches(&entities[position], rule));
+                        visible[position] = rule.is_none_or(|rule| enabled[rule]);
+                    }
+                }
+            }
+            _ => {
+                let mut warnings = BTreeSet::new();
+                self.visibility.clear();
+                for policy in catalog.visibility() {
+                    let enabled = Self::enabled_rules(policy, catalog, variables, &mut warnings);
+                    let visible = entities
+                        .iter()
+                        .map(|entity| {
+                            let rule = policy.rules.iter().position(|rule| visibility_rule_matches(entity, rule));
+                            rule.is_none_or(|position| enabled[position])
+                        })
+                        .collect();
+                    self.visibility.insert(policy.name.clone(), visible);
+                }
+                self.visibility_inputs = Some((generation, variables.clone()));
+                self.visibility_warnings = warnings.into_iter().collect();
+            }
         }
-        warnings.into_iter().collect()
+        self.visibility_warnings.clone()
+    }
+
+    /// Whether each of `policy`'s rules is switched on by its display
+    /// variables.
+    fn enabled_rules(
+        policy: &PlacementVisibility,
+        catalog: &TemplateConfigCatalog,
+        variables: &BTreeMap<String, DisplayVariableValue>,
+        warnings: &mut BTreeSet<String>,
+    ) -> Vec<bool> {
+        policy
+            .rules
+            .iter()
+            .map(|rule| {
+                std::iter::once(&rule.visible_when).chain(rule.and_visible_when.iter()).fold(true, |enabled, name| {
+                    let value = variables.get(name).or_else(|| {
+                        catalog.display_variables().iter().find(|variable| &variable.name == name).map(|variable| &variable.default)
+                    });
+                    if !matches!(value, Some(DisplayVariableValue::Bool(_))) {
+                        warnings.insert(format!(
+                            "visibility {} requires boolean display variable {}; matching entities are hidden",
+                            policy.name, name
+                        ));
+                    }
+                    enabled & matches!(value, Some(DisplayVariableValue::Bool(true)))
+                })
+            })
+            .collect()
     }
 
     fn lookup_ref(&self, key: &str, reference: &EntityRef) -> &[usize] {
@@ -449,6 +563,10 @@ pub struct ControllerState {
     sort_mode: SortMode,
     rail_config: RailConfig,
     template_catalog: Option<TemplateConfigCatalog>,
+    /// Moves whenever the template catalog is set, for what is derived from it.
+    template_generation: u64,
+    /// The placement index, kept between evaluations (see `PlacementIndex`).
+    placement_index: RefCell<PlacementIndex>,
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
     clock_ms: Option<u64>,
@@ -474,6 +592,8 @@ impl Default for ControllerState {
             sort_mode: Default::default(),
             rail_config: Default::default(),
             template_catalog: Some(Default::default()),
+            template_generation: 0,
+            placement_index: Default::default(),
             template_config: Default::default(),
             receive_counter: Default::default(),
             clock_ms: Default::default(),
@@ -807,6 +927,7 @@ impl ControllerState {
 
     pub fn set_template_catalog(&mut self, catalog: Option<TemplateConfigCatalog>) {
         self.template_catalog = Some(catalog.unwrap_or_default());
+        self.template_generation += 1;
         if let Some(catalog) = self.template_catalog.as_ref() {
             for variable in catalog.display_variables() {
                 self.rail_ui.variables.entry(variable.name.clone()).or_insert_with(|| variable.default.clone());
@@ -1218,14 +1339,17 @@ impl ControllerState {
             }
         }
         let index_phase = profile::span("placement-index");
-        let mut placement_index = PlacementIndex::build(region_catalog_entities);
+        let mut index = self.placement_index.borrow_mut();
+        let reindexed = index.update(region_catalog_entities);
         if let Some(config) = self.template_catalog.as_ref() {
-            for warning in placement_index.evaluate_visibility(region_catalog_entities, config, &self.rail_ui.variables) {
+            let generation = self.template_generation;
+            for warning in index.update_visibility(region_catalog_entities, config, generation, &self.rail_ui.variables, reindexed) {
                 if !template_config.warnings.contains(&warning) {
                     template_config.warnings.push(warning);
                 }
             }
         }
+        let placement_index: &PlacementIndex = &index;
         drop(index_phase);
         let placements_phase = profile::span("placements");
         let mut placement_layouts = BTreeMap::new();
