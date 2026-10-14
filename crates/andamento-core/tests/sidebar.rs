@@ -4,8 +4,8 @@ use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::suggested_layout::PRIMARY_SLOT;
 use andamento_core::{
     managed::{Resolved, SlotPlan},
-    tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, PlacementKey, PlacementLoopKey,
-    PlacementSegment, Sidebar, WorkspaceId,
+    tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, PlacementKey, PlacementLoopKey, PlacementSegment, Sidebar,
+    WorkspaceId,
 };
 use common::{entity, patch, refs, text, Feed, CONFIG, PROVIDER};
 use std::collections::BTreeMap;

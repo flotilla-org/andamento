@@ -4253,28 +4253,6 @@ mod tests {
         });
     }
 
-    fn apply_target_only_entity(state: &mut ControllerState, kind: &str, id: &str, ordinal: i64, facts: &[(&str, &str)]) {
-        state.apply_metadata_patch(MetadataPatch {
-            target: MetadataTarget::Entity(entity_ref(kind, id)),
-            source_id: "flotilla-connector".to_owned(),
-            set: facts
-                .iter()
-                .map(|(key, value)| {
-                    (
-                        (*key).to_owned(),
-                        MetadataValueUpdate {
-                            value: MetadataValue::Text((*value).into()),
-                            ttl_ms: None,
-                            precedence: None,
-                            ordinal: Some(ordinal),
-                        },
-                    )
-                })
-                .collect(),
-            unset: vec![],
-        });
-    }
-
     fn directory_entity_state() -> ControllerState {
         let mut state = ControllerState::default();
         state.set_template_catalog(None);

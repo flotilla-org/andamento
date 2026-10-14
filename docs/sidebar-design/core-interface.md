@@ -23,8 +23,8 @@ an empty batch advances expiry, and a backwards clock input cannot revive an
 expired value. Patches retain the existing producer schema and namespaces.
 
 An entity's facts are one record: each key holds its last writer's value and
-source. They carry no TTL, precedence or ordinal, and a batch giving an entity
-fact one is rejected. A source's unset removes a key only if that source wrote
+source. They carry no TTL, precedence or ordinal: an entity fact given one
+ignores it. A source's unset removes a key only if that source wrote
 it; removing an entity's last fact removes the entity. Liveness is the feed's:
 a dropped connection marks its provider stale, and removal retracts it. Tab,
 pane and root targets keep per-source arbitration and TTLs.
@@ -324,8 +324,8 @@ nullable arguments and ownership for every operation.
 The semantic producer model, its encoding and its transport are separate
 choices. Rust accepts typed `MetadataPatch` values. The native scalar
 `andamento_apply_entity` convenience interface supports text, boolean and
-integer entity facts and unsets without encoding those values; its TTL,
-precedence and ordinal must be absent, since entity facts reject them. It intentionally does not duplicate every producer target and
+integer entity facts and unsets without encoding those values; entity facts
+ignore its TTL, precedence and ordinal. It intentionally does not duplicate every producer target and
 value type in the C header.
 
 `andamento_apply_patch_json` is an optional decoder for one existing producer

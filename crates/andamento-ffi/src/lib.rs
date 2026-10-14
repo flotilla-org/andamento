@@ -308,7 +308,7 @@ pub const ANDAMENTO_FACT_ENTITY: u32 = 4;
 
 /// A scalar fact (ANDAMENTO_FACT_UNSET, _TEXT, _BOOL or _INTEGER), with
 /// optional TTL, precedence and ordinal: a workspace's facts may carry
-/// them; an entity's may not (andamento_apply_entity rejects them). Keys
+/// them; an entity's ignore them (andamento_apply_entity). Keys
 /// are unique within a call.
 #[repr(C)]
 pub struct Fact {

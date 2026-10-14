@@ -315,10 +315,6 @@ impl Sidebar {
         if provider.is_empty() || provider == LOCAL_PROVIDER {
             return Err(format!("a provider needs a name other than {:?}", LOCAL_PROVIDER));
         }
-        let patches: Vec<_> = patches.into_iter().collect();
-        for patch in &patches {
-            patch.check_entity_facts()?;
-        }
         self.apply_patches(now_ms, Some(provider), patches);
         Ok(())
     }

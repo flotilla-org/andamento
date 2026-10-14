@@ -1128,6 +1128,24 @@ mod tests {
     }
 
     #[test]
+    fn an_entitys_fact_ignores_a_lease_precedence_and_ordinal() {
+        let mut store = MetadataStore::default();
+        let target = EntityId::Entity(EntityRef::new("p", "convoy", "c"));
+        let update =
+            MetadataValueUpdate { value: MetadataValue::Text("one".into()), ttl_ms: Some(10), precedence: Some(5), ordinal: Some(3) };
+        let patch = MetadataPatch {
+            target: MetadataTarget::Entity(EntityRef::new("p", "convoy", "c")),
+            source_id: "a".into(),
+            set: BTreeMap::from([("label".to_owned(), update)]),
+            unset: vec![],
+        };
+        store.apply_patch_from(Some("p"), patch, 1);
+        let resolved = store.resolved(&target, 1_000_000);
+        let entry = resolved.get("label").expect("no lease to lapse");
+        assert_eq!((entry.ttl_ms, entry.precedence, entry.ordinal), (None, 0, 0));
+    }
+
+    #[test]
     fn unset_removes_only_that_source_key() {
         let mut store = MetadataStore::default();
         store.set(EntityId::Pane(PaneTarget::Terminal(1)), "zellij.pane.cwd", "zellij", entry("/a", 0, 0, 1));
