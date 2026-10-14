@@ -223,3 +223,31 @@ fn local_sections_follow_their_container_and_are_flagged_when_removed() {
         .unwrap();
     assert_eq!(sidebar.sidebar_arrangement_generation(), generation);
 }
+
+#[test]
+fn what_was_placed_since_the_hosts_last_commit_outlives_later_reconciles() {
+    // flotilla-org/wheelhouse#372: a section is placed while the host's
+    // gesture is in flight, then another local edit reconciles with nothing
+    // to place. The host's commit at its old generation is stale; it must
+    // still learn the section was placed, or its retry would close it.
+    let text = format!("{}{LOCAL}", config(&[("tree", "default-host=\"sidebar\" order=10")]));
+    let mut sidebar = Sidebar::new(&text).unwrap();
+    let (entity, facts) = section("workspaces", "0");
+    sidebar.set_local(entity, facts).unwrap();
+    let (view, _) = sidebar.sidebar_arrangement();
+    sidebar.set_sidebar_arrangement(view.doc.clone(), view.generation).unwrap();
+    let (view, _) = sidebar.sidebar_arrangement();
+    let (host, base) = (view.doc.clone(), view.generation);
+    assert!(view.placed.is_empty());
+
+    let (entity, facts) = section("pins", "1");
+    sidebar.set_local(entity, facts).unwrap();
+    let group = BTreeMap::from([(".section".into(), MetadataValue::EntityRefs(vec![EntityRef::local(".section", "workspaces")]))]);
+    sidebar.set_local(EntityRef::local(".group", "g"), group).unwrap();
+    let (view, report) = sidebar.sidebar_arrangement();
+    assert!(report.placed.is_empty(), "the last reconcile placed nothing");
+    assert_eq!(view.placed, set(&[".section:pins"]));
+
+    assert!(matches!(sidebar.set_sidebar_arrangement(host, base), Err(CommitError::Stale { .. })));
+    assert_eq!(sidebar.sidebar_arrangement().0.placed, set(&[".section:pins"]));
+}

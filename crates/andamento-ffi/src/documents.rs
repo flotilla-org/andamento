@@ -131,8 +131,10 @@ pub struct AndamentoSidebarArrangement {
     /// The host has committed since the last reset.
     pub owned: u32,
     pub doc: AndamentoSidebarDoc,
-    /// Every CLOSED section and UNRESOLVED key, and what the last
-    /// reconciliation or call did: PLACED, RESTORED and DUPLICATE.
+    /// Every CLOSED section and UNRESOLVED key, every section PLACED since
+    /// the host last committed (so a stale commit still names what was
+    /// placed meanwhile), and what the last reconciliation or call did:
+    /// RESTORED and DUPLICATE.
     pub notes: *const AndamentoNote,
     pub note_count: usize,
 }
@@ -368,7 +370,7 @@ fn sidebar_c(view: SidebarView, report: &Report, status: u32) -> *mut AndamentoS
     let notes = notes([
         (ANDAMENTO_NOTE_CLOSED, view.closed.iter().collect()),
         (ANDAMENTO_NOTE_UNRESOLVED, view.unresolved.iter().collect()),
-        (ANDAMENTO_NOTE_PLACED, report.placed.iter().collect()),
+        (ANDAMENTO_NOTE_PLACED, view.placed.iter().collect()),
         (ANDAMENTO_NOTE_RESTORED, report.restored.iter().collect()),
         (ANDAMENTO_NOTE_DUPLICATE, report.duplicates.iter().collect()),
     ]);

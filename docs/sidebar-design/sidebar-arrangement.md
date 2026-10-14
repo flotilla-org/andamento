@@ -169,8 +169,10 @@ status. In C the dock and each floating panel are flat panel arrays
 (`AndamentoArrangementDoc`), each panel naming its parent by index. A tab is
 `placed` if Andamento placed it since the host's last commit, and `gone` if
 its key no longer resolves. The notes list every CLOSED section and
-UNRESOLVED key, and what the last reconciliation or call did: PLACED,
-RESTORED and DUPLICATE. The Sections menu lists the CLOSED notes.
+UNRESOLVED key, every section PLACED since the host's last commit (so a stale
+commit still names what was placed meanwhile, and the host's retry keeps it),
+and what the last reconciliation or call did: RESTORED and DUPLICATE. The
+Sections menu lists the CLOSED notes.
 
 Poll `andamento_sidebar_arrangement_generation` to learn when to read it
 again; it is cheap and builds no snapshot.
