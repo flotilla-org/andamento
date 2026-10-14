@@ -59,8 +59,8 @@ fn six_kind_native_detail_contract() {
             assert!(!f.text.data.is_null());
             assert_eq!(f.has_observation, 1);
             assert_eq!(f.observed_at_ms, 42);
-            assert_eq!(f.has_ttl, 1);
-            assert_eq!(f.ttl_ms, 100);
+            assert_eq!(f.has_ttl, 0, "an entity's facts carry no lease");
+            assert_eq!(f.ttl_ms, 0);
             assert_eq!(f.stale, 0);
             assert_eq!(read(f.source_key), "summary.text");
             assert_eq!(read(f.source_id), "fixture-producer");
@@ -111,12 +111,13 @@ fn six_kind_native_detail_contract() {
         assert_eq!(d.has_workspace, 0);
         // Existing dispatch takes the card's stable entity action and emits Inspect.
         assert_eq!(andamento_dispatch(h, s, d.activate, ptr::null_mut()), 1);
-        // Snapshot ownership permits reading old facts after mutations; a new
-        // snapshot observes expiry at TTL+1, not at the inclusive TTL boundary.
-        andamento_tick(h, 142, ptr::null_mut());
+        // Snapshot ownership permits reading old facts after mutations: time
+        // alone changes nothing, and a new snapshot sees the producer's unset.
+        andamento_tick(h, 143, ptr::null_mut());
         let boundary = andamento_snapshot_acquire_details(h, ptr::null_mut());
         assert_eq!(field(boundary, card, "summary").has_value, 1);
-        andamento_tick(h, 143, ptr::null_mut());
+        let unset = r#"{"target":{"kind":"entity","value":{"kind":"worktree","id":"worktree:identity / #"}},"source_id":"fixture-producer","unset":["summary.text"]}"#;
+        assert_eq!(andamento_apply_patch_json(h, 144, text(PROVIDER), text(unset), ptr::null_mut()), 1);
         let expired = andamento_snapshot_acquire_details(h, ptr::null_mut());
         assert_eq!(field(expired, card, "summary").has_value, 0);
         assert_eq!(field(s, card, "summary").has_value, 1);
@@ -129,11 +130,11 @@ fn six_kind_native_detail_contract() {
     }
 }
 
-// Lifecycle scenario: materialization uses the primary control label, identical
-// lease renewals count as fresh observations, and a retained expired fact exposes
-// its original winner and stale receipt time through the actual native ABI.
+// Lifecycle scenario: materialization uses the primary control label, an
+// identical re-send changes nothing, and while its provider is stale a retained
+// fact exposes its writer and receipt time, marked stale, through the native ABI.
 #[test]
-fn native_controls_renewals_and_retained_expiry() {
+fn native_controls_resends_and_retained_staleness() {
     unsafe {
         let config = r#"
         region "tree" root-template="title" placement="tree"
@@ -142,7 +143,7 @@ fn native_controls_renewals_and_retained_expiry() {
     "#;
         let h = andamento_create(config.as_ptr(), config.len(), ptr::null_mut());
         assert!(!h.is_null());
-        let patch = r#"{"target":{"kind":"entity","value":{"kind":"worktree","id":"w"}},"source_id":"producer","set":{"display.label":{"value":{"type":"text","value":"Worker"},"ttl_ms":10},"summary.text":{"value":{"type":"text","value":"observed"},"ttl_ms":10},"action.primary.target":{"value":{"type":"text","value":"worktree:w"},"ttl_ms":10},"action.primary.recipe":{"value":{"type":"text","value":"exec sh"},"ttl_ms":10},"action.primary.label":{"value":{"type":"text","value":"Attach"},"ttl_ms":10}}}"#;
+        let patch = r#"{"target":{"kind":"entity","value":{"kind":"worktree","id":"w"}},"source_id":"producer","set":{"display.label":{"value":{"type":"text","value":"Worker"}},"summary.text":{"value":{"type":"text","value":"observed"}},"action.primary.target":{"value":{"type":"text","value":"worktree:w"}},"action.primary.recipe":{"value":{"type":"text","value":"exec sh"}},"action.primary.label":{"value":{"type":"text","value":"Attach"}}}}"#;
         assert_eq!(andamento_apply_patch_json(h, 100, text(PROVIDER), text(patch), ptr::null_mut()), 1);
         let s = acquire_worktree(h);
         let card = andamento_snapshot_detail_find(s, entity(text("worktree"), text("w")));
@@ -166,17 +167,17 @@ fn native_controls_renewals_and_retained_expiry() {
         assert_eq!(andamento_observe(h, &workspace, 1, ptr::null(), 0, ptr::null_mut()), 1);
         assert_eq!(andamento_apply_patch_json(h, 105, text(PROVIDER), text(patch), ptr::null_mut()), 1);
         let fresh = acquire_worktree(h);
-        assert_eq!(field(fresh, card, "summary").observed_at_ms, 105);
-        assert_eq!(field(s, card, "summary").observed_at_ms, 100);
-        assert_eq!(andamento_tick(h, 115, ptr::null_mut()), 1);
+        assert_eq!(field(fresh, card, "summary").observed_at_ms, 100, "an identical re-send changes nothing");
+        assert_eq!(andamento_tick(h, 10_000, ptr::null_mut()), 1);
         let boundary = acquire_worktree(h);
         assert_eq!(field(boundary, card, "summary").stale, 0);
-        assert_eq!(andamento_tick(h, 116, ptr::null_mut()), 1);
+        // The producer's connection drops: its facts are kept, and stale.
+        assert_eq!(andamento_provider_set_stale(h, text(PROVIDER), 1, ptr::null_mut()), 1);
         let expired = acquire_worktree(h);
         let f = field(expired, card, "summary");
         assert_eq!(f.has_value, 1);
         assert_eq!(f.stale, 1);
-        assert_eq!(f.observed_at_ms, 105);
+        assert_eq!(f.observed_at_ms, 100);
         assert_eq!(read(f.source_id), "producer");
         let mut d = MaybeUninit::uninit();
         assert_eq!(andamento_snapshot_detail(expired, card, d.as_mut_ptr()), 1);
@@ -191,12 +192,15 @@ fn native_controls_renewals_and_retained_expiry() {
     }
 }
 
-// Identical entries from competing producers still expose the same deterministic
-// winner as fact arbitration, and losing-source removal cannot change provenance.
+// An entity's fact is its last writer's, whatever another source wrote before,
+// and its writer's unset removes it.
 #[test]
-fn identical_producer_provenance() {
+fn last_writer_provenance() {
     unsafe {
         let h = andamento_create(ptr::null(), 0, ptr::null_mut());
+        // Another fact keeps the entity when the summary goes.
+        let label = r#"{"target":{"kind":"entity","value":{"kind":"worktree","id":"w"}},"source_id":"z-source","set":{"display.label":{"value":{"type":"text","value":"w"}}}}"#;
+        assert_eq!(andamento_apply_patch_json(h, 0, text(PROVIDER), text(label), ptr::null_mut()), 1);
         for source in ["z-source", "a-source"] {
             let patch = format!(
                 r#"{{"target":{{"kind":"entity","value":{{"kind":"worktree","id":"w"}}}},"source_id":"{source}","set":{{"summary.text":{{"value":{{"type":"text","value":"same"}}}}}}}}"#
@@ -209,7 +213,7 @@ fn identical_producer_provenance() {
         let unset = r#"{"target":{"kind":"entity","value":{"kind":"worktree","id":"w"}},"source_id":"a-source","unset":["summary.text"]}"#;
         assert_eq!(andamento_apply_patch_json(h, 1, text(PROVIDER), text(unset), ptr::null_mut()), 1);
         let next = acquire_worktree(h);
-        assert_eq!(read(field(next, card, "summary").source_id), "z-source");
+        assert_eq!(field(next, card, "summary").has_value, 0);
         andamento_snapshot_release(next);
         andamento_snapshot_release(s);
         andamento_destroy(h);

@@ -531,14 +531,16 @@ fn kept_matches_cold_through_a_session(config: &str) {
             }),
         ),
         (
-            "expiring fact",
+            "a fact set",
             Box::new(move |s: &mut Sidebar| {
-                let mut patch = change("vessel", 9, vec![("status.attention", MetadataValue::Bool(true))], vec![]);
-                patch.set.values_mut().for_each(|update| update.ttl_ms = Some(50));
-                s.apply(12, PROVIDER, [patch]).unwrap();
+                s.apply(12, PROVIDER, [change("vessel", 9, vec![("status.attention", MetadataValue::Bool(true))], vec![])]).unwrap()
             }),
         ),
-        ("expire", Box::new(|s: &mut Sidebar| s.tick(100))),
+        (
+            "and unset",
+            Box::new(move |s: &mut Sidebar| s.apply(13, PROVIDER, [change("vessel", 9, vec![], vec!["status.attention"])]).unwrap()),
+        ),
+        ("time passes", Box::new(|s: &mut Sidebar| s.tick(100))),
         (
             "stale",
             Box::new(|s: &mut Sidebar| {

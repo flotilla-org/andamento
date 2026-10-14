@@ -4,10 +4,10 @@ use andamento_core::sidebar::{Action, HostEffect, Workspace};
 use andamento_core::suggested_layout::PRIMARY_SLOT;
 use andamento_core::{
     managed::{Resolved, SlotPlan},
-    tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, PlacementKey, PlacementLoopKey,
-    PlacementSegment, Sidebar, WorkspaceId,
+    tab_workspace_id, EntityRef, MetadataPatch, MetadataTarget, MetadataValue, PlacementKey, PlacementLoopKey, PlacementSegment, Sidebar,
+    WorkspaceId,
 };
-use common::{entity, patch, refs, text, Feed, CONFIG};
+use common::{entity, patch, refs, text, Feed, CONFIG, PROVIDER};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -154,28 +154,6 @@ fn failed_materialization_is_visible_serializable_and_retryable() {
 }
 
 #[test]
-fn host_time_expires_overrides_without_further_facts_and_retries_refresh_ttl() {
-    let mut sidebar = sidebar();
-    let override_patch = MetadataPatch {
-        target: MetadataTarget::Entity(entity("vessel", "v")),
-        source_id: "temporary".into(),
-        set: BTreeMap::from([(
-            "display.label".into(),
-            MetadataValueUpdate { value: text("Temporary"), ttl_ms: Some(10), precedence: Some(100), ordinal: None },
-        )]),
-        unset: vec![],
-    };
-    sidebar.feed(1000, [override_patch.clone()]);
-    sidebar.feed(1005, [override_patch]);
-    sidebar.tick(1011);
-    assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].children[0].label, "Temporary");
-    sidebar.tick(1016);
-    assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].children[0].label, "Worker <one>");
-    sidebar.tick(1); // A host clock regression does not revive expired facts.
-    assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].children[0].label, "Worker <one>");
-}
-
-#[test]
 fn loop_keys_distinguish_invocations_and_survive_collapse() {
     let mut sidebar = sidebar();
     sidebar.feed(
@@ -250,24 +228,16 @@ fn abbreviation_uses_placement_variable_and_preserves_full_fallback() {
 }
 
 #[test]
-fn unchanged_heartbeats_and_ticks_reuse_snapshot_until_expiry() {
+fn unchanged_resends_and_ticks_reuse_the_snapshot() {
     let mut sidebar = sidebar();
-    let mut heartbeat = patch(entity("vessel", "v"), &[("status.state", text("running"))]);
-    heartbeat.set.get_mut("status.state").unwrap().ttl_ms = Some(100);
+    let heartbeat = patch(entity("vessel", "v"), &[("status.state", text("running"))]);
     sidebar.feed(100, [heartbeat.clone()]);
     let revision = sidebar.revision();
     let snapshot = sidebar.snapshot_shared() as *const _;
     sidebar.feed(150, [heartbeat]);
-    sidebar.tick(201); // The original deadline has been replaced.
+    sidebar.tick(10_000); // An entity's facts carry no lease: time alone changes nothing.
     assert_eq!(sidebar.revision(), revision);
     assert_eq!(sidebar.snapshot_shared() as *const _, snapshot);
-    sidebar.tick(250); // Entries are live through the deadline, inclusively.
-    assert_eq!(sidebar.revision(), revision);
-    sidebar.tick(251);
-    assert_ne!(sidebar.revision(), revision);
-    let expired = sidebar.snapshot();
-    sidebar.tick(300);
-    assert_eq!(sidebar.snapshot(), expired);
 }
 
 #[test]
@@ -299,12 +269,9 @@ fn identical_topology_is_unchanged_but_selection_invalidates() {
 }
 
 #[test]
-fn removing_last_expired_fact_invalidates_entity_membership() {
+fn removing_the_last_fact_removes_the_entity() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    let mut fact = patch(entity("project", "p"), &[("display.label", text("Project"))]);
-    fact.set.get_mut("display.label").unwrap().ttl_ms = Some(10);
-    sidebar.feed(100, [fact]);
-    sidebar.tick(111);
+    sidebar.feed(100, [patch(entity("project", "p"), &[("display.label", text("Project"))])]);
     let revision = sidebar.revision();
     sidebar.feed(
         111,
@@ -526,12 +493,12 @@ fn managed_primary_reconciles_resolution_not_global_revision() {
 }
 
 #[test]
-fn managed_content_is_independent_of_placement_and_expires_without_removal() {
+fn managed_content_is_independent_of_placement_and_goes_without_removal() {
     use andamento_core::managed::{ContentState, TerminalContent};
     let mut sidebar = Sidebar::new("").unwrap();
     let subject = entity("project-role", "p/governor");
     let applied = Resolved::from(TerminalContent { target: "old".into(), command: "old".into(), cwd: None });
-    let mut desired = patch(
+    let desired = patch(
         subject.clone(),
         &[
             ("workspace.primary.state", text("ready")),
@@ -539,12 +506,12 @@ fn managed_content_is_independent_of_placement_and_expires_without_removal() {
             ("action.primary.recipe", text("attach new")),
         ],
     );
-    for value in desired.set.values_mut() {
-        value.ttl_ms = Some(10);
-    }
     sidebar.feed(100, [desired.clone()]);
     let update = plan_primary(&mut sidebar, W42, &subject, applied.clone()).update.unwrap();
-    sidebar.tick(111);
+    // The producer withdraws the content; the subject stays.
+    let mut withdrawn = patch(subject.clone(), &[("display.label", text("Governor"))]);
+    withdrawn.unset = vec!["workspace.primary.state".into(), "workspace.primary.target".into(), "action.primary.recipe".into()];
+    sidebar.feed(111, [withdrawn]);
     assert!(!sidebar.managed.slot_valid(W42, PRIMARY_SLOT, update.token));
     assert_eq!(plan_primary(&mut sidebar, W42, &subject, applied.clone()).state, ContentState::Unavailable);
     sidebar.feed(112, [desired]);
@@ -668,7 +635,7 @@ fn materialized_target_is_recorded_when_the_resolution_has_a_working_directory()
 }
 
 #[test]
-fn retracted_and_expired_entities_leave_the_catalog() {
+fn removed_and_retracted_entities_leave_the_catalog() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
     let placed = |sidebar: &mut Sidebar, id: &str| {
         let snapshot = sidebar.snapshot();
@@ -689,14 +656,13 @@ fn retracted_and_expired_entities_leave_the_catalog() {
     sidebar.feed(102, [retracted]);
     assert!(!placed(&mut sidebar, "gone"), "an entity with no remaining facts is not a catalog entry");
 
-    let mut expiring = patch(entity("project", "stale"), &[("flotilla.project", text("stale")), ("display.label", text("Stale"))]);
-    for update in expiring.set.values_mut() {
-        update.ttl_ms = Some(1_000);
-    }
-    sidebar.feed(200, [expiring]);
+    let withdrawn = patch(entity("project", "stale"), &[("flotilla.project", text("stale")), ("display.label", text("Stale"))]);
+    sidebar.feed(200, [withdrawn]);
     assert!(placed(&mut sidebar, "stale"));
     sidebar.tick(1_300);
-    assert!(!placed(&mut sidebar, "stale"), "expired facts retract the entity");
+    assert!(placed(&mut sidebar, "stale"), "an entity's facts carry no lease");
+    sidebar.retract_provider(PROVIDER);
+    assert!(!placed(&mut sidebar, "stale"), "a retracted provider's entities leave");
 }
 
 fn directory_state(sidebar: &Sidebar, subject: &EntityRef) -> PresentationState {
@@ -875,9 +841,9 @@ fn ended_workspace_lifecycle_scenarios() {
 }
 
 #[test]
-fn disconnect_expiry_and_reconnect_preserve_subject_path_without_ending() {
+fn disconnect_and_reconnect_preserve_subject_path_without_ending() {
     let mut sidebar = retained_sidebar();
-    let mut publication = patch(
+    let publication = patch(
         entity("vessel", "v"),
         &[
             ("entity.kind", text("vessel")),
@@ -888,12 +854,10 @@ fn disconnect_expiry_and_reconnect_preserve_subject_path_without_ending() {
             ("action.primary.recipe", text("printf hello")),
         ],
     );
-    for update in publication.set.values_mut() {
-        update.ttl_ms = Some(10);
-    }
     sidebar.feed(101, [publication.clone()]);
-    // A disconnect is an empty drain. Even beyond the fact lease, the bound
-    // workspace remains under its subject and does not require Show finished.
+    // A disconnect leaves the provider stale: the bound workspace remains
+    // under its subject and does not require Show finished.
+    sidebar.set_provider_stale(PROVIDER, true);
     for time in [111, 112, 1000] {
         sidebar.tick(time);
         let snapshot = sidebar.snapshot();
@@ -907,6 +871,7 @@ fn disconnect_expiry_and_reconnect_preserve_subject_path_without_ending() {
         assert!(nodes.iter().all(|n| n.entity == entity("vessel", "v") && !n.facts.contains_key("presentation.ended")));
         assert!(fallback(&sidebar).is_empty());
     }
+    sidebar.set_provider_stale(PROVIDER, false);
     sidebar.feed(1001, [publication]);
     // Reasserting after reconnect updates the same subject, without moving it.
     let snapshot = sidebar.snapshot();
@@ -1028,29 +993,6 @@ fn reassertion_after_authoritative_removal_is_stale_for_the_same_identity() {
     assert!(workspace_nodes(&sidebar.snapshot().surface)
         .iter()
         .any(|n| n.facts.get("presentation.ended") == Some(&MetadataValue::Bool(true))));
-}
-
-#[test]
-fn lease_expiry_inside_a_patch_batch_preserves_the_original_path() {
-    let mut sidebar = retained_sidebar();
-    let mut publication = patch(
-        entity("project", "p"),
-        &[
-            ("entity.kind", text("project")),
-            ("entity.id", text("p")),
-            ("flotilla.project", text("p")),
-            ("display.label", text("Project P")),
-        ],
-    );
-    for fact in publication.set.values_mut() {
-        fact.ttl_ms = Some(10);
-    }
-    sidebar.feed(101, [publication]);
-    sidebar.feed(500, [patch(entity("unrelated", "heartbeat"), &[("source", text("unrelated"))])]);
-    // Capture is before the clock advance even when a batch also has patches.
-    let snapshot = sidebar.snapshot();
-    assert!(snapshot.surface.sections[0].nodes[0].children.iter().any(|n| n.entity == entity("vessel", "v")));
-    assert!(workspace_nodes(&snapshot.surface).iter().all(|n| !n.facts.contains_key("presentation.ended")));
 }
 
 #[test]
@@ -1184,13 +1126,13 @@ fn one_producer_retraction_preserves_other_identity_owner() {
 }
 
 #[test]
-fn individual_fact_expiry_is_not_resurrected_on_live_subject() {
+fn an_individual_fact_unset_is_not_resurrected_on_a_live_subject() {
     let mut sidebar = retained_sidebar();
-    let mut update = patch(entity("vessel", "v"), &[("status.attention", MetadataValue::Bool(true))]);
-    update.set.get_mut("status.attention").unwrap().ttl_ms = Some(10);
-    sidebar.feed(101, [update]);
+    sidebar.feed(101, [patch(entity("vessel", "v"), &[("status.attention", MetadataValue::Bool(true))])]);
     assert!(workspace_nodes(&sidebar.snapshot().surface).iter().any(|n| n.facts.contains_key("status.attention")));
-    sidebar.tick(112);
+    let mut unset = patch(entity("vessel", "v"), &[]);
+    unset.unset = vec!["status.attention".into()];
+    sidebar.feed(112, [unset]);
     let snapshot = sidebar.snapshot();
     assert!(!workspace_nodes(&snapshot.surface).is_empty());
     assert!(workspace_nodes(&snapshot.surface)

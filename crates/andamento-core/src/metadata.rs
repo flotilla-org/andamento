@@ -265,13 +265,16 @@ struct Cached {
 
 #[derive(Debug, Default)]
 pub struct MetadataStore {
+    /// Workspace, pane, root and identity facts, by contributor: several
+    /// sources contend for these, and the winner is resolved per key.
     entries: FastHashMap<EntityId, Stored>,
+    /// Entities' facts, each a whole record (`Record`).
+    records: FastHashMap<EntityId, Record>,
     /// Key names and the spines of resolved records.
     shapes: RefCell<Shapes>,
     /// Text values, one copy of each while a fact holds it (`intern_text`).
     texts: FastHashSet<Arc<str>>,
     texts_swept: usize,
-    target_ordinals: FastHashMap<EntityId, i64>,
     /// Deadlines of the TTL facts that can expire: every one whose provider
     /// is not stale.
     expiry_counts: BTreeMap<u64, usize>,
@@ -286,6 +289,17 @@ pub struct MetadataStore {
     /// The same, for the catalog (`take_catalog_changes`), which reads it
     /// when it evaluates rather than when facts arrive.
     catalog_changed: RefCell<Changed>,
+}
+
+/// An entity's facts as one record, which is also their resolution. A
+/// provider's entities are its own, and a local entity is Andamento's: each
+/// fact is whatever its last writer set, with no lease, precedence or
+/// ordinal. Liveness is the feed's: a provider whose connection drops is
+/// stale, and one removed is retracted.
+#[derive(Debug)]
+struct Record {
+    provider: Option<ProviderIx>,
+    facts: Rc<ResolvedFacts>,
 }
 
 /// One entity's facts, by key, and its resolution: made when first read
@@ -373,7 +387,7 @@ impl MetadataStore {
     }
 
     pub fn targets(&self) -> impl Iterator<Item = &EntityId> {
-        self.entries.keys()
+        self.entries.keys().chain(self.records.keys())
     }
 
     fn intern(&mut self, provider: &str) -> ProviderIx {
@@ -433,17 +447,14 @@ impl MetadataStore {
 
     /// Set a fact the core or host owns (no provider).
     pub fn set(&mut self, entity_id: EntityId, key: impl Into<String>, source_id: impl Into<String>, entry: MetadataEntry) {
+        if matches!(entity_id, EntityId::Entity(_)) {
+            let update = MetadataValueUpdate { value: entry.value, ttl_ms: None, precedence: None, ordinal: None };
+            self.apply_record_patch(None, entity_id, source_id.into(), BTreeMap::from([(key.into(), update)]), vec![], entry.updated_at);
+            return;
+        }
         let contributor = self.contributor(None, source_id);
         self.touch(&entity_id);
-        self.record_ordinal(&entity_id, entry.ordinal);
         self.set_contribution(&entity_id, &key.into(), contributor, entry);
-    }
-
-    /// The order `entity_id` takes in the catalog: the ordinal of its first fact.
-    fn record_ordinal(&mut self, entity_id: &EntityId, ordinal: i64) {
-        if !self.target_ordinals.contains_key(entity_id) {
-            self.target_ordinals.insert(entity_id.clone(), ordinal);
-        }
     }
 
     /// Set one contribution. The caller touches the entity and records its
@@ -471,6 +482,12 @@ impl MetadataStore {
 
     /// Unset a fact the core or host owns (no provider).
     pub fn unset(&mut self, entity_id: &EntityId, key: &str, source_id: &str) -> Option<MetadataEntry> {
+        if matches!(entity_id, EntityId::Entity(_)) {
+            let removed =
+                self.records.get(entity_id)?.facts.fact(key).filter(|fact| fact.source.as_deref() == Some(source_id))?.entry.clone();
+            self.apply_record_patch(None, entity_id.clone(), source_id.to_owned(), BTreeMap::new(), vec![key.to_owned()], 0);
+            return Some(Rc::unwrap_or_clone(removed));
+        }
         let contributor = self.existing_contributor(None, source_id)?;
         self.unset_contribution(entity_id, key, &contributor)
     }
@@ -484,7 +501,6 @@ impl MetadataStore {
         }
         if entity_entries.is_empty() {
             self.entries.remove(entity_id);
-            self.target_ordinals.remove(entity_id);
         }
         if let Some(entry) = &removed {
             self.touch(entity_id);
@@ -519,11 +535,11 @@ impl MetadataStore {
         before < now && self.expiry_counts.range(before..now).next().is_some()
     }
 
-    pub fn target_ordinal(&self, entity_id: &EntityId) -> Option<i64> {
-        self.target_ordinals.get(entity_id).copied()
-    }
-
     pub(crate) fn source_contributes(&self, entity: &EntityId, key: &str, provider: Option<&str>, source: &str) -> bool {
+        if let Some(record) = self.records.get(entity) {
+            let owner = record.provider.map(|ix| self.providers[ix as usize].as_str());
+            return owner == provider && record.facts.source(key) == Some(source);
+        }
         let Some(contributor) = self.existing_contributor(provider, source) else {
             return false;
         };
@@ -532,6 +548,9 @@ impl MetadataStore {
 
     // Raw ownership survives lease expiry: silence is not authoritative removal.
     pub(crate) fn has_contributors(&self, entity: &EntityId, key: &str) -> bool {
+        if let Some(record) = self.records.get(entity) {
+            return record.facts.contains_key(key);
+        }
         self.entries.get(entity).and_then(|keys| keys.get(key)).is_some_and(|sources| !sources.is_empty())
     }
 
@@ -546,11 +565,11 @@ impl MetadataStore {
     }
 
     /// Mark a provider stale, or fresh again. A stale provider's facts are
-    /// kept as they were when it became stale: those live then stay live and
-    /// none expires. Fresh again, each TTL fact that was live renews its lease
-    /// from `now`, as though the provider had just reasserted it, so a fact
-    /// the provider doesn't reassert expires one TTL later. Returns whether
-    /// anything changed.
+    /// kept, and its entities' records read as stale. Of its leased facts
+    /// (on workspaces and panes; an entity's have none), those live when it
+    /// became stale stay live; fresh again, each renews its lease from `now`,
+    /// as though reasserted, so one not reasserted expires a TTL later.
+    /// Returns whether anything changed.
     pub fn set_stale(&mut self, provider: &str, stale: bool, now: u64) -> bool {
         let ix = self.intern(provider);
         if stale == self.stale.contains_key(&ix) {
@@ -617,19 +636,30 @@ impl MetadataStore {
             if let (true, EntityId::Entity(entity)) = (lost, target) {
                 affected.insert(entity.clone());
             }
-            if keys.is_empty() {
-                self.target_ordinals.remove(target);
-                false
-            } else {
-                true
-            }
+            !keys.is_empty()
         });
         self.entries = entries;
+        let mut records = std::mem::take(&mut self.records);
+        records.retain(|target, record| {
+            if record.provider != Some(ix) {
+                return true;
+            }
+            removed = true;
+            self.touch(target);
+            if let EntityId::Entity(entity) = target {
+                affected.insert(entity.clone());
+            }
+            false
+        });
+        self.records = records;
         self.stale.remove(&ix);
         (removed, affected)
     }
 
     pub fn source_entry(&self, entity_id: &EntityId, key: &str, source_id: &str, now: u64) -> Option<&MetadataEntry> {
+        if let Some(record) = self.records.get(entity_id) {
+            return record.facts.fact(key).filter(|fact| fact.source.as_deref() == Some(source_id)).map(|fact| &*fact.entry);
+        }
         self.entries
             .get(entity_id)?
             .get(key)?
@@ -639,15 +669,18 @@ impl MetadataStore {
     }
 
     /// Apply a patch the core or host owns (no provider).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn apply_patch(&mut self, patch: MetadataPatch, now: u64) -> MetadataPatchOutcome {
         self.apply_patch_from(None, patch, now)
     }
 
     /// Apply a patch, contributed by `provider` when it has one.
     pub fn apply_patch_from(&mut self, provider: Option<&str>, patch: MetadataPatch, now: u64) -> MetadataPatchOutcome {
-        let mut outcome = MetadataPatchOutcome::default();
         let target = EntityId::from(patch.target);
+        if matches!(target, EntityId::Entity(_)) {
+            return self.apply_record_patch(provider, target, patch.source_id, patch.set, patch.unset, now);
+        }
+        let mut outcome = MetadataPatchOutcome::default();
         let target_existed = self.entries.contains_key(&target);
         let contributor = self.contributor(provider, patch.source_id);
         for key in patch.unset {
@@ -656,12 +689,7 @@ impl MetadataStore {
                 outcome.view_changed |= self.is_live(&contributor, &entry, now);
             }
         }
-        if !self.entries.contains_key(&target) {
-            if let Some(ordinal) = patch.set.values().map(|update| update.ordinal.unwrap_or_default()).min() {
-                self.target_ordinals.insert(target.clone(), ordinal);
-            }
-        }
-        let mut set_any = None;
+        let mut set_any = false;
         for (key, update) in patch.set {
             let next_entry = MetadataEntry {
                 value: update.value,
@@ -683,15 +711,14 @@ impl MetadataStore {
                 _ => (true, true),
             };
             if set {
-                set_any.get_or_insert(next_entry.ordinal);
+                set_any = true;
                 self.set_contribution(&target, &key, contributor, next_entry);
                 outcome.touched = true;
                 outcome.view_changed |= changes;
             }
         }
-        if let Some(ordinal) = set_any {
+        if set_any {
             self.touch(&target);
-            self.record_ordinal(&target, ordinal);
             if let Some(stored) = self.entries.get_mut(&target) {
                 stored.shrink();
             }
@@ -702,7 +729,90 @@ impl MetadataStore {
         outcome
     }
 
+    /// Apply a patch to an entity's record: each unset removes a key its own
+    /// source set, and each set replaces the key's fact (the same value from
+    /// the same source changes nothing). Leases, precedence and ordinals are
+    /// not an entity's, and are ignored. A patch that changes nothing, as a
+    /// producer's re-send of what it has, is found so without copying.
+    fn apply_record_patch(
+        &mut self,
+        provider: Option<&str>,
+        target: EntityId,
+        source_id: String,
+        set: BTreeMap<String, MetadataValueUpdate>,
+        unset: Vec<String>,
+        now: u64,
+    ) -> MetadataPatchOutcome {
+        let record = self.records.get(&target);
+        let written_by = |fact: &Fact| fact.source.as_deref() == Some(source_id.as_str());
+        let unsets = unset.iter().any(|key| record.and_then(|record| record.facts.fact(key)).is_some_and(written_by));
+        let sets = set.iter().any(|(key, update)| match record.and_then(|record| record.facts.fact(key)) {
+            Some(fact) => fact.entry.value != update.value || !written_by(fact),
+            None => true,
+        });
+        if !unsets && !sets {
+            return MetadataPatchOutcome::default();
+        }
+        let provider = provider.map(|provider| self.intern(provider));
+        let source = self.intern_source(source_id);
+        let source = self.sources[source as usize].clone();
+        let mut facts: Vec<(Rc<str>, Fact)> = match self.records.get(&target) {
+            Some(record) => record.facts.named().map(|(key, fact)| (key.clone(), fact.clone())).collect(),
+            None => vec![],
+        };
+        let position = |facts: &[(Rc<str>, Fact)], key: &str| facts.binary_search_by(|(name, _)| (**name).cmp(key));
+        let mut changed = false;
+        for key in &unset {
+            if let Ok(at) = position(&facts, key) {
+                if facts[at].1.source.as_deref() == Some(&*source) {
+                    facts.remove(at);
+                    changed = true;
+                }
+            }
+        }
+        for (key, update) in set {
+            let mut value = update.value;
+            self.intern_text(&mut value);
+            match position(&facts, &key) {
+                Ok(at) if facts[at].1.entry.value == value && facts[at].1.source.as_deref() == Some(&*source) => {}
+                found => {
+                    let entry = MetadataEntry { value, updated_at: now, ttl_ms: None, precedence: 0, ordinal: 0 };
+                    let fact = Fact { entry: Rc::new(entry), source: Some(source.clone()) };
+                    match found {
+                        Ok(at) => facts[at].1 = fact,
+                        Err(at) => facts.insert(at, (self.shapes.get_mut().key(&key), fact)),
+                    }
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return MetadataPatchOutcome::default();
+        }
+        if facts.is_empty() {
+            self.records.remove(&target);
+        } else {
+            let facts = Rc::new(self.shapes.get_mut().record(facts));
+            match self.records.get_mut(&target) {
+                Some(record) => record.facts = facts,
+                None => {
+                    self.records.insert(target.clone(), Record { provider, facts });
+                }
+            }
+        }
+        self.touch(&target);
+        MetadataPatchOutcome { view_changed: true, touched: true }
+    }
+
     pub fn entries_for(&self, entity_id: &EntityId, key: &str, now: u64) -> Vec<CandidateEntry> {
+        if let Some(record) = self.records.get(entity_id) {
+            return record
+                .facts
+                .fact(key)
+                .map(|fact| CandidateEntry::new(fact.source.as_deref().unwrap_or_default(), (*fact.entry).clone()))
+                .into_iter()
+                .collect();
+        }
         self.entries
             .get(entity_id)
             .and_then(|entity_entries| entity_entries.get(key))
@@ -718,6 +828,9 @@ impl MetadataStore {
 
     /// `entity_id`'s facts resolved at `now`, shared until they change.
     pub fn resolved(&self, entity_id: &EntityId, now: u64) -> Rc<ResolvedFacts> {
+        if let Some(record) = self.records.get(entity_id) {
+            return record.facts.clone();
+        }
         let Some(stored) = self.entries.get(entity_id) else {
             return Rc::default();
         };
@@ -778,6 +891,16 @@ impl MetadataStore {
     }
 
     pub fn source_entries_for(&self, entity_id: &EntityId, now: u64) -> BTreeMap<String, Vec<MetadataSourceEntry>> {
+        if let Some(record) = self.records.get(entity_id) {
+            return record
+                .facts
+                .facts()
+                .map(|(key, fact)| {
+                    let source_id = fact.source.as_deref().unwrap_or_default().to_owned();
+                    (key.to_owned(), vec![MetadataSourceEntry { source_id, entry: (*fact.entry).clone() }])
+                })
+                .collect();
+        }
         self.entries
             .get(entity_id)
             .map(|entity_entries| {
@@ -798,6 +921,15 @@ impl MetadataStore {
 
     pub fn snapshot_patches(&self, now: u64) -> Vec<MetadataPatch> {
         let mut patches: BTreeMap<(EntityId, String), BTreeMap<String, MetadataValueUpdate>> = BTreeMap::new();
+        for (target, record) in &self.records {
+            for (key, fact) in record.facts.facts() {
+                let source = fact.source.as_deref().unwrap_or_default().to_owned();
+                patches.entry((target.clone(), source)).or_default().insert(
+                    key.to_owned(),
+                    MetadataValueUpdate { value: fact.entry.value.clone(), ttl_ms: None, precedence: None, ordinal: None },
+                );
+            }
+        }
         for (target, target_entries) in &self.entries {
             for (key, source_entries) in target_entries.iter() {
                 for (contributor, entry) in source_entries.iter() {
@@ -818,7 +950,7 @@ impl MetadataStore {
         }
         patches
             .into_iter()
-            .filter_map(|((target, source_id), set)| {
+            .map(|((target, source_id), set)| {
                 let target = match target {
                     EntityId::Root => MetadataTarget::Root,
                     EntityId::Pane(pane) => MetadataTarget::Pane(pane),
@@ -826,7 +958,7 @@ impl MetadataStore {
                     EntityId::Entity(entity) => MetadataTarget::Entity(entity),
                     EntityId::Identity(identity) => MetadataTarget::Identity(identity),
                 };
-                Some(MetadataPatch { target, source_id, set, unset: vec![] })
+                MetadataPatch { target, source_id, set, unset: vec![] }
             })
             .collect()
     }
@@ -882,7 +1014,7 @@ mod tests {
     fn select_primary_value(entries: &[CandidateEntry]) -> Option<MetadataValue> {
         select_primary_entry(entries).map(|candidate| candidate.entry.value)
     }
-    use crate::{EntityRef, MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate, PaneTarget};
+    use crate::{tab_workspace_id, EntityRef, MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate, PaneTarget};
 
     fn entry(value: &str, precedence: i64, ordinal: i64, updated_at: u64) -> MetadataEntry {
         MetadataEntry { value: MetadataValue::Text(value.into()), updated_at, ttl_ms: None, precedence, ordinal }
@@ -937,10 +1069,11 @@ mod tests {
 
     #[test]
     fn stale_providers_leave_the_expiry_index_and_rejoin_it_renewed() {
+        // A workspace's facts (an entity's carry no lease).
         let mut store = MetadataStore::default();
-        let target = EntityId::Entity(EntityRef::new("p", "vessel", "v"));
+        let target = EntityId::Tab(tab_workspace_id(1));
         let patch = MetadataPatch {
-            target: MetadataTarget::Entity(EntityRef::new("p", "vessel", "v")),
+            target: MetadataTarget::Tab(tab_workspace_id(1)),
             source_id: "flotilla".into(),
             set: BTreeMap::from([(
                 "status".to_owned(),
@@ -962,11 +1095,65 @@ mod tests {
         assert!(store.entries_for(&target, "status", 1_011).is_empty());
         let (removed, affected) = store.retract("p");
         assert!(removed);
-        assert_eq!(affected.len(), 1);
+        assert!(affected.is_empty(), "a workspace is not an entity");
         assert!(!store.has_stale());
         // q's deadline (10) is the only one left.
         assert_eq!(store.expiry_counts, BTreeMap::from([(10, 1)]));
         assert_eq!(store.retract("p"), (false, Default::default()));
+    }
+
+    /// An entity's facts are a record: the last write of a key wins, the
+    /// same value from the same source changes nothing, an unset removes a
+    /// key only its own source set, and the record goes with its last fact.
+    #[test]
+    fn an_entitys_facts_are_its_last_writers() {
+        let mut store = MetadataStore::default();
+        let entity = EntityRef::new("p", "convoy", "c");
+        let target = EntityId::Entity(entity.clone());
+        let patch = |source: &str, set: &[(&str, &str)], unset: &[&str]| MetadataPatch {
+            target: MetadataTarget::Entity(entity.clone()),
+            source_id: source.into(),
+            set: set
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        key.to_string(),
+                        MetadataValueUpdate { value: MetadataValue::Text((*value).into()), ttl_ms: None, precedence: None, ordinal: None },
+                    )
+                })
+                .collect(),
+            unset: unset.iter().map(|key| key.to_string()).collect(),
+        };
+        let label = |store: &MetadataStore| store.resolved(&target, 0).get("label").map(|entry| entry.value.clone());
+        assert!(store.apply_patch_from(Some("p"), patch("a", &[("label", "one"), ("state", "on")], &[]), 1).touched);
+        assert!(!store.apply_patch_from(Some("p"), patch("a", &[("label", "one")], &[]), 2).touched, "same value, same source");
+        store.apply_patch_from(Some("p"), patch("b", &[("label", "two")], &[]), 3);
+        assert_eq!(label(&store), Some(MetadataValue::Text("two".into())), "the last write wins");
+        assert_eq!(store.resolved(&target, 0).source("label"), Some("b"));
+        assert!(!store.apply_patch_from(Some("p"), patch("a", &[], &["label"]), 4).touched, "a's unset can't remove b's");
+        store.apply_patch_from(Some("p"), patch("b", &[], &["label"]), 5);
+        assert_eq!(label(&store), None);
+        assert!(store.source_contributes(&target, "state", Some("p"), "a"));
+        store.apply_patch_from(Some("p"), patch("a", &[], &["state"]), 6);
+        assert!(store.targets().next().is_none(), "the record goes with its last fact");
+    }
+
+    #[test]
+    fn an_entitys_fact_ignores_a_lease_precedence_and_ordinal() {
+        let mut store = MetadataStore::default();
+        let target = EntityId::Entity(EntityRef::new("p", "convoy", "c"));
+        let update =
+            MetadataValueUpdate { value: MetadataValue::Text("one".into()), ttl_ms: Some(10), precedence: Some(5), ordinal: Some(3) };
+        let patch = MetadataPatch {
+            target: MetadataTarget::Entity(EntityRef::new("p", "convoy", "c")),
+            source_id: "a".into(),
+            set: BTreeMap::from([("label".to_owned(), update)]),
+            unset: vec![],
+        };
+        store.apply_patch_from(Some("p"), patch, 1);
+        let resolved = store.resolved(&target, 1_000_000);
+        let entry = resolved.get("label").expect("no lease to lapse");
+        assert_eq!((entry.ttl_ms, entry.precedence, entry.ordinal), (None, 0, 0));
     }
 
     #[test]
@@ -1023,12 +1210,12 @@ mod tests {
 
     #[test]
     fn metadata_patch_sets_values_with_controller_timestamp() {
+        // A workspace's facts keep a lease, precedence and ordinal each.
         let mut store = MetadataStore::default();
-        let entity = EntityRef::local("project", "zellij");
-        let target = EntityId::Entity(entity.clone());
+        let target = EntityId::Tab(tab_workspace_id(1));
         store.apply_patch(
             MetadataPatch {
-                target: MetadataTarget::Entity(entity),
+                target: MetadataTarget::Tab(tab_workspace_id(1)),
                 source_id: "flotilla".to_owned(),
                 set: BTreeMap::from([(
                     "summary.local_llm".to_owned(),
@@ -1052,28 +1239,6 @@ mod tests {
         assert_eq!(entries[0].entry.ttl_ms, Some(30_000));
         assert_eq!(entries[0].entry.precedence, 10);
         assert_eq!(entries[0].entry.ordinal, 2);
-    }
-
-    #[test]
-    fn target_ordinal_comes_from_the_patch_without_an_identity_value() {
-        let mut store = MetadataStore::default();
-        let entity = EntityRef::local("issue", "github/flotilla-org/andamento#37");
-        let target = EntityId::Entity(entity.clone());
-
-        store.apply_patch(
-            MetadataPatch {
-                target: MetadataTarget::Entity(entity),
-                source_id: "flotilla".to_owned(),
-                set: BTreeMap::from([(
-                    "display.label".to_owned(),
-                    MetadataValueUpdate { value: MetadataValue::Text("#37".into()), ttl_ms: None, precedence: None, ordinal: Some(7) },
-                )]),
-                unset: vec![],
-            },
-            1,
-        );
-
-        assert_eq!(store.target_ordinal(&target), Some(7));
     }
 
     #[test]
@@ -1213,6 +1378,14 @@ impl MetadataStore {
         for stored in self.entries.values() {
             if let Some(cached) = stored.resolved.borrow().as_ref().filter(|cached| census.first(&cached.resolved)) {
                 cached.resolved.census(census, "resolved facts");
+            }
+        }
+        for (target, record) in &self.records {
+            if let EntityId::Entity(entity) = target {
+                census.entity("records: entity ids", entity);
+            }
+            if census.first(&record.facts) {
+                record.facts.census(census, "records");
             }
         }
     }

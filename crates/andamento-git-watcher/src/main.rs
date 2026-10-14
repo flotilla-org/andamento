@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--ttl-ms" => ttl_ms = args.next().ok_or("--ttl-ms needs milliseconds")?.parse()?,
             "--once" => once = true,
             "--help" | "-h" => {
-                println!("andamento-git-watcher [--roots DIR]... [--transport stdout|zellij|wheelhouse] [--socket PATH] [--once] [--interval SECONDS] [--ttl-ms MS]\nZellij: [--zellij-bin PATH] [--plugin-url URL] [--factory-repo-manager] [--factory-layout PATH]\nDefaults: stdout JSONL, interval 5s, TTL 10000ms. Requires git; Wheelhouse also requires curl.");
+                println!("andamento-git-watcher [--roots DIR]... [--transport stdout|zellij|wheelhouse] [--socket PATH] [--once] [--interval SECONDS] [--ttl-ms MS (pane facts' lease)]\nZellij: [--zellij-bin PATH] [--plugin-url URL] [--factory-repo-manager] [--factory-layout PATH]\nDefaults: stdout JSONL, interval 5s, TTL 10000ms. Requires git; Wheelhouse also requires curl.");
                 return Ok(());
             }
             _ => return Err(format!("unknown argument: {arg}").into()),
@@ -68,9 +68,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => return Err("unknown transport".into()),
     };
     let interval = Duration::from_secs_f64(interval);
+    let mut published = Vec::new();
     loop {
         let start = Instant::now();
-        let trees = match run_cycle(&roots, transport.as_mut(), ttl_ms) {
+        let trees = match run_cycle(&roots, transport.as_mut(), &mut published, ttl_ms) {
             Ok(cycle) => {
                 for error in &cycle.errors {
                     eprintln!("andamento-git-watcher: {error}");

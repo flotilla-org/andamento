@@ -1,5 +1,6 @@
 //! Refresh orchestration and inexpensive Git control-file invalidation.
-use crate::{discover, git, patches, transport::Transport, Worktree};
+use crate::{discover_all, git, patches, transport::Transport, withdrawals, Worktree};
+use serde_json::Value;
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -13,15 +14,30 @@ pub struct Cycle {
 
 /// Failed discovery is not an empty inventory. Individual publish failures do
 /// not suppress later entities or discard the invalidation watch list.
-pub fn run_cycle(roots: &[PathBuf], transport: &mut dyn Transport, ttl_ms: u64) -> io::Result<Cycle> {
+/// `published` is the entity patches standing: what it holds and this cycle
+/// doesn't find is withdrawn, unless its status couldn't be read. A
+/// withdrawal that fails stays published, to be retried. `ttl_ms` is the
+/// lease on panes' facts.
+pub fn run_cycle(roots: &[PathBuf], transport: &mut dyn Transport, published: &mut Vec<Value>, ttl_ms: u64) -> io::Result<Cycle> {
     let observed = transport.observed()?;
-    let trees = discover(roots, &observed);
+    let (trees, unreadable) = discover_all(roots, &observed);
     let mut errors = Vec::new();
-    for patch in patches(&trees, ttl_ms) {
-        if let Err(error) = transport.publish(&patch) {
+    let mut current = patches(&trees);
+    let (withdrawn, kept) = withdrawals(published, &current, &unreadable);
+    let mut standing = kept;
+    for (patch, withdrawal) in withdrawn {
+        if let Err(error) = transport.publish(&withdrawal) {
+            errors.push(error.to_string());
+            standing.push(patch);
+        }
+    }
+    for patch in &current {
+        if let Err(error) = transport.publish(patch) {
             errors.push(error.to_string());
         }
     }
+    current.extend(standing);
+    *published = current;
     if let Err(error) = transport.reconcile(&trees, &observed, ttl_ms) {
         errors.push(error.to_string());
     }

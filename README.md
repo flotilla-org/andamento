@@ -353,16 +353,18 @@ Ambiguous URLs with a raw `@` in the path are omitted (using local repository
 identity), since that can be part of an unencoded password; percent-encode
 reserved characters in Git URLs.
 Non-UTF-8 paths cannot be represented by the metadata protocol and are skipped.
-Unreadable directories are skipped; a failed Git status drops that checkout until
-the next refresh, letting its old facts expire instead of claiming a clean tree.
+Unreadable directories are skipped; a failed Git status drops that checkout
+until the next refresh, withdrawing its facts instead of claiming a clean tree.
 
-Refresh defaults to five seconds with a ten-second fact TTL (`--interval` and
-`--ttl-ms`). HEAD/index/packed-refs changes trigger an earlier refresh; ordinary
-working-file changes are detected by the regular refresh. Removed worktrees
-expire by TTL. Failed host reads let existing facts expire instead of reporting
-an empty inventory. Individual publish errors are reported while the remaining entities and adapter
-reconciliation are still attempted. Cycles exceeding the TTL emit a diagnostic;
-large/slow inventories should raise `--ttl-ms`. The loop retries transport
+Refresh defaults to five seconds (`--interval`). HEAD/index/packed-refs changes
+trigger an earlier refresh; ordinary working-file changes are detected by the
+regular refresh. Each refresh withdraws the repos and worktrees the previous
+one published and this one does not see. A failed host read publishes nothing,
+keeping the existing facts instead of reporting an empty inventory. Entity
+facts carry no TTL, so they outlive a watcher that exits. Pane facts keep a
+ten-second TTL (`--ttl-ms`); cycles exceeding it emit a diagnostic, and
+large/slow inventories should raise it. Individual publish errors are reported
+while the remaining entities and adapter reconciliation are still attempted. The loop retries transport
 failures; `--once` exits nonzero.
 
 Wheelhouse discovery uses `GET /v1/observed/workdirs` from wheelhouse#130,

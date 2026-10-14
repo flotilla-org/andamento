@@ -349,12 +349,11 @@ impl Sidebar {
     }
 
     /// Mark a provider stale, when its connection drops, or fresh again when
-    /// it returns. A stale provider's facts are kept as they were and none
-    /// expires while it stays stale; snapshot nodes presenting its entities
-    /// are flagged stale. Fresh again, each TTL fact that was live then
-    /// renews its lease from now, as though the provider had reasserted it,
-    /// so one it doesn't reassert expires a TTL later. Returns whether the
-    /// provider's state changed.
+    /// it returns. A stale provider's facts are kept, and snapshot nodes and
+    /// detail fields presenting its entities are flagged stale. Its leased
+    /// non-entity facts don't expire while it is stale; fresh again, each
+    /// renews its lease from now, so one it doesn't reassert expires a TTL
+    /// later. Returns whether the provider's state changed.
     pub fn set_provider_stale(&mut self, provider: &str, stale: bool) -> bool {
         let changed = self.state.set_provider_stale(provider, stale);
         if changed {
@@ -1391,7 +1390,7 @@ mod evaluation_tests {
     fn entity() -> EntityRef {
         EntityRef::new(PROVIDER, "vessel", "v")
     }
-    fn patch(source: &str, label: &str, ttl: Option<u64>, precedence: i64) -> MetadataPatch {
+    fn patch(source: &str, label: &str) -> MetadataPatch {
         MetadataPatch {
             target: MetadataTarget::Entity(entity()),
             source_id: source.into(),
@@ -1407,12 +1406,7 @@ mod evaluation_tests {
             .map(|(key, value)| {
                 (
                     key.into(),
-                    MetadataValueUpdate {
-                        value: MetadataValue::Text(value.into()),
-                        ttl_ms: ttl,
-                        precedence: Some(precedence),
-                        ordinal: None,
-                    },
+                    MetadataValueUpdate { value: MetadataValue::Text(value.into()), ttl_ms: None, precedence: None, ordinal: None },
                 )
             })
             .collect(),
@@ -1450,7 +1444,7 @@ mod evaluation_tests {
     #[test]
     fn revision_queries_share_evaluation_and_validation() {
         let mut sidebar = Sidebar::new(CONFIG).unwrap();
-        sidebar.apply(100, PROVIDER, [patch("a", "first", None, 0)]).unwrap();
+        sidebar.apply(100, PROVIDER, [patch("a", "first")]).unwrap();
         add_project(&mut sidebar);
         profile::start();
         let snapshot = sidebar.snapshot();
@@ -1469,18 +1463,18 @@ mod evaluation_tests {
 
     #[test]
     fn generated_revision_lifecycles_match_uncached_output() {
-        // Deterministic operation generator spans duplicate observations, source
-        // precedence, expiry boundaries, unsets, config variables, topology,
+        // Deterministic operation generator spans duplicate observations, two
+        // sources' writes, ticks, unsets, config variables, topology,
         // dispatch and completions. Real controller/store/template collaborators.
         for seed in 0..24u64 {
             let mut sidebar = Sidebar::new(CONFIG).unwrap();
-            sidebar.apply(100, PROVIDER, [patch("base", "original", None, 0)]).unwrap();
+            sidebar.apply(100, PROVIDER, [patch("base", "original")]).unwrap();
             add_project(&mut sidebar);
             let held = sidebar.snapshot();
             let mut now = 100;
             for step in 0..18 {
                 match (seed + step * 7) % 9 {
-                    0 => sidebar.apply(now, PROVIDER, [patch("update", &format!("{seed}/{step}"), Some(5), 10)]).unwrap(),
+                    0 => sidebar.apply(now, PROVIDER, [patch("update", &format!("{seed}/{step}"))]).unwrap(),
                     1 => {
                         now += 5;
                         sidebar.tick(now);
@@ -1490,7 +1484,7 @@ mod evaluation_tests {
                         sidebar.tick(now);
                     }
                     3 => {
-                        let mut p = patch("update", "", None, 0);
+                        let mut p = patch("update", "");
                         p.set.clear();
                         p.unset = vec!["display.label".into()];
                         sidebar.apply(now, PROVIDER, [p]).unwrap();
@@ -1539,7 +1533,7 @@ mod evaluation_tests {
     fn presentation_matches_controller_for_every_sort_mode() {
         for mode in [SortMode::Controller, SortMode::Position, SortMode::PinnedFirst, SortMode::LatestStatus] {
             let mut sidebar = Sidebar::new(CONFIG).unwrap();
-            sidebar.apply(100, PROVIDER, [patch("base", "original", None, 0)]).unwrap();
+            sidebar.apply(100, PROVIDER, [patch("base", "original")]).unwrap();
             add_project(&mut sidebar);
             sidebar.observe(
                 vec![
@@ -1566,7 +1560,7 @@ mod evaluation_tests {
             assert!(sidebar.details.borrow().len() <= 64);
         }
         assert!(sidebar.detail_card(&entity()).is_none());
-        sidebar.apply(100, PROVIDER, [patch("base", "appeared", None, 0)]).unwrap();
+        sidebar.apply(100, PROVIDER, [patch("base", "appeared")]).unwrap();
         assert_eq!(sidebar.detail_card(&entity()).unwrap().label, "appeared");
     }
 }

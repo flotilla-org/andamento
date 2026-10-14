@@ -127,11 +127,11 @@ fn subject_urls_follow_updates_and_reject_incomplete_forges() {
     }
     let patch = serde_json::json!({"target":{"kind":"entity","value":entity},"source_id":"flotilla","set":{"flotilla.forge":{"value":{"type":"entity-refs","value":[{"kind":"forge","id":"github"}]}}}});
     sidebar.apply(0, replay::PROVIDER, [serde_json::from_value::<MetadataPatch>(patch).unwrap()]).unwrap();
-    let patch = serde_json::json!({"target":{"kind":"entity","value":{"kind":"forge","id":"github"}},"source_id":"flotilla","set":{"flotilla.forge.change_request_url_template":{"value":{"type":"text","value":"{web_url}/{scope}/pull/{number}"},"ttl_ms":10}}});
+    let patch = serde_json::json!({"target":{"kind":"entity","value":{"kind":"forge","id":"github"}},"source_id":"flotilla","set":{"flotilla.forge.change_request_url_template":{"value":{"type":"text","value":"{web_url}/{scope}/pull/{number}"}}}});
     sidebar.apply(0, replay::PROVIDER, [serde_json::from_value::<MetadataPatch>(patch).unwrap()]).unwrap();
     assert!(sidebar.subject_url(&entity).is_some());
-    sidebar.tick(10);
-    assert!(sidebar.subject_url(&entity).is_some());
-    sidebar.tick(11);
+    // The forge withdraws its template.
+    let patch = serde_json::json!({"target":{"kind":"entity","value":{"kind":"forge","id":"github"}},"source_id":"flotilla","set":{},"unset":["flotilla.forge.change_request_url_template"]});
+    sidebar.apply(11, replay::PROVIDER, [serde_json::from_value::<MetadataPatch>(patch).unwrap()]).unwrap();
     assert!(sidebar.subject_url(&entity).is_none());
 }

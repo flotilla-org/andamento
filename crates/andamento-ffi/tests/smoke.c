@@ -246,12 +246,11 @@ static void check_dashboard(const char *config_path, const char *patches_path) {
 static void check_providers(void) {
     Andamento *h = create("region \"tree\" root-template=\"flotilla/region/tree\" placement=\"tree\"\n"
                           "placement \"tree\" { for \"p\" kind=\"project\"; }\n");
-    AndamentoFact label = {.key = T("display.label"), .kind = ANDAMENTO_FACT_TEXT, .text = T("One"),
-                           .has_ttl = 1, .ttl_ms = 50};
+    AndamentoFact label = {.key = T("display.label"), .kind = ANDAMENTO_FACT_TEXT, .text = T("One")};
     ok(andamento_apply_entity(h, 100, T("sub-1"), T("project"), T("p"), T("x"), &label, 1, &error));
     ok(andamento_apply_entity(h, 100, T("sub-2"), T("project"), T("p"), T("x"), &label, 1, &error));
     ok(andamento_provider_set_stale(h, T("sub-1"), 1, &error));
-    ok(andamento_tick(h, 1000, &error));
+    ok(andamento_provider_retract(h, T("sub-2"), &error));
     AndamentoSnapshot *s = snapshot(h);
     size_t projects = 0;
     for (size_t i = 0; i < andamento_snapshot_node_count(s); ++i) {
@@ -259,7 +258,7 @@ static void check_providers(void) {
         assert(andamento_snapshot_node(s, i, &n));
         if (n.is_section) continue;
         projects++;
-        assert(eq(n.entity.provider, "sub-1") && n.stale); /* sub-2's expired */
+        assert(eq(n.entity.provider, "sub-1") && n.stale); /* sub-2's retracted */
     }
     assert(projects == 1);
     andamento_snapshot_release(s);

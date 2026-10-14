@@ -21,6 +21,13 @@ The host drains incoming metadata patches into `apply(now_ms, patches)`, then
 requests one `snapshot()`. Time is monotonic milliseconds local to the client;
 an empty batch advances expiry, and a backwards clock input cannot revive an
 expired value. Patches retain the existing producer schema and namespaces.
+
+An entity's facts are one record: each key holds its last writer's value and
+source. They carry no TTL, precedence or ordinal: an entity fact given one
+ignores it. A source's unset removes a key only if that source wrote
+it; removing an entity's last fact removes the entity. Liveness is the feed's:
+a dropped connection marks its provider stale, and removal retracts it. Tab,
+pane and root targets keep per-source arbitration and TTLs.
 The legacy Zellij adapter retains its existing receipt-clock behavior during
 this extraction; adopting a wall-clock expiry scheduler there is separate work.
 
@@ -171,15 +178,12 @@ which no host subscription may use.
   binding, and nothing is marked ended. Closing the workspace or removing the
   ref lets the retained entity go.
 - **Stale facts.** `set_provider_stale(provider, true)`
-  (`andamento_provider_set_stale`) is for a dropped connection, instead of
-  waiting for TTLs. A stale provider's facts are kept as they were when it
-  became stale: those live then stay live, and no TTL expires them while it
-  stays stale; facts that had already expired stay expired. Snapshot nodes
-  presenting its entities (a ref presenting its target included) set
-  `AndamentoNode.stale`. Marked fresh again, each TTL fact that was live
-  renews its lease from that moment, as though the provider had reasserted
-  it, so the reconnected stream has one TTL to reassert it before it expires.
-  Facts without a TTL are unaffected either way. Retraction clears staleness.
+  (`andamento_provider_set_stale`) is for a dropped connection. A stale
+  provider's facts are kept as they were, and snapshot nodes presenting its
+  entities (a ref presenting its target included) set `AndamentoNode.stale`,
+  as do their detail fields' `stale`. A non-entity TTL fact live when its
+  provider became stale stays live until it is fresh again, then renews its
+  lease from that moment. Retraction clears staleness.
 
 Placement keys carry the provider. `PlacementLoopKey::encode`
 (`AndamentoNode.loop_key`) is length-prefixed parts with each parent
@@ -320,8 +324,8 @@ nullable arguments and ownership for every operation.
 The semantic producer model, its encoding and its transport are separate
 choices. Rust accepts typed `MetadataPatch` values. The native scalar
 `andamento_apply_entity` convenience interface supports text, boolean and
-integer entity facts, unsets, TTL, precedence and ordinal without encoding
-those values. It intentionally does not duplicate every producer target and
+integer entity facts and unsets without encoding those values; entity facts
+ignore its TTL, precedence and ordinal. It intentionally does not duplicate every producer target and
 value type in the C header.
 
 `andamento_apply_patch_json` is an optional decoder for one existing producer

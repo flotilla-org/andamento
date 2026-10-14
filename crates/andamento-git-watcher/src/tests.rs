@@ -1,7 +1,7 @@
 use super::*;
 use andamento_core::{
     replay::{self, Frame, Replay},
-    Sidebar,
+    MetadataPatch, Sidebar,
 };
 use andamento_terminal::surface;
 use std::{
@@ -58,7 +58,7 @@ fn discovers_linked_worktrees_and_refreshes_git_state() {
     assert!(tree.branch.starts_with("detached:"));
     assert!(tree.dirty);
     assert!(!tree.open);
-    let stream = patches(&[tree], 10_000);
+    let stream = patches(&[tree]);
     let recipe = stream[1]["set"]["action.primary.recipe"]["value"]["value"].as_str().unwrap();
     let cd = recipe.split(" && exec").next().unwrap();
     let output = Command::new("sh").args(["-c", &format!("{cd} && pwd")]).output().unwrap();
@@ -82,7 +82,7 @@ fn remote_less_worktrees_share_parent_and_upstream_is_cleared() {
     git(&linked, &["commit", "--allow-empty", "-m", "ahead"]).unwrap();
     assert_eq!(discover(std::slice::from_ref(&root), &[]).iter().find(|t| t.root == linked).unwrap().ahead, Some(1));
     git(&linked, &["branch", "--unset-upstream"]).unwrap();
-    let stream = patches(&discover(&[root], &[]), 1000);
+    let stream = patches(&discover(&[root], &[]));
     assert!(stream
         .iter()
         .filter(|p| p["target"]["value"]["kind"] == "worktree")
@@ -102,7 +102,7 @@ fn parses_forge_remotes_and_host_inventories() {
     assert_eq!(transport::observed_identities(response).unwrap(), vec![PathBuf::from("/repo")]);
 }
 #[test]
-fn emitted_patches_replay_under_git_placement_and_expire() {
+fn emitted_patches_replay_under_git_placement_and_are_withdrawn() {
     let tree = Worktree {
         root: "/fixtures/repo".into(),
         repo: "owner/repo".into(),
@@ -114,8 +114,8 @@ fn emitted_patches_replay_under_git_placement_and_expire() {
         behind: None,
         open: false,
     };
-    let stream = patches(&[tree], 10_000);
-    let frames: Vec<Frame> = stream.into_iter().map(|p| Frame { offset_ms: 0, patch: serde_json::from_value(p).unwrap() }).collect();
+    let stream = patches(&[tree]);
+    let frames: Vec<Frame> = stream.iter().cloned().map(|p| Frame { offset_ms: 0, patch: serde_json::from_value(p).unwrap() }).collect();
     let mut replay = Replay::new(frames).unwrap();
     for config in [include_str!("../../../templates/andamento-git.kdl"), include_str!("../../../templates/flotilla-default.kdl")] {
         let mut sidebar = Sidebar::new(config).unwrap();
@@ -139,12 +139,19 @@ fn emitted_patches_replay_under_git_placement_and_expire() {
         assert_eq!(section.nodes.len(), 2);
         assert_eq!(section.nodes.iter().map(|n| n.children.len()).sum::<usize>(), 4);
         assert!(section.nodes.iter().all(|n| n.children.iter().all(|c| c.entity.kind == "worktree")));
+        // Time alone leaves an entity's facts in place.
         recorded.advance_to(&mut sidebar, 10_001).unwrap();
-        assert!(sidebar.snapshot().surface.sections.iter().all(|s| s.nodes.is_empty()));
+        assert_eq!(sidebar.snapshot().surface.sections.iter().map(|s| s.nodes.len()).sum::<usize>(), 2);
     }
     let mut sidebar = Sidebar::new(include_str!("../../../templates/andamento-git.kdl")).unwrap();
     replay.advance_to(&mut sidebar, 0).unwrap();
     assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].children.len(), 1);
+    // A cycle that no longer sees the worktree withdraws it and its repo.
+    let (withdrawn, kept) = withdrawals(&stream, &[], &BTreeSet::new());
+    assert!(kept.is_empty());
+    let gone: Vec<MetadataPatch> = withdrawn.into_iter().map(|(_, p)| serde_json::from_value(p).unwrap()).collect();
+    sidebar.apply(20_000, replay::PROVIDER, gone).unwrap();
+    assert!(sidebar.snapshot().surface.sections.iter().all(|s| s.nodes.is_empty()));
 }
 
 #[cfg(unix)]
@@ -195,7 +202,7 @@ fn wheelhouse_uses_unix_http_and_prefers_live_cwd() {
     });
     let mut host = transport::Wheelhouse { socket };
     assert_eq!(host.observed().unwrap(), vec![PathBuf::from("/live")]);
-    host.publish(&entity_patch("repo", "test", BTreeMap::new(), vec![], 1000)).unwrap();
+    host.publish(&entity_patch("repo", "test", BTreeMap::new(), vec![])).unwrap();
     assert!(host.observed().is_err());
     server.join().unwrap();
 }
@@ -249,7 +256,7 @@ fi
     let observed = host.observed().unwrap();
     let trees = discover(&[], &observed);
     for _ in 0..2 {
-        for patch in patches(&trees, 10_000) {
+        for patch in patches(&trees) {
             host.publish(&patch).unwrap();
         }
         host.reconcile(&trees, &observed, 10_000).unwrap();
@@ -284,7 +291,7 @@ fn remotes_redact_credentials_and_handle_ports_and_file_urls() {
     let temp = Temp::new();
     init(&temp.0);
     git(&temp.0, &["remote", "add", "origin", "https://alice:secret@forge.test:8443/org/repo.git"]).unwrap();
-    let stream = serde_json::to_string(&patches(&discover(std::slice::from_ref(&temp.0), &[]), 1000)).unwrap();
+    let stream = serde_json::to_string(&patches(&discover(std::slice::from_ref(&temp.0), &[]))).unwrap();
     assert!(!stream.contains("secret"));
     assert!(!stream.contains("alice"));
     assert!(stream.contains("forge.test:8443/org/repo.git"));
@@ -318,7 +325,7 @@ fn cycle_continues_after_publish_failure_and_retains_watch_roots() {
     let temp = Temp::new();
     init(&temp.0);
     let mut host = Host { root: temp.0.clone(), attempts: 0, reconciled: false };
-    let cycle = refresh::run_cycle(&[], &mut host, 1000).unwrap();
+    let cycle = refresh::run_cycle(&[], &mut host, &mut Vec::new(), 1000).unwrap();
     assert_eq!(cycle.trees.len(), 1);
     assert_eq!(cycle.errors, ["first rejected"]);
     assert_eq!(host.attempts, 2);
@@ -378,7 +385,7 @@ fn non_utf8_paths_never_panic_or_create_lossy_recipes() {
     host.reconcile(&trees, std::slice::from_ref(&invalid), 1000).unwrap();
     let mut tree = trees[0].clone();
     tree.root = invalid;
-    assert!(patches(&[tree], 1000).is_empty());
+    assert!(patches(&[tree]).is_empty());
 }
 
 #[test]
@@ -392,7 +399,7 @@ fn labels_remain_nonempty_and_disambiguate_worktree_basenames() {
     second.root = "/two/same".into();
     second.branch = "other".into();
     trees.push(second);
-    let stream = patches(&trees, 1000);
+    let stream = patches(&trees);
     assert_ne!(stream[1]["set"]["display.label"], stream[2]["set"]["display.label"]);
 }
 
@@ -504,4 +511,65 @@ fn early_http_rejection_reports_curl_error_instead_of_broken_pipe() {
     server.join().unwrap();
     assert!(error.contains("Wheelhouse ingress:"), "{error}");
     assert!(error.contains("curl:"), "{error}");
+}
+
+#[test]
+fn an_unreadable_worktree_and_its_repo_are_kept_not_withdrawn() {
+    let tree = |root: &str, repo: &str| Worktree {
+        root: root.into(),
+        repo: repo.into(),
+        remote: String::new(),
+        branch: "main".into(),
+        upstream: None,
+        dirty: false,
+        ahead: None,
+        behind: None,
+        open: false,
+    };
+    let before = patches(&[tree("/a", "o/a"), tree("/b", "o/b")]);
+    let (withdrawn, kept) = withdrawals(&before, &[], &BTreeSet::from(["/a".to_owned()]));
+    let targets = |patches: Vec<&Value>| {
+        patches.into_iter().map(|p| p["target"]["value"]["id"].as_str().unwrap().to_owned()).collect::<BTreeSet<_>>()
+    };
+    assert_eq!(targets(kept.iter().collect()), BTreeSet::from(["/a".to_owned(), "o/a".to_owned()]));
+    assert_eq!(targets(withdrawn.iter().map(|(_, w)| w).collect()), BTreeSet::from(["/b".to_owned(), "o/b".to_owned()]));
+    let (_, withdrawal) = withdrawn.iter().find(|(p, _)| p["target"]["value"]["id"] == "/b").unwrap();
+    assert!(withdrawal["unset"].as_array().unwrap().iter().any(|key| key == "git.branch"));
+}
+
+#[test]
+fn a_failed_withdrawal_is_retried_next_cycle() {
+    use transport::Transport;
+    struct Host {
+        observed: Vec<PathBuf>,
+        fail: bool,
+        sent: Vec<Value>,
+    }
+    impl Transport for Host {
+        fn observed(&mut self) -> io::Result<Vec<PathBuf>> {
+            Ok(self.observed.clone())
+        }
+        fn publish(&mut self, patch: &Value) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::other("down"));
+            }
+            self.sent.push(patch.clone());
+            Ok(())
+        }
+    }
+    let temp = Temp::new();
+    init(&temp.0);
+    let mut host = Host { observed: vec![temp.0.clone()], fail: false, sent: vec![] };
+    let mut published = Vec::new();
+    refresh::run_cycle(&[], &mut host, &mut published, 1000).unwrap();
+    assert_eq!(published.len(), 2, "a repo and its worktree");
+    host.observed.clear();
+    host.fail = true;
+    refresh::run_cycle(&[], &mut host, &mut published, 1000).unwrap();
+    assert_eq!(published.len(), 2, "unsent withdrawals leave both standing");
+    host.fail = false;
+    host.sent.clear();
+    refresh::run_cycle(&[], &mut host, &mut published, 1000).unwrap();
+    assert!(published.is_empty());
+    assert_eq!(host.sent.iter().filter(|p| p["set"].as_object().is_some_and(|s| s.is_empty())).count(), 2);
 }
