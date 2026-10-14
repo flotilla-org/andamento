@@ -85,6 +85,18 @@ fn schedule_scroll_flush() {
 #[cfg(test)]
 fn schedule_scroll_flush() {}
 
+#[cfg(not(test))]
+fn cell_size() -> Option<SizeInPixels> {
+    terminal_pixel_cell_size()
+}
+
+// The shim reads the host's reply from stdin, which in a test is whatever
+// cargo was given: a terminal would wait for a line that never comes.
+#[cfg(test)]
+fn cell_size() -> Option<SizeInPixels> {
+    None
+}
+
 fn rail_size_from_constraint(constraint: PaneDimensionConstraint) -> RailSize {
     match constraint {
         PaneDimensionConstraint::Fixed(size) => RailSize::Fixed(size),
@@ -489,7 +501,7 @@ impl ZellijPlugin for PluginState {
             cols,
             controller_available,
             self.mode_info.as_ref().map(|mode_info| render::theme_from_zellij(mode_info.style.colors)),
-            terminal_pixel_cell_size().map(|s| render::SizeInPixels { height: s.height, width: s.width }),
+            cell_size().map(|s| render::SizeInPixels { height: s.height, width: s.width }),
             &self.rail_ui_state.collapsed_placements,
             None,
             &metadata_controls,
