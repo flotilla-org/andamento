@@ -1342,9 +1342,9 @@ impl ControllerState {
     }
 
     /// Mark a provider stale (its connection dropped) or fresh again. A
-    /// stale provider's facts are kept as they were when it became stale and
-    /// none expires; fresh again, each TTL fact that was live renews its lease
-    /// from now, as though reasserted.
+    /// stale provider's facts are kept, its entities flagged stale; its leased
+    /// non-entity facts don't expire while stale, and renew from now when it
+    /// is fresh again.
     pub fn set_provider_stale(&mut self, provider: &str, stale: bool) -> bool {
         let now = self.now();
         self.metadata.set_stale(provider, stale, now)

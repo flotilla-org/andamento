@@ -147,7 +147,9 @@ fn emitted_patches_replay_under_git_placement_and_are_withdrawn() {
     replay.advance_to(&mut sidebar, 0).unwrap();
     assert_eq!(sidebar.snapshot().surface.sections[0].nodes[0].children.len(), 1);
     // A cycle that no longer sees the worktree withdraws it and its repo.
-    let gone: Vec<MetadataPatch> = withdrawals(&stream, &[]).into_iter().map(|p| serde_json::from_value(p).unwrap()).collect();
+    let (withdrawn, kept) = withdrawals(&stream, &[], &BTreeSet::new());
+    assert!(kept.is_empty());
+    let gone: Vec<MetadataPatch> = withdrawn.into_iter().map(|(_, p)| serde_json::from_value(p).unwrap()).collect();
     sidebar.apply(20_000, replay::PROVIDER, gone).unwrap();
     assert!(sidebar.snapshot().surface.sections.iter().all(|s| s.nodes.is_empty()));
 }
@@ -509,4 +511,65 @@ fn early_http_rejection_reports_curl_error_instead_of_broken_pipe() {
     server.join().unwrap();
     assert!(error.contains("Wheelhouse ingress:"), "{error}");
     assert!(error.contains("curl:"), "{error}");
+}
+
+#[test]
+fn an_unreadable_worktree_and_its_repo_are_kept_not_withdrawn() {
+    let tree = |root: &str, repo: &str| Worktree {
+        root: root.into(),
+        repo: repo.into(),
+        remote: String::new(),
+        branch: "main".into(),
+        upstream: None,
+        dirty: false,
+        ahead: None,
+        behind: None,
+        open: false,
+    };
+    let before = patches(&[tree("/a", "o/a"), tree("/b", "o/b")]);
+    let (withdrawn, kept) = withdrawals(&before, &[], &BTreeSet::from(["/a".to_owned()]));
+    let targets = |patches: Vec<&Value>| {
+        patches.into_iter().map(|p| p["target"]["value"]["id"].as_str().unwrap().to_owned()).collect::<BTreeSet<_>>()
+    };
+    assert_eq!(targets(kept.iter().collect()), BTreeSet::from(["/a".to_owned(), "o/a".to_owned()]));
+    assert_eq!(targets(withdrawn.iter().map(|(_, w)| w).collect()), BTreeSet::from(["/b".to_owned(), "o/b".to_owned()]));
+    let (_, withdrawal) = withdrawn.iter().find(|(p, _)| p["target"]["value"]["id"] == "/b").unwrap();
+    assert!(withdrawal["unset"].as_array().unwrap().iter().any(|key| key == "git.branch"));
+}
+
+#[test]
+fn a_failed_withdrawal_is_retried_next_cycle() {
+    use transport::Transport;
+    struct Host {
+        observed: Vec<PathBuf>,
+        fail: bool,
+        sent: Vec<Value>,
+    }
+    impl Transport for Host {
+        fn observed(&mut self) -> io::Result<Vec<PathBuf>> {
+            Ok(self.observed.clone())
+        }
+        fn publish(&mut self, patch: &Value) -> io::Result<()> {
+            if self.fail {
+                return Err(io::Error::other("down"));
+            }
+            self.sent.push(patch.clone());
+            Ok(())
+        }
+    }
+    let temp = Temp::new();
+    init(&temp.0);
+    let mut host = Host { observed: vec![temp.0.clone()], fail: false, sent: vec![] };
+    let mut published = Vec::new();
+    refresh::run_cycle(&[], &mut host, &mut published, 1000).unwrap();
+    assert_eq!(published.len(), 2, "a repo and its worktree");
+    host.observed.clear();
+    host.fail = true;
+    refresh::run_cycle(&[], &mut host, &mut published, 1000).unwrap();
+    assert_eq!(published.len(), 2, "unsent withdrawals leave both standing");
+    host.fail = false;
+    host.sent.clear();
+    refresh::run_cycle(&[], &mut host, &mut published, 1000).unwrap();
+    assert!(published.is_empty());
+    assert_eq!(host.sent.iter().filter(|p| p["set"].as_object().is_some_and(|s| s.is_empty())).count(), 2);
 }

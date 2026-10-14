@@ -565,11 +565,11 @@ impl MetadataStore {
     }
 
     /// Mark a provider stale, or fresh again. A stale provider's facts are
-    /// kept as they were when it became stale: those live then stay live and
-    /// none expires. Fresh again, each TTL fact that was live renews its lease
-    /// from `now`, as though the provider had just reasserted it, so a fact
-    /// the provider doesn't reassert expires one TTL later. Returns whether
-    /// anything changed.
+    /// kept, and its entities' records read as stale. Of its leased facts
+    /// (on workspaces and panes; an entity's have none), those live when it
+    /// became stale stay live; fresh again, each renews its lease from `now`,
+    /// as though reasserted, so one not reasserted expires a TTL later.
+    /// Returns whether anything changed.
     pub fn set_stale(&mut self, provider: &str, stale: bool, now: u64) -> bool {
         let ix = self.intern(provider);
         if stale == self.stale.contains_key(&ix) {
@@ -669,7 +669,7 @@ impl MetadataStore {
     }
 
     /// Apply a patch the core or host owns (no provider).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn apply_patch(&mut self, patch: MetadataPatch, now: u64) -> MetadataPatchOutcome {
         self.apply_patch_from(None, patch, now)
     }
@@ -732,7 +732,8 @@ impl MetadataStore {
     /// Apply a patch to an entity's record: each unset removes a key its own
     /// source set, and each set replaces the key's fact (the same value from
     /// the same source changes nothing). Leases, precedence and ordinals are
-    /// not an entity's (`check_entity_patch`), and are ignored here.
+    /// not an entity's, and are ignored. A patch that changes nothing, as a
+    /// producer's re-send of what it has, is found so without copying.
     fn apply_record_patch(
         &mut self,
         provider: Option<&str>,
@@ -742,6 +743,16 @@ impl MetadataStore {
         unset: Vec<String>,
         now: u64,
     ) -> MetadataPatchOutcome {
+        let record = self.records.get(&target);
+        let written_by = |fact: &Fact| fact.source.as_deref() == Some(source_id.as_str());
+        let unsets = unset.iter().any(|key| record.and_then(|record| record.facts.fact(key)).is_some_and(written_by));
+        let sets = set.iter().any(|(key, update)| match record.and_then(|record| record.facts.fact(key)) {
+            Some(fact) => fact.entry.value != update.value || !written_by(fact),
+            None => true,
+        });
+        if !unsets && !sets {
+            return MetadataPatchOutcome::default();
+        }
         let provider = provider.map(|provider| self.intern(provider));
         let source = self.intern_source(source_id);
         let source = self.sources[source as usize].clone();

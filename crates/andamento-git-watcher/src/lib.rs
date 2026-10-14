@@ -102,6 +102,12 @@ fn scan(path: &Path, visited: &mut BTreeSet<PathBuf>, found: &mut BTreeSet<PathB
 /// Configured roots are recursive containers or checkouts; observed paths can
 /// be subdirectories. Worktree porcelain uses NUL delimiters for unusual paths.
 pub fn discover(roots: &[PathBuf], observed: &[PathBuf]) -> Vec<Worktree> {
+    discover_all(roots, observed).0
+}
+
+/// The worktrees found, and the checkouts found whose status couldn't be
+/// read: those are neither published nor withdrawn.
+pub fn discover_all(roots: &[PathBuf], observed: &[PathBuf]) -> (Vec<Worktree>, BTreeSet<String>) {
     let mut found = BTreeSet::new();
     let mut visited = BTreeSet::new();
     for root in roots {
@@ -126,21 +132,34 @@ pub fn discover(roots: &[PathBuf], observed: &[PathBuf]) -> Vec<Worktree> {
             }
         }
     }
-    found
+    let mut unreadable = BTreeSet::new();
+    let trees = found
         .into_iter()
         .filter_map(|root| {
-            let remote = redact_remote(&git(&root, &["remote", "get-url", "origin"]).unwrap_or_default());
-            // The common directory gives remote-less linked worktrees one stable parent.
-            let common = git(&root, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok()?;
-            let repo = repo_name(&remote).unwrap_or_else(|| format!("local:{common}"));
-            // One status process supplies branch, upstream, divergence and
-            // dirty state. A failed status drops this tree rather than claiming
-            // it is clean; its previously published facts expire by TTL.
-            let status = git(&root, &["status", "--porcelain=v2", "--branch"]).ok()?;
-            let (branch, upstream, ahead, behind, dirty) = parse_status(&status);
-            Some(Worktree { open: open.contains(&root), root, repo, remote, branch, upstream, dirty, ahead, behind })
+            let read = || {
+                let remote = redact_remote(&git(&root, &["remote", "get-url", "origin"]).unwrap_or_default());
+                // The common directory gives remote-less linked worktrees one stable parent.
+                let common = git(&root, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok()?;
+                let repo = repo_name(&remote).unwrap_or_else(|| format!("local:{common}"));
+                // One status process supplies branch, upstream, divergence and
+                // dirty state. A failed status keeps this tree's published facts
+                // as they were rather than claiming it is clean.
+                let status = git(&root, &["status", "--porcelain=v2", "--branch"]).ok()?;
+                let (branch, upstream, ahead, behind, dirty) = parse_status(&status);
+                Some((remote, repo, branch, upstream, ahead, behind, dirty))
+            };
+            match read() {
+                Some((remote, repo, branch, upstream, ahead, behind, dirty)) => {
+                    Some(Worktree { open: open.contains(&root), root, repo, remote, branch, upstream, dirty, ahead, behind })
+                }
+                None => {
+                    unreadable.extend(root.to_str().map(str::to_owned));
+                    None
+                }
+            }
         })
-        .collect()
+        .collect();
+    (trees, unreadable)
 }
 
 fn parse_status(status: &str) -> (String, Option<String>, Option<i64>, Option<i64>, bool) {
@@ -185,17 +204,33 @@ pub fn entity_patch(kind: &str, id: &str, mut facts: BTreeMap<String, Value>, un
     patch(json!({"kind":"entity","value":{"kind":kind,"id":id}}), facts, unset, None)
 }
 
-/// Unsets of every fact `before` set for an entity `now` no longer has.
-pub fn withdrawals(before: &[Value], now: &[Value]) -> Vec<Value> {
-    let kept: BTreeSet<String> = now.iter().map(|patch| patch["target"].to_string()).collect();
-    before
-        .iter()
-        .filter(|patch| !kept.contains(&patch["target"].to_string()))
-        .map(|patch| {
-            let unset: Vec<&String> = patch["set"].as_object().map(|set| set.keys().collect()).unwrap_or_default();
-            json!({"type":"metadata-patch","target":patch["target"],"source_id":SOURCE,"set":{},"unset":unset})
-        })
-        .collect()
+/// What `before` published that `now` doesn't have, split into what to
+/// withdraw and what to keep as it was: an `unreadable` worktree, and the
+/// repo of one. Each pair is the earlier patch and its withdrawal.
+///
+/// A withdrawal unsets the keys the earlier patch set, so each entity's
+/// patch must set every key it has published, as `patches` does.
+pub fn withdrawals(before: &[Value], now: &[Value], unreadable: &BTreeSet<String>) -> (Vec<(Value, Value)>, Vec<Value>) {
+    let present: BTreeSet<String> = now.iter().map(|patch| patch["target"].to_string()).collect();
+    let gone: Vec<&Value> = before.iter().filter(|patch| !present.contains(&patch["target"].to_string())).collect();
+    let is_kept = |patch: &Value| {
+        patch["target"]["value"]["kind"] == "worktree" && patch["target"]["value"]["id"].as_str().is_some_and(|id| unreadable.contains(id))
+    };
+    let kept_repos: BTreeSet<&str> =
+        gone.iter().filter(|patch| is_kept(patch)).filter_map(|patch| patch["set"]["git.repo"]["value"]["value"].as_str()).collect();
+    let (mut withdrawn, mut kept) = (vec![], vec![]);
+    for patch in gone {
+        let repo =
+            patch["target"]["value"]["kind"] == "repo" && patch["target"]["value"]["id"].as_str().is_some_and(|id| kept_repos.contains(id));
+        if is_kept(patch) || repo {
+            kept.push(patch.clone());
+            continue;
+        }
+        let unset: Vec<&String> = patch["set"].as_object().map(|set| set.keys().collect()).unwrap_or_default();
+        withdrawn
+            .push((patch.clone(), json!({"type":"metadata-patch","target":patch["target"],"source_id":SOURCE,"set":{},"unset":unset})));
+    }
+    (withdrawn, kept)
 }
 
 pub fn quote_shell(s: &str) -> String {

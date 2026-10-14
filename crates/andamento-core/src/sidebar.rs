@@ -349,12 +349,11 @@ impl Sidebar {
     }
 
     /// Mark a provider stale, when its connection drops, or fresh again when
-    /// it returns. A stale provider's facts are kept as they were and none
-    /// expires while it stays stale; snapshot nodes presenting its entities
-    /// are flagged stale. Fresh again, each TTL fact that was live then
-    /// renews its lease from now, as though the provider had reasserted it,
-    /// so one it doesn't reassert expires a TTL later. Returns whether the
-    /// provider's state changed.
+    /// it returns. A stale provider's facts are kept, and snapshot nodes and
+    /// detail fields presenting its entities are flagged stale. Its leased
+    /// non-entity facts don't expire while it is stale; fresh again, each
+    /// renews its lease from now, so one it doesn't reassert expires a TTL
+    /// later. Returns whether the provider's state changed.
     pub fn set_provider_stale(&mut self, provider: &str, stale: bool) -> bool {
         let changed = self.state.set_provider_stale(provider, stale);
         if changed {
