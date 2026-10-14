@@ -264,7 +264,9 @@ typedef struct {
 } AndamentoBytes;
 
 // A scalar fact (ANDAMENTO_FACT_UNSET, _TEXT, _BOOL or _INTEGER), with
-// optional TTL, precedence and ordinal. Keys are unique within a call.
+// optional TTL, precedence and ordinal: a workspace's facts may carry
+// them; an entity's ignore them (andamento_apply_entity). Keys
+// are unique within a call.
 typedef struct {
   AndamentoText key;
   uint32_t kind;
@@ -355,8 +357,10 @@ typedef struct {
   AndamentoText source_id;
   uint32_t has_observation;
   uint64_t observed_at_ms;
+  // An entity's facts carry no lease: 0 for every entity's field.
   uint32_t has_ttl;
   uint64_t ttl_ms;
+  // Observed from a provider that is stale (its connection dropped).
   uint32_t stale;
   size_t relation_count;
 } AndamentoDetailField;
@@ -740,9 +744,9 @@ uint32_t andamento_apply_patch_json(Andamento *h,
 uint32_t andamento_provider_retract(Andamento *h, AndamentoText provider, char **error_out);
 
 // Mark a provider stale (nonzero), when its connection drops, or fresh
-// again (zero). A stale provider's facts don't expire, and nodes presenting
-// its entities report stale; fresh again, each live TTL fact renews its
-// lease from now. Retracting a provider clears its staleness.
+// again (zero). A stale provider's facts are kept, and nodes and detail
+// fields presenting its entities report stale. Retracting a provider
+// removes its facts and clears its staleness.
 uint32_t andamento_provider_set_stale(Andamento *h,
                                       AndamentoText provider,
                                       uint32_t stale,
