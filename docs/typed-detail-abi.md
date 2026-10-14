@@ -106,14 +106,13 @@ Literal/synthetic values also have no source key.
 `observed_at_ms` is the winning fact's controller receipt/refresh time, in the
 same **host monotonic millisecond domain** as the card's `now_ms`, not a Unix
 or producer event timestamp. `source_id` identifies that winning producer.
-Producer identity is carried from the same arbitration pass that selected the
-fact, and is preserved with retained observations even after lease expiry.
-Identical assertions with a TTL refresh receipt time and the lease; age denotes
-last observation rather than last value change. Identical assertions without a
-TTL preserve the existing observation time, matching the fact store contract. `has_ttl` distinguishes no expiry from a zero TTL; deadlines
-use saturating addition. A fact is stale strictly after `observed_at_ms + ttl_ms`.
-Ordinary expired facts become missing; retained workspace facts can remain stale.
-Frontends own relative-age formatting and stale colors.
+An entity's fact is its last writer's, so `source_id` is the source that last
+wrote it, and it is kept with retained observations. An identical re-send
+from the same source keeps the observation time, so age denotes the last
+change of value or writer. A fact has no lease: `stale` is set while the
+provider that wrote it is stale (its connection dropped), and the fact goes
+only when its source unsets it or its provider is retracted. Frontends own
+relative-age formatting and stale colors.
 
 Relations come directly from typed entity references. Self references are omitted; duplicate references retain only their first occurrence.
 Iterate `relation_count`, passing the exact entity navigation path to each
@@ -141,11 +140,11 @@ Zellij reserved hover panel is unchanged.
 ## Validation
 
 `fixtures/typed-detail.jsonl` supplies all six kinds, known-empty summary facts,
-missing kind-specific facts, typed self/hidden/unavailable relations, and TTLs.
+missing kind-specific facts, and typed self/hidden/unavailable relations.
 Core tests enumerate every role across missing and known-empty values and check
 KDL/JSON agreement, effective KDL round trips, separate labels/text, empty
 literals, invalid roles and preservation of flat output. Native Rust tests cover
-path omission, exact targets, observation provenance, expiry boundaries, action
+path omission, exact targets, observation provenance, provider staleness, action
 identity and immutable snapshot lifetimes. The independent C fixture links the
 real library and checks the actual C layouts, hidden navigation and live preview
 identity, along with the other ABI scenarios.

@@ -357,9 +357,6 @@ typedef struct {
   AndamentoText source_id;
   uint32_t has_observation;
   uint64_t observed_at_ms;
-  // An entity's facts carry no lease: 0 for every entity's field.
-  uint32_t has_ttl;
-  uint64_t ttl_ms;
   // Observed from a provider that is stale (its connection dropped).
   uint32_t stale;
   size_t relation_count;

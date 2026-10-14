@@ -201,7 +201,7 @@ unsafe fn provider(provider: Text) -> Result<String, String> {
 /// was built against.
 #[no_mangle]
 pub extern "C" fn andamento_abi_version() -> u32 {
-    5
+    6
 }
 /// A sidebar configured with a template catalog (KDL), or NULL with an
 /// error.
@@ -937,9 +937,6 @@ pub struct DetailFieldView {
     pub source_id: Text,
     pub has_observation: u32,
     pub observed_at_ms: u64,
-    /// An entity's facts carry no lease: 0 for every entity's field.
-    pub has_ttl: u32,
-    pub ttl_ms: u64,
     /// Observed from a provider that is stale (its connection dropped).
     pub stale: u32,
     pub relation_count: usize,
@@ -1058,7 +1055,6 @@ pub unsafe extern "C" fn andamento_snapshot_detail_field(
         return 0;
     };
     let role = f.role as u32;
-    let ttl = f.observation.as_ref().and_then(|o| o.ttl_ms);
     let observed = f.observation.as_ref().map_or(0, |o| o.updated_at);
     *out = DetailFieldView {
         name: Text::borrowed(&f.name),
@@ -1071,11 +1067,7 @@ pub unsafe extern "C" fn andamento_snapshot_detail_field(
         source_id: Text::borrowed(f.source_id.as_deref().unwrap_or("")),
         has_observation: f.observation.is_some() as u32,
         observed_at_ms: observed,
-        has_ttl: ttl.is_some() as u32,
-        ttl_ms: ttl.unwrap_or(0),
-        // An observation is stale while its provider is (its connection
-        // dropped), or past a lease where the fact has one.
-        stale: (f.observation.is_some() && (d.stale || ttl.is_some_and(|ttl| s.now_ms > observed.saturating_add(ttl)))) as u32,
+        stale: (f.observation.is_some() && d.stale) as u32,
         relation_count: f.relations.len(),
     };
     1

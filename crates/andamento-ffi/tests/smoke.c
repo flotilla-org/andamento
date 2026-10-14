@@ -71,7 +71,7 @@ static int same(AndamentoWorkspaceId a, AndamentoWorkspaceId b) {
 
 /* Facts, topology, the snapshot, dispatch, effects and completion. */
 static void check_sidebar(const char *config_path, const char *patches_path) {
-    assert(andamento_abi_version() == 5);
+    assert(andamento_abi_version() == 6);
     char *config = read_file(config_path);
     Andamento *h = create(config);
     ok(andamento_configure(h, text(config), &error));
@@ -80,8 +80,7 @@ static void check_sidebar(const char *config_path, const char *patches_path) {
     /* Every entity names its provider; "local" is Andamento's own. */
     fails(andamento_apply_patch_json(h, 100, T(""), T("{}"), &error));
     fails(andamento_apply_patch_json(h, 100, T("local"), T("{\"target\":{\"kind\":\"root\"},\"source_id\":\"x\",\"set\":{}}"), &error));
-    AndamentoFact facts[] = {{.key = T("display.label"), .kind = ANDAMENTO_FACT_TEXT, .text = T("Pee"),
-                              .has_ttl = 1, .ttl_ms = 50},
+    AndamentoFact facts[] = {{.key = T("display.label"), .kind = ANDAMENTO_FACT_TEXT, .text = T("Pee")},
                              {.key = T("gone"), .kind = ANDAMENTO_FACT_UNSET}};
     ok(andamento_apply_entity(h, 100, PROVIDER, T("project"), T("q"), T("fixture"), facts, 2, &error));
     AndamentoFact twice[] = {facts[0], facts[0]};
