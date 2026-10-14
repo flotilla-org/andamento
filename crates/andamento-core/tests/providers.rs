@@ -16,25 +16,26 @@ use std::rc::Rc;
 const W42: WorkspaceId = tab_workspace_id(42);
 
 /// A patch as a producer writes it: it names no provider.
-fn patch(kind: &str, id: &str, ttl_ms: Option<u64>, facts: &[(&str, MetadataValue)]) -> MetadataPatch {
+fn patch(kind: &str, id: &str, facts: &[(&str, MetadataValue)]) -> MetadataPatch {
     MetadataPatch {
         target: MetadataTarget::Entity(EntityRef::new("", kind, id)),
         source_id: "flotilla".into(),
         set: facts
             .iter()
-            .map(|(key, value)| (key.to_string(), MetadataValueUpdate { value: value.clone(), ttl_ms, precedence: None, ordinal: None }))
+            .map(|(key, value)| {
+                (key.to_string(), MetadataValueUpdate { value: value.clone(), ttl_ms: None, precedence: None, ordinal: None })
+            })
             .collect(),
         unset: vec![],
     }
 }
 /// A project and a vessel in it, labelled with `tag`.
-fn fleet(tag: &str, ttl_ms: Option<u64>) -> Vec<MetadataPatch> {
+fn fleet(tag: &str) -> Vec<MetadataPatch> {
     vec![
-        patch("project", "p", ttl_ms, &[("flotilla.project", text("p")), ("display.label", text(&format!("Project {tag}")))]),
+        patch("project", "p", &[("flotilla.project", text("p")), ("display.label", text(&format!("Project {tag}")))]),
         patch(
             "vessel",
             "v",
-            ttl_ms,
             &[
                 ("flotilla.project", text("p")),
                 ("flotilla.vessel", text("v")),
@@ -67,8 +68,8 @@ fn open(sidebar: &mut Sidebar, subject: EntityRef) {
 #[test]
 fn the_same_kind_and_id_under_two_providers_are_two_entities() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    sidebar.apply(100, "sub-1", fleet("one", None)).unwrap();
-    sidebar.apply(100, "sub-2", fleet("two", None)).unwrap();
+    sidebar.apply(100, "sub-1", fleet("one")).unwrap();
+    sidebar.apply(100, "sub-2", fleet("two")).unwrap();
     let projects = tree(&sidebar);
     assert_eq!(projects.len(), 2);
     for project in &projects {
@@ -104,7 +105,7 @@ fn the_same_kind_and_id_under_two_providers_are_two_entities() {
 #[test]
 fn a_patch_never_names_its_own_provider() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    let mut forged = fleet("one", None);
+    let mut forged = fleet("one");
     for patch in &mut forged {
         let MetadataTarget::Entity(entity) = &mut patch.target else { unreachable!() };
         entity.provider = "sub-2".into();
@@ -115,7 +116,7 @@ fn a_patch_never_names_its_own_provider() {
         MetadataValueUpdate { value: refs(entity("sub-2", "forge", "f")), ttl_ms: None, precedence: None, ordinal: None },
     );
     sidebar.apply(100, "sub-1", forged).unwrap();
-    assert!(sidebar.apply(100, "", fleet("x", None)).is_err());
+    assert!(sidebar.apply(100, "", fleet("x")).is_err());
     let snapshot = sidebar.snapshot();
     let all = nodes(&snapshot.surface);
     assert!(all.iter().all(|n| n.entity.provider == "sub-1"), "{all:?}");
@@ -128,7 +129,7 @@ fn a_reference_to_a_local_entity_stays_local() {
     // A producer may file its entity under one of Andamento's own groups;
     // stamping its provider must not claim the group.
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    let mut patches = fleet("one", None);
+    let mut patches = fleet("one");
     patches[1].set.insert(
         ".group".into(),
         MetadataValueUpdate { value: refs(entity(LOCAL_PROVIDER, ".group", "g")), ttl_ms: None, precedence: None, ordinal: None },
@@ -143,9 +144,9 @@ fn a_reference_to_a_local_entity_stays_local() {
 #[test]
 fn a_workspace_bound_by_a_providers_own_facts_is_that_providers() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    sidebar.apply(100, "sub-1", fleet("one", None)).unwrap();
-    sidebar.apply(100, "sub-2", fleet("two", None)).unwrap();
-    let mut binding = patch("vessel", "v", None, &[("entity.kind", text("vessel")), ("entity.id", text("v"))]);
+    sidebar.apply(100, "sub-1", fleet("one")).unwrap();
+    sidebar.apply(100, "sub-2", fleet("two")).unwrap();
+    let mut binding = patch("vessel", "v", &[("entity.kind", text("vessel")), ("entity.id", text("v"))]);
     binding.target = MetadataTarget::Tab(W42);
     sidebar.apply(100, "sub-2", [binding]).unwrap();
     sidebar.observe(vec![workspace(W42)], vec![]);
@@ -167,11 +168,11 @@ fn a_workspace_bound_by_a_providers_own_facts_is_that_providers() {
 #[test]
 fn retracting_a_provider_removes_its_facts_and_retains_open_workspaces() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    sidebar.apply(100, "sub-1", fleet("one", None)).unwrap();
-    let mut other = fleet("one", None);
-    other.push(patch("vessel", "u", None, &[("flotilla.project", text("p")), ("display.label", text("Unopened"))]));
+    sidebar.apply(100, "sub-1", fleet("one")).unwrap();
+    let mut other = fleet("one");
+    other.push(patch("vessel", "u", &[("flotilla.project", text("p")), ("display.label", text("Unopened"))]));
     sidebar.apply(100, "sub-1", other).unwrap();
-    sidebar.apply(100, "sub-2", fleet("two", None)).unwrap();
+    sidebar.apply(100, "sub-2", fleet("two")).unwrap();
     open(&mut sidebar, entity("sub-1", "vessel", "v"));
     let revision = sidebar.revision();
 
@@ -249,8 +250,8 @@ fn refs_keep_presenting_a_retracted_target() {
     }
     // A local entity is local; another provider is refused.
     assert!(sidebar.set_local(entity("sub-1", ".group", "g2"), BTreeMap::new()).is_err());
-    sidebar.apply(100, "sub-1", fleet("one", None)).unwrap();
-    sidebar.apply(100, "sub-2", fleet("two", None)).unwrap();
+    sidebar.apply(100, "sub-1", fleet("one")).unwrap();
+    sidebar.apply(100, "sub-2", fleet("two")).unwrap();
     let labels = |sidebar: &Sidebar| {
         let snapshot = sidebar.snapshot();
         nodes(&snapshot.surface)
@@ -271,44 +272,37 @@ fn refs_keep_presenting_a_retracted_target() {
 }
 
 #[test]
-fn a_stale_providers_facts_do_not_expire_and_are_flagged() {
+fn a_stale_providers_facts_are_kept_and_flagged() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    sidebar.apply(100, "sub-1", fleet("one", Some(1_000))).unwrap();
-    sidebar.apply(100, "sub-2", fleet("two", Some(1_000))).unwrap();
-    // Facts that expired before the provider went stale stay expired.
-    sidebar
-        .apply(100, "sub-1", [patch("vessel", "gone", Some(10), &[("flotilla.project", text("p")), ("display.label", text("Gone"))])])
-        .unwrap();
-    sidebar.tick(200);
+    sidebar.apply(100, "sub-1", fleet("one")).unwrap();
+    sidebar.apply(100, "sub-2", fleet("two")).unwrap();
     let stale_of = |sidebar: &Sidebar| {
         let snapshot = sidebar.snapshot();
-        nodes(&snapshot.surface).iter().map(|n| (n.entity.provider.clone(), n.entity.id.clone(), n.stale)).collect::<Vec<_>>()
+        nodes(&snapshot.surface).iter().map(|n| (n.entity.provider.clone(), n.stale)).collect::<Vec<_>>()
     };
-    assert!(stale_of(&sidebar).iter().all(|(_, _, stale)| !stale));
+    assert!(stale_of(&sidebar).iter().all(|(_, stale)| !stale));
     let revision = sidebar.revision();
     assert!(sidebar.set_provider_stale("sub-1", true));
     assert!(!sidebar.set_provider_stale("sub-1", true));
     assert!(sidebar.provider_is_stale("sub-1"));
     assert_ne!(sidebar.revision(), revision);
 
-    // Long past the TTL: sub-2's facts expired, sub-1's are kept and stale.
+    // However long it stays stale, sub-1's facts are kept, and flagged.
     sidebar.tick(5_000);
     let state = stale_of(&sidebar);
-    assert!(!state.is_empty());
-    assert!(state.iter().all(|(provider, id, stale)| provider == "sub-1" && *stale && id != "gone"), "{state:?}");
+    assert!(state.iter().any(|(provider, _)| provider == "sub-1"));
+    assert!(state.iter().all(|(provider, stale)| *stale == (provider == "sub-1")), "{state:?}");
     // The snapshot serializes the flag; fresh nodes leave it out.
     let json = serde_json::to_string(&sidebar.snapshot()).unwrap();
     assert!(json.contains(r#""stale":true"#));
 
-    // Fresh again, each lease restarts now, so the facts live one more TTL.
+    // Fresh again, nothing is stale; a retracted provider's facts go.
     assert!(sidebar.set_provider_stale("sub-1", false));
     assert!(!sidebar.provider_is_stale("sub-1"));
-    sidebar.tick(5_900);
-    let state = stale_of(&sidebar);
-    assert!(!state.is_empty() && state.iter().all(|(_, _, stale)| !stale));
+    assert!(stale_of(&sidebar).iter().all(|(_, stale)| !stale));
     assert!(!serde_json::to_string(&sidebar.snapshot()).unwrap().contains("\"stale\""));
-    sidebar.tick(6_001);
-    assert!(tree(&sidebar).is_empty());
+    sidebar.retract_provider("sub-1");
+    assert!(stale_of(&sidebar).iter().all(|(provider, _)| provider == "sub-2"));
 }
 
 #[test]
@@ -324,7 +318,7 @@ fn a_stale_ref_target_marks_the_ref_stale() {
             BTreeMap::from([(".group".into(), refs(group)), (".target".into(), refs(entity("sub-1", "vessel", "v")))]),
         )
         .unwrap();
-    sidebar.apply(100, "sub-1", fleet("one", None)).unwrap();
+    sidebar.apply(100, "sub-1", fleet("one")).unwrap();
     sidebar.set_provider_stale("sub-1", true);
     let snapshot = sidebar.snapshot();
     let all = nodes(&snapshot.surface);
@@ -339,7 +333,7 @@ fn a_stale_ref_target_marks_the_ref_stale() {
 #[test]
 fn an_entity_naming_its_own_action_target_goes_live_for_any_provider() {
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    let mut patches = fleet("one", None);
+    let mut patches = fleet("one");
     patches[1].set.insert(
         "action.primary.target".into(),
         MetadataValueUpdate { value: text("vessel:v"), ttl_ms: None, precedence: None, ordinal: None },

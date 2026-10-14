@@ -160,7 +160,7 @@ impl Transport for Zellij {
                             ("git.repo".into(), json!(tree.repo)),
                         ]),
                         vec![],
-                        ttl_ms,
+                        Some(ttl_ms),
                     ));
                     if let Err(error) = result {
                         errors.push(format!("pane {}: {error}", cwd.display()));
@@ -206,7 +206,7 @@ impl Transport for Zellij {
                             }
                         }
                         for id in ids {
-                            let mut p = patch(
+                            let p = patch(
                                 json!({"kind":"tab","value":tab_workspace_id(id)}),
                                 BTreeMap::from([
                                     ("entity.kind".into(), json!("repo")),
@@ -215,11 +215,8 @@ impl Transport for Zellij {
                                     ("action.primary.target".into(), json!(format!("repo-manager:{}", tree.repo))),
                                 ]),
                                 vec![],
-                                ttl_ms,
+                                None,
                             );
-                            for value in p["set"].as_object_mut().unwrap().values_mut() {
-                                value["ttl_ms"] = Value::Null;
-                            }
                             if let Err(error) = self.publish(&p) {
                                 errors.push(format!("tab {id}: {error}"));
                             }

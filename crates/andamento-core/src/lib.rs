@@ -645,6 +645,25 @@ impl MetadataValue {
 }
 
 impl MetadataPatch {
+    /// An entity's facts are its writer's values: none carries a lease,
+    /// precedence or ordinal. Liveness is the feed's (a provider goes stale
+    /// or is retracted), and an entity has one writer, so nothing to rank.
+    pub fn check_entity_facts(&self) -> Result<(), String> {
+        if !matches!(self.target, MetadataTarget::Entity(_)) {
+            return Ok(());
+        }
+        for (key, update) in &self.set {
+            for (name, given) in
+                [("ttl_ms", update.ttl_ms.is_some()), ("precedence", update.precedence.is_some()), ("ordinal", update.ordinal.is_some())]
+            {
+                if given {
+                    return Err(format!("an entity's fact carries no {name}, but {key} gives one"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn set_providers(&mut self, provider: &str, stamp: bool) {
         match &mut self.target {
             MetadataTarget::Entity(entity) if stamp => entity.provider = provider.to_owned(),

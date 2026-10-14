@@ -69,7 +69,7 @@ fn legacy_and_generated_catalog_snapshots() {
     }
 }
 #[test]
-fn scripted_roll_keeps_role_under_project_through_hold_handover_and_expiry() {
+fn scripted_roll_keeps_role_under_project_through_hold_and_handover() {
     let mut replay = Replay::new(frames("scripted-roll.jsonl")).unwrap();
     let mut sidebar = Sidebar::new(CONFIG).unwrap();
     let mut key = None;
@@ -95,7 +95,10 @@ fn scripted_roll_keeps_role_under_project_through_hold_handover_and_expiry() {
         }
     }
     assert_eq!(replay.step(&mut sidebar).unwrap(), None);
+    // An entity's facts carry no lease: the roll stays until its provider goes.
     replay.advance_to(&mut sidebar, 32_001).unwrap();
+    assert!(!sidebar.snapshot().surface.sections[0].nodes.is_empty());
+    sidebar.retract_provider(replay::PROVIDER);
     assert!(sidebar.snapshot().surface.sections[0].nodes.is_empty());
     assert!(replay.advance_to(&mut sidebar, 2000).is_err());
 }
@@ -124,38 +127,6 @@ fn recorder_round_trips_wire_values() {
     assert_eq!(recorded.len(), 2);
     assert_eq!(recorded[0].patch, patch);
     assert!(recorded[0].offset_ms <= recorded[1].offset_ms);
-}
-
-#[test]
-fn advancing_over_a_gap_does_not_refresh_old_facts() {
-    let mut input = frames("rail-scene-legacy.jsonl");
-    // Deliver one project late, leaving the other entities at time zero.
-    let index = input
-        .iter()
-        .position(|frame| {
-            matches!(&frame.patch.target,
-        MetadataTarget::Entity(entity) if entity.kind == "project")
-        })
-        .unwrap();
-    let mut late = input.remove(index);
-    late.offset_ms = 40_000;
-    // The replayed patch names no provider; the sidebar stamps its default.
-    let mut stamped = late.patch.clone();
-    stamped.stamp_provider(replay::PROVIDER);
-    let target = stamped.target;
-    input.push(late);
-    let mut replay = Replay::new(input).unwrap();
-    let mut sidebar = Sidebar::new(CONFIG).unwrap();
-    replay.advance_to(&mut sidebar, 0).unwrap();
-    assert_eq!(sidebar.snapshot().surface.sections[1].nodes[0].entity.id, "flotilla/adhoc-triage@fleet"); // Explicit -100 ordinal wins.
-    replay.advance_to(&mut sidebar, 40_000).unwrap();
-    let snapshot = sidebar.snapshot();
-    let nodes = &snapshot.surface.sections[0].nodes;
-    assert_eq!(nodes.len(), 1);
-    assert_eq!(MetadataTarget::Entity(nodes[0].entity.clone()), target);
-    assert!(snapshot.surface.sections[1..].iter().all(|s| s.nodes.is_empty()));
-    replay.advance_to(&mut sidebar, 70_001).unwrap();
-    assert!(sidebar.snapshot().surface.sections.iter().all(|s| s.nodes.is_empty()));
 }
 
 #[test]
@@ -210,7 +181,7 @@ fn cli_emit_snapshot_and_usage() {
         .unwrap();
     assert!(snapshot.status.success());
     let snapshot: Snapshot = serde_json::from_slice(&snapshot.stdout).unwrap();
-    assert!(snapshot.surface.sections.iter().all(|s| s.nodes.is_empty()));
+    assert!(snapshot.surface.sections.iter().any(|s| !s.nodes.is_empty()), "the roll's facts carry no lease");
     let invalid = Command::new(binary).arg("unknown").output().unwrap();
     assert!(!invalid.status.success());
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("usage:"));

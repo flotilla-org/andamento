@@ -153,11 +153,12 @@ fn review_convoy_layout_replays_into_slots_and_an_arrangement_baseline() {
         SlotResolution::Ready { target: Some(target), .. } if target.ends_with("#gen-2")
     ));
 
-    // Silence: every fact shares one TTL, so the layout expires whole.
+    // Silence changes nothing: an entity's facts carry no lease. Its
+    // provider's retraction takes the layout whole.
     assert_eq!(replay.step(&mut sidebar).unwrap(), None);
-    replay.advance_to(&mut sidebar, 31_999).unwrap();
-    assert_eq!(layout(&sidebar, "convoy"), Some(second));
     replay.advance_to(&mut sidebar, 32_001).unwrap();
+    assert_eq!(layout(&sidebar, "convoy"), Some(second));
+    sidebar.retract_provider(replay::PROVIDER);
     assert_eq!(layout(&sidebar, "convoy"), None);
 }
 

@@ -159,7 +159,9 @@ fn parse_status(status: &str) -> (String, Option<String>, Option<i64>, Option<i6
     (branch, upstream, ahead, behind, dirty)
 }
 
-pub fn patch(target: Value, facts: BTreeMap<String, Value>, unset: Vec<&str>, ttl_ms: u64) -> Value {
+/// A patch of `facts` for `target`. Only a pane's facts take a lease: an
+/// entity's last until the watcher withdraws them.
+pub fn patch(target: Value, facts: BTreeMap<String, Value>, unset: Vec<&str>, ttl_ms: Option<u64>) -> Value {
     let set: BTreeMap<_, _> = facts
         .into_iter()
         .map(|(key, value)| {
@@ -176,11 +178,24 @@ pub fn patch(target: Value, facts: BTreeMap<String, Value>, unset: Vec<&str>, tt
     json!({"type":"metadata-patch","target":target,"source_id":SOURCE,"set":set,"unset":unset})
 }
 
-pub fn entity_patch(kind: &str, id: &str, mut facts: BTreeMap<String, Value>, unset: Vec<&str>, ttl_ms: u64) -> Value {
+pub fn entity_patch(kind: &str, id: &str, mut facts: BTreeMap<String, Value>, unset: Vec<&str>) -> Value {
     facts.insert("entity.kind".into(), json!(kind));
     facts.insert("entity.id".into(), json!(id));
     facts.insert("source".into(), json!("git-watcher"));
-    patch(json!({"kind":"entity","value":{"kind":kind,"id":id}}), facts, unset, ttl_ms)
+    patch(json!({"kind":"entity","value":{"kind":kind,"id":id}}), facts, unset, None)
+}
+
+/// Unsets of every fact `before` set for an entity `now` no longer has.
+pub fn withdrawals(before: &[Value], now: &[Value]) -> Vec<Value> {
+    let kept: BTreeSet<String> = now.iter().map(|patch| patch["target"].to_string()).collect();
+    before
+        .iter()
+        .filter(|patch| !kept.contains(&patch["target"].to_string()))
+        .map(|patch| {
+            let unset: Vec<&String> = patch["set"].as_object().map(|set| set.keys().collect()).unwrap_or_default();
+            json!({"type":"metadata-patch","target":patch["target"],"source_id":SOURCE,"set":{},"unset":unset})
+        })
+        .collect()
 }
 
 pub fn quote_shell(s: &str) -> String {
@@ -200,7 +215,7 @@ fn labels(label: &str) -> BTreeMap<String, Value> {
     ])
 }
 
-pub fn patches(worktrees: &[Worktree], ttl_ms: u64) -> Vec<Value> {
+pub fn patches(worktrees: &[Worktree]) -> Vec<Value> {
     let mut output = Vec::new();
     let mut repos = BTreeSet::new();
     for tree in worktrees {
@@ -212,7 +227,7 @@ pub fn patches(worktrees: &[Worktree], ttl_ms: u64) -> Vec<Value> {
             let mut facts = labels(&tree.repo);
             facts.insert("git.repo".into(), json!(tree.repo));
             facts.insert("git.remote".into(), json!(tree.remote));
-            output.push(entity_patch("repo", &tree.repo, facts, vec![], ttl_ms));
+            output.push(entity_patch("repo", &tree.repo, facts, vec![]));
         }
         let basename = tree.root.file_name().and_then(|s| s.to_str()).unwrap_or(root);
         let duplicate_name = worktrees.iter().filter(|t| t.repo == tree.repo && t.root.file_name() == tree.root.file_name()).count() > 1;
@@ -244,7 +259,7 @@ pub fn patches(worktrees: &[Worktree], ttl_ms: u64) -> Vec<Value> {
                 unset.push(key);
             }
         }
-        output.push(entity_patch("worktree", root, facts, unset, ttl_ms));
+        output.push(entity_patch("worktree", root, facts, unset));
     }
     output
 }

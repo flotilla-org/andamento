@@ -1,5 +1,6 @@
 //! Refresh orchestration and inexpensive Git control-file invalidation.
-use crate::{discover, git, patches, transport::Transport, Worktree};
+use crate::{discover, git, patches, transport::Transport, withdrawals, Worktree};
+use serde_json::Value;
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -13,15 +14,19 @@ pub struct Cycle {
 
 /// Failed discovery is not an empty inventory. Individual publish failures do
 /// not suppress later entities or discard the invalidation watch list.
-pub fn run_cycle(roots: &[PathBuf], transport: &mut dyn Transport, ttl_ms: u64) -> io::Result<Cycle> {
+/// `published` is the last cycle's entity patches: what it had and this one
+/// does not is withdrawn. `ttl_ms` is the lease on panes' facts.
+pub fn run_cycle(roots: &[PathBuf], transport: &mut dyn Transport, published: &mut Vec<Value>, ttl_ms: u64) -> io::Result<Cycle> {
     let observed = transport.observed()?;
     let trees = discover(roots, &observed);
     let mut errors = Vec::new();
-    for patch in patches(&trees, ttl_ms) {
-        if let Err(error) = transport.publish(&patch) {
+    let current = patches(&trees);
+    for patch in withdrawals(published, &current).iter().chain(&current) {
+        if let Err(error) = transport.publish(patch) {
             errors.push(error.to_string());
         }
     }
+    *published = current;
     if let Err(error) = transport.reconcile(&trees, &observed, ttl_ms) {
         errors.push(error.to_string());
     }

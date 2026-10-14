@@ -150,7 +150,7 @@ mod tests {
                 if let Some(value) = value {
                     set.insert(
                         "fact".into(),
-                        MetadataValueUpdate { value: MetadataValue::Text(value.into()), ttl_ms: Some(10), precedence: None, ordinal: None },
+                        MetadataValueUpdate { value: MetadataValue::Text(value.into()), ttl_ms: None, precedence: None, ordinal: None },
                     );
                 }
                 sidebar

@@ -625,7 +625,6 @@ thread_local! { static CATALOG_BUILDS: std::cell::Cell<usize> = const { std::cel
 struct CatalogEntity {
     entity: EntityRef,
     facts: Rc<ResolvedFacts>,
-    ordinal: i64,
 }
 
 impl Deref for CatalogEntity {
@@ -688,11 +687,6 @@ impl CatalogEvaluation {
         match (self.position(entity), next) {
             (Some(at), Some(next)) => {
                 let current = &mut self.entities[at];
-                if current.ordinal != next.ordinal {
-                    self.removed.insert(entity.clone());
-                    self.added.push(next);
-                    return true;
-                }
                 if !Rc::ptr_eq(&current.facts, &next.facts) && *current.facts != *next.facts {
                     *current = next;
                 }
@@ -737,9 +731,9 @@ fn is_action_target(entity: &EntityRef, own: Option<&str>, candidate: &str) -> b
     }
 }
 
-/// The catalog's order: by ordinal, then identity.
+/// The catalog's order: by identity.
 fn catalog_order(a: &CatalogEntity, b: &CatalogEntity) -> Ordering {
-    a.ordinal.cmp(&b.ordinal).then_with(|| a.entity.cmp(&b.entity))
+    a.entity.cmp(&b.entity)
 }
 
 /// The catalog as last built (`ControllerState::catalog`).
@@ -2727,10 +2721,7 @@ impl ControllerState {
                     }
                 } else {
                     changed = true;
-                    self.retained_subjects.insert(
-                        subject.clone(),
-                        CatalogEntity { entity: subject, facts, ordinal: self.metadata.target_ordinal(&target).unwrap_or_default() },
-                    );
+                    self.retained_subjects.insert(subject.clone(), CatalogEntity { entity: subject, facts });
                 }
             }
         }
@@ -3019,11 +3010,7 @@ impl ControllerState {
     fn catalog_entity(&self, entity: &EntityRef, now: u64) -> Option<CatalogEntity> {
         let target = EntityId::Entity(entity.clone());
         let facts = self.metadata.resolved(&target, now);
-        let mut current = (!facts.is_empty()).then(|| CatalogEntity {
-            entity: entity.clone(),
-            facts,
-            ordinal: self.metadata.target_ordinal(&target).unwrap_or_default(),
-        });
+        let mut current = (!facts.is_empty()).then(|| CatalogEntity { entity: entity.clone(), facts });
         if let Some(retained) = self.retained_subjects.get(entity) {
             current = Some(match current {
                 Some(mut current) => {
@@ -3034,9 +3021,8 @@ impl ControllerState {
             });
         }
         if let Some(entity) = current.as_mut().filter(|entity| self.ended_subjects.contains(&entity.entity)) {
-            let ordinal = entity.ordinal;
             let made = |value| Fact {
-                entry: Rc::new(MetadataEntry { value, updated_at: now, ttl_ms: None, precedence: 0, ordinal }),
+                entry: Rc::new(MetadataEntry { value, updated_at: now, ttl_ms: None, precedence: 0, ordinal: 0 }),
                 source: None,
             };
             entity.insert(KEY_STATUS_STATE, made(MetadataValue::Text("ended".into())));
@@ -3159,7 +3145,7 @@ impl ControllerState {
                 updated_at: own.get(system::TARGET).map(|e| e.updated_at).unwrap_or_default(),
                 ttl_ms: None,
                 precedence: 0,
-                ordinal: entity.ordinal,
+                ordinal: 0,
             };
             presented.insert(KEY_ACTION_TARGET, Fact { entry: Rc::new(entry), source: None });
         }
@@ -3813,7 +3799,7 @@ fn saved_catalog_entity(entity: EntityRef, record: &SubjectRecord) -> CatalogEnt
         values.insert(KEY_DISPLAY_LABEL.to_owned(), entry(MetadataValue::Text(label.as_str().into())));
     }
     let sources = values.keys().map(|key| (key.clone(), SOURCE_RECORD.to_owned())).collect();
-    CatalogEntity { entity, facts: Rc::new(ResolvedFacts::from_maps(values, &sources)), ordinal: 0 }
+    CatalogEntity { entity, facts: Rc::new(ResolvedFacts::from_maps(values, &sources)) }
 }
 
 fn entity_ref_from_entries(entries: &impl Entries) -> Option<EntityRef> {
@@ -4294,19 +4280,6 @@ mod tests {
         state.set_template_catalog(None);
         state.set_rail_config(RailConfig::default());
         state
-    }
-
-    #[test]
-    fn target_only_entities_keep_patch_ordinals_for_catalog_ordering() {
-        let mut state = directory_entity_state();
-        apply_entity(&mut state, "issue", "later", 10, &[("flotilla.project", "dev"), ("flotilla.issue", "later")]);
-        apply_target_only_entity(&mut state, "issue", "earlier", 2, &[("flotilla.project", "dev"), ("flotilla.issue", "earlier")]);
-
-        let entities = state.catalog_entities();
-        assert_eq!(
-            entities.iter().map(|entity| (entity.entity.id.as_str(), entity.ordinal)).collect::<Vec<_>>(),
-            vec![("earlier", 2), ("later", 10)]
-        );
     }
 
     #[test]

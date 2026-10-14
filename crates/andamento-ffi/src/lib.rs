@@ -285,9 +285,9 @@ pub unsafe extern "C" fn andamento_provider_retract(h: *mut Andamento, provider:
     .is_some() as u32
 }
 /// Mark a provider stale (nonzero), when its connection drops, or fresh
-/// again (zero). A stale provider's facts don't expire, and nodes presenting
-/// its entities report stale; fresh again, each live TTL fact renews its
-/// lease from now. Retracting a provider clears its staleness.
+/// again (zero). A stale provider's facts are kept, and nodes and detail
+/// fields presenting its entities report stale. Retracting a provider
+/// removes its facts and clears its staleness.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_provider_set_stale(h: *mut Andamento, provider: Text, stale: u32, error_out: *mut *mut c_char) -> u32 {
     run(h, error_out, |h| {
@@ -307,7 +307,9 @@ pub const ANDAMENTO_FACT_INTEGER: u32 = 3;
 pub const ANDAMENTO_FACT_ENTITY: u32 = 4;
 
 /// A scalar fact (ANDAMENTO_FACT_UNSET, _TEXT, _BOOL or _INTEGER), with
-/// optional TTL, precedence and ordinal. Keys are unique within a call.
+/// optional TTL, precedence and ordinal: a workspace's facts may carry
+/// them; an entity's may not (andamento_apply_entity rejects them). Keys
+/// are unique within a call.
 #[repr(C)]
 pub struct Fact {
     pub key: Text,
@@ -643,6 +645,8 @@ pub(crate) struct Detail {
     card: DetailCard,
     activate: usize,
     copy_url: usize,
+    /// Its entity's provider was stale when the snapshot was taken.
+    stale: bool,
 }
 pub struct AndamentoSnapshot {
     pub(crate) now_ms: u64,
@@ -669,7 +673,8 @@ impl AndamentoSnapshot {
         };
         let index = self.details.len();
         self.detail_index.insert(card.entity.clone(), index);
-        self.details.push(Detail { card, activate, copy_url });
+        let stale = sidebar.provider_is_stale(&card.entity.provider);
+        self.details.push(Detail { card, activate, copy_url, stale });
         index
     }
     fn action(&mut self, a: Action) -> usize {
@@ -932,8 +937,10 @@ pub struct DetailFieldView {
     pub source_id: Text,
     pub has_observation: u32,
     pub observed_at_ms: u64,
+    /// An entity's facts carry no lease: 0 for every entity's field.
     pub has_ttl: u32,
     pub ttl_ms: u64,
+    /// Observed from a provider that is stale (its connection dropped).
     pub stale: u32,
     pub relation_count: usize,
 }
@@ -1044,7 +1051,10 @@ pub unsafe extern "C" fn andamento_snapshot_detail_field(
     let (Some(s), Some(out)) = (s.as_ref(), out.as_mut()) else {
         return 0;
     };
-    let Some(f) = s.details.get(detail).and_then(|d| d.card.fields.get(field)) else {
+    let Some(d) = s.details.get(detail) else {
+        return 0;
+    };
+    let Some(f) = d.card.fields.get(field) else {
         return 0;
     };
     let role = f.role as u32;
@@ -1063,7 +1073,9 @@ pub unsafe extern "C" fn andamento_snapshot_detail_field(
         observed_at_ms: observed,
         has_ttl: ttl.is_some() as u32,
         ttl_ms: ttl.unwrap_or(0),
-        stale: ttl.is_some_and(|ttl| s.now_ms > observed.saturating_add(ttl)) as u32,
+        // An observation is stale while its provider is (its connection
+        // dropped), or past a lease where the fact has one.
+        stale: (f.observation.is_some() && (d.stale || ttl.is_some_and(|ttl| s.now_ms > observed.saturating_add(ttl)))) as u32,
         relation_count: f.relations.len(),
     };
     1
