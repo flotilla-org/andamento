@@ -9,6 +9,20 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 static SERIAL: AtomicU64 = AtomicU64::new(0);
+
+/// Write an executable script from a child process. Written here, the file
+/// would be open for writing in this process while another test's thread
+/// forks; until that child execs, it holds the descriptor, and running the
+/// script fails with ETXTBSY ("Text file busy").
+#[cfg(unix)]
+fn write_executable(path: &Path, script: &str) {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child =
+        Command::new("sh").args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"]).arg(path).stdin(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+}
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
@@ -210,7 +224,6 @@ fn wheelhouse_uses_unix_http_and_prefers_live_cwd() {
 #[cfg(unix)]
 #[test]
 fn zellij_factory_dedupes_live_tabs_and_scopes_panes() {
-    use std::os::unix::fs::PermissionsExt;
     use transport::Transport;
     let temp = Temp::new();
     let root = temp.0.join("repo");
@@ -246,8 +259,7 @@ fi
         quote_shell(root.to_str().unwrap()),
         quote_shell(state.to_str().unwrap())
     );
-    fs::write(&bin, script).unwrap();
-    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable(&bin, &script);
     let mut host = transport::Zellij {
         bin: bin.to_str().unwrap().into(),
         plugin: Some("controller".into()),
@@ -432,7 +444,6 @@ fn wheelhouse_times_out_when_server_does_not_respond() {
 #[cfg(unix)]
 #[test]
 fn zellij_continues_after_pane_factory_and_tab_patch_failures() {
-    use std::os::unix::fs::PermissionsExt;
     use transport::Transport;
     let temp = Temp::new();
     let roots: Vec<_> = ["a", "b", "c"]
@@ -449,9 +460,9 @@ fn zellij_continues_after_pane_factory_and_tab_patch_failures() {
     let first = temp.0.join("first");
     let fail_inventory = temp.0.join("no-inventory");
     let bin = temp.0.join("zellij");
-    fs::write(
+    write_executable(
         &bin,
-        format!(
+        &format!(
             r#"#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> {}
@@ -474,9 +485,7 @@ fi
             quote_shell(first.to_str().unwrap()),
             quote_shell(fail_inventory.to_str().unwrap())
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let mut host = transport::Zellij { bin: bin.to_str().unwrap().into(), plugin: None, factory_layout: Some("/factory.kdl".into()) };
     let error = host.reconcile(&trees, &roots, 1000).unwrap_err().to_string();
     for text in ["first pane failed", "creation failed", "tab failed"] {
