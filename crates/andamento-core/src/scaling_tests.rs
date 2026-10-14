@@ -621,6 +621,65 @@ fn kept_variables_follow_a_parents_change() {
     assert_eq!(density(&kept), "compact");
 }
 
+/// Entities that resolve a template the same way share its resolution, and
+/// entities a project layer reaches don't: each shows its own project's
+/// template, for a loop's applied template and for a slot's.
+#[test]
+fn template_resolutions_follow_the_layers_that_apply() {
+    let user = parse_template_config_kdl(
+        r#"
+        region "tree" root-template="title" form="compact" placement="tree"
+        template "title" slot="compact" node-kind="entity" { field "label" source="literal" value="Tree"; }
+        placement "tree" {
+          for "vessel" kind="vessel" { apply-template "row"; }
+          for "convoy" kind="convoy"
+        }
+        "#,
+    )
+    .unwrap();
+    // Below the project layer, which is below the user's.
+    let ordinary = parse_template_config_kdl(
+        r#"
+        template "row" { field "label" source="literal" value="ordinary row"; }
+        template "convoy/compact" slot="compact" node-kind="entity" { field "label" source="literal" value="ordinary convoy"; }
+        "#,
+    )
+    .unwrap();
+    let special = parse_template_config_kdl(
+        r#"
+        template "row" { field "label" source="literal" value="special row"; }
+        template "convoy/compact" slot="compact" node-kind="entity" { field "label" source="literal" value="special convoy"; }
+        "#,
+    )
+    .unwrap();
+    let mut state = ControllerState::default();
+    state.set_template_catalog(Some(TemplateConfigCatalog::from_layers(vec![
+        TemplateConfigLayer::project("special", "special", special),
+        TemplateConfigLayer::user("user", user),
+        TemplateConfigLayer::bundled("bundled", ordinary),
+    ])));
+    for (kind, id, project) in
+        [("vessel", "a", "ordinary"), ("vessel", "b", "special"), ("convoy", "c", "ordinary"), ("convoy", "d", "special")]
+    {
+        state.apply_provider_patch(PROVIDER, patch(kind, id, vec![("flotilla.project".into(), text(project))]));
+    }
+    let surface = state.presentation_in(&state.evaluate_revision());
+    let shown: BTreeMap<String, String> = surface.sections[0]
+        .nodes
+        .iter()
+        .map(|node| (node.entity.id.clone(), node.content.fields.first().map(|field| field.value.clone()).unwrap_or_default()))
+        .collect();
+    assert_eq!(
+        shown,
+        BTreeMap::from([
+            ("a".into(), "ordinary row".into()),
+            ("b".into(), "special row".into()),
+            ("c".into(), "ordinary convoy".into()),
+            ("d".into(), "special convoy".into()),
+        ])
+    );
+}
+
 /// Where scaling breaks: generated fleets from the real catalog's size up
 /// to hundreds of projects of hundreds of convoys, and lopsided shapes.
 /// `cargo test --release -p andamento-core stress_shapes -- --ignored

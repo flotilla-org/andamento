@@ -326,7 +326,7 @@ impl SurfaceSnapshot {
             let definition = &region.definition;
             let mut metadata = BTreeMap::new();
             effective_metadata(root, &mut metadata);
-            let content = resolve_content(region.root.as_ref(), &metadata, false, false, false);
+            let content = resolve_content(region.root.as_deref(), &metadata, false, false, false);
             if let Some(error) = &content.error {
                 snapshot.diagnostics.push(format!("region {}: {error}", definition.name));
             }

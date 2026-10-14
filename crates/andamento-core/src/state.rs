@@ -13,7 +13,7 @@ pub(crate) struct EvaluatedPlacement {
 #[derive(Debug)]
 pub(crate) struct EvaluatedSection {
     pub definition: SurfaceRegionDefinition,
-    pub root: Option<ResolvedTemplateSlot>,
+    pub root: Option<Rc<ResolvedTemplateSlot>>,
     pub entities: Vec<Rc<EvaluatedPlacement>>,
 }
 #[derive(Debug, Clone, Default)]
@@ -42,9 +42,9 @@ use crate::profile;
 use crate::template_config::PlacementDefinition;
 use crate::template_config::{
     placement_index_text, AbbreviationTier, NodeVariableDefinition, PlacementOrder, PlacementOrderAbsent, PlacementOrderDirection,
-    PlacementVisibility, PlacementVisibilityRule, SurfaceRegionDefinition, TemplateAddress, TemplateConfigCatalog, TemplateConfigLayerKind,
-    TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigOrigin, TemplateConfigRenderReady, TemplateConfigRenderedField,
-    TemplateConfigSlot,
+    PlacementVisibility, PlacementVisibilityRule, ResolutionKey, SurfaceRegionDefinition, TemplateAddress, TemplateConfigCatalog,
+    TemplateConfigLayerKind, TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigOrigin, TemplateConfigRenderReady,
+    TemplateConfigRenderedField, TemplateConfigSlot,
 };
 use crate::WorkspaceId;
 use crate::{
@@ -867,10 +867,11 @@ pub struct PluginRegistration {
     pub placement: PluginPlacement,
 }
 
+/// Template resolutions by what they read.
+type Resolutions = FastHashMap<ResolutionKey, Option<Rc<ResolvedTemplateSlot>>>;
+
 /// An entity's display, with the facts and template generation it was made from.
 type KeptDisplay = (Rc<ResolvedFacts>, u64, EvaluatedPlacement);
-/// An applied template's resolution for an entity, likewise.
-type KeptAppliedTemplate = (Rc<ResolvedFacts>, u64, Option<Rc<ResolvedTemplateSlot>>);
 
 /// What evaluation keeps between revisions, each part valid only while
 /// what it was derived from stays the same. Everything kept lives here, so
@@ -882,8 +883,9 @@ struct Kept {
     /// Each entity's display (`display_entity`), kept while its resolved
     /// facts and the template catalog stay the same.
     displays: RefCell<FastHashMap<EntityRef, KeptDisplay>>,
-    /// Each applied template's resolution for an entity, kept likewise.
-    applied: RefCell<FastHashMap<(EntityRef, String), KeptAppliedTemplate>>,
+    /// Template resolutions, by what they read (`resolution`), with the
+    /// template catalog's generation they were made under.
+    resolutions: RefCell<(u64, Resolutions)>,
     /// Each region's loops as last evaluated (`evaluate_regions`), with
     /// what they were evaluated under.
     placements: RefCell<Option<(PlacementInputs, Vec<Vec<LoopMemo>>)>>,
@@ -900,7 +902,7 @@ impl Kept {
     fn swap(&self, other: &Kept) {
         self.placement_index.swap(&other.placement_index);
         self.displays.swap(&other.displays);
-        self.applied.swap(&other.applied);
+        self.resolutions.swap(&other.resolutions);
         self.placements.swap(&other.placements);
         self.variables.swap(&other.variables);
         self.surface.swap(&other.surface);
@@ -1988,7 +1990,7 @@ impl ControllerState {
                         .to_owned(),
                     primary_intent,
                     fields,
-                    error: slot.and_then(|slot| slot.resolve_error),
+                    error: slot.and_then(|slot| slot.resolve_error.clone()),
                 }
             })
             .collect();
@@ -2022,50 +2024,52 @@ impl ControllerState {
     fn applied_template(
         &self,
         catalog: &TemplateConfigCatalog,
-        entity: &CatalogEntity,
         template_name: &str,
         metadata: &FactMap,
     ) -> Option<Rc<ResolvedTemplateSlot>> {
-        let generation = self.template_generation;
-        let key = (entity.entity.clone(), template_name.to_owned());
-        if let Some((facts, at, slot)) = self.kept.applied.borrow().get(&key) {
-            if *at == generation && Rc::ptr_eq(facts, &entity.facts) {
-                return slot.clone();
+        self.resolution(catalog.placement_resolution_key(template_name, metadata), || {
+            match catalog.resolve_placement_template(template_name, metadata) {
+                Ok(Some(resolved)) => Some(ResolvedTemplateSlot {
+                    template_name: resolved.name.clone(),
+                    fields: vec![],
+                    render_ready: Some(resolved.render_ready()),
+                    setters: resolved.setters.clone(),
+                    effective_kdl: EffectiveKdl::of(resolved),
+                    resolve_error: None,
+                }),
+                Ok(None) => None,
+                Err(error) => Some(ResolvedTemplateSlot {
+                    template_name: "<resolve-error>".to_owned(),
+                    fields: vec![],
+                    render_ready: None,
+                    setters: vec![],
+                    effective_kdl: Default::default(),
+                    resolve_error: Some(error.to_string()),
+                }),
             }
+        })
+    }
+
+    /// A template's resolution for facts with `key`, shared by all with it:
+    /// made once while the template catalog lasts.
+    fn resolution(&self, key: ResolutionKey, resolve: impl FnOnce() -> Option<ResolvedTemplateSlot>) -> Option<Rc<ResolvedTemplateSlot>> {
+        let mut kept = self.kept.resolutions.borrow_mut();
+        if kept.0 != self.template_generation {
+            *kept = (self.template_generation, FastHashMap::default());
         }
-        let slot = match catalog.resolve_placement_template(template_name, metadata) {
-            Ok(Some(resolved)) => Some(ResolvedTemplateSlot {
-                template_name: resolved.name.clone(),
-                fields: vec![],
-                render_ready: Some(resolved.render_ready()),
-                setters: resolved.setters.clone(),
-                effective_kdl: EffectiveKdl::of(resolved),
-                resolve_error: None,
-            }),
-            Ok(None) => None,
-            Err(error) => Some(ResolvedTemplateSlot {
-                template_name: "<resolve-error>".to_owned(),
-                fields: vec![],
-                render_ready: None,
-                setters: vec![],
-                effective_kdl: Default::default(),
-                resolve_error: Some(error.to_string()),
-            }),
-        };
-        let slot = slot.map(Rc::new);
-        let mut applied = self.kept.applied.borrow_mut();
-        if applied.len() > 64 && applied.len() > 4 * self.metadata.targets().count() {
-            applied.retain(|_, (facts, _, _)| Rc::strong_count(facts) > 1);
+        if let Some(slot) = kept.1.get(&key) {
+            return slot.clone();
         }
-        applied.insert(key, (entity.facts.clone(), generation, slot.clone()));
+        let slot = resolve().map(Rc::new);
+        kept.1.insert(key, slot.clone());
         slot
     }
 
     fn display_entity_uncached(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
         let metadata = entity_facts(&entity.entity, &entity.facts);
         let templates = ResolvedTemplateSlots {
-            compact: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata).map(Rc::new),
-            detail: self.resolve_template_slot(TemplateConfigSlot::Detail, TemplateConfigNodeKind::Entity, &metadata).map(Rc::new),
+            compact: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
+            detail: self.resolve_template_slot(TemplateConfigSlot::Detail, TemplateConfigNodeKind::Entity, &metadata),
             ..Default::default()
         };
         EvaluatedPlacement {
@@ -2286,7 +2290,7 @@ impl ControllerState {
             let template_name = if requested.is_empty() { format!("{}/line", entity.entity.kind) } else { requested.to_owned() };
             if let Some(catalog) = self.template_catalog.as_ref() {
                 if let Some(address) = catalog.placement_template_address(&template_name, &display.metadata) {
-                    let resolved_slot = self.applied_template(catalog, entity, &template_name, &display.metadata);
+                    let resolved_slot = self.applied_template(catalog, &template_name, &display.metadata);
                     if let Some(slot) = resolved_slot {
                         display.templates.compact = Some(slot.clone());
                         if cx.form != DISPLAY_FORM_COMPACT {
@@ -3507,30 +3511,27 @@ impl ControllerState {
         slot: TemplateConfigSlot,
         node_kind: TemplateConfigNodeKind,
         metadata: &FactMap,
-    ) -> Option<ResolvedTemplateSlot> {
+    ) -> Option<Rc<ResolvedTemplateSlot>> {
         let catalog = self.template_catalog.as_ref()?;
         let context = TemplateConfigMatchContext { slot, node_kind, metadata, collapsed: false, collapsible: true, active_tab_name: None };
-        let resolved = match catalog.resolve(context) {
-            Ok(Some(resolved)) => resolved,
-            Ok(None) => return None,
-            Err(error) => {
-                return Some(ResolvedTemplateSlot {
-                    template_name: "<resolve-error>".to_owned(),
-                    fields: vec![],
-                    render_ready: None,
-                    setters: vec![],
-                    effective_kdl: EffectiveKdl::text(format!("// error: {error}\n")),
-                    resolve_error: Some(error.to_string()),
-                });
-            }
-        };
-        Some(ResolvedTemplateSlot {
-            template_name: resolved.name.clone(),
-            fields: vec![],
-            render_ready: Some(resolved.render_ready()),
-            setters: resolved.setters.clone(),
-            effective_kdl: EffectiveKdl::of(resolved),
-            resolve_error: None,
+        self.resolution(catalog.resolution_key(context), || match catalog.resolve(context) {
+            Ok(Some(resolved)) => Some(ResolvedTemplateSlot {
+                template_name: resolved.name.clone(),
+                fields: vec![],
+                render_ready: Some(resolved.render_ready()),
+                setters: resolved.setters.clone(),
+                effective_kdl: EffectiveKdl::of(resolved),
+                resolve_error: None,
+            }),
+            Ok(None) => None,
+            Err(error) => Some(ResolvedTemplateSlot {
+                template_name: "<resolve-error>".to_owned(),
+                fields: vec![],
+                render_ready: None,
+                setters: vec![],
+                effective_kdl: EffectiveKdl::text(format!("// error: {error}\n")),
+                resolve_error: Some(error.to_string()),
+            }),
         })
     }
 
@@ -5203,11 +5204,9 @@ impl ControllerState {
             census.entity("displays: keys", entity);
             display.census(census, "displays");
         }
-        for ((entity, name), (_, _, slot)) in kept.applied.borrow().iter() {
-            census.entity("applied templates: keys", entity);
-            census.string("applied templates: keys", name);
-            if let Some(slot) = slot.as_ref().filter(|slot| census.first(slot)) {
-                slot_census(census, "applied templates", slot);
+        for slot in kept.resolutions.borrow().1.values().flatten() {
+            if census.first(slot) {
+                slot_census(census, "template resolutions", slot);
             }
         }
         if let Some((_, regions)) = kept.placements.borrow().as_ref() {

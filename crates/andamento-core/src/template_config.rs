@@ -743,6 +743,38 @@ impl TemplateConfigCatalog {
     fn layer_stack(&self, metadata: &FactMap) -> Vec<&TemplateConfigLayer> {
         self.layers.iter().filter(|layer| layer.applies_to(metadata)).collect()
     }
+
+    /// What `resolve(context)` reads of `context`: the template its facts ask
+    /// for and the layers that apply to them. Contexts with the same key
+    /// resolve the same, while this catalog lasts.
+    pub(crate) fn resolution_key(&self, context: TemplateConfigMatchContext<'_>) -> ResolutionKey {
+        ResolutionKey {
+            template: ResolutionTemplate::Slot { slot: context.slot, node_kind: context.node_kind, name: template_name_for(context) },
+            layers: self.applying(context.metadata),
+        }
+    }
+
+    /// What `resolve_placement_template(name, metadata)` reads, likewise.
+    pub(crate) fn placement_resolution_key(&self, name: &str, metadata: &FactMap) -> ResolutionKey {
+        ResolutionKey { template: ResolutionTemplate::Placement(name.to_owned()), layers: self.applying(metadata) }
+    }
+
+    fn applying(&self, metadata: &FactMap) -> Box<[bool]> {
+        self.layers.iter().map(|layer| layer.applies_to(metadata)).collect()
+    }
+}
+
+/// See `TemplateConfigCatalog::resolution_key`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ResolutionKey {
+    template: ResolutionTemplate,
+    layers: Box<[bool]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ResolutionTemplate {
+    Slot { slot: TemplateConfigSlot, node_kind: TemplateConfigNodeKind, name: Option<(String, bool)> },
+    Placement(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1490,7 +1522,7 @@ impl TemplateConfigFieldOperation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TemplateConfigSlot {
     Compact,
@@ -1513,7 +1545,7 @@ impl TemplateConfigSlot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TemplateConfigNodeKind {
     Tab,
