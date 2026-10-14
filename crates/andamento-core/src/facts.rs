@@ -75,7 +75,10 @@ impl Shapes {
                 shape
             }
         };
-        ResolvedFacts { shape, facts: facts.into_iter().map(|(_, fact)| fact).collect() }
+        // A Vec of its own: collecting in place would keep the pairs' larger buffer.
+        let mut held = Vec::with_capacity(facts.len());
+        held.extend(facts.into_iter().map(|(_, fact)| fact));
+        ResolvedFacts { shape, facts: held }
     }
 }
 

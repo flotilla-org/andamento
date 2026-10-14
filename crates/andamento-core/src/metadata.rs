@@ -222,6 +222,13 @@ impl KeyedContributions {
         self.0.iter().map(|(_, contributions)| contributions)
     }
 
+    /// Give back what growing left spare: entities hold their facts for long.
+    fn shrink(&mut self) {
+        if self.0.capacity() > self.0.len() {
+            self.0.shrink_to_fit();
+        }
+    }
+
     fn values_mut(&mut self) -> impl Iterator<Item = &mut Contributions> {
         self.0.iter_mut().map(|(_, contributions)| contributions)
     }
@@ -685,6 +692,9 @@ impl MetadataStore {
         if let Some(ordinal) = set_any {
             self.touch(&target);
             self.record_ordinal(&target, ordinal);
+            if let Some(stored) = self.entries.get_mut(&target) {
+                stored.shrink();
+            }
         }
         // Entity identity can itself participate in placement queries even after all
         // its facts expire. Removing the last expired contribution removes it.
