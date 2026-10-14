@@ -1,5 +1,6 @@
 //! One presentation client's runtime. Hosts supply time and observations and
 //! execute returned effects. Transport and rendering do not run inside it.
+use std::rc::Rc;
 use std::{
     cell::{OnceCell, RefCell},
     collections::{BTreeMap, BTreeSet},
@@ -11,6 +12,7 @@ use crate::{
     detail::DetailCard,
     host::PaneObservation,
     managed::{ManagedContent, SlotPlan},
+    metadata::EntityId,
     presentation::{system, PlacementNode, PresentationState, SurfaceSnapshot, UNPLACED_WORKSPACES_SECTION},
     profile,
     records::{recordable, DashboardRecord, DashboardState, RecordName, SubjectRecord},
@@ -391,7 +393,7 @@ impl Sidebar {
     }
 
     fn retain_workspace_paths(&mut self, subjects: &BTreeMap<WorkspaceId, EntityRef>) -> bool {
-        fn collect(nodes: &[PlacementNode], ancestors: &mut Vec<EntityRef>, paths: &mut BTreeMap<WorkspaceId, BTreeSet<EntityRef>>) {
+        fn collect(nodes: &[Rc<PlacementNode>], ancestors: &mut Vec<EntityRef>, paths: &mut BTreeMap<WorkspaceId, BTreeSet<EntityRef>>) {
             for node in nodes {
                 // Andamento's own kinds (`.`-prefixed: workspaces, sections,
                 // groups, refs) are never retained: the host retracts them, and
@@ -824,7 +826,25 @@ impl Sidebar {
     /// the cached baseline: expiry is silence, not removal. This never
     /// invalidates the sidebar's snapshot; it moves the content revision.
     fn refresh_content(&mut self) {
-        if self.managed.publish(self.state.slot_resolutions()) {
+        // Only the entities whose facts changed resolve differently.
+        let changed = self.state.take_metadata_changes();
+        let entities: BTreeSet<EntityRef> = if changed.all {
+            self.state.metadata_entities().into_iter().chain(self.managed.published().cloned()).collect()
+        } else {
+            changed
+                .targets
+                .into_iter()
+                .filter_map(|target| match target {
+                    EntityId::Entity(entity) => Some(entity),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut published = false;
+        for entity in &entities {
+            published |= self.managed.publish(entity, self.state.entity_slot_resolutions(entity));
+        }
+        if published {
             self.content_changed = self.clock.tick();
         }
         let open: BTreeSet<WorkspaceId> = self.state.workspaces().iter().map(|tab| tab.tab_id).collect();
@@ -1162,6 +1182,13 @@ impl Sidebar {
                 .map(|(entity, message)| ActivationError { entity: entity.clone(), message: message.clone() })
                 .collect(),
         })
+    }
+
+    /// The surface a first evaluation of the current state presents, with
+    /// nothing kept from earlier evaluations. Kept state must not change it.
+    #[cfg(test)]
+    pub(crate) fn cold_surface(&self) -> SurfaceSnapshot {
+        self.state.cold(|state| state.presentation_in(&state.evaluate_revision()))
     }
 
     pub fn detail_cards(&self) -> (u64, Vec<DetailCard>) {

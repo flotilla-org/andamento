@@ -3,6 +3,7 @@ use andamento_core::{
     presentation::{PlacementNode, SurfaceSnapshot},
     sidebar::Action,
 };
+use std::rc::Rc;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Debug)]
@@ -29,7 +30,7 @@ pub fn render(snapshot: &SurfaceSnapshot, columns: usize) -> Frame {
             .collect();
         frame.lines.push(format!("{text}{}", " ".repeat(columns.saturating_sub(text.width()))));
     }
-    fn nodes(frame: &mut Frame, items: &[PlacementNode], depth: usize, columns: usize) {
+    fn nodes(frame: &mut Frame, items: &[Rc<PlacementNode>], depth: usize, columns: usize) {
         for node in items {
             let text = node.content.text();
             let text = if text.is_empty() { &node.label } else { &text };

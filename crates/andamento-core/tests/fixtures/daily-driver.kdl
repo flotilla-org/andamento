@@ -1,0 +1,354 @@
+version 1
+
+display-variable "show-issues" type="bool" default=true label="Issues" icon="I" persist=true
+
+display-variable "show-finished" type="bool" default=false label="Show finished" icon="F" persist=true
+
+display-variable "show-role-attempts" type="bool" default=false label="Role history" icon="R" persist=true
+
+// Internal constants let first-match visibility rules express Attention's union.
+display-variable "attention-yes" type="bool" default=true label="Internal" icon="·" persist=false
+display-variable "attention-no" type="bool" default=false label="Internal" icon="·" persist=false
+
+// First matching rule wins: finished tasks/subjects follow Show finished.
+// Standing-role history is placed separately behind Role history.
+// Shared by tree and Attention; hidden open workspaces remain in the fallback.
+visibility "wheelhouse/activity" {
+  when kind="convoy" visible-when="attention-no" { match "flotilla.role" exists=true; }
+  when kind="vessel" visible-when="show-role-attempts" { match "flotilla.role" exists=true; }
+
+  when kind="change_request" visible-when="show-finished" { match "flotilla.change_request.state" value="merged"; }
+  when kind="change_request" visible-when="show-finished" { match "flotilla.change_request.state" value="closed"; }
+  when kind="change_request" visible-when="show-finished" { match "flotilla.change_request.readiness" value="merged_not_landed"; }
+  when kind="change_request" visible-when="show-finished" { match "flotilla.change_request.readiness" value="closed"; }
+  when kind="issue" visible-when="show-finished" and-visible-when="show-issues" { match "flotilla.issue.state" value="closed"; }
+
+  when kind="convoy" visible-when="show-finished" { match "flotilla.convoy.superseded" value="true"; }
+  when kind="vessel" visible-when="show-finished" { match "flotilla.convoy.superseded" value="true"; }
+  when kind="convoy" visible-when="show-finished" { match "flotilla.convoy.phase" value="landed"; }
+  when kind="vessel" visible-when="show-finished" { match "flotilla.convoy.phase" value="landed"; }
+  when kind="convoy" visible-when="show-finished" { match "flotilla.convoy.phase" value="cancelled"; }
+  when kind="vessel" visible-when="show-finished" { match "flotilla.convoy.phase" value="cancelled"; }
+  when kind="convoy" visible-when="show-finished" { match "flotilla.convoy.phase" value="abandoned"; }
+  when kind="vessel" visible-when="show-finished" { match "flotilla.convoy.phase" value="abandoned"; }
+  when kind="issue" visible-when="show-issues"
+}
+
+visibility "wheelhouse/subject-attention" {
+  when visible-when="attention-yes" { match "flotilla.change_request.readiness" value="ready_to_merge"; }
+  when visible-when="attention-yes" { match "flotilla.change_request.readiness" value="ci_failing"; }
+  when kind="change_request" visible-when="attention-no"
+}
+
+// Keep independent project issues; linked subjects belong under their convoys.
+visibility "wheelhouse/unlinked-issue" {
+  when kind="issue" visible-when="attention-no" { match "flotilla.subject_of" exists=true; }
+  when kind="issue" visible-when="show-finished" and-visible-when="show-issues" { match "flotilla.issue.state" value="closed"; }
+  when kind="issue" visible-when="show-issues"
+}
+
+visibility "wheelhouse/role-attempt" {
+  when kind="convoy" visible-when="show-role-attempts"
+}
+
+region "tree" root-template="wheelhouse/projects" form="compact" placement="tree" default-host="sidebar" order=10
+region "sessions" root-template="wheelhouse/sessions" form="compact" placement="sessions" default-host="sidebar" order=20
+region "attention" root-template="wheelhouse/attention" form="compact" placement="attention" default-host="sidebar" order=30
+
+template "wheelhouse/projects" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Projects"
+  control "display-variable" variable="show-issues"
+  control "display-variable" variable="show-finished"
+  control "display-variable" variable="show-role-attempts"
+}
+template "wheelhouse/sessions" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Sessions"
+}
+template "wheelhouse/attention" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Attention"
+}
+
+placement "tree" {
+  for "project" kind="project" {
+    order "display.label"
+    apply-template "project/native"
+  }
+}
+template "project/native" {
+  field "label" key="display.label"
+  use "wheelhouse/chip-presentation"
+  // Standing roles (flotilla#1908) are actions on the project row, selected by
+  // kind rather than by any convoy or role name.
+  // Inline while history is hidden; the native renderer keeps non-leaf roles
+  // as rows when Role history exposes their descendants.
+  for "role" kind="role" layout="inline" {
+    match "flotilla.project" of="project"
+    order "flotilla.role.name"
+    apply-template "role/native"
+  }
+  for "checkout" kind="checkout" {
+    match "flotilla.project" of="project"
+    order "display.label"
+    apply-template "wheelhouse/entry"
+  }
+  // Local workspaces that live with the project (Wheelhouse host entities):
+  // rows, as they are contained in the project rather than about it (chips
+  // are workspaces about the project: its overview and standing roles).
+  for "workspace" kind=".workspace" {
+    match "flotilla.project" of="project"
+    order "display.label"
+    apply-template "wheelhouse/entry"
+  }
+  for "convoy" kind="convoy" visibility="wheelhouse/activity" {
+    match "flotilla.project" of="project"
+    order "display.label"
+    apply-template "convoy/native"
+  }
+  for "issue" kind="issue" visibility="wheelhouse/unlinked-issue" {
+    match "flotilla.project" of="project"
+    order "flotilla.subject.number" natural=true
+    apply-template "issue/native"
+  }
+}
+template "role/native" {
+  field "label" key="display.label"
+  field "kind" key="entity.kind"
+  field "status" key="status.state"
+  field "phase" key="flotilla.convoy.phase" prefix="Phase: "
+  use "wheelhouse/chip-presentation"
+  for "attempt" kind="convoy" in="flotilla.role.attempts" of="role" visibility="wheelhouse/role-attempt" {
+    apply-template "convoy/native"
+  }
+}
+template "convoy/native" {
+  field "label" key="display.label"
+  field "kind" key="entity.kind"
+  field "status" key="status.state"
+  use "wheelhouse/chip-presentation"
+  // Reverse entity edges support many repositories and shared generations.
+  // PR relationships (produces/adopts) precede works_on issues; each group is numeric.
+  for "change_request" kind="change_request" visibility="wheelhouse/activity" tier="medium" layout="inline" {
+    match "flotilla.subject_of" of="convoy"
+    order "flotilla.subject.number" natural=true
+    apply-template "change_request/native"
+  }
+  for "issue" kind="issue" visibility="wheelhouse/activity" tier="medium" layout="inline" {
+    match "flotilla.subject_of" of="convoy"
+    order "flotilla.subject.number" natural=true
+    apply-template "issue/native"
+  }
+  for "vessel" kind="vessel" visibility="wheelhouse/activity" layout="inline" {
+    match "flotilla.convoy" of="convoy"
+    order "display.label"
+    apply-template "wheelhouse/entry"
+  }
+}
+placement "sessions" {
+  for "session" kind="session" {
+    order "display.label"
+    apply-template "wheelhouse/entry"
+  }
+}
+template "change_request/native" {
+  field "label" key="display.label"
+  field "kind" key="entity.kind"
+  field "readiness" key="flotilla.change_request.readiness"
+  field "orphaned" key="flotilla.orphaned" prefix="orphaned:"
+}
+template "issue/native" {
+  field "label" key="display.label"
+  field "kind" key="entity.kind"
+  field "status" key="flotilla.issue.state"
+}
+placement "attention" {
+  for "change_request" kind="change_request" visibility="wheelhouse/subject-attention" tier="medium" {
+    order "flotilla.subject.number" natural=true
+    apply-template "change_request/native"
+  }
+  for "attention" visibility="wheelhouse/activity" {
+    match "status.attention" value="true"
+    order "display.label"
+    apply-template "wheelhouse/attention-entry"
+  }
+}
+template "wheelhouse/entry" {
+  field "label" key="display.label"
+  field "kind" key="entity.kind"
+  field "status" key="status.state"
+  use "wheelhouse/chip-presentation"
+}
+
+// Named prefixes carry native presentation values through ABI 2's text fields.
+// icon-override is local template policy; presentation.icon always wins.
+fragment "wheelhouse/chip-presentation" {
+  field "chip-fields" source="literal" value="1" prefix="chip-fields:"
+  field "medium" source="metadata-text" key="display.label.medium" prefix="chip-medium:"
+  field "short" source="metadata-text" key="display.label.short" prefix="chip-short:"
+  field "icon" key="presentation.icon" prefix="chip-icon:"
+  field "icon-override" source="literal" value="" prefix="chip-icon-override:"
+  field "attention" key="status.attention" prefix="chip-attention:"
+  field "activity" key="status.state" prefix="chip-status:"
+}
+
+// Context travels with detached Attention entries; the native renderer resolves
+// these identities to labels when the corresponding project/convoy is present.
+template "wheelhouse/attention-entry" {
+  field "label" key="display.label"
+  field "kind" key="entity.kind"
+  field "status" key="status.state"
+  field "project" key="flotilla.project"
+  field "convoy" key="flotilla.convoy"
+}
+
+// Detail fields are independent of the compact row composition.
+fragment "wheelhouse/hover-header" {
+  field "identity" structured-only=true section="header" role="identity" key="entity.id"
+  field "label" structured-only=true section="header" role="title" key="display.label"
+  field "badge" structured-only=true section="header" role="state" key="status.state"
+  field "related" structured-only=true section="related" role="relation" key="related.entities"
+  field "produces" structured-only=true section="related" role="relation" key="flotilla.subject.produces"
+  field "works-on" structured-only=true section="related" role="relation" key="flotilla.subject.works_on"
+  field "subject-of" structured-only=true section="related" role="relation" key="flotilla.subject_of"
+  field "attempt-link" structured-only=true section="related" role="relation" key="flotilla.role.current_attempt"
+}
+fragment "wheelhouse/hover-details" {
+  use "wheelhouse/hover-header"
+  field "status" section="facts" role="fact" label="Status" key="status.state" prefix="Status: "
+  field "detail" section="facts" role="fact" label="Detail" key="status.detail"
+  field "phase" section="facts" role="fact" label="Phase" key="flotilla.convoy.phase" prefix="Phase: "
+  field "host" section="facts" role="fact" label="Host" key="flotilla.vessel.host" prefix="Host: "
+  field "repo" section="facts" role="fact" label="Repository" key="vcs.repo" prefix="Repository: "
+  field "branch" section="facts" role="fact" label="Branch" key="checkout.branch" prefix="Branch: "
+  field "path" section="facts" role="fact" label="Path" key="checkout.path" prefix="Path: "
+}
+template "project/detail" slot="detail" node-kind="entity" {
+  use "wheelhouse/hover-details"
+  field "convoys" section="facts" role="fact" label="Convoys" source="metadata-display" key="count.convoys" prefix="Convoys: "
+  field "vessels" section="facts" role="fact" label="Vessels" source="metadata-display" key="count.vessels" prefix="Vessels: "
+  field "issues" section="facts" role="fact" label="Issues" source="metadata-display" key="count.issues" prefix="Issues: "
+  field "checkouts" section="facts" role="fact" label="Checkouts" source="metadata-display" key="count.checkouts" prefix="Checkouts: "
+  // Complete membership from the project definition (flotilla#1897), not
+  // inferred from activity. Zero is known-empty; absence is unavailable.
+  field "repositories" section="facts" role="fact" label="Repositories" source="metadata-display" key="flotilla.project.repository_count" prefix="Repositories: "
+  for "repository" kind="project_repository" {
+    match "flotilla.project" of="project"
+    order "display.label"
+    field "repository" section="facts" role="fact" label="" key="display.label" prefix="  "
+    field "subpath" section="facts" role="fact" label="path" key="flotilla.membership.subpath" prefix="    path: "
+  }
+}
+template "role/detail" slot="detail" node-kind="entity" {
+  field "summary" section="facts" role="fact" label="Summary" key="summary.text"
+  field "role" section="facts" role="fact" label="Role" key="flotilla.role.name" prefix="Role: "
+  field "presents" section="facts" role="fact" label="Presents as" key="flotilla.role.presents_as" prefix="Presents as: "
+  field "hold" section="facts" role="fact" label="Held" key="flotilla.role.hold" prefix="Held: "
+  field "content" section="facts" role="fact" label="Attachment" key="workspace.primary.state" prefix="Attachment: "
+  for "attempt" kind="convoy" in="flotilla.role.current_attempt" of="role" {
+    field "attempt" section="facts" role="fact" label="Current attempt" key="display.label" prefix="Current attempt: "
+    field "phase" section="facts" role="fact" label="Attempt phase" key="flotilla.convoy.phase" prefix="Attempt phase: "
+  }
+  use "wheelhouse/hover-details"
+}
+template "convoy/detail" slot="detail" node-kind="entity" {
+  field "summary" section="facts" role="fact" label="Summary" key="summary.text"
+  use "wheelhouse/hover-details"
+}
+template "vessel/detail" slot="detail" node-kind="entity" {
+  field "summary" section="facts" role="fact" label="Summary" key="summary.text"
+  use "wheelhouse/hover-details"
+}
+template "checkout/detail" slot="detail" node-kind="entity" {
+  field "summary" section="facts" role="fact" label="Summary" key="summary.text"
+  use "wheelhouse/hover-details"
+}
+template "session/detail" slot="detail" node-kind="entity" {
+  field "summary" section="facts" role="fact" label="Summary" key="summary.text"
+  use "wheelhouse/hover-details"
+}
+template "change_request/detail" slot="detail" node-kind="entity" {
+  field "title" section="header" role="title" key="flotilla.change_request.title" prefix="Title: "
+  field "title-at" key="flotilla.change_request.title.observed_at" prefix="Title observed: "
+  field "readiness" section="facts" role="fact" label="Readiness" key="flotilla.change_request.readiness" prefix="Readiness: "
+  field "orphaned" section="facts" role="fact" label="Orphaned" key="flotilla.orphaned" prefix="Orphaned: "
+  field "state" section="header" role="state" key="flotilla.change_request.state" prefix="State: "
+  field "state-at" key="flotilla.change_request.state.observed_at" prefix="State observed: "
+  field "checks" section="facts" role="fact" label="Checks" key="flotilla.change_request.checks" prefix="Checks: "
+  field "checks-at" key="flotilla.change_request.checks.observed_at" prefix="Checks observed: "
+  field "review" section="facts" role="fact" label="Review" key="flotilla.change_request.review_decision" prefix="Review: "
+  field "review-at" key="flotilla.change_request.review_decision.observed_at" prefix="Review observed: "
+  field "mergeable" section="facts" role="fact" label="Mergeable" key="flotilla.change_request.mergeable" prefix="Mergeable: "
+  field "mergeable-at" key="flotilla.change_request.mergeable.observed_at" prefix="Mergeability observed: "
+  use "wheelhouse/hover-header"
+}
+template "issue/detail" slot="detail" node-kind="entity" {
+  field "title" section="header" role="title" key="flotilla.issue.title" prefix="Title: "
+  field "state" section="header" role="state" key="flotilla.issue.state" prefix="State: "
+  field "state-at" key="flotilla.issue.state.observed_at" prefix="State observed: "
+  field "updated" key="flotilla.issue.updated_at" prefix="Updated: "
+  field "summary" section="facts" role="fact" label="Summary" key="summary.text"
+  use "wheelhouse/hover-details"
+}
+
+// Host-independent git producer contract, shared with andamento-git.kdl.
+region "git" root-template="wheelhouse/git" form="compact" placement="git" default-host="sidebar" order=40
+template "wheelhouse/git" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Git"
+}
+placement "git" {
+  for "repo" kind="repo" layout="fields" tier="medium" {
+    order "display.label"
+    apply-template "repo/native"
+  }
+}
+template "repo/native" {
+  field "label" class="required" key="display.label"
+  for "worktree" kind="worktree" layout="fields" tier="short" {
+    match "git.repo" of="repo"
+    order "git.root"
+    apply-template "worktree/native"
+  }
+}
+template "worktree/native" {
+  field "label" class="optional" key="display.label"
+  field "branch" class="required" key="git.branch"
+  field "dirty" class="required" key="git.dirty" prefix="dirty:"
+  field "ahead" class="priority" priority=20 key="git.ahead" prefix="↑"
+  field "behind" class="priority" priority=20 key="git.behind" prefix="↓"
+}
+template "worktree/detail" slot="detail" node-kind="entity" {
+  use "wheelhouse/hover-header"
+  field "root" section="facts" role="fact" label="Path" key="git.root" prefix="Path: "
+  field "branch" section="facts" role="fact" label="Branch" key="git.branch" prefix="Branch: "
+  field "dirty" section="facts" role="fact" label="Dirty" key="git.dirty" prefix="Dirty: "
+  field "upstream" section="facts" role="fact" label="Upstream" key="git.upstream" prefix="Upstream: "
+}
+
+// Sections and groups people make (drag-model.md, "Sections and groups as
+// data"). Wheelhouse publishes them; each .section is its own sidebar section.
+// A group's workspaces and references share one item loop, so one order.
+region "local" root-template="local/title" form="compact" placement="local" default-host="sidebar" order=50
+template "local/title" slot="compact" node-kind="entity" {
+  field "label" source="literal" value="Local"
+}
+placement "local" {
+  for "section" kind=".section" layout="section" {
+    order ".position" natural=true
+    apply-template "section/local"
+  }
+}
+template "section/local" {
+  field "label" key="display.label"
+  for "group" kind=".group" {
+    match ".section" of="section"
+    order ".position" natural=true
+    apply-template "group/local"
+  }
+}
+template "group/local" {
+  field "label" key="display.label"
+  for "item" {
+    match ".group" of="group"
+    order ".position" natural=true
+    apply-template "wheelhouse/entry"
+  }
+}

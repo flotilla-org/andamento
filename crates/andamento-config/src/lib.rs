@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Instant;
 
 use andamento_shared::segment_bar;
@@ -1130,7 +1131,7 @@ fn push_templates_page(frame: &mut ConfigUiFrame, model: Option<&ControllerViewM
     }
     frame.push_blank();
     frame.push_plain("resolved templates");
-    fn show(frame: &mut ConfigUiFrame, nodes: &[PlacementNode]) {
+    fn show(frame: &mut ConfigUiFrame, nodes: &[Rc<PlacementNode>]) {
         for node in nodes {
             frame.push_plain(&format!("{}: {}", node.label, node.content.template_name.as_deref().unwrap_or("<none>")));
             show(frame, &node.children);

@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -318,18 +319,9 @@ pub struct LatentTab {
     #[serde(default)]
     pub materialization: LatentMaterializationState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status_state: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary: Option<String>,
-    /// Producer provenance rendered as a compact source badge.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub materialize_recipe: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout_path: Option<String>,
-    #[serde(default)]
-    pub templates: ResolvedTemplateSlots,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -759,9 +751,9 @@ pub const DISPLAY_FORM_FULL: &str = "full";
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedTemplateSlots {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compact: Option<ResolvedTemplateSlot>,
+    pub compact: Option<Rc<ResolvedTemplateSlot>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<ResolvedTemplateSlot>,
+    pub detail: Option<Rc<ResolvedTemplateSlot>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1339,3 +1331,6 @@ mod cutover_tests;
 
 #[cfg(test)]
 mod visibility_tests;
+
+#[cfg(test)]
+mod scaling_tests;

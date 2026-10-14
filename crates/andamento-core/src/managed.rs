@@ -161,36 +161,44 @@ type BindingKey = (WorkspaceId, String);
 
 #[derive(Default)]
 pub struct ManagedContent {
-    desired: BTreeMap<(EntityRef, String), DesiredContent>,
+    /// Provider-published resolutions, by entity and slot.
+    desired: BTreeMap<EntityRef, BTreeMap<String, DesiredContent>>,
     bindings: BTreeMap<BindingKey, Binding>,
     next_token: u64,
 }
 
 impl ManagedContent {
-    /// Replace the provider-published resolutions. A binding whose desired
-    /// resolution changed loses its pending token and its failure. Returns
-    /// whether any resolution changed.
-    pub fn publish(&mut self, desired: BTreeMap<(EntityRef, String), DesiredContent>) -> bool {
-        if desired == self.desired {
-            return false;
-        }
-        for binding in self.bindings.values_mut() {
-            if let SlotSource::Provider { entity, slot } = &binding.source {
-                let key = (entity.clone(), slot.clone());
-                if self.desired.get(&key) != desired.get(&key) {
-                    binding.pending = None;
-                    binding.failed = false;
+    /// Replace one provider entity's published resolutions, by slot (empty:
+    /// none). A binding whose desired resolution changed loses its pending
+    /// token and its failure. Returns whether any resolution changed.
+    pub fn publish(&mut self, entity: &EntityRef, desired: BTreeMap<String, DesiredContent>) -> bool {
+        let current = self.desired.remove(entity).unwrap_or_default();
+        let changed = current != desired;
+        if changed {
+            for binding in self.bindings.values_mut() {
+                if let SlotSource::Provider { entity: bound, slot } = &binding.source {
+                    if bound == entity && current.get(slot) != desired.get(slot) {
+                        binding.pending = None;
+                        binding.failed = false;
+                    }
                 }
             }
         }
-        self.desired = desired;
-        true
+        if !desired.is_empty() {
+            self.desired.insert(entity.clone(), desired);
+        }
+        changed
+    }
+
+    /// The entities with published resolutions.
+    pub fn published(&self) -> impl Iterator<Item = &EntityRef> {
+        self.desired.keys()
     }
 
     /// The resolution `source` has now; `None` is Unavailable.
     pub fn desired(&self, source: &SlotSource) -> Option<DesiredContent> {
         match source {
-            SlotSource::Provider { entity, slot } => self.desired.get(&(entity.clone(), slot.clone())).cloned(),
+            SlotSource::Provider { entity, slot } => self.desired.get(entity).and_then(|slots| slots.get(slot)).cloned(),
             SlotSource::Local(recipe) => Some(DesiredContent::Ready(Resolved { target: None, recipe: recipe.clone() })),
         }
     }

@@ -5,40 +5,46 @@ pub(crate) struct EvaluatedPlacement {
     pub label: String,
     pub form: String,
     pub tier: Option<AbbreviationTier>,
-    pub metadata: BTreeMap<String, MetadataValue>,
+    pub metadata: Rc<BTreeMap<String, MetadataValue>>,
     pub templates: ResolvedTemplateSlots,
-    pub children: Vec<EvaluatedPlacement>,
+    pub annotation: PlacementAnnotation,
+    pub children: Vec<Rc<EvaluatedPlacement>>,
 }
 #[derive(Debug)]
 pub(crate) struct EvaluatedSection {
     pub definition: SurfaceRegionDefinition,
     pub root: Option<ResolvedTemplateSlot>,
-    pub entities: Vec<EvaluatedPlacement>,
+    pub entities: Vec<Rc<EvaluatedPlacement>>,
 }
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct PlacementAnnotation {
     pub layout: Option<String>,
     pub related_detail: Vec<TemplateConfigRenderedField>,
 }
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::ops::{Bound, Deref, DerefMut};
 use std::path::Path;
+use std::rc::Rc;
 
 use crate::detail::{resolve_field, DetailCard};
 use crate::host::PaneObservation;
-use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataStore};
+use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataStore, ResolvedFacts};
 use crate::profile;
+#[cfg(test)]
+use crate::template_config::PlacementDefinition;
 use crate::template_config::{
-    placement_index_text, AbbreviationTier, NodeVariableDefinition, PlacementDefinition, PlacementOrder, PlacementOrderAbsent,
-    PlacementOrderDirection, PlacementVisibilityRule, SurfaceRegionDefinition, TemplateConfigCatalog, TemplateConfigLayerKind,
+    placement_index_text, AbbreviationTier, NodeVariableDefinition, PlacementOrder, PlacementOrderAbsent, PlacementOrderDirection,
+    PlacementVisibility, PlacementVisibilityRule, SurfaceRegionDefinition, TemplateAddress, TemplateConfigCatalog, TemplateConfigLayerKind,
     TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigOrigin, TemplateConfigRenderReady, TemplateConfigRenderedField,
     TemplateConfigSlot,
 };
 use crate::WorkspaceId;
 use crate::{
     managed::{DesiredContent, Resolved},
-    presentation::{system, PlacementNode, PresentationState, Section, SurfaceSnapshot},
+    presentation::{system, PresentationState, SurfaceContext, SurfaceKept, SurfaceSnapshot},
     records::{recordable, DashboardState, SubjectRecord},
     sidebar_arrangement::RegionHints,
     suggested_layout::{self, LayoutError, SuggestedLayout},
@@ -74,8 +80,6 @@ const KEY_ACTION_TARGET: &str = "action.primary.target";
 const KEY_MATERIALIZE_RECIPE: &str = "action.primary.recipe";
 const KEY_CHECKOUT_PATH: &str = "git.root";
 const KEY_STATUS_STATE: &str = "status.state";
-const KEY_SUMMARY_TEXT: &str = "summary.text";
-const KEY_SOURCE: &str = "source";
 const KEY_DISPLAY_LABEL: &str = "display.label";
 const DISPLAY_SHOW_FINISHED: &str = "show-finished";
 const KEY_CONVOY_PHASE: &str = "flotilla.convoy.phase";
@@ -109,102 +113,417 @@ enum IndexedValue {
     Entity(EntityRef),
 }
 
-/// Catalog entities indexed by `(fact key, scalar or entity identity)`.
-/// Built once per model; placement predicates perform posting lookups only.
+/// Catalog entities indexed by `(fact key, scalar or entity identity)`, by
+/// position in the catalog. It is kept between evaluations: while the catalog
+/// lists the same entities in the same order, only positions whose facts
+/// changed (a new `Rc` from the metadata store) are re-indexed, and their
+/// visibility re-evaluated. Placement predicates perform posting lookups only.
+///
+/// Each posting has a generation, moved whenever an entity in it (before or
+/// after) changes facts, so a loop can tell whether what it matched could
+/// differ now (see `LoopReads`). Anything else that changes what lookups
+/// return, such as a rebuild or new visibility, moves the epoch.
 #[derive(Debug, Default)]
 struct PlacementIndex {
-    by_fact: BTreeMap<(String, IndexedValue), Vec<usize>>,
+    by_fact: BTreeMap<Rc<(String, IndexedValue)>, usize>,
+    /// Postings by ID; an emptied posting keeps its ID and generation.
+    postings: Vec<Posting>,
+    clock: u64,
+    epoch: u64,
+    /// The generation of the catalog indexed, if it had one.
+    list: Option<u64>,
     visibility: BTreeMap<String, Vec<bool>>,
     ref_keys: BTreeSet<String>,
+    /// Keys whose facts hold entity references, with how many positions do.
+    ref_key_counts: BTreeMap<String, usize>,
+    /// What each position was indexed from, and the postings it added.
+    entities: Vec<EntityRef>,
+    facts: Vec<Rc<ResolvedFacts>>,
+    indexed: Vec<Vec<usize>>,
+    /// What visibility was evaluated with: the template catalog's
+    /// generation and the display variables; and the warnings it gave.
+    visibility_inputs: Option<(u64, BTreeMap<String, DisplayVariableValue>)>,
+    visibility_warnings: Vec<String>,
+}
+
+#[derive(Debug)]
+struct Posting {
+    key: Rc<(String, IndexedValue)>,
+    positions: Vec<usize>,
+    generation: u64,
+}
+
+/// A posting a loop looked up: one that exists, at the generation it had,
+/// or one that didn't.
+#[derive(Debug)]
+enum PostingRead {
+    Present { id: usize, generation: u64 },
+    Absent(Rc<(String, IndexedValue)>),
+}
+
+/// What placement evaluation reads besides the catalog's facts. When any of
+/// it changes, nothing placed earlier is kept.
+#[derive(Debug, PartialEq)]
+struct PlacementInputs {
+    template_generation: u64,
+    index_epoch: u64,
+    show_finished: bool,
+    ended: BTreeSet<EntityRef>,
+    retained: Vec<EntityRef>,
+}
+
+/// Where a loop is evaluated: each enclosing match, bound under its loop's
+/// name. An applied template starts a new lexical environment: names bound
+/// outside it are not visible in it, but enclosing matches stay ancestors.
+#[derive(Clone, Copy, Default)]
+struct Scope<'s, 'a> {
+    entity: Option<&'a CatalogEntity>,
+    name: Option<&'s str>,
+    outer: Option<&'s Scope<'s, 'a>>,
+    parent: Option<&'s Scope<'s, 'a>>,
+}
+
+impl<'s, 'a> Scope<'s, 'a> {
+    /// The scope inside a match of `entity`, bound as `name`; `fresh` when
+    /// it starts a new lexical environment.
+    fn within(&'s self, name: &'s str, entity: &'a CatalogEntity, fresh: bool) -> Self {
+        Scope { entity: Some(entity), name: Some(name), outer: (!fresh).then_some(self), parent: Some(self) }
+    }
+
+    fn bound(&self, name: &str) -> Option<&'a CatalogEntity> {
+        if self.name == Some(name) {
+            return self.entity;
+        }
+        self.outer?.bound(name)
+    }
+
+    fn is_ancestor(&self, entity: &EntityRef) -> bool {
+        self.entity.is_some_and(|own| own.entity == *entity) || self.parent.is_some_and(|parent| parent.is_ancestor(entity))
+    }
+}
+
+/// What evaluating a loop read: the entities bound to the names it used, and
+/// the postings it intersected. While the bound entities' facts are the
+/// same and any one of those postings is unchanged, it matches the same
+/// entities in the same order: whatever matched, or would match now, is in
+/// every one of them, and a change to it moves them all.
+#[derive(Debug, Default)]
+struct LoopReads {
+    bound: Vec<(String, Option<Rc<ResolvedFacts>>)>,
+    postings: Vec<PostingRead>,
+}
+
+impl LoopReads {
+    fn bind<'a>(&mut self, scope: &Scope<'_, 'a>, name: &str) -> Option<&'a CatalogEntity> {
+        let bound = scope.bound(name);
+        if !self.bound.iter().any(|(read, _)| read == name) {
+            self.bound.push((name.to_owned(), bound.map(|entity| entity.facts.clone())));
+        }
+        bound
+    }
+
+    fn valid(&self, scope: &Scope, index: &PlacementIndex) -> bool {
+        self.bound.iter().all(|(name, facts)| match (scope.bound(name), facts) {
+            (Some(entity), Some(facts)) => Rc::ptr_eq(&entity.facts, facts),
+            (None, None) => true,
+            _ => false,
+        }) && (self.postings.is_empty() || self.postings.iter().any(|read| index.unchanged(read)))
+    }
+}
+
+/// A loop's evaluation in one place, kept for the next.
+#[derive(Debug, Default)]
+struct LoopMemo {
+    reads: LoopReads,
+    nodes: Vec<NodeMemo>,
+}
+
+impl LoopMemo {
+    fn placed(&self) -> impl Iterator<Item = Rc<EvaluatedPlacement>> + '_ {
+        self.nodes.iter().map(|node| node.placement.clone())
+    }
+}
+
+/// One match's evaluation, kept for the next: its placement, what its
+/// related detail read, and its nested loops'.
+#[derive(Debug)]
+struct NodeMemo {
+    position: usize,
+    facts: Rc<ResolvedFacts>,
+    placement: Rc<EvaluatedPlacement>,
+    related: Vec<LoopReads>,
+    related_binding: String,
+    /// The name nested loops see this match as, and whether they see only it.
+    binding: String,
+    fresh: bool,
+    child_loops: ChildLoops,
+    children: Vec<LoopMemo>,
+}
+
+/// Each placed node's variables, by the address of its placement.
+pub(crate) type NodeVariables = HashMap<*const EvaluatedPlacement, VariablesMemo>;
+
+/// A node's variables, kept while its placement and its parent's variables
+/// stay the same.
+#[derive(Debug)]
+pub(crate) struct VariablesMemo {
+    placement: Rc<EvaluatedPlacement>,
+    parent: Rc<EffectiveNodeVariables>,
+    pub(crate) resolved: Rc<EffectiveNodeVariables>,
+    warnings: Vec<String>,
+}
+
+/// The inspector's variable settings, by node.
+type VariableOverrides = BTreeMap<NodeKey, BTreeMap<String, String>>;
+
+/// Placed nodes' variables, with what they were resolved under: the
+/// template catalog's generation and the inspector's overrides, and the
+/// root's variables.
+#[derive(Debug, Default)]
+struct VariablesKept {
+    inputs: Option<(u64, VariableOverrides)>,
+    root: Option<Rc<EffectiveNodeVariables>>,
+    nodes: NodeVariables,
+}
+
+/// Which loops nest under a match: its loop's own, an applied template's, or
+/// none (an applied template that doesn't exist).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildLoops {
+    Own,
+    Template(TemplateAddress),
+    None,
+}
+
+struct PlacementContext<'a, 'f> {
+    entities: &'a [CatalogEntity],
+    index: &'a PlacementIndex,
+    form: &'f str,
+}
+
+/// The `(key, value)` postings an entity is indexed under.
+fn entity_postings(entity: &CatalogEntity) -> Vec<(String, IndexedValue)> {
+    // An entity's kind and id come from its ref, not from whatever the
+    // producer happened to echo into its facts, so `kind=` always works.
+    let mut postings = vec![
+        ("entity.kind".to_owned(), IndexedValue::Scalar(entity.entity.kind.clone())),
+        ("entity.id".to_owned(), IndexedValue::Scalar(entity.entity.id.clone())),
+    ];
+    // A `.ref` carries its target's facts for presentation, but rules
+    // reach it only through its own placement facts, so a query on the
+    // target's facts (say, needs attention) never places the ghost too.
+    let is_ref = entity.entity.kind == system::REF;
+    for (key, entry) in &entity.values {
+        if is_ref && key != system::GROUP && key != system::TARGET {
+            continue;
+        }
+        if let MetadataValue::EntityRefs(refs) = &entry.value {
+            postings.extend(refs.iter().map(|reference| (key.clone(), IndexedValue::Entity(reference.clone()))));
+            continue;
+        }
+        if let Some(text) = placement_index_text(&entry.value) {
+            postings.push((key.clone(), IndexedValue::Scalar(text)));
+        }
+    }
+    postings.sort();
+    postings.dedup();
+    postings
 }
 
 impl PlacementIndex {
+    #[cfg(test)]
     fn build(entities: &[CatalogEntity]) -> Self {
-        let mut by_fact = BTreeMap::<(String, IndexedValue), Vec<usize>>::new();
-        let mut ref_keys = BTreeSet::new();
-        for (position, entity) in entities.iter().enumerate() {
-            let mut insert = |key: String, text: IndexedValue| {
-                let postings = by_fact.entry((key, text)).or_default();
-                // Positions arrive ascending, so binary_search stays valid; the
-                // guard only stops an entity appearing twice under one fact.
-                if postings.last() != Some(&position) {
-                    postings.push(position);
-                }
-            };
-            // An entity's kind and id come from its ref, not from whatever the
-            // producer happened to echo into its facts, so `kind=` always works.
-            insert("entity.kind".to_owned(), IndexedValue::Scalar(entity.entity.kind.clone()));
-            insert("entity.id".to_owned(), IndexedValue::Scalar(entity.entity.id.clone()));
-            // A `.ref` carries its target's facts for presentation, but rules
-            // reach it only through its own placement facts, so a query on the
-            // target's facts (say, needs attention) never places the ghost too.
-            let is_ref = entity.entity.kind == system::REF;
-            for (key, entry) in &entity.values {
-                if is_ref && key != system::GROUP && key != system::TARGET {
-                    continue;
-                }
-                if let MetadataValue::EntityRefs(refs) = &entry.value {
-                    ref_keys.insert(key.clone());
-                    for reference in refs {
-                        insert(key.clone(), IndexedValue::Entity(reference.clone()));
-                    }
-                    continue;
-                }
-                let Some(text) = placement_index_text(&entry.value) else {
-                    continue;
-                };
-                insert(key.clone(), IndexedValue::Scalar(text));
-            }
-        }
-        Self { by_fact, ref_keys, visibility: BTreeMap::new() }
+        let mut index = Self::default();
+        index.update(entities, None);
+        index
     }
 
-    /// Each policy is evaluated once over the catalog, never once per nested
-    /// loop. Query evaluation then checks a bit alongside its posting position.
-    fn evaluate_visibility(
+    /// Bring the index up to date with `entities`, re-indexing the positions
+    /// whose facts changed, or every position when the list itself changed.
+    /// Returns the positions re-indexed (all of them: `None`).
+    /// `list` is the catalog's generation, when it has one: while it is the
+    /// same, so is the list.
+    fn update(&mut self, entities: &[CatalogEntity], list: Option<u64>) -> Option<Vec<usize>> {
+        let same_list = self.entities.len() == entities.len()
+            && match list {
+                Some(list) => self.list == Some(list),
+                None => self.entities.iter().zip(entities).all(|(old, new)| *old == new.entity),
+            };
+        if !same_list {
+            *self = Self { epoch: self.epoch + 1, list, ..Self::default() };
+            for (position, entity) in entities.iter().enumerate() {
+                self.entities.push(entity.entity.clone());
+                self.facts.push(entity.facts.clone());
+                self.indexed.push(vec![]);
+                let postings = entity_postings(entity);
+                self.index(position, &postings);
+            }
+            return None;
+        }
+        self.clock += 1;
+        let mut changed = vec![];
+        for (position, entity) in entities.iter().enumerate() {
+            if Rc::ptr_eq(&self.facts[position], &entity.facts) {
+                continue;
+            }
+            self.facts[position] = entity.facts.clone();
+            for &id in &self.indexed[position] {
+                self.postings[id].generation = self.clock;
+            }
+            let next = entity_postings(entity);
+            if self.indexed[position].iter().map(|&id| &*self.postings[id].key).eq(next.iter()) {
+                continue;
+            }
+            self.unindex(position);
+            self.index(position, &next);
+            changed.push(position);
+        }
+        Some(changed)
+    }
+
+    fn index(&mut self, position: usize, postings: &[(String, IndexedValue)]) {
+        let mut ids = Vec::with_capacity(postings.len());
+        for posting in postings {
+            if let IndexedValue::Entity(_) = posting.1 {
+                *self.ref_key_counts.entry(posting.0.clone()).or_default() += 1;
+                if self.ref_keys.insert(posting.0.clone()) {
+                    self.epoch += 1;
+                }
+            }
+            let id = match self.by_fact.get(posting) {
+                Some(&id) => id,
+                None => {
+                    let key = Rc::new(posting.clone());
+                    self.by_fact.insert(key.clone(), self.postings.len());
+                    self.postings.push(Posting { key, positions: vec![], generation: self.clock });
+                    self.postings.len() - 1
+                }
+            };
+            let entry = &mut self.postings[id];
+            entry.generation = self.clock;
+            if let Err(at) = entry.positions.binary_search(&position) {
+                entry.positions.insert(at, position);
+            }
+            ids.push(id);
+        }
+        self.indexed[position] = ids;
+    }
+
+    fn unindex(&mut self, position: usize) {
+        for id in std::mem::take(&mut self.indexed[position]) {
+            let entry = &mut self.postings[id];
+            entry.generation = self.clock;
+            if let IndexedValue::Entity(_) = entry.key.1 {
+                if let Some(count) = self.ref_key_counts.get_mut(&entry.key.0) {
+                    *count -= 1;
+                    if *count == 0 {
+                        self.ref_key_counts.remove(&entry.key.0);
+                        self.ref_keys.remove(&entry.key.0);
+                        self.epoch += 1;
+                    }
+                }
+            }
+            if let Ok(at) = entry.positions.binary_search(&position) {
+                entry.positions.remove(at);
+            }
+        }
+    }
+
+    /// Evaluate visibility after `update`: every position when the
+    /// policies, the display variables or the list changed, else only the
+    /// re-indexed positions. Each policy is evaluated once per entity, never
+    /// once per nested loop; query evaluation then checks a bit alongside its
+    /// posting position.
+    fn update_visibility(
         &mut self,
         entities: &[CatalogEntity],
         catalog: &TemplateConfigCatalog,
+        generation: u64,
         variables: &BTreeMap<String, DisplayVariableValue>,
+        reindexed: Option<Vec<usize>>,
     ) -> Vec<String> {
-        let mut warnings = BTreeSet::new();
-        for policy in catalog.visibility() {
-            let enabled: Vec<bool> = policy
-                .rules
-                .iter()
-                .map(|rule| {
-                    std::iter::once(&rule.visible_when).chain(rule.and_visible_when.iter()).fold(true, |enabled, name| {
-                        let value = variables.get(name).or_else(|| {
-                            catalog.display_variables().iter().find(|variable| &variable.name == name).map(|variable| &variable.default)
-                        });
-                        if !matches!(value, Some(DisplayVariableValue::Bool(_))) {
-                            warnings.insert(format!(
-                                "visibility {} requires boolean display variable {}; matching entities are hidden",
-                                policy.name, name
-                            ));
-                        }
-                        enabled & matches!(value, Some(DisplayVariableValue::Bool(true)))
-                    })
-                })
-                .collect();
-            let visible = entities
-                .iter()
-                .map(|entity| {
-                    let rule = policy.rules.iter().position(|rule| visibility_rule_matches(entity, rule));
-                    rule.is_none_or(|position| enabled[position])
-                })
-                .collect();
-            self.visibility.insert(policy.name.clone(), visible);
+        let unchanged = self.visibility_inputs.as_ref().is_some_and(|(at, vars)| *at == generation && vars == variables);
+        match reindexed {
+            Some(positions) if unchanged => {
+                for policy in catalog.visibility() {
+                    let enabled = Self::enabled_rules(policy, catalog, variables, &mut BTreeSet::new());
+                    let Some(visible) = self.visibility.get_mut(&policy.name) else {
+                        continue;
+                    };
+                    for &position in &positions {
+                        let rule = policy.rules.iter().position(|rule| visibility_rule_matches(&entities[position], rule));
+                        visible[position] = rule.is_none_or(|rule| enabled[rule]);
+                    }
+                }
+            }
+            _ => {
+                let mut warnings = BTreeSet::new();
+                self.visibility.clear();
+                for policy in catalog.visibility() {
+                    let enabled = Self::enabled_rules(policy, catalog, variables, &mut warnings);
+                    let visible = entities
+                        .iter()
+                        .map(|entity| {
+                            let rule = policy.rules.iter().position(|rule| visibility_rule_matches(entity, rule));
+                            rule.is_none_or(|position| enabled[position])
+                        })
+                        .collect();
+                    self.visibility.insert(policy.name.clone(), visible);
+                }
+                self.visibility_inputs = Some((generation, variables.clone()));
+                self.epoch += 1;
+                self.visibility_warnings = warnings.into_iter().collect();
+            }
         }
-        warnings.into_iter().collect()
+        self.visibility_warnings.clone()
     }
 
-    fn lookup_ref(&self, key: &str, reference: &EntityRef) -> &[usize] {
-        self.by_fact.get(&(key.to_owned(), IndexedValue::Entity(reference.clone()))).map(Vec::as_slice).unwrap_or_default()
+    /// Whether each of `policy`'s rules is switched on by its display
+    /// variables.
+    fn enabled_rules(
+        policy: &PlacementVisibility,
+        catalog: &TemplateConfigCatalog,
+        variables: &BTreeMap<String, DisplayVariableValue>,
+        warnings: &mut BTreeSet<String>,
+    ) -> Vec<bool> {
+        policy
+            .rules
+            .iter()
+            .map(|rule| {
+                std::iter::once(&rule.visible_when).chain(rule.and_visible_when.iter()).fold(true, |enabled, name| {
+                    let value = variables.get(name).or_else(|| {
+                        catalog.display_variables().iter().find(|variable| &variable.name == name).map(|variable| &variable.default)
+                    });
+                    if !matches!(value, Some(DisplayVariableValue::Bool(_))) {
+                        warnings.insert(format!(
+                            "visibility {} requires boolean display variable {}; matching entities are hidden",
+                            policy.name, name
+                        ));
+                    }
+                    enabled & matches!(value, Some(DisplayVariableValue::Bool(true)))
+                })
+            })
+            .collect()
     }
 
-    fn lookup_value(&self, key: &str, value: &str) -> &[usize] {
-        self.by_fact.get(&(key.to_owned(), IndexedValue::Scalar(value.to_owned()))).map(Vec::as_slice).unwrap_or_default()
+    /// The positions under `(key, value)`, and the read to record.
+    fn lookup(&self, key: &str, value: IndexedValue) -> (&[usize], PostingRead) {
+        let key = (key.to_owned(), value);
+        match self.by_fact.get(&key) {
+            Some(&id) => {
+                let posting = &self.postings[id];
+                (&posting.positions, PostingRead::Present { id, generation: posting.generation })
+            }
+            None => (&[], PostingRead::Absent(Rc::new(key))),
+        }
+    }
+
+    /// Whether no entity in a posting read earlier has changed since.
+    fn unchanged(&self, read: &PostingRead) -> bool {
+        match read {
+            PostingRead::Present { id, generation } => self.postings[*id].generation == *generation,
+            PostingRead::Absent(key) => !self.by_fact.contains_key(&**key),
+        }
     }
 }
 
@@ -275,31 +594,123 @@ struct PendingLatentMaterialization {
 #[cfg(test)]
 thread_local! { static CATALOG_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
+/// An entity in the catalog: its resolved facts (`values`, `sources`),
+/// shared with the metadata store's resolution until an edit here copies them.
 #[derive(Debug, Clone)]
 struct CatalogEntity {
     entity: EntityRef,
-    sources: BTreeMap<String, String>,
-    values: BTreeMap<String, MetadataEntry>,
+    facts: Rc<ResolvedFacts>,
     ordinal: i64,
+}
+
+impl Deref for CatalogEntity {
+    type Target = ResolvedFacts;
+    fn deref(&self) -> &ResolvedFacts {
+        &self.facts
+    }
+}
+
+impl DerefMut for CatalogEntity {
+    fn deref_mut(&mut self) -> &mut ResolvedFacts {
+        Rc::make_mut(&mut self.facts)
+    }
 }
 
 /// Resolved catalog and lookup tables shared by every pass of one model build.
 /// Its lifetime is the evaluation, so metadata/configuration/time changes cannot
 /// leave stale derived state behind between snapshots.
+#[derive(Debug, Clone)]
 struct CatalogEvaluation {
     entities: Vec<CatalogEntity>,
     by_entity: BTreeMap<EntityRef, usize>,
+    /// Moves when the list of entities or their order changes.
+    generation: u64,
+    /// Entities derived from others (retained subjects, refs), built again
+    /// each time the catalog is brought up to date.
+    derived: BTreeSet<EntityRef>,
+    /// What `replace` will remove and add when `reorder` runs.
+    removed: BTreeSet<EntityRef>,
+    added: Vec<CatalogEntity>,
+    structure_changed: bool,
 }
 
 impl CatalogEvaluation {
-    fn new(entities: Vec<CatalogEntity>) -> Self {
+    fn new(entities: Vec<CatalogEntity>, generation: u64) -> Self {
         let by_entity = entities.iter().enumerate().map(|(i, e)| (e.entity.clone(), i)).collect();
-        Self { entities, by_entity }
+        let derived = entities.iter().filter(|e| e.entity.kind == system::REF).map(|e| e.entity.clone()).collect();
+        Self { entities, by_entity, generation, derived, removed: BTreeSet::new(), added: vec![], structure_changed: false }
     }
 
     fn entity(&self, target: &EntityRef) -> Option<&CatalogEntity> {
         self.by_entity.get(target).map(|index| &self.entities[*index])
     }
+
+    /// Make `entity` `next` (None: absent). One whose facts are the same
+    /// keeps its own. Returns whether the list or its order changes, which
+    /// `reorder` then makes.
+    fn replace(&mut self, entity: &EntityRef, next: Option<CatalogEntity>) -> bool {
+        match (self.by_entity.get(entity).copied(), next) {
+            (Some(at), Some(next)) => {
+                let current = &mut self.entities[at];
+                if current.ordinal != next.ordinal {
+                    self.removed.insert(entity.clone());
+                    self.added.push(next);
+                    return true;
+                }
+                if !Rc::ptr_eq(&current.facts, &next.facts) && *current.facts != *next.facts {
+                    *current = next;
+                }
+                false
+            }
+            (Some(_), None) => {
+                self.removed.insert(entity.clone());
+                true
+            }
+            (None, Some(next)) => {
+                self.added.push(next);
+                true
+            }
+            (None, None) => false,
+        }
+    }
+
+    fn reorder(&mut self) {
+        let removed = std::mem::take(&mut self.removed);
+        self.entities.retain(|entity| !removed.contains(&entity.entity));
+        self.entities.append(&mut self.added);
+        self.entities.sort_by(catalog_order);
+        self.by_entity = self.entities.iter().enumerate().map(|(i, e)| (e.entity.clone(), i)).collect();
+        self.structure_changed = true;
+    }
+}
+
+/// Whether `candidate` is the action target of `entity`, given its own
+/// (`action.target`): that, else one made from its identity, as
+/// `EntityRef::action_target` makes it, compared without making it.
+fn is_action_target(entity: &EntityRef, own: Option<&str>, candidate: &str) -> bool {
+    if let Some(own) = own {
+        return own == candidate;
+    }
+    let Some(rest) = candidate.strip_prefix(entity.kind.as_str()).and_then(|rest| rest.strip_prefix(':')) else {
+        return false;
+    };
+    if entity.provider == LOCAL_PROVIDER {
+        rest == entity.id
+    } else {
+        rest.strip_prefix(entity.id.as_str()).and_then(|rest| rest.strip_prefix('@')) == Some(entity.provider.as_str())
+    }
+}
+
+/// The catalog's order: by ordinal, then identity.
+fn catalog_order(a: &CatalogEntity, b: &CatalogEntity) -> Ordering {
+    a.ordinal.cmp(&b.ordinal).then_with(|| a.entity.cmp(&b.entity))
+}
+
+/// The catalog as last built (`ControllerState::catalog`).
+#[derive(Debug, Default)]
+struct KeptCatalog {
+    evaluation: Option<Rc<CatalogEvaluation>>,
+    generation: u64,
 }
 
 /// Which controller outputs the caller consumes; semantic presentation is
@@ -311,11 +722,12 @@ enum ModelOutputs {
 
 /// Immutable catalog and activation inputs owned by a Sidebar revision.
 pub(crate) struct RevisionEvaluation {
-    catalog: CatalogEvaluation,
-    latents: Vec<LatentTab>,
+    catalog: Rc<CatalogEvaluation>,
+    /// Action targets open in a workspace: an entity with any other is
+    /// latent (see `latent_tabs_in`).
+    live_targets: BTreeSet<String>,
     resolved_workspaces: Vec<ResolvedMetadata>,
     live: BTreeMap<String, PresentationState>,
-    materializable: BTreeMap<EntityRef, bool>,
 }
 
 fn compare_order_values(left: &MetadataValue, right: &MetadataValue, natural: bool) -> Ordering {
@@ -419,6 +831,47 @@ pub struct PluginRegistration {
     pub placement: PluginPlacement,
 }
 
+/// An entity's display, with the facts and template generation it was made from.
+type KeptDisplay = (Rc<ResolvedFacts>, u64, EvaluatedPlacement);
+/// An applied template's resolution for an entity, likewise.
+type KeptAppliedTemplate = (Rc<ResolvedFacts>, u64, Option<Rc<ResolvedTemplateSlot>>);
+
+/// What evaluation keeps between revisions, each part valid only while
+/// what it was derived from stays the same. Everything kept lives here, so
+/// a test can evaluate without it and compare.
+#[derive(Debug, Default)]
+struct Kept {
+    /// The placement index (see `PlacementIndex`).
+    placement_index: RefCell<PlacementIndex>,
+    /// Each entity's display (`display_entity`), kept while its resolved
+    /// facts and the template catalog stay the same.
+    displays: RefCell<HashMap<EntityRef, KeptDisplay>>,
+    /// Each applied template's resolution for an entity, kept likewise.
+    applied: RefCell<HashMap<(EntityRef, String), KeptAppliedTemplate>>,
+    /// Each region's loops as last evaluated (`evaluate_regions`), with
+    /// what they were evaluated under.
+    placements: RefCell<Option<(PlacementInputs, Vec<Vec<LoopMemo>>)>>,
+    /// Each placed node's variables (`resolve_placement_variables`).
+    variables: RefCell<VariablesKept>,
+    /// Each placed node's resolution (`SurfaceSnapshot::resolve`).
+    surface: RefCell<SurfaceKept>,
+    /// The catalog (`catalog`).
+    catalog: RefCell<KeptCatalog>,
+}
+
+impl Kept {
+    #[cfg(test)]
+    fn swap(&self, other: &Kept) {
+        self.placement_index.swap(&other.placement_index);
+        self.displays.swap(&other.displays);
+        self.applied.swap(&other.applied);
+        self.placements.swap(&other.placements);
+        self.variables.swap(&other.variables);
+        self.surface.swap(&other.surface);
+        self.catalog.swap(&other.catalog);
+    }
+}
+
 #[derive(Debug)]
 pub struct ControllerState {
     tabs: Vec<ControllerTab>,
@@ -435,6 +888,10 @@ pub struct ControllerState {
     sort_mode: SortMode,
     rail_config: RailConfig,
     template_catalog: Option<TemplateConfigCatalog>,
+    /// Moves whenever the template catalog is set, for what is derived from it.
+    template_generation: u64,
+    /// What evaluation keeps from one revision to the next.
+    kept: Kept,
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
     clock_ms: Option<u64>,
@@ -442,7 +899,7 @@ pub struct ControllerState {
     pending_latent_materializations: BTreeMap<String, PendingLatentMaterialization>,
     rail_ui: ControllerRailUiState,
     rail_ui_writer_client_id: u16,
-    node_variable_overrides: BTreeMap<NodeKey, BTreeMap<String, String>>,
+    node_variable_overrides: VariableOverrides,
 }
 impl Default for ControllerState {
     fn default() -> Self {
@@ -460,6 +917,8 @@ impl Default for ControllerState {
             sort_mode: Default::default(),
             rail_config: Default::default(),
             template_catalog: Some(Default::default()),
+            template_generation: 0,
+            kept: Default::default(),
             template_config: Default::default(),
             receive_counter: Default::default(),
             clock_ms: Default::default(),
@@ -473,12 +932,43 @@ impl Default for ControllerState {
 }
 
 impl ControllerState {
+    /// Run `f` as a first evaluation would, with nothing kept from earlier
+    /// ones, leaving what is kept as it was.
+    #[cfg(test)]
+    pub(crate) fn cold<R>(&self, f: impl FnOnce(&Self) -> R) -> R {
+        let kept = Kept::default();
+        self.kept.swap(&kept);
+        let result = self.metadata.cold(|| f(self));
+        self.kept.swap(&kept);
+        result
+    }
+
     /// Opt into host-supplied monotonic time. Legacy adapters retain receipt-clock behavior.
     pub fn advance_time(&mut self, now_ms: u64) -> bool {
         let before = self.now();
         let now = self.clock_ms.unwrap_or(0).max(now_ms);
         self.clock_ms = Some(now);
-        self.metadata.expires_between(before, now)
+        let expired = self.metadata.expires_between(before, now);
+        if expired {
+            self.metadata.change_all();
+        }
+        expired
+    }
+
+    /// What changed in the facts since the last call.
+    pub(crate) fn take_metadata_changes(&mut self) -> crate::metadata::Changed {
+        self.metadata.take_changed()
+    }
+
+    /// Every entity with facts.
+    pub(crate) fn metadata_entities(&self) -> Vec<EntityRef> {
+        self.metadata
+            .targets()
+            .filter_map(|target| match target {
+                EntityId::Entity(entity) => Some(entity.clone()),
+                _ => None,
+            })
+            .collect()
     }
     fn now(&self) -> u64 {
         self.clock_ms.unwrap_or(self.receive_counter)
@@ -773,6 +1263,7 @@ impl ControllerState {
 
     pub fn set_template_catalog(&mut self, catalog: Option<TemplateConfigCatalog>) {
         self.template_catalog = Some(catalog.unwrap_or_default());
+        self.template_generation += 1;
         if let Some(catalog) = self.template_catalog.as_ref() {
             for variable in catalog.display_variables() {
                 self.rail_ui.variables.entry(variable.name.clone()).or_insert_with(|| variable.default.clone());
@@ -874,8 +1365,8 @@ impl ControllerState {
         // history. Keep the old record only for authoritative removal/loss.
         if !is_removal {
             if let Some(entity) = retained_target.as_ref() {
-                let current = self.metadata.resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
-                if current.contains_key(KEY_ENTITY_ID) || current.contains_key(KEY_DISPLAY_LABEL) {
+                let current = self.metadata.resolved(&EntityId::Entity(entity.clone()), self.now());
+                if current.values.contains_key(KEY_ENTITY_ID) || current.values.contains_key(KEY_DISPLAY_LABEL) {
                     if let Some(retained) = self.retained_subjects.get_mut(entity) {
                         for key in unset_keys {
                             ended_changed |= retained.values.remove(&key).is_some();
@@ -1105,8 +1596,8 @@ impl ControllerState {
 
     pub(crate) fn evaluate_revision(&self) -> RevisionEvaluation {
         let _phase = profile::span("revision-evaluation");
-        let catalog = CatalogEvaluation::new(self.catalog_entities());
-        let latents = self.latent_tabs_in(&catalog);
+        let catalog = self.catalog();
+        let live_targets = self.materialized_action_targets(&catalog);
         let seeds = self.tab_seed_metadata_entries();
         let resolved_workspaces: Vec<ResolvedMetadata> = std::iter::once(EntityId::Root)
             .chain(self.tabs.iter().map(|tab| EntityId::Tab(tab.tab_id)))
@@ -1124,8 +1615,7 @@ impl ControllerState {
             .filter_map(|m| if let EntityId::Tab(id) = m.target { Some((id, &m.values)) } else { None })
             .collect();
         let live = self.live_presentation_states(&catalog, &tab_metadata);
-        let materializable = latents.iter().map(|l| (l.entity.clone(), l.materialize_request().is_some())).collect();
-        RevisionEvaluation { catalog, latents, resolved_workspaces, live, materializable }
+        RevisionEvaluation { catalog, live_targets, resolved_workspaces, live }
     }
 
     pub(crate) fn presentation_in(&self, evaluation: &RevisionEvaluation) -> SurfaceSnapshot {
@@ -1170,7 +1660,6 @@ impl ControllerState {
             }
         }
 
-        let latent_tabs = &evaluation.latents;
         let resolved_metadata =
             if presentation_only { evaluation.resolved_workspaces.clone() } else { self.resolved_metadata_for_tabs(&tabs, catalog) };
         let observed_identities = if presentation_only { vec![] } else { observed_metadata_identities(&resolved_metadata) };
@@ -1183,66 +1672,45 @@ impl ControllerState {
                 template_config.warnings.push(warning);
             }
         }
-        let mut placement_index = PlacementIndex::build(region_catalog_entities);
+        let index_phase = profile::span("placement-index");
+        let mut index = self.kept.placement_index.borrow_mut();
+        let reindexed = index.update(region_catalog_entities, Some(catalog.generation));
         if let Some(config) = self.template_catalog.as_ref() {
-            for warning in placement_index.evaluate_visibility(region_catalog_entities, config, &self.rail_ui.variables) {
+            let generation = self.template_generation;
+            for warning in index.update_visibility(region_catalog_entities, config, generation, &self.rail_ui.variables, reindexed) {
                 if !template_config.warnings.contains(&warning) {
                     template_config.warnings.push(warning);
                 }
             }
         }
-        let mut placement_layouts = BTreeMap::new();
-        let surface_regions: Vec<EvaluatedSection> = self
-            .template_catalog
-            .as_ref()
-            .map(|catalog| {
-                catalog
-                    .regions()
-                    .iter()
-                    .cloned()
-                    .map(|definition| {
-                        let metadata =
-                            BTreeMap::from([("presentation.template".to_owned(), MetadataValue::Text(definition.root_template.clone()))]);
-                        let entities = if let Some(placement) = definition.placement.as_deref().and_then(|name| catalog.placement(name)) {
-                            self.evaluate_placement(
-                                placement,
-                                region_catalog_entities,
-                                &placement_index,
-                                &definition.form,
-                                &mut placement_layouts,
-                            )
-                        } else {
-                            vec![]
-                        };
-                        EvaluatedSection {
-                            definition,
-                            root: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
-                            entities,
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        if let Some(catalog) = self.template_catalog.as_ref() {
-            let mut inherited = template_config
-                .effective_variables
-                .iter()
-                .map(|entry| (entry.node.clone(), entry.values.clone()))
-                .collect::<BTreeMap<_, _>>();
-            let mut placement_variables = vec![];
-            let mut warnings = BTreeSet::new();
-            for entity in surface_regions.iter().flat_map(|region| &region.entities) {
-                self.resolve_placement_variables(catalog, entity, &NodeKey::Root, &mut inherited, &mut placement_variables, &mut warnings);
-            }
-            template_config.effective_variables.extend(placement_variables);
-            for warning in warnings {
-                if !template_config.warnings.contains(&warning) {
-                    template_config.warnings.push(warning);
-                }
+        let placement_index: &PlacementIndex = &index;
+        drop(index_phase);
+        let placements_phase = profile::span("placements");
+        let surface_regions = self.evaluate_regions(region_catalog_entities, placement_index);
+        drop(placements_phase);
+        let variables_phase = profile::span("placement-variables");
+        let root = template_config.effective_variables.iter().find(|variables| variables.node == NodeKey::Root).cloned();
+        for warning in self.resolve_placement_variables(&surface_regions, root.as_ref()) {
+            if !template_config.warnings.contains(&warning) {
+                template_config.warnings.push(warning);
             }
         }
-
-        fn collect_matched(nodes: &[EvaluatedPlacement], matched: &mut BTreeSet<EntityRef>) {
+        let node_variables = self.kept.variables.borrow();
+        if !presentation_only {
+            fn collect(placements: &[Rc<EvaluatedPlacement>], variables: &NodeVariables, out: &mut Vec<EffectiveNodeVariables>) {
+                for placement in placements {
+                    if let Some(memo) = variables.get(&Rc::as_ptr(placement)) {
+                        out.push((*memo.resolved).clone());
+                    }
+                    collect(&placement.children, variables, out);
+                }
+            }
+            for region in &surface_regions {
+                collect(&region.entities, &node_variables.nodes, &mut template_config.effective_variables);
+            }
+        }
+        drop(variables_phase);
+        fn collect_matched(nodes: &[Rc<EvaluatedPlacement>], matched: &mut BTreeSet<EntityRef>) {
             for node in nodes {
                 matched.insert(node.entity.clone());
                 collect_matched(&node.children, matched);
@@ -1292,33 +1760,44 @@ impl ControllerState {
                 }
             }
         }
-        let latents = latent_tabs.iter().map(|latent| (&latent.entity, latent)).collect::<BTreeMap<_, _>>();
-        let states = region_catalog_entities
-            .iter()
-            .map(|entity| {
-                let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| entity.entity.action_target());
-                let state = exact
-                    .get(&entity.entity)
-                    .cloned()
-                    .or_else(|| live.get(&action_target).map(|state| Self::alias_presentation_state(state, &subjects, &entity.entity)))
-                    .unwrap_or_else(|| {
-                        latents
-                            .get(&entity.entity)
-                            .map(|latent| {
-                                if latent.materialization == LatentMaterializationState::Opening {
-                                    PresentationState::Opening
-                                } else {
-                                    PresentationState::Latent { openable: latent.materialize_request().is_some() }
-                                }
-                            })
-                            .unwrap_or_default()
-                    });
-                (entity.entity.clone(), state)
-            })
-            .collect();
-        model.presentation = Some(SurfaceSnapshot::resolve(&model, &surface_regions, &placement_layouts, &states));
+        // What a node presenting an entity shows it as: live in its exact
+        // workspace, or where its action target is open; else latent, unless
+        // its action target is materialized.
+        let live_targets = &evaluation.live_targets;
+        let state = |entity: &EntityRef, facts: &BTreeMap<String, MetadataValue>| {
+            if let Some(state) = exact.get(entity) {
+                return state.clone();
+            }
+            let own = match facts.get(KEY_ACTION_TARGET) {
+                Some(MetadataValue::Text(target)) => Some(target.as_str()),
+                _ => None,
+            };
+            if let Some((_, state)) = live.iter().find(|(target, _)| is_action_target(entity, own, target)) {
+                return Self::alias_presentation_state(state, &subjects, entity);
+            }
+            if live_targets.iter().any(|target| is_action_target(entity, own, target)) {
+                return PresentationState::default();
+            }
+            if self.pending_latent_materializations.keys().any(|target| is_action_target(entity, own, target)) {
+                return PresentationState::Opening;
+            }
+            PresentationState::Latent { openable: matches!(facts.get(KEY_MATERIALIZE_RECIPE), Some(MetadataValue::Text(_))) }
+        };
+        // A node is stale when the entity it presents (a ref's target) has a
+        // stale provider.
+        let any_stale = self.metadata.has_stale();
+        let stale = |entity: &EntityRef| {
+            any_stale && {
+                let target =
+                    (entity.kind == system::REF).then(|| catalog.entity(entity)).flatten().and_then(|entity| ref_target(&entity.values));
+                self.metadata.is_stale(&target.as_ref().unwrap_or(entity).provider)
+            }
+        };
+        let surface_phase = profile::span("surface");
+        let cx = SurfaceContext { generation: self.template_generation, variables: &node_variables.nodes, state: &state, stale: &stale };
+        let presentation = SurfaceSnapshot::resolve(&model, &surface_regions, cx, &mut self.kept.surface.borrow_mut());
+        model.presentation = Some(presentation);
+        drop(surface_phase);
         if let Some(surface) = &mut model.presentation {
             // Default groups (`.default`) cover tabs nothing else places.
             let default_groups = region_catalog_entities
@@ -1329,31 +1808,10 @@ impl ControllerState {
                 })
                 .map(|e| e.entity.clone())
                 .collect::<Vec<_>>();
-            surface.cover_workspaces(&self.tabs, &host_entities, &default_groups);
-            if self.metadata.has_stale() {
-                self.mark_stale(&mut surface.sections, catalog);
-            }
+            surface.cover_workspaces(&self.tabs, &host_entities, &default_groups, &stale);
             surface.diagnostics.extend(model.template_config.warnings.iter().cloned());
         }
         model
-    }
-
-    /// Flag nodes whose presented entity (a ref's target) has a stale provider.
-    fn mark_stale(&self, sections: &mut [Section], catalog: &CatalogEvaluation) {
-        fn mark(state: &ControllerState, nodes: &mut [PlacementNode], catalog: &CatalogEvaluation) {
-            for node in nodes {
-                let target = (node.entity.kind == system::REF)
-                    .then(|| catalog.entity(&node.entity))
-                    .flatten()
-                    .and_then(|entity| ref_target(&entity.values));
-                let presented = target.as_ref().unwrap_or(&node.entity);
-                node.stale = state.metadata.is_stale(&presented.provider);
-                mark(state, &mut node.children, catalog);
-            }
-        }
-        for section in sections {
-            mark(self, &mut section.nodes, catalog);
-        }
     }
 
     pub fn view_model_for_client(&self, client_id: u16) -> ControllerViewModel {
@@ -1431,7 +1889,6 @@ impl ControllerState {
         let _phase = profile::span("detail-generation");
         let catalog = &evaluation.catalog;
         let live = &evaluation.live;
-        let materializable = &evaluation.materializable;
         let entities: Vec<_> = match target {
             Some(target) => catalog.entity(target).into_iter().collect(),
             None => catalog.entities.iter().collect(),
@@ -1477,7 +1934,10 @@ impl ControllerState {
                     DetailIntent::OpenUrl
                 } else if workspace_id.is_some() {
                     DetailIntent::FocusWorkspace
-                } else if materializable.get(&entity.entity).copied().unwrap_or(false) {
+                } else if !evaluation.live_targets.contains(&action_target)
+                    && !self.pending_latent_materializations.contains_key(&action_target)
+                    && metadata_entry_text(&entity.values, KEY_MATERIALIZE_RECIPE).is_some()
+                {
                     DetailIntent::MaterializeWorkspace
                 } else {
                     DetailIntent::Inspect
@@ -1503,10 +1963,72 @@ impl ControllerState {
     }
 
     fn display_entity(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
+        let generation = self.template_generation;
+        if let Some((facts, at, display)) = self.kept.displays.borrow().get(&entity.entity) {
+            if *at == generation && Rc::ptr_eq(facts, &entity.facts) {
+                return display.clone();
+            }
+        }
+        let display = self.display_entity_uncached(entity);
+        let mut displays = self.kept.displays.borrow_mut();
+        // Forget entities whose facts nothing else holds any more (gone, or
+        // superseded), so the cache stays the size of the catalog.
+        if displays.len() > 64 && displays.len() > 2 * self.metadata.targets().count() {
+            displays.retain(|_, (facts, _, _)| Rc::strong_count(facts) > 1);
+        }
+        displays.insert(entity.entity.clone(), (entity.facts.clone(), generation, display.clone()));
+        display
+    }
+
+    /// `template_name` applied to `entity`, kept while its resolved facts
+    /// and the template catalog stay the same.
+    fn applied_template(
+        &self,
+        catalog: &TemplateConfigCatalog,
+        entity: &CatalogEntity,
+        template_name: &str,
+        metadata: &BTreeMap<String, MetadataValue>,
+    ) -> Option<Rc<ResolvedTemplateSlot>> {
+        let generation = self.template_generation;
+        let key = (entity.entity.clone(), template_name.to_owned());
+        if let Some((facts, at, slot)) = self.kept.applied.borrow().get(&key) {
+            if *at == generation && Rc::ptr_eq(facts, &entity.facts) {
+                return slot.clone();
+            }
+        }
+        let slot = match catalog.resolve_placement_template(template_name, metadata) {
+            Ok(Some(resolved)) => Some(ResolvedTemplateSlot {
+                template_name: resolved.name.clone(),
+                fields: vec![],
+                render_ready: Some(resolved.render_ready()),
+                setters: resolved.setters.clone(),
+                effective_kdl: resolved.dump_kdl(),
+                resolve_error: None,
+            }),
+            Ok(None) => None,
+            Err(error) => Some(ResolvedTemplateSlot {
+                template_name: "<resolve-error>".to_owned(),
+                fields: vec![],
+                render_ready: None,
+                setters: vec![],
+                effective_kdl: String::new(),
+                resolve_error: Some(error.to_string()),
+            }),
+        };
+        let slot = slot.map(Rc::new);
+        let mut applied = self.kept.applied.borrow_mut();
+        if applied.len() > 64 && applied.len() > 4 * self.metadata.targets().count() {
+            applied.retain(|_, (facts, _, _)| Rc::strong_count(facts) > 1);
+        }
+        applied.insert(key, (entity.facts.clone(), generation, slot.clone()));
+        slot
+    }
+
+    fn display_entity_uncached(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
         let metadata = entity_facts(&entity.entity, &entity.values);
         let templates = ResolvedTemplateSlots {
-            compact: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
-            detail: self.resolve_template_slot(TemplateConfigSlot::Detail, TemplateConfigNodeKind::Entity, &metadata),
+            compact: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata).map(Rc::new),
+            detail: self.resolve_template_slot(TemplateConfigSlot::Detail, TemplateConfigNodeKind::Entity, &metadata).map(Rc::new),
             ..Default::default()
         };
         EvaluatedPlacement {
@@ -1515,67 +2037,300 @@ impl ControllerState {
             tier: None,
             label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL).map(str::to_owned).unwrap_or_else(|| entity.entity.id.clone()),
             form: DISPLAY_FORM_COMPACT.into(),
-            metadata,
+            metadata: Rc::new(metadata),
             templates,
+            annotation: Default::default(),
             children: vec![],
         }
     }
 
-    /// Evaluate a placement's single loop into the entities it places.
-    ///
-    /// Predicates intersect: the smallest posting list is taken first and the
-    /// rest filter it, so cost tracks the most selective fact rather than the
-    /// catalog size.
+    /// Evaluate a placement's loops into the entities they place, with
+    /// nothing kept from earlier evaluations.
+    #[cfg(test)]
     fn evaluate_placement(
         &self,
         placement: &PlacementDefinition,
         entities: &[CatalogEntity],
         index: &PlacementIndex,
         form: &str,
-        layouts: &mut BTreeMap<PlacementKey, PlacementAnnotation>,
-    ) -> Vec<EvaluatedPlacement> {
+    ) -> Vec<Rc<EvaluatedPlacement>> {
+        let cx = PlacementContext { entities, index, form };
         placement
             .loops
             .iter()
-            .flat_map(|loop_definition| {
-                self.evaluate_placement_loop(
-                    loop_definition,
-                    entities,
-                    index,
-                    form,
-                    &BTreeMap::new(),
-                    &[],
-                    &PlacementKey::default(),
-                    0,
-                    layouts,
-                )
+            .flat_map(|definition| {
+                self.evaluate_loop(&cx, definition, &Scope::default(), &PlacementKey::default(), 0, None).0.placed().collect::<Vec<_>>()
             })
             .collect()
     }
 
-    /// Entities a loop selects under the given bindings, in its declared order.
+    /// Each region's placed entities. What an earlier evaluation placed is
+    /// kept: a loop whose reads are unchanged keeps its matches, and an entity
+    /// whose facts are unchanged keeps its display, so only paths to what
+    /// changed are evaluated again.
+    fn evaluate_regions(&self, entities: &[CatalogEntity], index: &PlacementIndex) -> Vec<EvaluatedSection> {
+        let Some(catalog) = self.template_catalog.as_ref() else {
+            return vec![];
+        };
+        let inputs = PlacementInputs {
+            template_generation: self.template_generation,
+            index_epoch: index.epoch,
+            show_finished: self.show_finished(),
+            ended: self.ended_subjects.clone(),
+            retained: self.retained_subjects.keys().cloned().collect(),
+        };
+        let mut kept = self.kept.placements.borrow_mut();
+        let previous = match kept.take() {
+            Some((at, regions)) if at == inputs => regions,
+            _ => vec![],
+        };
+        let mut previous = previous.into_iter();
+        let mut memos = Vec::with_capacity(catalog.regions().len());
+        let sections = catalog
+            .regions()
+            .iter()
+            .map(|definition| {
+                let mut prior = previous.next().unwrap_or_default().into_iter();
+                let mut loops = vec![];
+                if let Some(placement) = definition.placement.as_deref().and_then(|name| catalog.placement(name)) {
+                    let cx = PlacementContext { entities, index, form: &definition.form };
+                    for loop_definition in &placement.loops {
+                        let (memo, _) =
+                            self.evaluate_loop(&cx, loop_definition, &Scope::default(), &PlacementKey::default(), 0, prior.next());
+                        loops.push(memo);
+                    }
+                }
+                let metadata =
+                    BTreeMap::from([("presentation.template".to_owned(), MetadataValue::Text(definition.root_template.clone()))]);
+                let section = EvaluatedSection {
+                    definition: definition.clone(),
+                    root: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
+                    entities: loops.iter().flat_map(LoopMemo::placed).collect(),
+                };
+                memos.push(loops);
+                section
+            })
+            .collect();
+        *kept = Some((inputs, memos));
+        sections
+    }
+
+    /// Evaluate one loop in `scope`, reusing `prior` (this loop's evaluation
+    /// in the same place last time) where what it read is unchanged. Returns
+    /// whether what it places differs from `prior`.
+    fn evaluate_loop<'a>(
+        &self,
+        cx: &PlacementContext<'a, '_>,
+        definition: &PlacementLoop,
+        scope: &Scope<'_, 'a>,
+        parent: &PlacementKey,
+        depth: usize,
+        prior: Option<LoopMemo>,
+    ) -> (LoopMemo, bool) {
+        const MAX_PLACEMENT_DEPTH: usize = 64;
+        if depth >= MAX_PLACEMENT_DEPTH {
+            return (LoopMemo::default(), prior.is_some_and(|memo| !memo.nodes.is_empty()));
+        }
+        match prior {
+            Some(memo) if memo.reads.valid(scope, cx.index) => {
+                let mut changed = false;
+                let nodes = memo
+                    .nodes
+                    .into_iter()
+                    .map(|node| {
+                        let (node, node_changed) = self.evaluate_node(cx, definition, scope, parent, depth, node.position, Some(node));
+                        changed |= node_changed;
+                        node
+                    })
+                    .collect();
+                (LoopMemo { reads: memo.reads, nodes }, changed)
+            }
+            prior => {
+                let mut earlier: HashMap<EntityRef, NodeMemo> = prior
+                    .map(|memo| memo.nodes.into_iter().map(|node| (node.placement.entity.clone(), node)).collect())
+                    .unwrap_or_default();
+                let matching = profile::span("placement-matches");
+                let mut reads = LoopReads::default();
+                let matches = self.placement_matches(definition, cx.entities, cx.index, scope, &mut reads);
+                drop(matching);
+                let nodes = matches
+                    .into_iter()
+                    .map(|position| {
+                        let prior = earlier.remove(&cx.entities[position].entity);
+                        self.evaluate_node(cx, definition, scope, parent, depth, position, prior).0
+                    })
+                    .collect();
+                (LoopMemo { reads, nodes }, true)
+            }
+        }
+    }
+
+    /// Evaluate the entity at `position` as a match of `definition`, reusing
+    /// `prior` while its facts and its related reads are unchanged. Returns
+    /// whether its placement differs from `prior`'s.
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_node<'a>(
+        &self,
+        cx: &PlacementContext<'a, '_>,
+        definition: &PlacementLoop,
+        scope: &Scope<'_, 'a>,
+        parent: &PlacementKey,
+        depth: usize,
+        position: usize,
+        prior: Option<NodeMemo>,
+    ) -> (NodeMemo, bool) {
+        let entity = &cx.entities[position];
+        let reusable = prior.as_ref().is_some_and(|node| {
+            Rc::ptr_eq(&node.facts, &entity.facts) && {
+                let related = Scope::default();
+                let related = related.within(&node.related_binding, entity, true);
+                node.related.iter().all(|reads| reads.valid(&related, cx.index))
+            }
+        });
+        if reusable {
+            let mut node = prior.expect("reusable implies prior");
+            let loops = self.child_loops(definition, node.child_loops);
+            let child_scope = scope.within(&node.binding, entity, node.fresh);
+            let key = node.placement.placement.clone().expect("a placed entity has a key");
+            let mut changed = false;
+            let children = std::mem::take(&mut node.children);
+            node.children = loops
+                .iter()
+                .zip(children)
+                .map(|(nested, memo)| {
+                    let (memo, loop_changed) = self.evaluate_loop(cx, nested, &child_scope, &key, depth + 1, Some(memo));
+                    changed |= loop_changed;
+                    memo
+                })
+                .collect();
+            if changed {
+                let mut placement = (*node.placement).clone();
+                placement.children = node.children.iter().flat_map(LoopMemo::placed).collect();
+                node.placement = Rc::new(placement);
+            }
+            return (node, changed);
+        }
+
+        let display_phase = profile::span("placement-display");
+        let mut display = self.display_entity(entity);
+        drop(display_phase);
+        display.form = cx.form.to_owned();
+        display.tier = definition.tier;
+        if !definition.fields.is_empty() {
+            display.templates.compact = Some(Rc::new(ResolvedTemplateSlot {
+                template_name: format!("placement:{}", definition.binding),
+                fields: vec![],
+                setters: vec![],
+                effective_kdl: String::new(),
+                resolve_error: None,
+                render_ready: Some(TemplateConfigRenderReady {
+                    fields: definition.fields.clone(),
+                    controls: vec![],
+                    chrome: Default::default(),
+                }),
+            }));
+            if cx.form != DISPLAY_FORM_COMPACT {
+                display.templates.detail = display.templates.compact.clone();
+            }
+        }
+        let mut key = parent.clone();
+        key.0.push(PlacementSegment { loop_name: definition.binding.clone(), entity: entity.entity.clone() });
+        let related_phase = profile::span("placement-related-detail");
+        let (related_detail, related, related_binding) = self.related_detail_fields(&display, entity, cx.entities, cx.index);
+        drop(related_phase);
+        display.annotation = PlacementAnnotation { layout: definition.layout.clone(), related_detail };
+        display.placement = Some(key.clone());
+
+        let mut child_loops = ChildLoops::Own;
+        let mut binding = definition.binding.clone();
+        let mut fresh = false;
+        let applied_phase = profile::span("placement-applied-template");
+        if let Some(requested) = definition.apply_template.as_deref() {
+            let template_name = if requested.is_empty() { format!("{}/line", entity.entity.kind) } else { requested.to_owned() };
+            if let Some(catalog) = self.template_catalog.as_ref() {
+                if let Some(address) = catalog.placement_template_address(&template_name, &display.metadata) {
+                    let resolved_slot = self.applied_template(catalog, entity, &template_name, &display.metadata);
+                    if let Some(slot) = resolved_slot {
+                        display.templates.compact = Some(slot.clone());
+                        if cx.form != DISPLAY_FORM_COMPACT {
+                            display.templates.detail = Some(slot);
+                        }
+                    }
+                    child_loops = ChildLoops::Template(address);
+                    // Applied templates intentionally start a new lexical environment.
+                    fresh = true;
+                    binding = template_name.split('/').next().unwrap_or(&template_name).to_owned();
+                } else if !requested.is_empty() {
+                    let slot = Rc::new(ResolvedTemplateSlot {
+                        template_name: "<resolve-error>".to_owned(),
+                        fields: vec![],
+                        render_ready: None,
+                        setters: vec![],
+                        effective_kdl: String::new(),
+                        resolve_error: Some(format!("unknown applied template {template_name}")),
+                    });
+                    display.templates.compact = Some(slot.clone());
+                    display.templates.detail = Some(slot);
+                    child_loops = ChildLoops::None;
+                }
+            }
+        }
+        drop(applied_phase);
+        let mut earlier = prior.filter(|node| node.child_loops == child_loops).map(|node| node.children.into_iter()).into_iter().flatten();
+        let child_scope = scope.within(&binding, entity, fresh);
+        let children: Vec<LoopMemo> = self
+            .child_loops(definition, child_loops)
+            .iter()
+            .map(|nested| self.evaluate_loop(cx, nested, &child_scope, &key, depth + 1, earlier.next()).0)
+            .collect();
+        display.children = children.iter().flat_map(LoopMemo::placed).collect();
+        let node = NodeMemo {
+            position,
+            facts: entity.facts.clone(),
+            placement: Rc::new(display),
+            related,
+            related_binding,
+            binding,
+            fresh,
+            child_loops,
+            children,
+        };
+        (node, true)
+    }
+
+    /// The loops nested under a match of `definition`.
+    fn child_loops<'d>(&'d self, definition: &'d PlacementLoop, loops: ChildLoops) -> &'d [PlacementLoop] {
+        match (loops, self.template_catalog.as_ref()) {
+            (ChildLoops::Own, _) => &definition.loops,
+            (ChildLoops::Template(address), Some(catalog)) => &catalog.template_at(address).loops,
+            (ChildLoops::Template(_), None) | (ChildLoops::None, _) => &[],
+        }
+    }
+
+    /// Positions of the entities a loop selects in `scope`, in its declared
+    /// order, recording what it read in `reads`.
     fn placement_matches<'a>(
         &self,
         loop_definition: &PlacementLoop,
         entities: &'a [CatalogEntity],
         index: &PlacementIndex,
-        bindings: &BTreeMap<String, &'a CatalogEntity>,
-        ancestors: &[EntityRef],
-    ) -> Vec<&'a CatalogEntity> {
+        scope: &Scope<'_, 'a>,
+        reads: &mut LoopReads,
+    ) -> Vec<usize> {
         let mut postings = loop_definition
             .predicates
             .iter()
             .map(|predicate| {
                 if predicate.value.is_none() && index.ref_keys.contains(&predicate.key) {
-                    return predicate
-                        .of
-                        .as_ref()
-                        .and_then(|name| bindings.get(name))
-                        .map(|bound| index.lookup_ref(&predicate.key, &bound.entity))
-                        .unwrap_or_default();
+                    let Some(bound) = predicate.of.as_ref().and_then(|name| reads.bind(scope, name)) else {
+                        return &[][..];
+                    };
+                    let (positions, read) = index.lookup(&predicate.key, IndexedValue::Entity(bound.entity.clone()));
+                    reads.postings.push(read);
+                    return positions;
                 }
                 let value = predicate.value.clone().or_else(|| {
-                    let bound = bindings.get(predicate.of.as_deref()?)?;
+                    let bound = reads.bind(scope, predicate.of.as_deref()?)?;
                     if predicate.key == "entity.kind" {
                         Some(bound.entity.kind.clone())
                     } else if predicate.key == "entity.id" {
@@ -1584,7 +2339,12 @@ impl ControllerState {
                         bound.values.get(&predicate.key).and_then(|entry| placement_index_text(&entry.value))
                     }
                 });
-                value.map(|value| index.lookup_value(&predicate.key, &value)).unwrap_or_default()
+                let Some(value) = value else {
+                    return &[][..];
+                };
+                let (positions, read) = index.lookup(&predicate.key, IndexedValue::Scalar(value));
+                reads.postings.push(read);
+                positions
             })
             .collect::<Vec<_>>();
         // A join on a provider's entity (`of`) stays within that provider:
@@ -1594,7 +2354,7 @@ impl ControllerState {
         let joined_providers = loop_definition
             .predicates
             .iter()
-            .filter_map(|predicate| bindings.get(predicate.of.as_deref()?))
+            .filter_map(|predicate| scope.bound(predicate.of.as_deref()?))
             .map(|bound| bound.entity.provider.as_str())
             .filter(|provider| *provider != LOCAL_PROVIDER)
             .collect::<BTreeSet<_>>();
@@ -1605,43 +2365,46 @@ impl ControllerState {
         };
         let mut matches = seed
             .iter()
+            .copied()
             .filter(|position| rest.iter().all(|matches| matches.binary_search(position).is_ok()))
             .filter(|position| {
                 // An open ended workspace keeps its retained subject path reachable
                 // even while Show finished is off (wheelhouse#188 owner ruling).
                 // This deliberately overrides all visibility policies: open ended
                 // subjects must remain reachable on their retained path.
-                entities.get(**position).is_some_and(|entity| {
+                entities.get(*position).is_some_and(|entity| {
                     self.ended_subjects.contains(&entity.entity) && self.retained_subjects.contains_key(&entity.entity)
                 }) || loop_definition.visibility.as_ref().is_none_or(|name| {
                     debug_assert!(index.visibility.contains_key(name), "validated visibility policy {name} was not evaluated");
-                    index.visibility.get(name).and_then(|visible| visible.get(**position)).copied().unwrap_or(false)
+                    index.visibility.get(name).and_then(|visible| visible.get(*position)).copied().unwrap_or(false)
                 })
             })
-            .filter_map(|position| entities.get(*position))
-            .filter(|entity| joined_providers.iter().all(|provider| entity.entity.provider == *provider))
-            .filter(|entity| !ancestors.contains(&entity.entity))
-            .filter(|entity| {
-                show_finished || !self.ended_subjects.contains(&entity.entity) || self.retained_subjects.contains_key(&entity.entity)
+            .filter(|position| {
+                let entity = &entities[*position];
+                joined_providers.iter().all(|provider| entity.entity.provider == *provider)
+                    && !scope.is_ancestor(&entity.entity)
+                    && (show_finished
+                        || !self.ended_subjects.contains(&entity.entity)
+                        || self.retained_subjects.contains_key(&entity.entity))
             })
             .collect::<Vec<_>>();
         if let Some(key) = &loop_definition.in_key {
             let Some(MetadataValue::EntityRefs(refs)) = loop_definition
                 .of
                 .as_ref()
-                .and_then(|name| bindings.get(name))
+                .and_then(|name| reads.bind(scope, name))
                 .and_then(|entity| entity.values.get(key))
                 .map(|entry| &entry.value)
             else {
                 return vec![];
             };
-            let eligible: BTreeMap<_, _> = matches.iter().map(|entity| (&entity.entity, *entity)).collect();
+            let eligible: BTreeMap<_, _> = matches.iter().map(|&position| (&entities[position].entity, position)).collect();
             let mut seen = BTreeSet::new();
             matches =
                 refs.iter().filter(|reference| seen.insert(*reference)).filter_map(|reference| eligible.get(reference).copied()).collect();
         }
         if loop_definition.in_key.is_none() || !loop_definition.order.is_empty() {
-            matches.sort_by(|left, right| placement_entity_order(left, right, &loop_definition.order));
+            matches.sort_by(|&left, &right| placement_entity_order(&entities[left], &entities[right], &loop_definition.order));
         }
         matches
     }
@@ -1649,163 +2412,43 @@ impl ControllerState {
     /// Fields contributed to a placed entity's detail by loops declared in its
     /// detail template. The template binds the entity under its own name, as an
     /// applied template does, and each loop renders its fields per match.
-    fn related_detail_fields<'a>(
+    /// Returns them with what each loop read and the name it bound.
+    fn related_detail_fields(
         &self,
         display: &EvaluatedPlacement,
-        entity: &'a CatalogEntity,
-        entities: &'a [CatalogEntity],
+        entity: &CatalogEntity,
+        entities: &[CatalogEntity],
         index: &PlacementIndex,
-    ) -> Vec<TemplateConfigRenderedField> {
+    ) -> (Vec<TemplateConfigRenderedField>, Vec<LoopReads>, String) {
         let (Some(catalog), Some(detail)) = (self.template_catalog.as_ref(), display.templates.detail.as_ref()) else {
-            return vec![];
+            return (vec![], vec![], String::new());
         };
         let Some(template) = catalog.placement_template(&detail.template_name, &display.metadata) else {
-            return vec![];
+            return (vec![], vec![], String::new());
         };
         let binding = detail.template_name.split('/').next().unwrap_or(&detail.template_name).to_owned();
-        let bindings = BTreeMap::from([(binding, entity)]);
-        let ancestors = [entity.entity.clone()];
-        template
-            .loops
-            .iter()
-            .flat_map(|related_loop| {
-                self.placement_matches(related_loop, entities, index, &bindings, &ancestors).into_iter().flat_map(move |related| {
-                    let metadata = entity_facts(&related.entity, &related.values);
-                    let context = TemplateConfigMatchContext {
-                        slot: TemplateConfigSlot::Detail,
-                        node_kind: TemplateConfigNodeKind::Entity,
-                        metadata: &metadata,
-                        collapsed: false,
-                        collapsible: false,
-                        active_tab_name: None,
-                    };
-                    related_loop.fields.iter().filter_map(|spec| spec.render(context)).collect::<Vec<_>>()
-                })
-            })
-            .collect()
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn evaluate_placement_loop<'a>(
-        &self,
-        loop_definition: &PlacementLoop,
-        entities: &'a [CatalogEntity],
-        index: &PlacementIndex,
-        form: &str,
-        bindings: &BTreeMap<String, &'a CatalogEntity>,
-        ancestors: &[EntityRef],
-        parent_placement: &PlacementKey,
-        depth: usize,
-        layouts: &mut BTreeMap<PlacementKey, PlacementAnnotation>,
-    ) -> Vec<EvaluatedPlacement> {
-        const MAX_PLACEMENT_DEPTH: usize = 64;
-        if depth >= MAX_PLACEMENT_DEPTH {
-            return vec![];
+        let root = Scope::default();
+        let scope = root.within(&binding, entity, true);
+        let mut fields = vec![];
+        let mut reads = vec![];
+        for related_loop in &template.loops {
+            let mut loop_reads = LoopReads::default();
+            for position in self.placement_matches(related_loop, entities, index, &scope, &mut loop_reads) {
+                let related = &entities[position];
+                let metadata = entity_facts(&related.entity, &related.values);
+                let context = TemplateConfigMatchContext {
+                    slot: TemplateConfigSlot::Detail,
+                    node_kind: TemplateConfigNodeKind::Entity,
+                    metadata: &metadata,
+                    collapsed: false,
+                    collapsible: false,
+                    active_tab_name: None,
+                };
+                fields.extend(related_loop.fields.iter().filter_map(|spec| spec.render(context)));
+            }
+            reads.push(loop_reads);
         }
-        let matches = self.placement_matches(loop_definition, entities, index, bindings, ancestors);
-        matches
-            .into_iter()
-            .map(|entity| {
-                let mut display = self.display_entity(entity);
-                display.form = form.to_owned();
-                display.tier = loop_definition.tier;
-                if !loop_definition.fields.is_empty() {
-                    display.templates.compact = Some(ResolvedTemplateSlot {
-                        template_name: format!("placement:{}", loop_definition.binding),
-                        fields: vec![],
-                        setters: vec![],
-                        effective_kdl: String::new(),
-                        resolve_error: None,
-                        render_ready: Some(TemplateConfigRenderReady {
-                            fields: loop_definition.fields.clone(),
-                            controls: vec![],
-                            chrome: Default::default(),
-                        }),
-                    });
-                    if form != DISPLAY_FORM_COMPACT {
-                        display.templates.detail = display.templates.compact.clone();
-                    }
-                }
-                let mut placement = parent_placement.clone();
-                placement.0.push(PlacementSegment { loop_name: loop_definition.binding.clone(), entity: entity.entity.clone() });
-                let related_detail = self.related_detail_fields(&display, entity, entities, index);
-                layouts.insert(placement.clone(), PlacementAnnotation { layout: loop_definition.layout.clone(), related_detail });
-                display.placement = Some(placement.clone());
-                let mut nested_bindings = bindings.clone();
-                nested_bindings.insert(loop_definition.binding.clone(), entity);
-                let mut nested_ancestors = ancestors.to_vec();
-                nested_ancestors.push(entity.entity.clone());
-
-                let mut child_loops = loop_definition.loops.as_slice();
-                if let Some(requested) = loop_definition.apply_template.as_deref() {
-                    let template_name = if requested.is_empty() { format!("{}/line", entity.entity.kind) } else { requested.to_owned() };
-                    if let Some(catalog) = self.template_catalog.as_ref() {
-                        if let Some(template) = catalog.placement_template(&template_name, &display.metadata) {
-                            let resolved_slot = match catalog.resolve_placement_template(&template_name, &display.metadata) {
-                                Ok(Some(resolved)) => Some(ResolvedTemplateSlot {
-                                    template_name: resolved.name.clone(),
-                                    fields: vec![],
-                                    render_ready: Some(resolved.render_ready()),
-                                    setters: resolved.setters.clone(),
-                                    effective_kdl: resolved.dump_kdl(),
-                                    resolve_error: None,
-                                }),
-                                Ok(None) => None,
-                                Err(error) => Some(ResolvedTemplateSlot {
-                                    template_name: "<resolve-error>".to_owned(),
-                                    fields: vec![],
-                                    render_ready: None,
-                                    setters: vec![],
-                                    effective_kdl: String::new(),
-                                    resolve_error: Some(error.to_string()),
-                                }),
-                            };
-                            if let Some(slot) = resolved_slot {
-                                display.templates.compact = Some(slot.clone());
-                                if form != DISPLAY_FORM_COMPACT {
-                                    display.templates.detail = Some(slot);
-                                }
-                            }
-                            child_loops = template.loops.as_slice();
-                            // Applied templates intentionally start a new lexical environment.
-                            nested_bindings.clear();
-                            let own_binding = template_name.split('/').next().unwrap_or(&template_name).to_owned();
-                            nested_bindings.insert(own_binding, entity);
-                        } else if !requested.is_empty() {
-                            let slot = ResolvedTemplateSlot {
-                                template_name: "<resolve-error>".to_owned(),
-                                fields: vec![],
-                                render_ready: None,
-                                setters: vec![],
-                                effective_kdl: String::new(),
-                                resolve_error: Some(format!("unknown applied template {template_name}")),
-                            };
-                            display.templates.compact = Some(slot.clone());
-                            display.templates.detail = Some(slot);
-                            child_loops = &[];
-                            nested_bindings.clear();
-                        }
-                    }
-                }
-                display.children = child_loops
-                    .iter()
-                    .flat_map(|nested| {
-                        self.evaluate_placement_loop(
-                            nested,
-                            entities,
-                            index,
-                            form,
-                            &nested_bindings,
-                            &nested_ancestors,
-                            &placement,
-                            depth + 1,
-                            layouts,
-                        )
-                    })
-                    .collect();
-                display
-            })
-            .collect()
+        (fields, reads, binding)
     }
 
     fn resolve_effective_variables(&self, resolved_metadata: &[ResolvedMetadata]) -> (Vec<EffectiveNodeVariables>, Vec<String>) {
@@ -1821,26 +2464,73 @@ impl ControllerState {
         )
     }
 
-    fn resolve_placement_variables(
+    /// Resolve each placed node's variables, inheriting from `root` down.
+    /// A node whose placement and parent's variables are unchanged keeps
+    /// its variables. Returns the warnings, kept with them.
+    fn resolve_placement_variables(&self, regions: &[EvaluatedSection], root: Option<&EffectiveNodeVariables>) -> BTreeSet<String> {
+        let mut kept = self.kept.variables.borrow_mut();
+        let (Some(catalog), Some(root)) = (self.template_catalog.as_ref(), root) else {
+            *kept = VariablesKept::default();
+            return BTreeSet::new();
+        };
+        let inputs = (self.template_generation, self.node_variable_overrides.clone());
+        let mut prior = std::mem::take(&mut kept.nodes);
+        if kept.inputs.as_ref() != Some(&inputs) {
+            prior.clear();
+            kept.inputs = Some(inputs);
+        }
+        let root = match kept.root.take() {
+            Some(kept) if *kept == *root => kept,
+            _ => Rc::new(root.clone()),
+        };
+        let mut nodes = HashMap::with_capacity(prior.len());
+        let mut warnings = BTreeSet::new();
+        for placement in regions.iter().flat_map(|region| &region.entities) {
+            self.node_variables(catalog, placement, &root, &mut prior, &mut nodes, &mut warnings);
+        }
+        kept.root = Some(root);
+        kept.nodes = nodes;
+        warnings
+    }
+
+    fn node_variables(
         &self,
         catalog: &TemplateConfigCatalog,
-        entity: &EvaluatedPlacement,
-        parent: &NodeKey,
-        inherited_by_node: &mut BTreeMap<NodeKey, BTreeMap<String, EffectiveVariableValue>>,
-        output: &mut Vec<EffectiveNodeVariables>,
+        placement: &Rc<EvaluatedPlacement>,
+        parent: &Rc<EffectiveNodeVariables>,
+        prior: &mut NodeVariables,
+        nodes: &mut NodeVariables,
         warnings: &mut BTreeSet<String>,
     ) {
-        let Some(key) = entity.placement.clone() else {
+        let Some(key) = placement.placement.as_ref() else {
             return;
         };
-        let node = NodeKey::Placement(key);
-        let template =
-            if entity.form == DISPLAY_FORM_COMPACT { entity.templates.compact.as_ref() } else { entity.templates.detail.as_ref() };
-        let resolved = self.resolve_variables_at_node(catalog, &node, inherited_by_node.get(parent), &entity.metadata, template, warnings);
-        inherited_by_node.insert(node.clone(), resolved.values.clone());
-        output.push(EffectiveNodeVariables { node: node.clone(), values: resolved.values, declarations: resolved.declarations });
-        for child in &entity.children {
-            self.resolve_placement_variables(catalog, child, &node, inherited_by_node, output, warnings);
+        let address = Rc::as_ptr(placement);
+        let memo = match prior.remove(&address) {
+            Some(memo) if Rc::ptr_eq(&memo.placement, placement) && Rc::ptr_eq(&memo.parent, parent) => memo,
+            _ => {
+                let node = NodeKey::Placement(key.clone());
+                let template = if placement.form == DISPLAY_FORM_COMPACT {
+                    placement.templates.compact.as_deref()
+                } else {
+                    placement.templates.detail.as_deref()
+                };
+                let mut own = BTreeSet::new();
+                let resolved =
+                    self.resolve_variables_at_node(catalog, &node, Some(&parent.values), &placement.metadata, template, &mut own);
+                VariablesMemo {
+                    placement: placement.clone(),
+                    parent: parent.clone(),
+                    resolved: Rc::new(EffectiveNodeVariables { node, values: resolved.values, declarations: resolved.declarations }),
+                    warnings: own.into_iter().collect(),
+                }
+            }
+        };
+        warnings.extend(memo.warnings.iter().cloned());
+        let resolved = memo.resolved.clone();
+        nodes.insert(address, memo);
+        for child in &placement.children {
+            self.node_variables(catalog, child, &resolved, prior, nodes, warnings);
         }
     }
 
@@ -1941,7 +2631,7 @@ impl ControllerState {
     }
 
     fn latent_tabs(&self) -> Vec<LatentTab> {
-        self.latent_tabs_in(&CatalogEvaluation::new(self.catalog_entities()))
+        self.latent_tabs_in(&self.catalog())
     }
 
     fn latent_tabs_in(&self, catalog: &CatalogEvaluation) -> Vec<LatentTab> {
@@ -1951,7 +2641,6 @@ impl ControllerState {
         entities
             .iter()
             .filter_map(|entity| {
-                let display = self.display_entity(entity);
                 let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity.entity.action_target());
@@ -1969,12 +2658,8 @@ impl ControllerState {
                     },
                     action_target,
                     name,
-                    status_state: metadata_entry_text(&entity.values, KEY_STATUS_STATE).map(str::to_owned),
-                    summary: metadata_entry_text(&entity.values, KEY_SUMMARY_TEXT).map(str::to_owned),
-                    source: metadata_entry_text(&entity.values, KEY_SOURCE).map(str::to_owned),
                     materialize_recipe: metadata_entry_text(&entity.values, KEY_MATERIALIZE_RECIPE).map(str::to_owned),
                     checkout_path: metadata_entry_text(&entity.values, KEY_CHECKOUT_PATH).map(str::to_owned),
-                    templates: display.templates,
                 })
             })
             .collect()
@@ -2005,8 +2690,7 @@ impl ControllerState {
                         subject.clone(),
                         CatalogEntity {
                             entity: subject,
-                            sources,
-                            values,
+                            facts: Rc::new(ResolvedFacts { values, sources }),
                             ordinal: self.metadata.target_ordinal(&target).unwrap_or_default(),
                         },
                     );
@@ -2032,10 +2716,11 @@ impl ControllerState {
     fn refresh_retained_subjects_for(&mut self, target: Option<&EntityRef>) -> bool {
         let now = self.now();
         let mut changed = false;
-        for (subject, retained) in &mut self.retained_subjects {
-            if target.is_some_and(|target| target != subject) {
-                continue;
-            }
+        let range = match target {
+            Some(target) => (Bound::Included(target), Bound::Included(target)),
+            None => (Bound::Unbounded, Bound::Unbounded),
+        };
+        for (subject, retained) in self.retained_subjects.range_mut::<EntityRef, _>(range) {
             let (values, sources) = self.metadata.resolved_entries_with_sources_for(&EntityId::Entity(subject.clone()), now);
             // While identity remains observed, individual facts keep their ordinary
             // freshness. Only unobserved identities need the last known record.
@@ -2276,69 +2961,127 @@ impl ControllerState {
         let _phase = profile::span("catalog");
         #[cfg(test)]
         CATALOG_BUILDS.with(|count| count.set(count.get() + 1));
+        let now = self.now();
         let mut entities = self
             .metadata
             .targets()
-            .filter_map(|target| {
-                let EntityId::Entity(entity) = target else {
-                    return None;
-                };
-                let (values, sources) = self.metadata.resolved_entries_with_sources_for(target, self.now());
-                if values.is_empty() {
-                    return None;
-                }
-                Some(CatalogEntity {
-                    entity: entity.clone(),
-                    sources,
-                    values,
-                    ordinal: self.metadata.target_ordinal(target).unwrap_or_default(),
-                })
+            .filter_map(|target| match target {
+                EntityId::Entity(entity) if !self.retained_subjects.contains_key(entity) => self.catalog_entity(entity, now),
+                _ => None,
             })
+            .chain(self.retained_subjects.keys().filter_map(|subject| self.catalog_entity(subject, now)))
             .collect::<Vec<_>>();
-        let positions: BTreeMap<_, _> = entities.iter().enumerate().map(|(index, entity)| (entity.entity.clone(), index)).collect();
-        for (subject, retained) in &self.retained_subjects {
-            if let Some(index) = positions.get(subject) {
-                let current = &mut entities[*index];
-                let mut values = retained.values.clone();
-                values.extend(std::mem::take(&mut current.values));
-                current.values = values;
-                let mut sources = retained.sources.clone();
-                sources.extend(std::mem::take(&mut current.sources));
-                current.sources = sources;
-            } else {
-                entities.push(retained.clone());
-            }
-        }
-        let now = self.now();
-        for entity in &mut entities {
-            if self.ended_subjects.contains(&entity.entity) {
-                entity.sources.remove(KEY_STATUS_STATE);
-                entity.sources.remove("presentation.ended");
-                entity.values.insert(
-                    KEY_STATUS_STATE.to_owned(),
-                    MetadataEntry {
-                        value: MetadataValue::Text("ended".to_owned()),
-                        updated_at: now,
-                        ttl_ms: None,
-                        precedence: 0,
-                        ordinal: entity.ordinal,
-                    },
-                );
-                entity.values.insert(
-                    "presentation.ended".to_owned(),
-                    MetadataEntry {
-                        value: MetadataValue::Bool(true),
-                        updated_at: now,
-                        ttl_ms: None,
-                        precedence: 0,
-                        ordinal: entity.ordinal,
-                    },
-                );
-            }
-        }
         Self::present_refs(&mut entities);
-        entities.sort_by(|a, b| a.ordinal.cmp(&b.ordinal).then_with(|| a.entity.cmp(&b.entity)));
+        entities.sort_by(catalog_order);
         entities
+    }
+
+    /// One entity as the catalog presents it, but for a ref's target's facts
+    /// (`present_refs`): its resolved facts, over what is retained of it if
+    /// it is a retained subject, and marked as ended if it is an ended one.
+    /// None if it has no facts.
+    fn catalog_entity(&self, entity: &EntityRef, now: u64) -> Option<CatalogEntity> {
+        let target = EntityId::Entity(entity.clone());
+        let facts = self.metadata.resolved(&target, now);
+        let mut current = (!facts.values.is_empty()).then(|| CatalogEntity {
+            entity: entity.clone(),
+            facts,
+            ordinal: self.metadata.target_ordinal(&target).unwrap_or_default(),
+        });
+        if let Some(retained) = self.retained_subjects.get(entity) {
+            current = Some(match current {
+                Some(mut current) => {
+                    let mut values = retained.values.clone();
+                    values.extend(std::mem::take(&mut current.values));
+                    current.values = values;
+                    let mut sources = retained.sources.clone();
+                    sources.extend(std::mem::take(&mut current.sources));
+                    current.sources = sources;
+                    current
+                }
+                None => retained.clone(),
+            });
+        }
+        if let Some(entity) = current.as_mut().filter(|entity| self.ended_subjects.contains(&entity.entity)) {
+            let ordinal = entity.ordinal;
+            entity.sources.remove(KEY_STATUS_STATE);
+            entity.sources.remove("presentation.ended");
+            entity.values.insert(
+                KEY_STATUS_STATE.to_owned(),
+                MetadataEntry { value: MetadataValue::Text("ended".to_owned()), updated_at: now, ttl_ms: None, precedence: 0, ordinal },
+            );
+            entity.values.insert(
+                "presentation.ended".to_owned(),
+                MetadataEntry { value: MetadataValue::Bool(true), updated_at: now, ttl_ms: None, precedence: 0, ordinal },
+            );
+        }
+        current
+    }
+
+    /// The catalog, brought up to date from the one built last time: only
+    /// entities whose facts changed are built again, and those derived from
+    /// others (retained subjects, refs) each time. An entity whose facts are
+    /// the same as before keeps them, shared, so what is kept from them stays.
+    fn catalog(&self) -> Rc<CatalogEvaluation> {
+        let changed = self.metadata.take_catalog_changes();
+        let mut kept = self.kept.catalog.borrow_mut();
+        let previous = kept.evaluation.take().filter(|_| !changed.all);
+        let Some(previous) = previous else {
+            kept.generation += 1;
+            let catalog = Rc::new(CatalogEvaluation::new(self.catalog_entities(), kept.generation));
+            kept.evaluation = Some(catalog.clone());
+            return catalog;
+        };
+        let _phase = profile::span("catalog");
+        let now = self.now();
+        let mut catalog = Rc::try_unwrap(previous).unwrap_or_else(|shared| (*shared).clone());
+        let mut again: BTreeSet<EntityRef> = changed
+            .targets
+            .into_iter()
+            .filter_map(|target| match target {
+                EntityId::Entity(entity) => Some(entity),
+                _ => None,
+            })
+            .collect();
+        again.extend(self.retained_subjects.keys().cloned());
+        again.extend(std::mem::take(&mut catalog.derived));
+        let (refs, others): (Vec<_>, Vec<_>) = again.into_iter().partition(|entity| entity.kind == system::REF);
+        let mut structural = false;
+        for entity in others {
+            let next = self.catalog_entity(&entity, now);
+            structural |= catalog.replace(&entity, next);
+        }
+        if structural {
+            catalog.reorder();
+        }
+        // Refs present their targets as now in the catalog.
+        let mut structural = false;
+        for entity in refs {
+            let next = self.catalog_entity(&entity, now).map(|mut entity| {
+                if let Some(target) = ref_target(&entity.values).and_then(|target| catalog.entity(&target)) {
+                    if target.entity.kind != system::REF {
+                        Self::present_ref(&mut entity, target);
+                    }
+                }
+                entity
+            });
+            structural |= catalog.replace(&entity, next);
+        }
+        if structural {
+            catalog.reorder();
+        }
+        if catalog.structure_changed {
+            kept.generation += 1;
+            catalog.generation = kept.generation;
+            catalog.structure_changed = false;
+        }
+        catalog.derived = self.retained_subjects.keys().cloned().collect();
+        catalog
+            .derived
+            .extend(catalog.entities.iter().filter(|entity| entity.entity.kind == system::REF).map(|entity| entity.entity.clone()));
+        let catalog = Rc::new(catalog);
+        kept.evaluation = Some(catalog.clone());
+        catalog
     }
 
     /// A `.ref` (a ghost) presents its `.target`: it takes the target's facts
@@ -2363,42 +3106,44 @@ impl ControllerState {
         let resolved = entities
             .iter()
             .filter(|e| e.entity.kind != system::REF && wanted.contains(&e.entity))
-            .map(|e| (e.entity.clone(), (e.values.clone(), e.sources.clone())))
+            .map(|e| (e.entity.clone(), e.clone()))
             .collect::<BTreeMap<_, _>>();
         for entity in entities.iter_mut().filter(|e| e.entity.kind == system::REF) {
-            let Some(target) = targets.get(&entity.entity) else {
-                continue;
-            };
-            let Some((values, sources)) = resolved.get(target) else {
-                continue;
-            };
-            let own = std::mem::replace(&mut entity.values, values.clone());
-            let own_sources = std::mem::replace(&mut entity.sources, sources.clone());
-            entity.values.retain(|key, _| !system::is_system(key));
-            entity.sources.retain(|key, _| !system::is_system(key));
-            for (key, value) in own.iter().filter(|(key, _)| system::is_system(key)) {
-                entity.values.insert(key.clone(), value.clone());
+            if let Some(target) = targets.get(&entity.entity).and_then(|target| resolved.get(target)) {
+                Self::present_ref(entity, target);
             }
-            for (key, source) in own_sources.iter().filter(|(key, _)| system::is_system(key)) {
-                entity.sources.insert(key.clone(), source.clone());
-            }
-            // Live state and activation key on the action target: the
-            // target's own, else one made from its identity. The made entry
-            // dates from the ref's `.target`, so it is as fresh as the
-            // reference; it never expires and loses to any real one.
-            if !entity.values.contains_key(KEY_ACTION_TARGET) {
-                let ordinal = entity.ordinal;
-                entity.values.insert(
-                    KEY_ACTION_TARGET.to_owned(),
-                    MetadataEntry {
-                        value: MetadataValue::Text(target.action_target()),
-                        updated_at: own.get(system::TARGET).map(|e| e.updated_at).unwrap_or_default(),
-                        ttl_ms: None,
-                        precedence: 0,
-                        ordinal,
-                    },
-                );
-            }
+        }
+    }
+
+    /// Give a ref its target's facts and sources, keeping its own
+    /// `.`-prefixed ones (see `present_refs`).
+    fn present_ref(entity: &mut CatalogEntity, target: &CatalogEntity) {
+        let own = std::mem::replace(&mut entity.values, target.values.clone());
+        let own_sources = std::mem::replace(&mut entity.sources, target.sources.clone());
+        entity.values.retain(|key, _| !system::is_system(key));
+        entity.sources.retain(|key, _| !system::is_system(key));
+        for (key, value) in own.iter().filter(|(key, _)| system::is_system(key)) {
+            entity.values.insert(key.clone(), value.clone());
+        }
+        for (key, source) in own_sources.iter().filter(|(key, _)| system::is_system(key)) {
+            entity.sources.insert(key.clone(), source.clone());
+        }
+        // Live state and activation key on the action target: the
+        // target's own, else one made from its identity. The made entry
+        // dates from the ref's `.target`, so it is as fresh as the
+        // reference; it never expires and loses to any real one.
+        if !entity.values.contains_key(KEY_ACTION_TARGET) {
+            let ordinal = entity.ordinal;
+            entity.values.insert(
+                KEY_ACTION_TARGET.to_owned(),
+                MetadataEntry {
+                    value: MetadataValue::Text(target.entity.action_target()),
+                    updated_at: own.get(system::TARGET).map(|e| e.updated_at).unwrap_or_default(),
+                    ttl_ms: None,
+                    precedence: 0,
+                    ordinal,
+                },
+            );
         }
     }
 
@@ -2582,35 +3327,32 @@ impl ControllerState {
     /// `workspace.primary.*` facts, independently of any `layout.*` facts)
     /// and the slots of its valid Suggested Layout. Unavailable resolutions
     /// are absent.
-    pub(crate) fn slot_resolutions(&self) -> BTreeMap<(EntityRef, String), DesiredContent> {
+    /// What `entity`'s facts resolve its Slots to: the primary from its
+    /// `workspace.primary.*` facts, the others from its Suggested Layout.
+    pub(crate) fn entity_slot_resolutions(&self, entity: &EntityRef) -> BTreeMap<String, DesiredContent> {
         use crate::suggested_layout::{SlotResolution, PRIMARY_SLOT};
         let mut resolutions = BTreeMap::new();
-        for target in self.metadata.targets() {
-            let EntityId::Entity(entity) = target else {
+        let values = self.metadata.resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
+        if let Some(desired) = desired_primary(&values) {
+            resolutions.insert(PRIMARY_SLOT.to_owned(), desired);
+        }
+        if !values.keys().any(|key| key.starts_with("layout.")) {
+            return resolutions;
+        }
+        let facts = values.into_iter().map(|(key, entry)| (key, entry.value)).collect();
+        let Ok(Some(layout)) = suggested_layout::parse(entity, &facts) else {
+            return resolutions;
+        };
+        for slot in layout.slots {
+            if slot.key == PRIMARY_SLOT {
                 continue;
+            }
+            let desired = match slot.resolution {
+                SlotResolution::Ready { target, recipe } => DesiredContent::Ready(Resolved { target, recipe }),
+                SlotResolution::Held => DesiredContent::Held,
+                SlotResolution::Unavailable => continue,
             };
-            let values = self.metadata.resolved_entries_for(target, self.now());
-            if let Some(desired) = desired_primary(&values) {
-                resolutions.insert((entity.clone(), PRIMARY_SLOT.to_owned()), desired);
-            }
-            if !values.keys().any(|key| key.starts_with("layout.")) {
-                continue;
-            }
-            let facts = values.into_iter().map(|(key, entry)| (key, entry.value)).collect();
-            let Ok(Some(layout)) = suggested_layout::parse(entity, &facts) else {
-                continue;
-            };
-            for slot in layout.slots {
-                if slot.key == PRIMARY_SLOT {
-                    continue;
-                }
-                let desired = match slot.resolution {
-                    SlotResolution::Ready { target, recipe } => DesiredContent::Ready(Resolved { target, recipe }),
-                    SlotResolution::Held => DesiredContent::Held,
-                    SlotResolution::Unavailable => continue,
-                };
-                resolutions.insert((entity.clone(), slot.key), desired);
-            }
+            resolutions.insert(slot.key, desired);
         }
         resolutions
     }
@@ -3047,7 +3789,8 @@ fn saved_catalog_entity(entity: EntityRef, record: &SubjectRecord) -> CatalogEnt
     if let Some(label) = &record.label {
         values.insert(KEY_DISPLAY_LABEL.to_owned(), entry(MetadataValue::Text(label.clone())));
     }
-    CatalogEntity { entity, sources: values.keys().map(|key| (key.clone(), SOURCE_RECORD.to_owned())).collect(), values, ordinal: 0 }
+    let sources = values.keys().map(|key| (key.clone(), SOURCE_RECORD.to_owned())).collect();
+    CatalogEntity { entity, facts: Rc::new(ResolvedFacts { values, sources }), ordinal: 0 }
 }
 
 fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
@@ -3215,9 +3958,10 @@ mod tests {
             entity.values.clear();
         }
         let bound = entities.iter().find(|entity| entity.entity == convoy).unwrap();
-        let bindings = BTreeMap::from([("convoy".into(), bound)]);
-        let matched = state.placement_matches(query, &entities, &index, &bindings, &[]);
-        assert_eq!(matched.iter().map(|e| e.entity.id.as_str()).collect::<Vec<_>>(), vec!["match"]);
+        let root = Scope::default();
+        let scope = root.within("convoy", bound, true);
+        let matched = state.placement_matches(query, &entities, &index, &scope, &mut LoopReads::default());
+        assert_eq!(matched.iter().map(|&p| entities[p].entity.id.as_str()).collect::<Vec<_>>(), vec!["match"]);
     }
 
     fn forward_reference_lists() -> Vec<Vec<EntityRef>> {
@@ -3279,15 +4023,18 @@ mod tests {
             let entities = state.catalog_entities();
             let index = PlacementIndex::build(&entities);
             let role = entities.iter().find(|e| e.entity == entity_ref("role", "r")).unwrap();
-            let bindings = BTreeMap::from([("role".into(), role)]);
             for (explicit_order, config) in [false, true].into_iter().zip(&configs) {
                 assert_eq!(config.placements[0].loops.len(), 2);
                 let query = &config.placements[0].loops[0].loops[0];
+                // `role` bound, under an ancestor bound to no name.
                 let ids = |ancestors: &[EntityRef]| {
+                    let ancestor = ancestors.first().and_then(|a| entities.iter().find(|e| e.entity == *a));
+                    let outside = Scope { entity: ancestor, ..Scope::default() };
+                    let scope = Scope { entity: Some(role), name: Some("role"), outer: None, parent: Some(&outside) };
                     state
-                        .placement_matches(query, &entities, &index, &bindings, ancestors)
+                        .placement_matches(query, &entities, &index, &scope, &mut LoopReads::default())
                         .iter()
-                        .map(|e| e.entity.id.as_str())
+                        .map(|&p| entities[p].entity.id.as_str())
                         .collect::<Vec<_>>()
                 };
                 let mut expected = vec![];
@@ -3309,8 +4056,9 @@ mod tests {
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
         let role = entities.iter().find(|e| e.entity == entity_ref("role", "r")).unwrap();
-        let bindings = BTreeMap::from([("role".into(), role)]);
-        let missing = BTreeMap::new();
+        let root = Scope::default();
+        let bindings = root.within("role", role, true);
+        let missing = Scope::default();
         let config = parse_template_config_kdl(
             r#"
             placement "tree" { for "role" kind="role" { for "attempt" kind="convoy" in="absent" of="role"; }; }
@@ -3318,8 +4066,8 @@ mod tests {
         )
         .unwrap();
         let query = &config.placements[0].loops[0].loops[0];
-        assert!(state.placement_matches(query, &entities, &index, &bindings, &[]).is_empty());
-        assert!(state.placement_matches(query, &entities, &index, &missing, &[]).is_empty());
+        assert!(state.placement_matches(query, &entities, &index, &bindings, &mut LoopReads::default()).is_empty());
+        assert!(state.placement_matches(query, &entities, &index, &missing, &mut LoopReads::default()).is_empty());
     }
 
     // Forward detail fields bind their source by template name, remain fresh,
@@ -3560,8 +4308,7 @@ mod tests {
 
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
-        let placed =
-            state.evaluate_placement(&placement_loop(&[("entity.kind", "vessel")]), &entities, &index, "full", &mut BTreeMap::new());
+        let placed = state.evaluate_placement(&placement_loop(&[("entity.kind", "vessel")]), &entities, &index, "full");
 
         assert_eq!(
             placed.len(),
@@ -3572,24 +4319,33 @@ mod tests {
     }
 
     #[test]
+    fn action_targets_are_recognised_without_being_made() {
+        for entity in [
+            EntityRef::local(".group", "g"),
+            EntityRef::new("sub", "convoy", "fleet/convoy-1"),
+            EntityRef::new("sub@x", "kind:odd", "id@with:sep"),
+        ] {
+            let made = entity.action_target();
+            assert!(is_action_target(&entity, None, &made), "{made}");
+            for other in [format!("{made}x"), made[..made.len() - 1].to_owned(), String::new()] {
+                assert!(!is_action_target(&entity, None, &other), "{other} for {made}");
+            }
+            assert!(is_action_target(&entity, Some("own"), "own"));
+            assert!(!is_action_target(&entity, Some("own"), &made));
+        }
+    }
+
+    #[test]
     fn a_loop_matching_nothing_places_nothing() {
         let mut state = directory_entity_state();
         apply_entity(&mut state, "vessel", "dev/focus/worker@lab", 1, &[("flotilla.vessel", "dev/focus/worker@lab")]);
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
 
-        assert!(state
-            .evaluate_placement(&placement_loop(&[("entity.kind", "convoy")]), &entities, &index, "full", &mut BTreeMap::new())
-            .is_empty());
+        assert!(state.evaluate_placement(&placement_loop(&[("entity.kind", "convoy")]), &entities, &index, "full").is_empty());
         assert!(
             state
-                .evaluate_placement(
-                    &placement_loop(&[("entity.kind", "vessel"), ("status.attention", "true")]),
-                    &entities,
-                    &index,
-                    "full",
-                    &mut BTreeMap::new()
-                )
+                .evaluate_placement(&placement_loop(&[("entity.kind", "vessel"), ("status.attention", "true")]), &entities, &index, "full")
                 .is_empty(),
             "predicates intersect: an unmatched one empties the result"
         );
@@ -3643,9 +4399,9 @@ placement "identity-descending" {
         let index = PlacementIndex::build(&entities);
         let labels = |placement: &PlacementDefinition| {
             state
-                .evaluate_placement(placement, &entities, &index, "full", &mut BTreeMap::new())
+                .evaluate_placement(placement, &entities, &index, "full")
                 .into_iter()
-                .map(|entity| entity.label)
+                .map(|entity| entity.label.clone())
                 .collect::<Vec<_>>()
         };
 
@@ -3667,10 +4423,9 @@ placement "identity-descending" {
         }
         let entities = state.catalog_entities();
         let index = PlacementIndex::build(&entities);
-        let placed =
-            state.evaluate_placement(&placement_loop(&[("entity.kind", "vessel")]), &entities, &index, "full", &mut BTreeMap::new());
+        let placed = state.evaluate_placement(&placement_loop(&[("entity.kind", "vessel")]), &entities, &index, "full");
 
-        assert_eq!(placed.into_iter().map(|item| item.entity.id).collect::<Vec<_>>(), vec!["alpha-id", "zeta-id"]);
+        assert_eq!(placed.into_iter().map(|item| item.entity.id.clone()).collect::<Vec<_>>(), vec!["alpha-id", "zeta-id"]);
     }
 
     #[test]

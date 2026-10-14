@@ -444,6 +444,13 @@ impl TemplateConfigLayer {
     }
 }
 
+/// A template's place in a catalog's layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TemplateAddress {
+    layer: usize,
+    template: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateConfigCatalog {
     layers: Vec<TemplateConfigLayer>,
@@ -685,7 +692,19 @@ impl TemplateConfigCatalog {
         name: &str,
         metadata: &BTreeMap<String, MetadataValue>,
     ) -> Option<&'a TemplateConfigDefinition> {
-        self.layer_stack(metadata).into_iter().find_map(|layer| layer.config.templates.iter().find(|template| template.name == name))
+        self.placement_template_address(name, metadata).map(|address| self.template_at(address))
+    }
+
+    /// Where `placement_template` finds `name`, to find it again without
+    /// searching while this catalog lasts.
+    pub(crate) fn placement_template_address(&self, name: &str, metadata: &BTreeMap<String, MetadataValue>) -> Option<TemplateAddress> {
+        self.layers.iter().enumerate().filter(|(_, layer)| layer.applies_to(metadata)).find_map(|(layer, config)| {
+            config.config.templates.iter().position(|template| template.name == name).map(|template| TemplateAddress { layer, template })
+        })
+    }
+
+    pub(crate) fn template_at(&self, address: TemplateAddress) -> &TemplateConfigDefinition {
+        &self.layers[address.layer].config.templates[address.template]
     }
 
     /// Resolve the render surface of a template reached through

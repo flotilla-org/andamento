@@ -11,6 +11,7 @@ use andamento_core::{
 };
 use common::{nodes, refs, text, CONFIG};
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 const W42: WorkspaceId = tab_workspace_id(42);
 
@@ -46,7 +47,7 @@ fn fleet(tag: &str, ttl_ms: Option<u64>) -> Vec<MetadataPatch> {
 fn entity(provider: &str, kind: &str, id: &str) -> EntityRef {
     EntityRef::new(provider, kind, id)
 }
-fn tree(sidebar: &Sidebar) -> Vec<PlacementNode> {
+fn tree(sidebar: &Sidebar) -> Vec<Rc<PlacementNode>> {
     sidebar.snapshot().surface.sections[0].nodes.clone()
 }
 fn workspace(id: WorkspaceId) -> Workspace {
