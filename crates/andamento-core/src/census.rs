@@ -80,6 +80,9 @@ impl Census {
     }
 
     pub(crate) fn entity(&mut self, kind: &str, entity: &EntityRef) {
+        if !self.first_shared(&entity.0) {
+            return;
+        }
         self.string(kind, &entity.provider);
         self.string(kind, &entity.kind);
         self.string(kind, &entity.id);

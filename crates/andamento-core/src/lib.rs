@@ -1,7 +1,7 @@
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -473,12 +473,40 @@ pub const LOCAL_PROVIDER: &str = "local";
 /// In JSON a missing `provider` is empty, which means "not named": patch
 /// application stamps the patch's provider over it. Every other entry point
 /// rejects an entity that names none.
+///
+/// One allocation holds what it names, shared by its clones: an entity's
+/// reference is copied into the catalog, its index, its placements and
+/// their nodes. Read its parts through it; changing one copies them.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EntityRef(Arc<EntityRefParts>);
+
+/// What an [`EntityRef`] names.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct EntityRef {
+pub struct EntityRefParts {
     #[serde(default)]
     pub provider: String,
     pub kind: String,
     pub id: String,
+}
+
+impl Deref for EntityRef {
+    type Target = EntityRefParts;
+    fn deref(&self) -> &EntityRefParts {
+        &self.0
+    }
+}
+
+impl DerefMut for EntityRef {
+    fn deref_mut(&mut self) -> &mut EntityRefParts {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl fmt::Debug for EntityRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EntityRef").field("provider", &self.provider).field("kind", &self.kind).field("id", &self.id).finish()
+    }
 }
 
 /// The identity of one rendered appearance of an entity.
@@ -549,7 +577,7 @@ impl PlacementLoopKey {
 
 impl EntityRef {
     pub fn new(provider: impl Into<String>, kind: impl Into<String>, id: impl Into<String>) -> Self {
-        Self { provider: provider.into(), kind: kind.into(), id: id.into() }
+        Self(Arc::new(EntityRefParts { provider: provider.into(), kind: kind.into(), id: id.into() }))
     }
 
     /// An entity of the [`LOCAL_PROVIDER`].
