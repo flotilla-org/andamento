@@ -43,33 +43,82 @@ struct Contributor {
 /// A producer's source ID, interned by the store.
 type SourceIx = u32;
 
-/// One key's contributions, by contributor. Nearly always one, so a sorted
-/// Vec: a map would allocate a whole node per fact.
+/// A contribution: who made it, and its entry, shared with resolutions.
+type Contribution = (Contributor, Rc<MetadataEntry>);
+
+/// One key's contributions, by contributor. Nearly always one, held in
+/// place; more spill to a sorted Vec.
 #[derive(Debug, Default)]
-struct Contributions(Vec<(Contributor, Rc<MetadataEntry>)>);
+enum Contributions {
+    #[default]
+    None,
+    One(Contribution),
+    Many(Vec<Contribution>),
+}
 
 impl Contributions {
+    fn as_slice(&self) -> &[Contribution] {
+        match self {
+            Self::None => &[],
+            Self::One(one) => std::slice::from_ref(one),
+            Self::Many(many) => many,
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [Contribution] {
+        match self {
+            Self::None => &mut [],
+            Self::One(one) => std::slice::from_mut(one),
+            Self::Many(many) => many,
+        }
+    }
+
     fn position(&self, contributor: &Contributor) -> Result<usize, usize> {
-        self.0.binary_search_by(|(c, _)| c.cmp(contributor))
+        self.as_slice().binary_search_by(|(c, _)| c.cmp(contributor))
     }
 
     fn insert(&mut self, contributor: Contributor, entry: MetadataEntry) -> Option<Rc<MetadataEntry>> {
         let entry = Rc::new(entry);
         match self.position(&contributor) {
-            Ok(at) => Some(std::mem::replace(&mut self.0[at].1, entry)),
+            Ok(at) => Some(std::mem::replace(&mut self.as_mut_slice()[at].1, entry)),
             Err(at) => {
-                self.0.insert(at, (contributor, entry));
+                *self = match std::mem::take(self) {
+                    Self::None => Self::One((contributor, entry)),
+                    Self::One(one) => {
+                        let mut many = vec![one];
+                        many.insert(at, (contributor, entry));
+                        Self::Many(many)
+                    }
+                    Self::Many(mut many) => {
+                        many.insert(at, (contributor, entry));
+                        Self::Many(many)
+                    }
+                };
                 None
             }
         }
     }
 
     fn remove(&mut self, contributor: &Contributor) -> Option<MetadataEntry> {
-        self.position(contributor).ok().map(|at| Rc::unwrap_or_clone(self.0.remove(at).1))
+        let at = self.position(contributor).ok()?;
+        let removed = match std::mem::take(self) {
+            Self::None => unreachable!("found in none"),
+            Self::One(one) => one.1,
+            Self::Many(mut many) => {
+                let removed = many.remove(at).1;
+                *self = match many.len() {
+                    0 => Self::None,
+                    1 => Self::One(many.pop().expect("one left")),
+                    _ => Self::Many(many),
+                };
+                removed
+            }
+        };
+        Some(Rc::unwrap_or_clone(removed))
     }
 
     fn get(&self, contributor: &Contributor) -> Option<&MetadataEntry> {
-        self.position(contributor).ok().map(|at| &*self.0[at].1)
+        self.position(contributor).ok().map(|at| &*self.as_slice()[at].1)
     }
 
     fn contains_key(&self, contributor: &Contributor) -> bool {
@@ -77,30 +126,104 @@ impl Contributions {
     }
 
     fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.as_slice().is_empty()
     }
 
     fn len(&self) -> usize {
-        self.0.len()
+        self.as_slice().len()
     }
 
     fn iter(&self) -> impl Iterator<Item = (&Contributor, &MetadataEntry)> {
-        self.0.iter().map(|(contributor, entry)| (contributor, &**entry))
+        self.as_slice().iter().map(|(contributor, entry)| (contributor, &**entry))
     }
 
     /// Entries as held, to share rather than copy.
     fn shared(&self) -> impl Iterator<Item = (&Contributor, &Rc<MetadataEntry>)> {
-        self.0.iter().map(|(contributor, entry)| (contributor, entry))
+        self.as_slice().iter().map(|(contributor, entry)| (contributor, entry))
     }
 
     /// Entries to change: `Rc::make_mut` one to change it, copying it only
     /// if a resolution shares it.
     fn iter_mut(&mut self) -> impl Iterator<Item = (&Contributor, &mut Rc<MetadataEntry>)> {
-        self.0.iter_mut().map(|(contributor, entry)| (&*contributor, entry))
+        self.as_mut_slice().iter_mut().map(|(contributor, entry)| (&*contributor, entry))
     }
 
     fn retain(&mut self, mut keep: impl FnMut(&Contributor, &MetadataEntry) -> bool) {
-        self.0.retain(|(contributor, entry)| keep(contributor, entry));
+        *self = match std::mem::take(self) {
+            Self::One(one) if !keep(&one.0, &one.1) => Self::None,
+            Self::Many(mut many) => {
+                many.retain(|(contributor, entry)| keep(contributor, entry));
+                match many.len() {
+                    0 => Self::None,
+                    1 => Self::One(many.pop().expect("one left")),
+                    _ => Self::Many(many),
+                }
+            }
+            kept => kept,
+        };
+    }
+}
+
+/// An entity's contributions by fact name, sorted by name: names are the
+/// store's interned ones, and an entity has a few dozen, so a sorted Vec
+/// rather than a hash table per entity.
+#[derive(Debug, Default)]
+struct KeyedContributions(Vec<(Rc<str>, Contributions)>);
+
+impl KeyedContributions {
+    fn position(&self, key: &str) -> Result<usize, usize> {
+        self.0.binary_search_by(|(name, _)| (**name).cmp(key))
+    }
+
+    fn get(&self, key: &str) -> Option<&Contributions> {
+        self.position(key).ok().map(|at| &self.0[at].1)
+    }
+
+    fn get_mut(&mut self, key: &str) -> Option<&mut Contributions> {
+        self.position(key).ok().map(|at| &mut self.0[at].1)
+    }
+
+    fn entry_or_default(&mut self, key: Rc<str>) -> &mut Contributions {
+        let at = match self.position(&key) {
+            Ok(at) => at,
+            Err(at) => {
+                self.0.insert(at, (key, Contributions::None));
+                at
+            }
+        };
+        &mut self.0[at].1
+    }
+
+    fn remove(&mut self, key: &str) {
+        if let Ok(at) = self.position(key) {
+            self.0.remove(at);
+        }
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&Rc<str>, &mut Contributions) -> bool) {
+        self.0.retain_mut(|(key, contributions)| keep(key, contributions));
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Rc<str>, &Contributions)> {
+        self.0.iter().map(|(key, contributions)| (key, contributions))
+    }
+
+    #[cfg(test)]
+    fn keys(&self) -> impl Iterator<Item = &Rc<str>> {
+        self.0.iter().map(|(key, _)| key)
+    }
+
+    #[cfg(test)]
+    fn values(&self) -> impl Iterator<Item = &Contributions> {
+        self.0.iter().map(|(_, contributions)| contributions)
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut Contributions> {
+        self.0.iter_mut().map(|(_, contributions)| contributions)
     }
 }
 
@@ -163,12 +286,12 @@ pub struct MetadataStore {
 /// fact in it expires.
 #[derive(Debug, Default)]
 struct Stored {
-    facts: FastHashMap<Rc<str>, Contributions>,
+    facts: KeyedContributions,
     resolved: RefCell<Option<Cached>>,
 }
 
 impl Deref for Stored {
-    type Target = FastHashMap<Rc<str>, Contributions>;
+    type Target = KeyedContributions;
     fn deref(&self) -> &Self::Target {
         &self.facts
     }
@@ -328,7 +451,7 @@ impl MetadataStore {
             self.entries.insert(entity_id.clone(), Stored::default());
         }
         let stored = self.entries.get_mut(entity_id).expect("just inserted");
-        let previous = stored.entry(key).or_default().insert(contributor, entry);
+        let previous = stored.entry_or_default(key).insert(contributor, entry);
         if indexed {
             if let Some(previous) = previous {
                 self.remove_expiry(&previous);
