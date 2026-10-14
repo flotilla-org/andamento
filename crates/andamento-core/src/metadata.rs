@@ -1,6 +1,12 @@
+#[cfg(test)]
+use crate::census::Census;
+use crate::facts::Shapes;
+use crate::{FastHashMap, FastHashSet};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::{
     EntityRef, MetadataEntry, MetadataPatch, MetadataSourceEntry, MetadataTarget, MetadataValue, MetadataValueUpdate,
@@ -37,32 +43,82 @@ struct Contributor {
 /// A producer's source ID, interned by the store.
 type SourceIx = u32;
 
-/// One key's contributions, by contributor. Nearly always one, so a sorted
-/// Vec: a map would allocate a whole node per fact.
+/// A contribution: who made it, and its entry, shared with resolutions.
+type Contribution = (Contributor, Rc<MetadataEntry>);
+
+/// One key's contributions, by contributor. Nearly always one, held in
+/// place; more spill to a sorted Vec.
 #[derive(Debug, Default)]
-struct Contributions(Vec<(Contributor, MetadataEntry)>);
+enum Contributions {
+    #[default]
+    None,
+    One(Contribution),
+    Many(Vec<Contribution>),
+}
 
 impl Contributions {
-    fn position(&self, contributor: &Contributor) -> Result<usize, usize> {
-        self.0.binary_search_by(|(c, _)| c.cmp(contributor))
+    fn as_slice(&self) -> &[Contribution] {
+        match self {
+            Self::None => &[],
+            Self::One(one) => std::slice::from_ref(one),
+            Self::Many(many) => many,
+        }
     }
 
-    fn insert(&mut self, contributor: Contributor, entry: MetadataEntry) -> Option<MetadataEntry> {
+    fn as_mut_slice(&mut self) -> &mut [Contribution] {
+        match self {
+            Self::None => &mut [],
+            Self::One(one) => std::slice::from_mut(one),
+            Self::Many(many) => many,
+        }
+    }
+
+    fn position(&self, contributor: &Contributor) -> Result<usize, usize> {
+        self.as_slice().binary_search_by(|(c, _)| c.cmp(contributor))
+    }
+
+    fn insert(&mut self, contributor: Contributor, entry: MetadataEntry) -> Option<Rc<MetadataEntry>> {
+        let entry = Rc::new(entry);
         match self.position(&contributor) {
-            Ok(at) => Some(std::mem::replace(&mut self.0[at].1, entry)),
+            Ok(at) => Some(std::mem::replace(&mut self.as_mut_slice()[at].1, entry)),
             Err(at) => {
-                self.0.insert(at, (contributor, entry));
+                *self = match std::mem::take(self) {
+                    Self::None => Self::One((contributor, entry)),
+                    Self::One(one) => {
+                        let mut many = vec![one];
+                        many.insert(at, (contributor, entry));
+                        Self::Many(many)
+                    }
+                    Self::Many(mut many) => {
+                        many.insert(at, (contributor, entry));
+                        Self::Many(many)
+                    }
+                };
                 None
             }
         }
     }
 
     fn remove(&mut self, contributor: &Contributor) -> Option<MetadataEntry> {
-        self.position(contributor).ok().map(|at| self.0.remove(at).1)
+        let at = self.position(contributor).ok()?;
+        let removed = match std::mem::take(self) {
+            Self::None => unreachable!("found in none"),
+            Self::One(one) => one.1,
+            Self::Many(mut many) => {
+                let removed = many.remove(at).1;
+                *self = match many.len() {
+                    0 => Self::None,
+                    1 => Self::One(many.pop().expect("one left")),
+                    _ => Self::Many(many),
+                };
+                removed
+            }
+        };
+        Some(Rc::unwrap_or_clone(removed))
     }
 
     fn get(&self, contributor: &Contributor) -> Option<&MetadataEntry> {
-        self.position(contributor).ok().map(|at| &self.0[at].1)
+        self.position(contributor).ok().map(|at| &*self.as_slice()[at].1)
     }
 
     fn contains_key(&self, contributor: &Contributor) -> bool {
@@ -70,23 +126,111 @@ impl Contributions {
     }
 
     fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.as_slice().is_empty()
     }
 
     fn len(&self) -> usize {
-        self.0.len()
+        self.as_slice().len()
     }
 
     fn iter(&self) -> impl Iterator<Item = (&Contributor, &MetadataEntry)> {
-        self.0.iter().map(|(contributor, entry)| (contributor, entry))
+        self.as_slice().iter().map(|(contributor, entry)| (contributor, &**entry))
     }
 
-    fn iter_mut(&mut self) -> impl Iterator<Item = (&Contributor, &mut MetadataEntry)> {
-        self.0.iter_mut().map(|(contributor, entry)| (&*contributor, entry))
+    /// Entries as held, to share rather than copy.
+    fn shared(&self) -> impl Iterator<Item = (&Contributor, &Rc<MetadataEntry>)> {
+        self.as_slice().iter().map(|(contributor, entry)| (contributor, entry))
     }
 
-    fn retain(&mut self, mut keep: impl FnMut(&Contributor, &mut MetadataEntry) -> bool) {
-        self.0.retain_mut(|(contributor, entry)| keep(contributor, entry));
+    /// Entries to change: `Rc::make_mut` one to change it, copying it only
+    /// if a resolution shares it.
+    fn iter_mut(&mut self) -> impl Iterator<Item = (&Contributor, &mut Rc<MetadataEntry>)> {
+        self.as_mut_slice().iter_mut().map(|(contributor, entry)| (&*contributor, entry))
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&Contributor, &MetadataEntry) -> bool) {
+        *self = match std::mem::take(self) {
+            Self::One(one) if !keep(&one.0, &one.1) => Self::None,
+            Self::Many(mut many) => {
+                many.retain(|(contributor, entry)| keep(contributor, entry));
+                match many.len() {
+                    0 => Self::None,
+                    1 => Self::One(many.pop().expect("one left")),
+                    _ => Self::Many(many),
+                }
+            }
+            kept => kept,
+        };
+    }
+}
+
+/// An entity's contributions by fact name, sorted by name: names are the
+/// store's interned ones, and an entity has a few dozen, so a sorted Vec
+/// rather than a hash table per entity.
+#[derive(Debug, Default)]
+struct KeyedContributions(Vec<(Rc<str>, Contributions)>);
+
+impl KeyedContributions {
+    fn position(&self, key: &str) -> Result<usize, usize> {
+        self.0.binary_search_by(|(name, _)| (**name).cmp(key))
+    }
+
+    fn get(&self, key: &str) -> Option<&Contributions> {
+        self.position(key).ok().map(|at| &self.0[at].1)
+    }
+
+    fn get_mut(&mut self, key: &str) -> Option<&mut Contributions> {
+        self.position(key).ok().map(|at| &mut self.0[at].1)
+    }
+
+    fn entry_or_default(&mut self, key: Rc<str>) -> &mut Contributions {
+        let at = match self.position(&key) {
+            Ok(at) => at,
+            Err(at) => {
+                self.0.insert(at, (key, Contributions::None));
+                at
+            }
+        };
+        &mut self.0[at].1
+    }
+
+    fn remove(&mut self, key: &str) {
+        if let Ok(at) = self.position(key) {
+            self.0.remove(at);
+        }
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&Rc<str>, &mut Contributions) -> bool) {
+        self.0.retain_mut(|(key, contributions)| keep(key, contributions));
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Rc<str>, &Contributions)> {
+        self.0.iter().map(|(key, contributions)| (key, contributions))
+    }
+
+    #[cfg(test)]
+    fn keys(&self) -> impl Iterator<Item = &Rc<str>> {
+        self.0.iter().map(|(key, _)| key)
+    }
+
+    #[cfg(test)]
+    fn values(&self) -> impl Iterator<Item = &Contributions> {
+        self.0.iter().map(|(_, contributions)| contributions)
+    }
+
+    /// Give back what growing left spare: entities hold their facts for long.
+    fn shrink(&mut self) {
+        if self.0.capacity() > self.0.len() {
+            self.0.shrink_to_fit();
+        }
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut Contributions> {
+        self.0.iter_mut().map(|(_, contributions)| contributions)
     }
 }
 
@@ -105,16 +249,10 @@ fn count_resolution() {
 #[derive(Debug, Default)]
 pub struct Changed {
     pub all: bool,
-    pub targets: HashSet<EntityId>,
+    pub targets: FastHashSet<EntityId>,
 }
 
-/// An entity's facts resolved: each key's winning entry, and the source it
-/// came from.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ResolvedFacts {
-    pub values: BTreeMap<String, MetadataEntry>,
-    pub sources: BTreeMap<String, String>,
-}
+pub use crate::facts::{Fact, ResolvedFacts};
 
 /// A resolution and when it holds: from `at` through `until`, the earliest
 /// deadline among the facts live at `at` (none: no TTL fact can expire).
@@ -127,15 +265,20 @@ struct Cached {
 
 #[derive(Debug, Default)]
 pub struct MetadataStore {
-    entries: HashMap<EntityId, HashMap<String, Contributions>>,
-    target_ordinals: HashMap<EntityId, i64>,
+    entries: FastHashMap<EntityId, Stored>,
+    /// Key names and the spines of resolved records.
+    shapes: RefCell<Shapes>,
+    /// Text values, one copy of each while a fact holds it (`intern_text`).
+    texts: FastHashSet<Arc<str>>,
+    texts_swept: usize,
+    target_ordinals: FastHashMap<EntityId, i64>,
     /// Deadlines of the TTL facts that can expire: every one whose provider
     /// is not stale.
     expiry_counts: BTreeMap<u64, usize>,
     providers: Vec<String>,
-    provider_ixs: HashMap<String, ProviderIx>,
-    sources: Vec<String>,
-    source_ixs: HashMap<String, SourceIx>,
+    provider_ixs: FastHashMap<String, ProviderIx>,
+    sources: Vec<Rc<str>>,
+    source_ixs: FastHashMap<Rc<str>, SourceIx>,
     /// Stale providers, with the time each became stale. Their facts are
     /// judged live as of that time, so none expires while it stays stale.
     stale: BTreeMap<ProviderIx, u64>,
@@ -143,25 +286,65 @@ pub struct MetadataStore {
     /// The same, for the catalog (`take_catalog_changes`), which reads it
     /// when it evaluates rather than when facts arrive.
     catalog_changed: RefCell<Changed>,
-    /// Each entity's resolution, made when first read and dropped when its
-    /// facts change, everything may have changed, or a fact in it expires.
-    resolved: RefCell<HashMap<EntityId, Cached>>,
+}
+
+/// One entity's facts, by key, and its resolution: made when first read
+/// and dropped when its facts change, everything may have changed, or a
+/// fact in it expires.
+#[derive(Debug, Default)]
+struct Stored {
+    facts: KeyedContributions,
+    resolved: RefCell<Option<Cached>>,
+}
+
+impl Deref for Stored {
+    type Target = KeyedContributions;
+    fn deref(&self) -> &Self::Target {
+        &self.facts
+    }
+}
+
+impl DerefMut for Stored {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.facts
+    }
 }
 
 impl MetadataStore {
     /// Run `f` with no resolutions kept, leaving those kept as they were.
     #[cfg(test)]
     pub(crate) fn cold<R>(&self, f: impl FnOnce() -> R) -> R {
-        let kept = self.resolved.take();
+        let kept: Vec<_> = self.entries.values().map(|stored| stored.resolved.take()).collect();
         let changed = self.catalog_changed.take();
         let result = f();
-        self.resolved.replace(kept);
+        for (stored, kept) in self.entries.values().zip(kept) {
+            stored.resolved.replace(kept);
+        }
         self.catalog_changed.replace(changed);
         result
     }
 
+    /// Hold `value`'s text as the one copy of it. Whenever the copies have
+    /// doubled since, forget those no fact (or anything else) holds now.
+    fn intern_text(&mut self, value: &mut MetadataValue) {
+        let MetadataValue::Text(text) = value else {
+            return;
+        };
+        if let Some(held) = self.texts.get(&**text) {
+            *text = held.clone();
+            return;
+        }
+        self.texts.insert(text.clone());
+        if self.texts.len() > 2 * self.texts_swept.max(512) {
+            self.texts.retain(|text| Arc::strong_count(text) > 1);
+            self.texts_swept = self.texts.len();
+        }
+    }
+
     fn touch(&mut self, target: &EntityId) {
-        self.resolved.get_mut().remove(target);
+        if let Some(stored) = self.entries.get_mut(target) {
+            *stored.resolved.get_mut() = None;
+        }
         for changed in [&mut self.changed, self.catalog_changed.get_mut()] {
             if !changed.all {
                 changed.targets.insert(target.clone());
@@ -172,9 +355,11 @@ impl MetadataStore {
     /// Everything may resolve differently: facts expired, or a provider
     /// went stale or fresh.
     pub fn change_all(&mut self) {
-        self.resolved.get_mut().clear();
-        self.changed = Changed { all: true, targets: HashSet::new() };
-        *self.catalog_changed.get_mut() = Changed { all: true, targets: HashSet::new() };
+        for stored in self.entries.values_mut() {
+            *stored.resolved.get_mut() = None;
+        }
+        self.changed = Changed { all: true, targets: FastHashSet::default() };
+        *self.catalog_changed.get_mut() = Changed { all: true, targets: FastHashSet::default() };
     }
 
     /// What changed since the catalog last read it.
@@ -202,10 +387,11 @@ impl MetadataStore {
     }
 
     fn intern_source(&mut self, source: String) -> SourceIx {
-        if let Some(ix) = self.source_ixs.get(&source) {
+        if let Some(ix) = self.source_ixs.get(source.as_str()) {
             return *ix;
         }
         let ix = SourceIx::try_from(self.sources.len()).expect("fewer than 2^32 sources");
+        let source: Rc<str> = Rc::from(source);
         self.sources.push(source.clone());
         self.source_ixs.insert(source, ix);
         ix
@@ -248,15 +434,31 @@ impl MetadataStore {
     /// Set a fact the core or host owns (no provider).
     pub fn set(&mut self, entity_id: EntityId, key: impl Into<String>, source_id: impl Into<String>, entry: MetadataEntry) {
         let contributor = self.contributor(None, source_id);
-        self.set_contribution(entity_id, key.into(), contributor, entry);
+        self.touch(&entity_id);
+        self.record_ordinal(&entity_id, entry.ordinal);
+        self.set_contribution(&entity_id, &key.into(), contributor, entry);
     }
 
-    fn set_contribution(&mut self, entity_id: EntityId, key: String, contributor: Contributor, entry: MetadataEntry) {
-        self.touch(&entity_id);
-        self.target_ordinals.entry(entity_id.clone()).or_insert(entry.ordinal);
+    /// The order `entity_id` takes in the catalog: the ordinal of its first fact.
+    fn record_ordinal(&mut self, entity_id: &EntityId, ordinal: i64) {
+        if !self.target_ordinals.contains_key(entity_id) {
+            self.target_ordinals.insert(entity_id.clone(), ordinal);
+        }
+    }
+
+    /// Set one contribution. The caller touches the entity and records its
+    /// ordinal, once for all it sets.
+    fn set_contribution(&mut self, entity_id: &EntityId, key: &str, contributor: Contributor, entry: MetadataEntry) {
         let indexed = self.indexed(&contributor);
         let deadline = entry.ttl_ms.map(|ttl| entry.updated_at.saturating_add(ttl));
-        let previous = self.entries.entry(entity_id).or_default().entry(key).or_default().insert(contributor, entry);
+        let key = self.shapes.get_mut().key(key);
+        let mut entry = entry;
+        self.intern_text(&mut entry.value);
+        if !self.entries.contains_key(entity_id) {
+            self.entries.insert(entity_id.clone(), Stored::default());
+        }
+        let stored = self.entries.get_mut(entity_id).expect("just inserted");
+        let previous = stored.entry_or_default(key).insert(contributor, entry);
         if indexed {
             if let Some(previous) = previous {
                 self.remove_expiry(&previous);
@@ -372,7 +574,7 @@ impl MetadataStore {
                         None => self.remove_expiry(entry),
                         Some(since) => {
                             if entry_is_live(entry, since) {
-                                entry.updated_at = now;
+                                Rc::make_mut(entry).updated_at = now;
                             }
                             self.add_expiry(entry);
                         }
@@ -459,6 +661,7 @@ impl MetadataStore {
                 self.target_ordinals.insert(target.clone(), ordinal);
             }
         }
+        let mut set_any = None;
         for (key, update) in patch.set {
             let next_entry = MetadataEntry {
                 value: update.value,
@@ -467,25 +670,30 @@ impl MetadataStore {
                 precedence: update.precedence.unwrap_or_default(),
                 ordinal: update.ordinal.unwrap_or_default(),
             };
-            let existing_entry = self
+            // The same payload, still live, needs setting only to renew a TTL.
+            let (set, changes) = match self
                 .entries
                 .get(&target)
-                .and_then(|entity_entries| entity_entries.get(&key))
+                .and_then(|entity_entries| entity_entries.get(key.as_str()))
                 .and_then(|source_entries| source_entries.get(&contributor))
-                .cloned();
-
-            match existing_entry {
-                Some(existing) if metadata_entry_payload_matches(&existing, &next_entry) && self.is_live(&contributor, &existing, now) => {
-                    if existing.ttl_ms.is_some() {
-                        self.set_contribution(target.clone(), key, contributor, next_entry);
-                        outcome.touched = true;
-                    }
+            {
+                Some(existing) if metadata_entry_payload_matches(existing, &next_entry) && self.is_live(&contributor, existing, now) => {
+                    (existing.ttl_ms.is_some(), false)
                 }
-                _ => {
-                    self.set_contribution(target.clone(), key, contributor, next_entry);
-                    outcome.touched = true;
-                    outcome.view_changed = true;
-                }
+                _ => (true, true),
+            };
+            if set {
+                set_any.get_or_insert(next_entry.ordinal);
+                self.set_contribution(&target, &key, contributor, next_entry);
+                outcome.touched = true;
+                outcome.view_changed |= changes;
+            }
+        }
+        if let Some(ordinal) = set_any {
+            self.touch(&target);
+            self.record_ordinal(&target, ordinal);
+            if let Some(stored) = self.entries.get_mut(&target) {
+                stored.shrink();
             }
         }
         // Entity identity can itself participate in placement queries even after all
@@ -510,52 +718,63 @@ impl MetadataStore {
 
     /// `entity_id`'s facts resolved at `now`, shared until they change.
     pub fn resolved(&self, entity_id: &EntityId, now: u64) -> Rc<ResolvedFacts> {
-        if let Some(cached) = self.resolved.borrow().get(entity_id) {
+        let Some(stored) = self.entries.get(entity_id) else {
+            return Rc::default();
+        };
+        if let Some(cached) = stored.resolved.borrow().as_ref() {
             if cached.at <= now && cached.until.is_none_or(|until| now <= until) {
                 return cached.resolved.clone();
             }
         }
         #[cfg(test)]
         count_resolution();
-        let mut resolved = ResolvedFacts::default();
+        let mut facts = vec![];
         let mut until: Option<u64> = None;
-        if let Some(entries) = self.entries.get(entity_id) {
-            for (key, contributions) in entries {
-                let mut candidates = Vec::with_capacity(contributions.len());
-                for (contributor, entry) in contributions.iter() {
-                    if !self.is_live(contributor, entry, now) {
-                        continue;
-                    }
-                    // A stale provider's facts don't expire while it stays stale.
-                    if let (Some(ttl), true) = (entry.ttl_ms, self.indexed(contributor)) {
-                        let deadline = entry.updated_at.saturating_add(ttl);
-                        until = Some(until.map_or(deadline, |until| until.min(deadline)));
-                    }
-                    candidates.push(CandidateEntry::new(self.source(contributor), entry.clone()));
+        for (key, contributions) in stored.iter() {
+            let mut shared = Vec::with_capacity(contributions.len());
+            for (contributor, entry) in contributions.shared() {
+                if !self.is_live(contributor, entry, now) {
+                    continue;
                 }
-                if let Some(candidate) = select_primary_entry(&candidates) {
-                    resolved.sources.insert(key.clone(), candidate.source_id);
-                    resolved.values.insert(key.clone(), candidate.entry);
+                // A stale provider's facts don't expire while it stays stale.
+                if let (Some(ttl), true) = (entry.ttl_ms, self.indexed(contributor)) {
+                    let deadline = entry.updated_at.saturating_add(ttl);
+                    until = Some(until.map_or(deadline, |until| until.min(deadline)));
                 }
+                shared.push((contributor, entry));
+            }
+            // Nearly every key has one contributor, and it wins.
+            if let [(contributor, entry)] = shared.as_slice() {
+                let source = self.sources[contributor.source as usize].clone();
+                facts.push((key.clone(), Fact { entry: Rc::clone(entry), source: Some(source) }));
+                continue;
+            }
+            let candidates: Vec<_> =
+                shared.iter().map(|(contributor, entry)| CandidateEntry::new(self.source(contributor), (***entry).clone())).collect();
+            if let Some(candidate) = select_primary_entry(&candidates) {
+                // The store's own entry, shared, when the winner is one as held.
+                let held = shared
+                    .iter()
+                    .find(|(contributor, entry)| self.source(contributor) == candidate.source_id && ***entry == candidate.entry)
+                    .map(|(contributor, entry)| (self.sources[contributor.source as usize].clone(), Rc::clone(entry)));
+                let (source, entry) = match held {
+                    Some((source, entry)) => (Some(source), entry),
+                    None => {
+                        let source = self.source_ixs.get_key_value(candidate.source_id.as_str()).map(|(source, _)| source.clone());
+                        (source, Rc::new(candidate.entry))
+                    }
+                };
+                facts.push((key.clone(), Fact { entry, source }));
             }
         }
-        let resolved = Rc::new(resolved);
-        self.resolved.borrow_mut().insert(entity_id.clone(), Cached { resolved: resolved.clone(), at: now, until });
+        let resolved = Rc::new(self.shapes.borrow_mut().record(facts));
+        *stored.resolved.borrow_mut() = Some(Cached { resolved: resolved.clone(), at: now, until });
         resolved
     }
 
     /// Preserve the winning producer alongside each selected entry in one pass.
-    pub fn resolved_entries_with_sources_for(
-        &self,
-        entity_id: &EntityId,
-        now: u64,
-    ) -> (BTreeMap<String, MetadataEntry>, BTreeMap<String, String>) {
-        let resolved = self.resolved(entity_id, now);
-        (resolved.values.clone(), resolved.sources.clone())
-    }
-
     pub fn resolved_entries_for(&self, entity_id: &EntityId, now: u64) -> BTreeMap<String, MetadataEntry> {
-        self.resolved(entity_id, now).values.clone()
+        self.resolved(entity_id, now).to_values()
     }
 
     pub fn source_entries_for(&self, entity_id: &EntityId, now: u64) -> BTreeMap<String, Vec<MetadataSourceEntry>> {
@@ -570,7 +789,7 @@ impl MetadataStore {
                             .into_iter()
                             .map(|candidate| MetadataSourceEntry { source_id: candidate.source_id, entry: candidate.entry })
                             .collect::<Vec<_>>();
-                        (!entries.is_empty()).then_some((key.clone(), entries))
+                        (!entries.is_empty()).then_some((key.to_string(), entries))
                     })
                     .collect()
             })
@@ -580,13 +799,13 @@ impl MetadataStore {
     pub fn snapshot_patches(&self, now: u64) -> Vec<MetadataPatch> {
         let mut patches: BTreeMap<(EntityId, String), BTreeMap<String, MetadataValueUpdate>> = BTreeMap::new();
         for (target, target_entries) in &self.entries {
-            for (key, source_entries) in target_entries {
+            for (key, source_entries) in target_entries.iter() {
                 for (contributor, entry) in source_entries.iter() {
                     if !self.is_live(contributor, entry, now) {
                         continue;
                     }
                     patches.entry((target.clone(), self.source(contributor).to_owned())).or_default().insert(
-                        key.clone(),
+                        key.to_string(),
                         MetadataValueUpdate {
                             value: entry.value.clone(),
                             ttl_ms: entry.ttl_ms,
@@ -663,10 +882,31 @@ mod tests {
     fn select_primary_value(entries: &[CandidateEntry]) -> Option<MetadataValue> {
         select_primary_entry(entries).map(|candidate| candidate.entry.value)
     }
-    use crate::{MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate, PaneTarget};
+    use crate::{EntityRef, MetadataEntry, MetadataPatch, MetadataValue, MetadataValueUpdate, PaneTarget};
 
     fn entry(value: &str, precedence: i64, ordinal: i64, updated_at: u64) -> MetadataEntry {
-        MetadataEntry { value: MetadataValue::Text(value.to_owned()), updated_at, ttl_ms: None, precedence, ordinal }
+        MetadataEntry { value: MetadataValue::Text(value.into()), updated_at, ttl_ms: None, precedence, ordinal }
+    }
+
+    /// Equal text held by many facts is one copy; text no fact holds any
+    /// more is forgotten, however much has come and gone.
+    #[test]
+    fn text_values_are_held_once_while_a_fact_holds_them() {
+        let mut store = MetadataStore::default();
+        let target = |id: &str| EntityId::Entity(EntityRef::new("p", "convoy", id));
+        for id in ["a", "b"] {
+            store.set(target(id), "status", "source", entry("running", 0, 0, 0));
+        }
+        let text = |store: &MetadataStore, id: &str| match &store.resolved(&target(id), 0).get("status").unwrap().value {
+            MetadataValue::Text(text) => text.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(Arc::ptr_eq(&text(&store, "a"), &text(&store, "b")));
+        for n in 0..10_000 {
+            store.set(target("a"), "summary", "source", entry(&format!("summary {n}"), 0, 0, 0));
+        }
+        assert!(store.texts.len() < 1100, "{} texts kept", store.texts.len());
+        assert_eq!(&*text(&store, "a"), "running");
     }
 
     #[test]
@@ -750,7 +990,7 @@ mod tests {
             CandidateEntry::new("c", entry("/focused", 10, 2, 1)),
         ];
 
-        assert_eq!(select_primary_value(&entries), Some(MetadataValue::Text("/focused".to_owned())));
+        assert_eq!(select_primary_value(&entries), Some(MetadataValue::Text("/focused".into())));
     }
 
     #[test]
@@ -761,14 +1001,14 @@ mod tests {
             CandidateEntry::new("c", entry("/two", 0, 2, 1)),
         ];
 
-        assert_eq!(select_primary_value(&entries), Some(MetadataValue::Text("/two".to_owned())));
+        assert_eq!(select_primary_value(&entries), Some(MetadataValue::Text("/two".into())));
     }
 
     #[test]
     fn selector_uses_ordinal_after_count() {
         let entries = vec![CandidateEntry::new("a", entry("/later", 0, 10, 1)), CandidateEntry::new("b", entry("/earlier", 0, 2, 1))];
 
-        assert_eq!(select_primary_value(&entries), Some(MetadataValue::Text("/earlier".to_owned())));
+        assert_eq!(select_primary_value(&entries), Some(MetadataValue::Text("/earlier".into())));
     }
 
     #[test]
@@ -793,7 +1033,7 @@ mod tests {
                 set: BTreeMap::from([(
                     "summary.local_llm".to_owned(),
                     MetadataValueUpdate {
-                        value: MetadataValue::Text("running tests".to_owned()),
+                        value: MetadataValue::Text("running tests".into()),
                         ttl_ms: Some(30_000),
                         precedence: Some(10),
                         ordinal: Some(2),
@@ -826,7 +1066,7 @@ mod tests {
                 source_id: "flotilla".to_owned(),
                 set: BTreeMap::from([(
                     "display.label".to_owned(),
-                    MetadataValueUpdate { value: MetadataValue::Text("#37".to_owned()), ttl_ms: None, precedence: None, ordinal: Some(7) },
+                    MetadataValueUpdate { value: MetadataValue::Text("#37".into()), ttl_ms: None, precedence: None, ordinal: Some(7) },
                 )]),
                 unset: vec![],
             },
@@ -846,7 +1086,7 @@ mod tests {
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    value: MetadataValue::Text("zellij-org/zellij".into()),
                     ttl_ms: None,
                     precedence: Some(10),
                     ordinal: Some(2),
@@ -876,7 +1116,7 @@ mod tests {
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    value: MetadataValue::Text("zellij-org/zellij".into()),
                     ttl_ms: Some(10_000),
                     precedence: None,
                     ordinal: None,
@@ -908,7 +1148,7 @@ mod tests {
                 source_id: "zellij".to_owned(),
                 set: BTreeMap::from([(
                     "zellij.pane.title".to_owned(),
-                    MetadataValueUpdate { value: MetadataValue::Text("server".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
+                    MetadataValueUpdate { value: MetadataValue::Text("server".into()), ttl_ms: None, precedence: None, ordinal: None },
                 )]),
                 unset: vec![],
             },
@@ -942,5 +1182,59 @@ mod tests {
         let entries = store.entries_for(&target, "zellij.pane.cwd", 2);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].source_id, "shell");
+    }
+}
+
+#[cfg(test)]
+impl MetadataStore {
+    /// Count what the store holds: facts by entity, and the resolutions kept.
+    pub(crate) fn census(&self, census: &mut Census) {
+        for (target, keys) in &self.entries {
+            if let EntityId::Entity(entity) = target {
+                census.entity("store: entity ids", entity);
+            }
+            census.shape("store: facts per entity", keys.keys());
+            for key in keys.keys() {
+                if census.first(key) {
+                    census.string("store: fact keys (interned)", key);
+                }
+            }
+            for contributions in keys.values() {
+                for (_, entry) in contributions.shared() {
+                    if census.first(entry) {
+                        census.value("store: fact values", &entry.value);
+                    }
+                }
+            }
+        }
+        for source in &self.sources {
+            census.string("store: sources (interned)", source);
+        }
+        for stored in self.entries.values() {
+            if let Some(cached) = stored.resolved.borrow().as_ref().filter(|cached| census.first(&cached.resolved)) {
+                cached.resolved.census(census, "resolved facts");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+impl ResolvedFacts {
+    pub(crate) fn census(&self, census: &mut Census, prefix: &str) {
+        // Keys and sources are shared (a spine, interned sources); count
+        // each spine once, and the facts each record holds.
+        if census.first(self.shape()) {
+            census.shape(&format!("{prefix}: spines"), self.keys());
+            for key in self.shape().keys() {
+                if census.first(key) {
+                    census.string(&format!("{prefix}: spine keys"), key);
+                }
+            }
+        }
+        for (_, fact) in self.facts() {
+            if census.first(&fact.entry) {
+                census.value(&format!("{prefix}: values (not shared)"), &fact.entry.value);
+            }
+        }
     }
 }

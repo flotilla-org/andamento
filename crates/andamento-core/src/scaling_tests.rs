@@ -2,6 +2,7 @@
 //! working Flotilla fleet's (about 580 entities, mostly convoys and vessels
 //! with ~25 facts each) arrives as one snapshot and then as small deltas;
 //! neither may cost work in proportion to everything already stored.
+use crate::census::Census;
 use crate::metadata::ENTITY_RESOLUTIONS;
 use crate::presentation::{PlacementNode, SurfaceSnapshot};
 use crate::sidebar::{Action, Sidebar, Workspace};
@@ -15,7 +16,7 @@ const PROVIDER: &str = "subscription";
 const CONFIG: &str = include_str!("../tests/fixtures/sidebar.kdl");
 
 fn text(value: impl Into<String>) -> MetadataValue {
-    MetadataValue::Text(value.into())
+    MetadataValue::Text(value.into().into())
 }
 
 fn patch(kind: &str, id: &str, facts: Vec<(String, MetadataValue)>) -> MetadataPatch {
@@ -620,6 +621,65 @@ fn kept_variables_follow_a_parents_change() {
     assert_eq!(density(&kept), "compact");
 }
 
+/// Entities that resolve a template the same way share its resolution, and
+/// entities a project layer reaches don't: each shows its own project's
+/// template, for a loop's applied template and for a slot's.
+#[test]
+fn template_resolutions_follow_the_layers_that_apply() {
+    let user = parse_template_config_kdl(
+        r#"
+        region "tree" root-template="title" form="compact" placement="tree"
+        template "title" slot="compact" node-kind="entity" { field "label" source="literal" value="Tree"; }
+        placement "tree" {
+          for "vessel" kind="vessel" { apply-template "row"; }
+          for "convoy" kind="convoy"
+        }
+        "#,
+    )
+    .unwrap();
+    // Below the project layer, which is below the user's.
+    let ordinary = parse_template_config_kdl(
+        r#"
+        template "row" { field "label" source="literal" value="ordinary row"; }
+        template "convoy/compact" slot="compact" node-kind="entity" { field "label" source="literal" value="ordinary convoy"; }
+        "#,
+    )
+    .unwrap();
+    let special = parse_template_config_kdl(
+        r#"
+        template "row" { field "label" source="literal" value="special row"; }
+        template "convoy/compact" slot="compact" node-kind="entity" { field "label" source="literal" value="special convoy"; }
+        "#,
+    )
+    .unwrap();
+    let mut state = ControllerState::default();
+    state.set_template_catalog(Some(TemplateConfigCatalog::from_layers(vec![
+        TemplateConfigLayer::project("special", "special", special),
+        TemplateConfigLayer::user("user", user),
+        TemplateConfigLayer::bundled("bundled", ordinary),
+    ])));
+    for (kind, id, project) in
+        [("vessel", "a", "ordinary"), ("vessel", "b", "special"), ("convoy", "c", "ordinary"), ("convoy", "d", "special")]
+    {
+        state.apply_provider_patch(PROVIDER, patch(kind, id, vec![("flotilla.project".into(), text(project))]));
+    }
+    let surface = state.presentation_in(&state.evaluate_revision());
+    let shown: BTreeMap<String, String> = surface.sections[0]
+        .nodes
+        .iter()
+        .map(|node| (node.entity.id.clone(), node.content.fields.first().map(|field| field.value.clone()).unwrap_or_default()))
+        .collect();
+    assert_eq!(
+        shown,
+        BTreeMap::from([
+            ("a".into(), "ordinary row".into()),
+            ("b".into(), "special row".into()),
+            ("c".into(), "ordinary convoy".into()),
+            ("d".into(), "special convoy".into()),
+        ])
+    );
+}
+
 /// Where scaling breaks: generated fleets from the real catalog's size up
 /// to hundreds of projects of hundreds of convoys, and lopsided shapes.
 /// `cargo test --release -p andamento-core stress_shapes -- --ignored
@@ -655,7 +715,8 @@ fn stress_shapes() {
         }
         let patches = fleet(shape, usize::MAX);
         let mut sidebar = Sidebar::new(config).unwrap();
-        let snapshot = time(&mut || sidebar.apply(1, PROVIDER, patches.clone()).unwrap());
+        let mut given = Some(patches.clone());
+        let snapshot = time(&mut || sidebar.apply(1, PROVIDER, given.take().unwrap()).unwrap());
         let first = time(&mut || {
             sidebar.snapshot_shared();
         });
@@ -695,4 +756,42 @@ fn stress_shapes() {
 
 fn count_nodes(nodes: &[Rc<PlacementNode>]) -> usize {
     nodes.iter().map(|node| 1 + count_nodes(&node.children)).sum()
+}
+
+/// What the sidebar holds, by kind: strings and their copies, and
+/// string-keyed maps by shape. On the real catalog and its recorded deltas
+/// (ANDAMENTO_CATALOG_FIXTURE, ANDAMENTO_CATALOG_TEMPLATE as for
+/// `real_catalog_timings`), else a generated fleet (CENSUS_CONVOYS, 580).
+/// `cargo test -p andamento-core census -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn census() {
+    let template = std::env::var("ANDAMENTO_CATALOG_TEMPLATE").map(|path| std::fs::read_to_string(path).unwrap());
+    let mut sidebar = Sidebar::new(template.as_deref().unwrap_or(CONFIG)).unwrap();
+    match std::env::var("ANDAMENTO_CATALOG_FIXTURE") {
+        Ok(path) => {
+            let patches: Vec<MetadataPatch> = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            sidebar.apply(1, PROVIDER, patches).unwrap();
+            let _ = sidebar.snapshot_shared();
+            let deltas = std::path::Path::new(&path).with_file_name("deltas.jsonl");
+            for (i, line) in std::fs::read_to_string(deltas).unwrap_or_default().lines().enumerate() {
+                let request: serde_json::Value = serde_json::from_str(line).unwrap();
+                let patches: Vec<MetadataPatch> = serde_json::from_value(request["patches"].clone()).unwrap();
+                sidebar.apply(10 + i as u64, PROVIDER, patches).unwrap();
+                let _ = sidebar.snapshot_shared();
+            }
+        }
+        Err(_) => {
+            let convoys = std::env::var("CENSUS_CONVOYS").ok().and_then(|n| n.parse().ok()).unwrap_or(580);
+            sidebar.apply(1, PROVIDER, catalog(convoys)).unwrap();
+            let _ = sidebar.snapshot_shared();
+            for i in 0..20 {
+                sidebar.apply(2 + i as u64, PROVIDER, [delta(i * 7 % convoys, "active")]).unwrap();
+                let _ = sidebar.snapshot_shared();
+            }
+        }
+    }
+    let mut census = Census::default();
+    sidebar.census(&mut census);
+    println!("{}", census.report());
 }

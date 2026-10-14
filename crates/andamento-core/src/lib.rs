@@ -1,11 +1,22 @@
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
+
+/// Hash maps and sets of Andamento's own data, with a fast hasher rather
+/// than std's DoS-resistant one: their keys come from local producers and
+/// Andamento itself, and hashing is a measurable part of applying facts.
+pub(crate) type FastHashMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
+pub(crate) type FastHashSet<T> = std::collections::HashSet<T, foldhash::fast::RandomState>;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
 pub mod detail;
+mod facts;
 pub mod host;
 pub mod managed;
 mod metadata;
@@ -379,7 +390,7 @@ impl Default for RailStructure {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "kebab-case")]
 pub enum MetadataValue {
-    Text(String),
+    Text(Arc<str>),
     Bool(bool),
     Integer(i64),
     StringList(Vec<String>),
@@ -424,7 +435,7 @@ pub enum MetadataPathValue {
 impl From<MetadataPathValue> for MetadataValue {
     fn from(value: MetadataPathValue) -> Self {
         match value {
-            MetadataPathValue::Text(value) => MetadataValue::Text(value),
+            MetadataPathValue::Text(value) => MetadataValue::Text(value.into()),
             MetadataPathValue::Bool(value) => MetadataValue::Bool(value),
             MetadataPathValue::Integer(value) => MetadataValue::Integer(value),
             MetadataPathValue::StringList(values) => MetadataValue::StringList(values),
@@ -462,12 +473,44 @@ pub const LOCAL_PROVIDER: &str = "local";
 /// In JSON a missing `provider` is empty, which means "not named": patch
 /// application stamps the patch's provider over it. Every other entry point
 /// rejects an entity that names none.
+///
+/// One allocation holds what it names, shared by its clones: an entity's
+/// reference is copied into the catalog, its index, its placements and
+/// their nodes. Read its parts through it; changing one copies them.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EntityRef(Arc<EntityRefParts>);
+
+/// An entity's facts as templates read them, by name: names are shared
+/// with the store's.
+pub type FactMap = BTreeMap<Rc<str>, MetadataValue>;
+
+/// What an [`EntityRef`] names.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct EntityRef {
+pub struct EntityRefParts {
     #[serde(default)]
     pub provider: String,
     pub kind: String,
     pub id: String,
+}
+
+impl Deref for EntityRef {
+    type Target = EntityRefParts;
+    fn deref(&self) -> &EntityRefParts {
+        &self.0
+    }
+}
+
+impl DerefMut for EntityRef {
+    fn deref_mut(&mut self) -> &mut EntityRefParts {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl fmt::Debug for EntityRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EntityRef").field("provider", &self.provider).field("kind", &self.kind).field("id", &self.id).finish()
+    }
 }
 
 /// The identity of one rendered appearance of an entity.
@@ -538,7 +581,7 @@ impl PlacementLoopKey {
 
 impl EntityRef {
     pub fn new(provider: impl Into<String>, kind: impl Into<String>, id: impl Into<String>) -> Self {
-        Self { provider: provider.into(), kind: kind.into(), id: id.into() }
+        Self(Arc::new(EntityRefParts { provider: provider.into(), kind: kind.into(), id: id.into() }))
     }
 
     /// An entity of the [`LOCAL_PROVIDER`].
@@ -748,6 +791,78 @@ pub const DISPLAY_FORM_COMPACT: &str = "compact";
 /// Conventional name for the default full surface.
 pub const DISPLAY_FORM_FULL: &str = "full";
 
+/// A resolved template's effective KDL, for inspection: written out when
+/// first read, since presenting never reads it. Clones share it.
+#[derive(Clone, Default)]
+pub struct EffectiveKdl(Rc<LazyKdl>);
+
+#[derive(Default)]
+struct LazyKdl {
+    template: Option<template_config::TemplateConfigResolved>,
+    text: OnceCell<Rc<str>>,
+}
+
+impl EffectiveKdl {
+    /// `template`'s, written out when first read.
+    pub fn of(template: template_config::TemplateConfigResolved) -> Self {
+        Self(Rc::new(LazyKdl { template: Some(template), text: OnceCell::new() }))
+    }
+
+    /// Text given as it is, such as an error.
+    pub fn text(text: impl Into<Rc<str>>) -> Self {
+        Self(Rc::new(LazyKdl { template: None, text: OnceCell::from(text.into()) }))
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.text.get_or_init(|| self.0.template.as_ref().map(|template| template.dump_kdl().into()).unwrap_or_default())
+    }
+
+    /// The shared text, if written out yet.
+    #[cfg(test)]
+    pub(crate) fn written(&self) -> Option<&Rc<str>> {
+        self.0.text.get()
+    }
+}
+
+impl Deref for EffectiveKdl {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for EffectiveKdl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl fmt::Debug for EffectiveKdl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl PartialEq for EffectiveKdl {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0) || self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for EffectiveKdl {}
+
+impl Serialize for EffectiveKdl {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for EffectiveKdl {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::text)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedTemplateSlots {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -771,7 +886,7 @@ pub struct ResolvedTemplateSlot {
     pub setters: Vec<template_config::ResolvedVariableSetter>,
     /// Flattened template evidence shown by inspect.
     #[serde(default)]
-    pub effective_kdl: String,
+    pub effective_kdl: EffectiveKdl,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolve_error: Option<String>,
 }
@@ -1263,7 +1378,7 @@ mod tests {
     fn metadata_target_identity_round_trips_json() {
         let target = MetadataTarget::Identity(MetadataIdentity {
             key: "git.repo".to_owned(),
-            value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+            value: MetadataValue::Text("rjwittams/katzensteg".into()),
         });
 
         let encoded = serde_json::to_string(&target).unwrap();
@@ -1280,7 +1395,7 @@ mod tests {
             set: std::collections::BTreeMap::from([(
                 "summary.local_llm".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("running tests".to_owned()),
+                    value: MetadataValue::Text("running tests".into()),
                     ttl_ms: Some(30_000),
                     precedence: Some(10),
                     ordinal: Some(2),
@@ -1302,7 +1417,7 @@ mod tests {
             source_id: "flotilla".to_owned(),
             set: std::collections::BTreeMap::from([(
                 "tab.subject".to_owned(),
-                MetadataValueUpdate { value: MetadataValue::Text("checkout".to_owned()), ttl_ms: None, precedence: Some(1), ordinal: None },
+                MetadataValueUpdate { value: MetadataValue::Text("checkout".into()), ttl_ms: None, precedence: Some(1), ordinal: None },
             )]),
             unset: vec![],
         };
@@ -1332,5 +1447,7 @@ mod cutover_tests;
 #[cfg(test)]
 mod visibility_tests;
 
+#[cfg(test)]
+mod census;
 #[cfg(test)]
 mod scaling_tests;

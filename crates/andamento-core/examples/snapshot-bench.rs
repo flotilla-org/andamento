@@ -21,7 +21,10 @@ fn main() {
                 ]
                 .into_iter()
                 .map(|(k, v)| {
-                    (k.into(), MetadataValueUpdate { value: MetadataValue::Text(v), ttl_ms: None, precedence: None, ordinal: Some(i) })
+                    (
+                        k.into(),
+                        MetadataValueUpdate { value: MetadataValue::Text(v.into()), ttl_ms: None, precedence: None, ordinal: Some(i) },
+                    )
                 })
                 .collect::<BTreeMap<_, _>>(),
             })
@@ -41,7 +44,7 @@ fn main() {
                         set: BTreeMap::from([(
                             "status.state".into(),
                             MetadataValueUpdate {
-                                value: MetadataValue::Text(format!("update-{update}")),
+                                value: MetadataValue::Text(format!("update-{update}").into()),
                                 ttl_ms: None,
                                 precedence: None,
                                 ordinal: Some(0),

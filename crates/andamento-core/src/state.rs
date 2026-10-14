@@ -5,7 +5,7 @@ pub(crate) struct EvaluatedPlacement {
     pub label: String,
     pub form: String,
     pub tier: Option<AbbreviationTier>,
-    pub metadata: Rc<BTreeMap<String, MetadataValue>>,
+    pub metadata: Rc<FactMap>,
     pub templates: ResolvedTemplateSlots,
     pub annotation: PlacementAnnotation,
     pub children: Vec<Rc<EvaluatedPlacement>>,
@@ -13,7 +13,7 @@ pub(crate) struct EvaluatedPlacement {
 #[derive(Debug)]
 pub(crate) struct EvaluatedSection {
     pub definition: SurfaceRegionDefinition,
-    pub root: Option<ResolvedTemplateSlot>,
+    pub root: Option<Rc<ResolvedTemplateSlot>>,
     pub entities: Vec<Rc<EvaluatedPlacement>>,
 }
 #[derive(Debug, Clone, Default)]
@@ -21,25 +21,30 @@ pub(crate) struct PlacementAnnotation {
     pub layout: Option<String>,
     pub related_detail: Vec<TemplateConfigRenderedField>,
 }
+use crate::{FactMap, FastHashMap, FastHashSet};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::ops::{Bound, Deref, DerefMut};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
+#[cfg(test)]
+use crate::census::Census;
 use crate::detail::{resolve_field, DetailCard};
+use crate::facts::Entries;
 use crate::host::PaneObservation;
-use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, MetadataStore, ResolvedFacts};
+use crate::metadata::{select_primary_entry, CandidateEntry, EntityId, Fact, MetadataStore, ResolvedFacts};
 use crate::profile;
 #[cfg(test)]
 use crate::template_config::PlacementDefinition;
 use crate::template_config::{
     placement_index_text, AbbreviationTier, NodeVariableDefinition, PlacementOrder, PlacementOrderAbsent, PlacementOrderDirection,
-    PlacementVisibility, PlacementVisibilityRule, SurfaceRegionDefinition, TemplateAddress, TemplateConfigCatalog, TemplateConfigLayerKind,
-    TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigOrigin, TemplateConfigRenderReady, TemplateConfigRenderedField,
-    TemplateConfigSlot,
+    PlacementVisibility, PlacementVisibilityRule, ResolutionKey, SurfaceRegionDefinition, TemplateAddress, TemplateConfigCatalog,
+    TemplateConfigLayerKind, TemplateConfigMatchContext, TemplateConfigNodeKind, TemplateConfigOrigin, TemplateConfigRenderReady,
+    TemplateConfigRenderedField, TemplateConfigSlot,
 };
 use crate::WorkspaceId;
 use crate::{
@@ -49,13 +54,14 @@ use crate::{
     sidebar_arrangement::RegionHints,
     suggested_layout::{self, LayoutError, SuggestedLayout},
     template_config::{PlacementLoop, TemplateVariableType},
-    ControllerBootstrapSnapshot, ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EffectiveVariableValue, EntityRef,
-    LatentMaterializationState, LatentTab, MaterializeLatentRequest, MetadataControls, MetadataEntry, MetadataIdentity, MetadataPatch,
-    MetadataSourceEntry, MetadataTarget, MetadataTriState, MetadataValue, MetadataValueUpdate, NodeKey, NodeVariableOverrides,
-    ObservedMetadataIdentity, PaneTarget, PlacementKey, PlacementLoopKey, PlacementSegment, PluginPlacement, PluginRegistrationHello,
-    Priority, RailConfig, RailUiAction, RailUiRevision, RailUiState, ReachableMetadataIdentity, RendererHello, ResolvedMetadata,
-    ResolvedMetadataTarget, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard, TabStatusSummary,
-    TemplateConfigDiagnostics, VariableSetterProvenance, DISPLAY_FORM_COMPACT, LOCAL_PROVIDER, NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
+    ControllerBootstrapSnapshot, ControllerViewModel, DisplayVariableValue, EffectiveKdl, EffectiveNodeVariables, EffectiveVariableValue,
+    EntityRef, LatentMaterializationState, LatentTab, MaterializeLatentRequest, MetadataControls, MetadataEntry, MetadataIdentity,
+    MetadataPatch, MetadataSourceEntry, MetadataTarget, MetadataTriState, MetadataValue, MetadataValueUpdate, NodeKey,
+    NodeVariableOverrides, ObservedMetadataIdentity, PaneTarget, PlacementKey, PlacementLoopKey, PlacementSegment, PluginPlacement,
+    PluginRegistrationHello, Priority, RailConfig, RailUiAction, RailUiRevision, RailUiState, ReachableMetadataIdentity, RendererHello,
+    ResolvedMetadata, ResolvedMetadataTarget, ResolvedTemplateSlot, ResolvedTemplateSlots, SetPaneStatus, SortMode, TabCard,
+    TabStatusSummary, TemplateConfigDiagnostics, VariableSetterProvenance, DISPLAY_FORM_COMPACT, LOCAL_PROVIDER,
+    NODE_VARIABLE_CONFIG_OVERRIDE_SETTER,
 };
 
 const SOURCE_ZELLIJ: &str = "zellij";
@@ -89,7 +95,7 @@ const NORMAL_CWD_PRECEDENCE: i64 = 0;
 // Opener-owned identity must outrank observational discovery such as cwd-derived associations.
 const LATENT_MATERIALIZER_PRECEDENCE: i64 = 1_000;
 
-type TabSeedMetadata = HashMap<WorkspaceId, BTreeMap<String, MetadataEntry>>;
+type TabSeedMetadata = FastHashMap<WorkspaceId, BTreeMap<String, MetadataEntry>>;
 
 /// Per tab: its subject, and the host entity the host published for it.
 #[derive(Debug, Default)]
@@ -107,9 +113,9 @@ pub struct ControllerTab {
 }
 
 // Keep scalar text distinct from structured entity identities.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum IndexedValue {
-    Scalar(String),
+    Scalar(Arc<str>),
     Entity(EntityRef),
 }
 
@@ -125,7 +131,9 @@ enum IndexedValue {
 /// return, such as a rebuild or new visibility, moves the epoch.
 #[derive(Debug, Default)]
 struct PlacementIndex {
-    by_fact: BTreeMap<Rc<(String, IndexedValue)>, usize>,
+    by_fact: FastHashMap<Rc<PostingKey>, usize>,
+    /// The fact names postings are under, to look one up without making it.
+    names: FastHashSet<Rc<str>>,
     /// Postings by ID; an emptied posting keeps its ID and generation.
     postings: Vec<Posting>,
     clock: u64,
@@ -137,7 +145,6 @@ struct PlacementIndex {
     /// Keys whose facts hold entity references, with how many positions do.
     ref_key_counts: BTreeMap<String, usize>,
     /// What each position was indexed from, and the postings it added.
-    entities: Vec<EntityRef>,
     facts: Vec<Rc<ResolvedFacts>>,
     indexed: Vec<Vec<usize>>,
     /// What visibility was evaluated with: the template catalog's
@@ -148,7 +155,7 @@ struct PlacementIndex {
 
 #[derive(Debug)]
 struct Posting {
-    key: Rc<(String, IndexedValue)>,
+    key: Rc<PostingKey>,
     positions: Vec<usize>,
     generation: u64,
 }
@@ -158,7 +165,7 @@ struct Posting {
 #[derive(Debug)]
 enum PostingRead {
     Present { id: usize, generation: u64 },
-    Absent(Rc<(String, IndexedValue)>),
+    Absent(Rc<PostingKey>),
 }
 
 /// What placement evaluation reads besides the catalog's facts. When any of
@@ -261,7 +268,7 @@ struct NodeMemo {
 }
 
 /// Each placed node's variables, by the address of its placement.
-pub(crate) type NodeVariables = HashMap<*const EvaluatedPlacement, VariablesMemo>;
+pub(crate) type NodeVariables = FastHashMap<*const EvaluatedPlacement, VariablesMemo>;
 
 /// A node's variables, kept while its placement and its parent's variables
 /// stay the same.
@@ -301,33 +308,16 @@ struct PlacementContext<'a, 'f> {
     form: &'f str,
 }
 
-/// The `(key, value)` postings an entity is indexed under.
-fn entity_postings(entity: &CatalogEntity) -> Vec<(String, IndexedValue)> {
-    // An entity's kind and id come from its ref, not from whatever the
-    // producer happened to echo into its facts, so `kind=` always works.
-    let mut postings = vec![
-        ("entity.kind".to_owned(), IndexedValue::Scalar(entity.entity.kind.clone())),
-        ("entity.id".to_owned(), IndexedValue::Scalar(entity.entity.id.clone())),
-    ];
-    // A `.ref` carries its target's facts for presentation, but rules
-    // reach it only through its own placement facts, so a query on the
-    // target's facts (say, needs attention) never places the ghost too.
-    let is_ref = entity.entity.kind == system::REF;
-    for (key, entry) in &entity.values {
-        if is_ref && key != system::GROUP && key != system::TARGET {
-            continue;
-        }
-        if let MetadataValue::EntityRefs(refs) = &entry.value {
-            postings.extend(refs.iter().map(|reference| (key.clone(), IndexedValue::Entity(reference.clone()))));
-            continue;
-        }
-        if let Some(text) = placement_index_text(&entry.value) {
-            postings.push((key.clone(), IndexedValue::Scalar(text)));
-        }
+/// A posting's key: a fact's name, shared with the records' spines, and a
+/// value.
+type PostingKey = (Rc<str>, IndexedValue);
+
+/// A fact's value as placement predicates match it, sharing its text.
+fn indexed_text(value: &MetadataValue) -> Option<Arc<str>> {
+    match value {
+        MetadataValue::Text(text) => Some(text.clone()),
+        other => placement_index_text(other).map(Arc::from),
     }
-    postings.sort();
-    postings.dedup();
-    postings
 }
 
 impl PlacementIndex {
@@ -341,21 +331,16 @@ impl PlacementIndex {
     /// Bring the index up to date with `entities`, re-indexing the positions
     /// whose facts changed, or every position when the list itself changed.
     /// Returns the positions re-indexed (all of them: `None`).
-    /// `list` is the catalog's generation, when it has one: while it is the
-    /// same, so is the list.
+    /// `list` is the catalog's generation: while it is the same, so is the
+    /// list. Without one, the list is taken to have changed.
     fn update(&mut self, entities: &[CatalogEntity], list: Option<u64>) -> Option<Vec<usize>> {
-        let same_list = self.entities.len() == entities.len()
-            && match list {
-                Some(list) => self.list == Some(list),
-                None => self.entities.iter().zip(entities).all(|(old, new)| *old == new.entity),
-            };
+        let same_list = self.facts.len() == entities.len() && list.is_some() && self.list == list;
         if !same_list {
             *self = Self { epoch: self.epoch + 1, list, ..Self::default() };
             for (position, entity) in entities.iter().enumerate() {
-                self.entities.push(entity.entity.clone());
                 self.facts.push(entity.facts.clone());
                 self.indexed.push(vec![]);
-                let postings = entity_postings(entity);
+                let postings = self.postings_of(entity);
                 self.index(position, &postings);
             }
             return None;
@@ -370,7 +355,7 @@ impl PlacementIndex {
             for &id in &self.indexed[position] {
                 self.postings[id].generation = self.clock;
             }
-            let next = entity_postings(entity);
+            let next = self.postings_of(entity);
             if self.indexed[position].iter().map(|&id| &*self.postings[id].key).eq(next.iter()) {
                 continue;
             }
@@ -381,12 +366,51 @@ impl PlacementIndex {
         Some(changed)
     }
 
-    fn index(&mut self, position: usize, postings: &[(String, IndexedValue)]) {
+    /// The postings `entity` is indexed under.
+    fn postings_of(&mut self, entity: &CatalogEntity) -> Vec<PostingKey> {
+        // An entity's kind and id come from its ref, not from whatever the
+        // producer happened to echo into its facts, so `kind=` always works.
+        let mut postings = vec![
+            (self.name(KEY_ENTITY_KIND), IndexedValue::Scalar(Arc::from(entity.entity.kind.as_str()))),
+            (self.name(KEY_ENTITY_ID), IndexedValue::Scalar(Arc::from(entity.entity.id.as_str()))),
+        ];
+        // A `.ref` carries its target's facts for presentation, but rules
+        // reach it only through its own placement facts, so a query on the
+        // target's facts (say, needs attention) never places the ghost too.
+        let is_ref = entity.entity.kind == system::REF;
+        for (key, fact) in entity.facts.named() {
+            if is_ref && &**key != system::GROUP && &**key != system::TARGET {
+                continue;
+            }
+            if let MetadataValue::EntityRefs(refs) = &fact.entry.value {
+                postings.extend(refs.iter().map(|reference| (key.clone(), IndexedValue::Entity(reference.clone()))));
+                continue;
+            }
+            if let Some(text) = indexed_text(&fact.entry.value) {
+                postings.push((key.clone(), IndexedValue::Scalar(text)));
+            }
+        }
+        postings.sort();
+        postings.dedup();
+        postings
+    }
+
+    fn name(&mut self, name: &str) -> Rc<str> {
+        if let Some(name) = self.names.get(name) {
+            return name.clone();
+        }
+        let name: Rc<str> = Rc::from(name);
+        self.names.insert(name.clone());
+        name
+    }
+
+    fn index(&mut self, position: usize, postings: &[PostingKey]) {
         let mut ids = Vec::with_capacity(postings.len());
         for posting in postings {
+            self.names.insert(posting.0.clone());
             if let IndexedValue::Entity(_) = posting.1 {
-                *self.ref_key_counts.entry(posting.0.clone()).or_default() += 1;
-                if self.ref_keys.insert(posting.0.clone()) {
+                *self.ref_key_counts.entry(posting.0.to_string()).or_default() += 1;
+                if self.ref_keys.insert(posting.0.to_string()) {
                     self.epoch += 1;
                 }
             }
@@ -414,11 +438,11 @@ impl PlacementIndex {
             let entry = &mut self.postings[id];
             entry.generation = self.clock;
             if let IndexedValue::Entity(_) = entry.key.1 {
-                if let Some(count) = self.ref_key_counts.get_mut(&entry.key.0) {
+                if let Some(count) = self.ref_key_counts.get_mut(&*entry.key.0) {
                     *count -= 1;
                     if *count == 0 {
-                        self.ref_key_counts.remove(&entry.key.0);
-                        self.ref_keys.remove(&entry.key.0);
+                        self.ref_key_counts.remove(&*entry.key.0);
+                        self.ref_keys.remove(&*entry.key.0);
                         self.epoch += 1;
                     }
                 }
@@ -508,7 +532,8 @@ impl PlacementIndex {
 
     /// The positions under `(key, value)`, and the read to record.
     fn lookup(&self, key: &str, value: IndexedValue) -> (&[usize], PostingRead) {
-        let key = (key.to_owned(), value);
+        let name = self.names.get(key).cloned().unwrap_or_else(|| Rc::from(key));
+        let key = (name, value);
         match self.by_fact.get(&key) {
             Some(&id) => {
                 let posting = &self.postings[id];
@@ -534,7 +559,7 @@ fn visibility_rule_matches(entity: &CatalogEntity, rule: &PlacementVisibilityRul
             "entity.id" => Some(entity.entity.id.as_str()),
             _ => None,
         };
-        let fact = entity.values.get(&predicate.key);
+        let fact = entity.facts.get(&predicate.key);
         if let Some(exists) = predicate.exists {
             return exists == (identity.is_some() || fact.is_some());
         }
@@ -543,7 +568,7 @@ fn visibility_rule_matches(entity: &CatalogEntity, rule: &PlacementVisibilityRul
             return Some(identity) == expected;
         }
         match fact.map(|entry| &entry.value) {
-            Some(MetadataValue::Text(text)) => Some(text.as_str()) == expected,
+            Some(MetadataValue::Text(text)) => Some(&**text) == expected,
             Some(MetadataValue::Bool(value)) => Some(if *value { "true" } else { "false" }) == expected,
             Some(MetadataValue::Integer(value)) => Some(value.to_string().as_str()) == expected,
             _ => false,
@@ -622,7 +647,8 @@ impl DerefMut for CatalogEntity {
 #[derive(Debug, Clone)]
 struct CatalogEvaluation {
     entities: Vec<CatalogEntity>,
-    by_entity: BTreeMap<EntityRef, usize>,
+    /// Positions, ordered by their entities, to find one by identity.
+    by_entity: Vec<usize>,
     /// Moves when the list of entities or their order changes.
     generation: u64,
     /// Entities derived from others (retained subjects, refs), built again
@@ -636,20 +662,30 @@ struct CatalogEvaluation {
 
 impl CatalogEvaluation {
     fn new(entities: Vec<CatalogEntity>, generation: u64) -> Self {
-        let by_entity = entities.iter().enumerate().map(|(i, e)| (e.entity.clone(), i)).collect();
+        let by_entity = Self::by_entity(&entities);
         let derived = entities.iter().filter(|e| e.entity.kind == system::REF).map(|e| e.entity.clone()).collect();
         Self { entities, by_entity, generation, derived, removed: BTreeSet::new(), added: vec![], structure_changed: false }
     }
 
+    fn by_entity(entities: &[CatalogEntity]) -> Vec<usize> {
+        let mut positions: Vec<usize> = (0..entities.len()).collect();
+        positions.sort_by(|&left, &right| entities[left].entity.cmp(&entities[right].entity));
+        positions
+    }
+
+    fn position(&self, target: &EntityRef) -> Option<usize> {
+        self.by_entity.binary_search_by(|&position| self.entities[position].entity.cmp(target)).ok().map(|at| self.by_entity[at])
+    }
+
     fn entity(&self, target: &EntityRef) -> Option<&CatalogEntity> {
-        self.by_entity.get(target).map(|index| &self.entities[*index])
+        self.position(target).map(|position| &self.entities[position])
     }
 
     /// Make `entity` `next` (None: absent). One whose facts are the same
     /// keeps its own. Returns whether the list or its order changes, which
     /// `reorder` then makes.
     fn replace(&mut self, entity: &EntityRef, next: Option<CatalogEntity>) -> bool {
-        match (self.by_entity.get(entity).copied(), next) {
+        match (self.position(entity), next) {
             (Some(at), Some(next)) => {
                 let current = &mut self.entities[at];
                 if current.ordinal != next.ordinal {
@@ -679,7 +715,7 @@ impl CatalogEvaluation {
         self.entities.retain(|entity| !removed.contains(&entity.entity));
         self.entities.append(&mut self.added);
         self.entities.sort_by(catalog_order);
-        self.by_entity = self.entities.iter().enumerate().map(|(i, e)| (e.entity.clone(), i)).collect();
+        self.by_entity = Self::by_entity(&self.entities);
         self.structure_changed = true;
     }
 }
@@ -793,9 +829,9 @@ fn placement_entity_order(left: &CatalogEntity, right: &CatalogEntity, order: &[
 
 fn placement_sort_fact<'a>(entity: &'a CatalogEntity, key: &str) -> Option<Cow<'a, MetadataValue>> {
     match key {
-        KEY_ENTITY_KIND => Some(Cow::Owned(MetadataValue::Text(entity.entity.kind.clone()))),
-        KEY_ENTITY_ID => Some(Cow::Owned(MetadataValue::Text(entity.entity.id.clone()))),
-        _ => entity.values.get(key).map(|entry| Cow::Borrowed(&entry.value)),
+        KEY_ENTITY_KIND => Some(Cow::Owned(MetadataValue::Text(entity.entity.kind.as_str().into()))),
+        KEY_ENTITY_ID => Some(Cow::Owned(MetadataValue::Text(entity.entity.id.as_str().into()))),
+        _ => entity.facts.get(key).map(|entry| Cow::Borrowed(&entry.value)),
     }
 }
 
@@ -831,10 +867,11 @@ pub struct PluginRegistration {
     pub placement: PluginPlacement,
 }
 
+/// Template resolutions by what they read.
+type Resolutions = FastHashMap<ResolutionKey, Option<Rc<ResolvedTemplateSlot>>>;
+
 /// An entity's display, with the facts and template generation it was made from.
 type KeptDisplay = (Rc<ResolvedFacts>, u64, EvaluatedPlacement);
-/// An applied template's resolution for an entity, likewise.
-type KeptAppliedTemplate = (Rc<ResolvedFacts>, u64, Option<Rc<ResolvedTemplateSlot>>);
 
 /// What evaluation keeps between revisions, each part valid only while
 /// what it was derived from stays the same. Everything kept lives here, so
@@ -845,9 +882,10 @@ struct Kept {
     placement_index: RefCell<PlacementIndex>,
     /// Each entity's display (`display_entity`), kept while its resolved
     /// facts and the template catalog stay the same.
-    displays: RefCell<HashMap<EntityRef, KeptDisplay>>,
-    /// Each applied template's resolution for an entity, kept likewise.
-    applied: RefCell<HashMap<(EntityRef, String), KeptAppliedTemplate>>,
+    displays: RefCell<FastHashMap<EntityRef, KeptDisplay>>,
+    /// Template resolutions, by what they read (`resolution`), with the
+    /// template catalog's generation they were made under.
+    resolutions: RefCell<(u64, Resolutions)>,
     /// Each region's loops as last evaluated (`evaluate_regions`), with
     /// what they were evaluated under.
     placements: RefCell<Option<(PlacementInputs, Vec<Vec<LoopMemo>>)>>,
@@ -864,7 +902,7 @@ impl Kept {
     fn swap(&self, other: &Kept) {
         self.placement_index.swap(&other.placement_index);
         self.displays.swap(&other.displays);
-        self.applied.swap(&other.applied);
+        self.resolutions.swap(&other.resolutions);
         self.placements.swap(&other.placements);
         self.variables.swap(&other.variables);
         self.surface.swap(&other.surface);
@@ -876,14 +914,14 @@ impl Kept {
 pub struct ControllerState {
     tabs: Vec<ControllerTab>,
     observed_workdirs: BTreeMap<WorkspaceId, BTreeSet<String>>,
-    pane_to_tab: HashMap<PaneTarget, WorkspaceId>,
-    panes: HashMap<PaneTarget, ControllerPane>,
+    pane_to_tab: FastHashMap<PaneTarget, WorkspaceId>,
+    panes: FastHashMap<PaneTarget, ControllerPane>,
     metadata: MetadataStore,
     retained_subjects: BTreeMap<EntityRef, CatalogEntity>,
     // Authoritative ends are terminal for an identity; new attempts use new IDs.
     ended_subjects: BTreeSet<EntityRef>,
-    pane_statuses: HashMap<PaneTarget, StoredPaneStatus>,
-    pinned_tabs: HashSet<WorkspaceId>,
+    pane_statuses: FastHashMap<PaneTarget, StoredPaneStatus>,
+    pinned_tabs: FastHashSet<WorkspaceId>,
     clients: BTreeMap<u16, ControllerClientState>,
     sort_mode: SortMode,
     rail_config: RailConfig,
@@ -895,7 +933,7 @@ pub struct ControllerState {
     template_config: TemplateConfigDiagnostics,
     receive_counter: u64,
     clock_ms: Option<u64>,
-    pending_materialized_tab_names: HashMap<WorkspaceId, String>,
+    pending_materialized_tab_names: FastHashMap<WorkspaceId, String>,
     pending_latent_materializations: BTreeMap<String, PendingLatentMaterialization>,
     rail_ui: ControllerRailUiState,
     rail_ui_writer_client_id: u16,
@@ -1015,7 +1053,7 @@ impl ControllerState {
             next_tabs.push(ControllerTab { tab_id: tab.tab_id, position: tab.position, name, active: tab.active });
         }
         next_tabs.sort_by_key(|tab| tab.position);
-        let live_tab_ids: HashSet<WorkspaceId> = next_tabs.iter().map(|tab| tab.tab_id).collect();
+        let live_tab_ids: FastHashSet<WorkspaceId> = next_tabs.iter().map(|tab| tab.tab_id).collect();
         pending_materialized_tab_names.retain(|tab_id, _| live_tab_ids.contains(tab_id));
         self.pending_materialized_tab_names = pending_materialized_tab_names;
         self.observed_workdirs.retain(|id, _| live_tab_ids.contains(id));
@@ -1038,7 +1076,7 @@ impl ControllerState {
 
     #[allow(dead_code)]
     pub fn observe_panes(&mut self, observations: Vec<PaneObservation>) -> bool {
-        let mut live_panes = HashSet::new();
+        let mut live_panes = FastHashSet::default();
         let previous_pane_to_tab = self.pane_to_tab.clone();
         self.pane_to_tab.clear();
         let previous_panes = self.panes.clone();
@@ -1127,7 +1165,7 @@ impl ControllerState {
         self.pane_statuses.remove(&pane_id);
     }
 
-    pub fn retain_panes(&mut self, live_panes: HashSet<PaneTarget>) {
+    pub fn retain_panes(&mut self, live_panes: FastHashSet<PaneTarget>) {
         self.pane_to_tab.retain(|pane_id, _| live_panes.contains(pane_id));
         self.panes.retain(|pane_id, _| live_panes.contains(pane_id));
         self.pane_statuses.retain(|pane_id, _| live_panes.contains(pane_id));
@@ -1364,12 +1402,12 @@ impl ControllerState {
         // Explicit single-fact unsets on a still-observed subject are not
         // history. Keep the old record only for authoritative removal/loss.
         if !is_removal {
-            if let Some(entity) = retained_target.as_ref() {
+            if let Some(entity) = retained_target.as_ref().filter(|entity| self.retained_subjects.contains_key(*entity)) {
                 let current = self.metadata.resolved(&EntityId::Entity(entity.clone()), self.now());
-                if current.values.contains_key(KEY_ENTITY_ID) || current.values.contains_key(KEY_DISPLAY_LABEL) {
+                if current.contains_key(KEY_ENTITY_ID) || current.contains_key(KEY_DISPLAY_LABEL) {
                     if let Some(retained) = self.retained_subjects.get_mut(entity) {
                         for key in unset_keys {
-                            ended_changed |= retained.values.remove(&key).is_some();
+                            ended_changed |= retained.remove(&key).is_some();
                         }
                     }
                 }
@@ -1764,12 +1802,12 @@ impl ControllerState {
         // workspace, or where its action target is open; else latent, unless
         // its action target is materialized.
         let live_targets = &evaluation.live_targets;
-        let state = |entity: &EntityRef, facts: &BTreeMap<String, MetadataValue>| {
+        let state = |entity: &EntityRef, facts: &FactMap| {
             if let Some(state) = exact.get(entity) {
                 return state.clone();
             }
             let own = match facts.get(KEY_ACTION_TARGET) {
-                Some(MetadataValue::Text(target)) => Some(target.as_str()),
+                Some(MetadataValue::Text(target)) => Some(&**target),
                 _ => None,
             };
             if let Some((_, state)) = live.iter().find(|(target, _)| is_action_target(entity, own, target)) {
@@ -1789,7 +1827,7 @@ impl ControllerState {
         let stale = |entity: &EntityRef| {
             any_stale && {
                 let target =
-                    (entity.kind == system::REF).then(|| catalog.entity(entity)).flatten().and_then(|entity| ref_target(&entity.values));
+                    (entity.kind == system::REF).then(|| catalog.entity(entity)).flatten().and_then(|entity| ref_target(&entity.facts));
                 self.metadata.is_stale(&target.as_ref().unwrap_or(entity).provider)
             }
         };
@@ -1804,7 +1842,7 @@ impl ControllerState {
                 .iter()
                 .filter(|e| {
                     e.entity.kind == system::GROUP
-                        && matches!(e.values.get(system::DEFAULT).map(|v| &v.value), Some(MetadataValue::Bool(true)))
+                        && matches!(e.facts.get(system::DEFAULT).map(|v| &v.value), Some(MetadataValue::Bool(true)))
                 })
                 .map(|e| e.entity.clone())
                 .collect::<Vec<_>>();
@@ -1851,7 +1889,7 @@ impl ControllerState {
                 let target_of = |entity: EntityRef| {
                     catalog
                         .entity(&entity)
-                        .and_then(|e| metadata_entry_text(&e.values, KEY_ACTION_TARGET))
+                        .and_then(|e| metadata_entry_text(&e.facts, KEY_ACTION_TARGET))
                         .map(str::to_owned)
                         .unwrap_or_else(|| entity.action_target())
                 };
@@ -1868,7 +1906,7 @@ impl ControllerState {
         for (entity, id) in self.directory_bindings(&catalog.entities) {
             if let Some(candidate) = catalog.entity(&entity) {
                 let action_target =
-                    metadata_entry_text(&candidate.values, KEY_ACTION_TARGET).map(str::to_owned).unwrap_or_else(|| entity.action_target());
+                    metadata_entry_text(&candidate.facts, KEY_ACTION_TARGET).map(str::to_owned).unwrap_or_else(|| entity.action_target());
                 let selected = self.tabs.iter().any(|tab| tab.tab_id == id && tab.active);
                 live.entry(action_target).or_insert(PresentationState::Live { workspace_id: id, selected });
             }
@@ -1896,7 +1934,7 @@ impl ControllerState {
         let cards = entities
             .into_iter()
             .map(|entity| {
-                let facts = entity_facts(&entity.entity, &entity.values);
+                let facts = entity_facts(&entity.entity, &entity.facts);
                 let slot = self.resolve_template_slot(TemplateConfigSlot::Detail, TemplateConfigNodeKind::Entity, &facts);
                 let context = TemplateConfigMatchContext {
                     slot: TemplateConfigSlot::Detail,
@@ -1914,15 +1952,16 @@ impl ControllerState {
                             .fields
                             .iter()
                             .filter_map(|spec| {
-                                let mut field = resolve_field(spec, context, &entity.values)?;
-                                field.source_id = field.observation.as_ref().and_then(|_| entity.sources.get(&field.source_key)).cloned();
+                                let mut field = resolve_field(spec, context, &entity.facts)?;
+                                field.source_id =
+                                    field.observation.as_ref().and_then(|_| entity.source(&field.source_key)).map(str::to_owned);
                                 field.relations.retain(|target| target != &entity.entity);
                                 Some(field)
                             })
                             .collect()
                     })
                     .unwrap_or_default();
-                let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
+                let action_target = metadata_entry_text(&entity.facts, KEY_ACTION_TARGET)
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity.entity.action_target());
                 let workspace_id = match live.get(&action_target) {
@@ -1936,7 +1975,7 @@ impl ControllerState {
                     DetailIntent::FocusWorkspace
                 } else if !evaluation.live_targets.contains(&action_target)
                     && !self.pending_latent_materializations.contains_key(&action_target)
-                    && metadata_entry_text(&entity.values, KEY_MATERIALIZE_RECIPE).is_some()
+                    && metadata_entry_text(&entity.facts, KEY_MATERIALIZE_RECIPE).is_some()
                 {
                     DetailIntent::MaterializeWorkspace
                 } else {
@@ -1944,14 +1983,14 @@ impl ControllerState {
                 };
                 DetailCard {
                     entity: entity.entity.clone(),
-                    label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL).unwrap_or(&entity.entity.id).to_owned(),
+                    label: metadata_entry_text(&entity.facts, KEY_DISPLAY_LABEL).unwrap_or(&entity.entity.id).to_owned(),
                     workspace_id,
-                    primary_label: metadata_entry_text(&entity.values, "action.primary.label")
+                    primary_label: metadata_entry_text(&entity.facts, "action.primary.label")
                         .unwrap_or(primary_intent.default_label())
                         .to_owned(),
                     primary_intent,
                     fields,
-                    error: slot.and_then(|slot| slot.resolve_error),
+                    error: slot.and_then(|slot| slot.resolve_error.clone()),
                 }
             })
             .collect();
@@ -1985,57 +2024,59 @@ impl ControllerState {
     fn applied_template(
         &self,
         catalog: &TemplateConfigCatalog,
-        entity: &CatalogEntity,
         template_name: &str,
-        metadata: &BTreeMap<String, MetadataValue>,
+        metadata: &FactMap,
     ) -> Option<Rc<ResolvedTemplateSlot>> {
-        let generation = self.template_generation;
-        let key = (entity.entity.clone(), template_name.to_owned());
-        if let Some((facts, at, slot)) = self.kept.applied.borrow().get(&key) {
-            if *at == generation && Rc::ptr_eq(facts, &entity.facts) {
-                return slot.clone();
+        self.resolution(catalog.placement_resolution_key(template_name, metadata), || {
+            match catalog.resolve_placement_template(template_name, metadata) {
+                Ok(Some(resolved)) => Some(ResolvedTemplateSlot {
+                    template_name: resolved.name.clone(),
+                    fields: vec![],
+                    render_ready: Some(resolved.render_ready()),
+                    setters: resolved.setters.clone(),
+                    effective_kdl: EffectiveKdl::of(resolved),
+                    resolve_error: None,
+                }),
+                Ok(None) => None,
+                Err(error) => Some(ResolvedTemplateSlot {
+                    template_name: "<resolve-error>".to_owned(),
+                    fields: vec![],
+                    render_ready: None,
+                    setters: vec![],
+                    effective_kdl: Default::default(),
+                    resolve_error: Some(error.to_string()),
+                }),
             }
+        })
+    }
+
+    /// A template's resolution for facts with `key`, shared by all with it:
+    /// made once while the template catalog lasts.
+    fn resolution(&self, key: ResolutionKey, resolve: impl FnOnce() -> Option<ResolvedTemplateSlot>) -> Option<Rc<ResolvedTemplateSlot>> {
+        let mut kept = self.kept.resolutions.borrow_mut();
+        if kept.0 != self.template_generation {
+            *kept = (self.template_generation, FastHashMap::default());
         }
-        let slot = match catalog.resolve_placement_template(template_name, metadata) {
-            Ok(Some(resolved)) => Some(ResolvedTemplateSlot {
-                template_name: resolved.name.clone(),
-                fields: vec![],
-                render_ready: Some(resolved.render_ready()),
-                setters: resolved.setters.clone(),
-                effective_kdl: resolved.dump_kdl(),
-                resolve_error: None,
-            }),
-            Ok(None) => None,
-            Err(error) => Some(ResolvedTemplateSlot {
-                template_name: "<resolve-error>".to_owned(),
-                fields: vec![],
-                render_ready: None,
-                setters: vec![],
-                effective_kdl: String::new(),
-                resolve_error: Some(error.to_string()),
-            }),
-        };
-        let slot = slot.map(Rc::new);
-        let mut applied = self.kept.applied.borrow_mut();
-        if applied.len() > 64 && applied.len() > 4 * self.metadata.targets().count() {
-            applied.retain(|_, (facts, _, _)| Rc::strong_count(facts) > 1);
+        if let Some(slot) = kept.1.get(&key) {
+            return slot.clone();
         }
-        applied.insert(key, (entity.facts.clone(), generation, slot.clone()));
+        let slot = resolve().map(Rc::new);
+        kept.1.insert(key, slot.clone());
         slot
     }
 
     fn display_entity_uncached(&self, entity: &CatalogEntity) -> EvaluatedPlacement {
-        let metadata = entity_facts(&entity.entity, &entity.values);
+        let metadata = entity_facts(&entity.entity, &entity.facts);
         let templates = ResolvedTemplateSlots {
-            compact: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata).map(Rc::new),
-            detail: self.resolve_template_slot(TemplateConfigSlot::Detail, TemplateConfigNodeKind::Entity, &metadata).map(Rc::new),
+            compact: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
+            detail: self.resolve_template_slot(TemplateConfigSlot::Detail, TemplateConfigNodeKind::Entity, &metadata),
             ..Default::default()
         };
         EvaluatedPlacement {
             entity: entity.entity.clone(),
             placement: None,
             tier: None,
-            label: metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL).map(str::to_owned).unwrap_or_else(|| entity.entity.id.clone()),
+            label: metadata_entry_text(&entity.facts, KEY_DISPLAY_LABEL).map(str::to_owned).unwrap_or_else(|| entity.entity.id.clone()),
             form: DISPLAY_FORM_COMPACT.into(),
             metadata: Rc::new(metadata),
             templates,
@@ -2101,7 +2142,7 @@ impl ControllerState {
                     }
                 }
                 let metadata =
-                    BTreeMap::from([("presentation.template".to_owned(), MetadataValue::Text(definition.root_template.clone()))]);
+                    FactMap::from([("presentation.template".into(), MetadataValue::Text(definition.root_template.as_str().into()))]);
                 let section = EvaluatedSection {
                     definition: definition.clone(),
                     root: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
@@ -2146,7 +2187,7 @@ impl ControllerState {
                 (LoopMemo { reads: memo.reads, nodes }, changed)
             }
             prior => {
-                let mut earlier: HashMap<EntityRef, NodeMemo> = prior
+                let mut earlier: FastHashMap<EntityRef, NodeMemo> = prior
                     .map(|memo| memo.nodes.into_iter().map(|node| (node.placement.entity.clone(), node)).collect())
                     .unwrap_or_default();
                 let matching = profile::span("placement-matches");
@@ -2221,7 +2262,7 @@ impl ControllerState {
                 template_name: format!("placement:{}", definition.binding),
                 fields: vec![],
                 setters: vec![],
-                effective_kdl: String::new(),
+                effective_kdl: Default::default(),
                 resolve_error: None,
                 render_ready: Some(TemplateConfigRenderReady {
                     fields: definition.fields.clone(),
@@ -2249,7 +2290,7 @@ impl ControllerState {
             let template_name = if requested.is_empty() { format!("{}/line", entity.entity.kind) } else { requested.to_owned() };
             if let Some(catalog) = self.template_catalog.as_ref() {
                 if let Some(address) = catalog.placement_template_address(&template_name, &display.metadata) {
-                    let resolved_slot = self.applied_template(catalog, entity, &template_name, &display.metadata);
+                    let resolved_slot = self.applied_template(catalog, &template_name, &display.metadata);
                     if let Some(slot) = resolved_slot {
                         display.templates.compact = Some(slot.clone());
                         if cx.form != DISPLAY_FORM_COMPACT {
@@ -2266,7 +2307,7 @@ impl ControllerState {
                         fields: vec![],
                         render_ready: None,
                         setters: vec![],
-                        effective_kdl: String::new(),
+                        effective_kdl: Default::default(),
                         resolve_error: Some(format!("unknown applied template {template_name}")),
                     });
                     display.templates.compact = Some(slot.clone());
@@ -2329,14 +2370,14 @@ impl ControllerState {
                     reads.postings.push(read);
                     return positions;
                 }
-                let value = predicate.value.clone().or_else(|| {
+                let value = predicate.value.as_deref().map(Arc::from).or_else(|| {
                     let bound = reads.bind(scope, predicate.of.as_deref()?)?;
                     if predicate.key == "entity.kind" {
-                        Some(bound.entity.kind.clone())
+                        Some(Arc::from(bound.entity.kind.as_str()))
                     } else if predicate.key == "entity.id" {
-                        Some(bound.entity.id.clone())
+                        Some(Arc::from(bound.entity.id.as_str()))
                     } else {
-                        bound.values.get(&predicate.key).and_then(|entry| placement_index_text(&entry.value))
+                        bound.facts.get(&predicate.key).and_then(|entry| indexed_text(&entry.value))
                     }
                 });
                 let Some(value) = value else {
@@ -2393,7 +2434,7 @@ impl ControllerState {
                 .of
                 .as_ref()
                 .and_then(|name| reads.bind(scope, name))
-                .and_then(|entity| entity.values.get(key))
+                .and_then(|entity| entity.facts.get(key))
                 .map(|entry| &entry.value)
             else {
                 return vec![];
@@ -2435,7 +2476,7 @@ impl ControllerState {
             let mut loop_reads = LoopReads::default();
             for position in self.placement_matches(related_loop, entities, index, &scope, &mut loop_reads) {
                 let related = &entities[position];
-                let metadata = entity_facts(&related.entity, &related.values);
+                let metadata = entity_facts(&related.entity, &related.facts);
                 let context = TemplateConfigMatchContext {
                     slot: TemplateConfigSlot::Detail,
                     node_kind: TemplateConfigNodeKind::Entity,
@@ -2483,7 +2524,7 @@ impl ControllerState {
             Some(kept) if *kept == *root => kept,
             _ => Rc::new(root.clone()),
         };
-        let mut nodes = HashMap::with_capacity(prior.len());
+        let mut nodes = FastHashMap::with_capacity_and_hasher(prior.len(), Default::default());
         let mut warnings = BTreeSet::new();
         for placement in regions.iter().flat_map(|region| &region.entities) {
             self.node_variables(catalog, placement, &root, &mut prior, &mut nodes, &mut warnings);
@@ -2539,7 +2580,7 @@ impl ControllerState {
         catalog: &TemplateConfigCatalog,
         node: &NodeKey,
         inherited: Option<&BTreeMap<String, EffectiveVariableValue>>,
-        metadata: &BTreeMap<String, MetadataValue>,
+        metadata: &FactMap,
         template: Option<&ResolvedTemplateSlot>,
         warnings: &mut BTreeSet<String>,
     ) -> ResolvedNodeVariables {
@@ -2641,14 +2682,14 @@ impl ControllerState {
         entities
             .iter()
             .filter_map(|entity| {
-                let action_target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
+                let action_target = metadata_entry_text(&entity.facts, KEY_ACTION_TARGET)
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity.entity.action_target());
                 if live_targets.contains(&action_target) {
                     return None;
                 }
                 let name =
-                    metadata_entry_text(&entity.values, KEY_DISPLAY_LABEL).map(str::to_owned).unwrap_or_else(|| entity.entity.id.clone());
+                    metadata_entry_text(&entity.facts, KEY_DISPLAY_LABEL).map(str::to_owned).unwrap_or_else(|| entity.entity.id.clone());
                 Some(LatentTab {
                     entity: entity.entity.clone(),
                     materialization: if self.pending_latent_materializations.contains_key(&action_target) {
@@ -2658,8 +2699,8 @@ impl ControllerState {
                     },
                     action_target,
                     name,
-                    materialize_recipe: metadata_entry_text(&entity.values, KEY_MATERIALIZE_RECIPE).map(str::to_owned),
-                    checkout_path: metadata_entry_text(&entity.values, KEY_CHECKOUT_PATH).map(str::to_owned),
+                    materialize_recipe: metadata_entry_text(&entity.facts, KEY_MATERIALIZE_RECIPE).map(str::to_owned),
+                    checkout_path: metadata_entry_text(&entity.facts, KEY_CHECKOUT_PATH).map(str::to_owned),
                 })
             })
             .collect()
@@ -2678,8 +2719,8 @@ impl ControllerState {
         for subject in subjects {
             if !self.retained_subjects.contains_key(&subject) {
                 let target = EntityId::Entity(subject.clone());
-                let (values, sources) = self.metadata.resolved_entries_with_sources_for(&target, self.now());
-                if values.is_empty() {
+                let facts = self.metadata.resolved(&target, self.now());
+                if facts.is_empty() {
                     if let Some(record) = saved.get(&subject) {
                         changed = true;
                         self.retained_subjects.insert(subject.clone(), saved_catalog_entity(subject, record));
@@ -2688,11 +2729,7 @@ impl ControllerState {
                     changed = true;
                     self.retained_subjects.insert(
                         subject.clone(),
-                        CatalogEntity {
-                            entity: subject,
-                            facts: Rc::new(ResolvedFacts { values, sources }),
-                            ordinal: self.metadata.target_ordinal(&target).unwrap_or_default(),
-                        },
+                        CatalogEntity { entity: subject, facts, ordinal: self.metadata.target_ordinal(&target).unwrap_or_default() },
                     );
                 }
             }
@@ -2721,18 +2758,17 @@ impl ControllerState {
             None => (Bound::Unbounded, Bound::Unbounded),
         };
         for (subject, retained) in self.retained_subjects.range_mut::<EntityRef, _>(range) {
-            let (values, sources) = self.metadata.resolved_entries_with_sources_for(&EntityId::Entity(subject.clone()), now);
+            let facts = self.metadata.resolved(&EntityId::Entity(subject.clone()), now);
             // While identity remains observed, individual facts keep their ordinary
             // freshness. Only unobserved identities need the last known record.
-            if values.contains_key(KEY_ENTITY_ID) || values.contains_key(KEY_DISPLAY_LABEL) {
-                changed |= retained.values != values || retained.sources != sources;
-                retained.values = values;
-                retained.sources = sources;
+            if facts.contains_key(KEY_ENTITY_ID) || facts.contains_key(KEY_DISPLAY_LABEL) {
+                changed |= retained.facts != facts;
+                retained.facts = facts;
             }
             // TODO(#122): consume a producer-declared lifecycle-ended fact.
             let terminal = matches!(subject.kind.as_str(), "convoy" | "vessel")
-                && (matches!(metadata_entry_text(&retained.values, KEY_CONVOY_PHASE), Some("landed" | "abandoned" | "cancelled"))
-                    || matches!(retained.values.get(KEY_CONVOY_SUPERSEDED).map(|e| &e.value), Some(MetadataValue::Bool(true))));
+                && (matches!(metadata_entry_text(&retained.facts, KEY_CONVOY_PHASE), Some("landed" | "abandoned" | "cancelled"))
+                    || matches!(retained.get(KEY_CONVOY_SUPERSEDED).map(|e| &e.value), Some(MetadataValue::Bool(true))));
             if terminal {
                 changed |= self.ended_subjects.insert(subject.clone());
             }
@@ -2760,16 +2796,16 @@ impl ControllerState {
     /// recordable facts among `keys`, and whether a producer publishes it now.
     pub(crate) fn retained_subject_record(&self, subject: &EntityRef, keys: &BTreeSet<String>) -> Option<(SubjectRecord, bool)> {
         let retained = self.retained_subjects.get(subject)?;
-        let observed = !self.metadata.resolved_entries_for(&EntityId::Entity(subject.clone()), self.now()).is_empty();
+        let observed = !self.metadata.resolved(&EntityId::Entity(subject.clone()), self.now()).is_empty();
         let record = SubjectRecord {
-            label: metadata_entry_text(&retained.values, KEY_DISPLAY_LABEL).map(str::to_owned),
+            label: metadata_entry_text(&retained.facts, KEY_DISPLAY_LABEL).map(str::to_owned),
             ended: self.ended_subjects.contains(subject),
             last_seen_ms: None,
             facts: retained
-                .values
+                .facts
                 .iter()
                 .filter(|(key, entry)| keys.contains(*key) && *key != KEY_DISPLAY_LABEL && recordable(&entry.value))
-                .map(|(key, entry)| (key.clone(), entry.value.clone()))
+                .map(|(key, entry)| (key.to_owned(), entry.value.clone()))
                 .collect(),
         };
         Some((record, observed))
@@ -2983,7 +3019,7 @@ impl ControllerState {
     fn catalog_entity(&self, entity: &EntityRef, now: u64) -> Option<CatalogEntity> {
         let target = EntityId::Entity(entity.clone());
         let facts = self.metadata.resolved(&target, now);
-        let mut current = (!facts.values.is_empty()).then(|| CatalogEntity {
+        let mut current = (!facts.is_empty()).then(|| CatalogEntity {
             entity: entity.clone(),
             facts,
             ordinal: self.metadata.target_ordinal(&target).unwrap_or_default(),
@@ -2991,12 +3027,7 @@ impl ControllerState {
         if let Some(retained) = self.retained_subjects.get(entity) {
             current = Some(match current {
                 Some(mut current) => {
-                    let mut values = retained.values.clone();
-                    values.extend(std::mem::take(&mut current.values));
-                    current.values = values;
-                    let mut sources = retained.sources.clone();
-                    sources.extend(std::mem::take(&mut current.sources));
-                    current.sources = sources;
+                    current.facts = Rc::new(current.facts.over(&retained.facts));
                     current
                 }
                 None => retained.clone(),
@@ -3004,16 +3035,12 @@ impl ControllerState {
         }
         if let Some(entity) = current.as_mut().filter(|entity| self.ended_subjects.contains(&entity.entity)) {
             let ordinal = entity.ordinal;
-            entity.sources.remove(KEY_STATUS_STATE);
-            entity.sources.remove("presentation.ended");
-            entity.values.insert(
-                KEY_STATUS_STATE.to_owned(),
-                MetadataEntry { value: MetadataValue::Text("ended".to_owned()), updated_at: now, ttl_ms: None, precedence: 0, ordinal },
-            );
-            entity.values.insert(
-                "presentation.ended".to_owned(),
-                MetadataEntry { value: MetadataValue::Bool(true), updated_at: now, ttl_ms: None, precedence: 0, ordinal },
-            );
+            let made = |value| Fact {
+                entry: Rc::new(MetadataEntry { value, updated_at: now, ttl_ms: None, precedence: 0, ordinal }),
+                source: None,
+            };
+            entity.insert(KEY_STATUS_STATE, made(MetadataValue::Text("ended".into())));
+            entity.insert("presentation.ended", made(MetadataValue::Bool(true)));
         }
         current
     }
@@ -3058,7 +3085,7 @@ impl ControllerState {
         let mut structural = false;
         for entity in refs {
             let next = self.catalog_entity(&entity, now).map(|mut entity| {
-                if let Some(target) = ref_target(&entity.values).and_then(|target| catalog.entity(&target)) {
+                if let Some(target) = ref_target(&entity.facts).and_then(|target| catalog.entity(&target)) {
                     if target.entity.kind != system::REF {
                         Self::present_ref(&mut entity, target);
                     }
@@ -3097,7 +3124,7 @@ impl ControllerState {
         let targets = entities
             .iter()
             .filter(|e| e.entity.kind == system::REF)
-            .filter_map(|e| Some((e.entity.clone(), ref_target(&e.values)?)))
+            .filter_map(|e| Some((e.entity.clone(), ref_target(&e.facts)?)))
             .collect::<BTreeMap<_, _>>();
         if targets.is_empty() {
             return;
@@ -3118,33 +3145,25 @@ impl ControllerState {
     /// Give a ref its target's facts and sources, keeping its own
     /// `.`-prefixed ones (see `present_refs`).
     fn present_ref(entity: &mut CatalogEntity, target: &CatalogEntity) {
-        let own = std::mem::replace(&mut entity.values, target.values.clone());
-        let own_sources = std::mem::replace(&mut entity.sources, target.sources.clone());
-        entity.values.retain(|key, _| !system::is_system(key));
-        entity.sources.retain(|key, _| !system::is_system(key));
-        for (key, value) in own.iter().filter(|(key, _)| system::is_system(key)) {
-            entity.values.insert(key.clone(), value.clone());
-        }
-        for (key, source) in own_sources.iter().filter(|(key, _)| system::is_system(key)) {
-            entity.sources.insert(key.clone(), source.clone());
-        }
+        let mut own = (*entity.facts).clone();
+        own.retain(|key, _| system::is_system(key));
+        let mut presented = (*target.facts).clone();
+        presented.retain(|key, _| !system::is_system(key));
         // Live state and activation key on the action target: the
         // target's own, else one made from its identity. The made entry
         // dates from the ref's `.target`, so it is as fresh as the
         // reference; it never expires and loses to any real one.
-        if !entity.values.contains_key(KEY_ACTION_TARGET) {
-            let ordinal = entity.ordinal;
-            entity.values.insert(
-                KEY_ACTION_TARGET.to_owned(),
-                MetadataEntry {
-                    value: MetadataValue::Text(target.entity.action_target()),
-                    updated_at: own.get(system::TARGET).map(|e| e.updated_at).unwrap_or_default(),
-                    ttl_ms: None,
-                    precedence: 0,
-                    ordinal,
-                },
-            );
+        if !presented.contains_key(KEY_ACTION_TARGET) {
+            let entry = MetadataEntry {
+                value: MetadataValue::Text(target.entity.action_target().into()),
+                updated_at: own.get(system::TARGET).map(|e| e.updated_at).unwrap_or_default(),
+                ttl_ms: None,
+                precedence: 0,
+                ordinal: entity.ordinal,
+            };
+            presented.insert(KEY_ACTION_TARGET, Fact { entry: Rc::new(entry), source: None });
         }
+        entity.facts = Rc::new(own.over(&presented));
     }
 
     /// The entity a placement presents: a `.ref`'s target, otherwise itself.
@@ -3152,8 +3171,7 @@ impl ControllerState {
         if entity.kind != system::REF {
             return entity.clone();
         }
-        let (values, _) = self.metadata.resolved_entries_with_sources_for(&EntityId::Entity(entity.clone()), self.now());
-        ref_target(&values).unwrap_or_else(|| entity.clone())
+        ref_target(&self.metadata.resolved(&EntityId::Entity(entity.clone()), self.now())).unwrap_or_else(|| entity.clone())
     }
 
     /// Full replacement of ephemeral host directory observations. These are
@@ -3189,7 +3207,7 @@ impl ControllerState {
         entities
             .iter()
             .filter_map(|entity| {
-                let cwd = metadata_entry_text(&entity.values, KEY_CHECKOUT_PATH).filter(|s| !s.is_empty())?;
+                let cwd = metadata_entry_text(&entity.facts, KEY_CHECKOUT_PATH).filter(|s| !s.is_empty())?;
                 let tab = unbound.iter().find(|tab| self.observed_workdirs.get(&tab.tab_id).is_some_and(|dirs| dirs.contains(cwd)))?;
                 Some((entity.entity.clone(), tab.tab_id))
             })
@@ -3205,7 +3223,7 @@ impl ControllerState {
             .map(|entity| {
                 catalog
                     .entity(&entity)
-                    .and_then(|candidate| metadata_entry_text(&candidate.values, KEY_ACTION_TARGET))
+                    .and_then(|candidate| metadata_entry_text(&candidate.facts, KEY_ACTION_TARGET))
                     .map(str::to_owned)
                     .unwrap_or_else(|| entity.action_target())
             })
@@ -3286,7 +3304,7 @@ impl ControllerState {
     /// The action target an entity is matched by: its own
     /// `action.primary.target`, else one made from its identity.
     fn action_target_of(&self, entity: &EntityRef) -> String {
-        let values = self.metadata.resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
+        let values = self.metadata.resolved(&EntityId::Entity(entity.clone()), self.now());
         metadata_entry_text(&values, KEY_ACTION_TARGET).map(str::to_owned).unwrap_or_else(|| entity.action_target())
     }
 
@@ -3310,7 +3328,7 @@ impl ControllerState {
                 let entities = self.catalog_entities();
                 let bindings = self.directory_bindings(&entities);
                 entities.iter().find_map(|entity| {
-                    let target = metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
+                    let target = metadata_entry_text(&entity.facts, KEY_ACTION_TARGET)
                         .map(str::to_owned)
                         .unwrap_or_else(|| entity.entity.action_target());
                     if target != action_target {
@@ -3332,14 +3350,14 @@ impl ControllerState {
     pub(crate) fn entity_slot_resolutions(&self, entity: &EntityRef) -> BTreeMap<String, DesiredContent> {
         use crate::suggested_layout::{SlotResolution, PRIMARY_SLOT};
         let mut resolutions = BTreeMap::new();
-        let values = self.metadata.resolved_entries_for(&EntityId::Entity(entity.clone()), self.now());
+        let values = self.metadata.resolved(&EntityId::Entity(entity.clone()), self.now());
         if let Some(desired) = desired_primary(&values) {
             resolutions.insert(PRIMARY_SLOT.to_owned(), desired);
         }
-        if !values.keys().any(|key| key.starts_with("layout.")) {
+        if !values.iter().any(|(key, _)| key.starts_with("layout.")) {
             return resolutions;
         }
-        let facts = values.into_iter().map(|(key, entry)| (key, entry.value)).collect();
+        let facts = values.iter().map(|(key, entry)| (key.into(), entry.value.clone())).collect();
         let Ok(Some(layout)) = suggested_layout::parse(entity, &facts) else {
             return resolutions;
         };
@@ -3361,15 +3379,15 @@ impl ControllerState {
     pub(crate) fn suggested_layout(&self, entity: &EntityRef) -> Result<Option<SuggestedLayout>, LayoutError> {
         let facts = self
             .metadata
-            .resolved_entries_for(&EntityId::Entity(entity.clone()), self.now())
-            .into_iter()
-            .map(|(key, entry)| (key, entry.value))
+            .resolved(&EntityId::Entity(entity.clone()), self.now())
+            .named()
+            .map(|(key, fact)| (key.clone(), fact.entry.value.clone()))
             .collect();
         suggested_layout::parse(entity, &facts)
     }
 
     fn desired_content(&self, target: &EntityId) -> Option<DesiredContent> {
-        desired_primary(&self.metadata.resolved_entries_for(target, self.now()))
+        desired_primary(&self.metadata.resolved(target, self.now()))
     }
 
     /// The managed target a materialization of `recipe` would install, if the
@@ -3386,7 +3404,7 @@ impl ControllerState {
 
     /// A subject's display label as its provider gives it now.
     pub fn subject_label(&self, subject: &EntityRef) -> Option<String> {
-        let values = self.metadata.resolved_entries_for(&EntityId::Entity(subject.clone()), self.now());
+        let values = self.metadata.resolved(&EntityId::Entity(subject.clone()), self.now());
         metadata_entry_text(&values, KEY_DISPLAY_LABEL).map(str::to_owned)
     }
 
@@ -3398,7 +3416,7 @@ impl ControllerState {
             "issue" => "flotilla.forge.issue_url_template",
             _ => return None,
         };
-        let values = self.metadata.resolved_entries_for(&EntityId::Entity(subject.clone()), self.now());
+        let values = self.metadata.resolved(&EntityId::Entity(subject.clone()), self.now());
         let MetadataValue::EntityRefs(refs) = &values.get("flotilla.forge")?.value else {
             return None;
         };
@@ -3408,7 +3426,7 @@ impl ControllerState {
         if forge.kind != "forge" {
             return None;
         }
-        let forge_values = self.metadata.resolved_entries_for(&EntityId::Entity(forge.clone()), self.now());
+        let forge_values = self.metadata.resolved(&EntityId::Entity(forge.clone()), self.now());
         let template = metadata_entry_text(&forge_values, template_key)?;
         let web_url = metadata_entry_text(&forge_values, "flotilla.forge.web_url")?;
         let scope = metadata_entry_text(&values, "flotilla.subject.scope")?;
@@ -3435,7 +3453,7 @@ impl ControllerState {
         let entities = self.catalog_entities();
         let entity = entities.iter().find(|entity| &entity.entity == subject)?;
         let action_target =
-            metadata_entry_text(&entity.values, KEY_ACTION_TARGET).map(str::to_owned).unwrap_or_else(|| entity.entity.action_target());
+            metadata_entry_text(&entity.facts, KEY_ACTION_TARGET).map(str::to_owned).unwrap_or_else(|| entity.entity.action_target());
         if let Some(position) = self.materialized_tab_position_for_action_target(&action_target) {
             return Some(EntityActivation::FocusTab { position });
         }
@@ -3447,7 +3465,7 @@ impl ControllerState {
     }
 
     fn claim_materializing_tabs(&mut self) -> bool {
-        let live_tab_ids = self.tabs.iter().map(|tab| tab.tab_id).collect::<HashSet<_>>();
+        let live_tab_ids = self.tabs.iter().map(|tab| tab.tab_id).collect::<FastHashSet<_>>();
         let claims = self
             .pending_latent_materializations
             .iter()
@@ -3471,7 +3489,7 @@ impl ControllerState {
             self.catalog_entities()
                 .into_iter()
                 .find(|entity| {
-                    metadata_entry_text(&entity.values, KEY_ACTION_TARGET)
+                    metadata_entry_text(&entity.facts, KEY_ACTION_TARGET)
                         .map(str::to_owned)
                         .unwrap_or_else(|| entity.entity.action_target())
                         == request.action_target
@@ -3492,31 +3510,28 @@ impl ControllerState {
         &self,
         slot: TemplateConfigSlot,
         node_kind: TemplateConfigNodeKind,
-        metadata: &BTreeMap<String, MetadataValue>,
-    ) -> Option<ResolvedTemplateSlot> {
+        metadata: &FactMap,
+    ) -> Option<Rc<ResolvedTemplateSlot>> {
         let catalog = self.template_catalog.as_ref()?;
         let context = TemplateConfigMatchContext { slot, node_kind, metadata, collapsed: false, collapsible: true, active_tab_name: None };
-        let resolved = match catalog.resolve(context) {
-            Ok(Some(resolved)) => resolved,
-            Ok(None) => return None,
-            Err(error) => {
-                return Some(ResolvedTemplateSlot {
-                    template_name: "<resolve-error>".to_owned(),
-                    fields: vec![],
-                    render_ready: None,
-                    setters: vec![],
-                    effective_kdl: format!("// error: {error}\n"),
-                    resolve_error: Some(error.to_string()),
-                });
-            }
-        };
-        Some(ResolvedTemplateSlot {
-            template_name: resolved.name.clone(),
-            fields: vec![],
-            render_ready: Some(resolved.render_ready()),
-            setters: resolved.setters.clone(),
-            effective_kdl: resolved.dump_kdl(),
-            resolve_error: None,
+        self.resolution(catalog.resolution_key(context), || match catalog.resolve(context) {
+            Ok(Some(resolved)) => Some(ResolvedTemplateSlot {
+                template_name: resolved.name.clone(),
+                fields: vec![],
+                render_ready: Some(resolved.render_ready()),
+                setters: resolved.setters.clone(),
+                effective_kdl: EffectiveKdl::of(resolved),
+                resolve_error: None,
+            }),
+            Ok(None) => None,
+            Err(error) => Some(ResolvedTemplateSlot {
+                template_name: "<resolve-error>".to_owned(),
+                fields: vec![],
+                render_ready: None,
+                setters: vec![],
+                effective_kdl: EffectiveKdl::text(format!("// error: {error}\n")),
+                resolve_error: Some(error.to_string()),
+            }),
         })
     }
 
@@ -3575,7 +3590,8 @@ impl ControllerState {
                     if !current_values.contains_key(KEY_ENTITY_PROVIDER) && current_values.contains_key(KEY_ENTITY_ID) =>
                 {
                     let mut values = current_values;
-                    let entry = MetadataEntry { value: MetadataValue::Text(entity.provider.clone()), ..values[KEY_ENTITY_ID].clone() };
+                    let entry =
+                        MetadataEntry { value: MetadataValue::Text(entity.provider.as_str().into()), ..values[KEY_ENTITY_ID].clone() };
                     values.insert(KEY_ENTITY_PROVIDER.to_owned(), entry);
                     values
                 }
@@ -3603,15 +3619,15 @@ impl ControllerState {
     }
 
     fn tab_seed_metadata_entries(&self) -> TabSeedMetadata {
-        self.tab_seed_metadata_entries_for(&HashSet::new())
+        self.tab_seed_metadata_entries_for(&FastHashSet::default())
     }
 
-    fn tab_seed_metadata_entries_for(&self, directory_tab_ids: &HashSet<WorkspaceId>) -> TabSeedMetadata {
+    fn tab_seed_metadata_entries_for(&self, directory_tab_ids: &FastHashSet<WorkspaceId>) -> TabSeedMetadata {
         let cwd_entries = self
             .tabs
             .iter()
             .filter_map(|tab| self.tab_primary_metadata_entry(tab.tab_id, KEY_PANE_CWD).map(|entry| (tab.tab_id, entry)))
-            .collect::<HashMap<_, _>>();
+            .collect::<FastHashMap<_, _>>();
         let all_group_cwds = cwd_entries
             .iter()
             .filter_map(|(tab_id, entry)| {
@@ -3634,7 +3650,7 @@ impl ControllerState {
                 if let MetadataValue::Text(cwd) = &cwd_entry.value {
                     entries.insert(
                         KEY_PANE_CWD_LABEL.to_owned(),
-                        MetadataEntry { value: MetadataValue::Text(cwd_group_label(cwd, &all_group_cwds)), ..cwd_entry },
+                        MetadataEntry { value: MetadataValue::Text(cwd_group_label(cwd, &all_group_cwds).into()), ..cwd_entry },
                     );
                 }
                 (tab_id, entries)
@@ -3655,7 +3671,7 @@ impl ControllerState {
             self.metadata.unset(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ);
             return changed;
         };
-        let value = MetadataValue::Text(cwd);
+        let value = MetadataValue::Text(cwd.into());
         let precedence = if pane.is_focused { FOCUSED_CWD_PRECEDENCE } else { NORMAL_CWD_PRECEDENCE };
         if self.metadata.source_entry(&entity_id, KEY_PANE_CWD, SOURCE_ZELLIJ, self.now()).is_some_and(|entry| {
             entry.value == value && entry.ttl_ms.is_none() && entry.precedence == precedence && entry.ordinal == pane.ordinal
@@ -3701,7 +3717,7 @@ impl ControllerState {
     }
 }
 
-fn node_metadata(node: &NodeKey, resolved_metadata: &[ResolvedMetadata]) -> BTreeMap<String, MetadataValue> {
+fn node_metadata(node: &NodeKey, resolved_metadata: &[ResolvedMetadata]) -> FactMap {
     let target = match node {
         NodeKey::Root => ResolvedMetadataTarget::Root,
         NodeKey::Tab(tab_id) => ResolvedMetadataTarget::Tab(*tab_id),
@@ -3713,7 +3729,7 @@ fn node_metadata(node: &NodeKey, resolved_metadata: &[ResolvedMetadata]) -> BTre
     resolved_metadata
         .iter()
         .find(|metadata| metadata.target == target)
-        .map(|metadata| metadata.values.iter().map(|(key, entry)| (key.clone(), entry.value.clone())).collect())
+        .map(|metadata| metadata.values.iter().map(|(key, entry)| (key.as_str().into(), entry.value.clone())).collect())
         .unwrap_or_default()
 }
 
@@ -3734,24 +3750,31 @@ fn apply_variable_setter(
     values.insert(name.to_owned(), EffectiveVariableValue { value: value.to_owned(), provenance, overridden });
 }
 
-fn entity_facts(entity: &EntityRef, values: &BTreeMap<String, MetadataEntry>) -> BTreeMap<String, MetadataValue> {
-    let mut facts = values.iter().map(|(key, entry)| (key.clone(), entry.value.clone())).collect::<BTreeMap<_, _>>();
+thread_local! {
+    /// The names of the identity facts `entity_facts` adds, made once.
+    static IDENTITY_KEYS: (Rc<str>, Rc<str>) = (Rc::from(KEY_ENTITY_KIND), Rc::from(KEY_ENTITY_ID));
+}
+
+/// An entity's facts as templates read them, sharing the record's names.
+fn entity_facts(entity: &EntityRef, values: &ResolvedFacts) -> FactMap {
+    let mut facts: FactMap = values.named().map(|(key, fact)| (key.clone(), fact.entry.value.clone())).collect();
     // The target is the canonical entity identity. Producers must not have to
     // duplicate it in every patch's set map for placement queries and templates.
-    facts.insert(KEY_ENTITY_KIND.to_owned(), MetadataValue::Text(entity.kind.clone()));
-    facts.insert(KEY_ENTITY_ID.to_owned(), MetadataValue::Text(entity.id.clone()));
+    let (kind, id) = IDENTITY_KEYS.with(|(kind, id)| (kind.clone(), id.clone()));
+    facts.insert(kind, MetadataValue::Text(entity.kind.as_str().into()));
+    facts.insert(id, MetadataValue::Text(entity.id.as_str().into()));
     facts
 }
 
 /// A `.ref`'s `.target`: a single entity reference.
-fn ref_target(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
-    match &entries.get(system::TARGET)?.value {
+fn ref_target(entries: &impl Entries) -> Option<EntityRef> {
+    match &entries.entry_at(system::TARGET)?.value {
         MetadataValue::EntityRefs(refs) if refs.len() == 1 => refs.first().cloned(),
         _ => None,
     }
 }
 
-fn host_entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
+fn host_entity_ref_from_entries(entries: &impl Entries) -> Option<EntityRef> {
     Some(EntityRef::new(
         metadata_entry_text(entries, KEY_HOST_ENTITY_PROVIDER).unwrap_or(LOCAL_PROVIDER),
         metadata_entry_text(entries, KEY_HOST_ENTITY_KIND)?,
@@ -3772,7 +3795,7 @@ fn stamp_identity_providers(patch: &mut MetadataPatch, provider: &str) {
             continue;
         }
         if let Some(update) = patch.set.get(id).or_else(|| patch.set.get(kind)).cloned() {
-            patch.set.insert(key.to_owned(), MetadataValueUpdate { value: MetadataValue::Text(provider.to_owned()), ..update });
+            patch.set.insert(key.to_owned(), MetadataValueUpdate { value: MetadataValue::Text(provider.into()), ..update });
         } else if patch.unset.iter().any(|unset| unset == id || unset == kind) {
             patch.unset.push(key.to_owned());
         }
@@ -3787,13 +3810,13 @@ fn saved_catalog_entity(entity: EntityRef, record: &SubjectRecord) -> CatalogEnt
     let entry = |value| MetadataEntry { value, updated_at, ttl_ms: None, precedence: 0, ordinal: 0 };
     let mut values: BTreeMap<_, _> = record.facts.iter().map(|(key, value)| (key.clone(), entry(value.clone()))).collect();
     if let Some(label) = &record.label {
-        values.insert(KEY_DISPLAY_LABEL.to_owned(), entry(MetadataValue::Text(label.clone())));
+        values.insert(KEY_DISPLAY_LABEL.to_owned(), entry(MetadataValue::Text(label.as_str().into())));
     }
     let sources = values.keys().map(|key| (key.clone(), SOURCE_RECORD.to_owned())).collect();
-    CatalogEntity { entity, facts: Rc::new(ResolvedFacts { values, sources }), ordinal: 0 }
+    CatalogEntity { entity, facts: Rc::new(ResolvedFacts::from_maps(values, &sources)), ordinal: 0 }
 }
 
-fn entity_ref_from_entries(entries: &BTreeMap<String, MetadataEntry>) -> Option<EntityRef> {
+fn entity_ref_from_entries(entries: &impl Entries) -> Option<EntityRef> {
     Some(EntityRef::new(
         metadata_entry_text(entries, KEY_ENTITY_PROVIDER).unwrap_or(LOCAL_PROVIDER),
         metadata_entry_text(entries, KEY_ENTITY_KIND)?,
@@ -3809,7 +3832,7 @@ fn subject_binding(subject: &EntityRef) -> BTreeMap<String, MetadataValueUpdate>
             (
                 key.to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text(value.clone()),
+                    value: MetadataValue::Text(value.as_str().into()),
                     ttl_ms: None,
                     precedence: Some(LATENT_MATERIALIZER_PRECEDENCE),
                     ordinal: None,
@@ -3821,7 +3844,7 @@ fn subject_binding(subject: &EntityRef) -> BTreeMap<String, MetadataValueUpdate>
 
 /// The `primary` slot's resolution, from the facts managed primary content
 /// has always read.
-fn desired_primary(values: &BTreeMap<String, MetadataEntry>) -> Option<DesiredContent> {
+fn desired_primary(values: &impl Entries) -> Option<DesiredContent> {
     use crate::managed::TerminalContent;
     let text = |key| metadata_entry_text(values, key).map(str::to_owned);
     match text("workspace.primary.state").as_deref()? {
@@ -3840,17 +3863,19 @@ fn desired_primary(values: &BTreeMap<String, MetadataEntry>) -> Option<DesiredCo
     }
 }
 
-fn metadata_entry_text<'a>(values: &'a BTreeMap<String, MetadataEntry>, key: &str) -> Option<&'a str> {
-    match values.get(key).map(|entry| &entry.value) {
+fn metadata_entry_text<'a>(values: &'a impl Entries, key: &str) -> Option<&'a str> {
+    match values.entry_at(key).map(|entry| &entry.value) {
         Some(MetadataValue::Text(value)) => Some(value),
         _ => None,
     }
 }
 
-fn cwd_group_label(cwd: &str, all_group_cwds: &[String]) -> String {
+fn cwd_group_label(cwd: &str, all_group_cwds: &[Arc<str>]) -> String {
     let basename = Path::new(cwd).file_name().and_then(|name| name.to_str()).filter(|name| !name.is_empty()).unwrap_or(cwd);
-    let duplicate_basename_count =
-        all_group_cwds.iter().filter(|candidate| Path::new(candidate).file_name().and_then(|name| name.to_str()) == Some(basename)).count();
+    let duplicate_basename_count = all_group_cwds
+        .iter()
+        .filter(|candidate| Path::new(&***candidate).file_name().and_then(|name| name.to_str()) == Some(basename))
+        .count();
     if duplicate_basename_count <= 1 {
         return basename.to_owned();
     }
@@ -3955,7 +3980,7 @@ mod tests {
         .unwrap();
         let query = &config.placements[0].loops[0].loops[0];
         for entity in &mut entities {
-            entity.values.clear();
+            entity.facts = Rc::new(ResolvedFacts::default());
         }
         let bound = entities.iter().find(|entity| entity.entity == convoy).unwrap();
         let root = Scope::default();
@@ -4171,7 +4196,11 @@ mod tests {
                         let right = format!("{prefix}{b}/run2");
                         assert_eq!(natural_text_order(&left, &right), a.cmp(&b));
                         assert_eq!(
-                            compare_order_values(&MetadataValue::Text(left.clone()), &MetadataValue::Text(right.clone()), true),
+                            compare_order_values(
+                                &MetadataValue::Text(left.as_str().into()),
+                                &MetadataValue::Text(right.as_str().into()),
+                                true
+                            ),
                             a.cmp(&b)
                         );
                         assert_eq!(natural_text_order(&right, &left), a.cmp(&b).reverse());
@@ -4217,22 +4246,17 @@ mod tests {
         let mut set = BTreeMap::from([
             (
                 KEY_ENTITY_KIND.to_owned(),
-                MetadataValueUpdate { value: MetadataValue::Text(kind.to_owned()), ttl_ms: None, precedence: None, ordinal: Some(ordinal) },
+                MetadataValueUpdate { value: MetadataValue::Text(kind.into()), ttl_ms: None, precedence: None, ordinal: Some(ordinal) },
             ),
             (
                 KEY_ENTITY_ID.to_owned(),
-                MetadataValueUpdate { value: MetadataValue::Text(id.to_owned()), ttl_ms: None, precedence: None, ordinal: Some(ordinal) },
+                MetadataValueUpdate { value: MetadataValue::Text(id.into()), ttl_ms: None, precedence: None, ordinal: Some(ordinal) },
             ),
         ]);
         set.extend(facts.iter().map(|(key, value)| {
             (
                 (*key).to_owned(),
-                MetadataValueUpdate {
-                    value: MetadataValue::Text((*value).to_owned()),
-                    ttl_ms: None,
-                    precedence: None,
-                    ordinal: Some(ordinal),
-                },
+                MetadataValueUpdate { value: MetadataValue::Text((*value).into()), ttl_ms: None, precedence: None, ordinal: Some(ordinal) },
             )
         }));
         state.apply_metadata_patch(MetadataPatch {
@@ -4253,7 +4277,7 @@ mod tests {
                     (
                         (*key).to_owned(),
                         MetadataValueUpdate {
-                            value: MetadataValue::Text((*value).to_owned()),
+                            value: MetadataValue::Text((*value).into()),
                             ttl_ms: None,
                             precedence: None,
                             ordinal: Some(ordinal),
@@ -4541,7 +4565,7 @@ placement "identity-descending" {
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    value: MetadataValue::Text("zellij-org/zellij".into()),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: None,
@@ -4565,7 +4589,7 @@ placement "identity-descending" {
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    value: MetadataValue::Text("zellij-org/zellij".into()),
                     ttl_ms: Some(10_000),
                     precedence: None,
                     ordinal: None,
@@ -4648,7 +4672,7 @@ placement "identity-descending" {
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                    value: MetadataValue::Text("rjwittams/katzensteg".into()),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: None,
@@ -4659,21 +4683,21 @@ placement "identity-descending" {
         state.apply_metadata_patch(MetadataPatch {
             target: EntityId::Identity(MetadataIdentity {
                 key: "git.repo".to_owned(),
-                value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                value: MetadataValue::Text("rjwittams/katzensteg".into()),
             }),
             source_id: "gh".to_owned(),
             set: BTreeMap::from([(
                 "vcs.pr".to_owned(),
-                MetadataValueUpdate { value: MetadataValue::Text("#45".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
+                MetadataValueUpdate { value: MetadataValue::Text("#45".into()), ttl_ms: None, precedence: None, ordinal: None },
             )]),
             unset: vec![],
         });
         state.apply_metadata_patch(MetadataPatch {
-            target: EntityId::Identity(MetadataIdentity { key: "vcs.pr".to_owned(), value: MetadataValue::Text("#45".to_owned()) }),
+            target: EntityId::Identity(MetadataIdentity { key: "vcs.pr".to_owned(), value: MetadataValue::Text("#45".into()) }),
             source_id: "ci".to_owned(),
             set: BTreeMap::from([(
                 "ci.status".to_owned(),
-                MetadataValueUpdate { value: MetadataValue::Text("failing".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
+                MetadataValueUpdate { value: MetadataValue::Text("failing".into()), ttl_ms: None, precedence: None, ordinal: None },
             )]),
             unset: vec![],
         });
@@ -4687,26 +4711,23 @@ placement "identity-descending" {
 
         assert_eq!(
             tab_metadata.values.get("git.repo").map(|entry| &entry.value),
-            Some(&MetadataValue::Text("rjwittams/katzensteg".to_owned()))
+            Some(&MetadataValue::Text("rjwittams/katzensteg".into()))
         );
-        assert_eq!(tab_metadata.values.get("vcs.pr").map(|entry| &entry.value), Some(&MetadataValue::Text("#45".to_owned())));
-        assert_eq!(tab_metadata.values.get("ci.status").map(|entry| &entry.value), Some(&MetadataValue::Text("failing".to_owned())));
+        assert_eq!(tab_metadata.values.get("vcs.pr").map(|entry| &entry.value), Some(&MetadataValue::Text("#45".into())));
+        assert_eq!(tab_metadata.values.get("ci.status").map(|entry| &entry.value), Some(&MetadataValue::Text("failing".into())));
         assert_eq!(
             tab_metadata.reachable_identities,
             vec![
                 ReachableMetadataIdentity {
-                    identity: MetadataIdentity {
-                        key: "git.repo".to_owned(),
-                        value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
-                    },
+                    identity: MetadataIdentity { key: "git.repo".to_owned(), value: MetadataValue::Text("rjwittams/katzensteg".into()) },
                     distance: 1,
                 },
                 ReachableMetadataIdentity {
-                    identity: MetadataIdentity { key: "vcs.pr".to_owned(), value: MetadataValue::Text("#45".to_owned()) },
+                    identity: MetadataIdentity { key: "vcs.pr".to_owned(), value: MetadataValue::Text("#45".into()) },
                     distance: 2,
                 },
                 ReachableMetadataIdentity {
-                    identity: MetadataIdentity { key: "ci.status".to_owned(), value: MetadataValue::Text("failing".to_owned()) },
+                    identity: MetadataIdentity { key: "ci.status".to_owned(), value: MetadataValue::Text("failing".into()) },
                     distance: 3,
                 },
             ]
@@ -4722,13 +4743,13 @@ placement "identity-descending" {
         state.apply_metadata_patch(MetadataPatch {
             target: EntityId::Identity(MetadataIdentity {
                 key: KEY_PANE_CWD.to_owned(),
-                value: MetadataValue::Text("/Users/robert/dev/katzensteg".to_owned()),
+                value: MetadataValue::Text("/Users/robert/dev/katzensteg".into()),
             }),
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                    value: MetadataValue::Text("rjwittams/katzensteg".into()),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: None,
@@ -4746,10 +4767,10 @@ placement "identity-descending" {
 
         assert_eq!(
             tab_metadata.values.get("git.repo").map(|entry| &entry.value),
-            Some(&MetadataValue::Text("rjwittams/katzensteg".to_owned()))
+            Some(&MetadataValue::Text("rjwittams/katzensteg".into()))
         );
         assert!(tab_metadata.reachable_identities.iter().any(|reachable| reachable.identity
-            == MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text("/Users/robert/dev/katzensteg".to_owned()) }
+            == MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text("/Users/robert/dev/katzensteg".into()) }
             && reachable.distance == 1));
     }
 
@@ -4762,12 +4783,12 @@ placement "identity-descending" {
         let cwd = "/Users/robert/dev/katzensteg".to_owned();
         state.set_pane_cwd(PaneTarget::Terminal(1), cwd.clone());
         state.apply_metadata_patch(MetadataPatch {
-            target: EntityId::Identity(MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text(cwd.clone()) }),
+            target: EntityId::Identity(MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text(cwd.as_str().into()) }),
             source_id: "dir-watcher".to_owned(),
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("rjwittams/katzensteg".to_owned()),
+                    value: MetadataValue::Text("rjwittams/katzensteg".into()),
                     ttl_ms: None,
                     precedence: None,
                     ordinal: None,
@@ -4779,13 +4800,12 @@ placement "identity-descending" {
         let model = state.view_model();
 
         assert!(model.observed_identities.iter().any(|observed| {
-            observed.identity == MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text(cwd.clone()) }
+            observed.identity == MetadataIdentity { key: KEY_PANE_CWD.to_owned(), value: MetadataValue::Text(cwd.as_str().into()) }
                 && observed.target_count == 1
                 && observed.nearest_distance == 1
         }));
         assert!(model.observed_identities.iter().any(|observed| {
-            observed.identity
-                == MetadataIdentity { key: "git.repo".to_owned(), value: MetadataValue::Text("rjwittams/katzensteg".to_owned()) }
+            observed.identity == MetadataIdentity { key: "git.repo".to_owned(), value: MetadataValue::Text("rjwittams/katzensteg".into()) }
                 && observed.target_count == 1
                 && observed.nearest_distance == 2
         }));
@@ -4947,7 +4967,7 @@ placement "identity-descending" {
             set: BTreeMap::from([(
                 KEY.to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("project:zellij".to_owned()),
+                    value: MetadataValue::Text("project:zellij".into()),
                     ttl_ms: None,
                     precedence: Some(4),
                     ordinal: Some(2),
@@ -4970,7 +4990,7 @@ placement "identity-descending" {
 
         assert_eq!(
             metadata.values.get(KEY).map(|entry| (&entry.value, entry.precedence, entry.ordinal)),
-            Some((&MetadataValue::Text("project:zellij".to_owned()), 4, 2))
+            Some((&MetadataValue::Text("project:zellij".into()), 4, 2))
         );
     }
 
@@ -5148,5 +5168,164 @@ placement "identity-descending" {
         let targets = state.rail_plugin_targets();
 
         assert_eq!(targets, vec![RendererHello { plugin_id: 1, client_id: 4 }, RendererHello { plugin_id: 2, client_id: 4 },]);
+    }
+}
+
+#[cfg(test)]
+impl ControllerState {
+    /// Count what the state holds and keeps between evaluations.
+    pub(crate) fn census(&self, census: &mut Census) {
+        self.metadata.census(census);
+        let kept = &self.kept;
+        if let Some(catalog) = &kept.catalog.borrow().evaluation {
+            for entity in &catalog.entities {
+                census.entity("catalog: entity refs", &entity.entity);
+                if census.first(&entity.facts) {
+                    entity.facts.census(census, "catalog facts (not shared)");
+                }
+            }
+        }
+        let index = kept.placement_index.borrow();
+        for key in index.by_fact.keys() {
+            if census.first(&key.0) {
+                census.string("index: posting keys (not shared)", &key.0);
+            }
+            match &key.1 {
+                IndexedValue::Scalar(value) => {
+                    if census.first_shared(value) {
+                        census.string("index: posting values (not shared)", value)
+                    }
+                }
+                IndexedValue::Entity(entity) => census.entity("index: posting values", entity),
+            }
+        }
+        drop(index);
+        for (entity, (_, _, display)) in kept.displays.borrow().iter() {
+            census.entity("displays: keys", entity);
+            display.census(census, "displays");
+        }
+        for slot in kept.resolutions.borrow().1.values().flatten() {
+            if census.first(slot) {
+                slot_census(census, "template resolutions", slot);
+            }
+        }
+        if let Some((_, regions)) = kept.placements.borrow().as_ref() {
+            for memo in regions.iter().flatten() {
+                memo.census(census);
+            }
+        }
+        for memo in kept.variables.borrow().nodes.values() {
+            if census.first(&memo.resolved) {
+                variables_census(census, "kept variables", &memo.resolved);
+            }
+        }
+        for memo in kept.surface.borrow().nodes_census() {
+            if census.first(memo) {
+                memo.census(census, "kept surface nodes");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+impl LoopMemo {
+    fn census(&self, census: &mut Census) {
+        self.reads.census(census);
+        for node in &self.nodes {
+            if census.first(&node.placement) {
+                node.placement.census(census, "placements");
+            }
+            node.related.iter().for_each(|reads| reads.census(census));
+            census.string("placement memo: bindings", &node.binding);
+            census.string("placement memo: bindings", &node.related_binding);
+            node.children.iter().for_each(|child| child.census(census));
+        }
+    }
+}
+
+#[cfg(test)]
+impl LoopReads {
+    fn census(&self, census: &mut Census) {
+        for (name, _) in &self.bound {
+            census.string("placement memo: reads", name);
+        }
+        for read in &self.postings {
+            if let PostingRead::Absent(key) = read {
+                if census.first(key) {
+                    census.string("placement memo: reads", &key.0);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+impl EvaluatedPlacement {
+    pub(crate) fn census(&self, census: &mut Census, prefix: &str) {
+        census.entity(&format!("{prefix}: entity refs"), &self.entity);
+        if let Some(key) = &self.placement {
+            census.key(&format!("{prefix}: keys"), key);
+        }
+        census.string(&format!("{prefix}: labels"), &self.label);
+        census.string(&format!("{prefix}: forms"), &self.form);
+        if census.first(&self.metadata) {
+            census.facts(&format!("{prefix}: facts"), &format!("{prefix}: fact keys (not shared)"), &self.metadata);
+        }
+        for slot in [&self.templates.compact, &self.templates.detail].into_iter().flatten() {
+            if census.first(slot) {
+                slot_census(census, &format!("{prefix}: templates"), slot);
+            }
+        }
+        if let Some(layout) = &self.annotation.layout {
+            census.string(&format!("{prefix}: layouts"), layout);
+        }
+        for field in &self.annotation.related_detail {
+            census.string(&format!("{prefix}: related detail"), &field.value);
+        }
+        for child in &self.children {
+            if census.first(child) {
+                child.census(census, prefix);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn slot_census(census: &mut Census, prefix: &str, slot: &ResolvedTemplateSlot) {
+    census.string(&format!("{prefix}: names"), &slot.template_name);
+    if let Some(kdl) = slot.effective_kdl.written().filter(|kdl| census.first(kdl)) {
+        census.string(&format!("{prefix}: effective KDL"), kdl);
+    }
+    for field in &slot.fields {
+        census.string(&format!("{prefix}: field text"), &field.text);
+    }
+    if let Some(ready) = &slot.render_ready {
+        census.blob(&format!("{prefix}: render data"), serde_json::to_string(ready).map(|json| json.len()).unwrap_or_default());
+    }
+    if !slot.setters.is_empty() {
+        census.blob(&format!("{prefix}: setters"), serde_json::to_string(&slot.setters).map(|json| json.len()).unwrap_or_default());
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn variables_census(census: &mut Census, prefix: &str, variables: &EffectiveNodeVariables) {
+    census.node_key(&format!("{prefix}: node keys"), &variables.node);
+    census.map(&format!("{prefix}: per node"), &format!("{prefix}: names"), variables.values.keys());
+    for value in variables.values.values() {
+        census.string(&format!("{prefix}: values"), &value.value);
+        for provenance in std::iter::once(&value.provenance).chain(&value.overridden) {
+            census.string(&format!("{prefix}: provenance"), &provenance.setter);
+            census.node_key(&format!("{prefix}: provenance"), &provenance.ancestor);
+            census.string(&format!("{prefix}: provenance"), &provenance.origin.source);
+            if let Some(membership) = &provenance.origin.membership {
+                census.string(&format!("{prefix}: provenance"), membership);
+            }
+        }
+    }
+    if !variables.declarations.is_empty() {
+        census.blob(
+            &format!("{prefix}: declarations"),
+            serde_json::to_string(&variables.declarations).map(|json| json.len()).unwrap_or_default(),
+        );
     }
 }

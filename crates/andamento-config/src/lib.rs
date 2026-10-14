@@ -1216,7 +1216,7 @@ fn push_cwd_metadata(frame: &mut ConfigUiFrame, model: Option<&ControllerViewMod
 
 fn format_metadata_value(value: &MetadataValue) -> String {
     match value {
-        MetadataValue::Text(value) => value.clone(),
+        MetadataValue::Text(value) => value.to_string(),
         MetadataValue::Bool(value) => value.to_string(),
         MetadataValue::Integer(value) => value.to_string(),
         MetadataValue::StringList(values) => values.join(","),
@@ -1766,7 +1766,7 @@ mod tests {
         let mut model = model_with_tab(tab_workspace_id(7), "repo");
         model.inspected_node = Some(NodeKey::Tab(tab_workspace_id(7)));
         let entry = MetadataEntry {
-            value: MetadataValue::Text("flotilla-org/flotilla".to_owned()),
+            value: MetadataValue::Text("flotilla-org/flotilla".into()),
             updated_at: 150,
             ttl_ms: Some(10_000),
             precedence: 4,
@@ -1802,7 +1802,7 @@ mod tests {
                 (
                     format!("meta.{index:02}"),
                     MetadataEntry {
-                        value: MetadataValue::Text(format!("value-{index:02}")),
+                        value: MetadataValue::Text(format!("value-{index:02}").into()),
                         updated_at: index,
                         ttl_ms: None,
                         precedence: 0,

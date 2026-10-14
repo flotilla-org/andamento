@@ -1707,7 +1707,7 @@ mod tests {
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 "tab.subject".to_owned(),
-                MetadataValueUpdate { value: MetadataValue::Text("checkout".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
+                MetadataValueUpdate { value: MetadataValue::Text("checkout".into()), ttl_ms: None, precedence: None, ordinal: None },
             )]),
             unset: vec![],
         };
@@ -1723,7 +1723,7 @@ mod tests {
             .expect("tab metadata");
         assert!(result.state_changed);
         assert_eq!(result.view_model_push_reason, Some(ViewModelPushReason::PipeMetadata));
-        assert_eq!(tab_metadata.values.get("tab.subject").map(|entry| &entry.value), Some(&MetadataValue::Text("checkout".to_owned())));
+        assert_eq!(tab_metadata.values.get("tab.subject").map(|entry| &entry.value), Some(&MetadataValue::Text("checkout".into())));
         assert_eq!(
             tab_metadata.source_entries.get("tab.subject").and_then(|entries| entries.first()).map(|entry| entry.source_id.as_str()),
             Some("test")
@@ -1739,7 +1739,7 @@ mod tests {
             source_id: "test".to_owned(),
             set: BTreeMap::from([(
                 "tab.subject".to_owned(),
-                MetadataValueUpdate { value: MetadataValue::Text("checkout".to_owned()), ttl_ms: None, precedence: None, ordinal: None },
+                MetadataValueUpdate { value: MetadataValue::Text("checkout".into()), ttl_ms: None, precedence: None, ordinal: None },
             )]),
             unset: vec![],
         };
@@ -1761,7 +1761,7 @@ mod tests {
             set: BTreeMap::from([(
                 "git.repo".to_owned(),
                 MetadataValueUpdate {
-                    value: MetadataValue::Text("zellij-org/zellij".to_owned()),
+                    value: MetadataValue::Text("zellij-org/zellij".into()),
                     ttl_ms: Some(10_000),
                     precedence: None,
                     ordinal: None,
@@ -1795,7 +1795,7 @@ mod tests {
         assert_eq!(output.pipe_id, "pipe-1");
         assert_eq!(result.cli_pipe_unblock, Some("pipe-1".to_owned()));
         assert!(observed.iter().any(|identity| {
-            identity.identity == MetadataIdentity { key: "zellij.pane.cwd".to_owned(), value: MetadataValue::Text(cwd.clone()) }
+            identity.identity == MetadataIdentity { key: "zellij.pane.cwd".to_owned(), value: MetadataValue::Text(cwd.as_str().into()) }
         }));
     }
 

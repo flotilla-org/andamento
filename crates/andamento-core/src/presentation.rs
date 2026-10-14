@@ -1,20 +1,21 @@
 //! Semantic placement snapshots shared by all frontends.
-use std::{
-    collections::{BTreeMap, HashMap},
-    ops::ControlFlow,
-    rc::Rc,
-};
+use crate::FastHashMap;
+use std::{collections::BTreeMap, ops::ControlFlow, rc::Rc};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use crate::census::Census;
+#[cfg(test)]
+use crate::state::variables_census;
 use crate::state::{ControllerTab, EvaluatedPlacement, EvaluatedSection, NodeVariables};
 use crate::template_config::{
     AbbreviationTier, ChromeSpec, SurfaceRegionDefinition, TemplateConfigFieldClass, TemplateConfigMatchContext, TemplateConfigNodeKind,
     TemplateConfigRenderedField, TemplateConfigSlot, TemplateControlSpec, TemplateVariableDefinition,
 };
 use crate::{
-    ControllerViewModel, DisplayVariableValue, EffectiveNodeVariables, EntityRef, MetadataValue, NodeKey, PlacementKey, PlacementLoopKey,
-    PlacementSegment, ResolvedTemplateSlot, WorkspaceId, DISPLAY_FORM_COMPACT,
+    ControllerViewModel, DisplayVariableValue, EffectiveKdl, EffectiveNodeVariables, EntityRef, FactMap, MetadataValue, NodeKey,
+    PlacementKey, PlacementLoopKey, PlacementSegment, ResolvedTemplateSlot, WorkspaceId, DISPLAY_FORM_COMPACT,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,7 +95,7 @@ pub struct PlacementNode {
     pub state: PresentationState,
     pub content: Content,
     pub detail: Content,
-    pub facts: Rc<BTreeMap<String, MetadataValue>>,
+    pub facts: Rc<FactMap>,
     pub variables: Option<EffectiveNodeVariables>,
     pub collapsed: bool,
     /// The provider of the entity this node presents (a ref's target) is
@@ -126,7 +127,7 @@ pub struct Content {
     pub controls: Vec<TemplateControlSpec>,
     pub chrome: ChromeSpec,
     pub template_name: Option<String>,
-    pub effective_kdl: String,
+    pub effective_kdl: EffectiveKdl,
     pub error: Option<String>,
 }
 
@@ -317,7 +318,7 @@ impl SurfaceSnapshot {
             model,
             cx,
             orders: model.sibling_orders.iter().cloned().collect(),
-            next: HashMap::with_capacity(prior.len()),
+            next: FastHashMap::with_capacity_and_hasher(prior.len(), Default::default()),
             prior,
         };
         let root = model.template_config.effective_variables.iter().find(|variables| variables.node == NodeKey::Root);
@@ -325,7 +326,7 @@ impl SurfaceSnapshot {
             let definition = &region.definition;
             let mut metadata = BTreeMap::new();
             effective_metadata(root, &mut metadata);
-            let content = resolve_content(region.root.as_ref(), &metadata, false, false, false);
+            let content = resolve_content(region.root.as_deref(), &metadata, false, false, false);
             if let Some(error) = &content.error {
                 snapshot.diagnostics.push(format!("region {}: {error}", definition.name));
             }
@@ -349,7 +350,7 @@ pub(crate) struct SurfaceContext<'a> {
     pub(crate) generation: u64,
     pub(crate) variables: &'a NodeVariables,
     /// How a node presenting an entity with these facts shows it.
-    pub(crate) state: &'a dyn Fn(&EntityRef, &BTreeMap<String, MetadataValue>) -> PresentationState,
+    pub(crate) state: &'a dyn Fn(&EntityRef, &FactMap) -> PresentationState,
     /// Whether the entity a node presents has a stale provider.
     pub(crate) stale: &'a dyn Fn(&EntityRef) -> bool,
 }
@@ -372,15 +373,15 @@ type SiblingOrders = Vec<(PlacementLoopKey, Vec<EntityRef>)>;
 #[derive(Debug, Default)]
 pub(crate) struct SurfaceKept {
     inputs: Option<(u64, SiblingOrders)>,
-    nodes: HashMap<*const EvaluatedPlacement, SurfaceMemo>,
+    nodes: FastHashMap<*const EvaluatedPlacement, SurfaceMemo>,
 }
 
 struct Resolver<'a> {
     model: &'a ControllerViewModel,
     cx: SurfaceContext<'a>,
     orders: BTreeMap<PlacementLoopKey, Vec<EntityRef>>,
-    prior: HashMap<*const EvaluatedPlacement, SurfaceMemo>,
-    next: HashMap<*const EvaluatedPlacement, SurfaceMemo>,
+    prior: FastHashMap<*const EvaluatedPlacement, SurfaceMemo>,
+    next: FastHashMap<*const EvaluatedPlacement, SurfaceMemo>,
 }
 
 impl Resolver<'_> {
@@ -420,25 +421,17 @@ impl Resolver<'_> {
 /// Resolve the declared tier without measuring or shortening producer text.
 /// Returns true when a shorter tier had to fall back to the full label; a
 /// frontend may apply its own measured elision to that fallback.
-pub fn apply_declared_abbreviation(
-    metadata: &mut BTreeMap<String, MetadataValue>,
-    binding: &str,
-    explicit: Option<AbbreviationTier>,
-) -> bool {
+pub fn apply_declared_abbreviation(metadata: &mut FactMap, binding: &str, explicit: Option<AbbreviationTier>) -> bool {
     let Some((selected, producer_supplied)) = declared_abbreviation(metadata, binding, explicit) else {
         return false;
     };
     let selected = selected.to_owned();
-    metadata.insert("display.label".to_owned(), MetadataValue::Text(selected));
+    metadata.insert("display.label".to_owned().into(), MetadataValue::Text(selected.into()));
     !producer_supplied
 }
 
 /// The label `binding`'s tier selects, and whether its producer supplied it.
-fn declared_abbreviation<'a>(
-    metadata: &'a BTreeMap<String, MetadataValue>,
-    binding: &str,
-    explicit: Option<AbbreviationTier>,
-) -> Option<(&'a str, bool)> {
+fn declared_abbreviation<'a>(metadata: &'a FactMap, binding: &str, explicit: Option<AbbreviationTier>) -> Option<(&'a str, bool)> {
     let tier = explicit.map(|tier| tier.as_str()).or_else(|| metadata_text(metadata, &format!("var.{binding}.tier"))).unwrap_or("full");
     let full = metadata_text(metadata, "display.label");
     let medium = metadata_text(metadata, "display.label.medium");
@@ -450,20 +443,17 @@ fn declared_abbreviation<'a>(
     }
 }
 
-fn metadata_text<'a>(metadata: &'a BTreeMap<String, MetadataValue>, key: &str) -> Option<&'a str> {
+fn metadata_text<'a>(metadata: &'a FactMap, key: &str) -> Option<&'a str> {
     match metadata.get(key) {
         Some(MetadataValue::Text(value)) => Some(value),
         _ => None,
     }
 }
 
-fn effective_metadata(
-    variables: Option<&EffectiveNodeVariables>,
-    metadata: &mut BTreeMap<String, MetadataValue>,
-) -> Option<EffectiveNodeVariables> {
+fn effective_metadata(variables: Option<&EffectiveNodeVariables>, metadata: &mut FactMap) -> Option<EffectiveNodeVariables> {
     let variables = variables?;
     for (name, value) in &variables.values {
-        metadata.insert(format!("var.{name}"), MetadataValue::Text(value.value.clone()));
+        metadata.insert(format!("var.{name}").into(), MetadataValue::Text(value.value.as_str().into()));
     }
     Some(variables.clone())
 }
@@ -527,7 +517,7 @@ fn resolve_node(
     let form = region
         .promotions
         .iter()
-        .find(|p| facts.get(&p.when) == Some(&MetadataValue::Bool(true)))
+        .find(|p| facts.get(p.when.as_str()) == Some(&MetadataValue::Bool(true)))
         .map(|p| &p.form)
         .unwrap_or(&region.form)
         .clone();
@@ -538,7 +528,7 @@ fn resolve_node(
         .filter(|label| metadata_text(&display_facts, "display.label") != Some(label))
         .map(str::to_owned);
     if let Some(label) = declared {
-        Rc::make_mut(&mut display_facts).insert("display.label".to_owned(), MetadataValue::Text(label));
+        Rc::make_mut(&mut display_facts).insert("display.label".to_owned().into(), MetadataValue::Text(label.into()));
     }
     Some(PlacementNode {
         content: resolve_content(slot, &display_facts, collapsed, !entity.children.is_empty(), true),
@@ -564,7 +554,7 @@ fn resolve_node(
 
 fn resolve_content(
     slot: Option<&ResolvedTemplateSlot>,
-    metadata: &BTreeMap<String, MetadataValue>,
+    metadata: &FactMap,
     collapsed: bool,
     collapsible: bool,
     reserve_columns: bool,
@@ -614,5 +604,55 @@ fn resolve_content(
         template_name: Some(slot.template_name.clone()),
         effective_kdl: slot.effective_kdl.clone(),
         error: slot.resolve_error.clone(),
+    }
+}
+
+#[cfg(test)]
+impl SurfaceKept {
+    pub(crate) fn nodes_census(&self) -> Vec<&Rc<PlacementNode>> {
+        self.nodes.values().map(|memo| &memo.node).collect()
+    }
+}
+
+#[cfg(test)]
+impl PlacementNode {
+    /// Count what a node holds, and its children not counted yet.
+    pub(crate) fn census(&self, census: &mut Census, prefix: &str) {
+        census.key(&format!("{prefix}: keys"), &self.key);
+        census.string(&format!("{prefix}: loop keys"), &self.loop_key.region);
+        census.key(&format!("{prefix}: loop keys"), &self.loop_key.parent);
+        census.string(&format!("{prefix}: loop keys"), &self.loop_key.binding);
+        census.entity(&format!("{prefix}: entity refs"), &self.entity);
+        census.string(&format!("{prefix}: labels"), &self.label);
+        census.string(&format!("{prefix}: forms"), &self.form);
+        if let Some(layout) = &self.layout {
+            census.string(&format!("{prefix}: layouts"), layout);
+        }
+        for (what, content) in [("content", &self.content), ("detail", &self.detail)] {
+            for field in &content.fields {
+                census.string(&format!("{prefix}: {what} field values"), &field.value);
+                if let Some(source) = &field.source {
+                    census.string(&format!("{prefix}: {what} field sources"), &source.key);
+                    census.value(&format!("{prefix}: {what} field sources"), &source.value);
+                }
+            }
+            if let Some(kdl) = content.effective_kdl.written().filter(|kdl| census.first(kdl)) {
+                census.string(&format!("{prefix}: {what} effective KDL"), kdl);
+            }
+            if let Some(name) = &content.template_name {
+                census.string(&format!("{prefix}: {what} template names"), name);
+            }
+        }
+        if census.first(&self.facts) {
+            census.facts(&format!("{prefix}: facts"), &format!("{prefix}: fact keys (not shared)"), &self.facts);
+        }
+        if let Some(variables) = &self.variables {
+            variables_census(census, &format!("{prefix}: variables"), variables);
+        }
+        for child in &self.children {
+            if census.first(child) {
+                child.census(census, prefix);
+            }
+        }
     }
 }
