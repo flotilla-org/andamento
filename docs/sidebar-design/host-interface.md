@@ -1,4 +1,4 @@
-# The host interface (ABI 5)
+# The host interface (ABI 6)
 
 What a host such as Wheelhouse uses to drive Andamento through its C ABI.
 `crates/andamento-ffi/include/andamento.h` is generated from the FFI crate
@@ -153,6 +153,13 @@ single pass, appending each panel to its parent.
   `variable:` and the key.
 
 Committing an arrangement never changes the snapshot's revision.
+
+## From ABI 5
+
+ABI 6 removes `has_ttl` and `ttl_ms` from `AndamentoDetailField`: an entity's
+facts have no lease (andamento#173), so they were always 0. `stale` now
+follows the provider alone. The struct's layout changed, so a host built
+against ABI 5 must be rebuilt.
 
 ## From ABI 4
 

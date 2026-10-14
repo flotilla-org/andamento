@@ -45,7 +45,7 @@ fn six_kind_native_detail_contract() {
         assert_eq!(andamento_snapshot_detail_find(legacy, entity(text("worktree"), text("worktree:identity / #"))), usize::MAX);
         andamento_snapshot_release(legacy);
         let s = andamento_snapshot_acquire_details(h, ptr::null_mut());
-        assert_eq!(andamento_abi_version(), 5);
+        assert_eq!(andamento_abi_version(), 6);
         assert_eq!(andamento_snapshot_detail_count(s), 6);
         for kind in ["change_request", "issue", "convoy", "role", "project", "worktree"] {
             let card = andamento_snapshot_detail_find(s, entity(text(kind), text(&format!("{kind}:identity / #"))));
@@ -59,8 +59,6 @@ fn six_kind_native_detail_contract() {
             assert!(!f.text.data.is_null());
             assert_eq!(f.has_observation, 1);
             assert_eq!(f.observed_at_ms, 42);
-            assert_eq!(f.has_ttl, 0, "an entity's facts carry no lease");
-            assert_eq!(f.ttl_ms, 0);
             assert_eq!(f.stale, 0);
             assert_eq!(read(f.source_key), "summary.text");
             assert_eq!(read(f.source_id), "fixture-producer");
