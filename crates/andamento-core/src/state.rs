@@ -5,7 +5,7 @@ pub(crate) struct EvaluatedPlacement {
     pub label: String,
     pub form: String,
     pub tier: Option<AbbreviationTier>,
-    pub metadata: Rc<BTreeMap<String, MetadataValue>>,
+    pub metadata: Rc<FactMap>,
     pub templates: ResolvedTemplateSlots,
     pub annotation: PlacementAnnotation,
     pub children: Vec<Rc<EvaluatedPlacement>>,
@@ -21,7 +21,7 @@ pub(crate) struct PlacementAnnotation {
     pub layout: Option<String>,
     pub related_detail: Vec<TemplateConfigRenderedField>,
 }
-use crate::{FastHashMap, FastHashSet};
+use crate::{FactMap, FastHashMap, FastHashSet};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -1800,7 +1800,7 @@ impl ControllerState {
         // workspace, or where its action target is open; else latent, unless
         // its action target is materialized.
         let live_targets = &evaluation.live_targets;
-        let state = |entity: &EntityRef, facts: &BTreeMap<String, MetadataValue>| {
+        let state = |entity: &EntityRef, facts: &FactMap| {
             if let Some(state) = exact.get(entity) {
                 return state.clone();
             }
@@ -2024,7 +2024,7 @@ impl ControllerState {
         catalog: &TemplateConfigCatalog,
         entity: &CatalogEntity,
         template_name: &str,
-        metadata: &BTreeMap<String, MetadataValue>,
+        metadata: &FactMap,
     ) -> Option<Rc<ResolvedTemplateSlot>> {
         let generation = self.template_generation;
         let key = (entity.entity.clone(), template_name.to_owned());
@@ -2138,7 +2138,7 @@ impl ControllerState {
                     }
                 }
                 let metadata =
-                    BTreeMap::from([("presentation.template".to_owned(), MetadataValue::Text(definition.root_template.as_str().into()))]);
+                    FactMap::from([("presentation.template".into(), MetadataValue::Text(definition.root_template.as_str().into()))]);
                 let section = EvaluatedSection {
                     definition: definition.clone(),
                     root: self.resolve_template_slot(TemplateConfigSlot::Compact, TemplateConfigNodeKind::Entity, &metadata),
@@ -2576,7 +2576,7 @@ impl ControllerState {
         catalog: &TemplateConfigCatalog,
         node: &NodeKey,
         inherited: Option<&BTreeMap<String, EffectiveVariableValue>>,
-        metadata: &BTreeMap<String, MetadataValue>,
+        metadata: &FactMap,
         template: Option<&ResolvedTemplateSlot>,
         warnings: &mut BTreeSet<String>,
     ) -> ResolvedNodeVariables {
@@ -3353,7 +3353,7 @@ impl ControllerState {
         if !values.iter().any(|(key, _)| key.starts_with("layout.")) {
             return resolutions;
         }
-        let facts = values.iter().map(|(key, entry)| (key.to_owned(), entry.value.clone())).collect();
+        let facts = values.iter().map(|(key, entry)| (key.into(), entry.value.clone())).collect();
         let Ok(Some(layout)) = suggested_layout::parse(entity, &facts) else {
             return resolutions;
         };
@@ -3375,9 +3375,9 @@ impl ControllerState {
     pub(crate) fn suggested_layout(&self, entity: &EntityRef) -> Result<Option<SuggestedLayout>, LayoutError> {
         let facts = self
             .metadata
-            .resolved_entries_for(&EntityId::Entity(entity.clone()), self.now())
-            .into_iter()
-            .map(|(key, entry)| (key, entry.value))
+            .resolved(&EntityId::Entity(entity.clone()), self.now())
+            .named()
+            .map(|(key, fact)| (key.clone(), fact.entry.value.clone()))
             .collect();
         suggested_layout::parse(entity, &facts)
     }
@@ -3506,7 +3506,7 @@ impl ControllerState {
         &self,
         slot: TemplateConfigSlot,
         node_kind: TemplateConfigNodeKind,
-        metadata: &BTreeMap<String, MetadataValue>,
+        metadata: &FactMap,
     ) -> Option<ResolvedTemplateSlot> {
         let catalog = self.template_catalog.as_ref()?;
         let context = TemplateConfigMatchContext { slot, node_kind, metadata, collapsed: false, collapsible: true, active_tab_name: None };
@@ -3716,7 +3716,7 @@ impl ControllerState {
     }
 }
 
-fn node_metadata(node: &NodeKey, resolved_metadata: &[ResolvedMetadata]) -> BTreeMap<String, MetadataValue> {
+fn node_metadata(node: &NodeKey, resolved_metadata: &[ResolvedMetadata]) -> FactMap {
     let target = match node {
         NodeKey::Root => ResolvedMetadataTarget::Root,
         NodeKey::Tab(tab_id) => ResolvedMetadataTarget::Tab(*tab_id),
@@ -3728,7 +3728,7 @@ fn node_metadata(node: &NodeKey, resolved_metadata: &[ResolvedMetadata]) -> BTre
     resolved_metadata
         .iter()
         .find(|metadata| metadata.target == target)
-        .map(|metadata| metadata.values.iter().map(|(key, entry)| (key.clone(), entry.value.clone())).collect())
+        .map(|metadata| metadata.values.iter().map(|(key, entry)| (key.as_str().into(), entry.value.clone())).collect())
         .unwrap_or_default()
 }
 
@@ -3749,12 +3749,19 @@ fn apply_variable_setter(
     values.insert(name.to_owned(), EffectiveVariableValue { value: value.to_owned(), provenance, overridden });
 }
 
-fn entity_facts(entity: &EntityRef, values: &impl Entries) -> BTreeMap<String, MetadataValue> {
-    let mut facts = values.entries().map(|(key, entry)| (key.to_owned(), entry.value.clone())).collect::<BTreeMap<_, _>>();
+thread_local! {
+    /// The names of the identity facts `entity_facts` adds, made once.
+    static IDENTITY_KEYS: (Rc<str>, Rc<str>) = (Rc::from(KEY_ENTITY_KIND), Rc::from(KEY_ENTITY_ID));
+}
+
+/// An entity's facts as templates read them, sharing the record's names.
+fn entity_facts(entity: &EntityRef, values: &ResolvedFacts) -> FactMap {
+    let mut facts: FactMap = values.named().map(|(key, fact)| (key.clone(), fact.entry.value.clone())).collect();
     // The target is the canonical entity identity. Producers must not have to
     // duplicate it in every patch's set map for placement queries and templates.
-    facts.insert(KEY_ENTITY_KIND.to_owned(), MetadataValue::Text(entity.kind.as_str().into()));
-    facts.insert(KEY_ENTITY_ID.to_owned(), MetadataValue::Text(entity.id.as_str().into()));
+    let (kind, id) = IDENTITY_KEYS.with(|(kind, id)| (kind.clone(), id.clone()));
+    facts.insert(kind, MetadataValue::Text(entity.kind.as_str().into()));
+    facts.insert(id, MetadataValue::Text(entity.id.as_str().into()));
     facts
 }
 
@@ -5263,8 +5270,7 @@ impl EvaluatedPlacement {
         census.string(&format!("{prefix}: labels"), &self.label);
         census.string(&format!("{prefix}: forms"), &self.form);
         if census.first(&self.metadata) {
-            census.map(&format!("{prefix}: facts"), &format!("{prefix}: fact keys"), self.metadata.keys());
-            self.metadata.values().for_each(|value| census.value(&format!("{prefix}: fact values"), value));
+            census.facts(&format!("{prefix}: facts"), &format!("{prefix}: fact keys (not shared)"), &self.metadata);
         }
         for slot in [&self.templates.compact, &self.templates.detail].into_iter().flatten() {
             if census.first(slot) {

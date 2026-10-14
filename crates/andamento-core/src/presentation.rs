@@ -14,8 +14,8 @@ use crate::template_config::{
     TemplateConfigRenderedField, TemplateConfigSlot, TemplateControlSpec, TemplateVariableDefinition,
 };
 use crate::{
-    ControllerViewModel, DisplayVariableValue, EffectiveKdl, EffectiveNodeVariables, EntityRef, MetadataValue, NodeKey, PlacementKey,
-    PlacementLoopKey, PlacementSegment, ResolvedTemplateSlot, WorkspaceId, DISPLAY_FORM_COMPACT,
+    ControllerViewModel, DisplayVariableValue, EffectiveKdl, EffectiveNodeVariables, EntityRef, FactMap, MetadataValue, NodeKey,
+    PlacementKey, PlacementLoopKey, PlacementSegment, ResolvedTemplateSlot, WorkspaceId, DISPLAY_FORM_COMPACT,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,7 +95,7 @@ pub struct PlacementNode {
     pub state: PresentationState,
     pub content: Content,
     pub detail: Content,
-    pub facts: Rc<BTreeMap<String, MetadataValue>>,
+    pub facts: Rc<FactMap>,
     pub variables: Option<EffectiveNodeVariables>,
     pub collapsed: bool,
     /// The provider of the entity this node presents (a ref's target) is
@@ -350,7 +350,7 @@ pub(crate) struct SurfaceContext<'a> {
     pub(crate) generation: u64,
     pub(crate) variables: &'a NodeVariables,
     /// How a node presenting an entity with these facts shows it.
-    pub(crate) state: &'a dyn Fn(&EntityRef, &BTreeMap<String, MetadataValue>) -> PresentationState,
+    pub(crate) state: &'a dyn Fn(&EntityRef, &FactMap) -> PresentationState,
     /// Whether the entity a node presents has a stale provider.
     pub(crate) stale: &'a dyn Fn(&EntityRef) -> bool,
 }
@@ -421,25 +421,17 @@ impl Resolver<'_> {
 /// Resolve the declared tier without measuring or shortening producer text.
 /// Returns true when a shorter tier had to fall back to the full label; a
 /// frontend may apply its own measured elision to that fallback.
-pub fn apply_declared_abbreviation(
-    metadata: &mut BTreeMap<String, MetadataValue>,
-    binding: &str,
-    explicit: Option<AbbreviationTier>,
-) -> bool {
+pub fn apply_declared_abbreviation(metadata: &mut FactMap, binding: &str, explicit: Option<AbbreviationTier>) -> bool {
     let Some((selected, producer_supplied)) = declared_abbreviation(metadata, binding, explicit) else {
         return false;
     };
     let selected = selected.to_owned();
-    metadata.insert("display.label".to_owned(), MetadataValue::Text(selected.into()));
+    metadata.insert("display.label".to_owned().into(), MetadataValue::Text(selected.into()));
     !producer_supplied
 }
 
 /// The label `binding`'s tier selects, and whether its producer supplied it.
-fn declared_abbreviation<'a>(
-    metadata: &'a BTreeMap<String, MetadataValue>,
-    binding: &str,
-    explicit: Option<AbbreviationTier>,
-) -> Option<(&'a str, bool)> {
+fn declared_abbreviation<'a>(metadata: &'a FactMap, binding: &str, explicit: Option<AbbreviationTier>) -> Option<(&'a str, bool)> {
     let tier = explicit.map(|tier| tier.as_str()).or_else(|| metadata_text(metadata, &format!("var.{binding}.tier"))).unwrap_or("full");
     let full = metadata_text(metadata, "display.label");
     let medium = metadata_text(metadata, "display.label.medium");
@@ -451,20 +443,17 @@ fn declared_abbreviation<'a>(
     }
 }
 
-fn metadata_text<'a>(metadata: &'a BTreeMap<String, MetadataValue>, key: &str) -> Option<&'a str> {
+fn metadata_text<'a>(metadata: &'a FactMap, key: &str) -> Option<&'a str> {
     match metadata.get(key) {
         Some(MetadataValue::Text(value)) => Some(value),
         _ => None,
     }
 }
 
-fn effective_metadata(
-    variables: Option<&EffectiveNodeVariables>,
-    metadata: &mut BTreeMap<String, MetadataValue>,
-) -> Option<EffectiveNodeVariables> {
+fn effective_metadata(variables: Option<&EffectiveNodeVariables>, metadata: &mut FactMap) -> Option<EffectiveNodeVariables> {
     let variables = variables?;
     for (name, value) in &variables.values {
-        metadata.insert(format!("var.{name}"), MetadataValue::Text(value.value.as_str().into()));
+        metadata.insert(format!("var.{name}").into(), MetadataValue::Text(value.value.as_str().into()));
     }
     Some(variables.clone())
 }
@@ -528,7 +517,7 @@ fn resolve_node(
     let form = region
         .promotions
         .iter()
-        .find(|p| facts.get(&p.when) == Some(&MetadataValue::Bool(true)))
+        .find(|p| facts.get(p.when.as_str()) == Some(&MetadataValue::Bool(true)))
         .map(|p| &p.form)
         .unwrap_or(&region.form)
         .clone();
@@ -539,7 +528,7 @@ fn resolve_node(
         .filter(|label| metadata_text(&display_facts, "display.label") != Some(label))
         .map(str::to_owned);
     if let Some(label) = declared {
-        Rc::make_mut(&mut display_facts).insert("display.label".to_owned(), MetadataValue::Text(label.into()));
+        Rc::make_mut(&mut display_facts).insert("display.label".to_owned().into(), MetadataValue::Text(label.into()));
     }
     Some(PlacementNode {
         content: resolve_content(slot, &display_facts, collapsed, !entity.children.is_empty(), true),
@@ -565,7 +554,7 @@ fn resolve_node(
 
 fn resolve_content(
     slot: Option<&ResolvedTemplateSlot>,
-    metadata: &BTreeMap<String, MetadataValue>,
+    metadata: &FactMap,
     collapsed: bool,
     collapsible: bool,
     reserve_columns: bool,
@@ -655,8 +644,7 @@ impl PlacementNode {
             }
         }
         if census.first(&self.facts) {
-            census.map(&format!("{prefix}: facts"), &format!("{prefix}: fact keys"), self.facts.keys());
-            self.facts.values().for_each(|value| census.value(&format!("{prefix}: fact values"), value));
+            census.facts(&format!("{prefix}: facts"), &format!("{prefix}: fact keys (not shared)"), &self.facts);
         }
         if let Some(variables) = &self.variables {
             variables_census(census, &format!("{prefix}: variables"), variables);

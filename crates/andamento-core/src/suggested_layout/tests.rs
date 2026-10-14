@@ -1,4 +1,6 @@
 use super::*;
+use crate::FactMap;
+use std::rc::Rc;
 
 fn entity(kind: &str, id: &str) -> EntityRef {
     EntityRef::local(kind, id)
@@ -10,9 +12,8 @@ fn list(values: &[&str]) -> MetadataValue {
     MetadataValue::StringList(values.iter().map(|v| v.to_string()).collect())
 }
 fn facts(pairs: impl IntoIterator<Item = (&'static str, MetadataValue)>) -> FactMap {
-    pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()
+    pairs.into_iter().map(|(k, v)| (k.into(), v)).collect()
 }
-type FactMap = BTreeMap<String, MetadataValue>;
 fn convoy() -> EntityRef {
     entity("convoy", "c")
 }
@@ -47,7 +48,7 @@ fn two_slots() -> FactMap {
         ("layout.slot.pr.url", text("https://example.test/1")),
     ])
 }
-fn with<K: Into<String>>(mut base: FactMap, pairs: impl IntoIterator<Item = (K, MetadataValue)>) -> FactMap {
+fn with<K: Into<Rc<str>>>(mut base: FactMap, pairs: impl IntoIterator<Item = (K, MetadataValue)>) -> FactMap {
     base.extend(pairs.into_iter().map(|(k, v)| (k.into(), v)));
     base
 }

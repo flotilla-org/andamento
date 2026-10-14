@@ -6,9 +6,10 @@
 //! view specs, arrangement) is a [`LayoutError`] for the whole layout. An
 //! incomplete *resolution* of a provider-facet slot is that slot's
 //! [`SlotResolution::Unavailable`], matching managed primary content.
-use crate::{EntityRef, MetadataValue};
+use crate::{EntityRef, FactMap, MetadataValue};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::ops::Bound;
 
 /// The reserved slot key for the `workspace.primary.*` facts.
 pub const PRIMARY_SLOT: &str = "primary";
@@ -234,7 +235,7 @@ impl std::error::Error for LayoutError {}
 /// Reads the Suggested Layout `entity` publishes, if any. `facts` are its
 /// resolved, live facts. Returns `Ok(None)` when it publishes neither
 /// `layout.*` nor `workspace.primary.state`.
-pub fn parse(entity: &EntityRef, facts: &BTreeMap<String, MetadataValue>) -> Result<Option<SuggestedLayout>, LayoutError> {
+pub fn parse(entity: &EntityRef, facts: &FactMap) -> Result<Option<SuggestedLayout>, LayoutError> {
     let primary = facts.contains_key(KEY_PRIMARY_STATE).then(|| primary_slot(entity, facts));
     if !facts.keys().any(|key| key.starts_with("layout.")) {
         return Ok(primary.map(|slot| SuggestedLayout { version: BaselineVersion::PrimaryOnly, slots: vec![slot], arrangement: None }));
@@ -253,10 +254,10 @@ pub fn parse(entity: &EntityRef, facts: &BTreeMap<String, MetadataValue>) -> Res
     for fact in facts.keys() {
         if let Some((slot, _)) = fact.strip_prefix(SLOT_PREFIX).and_then(|rest| rest.split_once('.')) {
             if slot == PRIMARY_SLOT {
-                return Err(LayoutError::ReservedPrimary { key: fact.clone() });
+                return Err(LayoutError::ReservedPrimary { key: fact.to_string() });
             }
             if !listed.contains(slot) {
-                return Err(LayoutError::UnlistedSlot { key: fact.clone() });
+                return Err(LayoutError::UnlistedSlot { key: fact.to_string() });
             }
         }
     }
@@ -281,7 +282,7 @@ pub fn parse(entity: &EntityRef, facts: &BTreeMap<String, MetadataValue>) -> Res
 }
 
 /// The single-slot special case, read exactly as managed primary content does.
-fn primary_slot(entity: &EntityRef, facts: &BTreeMap<String, MetadataValue>) -> Slot {
+fn primary_slot(entity: &EntityRef, facts: &FactMap) -> Slot {
     let text = |key| match facts.get(key) {
         Some(MetadataValue::Text(value)) => Some(value.clone()),
         _ => None,
@@ -317,7 +318,7 @@ fn provider_slot(f: &Facts, key: &str) -> Result<Slot, LayoutError> {
         Some("ask") => RebindPolicy::Ask,
         Some(other) => return Err(invalid(&at("rebind"), other)),
     };
-    let entity = match f.0.get(&at("entity")) {
+    let entity = match f.0.get(at("entity").as_str()) {
         None => None,
         Some(MetadataValue::EntityRefs(refs)) if refs.len() == 1 => Some(refs[0].clone()),
         Some(_) => return Err(wrong(&at("entity"), "exactly one entity ref")),
@@ -386,7 +387,7 @@ fn recipe(f: &Facts, key: &str) -> Result<LocalRecipe, LayoutError> {
 fn argv(f: &Facts, key: &str) -> Result<Vec<String>, LayoutError> {
     let prefix = format!("{SLOT_PREFIX}{key}.argv.");
     let mut indexed = BTreeMap::new();
-    for (fact, value) in f.0.range(prefix.clone()..) {
+    for (fact, value) in f.0.range::<str, _>((Bound::Included(prefix.as_str()), Bound::Unbounded)) {
         let Some(index) = fact.strip_prefix(&prefix) else {
             break;
         };
@@ -429,7 +430,7 @@ fn arrangement(f: &Facts, known: &BTreeSet<&str>) -> Result<Option<Arrangement>,
             return Err(LayoutError::UnknownPanel { panel: id });
         }
         let at = |field: &str| format!("{PANEL_PREFIX}{id}.{field}");
-        let weight = match f.0.get(&at("weight")) {
+        let weight = match f.0.get(at("weight").as_str()) {
             None => 1,
             Some(MetadataValue::Integer(w)) => {
                 u32::try_from(*w).ok().filter(|w| *w > 0).ok_or_else(|| invalid(&at("weight"), &w.to_string()))?
@@ -448,7 +449,7 @@ fn arrangement(f: &Facts, known: &BTreeSet<&str>) -> Result<Option<Arrangement>,
                     check_id(&at("children"), child)?;
                 }
                 pending.extend(children.iter().rev().cloned());
-                if f.0.contains_key(&at("selected")) {
+                if f.0.contains_key(at("selected").as_str()) {
                     return Err(LayoutError::PanelShape { panel: id });
                 }
                 PanelNode::Split { axis, children: children.clone() }
@@ -478,7 +479,7 @@ fn arrangement(f: &Facts, known: &BTreeSet<&str>) -> Result<Option<Arrangement>,
     Ok(Some(Arrangement { root: root.to_owned(), panels }))
 }
 
-struct Facts<'a>(&'a BTreeMap<String, MetadataValue>);
+struct Facts<'a>(&'a FactMap);
 
 impl Facts<'_> {
     fn text(&self, key: &str) -> Result<Option<&str>, LayoutError> {

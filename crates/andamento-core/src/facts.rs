@@ -221,16 +221,11 @@ impl ResolvedFacts {
 /// Entries read by key: a resolved record, or a plain map of them.
 pub trait Entries {
     fn entry_at(&self, key: &str) -> Option<&MetadataEntry>;
-    fn entries(&self) -> impl Iterator<Item = (&str, &MetadataEntry)>;
 }
 
 impl Entries for ResolvedFacts {
     fn entry_at(&self, key: &str) -> Option<&MetadataEntry> {
         self.get(key)
-    }
-
-    fn entries(&self) -> impl Iterator<Item = (&str, &MetadataEntry)> {
-        self.iter()
     }
 }
 
@@ -238,28 +233,16 @@ impl Entries for BTreeMap<String, MetadataEntry> {
     fn entry_at(&self, key: &str) -> Option<&MetadataEntry> {
         self.get(key)
     }
-
-    fn entries(&self) -> impl Iterator<Item = (&str, &MetadataEntry)> {
-        self.iter().map(|(key, entry)| (key.as_str(), entry))
-    }
 }
 
 impl<T: Entries> Entries for Rc<T> {
     fn entry_at(&self, key: &str) -> Option<&MetadataEntry> {
         (**self).entry_at(key)
     }
-
-    fn entries(&self) -> impl Iterator<Item = (&str, &MetadataEntry)> {
-        (**self).entries()
-    }
 }
 
 impl<T: Entries + ?Sized> Entries for &T {
     fn entry_at(&self, key: &str) -> Option<&MetadataEntry> {
         (**self).entry_at(key)
-    }
-
-    fn entries(&self) -> impl Iterator<Item = (&str, &MetadataEntry)> {
-        (**self).entries()
     }
 }

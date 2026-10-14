@@ -481,6 +481,10 @@ pub const LOCAL_PROVIDER: &str = "local";
 #[serde(transparent)]
 pub struct EntityRef(Arc<EntityRefParts>);
 
+/// An entity's facts as templates read them, by name: names are shared
+/// with the store's.
+pub type FactMap = BTreeMap<Rc<str>, MetadataValue>;
+
 /// What an [`EntityRef`] names.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EntityRefParts {

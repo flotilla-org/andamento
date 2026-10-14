@@ -7,7 +7,7 @@ use std::fmt::Write;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::{EntityRef, MetadataValue, NodeKey, PlacementKey};
+use crate::{EntityRef, FactMap, MetadataValue, NodeKey, PlacementKey};
 
 #[derive(Default)]
 pub(crate) struct Census {
@@ -70,6 +70,19 @@ impl Census {
         let mut shape = keys;
         shape.sort();
         *maps.shapes.entry(shape).or_default() += 1;
+    }
+
+    /// A map of facts by shared name: its shape, and each name once.
+    pub(crate) fn facts(&mut self, kind: &str, keys_kind: &str, facts: &FactMap) {
+        self.shape(kind, facts.keys());
+        for key in facts.keys() {
+            if self.first(key) {
+                self.string(keys_kind, key);
+            }
+        }
+        for value in facts.values() {
+            self.value(&format!("{kind}: values"), value);
+        }
     }
 
     /// Something counted only by its size, such as parsed template data.
