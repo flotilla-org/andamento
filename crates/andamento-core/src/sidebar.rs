@@ -1062,8 +1062,7 @@ impl Sidebar {
         self.sidebar_report = report;
     }
 
-    /// The Dashboard's sidebar arrangement: the dock and floating panels,
-    /// closed sections, flags, and what its last reconciliation did. Its
+    /// The Dashboard's sidebar arrangement: the dock, closed sections, flags, and what its last reconciliation did. Its
     /// unresolved keys include saved dashboard keys the template no longer
     /// resolves.
     pub fn sidebar_arrangement(&self) -> (SidebarView, &Report) {

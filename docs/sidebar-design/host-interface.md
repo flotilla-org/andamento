@@ -1,4 +1,4 @@
-# The host interface (ABI 6)
+# The host interface (ABI 7)
 
 What a host such as Wheelhouse uses to drive Andamento through its C ABI.
 `crates/andamento-ffi/include/andamento.h` is generated from the FFI crate
@@ -145,14 +145,22 @@ single pass, appending each panel to its parent.
 - **The sidebar's** (`andamento_sidebar_arrangement_get`, `_commit(h, doc,
   expected)`, `andamento_sidebar_restore_section`, `andamento_sidebar_reset`,
   `_free`, and `andamento_sidebar_arrangement_generation` to poll): an
-  `AndamentoSidebarDoc {dock, floating}`, the dock with at most one root and
-  each floating root a panel of its own; tabs are section keys. Every call
+  `AndamentoSidebarDoc {dock}`, the dock with at most one root; tabs are
+  section keys. Every call
   returns `AndamentoSidebarArrangement` with notes CLOSED, UNRESOLVED,
   PLACED, RESTORED and DUPLICATE. UNRESOLVED also lists saved dashboard keys
   the template no longer resolves, as `display:`, `collapse:`, `order:` or
   `variable:` and the key.
 
 Committing an arrangement never changes the snapshot's revision.
+
+## From ABI 6
+
+ABI 7 removes floating panels (wheelhouse#380): `AndamentoSidebarDoc` loses
+`floating`, so it and `AndamentoSidebarArrangement`, which embeds it, change
+layout, and a host built against ABI 6 must be rebuilt. Every section docks; a
+region's `default-host` no longer places one. A stored record's floating
+panels are dropped on import, and the sections only they held are docked.
 
 ## From ABI 5
 

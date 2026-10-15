@@ -45,7 +45,7 @@ fn six_kind_native_detail_contract() {
         assert_eq!(andamento_snapshot_detail_find(legacy, entity(text("worktree"), text("worktree:identity / #"))), usize::MAX);
         andamento_snapshot_release(legacy);
         let s = andamento_snapshot_acquire_details(h, ptr::null_mut());
-        assert_eq!(andamento_abi_version(), 6);
+        assert_eq!(andamento_abi_version(), 7);
         assert_eq!(andamento_snapshot_detail_count(s), 6);
         for kind in ["change_request", "issue", "convoy", "role", "project", "worktree"] {
             let card = andamento_snapshot_detail_find(s, entity(text(kind), text(&format!("{kind}:identity / #"))));

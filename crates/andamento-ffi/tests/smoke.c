@@ -71,7 +71,7 @@ static int same(AndamentoWorkspaceId a, AndamentoWorkspaceId b) {
 
 /* Facts, topology, the snapshot, dispatch, effects and completion. */
 static void check_sidebar(const char *config_path, const char *patches_path) {
-    assert(andamento_abi_version() == 6);
+    assert(andamento_abi_version() == 7);
     char *config = read_file(config_path);
     Andamento *h = create(config);
     ok(andamento_configure(h, text(config), &error));
@@ -363,7 +363,7 @@ static void check_workspace(const char *config_path) {
     assert(andamento_arrangement_resolve(h, ws, ANDAMENTO_ARRANGEMENT_KEEP, at, &generation, &error) ==
            ANDAMENTO_COMMITTED);
 
-    /* The sidebar's arrangement: the same panels, a dock and floating ones. */
+    /* The sidebar's arrangement: the same panels, in a dock. */
     AndamentoSidebarArrangement *sidebar = andamento_sidebar_arrangement_get(h, &error);
     assert(sidebar && !error && sidebar->doc.dock.panel_count && sidebar->note_count);
     assert(sidebar->generation == andamento_sidebar_arrangement_generation(h, &error));
