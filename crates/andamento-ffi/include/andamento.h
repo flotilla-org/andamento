@@ -547,12 +547,9 @@ typedef struct {
   size_t note_count;
 } AndamentoWorkspaceArrangement;
 
-// The sidebar's document: the dock, one tree or none, and the floating
-// panels, each a tree of its own (their positions and sizes are the
-// host's).
+// The sidebar's document: the dock, one tree or none.
 typedef struct {
   AndamentoArrangementDoc dock;
-  AndamentoArrangementDoc floating;
 } AndamentoSidebarDoc;
 
 // The Dashboard's sidebar arrangement: which sections are docked where.
@@ -1020,9 +1017,9 @@ void andamento_arrangement_free(AndamentoWorkspaceArrangement *arrangement);
 // The sidebar arrangement. Free it with andamento_sidebar_arrangement_free.
 // Andamento reconciles it when what is declared changes (on configure, and
 // when local sections or groups change or are imported): a section with
-// neither a tab nor a closed record is placed in a new tab panel of its
-// default-host ("floating", else the dock), before the subtree holding the
-// next section in default order placed there, else last.
+// neither a tab nor a closed record is placed in a new tab panel in the
+// dock, before the subtree holding the next section in default order
+// placed there, else last.
 AndamentoSidebarArrangement *andamento_sidebar_arrangement_get(Andamento *h, char **error_out);
 
 // Commit the host's whole sidebar document at the end of a gesture, as

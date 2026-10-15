@@ -56,14 +56,11 @@ pub struct AndamentoArrangementDoc {
     pub panel_count: usize,
 }
 
-/// The sidebar's document: the dock, one tree or none, and the floating
-/// panels, each a tree of its own (their positions and sizes are the
-/// host's).
+/// The sidebar's document: the dock, one tree or none.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AndamentoSidebarDoc {
     pub dock: AndamentoArrangementDoc,
-    pub floating: AndamentoArrangementDoc,
 }
 
 /// A key Andamento placed since the host last committed.
@@ -365,7 +362,6 @@ pub unsafe extern "C" fn andamento_arrangement_free(arrangement: *mut AndamentoW
 
 fn sidebar_c(view: SidebarView, report: &Report, status: u32) -> *mut AndamentoSidebarArrangement {
     let dock = Panels::of(&view.doc.dock.root);
-    let floating = Panels::of(&view.doc.floating);
     let report = report.clone();
     let notes = notes([
         (ANDAMENTO_NOTE_CLOSED, view.closed.iter().collect()),
@@ -378,13 +374,13 @@ fn sidebar_c(view: SidebarView, report: &Report, status: u32) -> *mut AndamentoS
         status,
         generation: view.generation,
         owned: view.owned as u32,
-        doc: AndamentoSidebarDoc { dock: dock.doc(), floating: floating.doc() },
+        doc: AndamentoSidebarDoc { dock: dock.doc() },
         notes: notes.as_ptr(),
         note_count: notes.len(),
     };
-    give(value, (view, report, dock, floating, notes))
+    give(value, (view, report, dock, notes))
 }
-type SidebarKeep = (SidebarView, Report, Panels, Panels, Vec<AndamentoNote>);
+type SidebarKeep = (SidebarView, Report, Panels, Vec<AndamentoNote>);
 
 /// The sidebar arrangement after a compare-and-set.
 fn sidebar_after(h: &Andamento, result: Result<Report, CommitError>) -> Result<*mut AndamentoSidebarArrangement, String> {
@@ -396,9 +392,9 @@ fn sidebar_after(h: &Andamento, result: Result<Report, CommitError>) -> Result<*
 /// The sidebar arrangement. Free it with andamento_sidebar_arrangement_free.
 /// Andamento reconciles it when what is declared changes (on configure, and
 /// when local sections or groups change or are imported): a section with
-/// neither a tab nor a closed record is placed in a new tab panel of its
-/// default-host ("floating", else the dock), before the subtree holding the
-/// next section in default order placed there, else last.
+/// neither a tab nor a closed record is placed in a new tab panel in the
+/// dock, before the subtree holding the next section in default order
+/// placed there, else last.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_sidebar_arrangement_get(
     h: *mut Andamento,
@@ -425,7 +421,7 @@ pub unsafe extern "C" fn andamento_sidebar_arrangement_commit(
 ) -> *mut AndamentoSidebarArrangement {
     run(h, error_out, |h| {
         let doc = doc.as_ref().ok_or("null document")?;
-        let doc = SidebarDoc { dock: ArrangementDoc { root: one_root(read_doc(&doc.dock)?)? }, floating: read_doc(&doc.floating)? };
+        let doc = SidebarDoc { dock: ArrangementDoc { root: one_root(read_doc(&doc.dock)?)? } };
         let result = h.sidebar.set_sidebar_arrangement(doc, expected_generation);
         sidebar_after(h, result)
     })

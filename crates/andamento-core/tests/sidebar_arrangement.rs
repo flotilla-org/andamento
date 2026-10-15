@@ -56,7 +56,6 @@ fn dock(children: Vec<Panel>) -> SidebarDoc {
         dock: ArrangementDoc {
             root: Some(Panel { id: "root".into(), weight: 1.0, node: PanelNode::Split { axis: Axis::Column, children } }),
         },
-        floating: Vec::new(),
     }
 }
 
@@ -161,8 +160,7 @@ fn an_imported_record_with_duplicates_is_repaired() {
     use andamento_core::records::DashboardRecord;
     use andamento_core::sidebar_arrangement::SidebarArrangement;
     let mut sidebar = Sidebar::new(&ab()).unwrap();
-    let mut doc = dock(vec![tabs("2", &["a"]), tabs("3", &["a"])]);
-    doc.floating.push(tabs("4", &["b", "a"]));
+    let doc = dock(vec![tabs("2", &["a"]), tabs("3", &["a"])]);
     let record = DashboardRecord {
         sidebar: Some(SidebarArrangement { owned: true, doc, closed: set(&[".unplaced"]), ..SidebarArrangement::default() }),
         ..DashboardRecord::default()
@@ -176,6 +174,28 @@ fn an_imported_record_with_duplicates_is_repaired() {
     let mut placed = Sidebar::new(&ab()).unwrap();
     placed.import_record("dashboard", &DashboardRecord::default().encode()).unwrap();
     assert_eq!(docked(&placed), keys(&[&["a"], &["b"], &[".unplaced"]]));
+}
+
+/// A record from before floating panels went: their panels are dropped on
+/// import, and a section only they held is docked by its hints, not closed.
+#[test]
+fn an_imported_record_with_floating_panels_docks_their_sections() {
+    use andamento_core::records::DashboardRecord;
+    use andamento_core::sidebar_arrangement::SidebarArrangement;
+    let mut sidebar = Sidebar::new(&ab()).unwrap();
+    let doc = dock(vec![tabs("2", &["a"]), tabs("3", &[".unplaced"])]);
+    let record = DashboardRecord {
+        sidebar: Some(SidebarArrangement { owned: true, doc, ..SidebarArrangement::default() }),
+        ..DashboardRecord::default()
+    };
+    let mut json: serde_json::Value = serde_json::from_str(&record.encode()).unwrap();
+    json["sidebar"]["doc"]["floating"] =
+        serde_json::json!([{"id": "4", "weight": 1.0, "node": {"Tabs": {"tabs": ["b", "u:notes"], "selected": "b"}}}]);
+    sidebar.import_record("dashboard", &json.to_string()).unwrap();
+    let (view, report) = sidebar.sidebar_arrangement();
+    assert_eq!(report.placed, ["b"]);
+    assert!(view.closed.is_empty());
+    assert_eq!(docked(&sidebar), keys(&[&["a"], &["b"], &[".unplaced"]]));
 }
 
 #[test]

@@ -2836,7 +2836,6 @@ impl ControllerState {
             .iter()
             .map(|region| RegionHints {
                 name: region.name.clone(),
-                default_host: region.default_host.clone(),
                 order: region.order,
                 pinned: region.pinned,
                 hosts_local_sections: region

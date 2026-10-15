@@ -184,10 +184,12 @@ mod tests {
                         root: Some(Panel {
                             id: "1".into(),
                             weight: 1.0,
-                            node: PanelNode::Split { axis: Axis::Column, children: vec![tabs("2", &["tree", "u:notes"])] },
+                            node: PanelNode::Split {
+                                axis: Axis::Column,
+                                children: vec![tabs("2", &["tree", "u:notes"]), tabs("3", &["git"])],
+                            },
                         }),
                     },
-                    floating: vec![tabs("3", &["git"])],
                 },
                 closed: BTreeSet::from(["closed".into()]),
                 ..SidebarArrangement::default()
@@ -205,7 +207,10 @@ mod tests {
     fn malformed_records_are_rejected_with_a_reason() {
         let mut bad_doc = dashboard();
         let sidebar = bad_doc.sidebar.as_mut().unwrap();
-        sidebar.doc.floating[0].weight = -1.0;
+        let Some(PanelNode::Split { children, .. }) = sidebar.doc.dock.root.as_mut().map(|root| &mut root.node) else {
+            unreachable!("the fixture's dock is a split")
+        };
+        children[1].weight = -1.0;
         let mut bad_fact = dashboard();
         bad_fact.state.local.values_mut().next().unwrap().insert("list".into(), MetadataValue::StringList(vec!["x".into()]));
         for (text, reason) in [

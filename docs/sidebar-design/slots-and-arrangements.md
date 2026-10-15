@@ -248,7 +248,7 @@ Wheelhouse's: it saves the portable ones through
   not stored: they stay in the host's device-local state. Portable ones are
   above.
 - **The Dashboard's sidebar arrangement** uses the same document shape, with
-  floating panels, a closed set and hint-based placement: see [The sidebar
+  a closed set and hint-based placement: see [The sidebar
   arrangement](sidebar-arrangement.md).
 - Closed workspaces keep the slots and arrangement they had; baselines follow
   only open workspaces' subjects.

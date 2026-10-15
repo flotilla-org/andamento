@@ -20,7 +20,6 @@ in [The host interface](host-interface.md#arrangements).
 | Logical: in the `dashboard` record | Presentation: the host's |
 |---|---|
 | the dock's panel tree: splits, their axes and relative weights, tab panels holding section keys, each panel's selected tab | the sidebar's width and every pixel size |
-| floating panels, each a panel tree | where a floating panel is and how big |
 | the sections closed on purpose | whether a section is collapsed |
 
 A tab holds a **section key**:
@@ -39,8 +38,8 @@ workspace's arrangement (`AndamentoDocPanel`), but has calls of its own
 rather than a target parameter on a workspace's:
 
 - A workspace call names a workspace ID; the Dashboard has none.
-- The sidebar document has floating panels and a closed set, which a
-  workspace's doesn't (`AndamentoSidebarDoc {dock, floating}`).
+- The sidebar document has a closed set, which a workspace's doesn't
+  (`AndamentoSidebarDoc {dock}`).
 - The rules differ. A workspace places a new slot in the first tab panel; the
   sidebar places a section by its region's hints. A workspace commit with a
   slot tabbed twice is invalid; a sidebar commit repairs it, because the
@@ -56,15 +55,14 @@ sizes need pixels. At the end of a gesture it commits the whole document with
 
 1. **Generation.** A commit at any generation but the stored one is **stale**
    and changes nothing (`ANDAMENTO_STALE`, no error).
-2. **Validation.** The shape rules of an arrangement document across the dock
-   and the floating panels (panel IDs nonempty and unique across both,
-   weights finite and positive, splits nonempty, a selected tab one of its
+2. **Validation.** The shape rules of an arrangement document (panel IDs
+   nonempty and unique, weights finite and positive, splits nonempty, a selected tab one of its
    panel's), except that a key may have two tabs. Each tab names a declared
    section, a local section, a host View, or a key the stored document
    already holds (one that no longer resolves). Otherwise it is **invalid**
    and changes nothing.
 3. **Duplicates.** Later tabs of a key are removed, keeping the first in
-   preorder, the dock before the floating panels. A panel the removal
+   preorder. A panel the removal
    empties goes; a panel that was already empty stays.
 4. **Closing and restoring.** Every declared section the document leaves out
    is **closed**: the host closes a section by committing without it. A
@@ -92,7 +90,7 @@ duplicate tabs were removed, and keys that no longer resolve.
 ### Declarations
 
 `Declared::new(regions, local_sections)` turns the template's regions (name,
-`default-host`, `order`, `pinned`, and whether it hosts local sections) and
+`order`, `pinned`, and whether it hosts local sections) and
 the local sections (ID, `.position`, whether it holds the default group) into
 the sections, in **default order**:
 
@@ -109,27 +107,24 @@ the sections, in **default order**:
   sorts after everything. Ties keep declaration order.
 - Pinned regions sort before unpinned ones. This rule is new: Wheelhouse
   ignored `pinned`, which the terminal renderer reads as "always on top".
-- `default-host="floating"` places a section in a floating panel. Any other
-  host, or none, docks it (Wheelhouse's fallback for absent, unknown or
-  rejected hosts).
+- Every section docks. A region's `default-host` is the host's to read
+  (`AndamentoSectionNode.default_host`); Andamento doesn't place by it.
 
 ### Placing
 
 A declared section with neither a tab nor a closed record is **new**, and is
-placed in a new tab panel of its host, holding and selecting it:
+placed in a new tab panel in the dock, holding and selecting it:
 
-- In the dock, the root becomes a column split if it isn't a split (an empty
-  dock gets one; a tab panel with tabs is lifted into it). The new panel goes
+- The dock's root becomes a column split if it isn't a split (an empty dock
+  gets one; a tab panel with tabs is lifted into it). The new panel goes
   among the root's children before the whole subtree holding the next section
-  in default order that is docked, else last. Saved nested splits keep their
-  structure, selection and weights; a new section never goes inside one.
-- In the floating panels, likewise before the panel holding the next floating
-  section, else last.
+  in default order, else last. Saved nested splits keep their structure,
+  selection and weights; a new section never goes inside one.
 - A placed section arrives with weight 1 (the host sizes sections). Andamento
   marks it **placed** until the host's next commit.
 
 Placed sections keep their place when hints change: changing a region's
-`default-host` or `order` moves nothing until the user restores or resets.
+`order` moves nothing until the user restores or resets.
 
 ### Template key drift
 
@@ -165,8 +160,8 @@ owned.
 document, its generation, whether the host owns it, the closed set, the
 placed and unresolved keys, and the last reconciliation's report. Commit,
 restore and reset return the same `AndamentoSidebarArrangement`, with their
-status. In C the dock and each floating panel are flat panel arrays
-(`AndamentoArrangementDoc`), each panel naming its parent by index. A tab is
+status. In C the dock is a flat panel array (`AndamentoArrangementDoc`),
+each panel naming its parent by index. A tab is
 `placed` if Andamento placed it since the host's last commit, and `gone` if
 its key no longer resolves. The notes list every CLOSED section and
 UNRESOLVED key, every section PLACED since the host's last commit (so a stale
@@ -188,9 +183,12 @@ them again.
 ## The record
 
 The `dashboard` record holds the arrangement once anything is stored: the
-dock, the floating panels, whether the host owns it, the closed set and the
-placed keys. A stored document with duplicate tabs imports, and reconciling
-repairs it. Importing gives the arrangement a generation it never had, so a
+dock, whether the host owns it, the closed set and the placed keys. A stored
+document with duplicate tabs imports, and reconciling repairs it. A record
+from before floating panels were removed (ABI 7) imports without them: a
+section only they held has neither a tab nor a closed record, so reconciling
+docks it by its hints. A host view (`u:<id>`) only they held is dropped:
+Andamento never places host views, so the host adds it again if it wants it. Importing gives the arrangement a generation it never had, so a
 commit the host prepared before the import is stale.
 
 ## Measured
@@ -223,10 +221,9 @@ with the host:
 `sidebar_arrangement/tests.rs` ports the scenarios of Wheelhouse's
 `uishell_section_placement_diagnostics`: hints regardless of declaration
 order, `.unplaced` last, reorder and idempotence, unrelated empty panels,
-duplicates in the dock and floating panels, add before the next hinted
-neighbour, close, closed restore with an equal share, removal, reset, a saved
-nested split, legacy adoption, an empty declaration, host and order variants,
-a changed host hint, closing everything, lifting a merged leaf, and unusual
+duplicates in the dock, add before the next hinted neighbour, close, closed
+restore with an equal share, removal, reset, a saved nested split, legacy
+adoption, an empty declaration, closing everything, lifting a merged leaf, and unusual
 keys; plus template drift, local sections and pinned regions.
 `tests/sidebar_arrangement.rs` runs them through the sidebar and its record
 (restart, a repaired import), and `smoke.c`

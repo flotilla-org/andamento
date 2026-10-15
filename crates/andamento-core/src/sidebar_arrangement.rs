@@ -2,13 +2,13 @@
 //! docs/sidebar-design/sidebar-arrangement.md).
 //!
 //! Which sections are docked where is one document: the dock's panel tree,
-//! the floating panels, and the sections closed on purpose. The host owns the
-//! live copy and commits it whole at an expected generation, as it does a
-//! workspace's arrangement. Andamento reconciles it against what the template
-//! and the local sections declare: new sections are placed by their region's
-//! `default-host` and `order` hints, duplicate tabs are removed, and keys that
-//! no longer resolve are flagged rather than dropped. Pixel geometry and
-//! section collapse are the host's Presentation State.
+//! and the sections closed on purpose. The host owns the live copy and
+//! commits it whole at an expected generation, as it does a workspace's
+//! arrangement. Andamento reconciles it against what the template and the
+//! local sections declare: new sections are placed by their region's `order`
+//! hint, duplicate tabs are removed, and keys that no longer resolve are
+//! flagged rather than dropped. Pixel geometry and section collapse are the
+//! host's Presentation State.
 use std::collections::BTreeSet;
 
 use crate::presentation::UNPLACED_WORKSPACES_SECTION;
@@ -20,14 +20,11 @@ pub const LOCAL_SECTION_PREFIX: &str = ".section:";
 /// The prefix of keys of the host's own views, which Andamento stores but
 /// never places or flags (`u:<id>`, as for a workspace's user slots).
 pub const HOST_VIEW_PREFIX: &str = slots::USER_PREFIX;
-/// The `default-host` hint for a floating panel; any other (or none) docks.
-pub const FLOATING_HOST: &str = "floating";
 
 /// A template region's placement hints.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegionHints {
     pub name: String,
-    pub default_host: Option<String>,
     pub order: Option<i64>,
     pub pinned: bool,
     /// Its placement has a `layout="section"` loop: while any local section
@@ -46,17 +43,10 @@ pub struct LocalSection {
     pub default: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Host {
-    Dock,
-    Floating,
-}
-
 /// A declared section and where it goes by default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Section {
     pub key: String,
-    pub host: Host,
     pub pinned: bool,
     /// The explicit order, or the declaration index; an unhinted workspace
     /// fallback is `i64::MAX`.
@@ -85,8 +75,7 @@ impl Declared {
     ///   unhinted workspace fallback (`.unplaced`, or the local section
     ///   holding the default group) sorts after every other section.
     /// - Pinned regions sort before unpinned ones.
-    /// - `default-host="floating"` places a section in a floating panel; any
-    ///   other host, or none, docks it.
+    /// - Every section docks.
     pub fn new(regions: &[RegionHints], local: &[LocalSection]) -> Self {
         let mut local_sorted: Vec<&LocalSection> = local.iter().collect();
         local_sorted.sort_by(|a, b| (a.position.is_none(), a.position, &a.id).cmp(&(b.position.is_none(), b.position, &b.id)));
@@ -100,10 +89,6 @@ impl Declared {
             let order = region.and_then(|r| r.order);
             sections.push(Section {
                 key,
-                host: match region.and_then(|r| r.default_host.as_deref()) {
-                    Some(FLOATING_HOST) => Host::Floating,
-                    _ => Host::Dock,
-                },
                 pinned: region.is_some_and(|r| r.pinned),
                 order: order.unwrap_or(if fallback { i64::MAX } else { index }),
             });
@@ -143,27 +128,29 @@ fn is_host_view(key: &str) -> bool {
     key.strip_prefix(HOST_VIEW_PREFIX).is_some_and(|id| slots::check_key(id).is_ok())
 }
 
-/// The sidebar's panels: the dock's tree, and the floating panels, each a
-/// tree of its own. Tabs hold section keys (or the host's `u:<id>` views).
+/// The sidebar's panels: the dock's tree. Tabs hold section keys (or the
+/// host's `u:<id>` views). A record from before floating panels went holds
+/// them too; decoding drops them, and reconciling docks their sections. A
+/// host view only they held is dropped with them: Andamento never places
+/// host views.
+///
+/// It stays a struct around the dock, rather than the dock itself, so the
+/// record's JSON (`doc.dock`) and the C `AndamentoSidebarDoc` keep their
+/// shape.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SidebarDoc {
     pub dock: ArrangementDoc,
-    pub floating: Vec<Panel>,
 }
 
 impl SidebarDoc {
-    /// Every panel in preorder: the dock's, then each floating panel's.
+    /// Every panel in preorder.
     pub fn panels(&self) -> Vec<&Panel> {
-        let mut out = self.dock.panels();
-        out.extend(self.floating.iter().flat_map(Panel::preorder));
-        out
+        self.dock.panels()
     }
 
     /// Every tab's key, in the same order.
     pub fn tabs(&self) -> Vec<&str> {
-        let mut out = self.dock.tabs();
-        out.extend(self.floating.iter().flat_map(Panel::tabs));
-        out
+        self.dock.tabs()
     }
 
     fn contains(&self, key: &str) -> bool {
@@ -206,7 +193,7 @@ pub struct Report {
 }
 
 /// Reconcile a stored arrangement with what is declared: remove duplicate
-/// tabs (keeping the first, dock before floating, in preorder), and place
+/// tabs (keeping the first, in preorder), and place
 /// each declared section that has neither a tab nor a closed record by its
 /// hints. Nothing that no longer resolves is dropped; it is reported.
 pub fn reconcile(declared: &Declared, stored: &SidebarArrangement) -> (SidebarArrangement, Report) {
@@ -334,8 +321,8 @@ enum Share {
     Equal,
 }
 
-/// Remove every tab whose key an earlier tab has (dock before floating,
-/// preorder), and the panels that removal empties. Panels that were already
+/// Remove every tab whose key an earlier tab has (in preorder), and the
+/// panels that removal empties. Panels that were already
 /// empty stay. Returns the keys removed, once each.
 fn dedupe(doc: &mut SidebarDoc) -> Vec<String> {
     let mut seen = BTreeSet::new();
@@ -343,7 +330,6 @@ fn dedupe(doc: &mut SidebarDoc) -> Vec<String> {
     if doc.dock.root.as_mut().is_some_and(|root| dedupe_panel(root, &mut seen, &mut removed)) {
         doc.dock.root = None;
     }
-    doc.floating.retain_mut(|root| !dedupe_panel(root, &mut seen, &mut removed));
     removed
 }
 
@@ -380,7 +366,7 @@ fn fresh_ids(doc: &SidebarDoc, count: usize) -> Vec<String> {
     (1..).map(|n: u64| n.to_string()).filter(|id| !used.contains(id.as_str())).take(count).collect()
 }
 
-/// Place declared section `index` in a new tab panel of its host, before the
+/// Place declared section `index` in a new tab panel in the dock, before the
 /// whole subtree holding the next declared section placed there; else last.
 /// Saved panels keep their structure, selection and weights (an equal share
 /// scales the dock's).
@@ -391,25 +377,17 @@ fn place(doc: &mut SidebarDoc, declared: &Declared, index: usize, share: Share) 
     let mut panel =
         Panel { id: panel_id, weight: 1.0, node: PanelNode::Tabs { tabs: vec![section.key.clone()], selected: Some(section.key.clone()) } };
     let anchor = |panels: &[Panel]| later.iter().find_map(|key| panels.iter().position(|p| p.tabs().contains(key))).unwrap_or(panels.len());
-    match section.host {
-        Host::Floating => {
-            let at = anchor(&doc.floating);
-            doc.floating.insert(at, panel);
+    let children = dock_children(&mut doc.dock, split_id);
+    let at = anchor(children);
+    if share == Share::Equal && !children.is_empty() {
+        let total: f64 = children.iter().map(|p| p.weight).sum();
+        let fraction = 1.0 / (children.len() + 1) as f64;
+        for child in children.iter_mut() {
+            child.weight = (1.0 - fraction) * child.weight / total;
         }
-        Host::Dock => {
-            let children = dock_children(&mut doc.dock, split_id);
-            let at = anchor(children);
-            if share == Share::Equal && !children.is_empty() {
-                let total: f64 = children.iter().map(|p| p.weight).sum();
-                let fraction = 1.0 / (children.len() + 1) as f64;
-                for child in children.iter_mut() {
-                    child.weight = (1.0 - fraction) * child.weight / total;
-                }
-                panel.weight = fraction;
-            }
-            children.insert(at, panel);
-        }
+        panel.weight = fraction;
     }
+    children.insert(at, panel);
 }
 
 /// The dock root's panels, making the root a column split first: an empty

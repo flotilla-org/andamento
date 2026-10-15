@@ -191,10 +191,7 @@ fn main() {
                 if dock.len() > 1 {
                     dock[1].weight = 0.3 + 0.02 * iteration as f64;
                 }
-                let doc = AndamentoSidebarDoc {
-                    dock: AndamentoArrangementDoc { panels: dock.as_ptr(), panel_count: dock.len() },
-                    floating: (*sidebar).doc.floating,
-                };
+                let doc = AndamentoSidebarDoc { dock: AndamentoArrangementDoc { panels: dock.as_ptr(), panel_count: dock.len() } };
                 let start = Instant::now();
                 let committed = andamento_sidebar_arrangement_commit(h, &doc, generation, ptr::null_mut());
                 assert_eq!((*committed).status, ANDAMENTO_COMMITTED);
