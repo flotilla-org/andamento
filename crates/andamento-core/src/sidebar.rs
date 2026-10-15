@@ -1062,9 +1062,9 @@ impl Sidebar {
         self.sidebar_report = report;
     }
 
-    /// The Dashboard's sidebar arrangement: the dock, closed sections, flags, and what its last reconciliation did. Its
-    /// unresolved keys include saved dashboard keys the template no longer
-    /// resolves.
+    /// The Dashboard's sidebar arrangement: the dock, closed sections, flags,
+    /// and what its last reconciliation did. Its unresolved keys include
+    /// saved dashboard keys the template no longer resolves.
     pub fn sidebar_arrangement(&self) -> (SidebarView, &Report) {
         let declared = self.sidebar_declared();
         let mut view = self.sidebar_arrangement.get().view(self.sidebar_arrangement.generation(), &declared);

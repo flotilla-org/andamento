@@ -187,7 +187,8 @@ dock, whether the host owns it, the closed set and the placed keys. A stored
 document with duplicate tabs imports, and reconciling repairs it. A record
 from before floating panels were removed (ABI 7) imports without them: a
 section only they held has neither a tab nor a closed record, so reconciling
-docks it by its hints. Importing gives the arrangement a generation it never had, so a
+docks it by its hints. A host view (`u:<id>`) only they held is dropped:
+Andamento never places host views, so the host adds it again if it wants it. Importing gives the arrangement a generation it never had, so a
 commit the host prepared before the import is stale.
 
 ## Measured

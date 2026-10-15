@@ -30,6 +30,8 @@ pub struct SurfaceSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Section {
     pub name: String,
+    /// The host's docking hint (`AndamentoSectionNode.default_host`).
+    /// Andamento doesn't place by it: every section docks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

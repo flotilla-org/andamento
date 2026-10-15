@@ -2,13 +2,13 @@
 //! docs/sidebar-design/sidebar-arrangement.md).
 //!
 //! Which sections are docked where is one document: the dock's panel tree,
-//! and the sections closed on purpose. The host owns the
-//! live copy and commits it whole at an expected generation, as it does a
-//! workspace's arrangement. Andamento reconciles it against what the template
-//! and the local sections declare: new sections are placed by their region's
-//! `order` hint, duplicate tabs are removed, and keys that
-//! no longer resolve are flagged rather than dropped. Pixel geometry and
-//! section collapse are the host's Presentation State.
+//! and the sections closed on purpose. The host owns the live copy and
+//! commits it whole at an expected generation, as it does a workspace's
+//! arrangement. Andamento reconciles it against what the template and the
+//! local sections declare: new sections are placed by their region's `order`
+//! hint, duplicate tabs are removed, and keys that no longer resolve are
+//! flagged rather than dropped. Pixel geometry and section collapse are the
+//! host's Presentation State.
 use std::collections::BTreeSet;
 
 use crate::presentation::UNPLACED_WORKSPACES_SECTION;
@@ -130,7 +130,13 @@ fn is_host_view(key: &str) -> bool {
 
 /// The sidebar's panels: the dock's tree. Tabs hold section keys (or the
 /// host's `u:<id>` views). A record from before floating panels went holds
-/// them too; decoding drops them, and reconciling docks their sections.
+/// them too; decoding drops them, and reconciling docks their sections. A
+/// host view only they held is dropped with them: Andamento never places
+/// host views.
+///
+/// It stays a struct around the dock, rather than the dock itself, so the
+/// record's JSON (`doc.dock`) and the C `AndamentoSidebarDoc` keep their
+/// shape.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SidebarDoc {
     pub dock: ArrangementDoc,

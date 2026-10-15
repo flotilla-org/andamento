@@ -160,7 +160,8 @@ ABI 7 removes floating panels (wheelhouse#380): `AndamentoSidebarDoc` loses
 `floating`, so it and `AndamentoSidebarArrangement`, which embeds it, change
 layout, and a host built against ABI 6 must be rebuilt. Every section docks; a
 region's `default-host` no longer places one. A stored record's floating
-panels are dropped on import, and the sections only they held are docked.
+panels are dropped on import, and the sections only they held are docked;
+host views (`u:<id>`) only they held are dropped.
 
 ## From ABI 5
 
