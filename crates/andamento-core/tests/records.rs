@@ -161,6 +161,202 @@ fn export_all(sidebar: &mut Sidebar) -> Vec<(String, String)> {
         .collect()
 }
 
+fn ended_workspace_records(kind: &str) -> (String, Vec<(String, String)>) {
+    let config = config().replace("vessel", kind);
+    let subject = entity(kind, "v");
+    let mut sidebar = Sidebar::new(&config).unwrap();
+    let mut publication = vessel("v", "Worker");
+    publication.target = andamento_core::MetadataTarget::Entity(subject.clone());
+    publication.set.get_mut("entity.kind").unwrap().value = text(kind);
+    sidebar.feed(100, [project(), publication.clone()]);
+    let effects = sidebar.dispatch(Action::Activate { entity: subject }).unwrap();
+    let [HostEffect::Materialize { request_id, .. }] = effects[..] else { panic!("{effects:?}") };
+    sidebar.complete(request_id, Ok(Some(worker())));
+    sidebar.observe(vec![workspace(true)], vec![]);
+    let mut removal = patch(entity(kind, "v"), &[], None);
+    removal.unset = publication.set.keys().cloned().collect();
+    sidebar.feed(150, [removal]);
+    assert!(nodes(&sidebar.snapshot().surface).iter().any(|node| node.entity == entity(kind, "v") && ended(node)));
+    (config, export_all(&mut sidebar))
+}
+
+#[test]
+fn fresh_lifecycle_overrides_saved_ended_when_opening_and_after_another_restart() {
+    for (kind, phase) in [("role", "landed"), ("vessel", "active"), ("convoy", "pending"), ("convoy", "interrupted"), ("convoy", "landing")]
+    {
+        let (config, records) = ended_workspace_records(kind);
+        let mut sidebar = Sidebar::new(&config).unwrap();
+        for (name, record) in &records {
+            sidebar.import_record(name, record).unwrap();
+        }
+        sidebar.feed(
+            200,
+            [
+                project(),
+                patch(
+                    entity(kind, "v"),
+                    &[
+                        ("entity.kind", text(kind)),
+                        ("entity.id", text("v")),
+                        ("flotilla.project", text("p")),
+                        ("display.label", text("Worker")),
+                        ("flotilla.convoy.phase", text(phase)),
+                    ],
+                    None,
+                ),
+            ],
+        );
+        assert!(
+            nodes(&sidebar.snapshot().surface).iter().any(|node| node.entity == entity(kind, "v") && !ended(node)),
+            "{kind} before open"
+        );
+        sidebar.observe(vec![workspace(true)], vec![]);
+        assert!(
+            nodes(&sidebar.snapshot().surface).iter().any(|node| node.entity == entity(kind, "v") && !ended(node)),
+            "{kind} after open"
+        );
+        let name = format!("workspace/{WORKER}");
+        let record = sidebar.export_record(&name).unwrap();
+        let decoded = WorkspaceRecord::decode(&record, &mut Default::default()).unwrap();
+        assert!(!decoded.subject.get().retained[&entity(kind, "v")].ended, "{kind} persisted correction");
+        // Losing the connection or restarting without facts retains the corrected history.
+        sidebar.set_provider_stale(common::PROVIDER, true);
+        assert!(
+            nodes(&sidebar.snapshot().surface).iter().any(|node| node.entity == entity(kind, "v") && !ended(node)),
+            "{kind} disconnected"
+        );
+        let mut restored = Sidebar::new(&config).unwrap();
+        restored.import_record(&name, &record).unwrap();
+        restored.observe(vec![workspace(true)], vec![]);
+        assert!(
+            nodes(&restored.snapshot().surface).iter().any(|node| node.entity == entity(kind, "v") && !ended(node)),
+            "{kind} second restart"
+        );
+    }
+}
+
+#[test]
+fn stale_lifecycle_waits_for_reconnect_before_correcting_saved_history() {
+    for kind in ["role", "vessel", "convoy"] {
+        let (config, records) = ended_workspace_records(kind);
+        let mut sidebar = Sidebar::new(&config).unwrap();
+        for (name, record) in &records {
+            sidebar.import_record(name, record).unwrap();
+        }
+        sidebar.set_provider_stale(common::PROVIDER, true);
+        sidebar.feed(
+            200,
+            [
+                project(),
+                patch(
+                    entity(kind, "v"),
+                    &[
+                        ("entity.kind", text(kind)),
+                        ("entity.id", text("v")),
+                        ("flotilla.project", text("p")),
+                        ("display.label", text("Worker")),
+                        ("flotilla.convoy.phase", text("active")),
+                    ],
+                    None,
+                ),
+            ],
+        );
+        sidebar.observe(vec![workspace(true)], vec![]);
+        assert!(nodes(&sidebar.snapshot().surface).iter().any(|node| node.entity == entity(kind, "v") && ended(node)), "{kind} stale");
+        sidebar.set_provider_stale(common::PROVIDER, false);
+        assert!(
+            nodes(&sidebar.snapshot().surface).iter().any(|node| node.entity == entity(kind, "v") && !ended(node)),
+            "{kind} reconnected"
+        );
+    }
+}
+
+#[test]
+fn identity_and_recipe_without_live_lifecycle_do_not_revive_ended_workspaces() {
+    for kind in ["vessel", "convoy"] {
+        for (phase, superseded) in [
+            (None, false),
+            (Some("landed"), false),
+            (Some("abandoned"), false),
+            (Some("cancelled"), false),
+            (Some("failed"), false),
+            (Some("anchored"), false),
+            (Some("unrecognized"), false),
+            (Some("active"), true),
+        ] {
+            let (config, records) = ended_workspace_records(kind);
+            let mut sidebar = Sidebar::new(&config).unwrap();
+            for (name, record) in &records {
+                sidebar.import_record(name, record).unwrap();
+            }
+            let mut publication = vessel("v", "Worker");
+            publication.target = andamento_core::MetadataTarget::Entity(entity(kind, "v"));
+            publication.set.get_mut("entity.kind").unwrap().value = text(kind);
+            sidebar.feed(200, [project(), publication]);
+            if let Some(phase) = phase {
+                sidebar.feed(201, [patch(entity(kind, "v"), &[("flotilla.convoy.phase", text(phase))], None)]);
+            }
+            if superseded {
+                sidebar.feed(202, [patch(entity(kind, "v"), &[("flotilla.convoy.superseded", MetadataValue::Bool(true))], None)]);
+            }
+            sidebar.observe(vec![workspace(true)], vec![]);
+            assert!(
+                nodes(&sidebar.snapshot().surface).iter().any(|node| node.entity == entity(kind, "v") && ended(node)),
+                "{kind} {phase:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn historical_ancestor_cannot_end_a_live_workspace_or_end_it_on_disconnect() {
+    for kind in ["role", "vessel", "convoy"] {
+        let config = config().replace("vessel", kind);
+        let subject = entity(kind, "v");
+        let mut sidebar = Sidebar::new(&config).unwrap();
+        sidebar.feed(
+            100,
+            [
+                patch(
+                    entity("project", "p"),
+                    &[
+                        ("entity.kind", text("project")),
+                        ("entity.id", text("p")),
+                        ("flotilla.project", text("p")),
+                        ("display.label", text("Project")),
+                    ],
+                    None,
+                ),
+                patch(
+                    subject.clone(),
+                    &[
+                        ("entity.kind", text(kind)),
+                        ("entity.id", text("v")),
+                        ("flotilla.project", text("p")),
+                        ("display.label", text("Worker")),
+                        ("flotilla.convoy.phase", text("active")),
+                        ("action.primary.recipe", text("printf hello")),
+                    ],
+                    None,
+                ),
+            ],
+        );
+        let effects = sidebar.dispatch(Action::Activate { entity: subject.clone() }).unwrap();
+        let [HostEffect::Materialize { request_id, .. }] = effects[..] else { panic!("{effects:?}") };
+        sidebar.complete(request_id, Ok(Some(worker())));
+        sidebar.observe(vec![workspace(true)], vec![]);
+        let mut removal = patch(entity("project", "p"), &[], None);
+        removal.unset = ["entity.kind", "entity.id", "flotilla.project", "display.label"].map(str::to_owned).to_vec();
+        sidebar.feed(200, [removal]);
+        for stale in [false, true, false] {
+            sidebar.set_provider_stale(common::PROVIDER, stale);
+            let snapshot = sidebar.snapshot();
+            assert!(nodes(&snapshot.surface).iter().any(|node| node.entity == entity("project", "p") && ended(node)));
+            assert!(nodes(&snapshot.surface).iter().any(|node| node.entity == subject && !ended(node)), "{kind} stale={stale}");
+        }
+    }
+}
+
 #[test]
 fn records_are_named_for_the_dashboard_and_registered_workspaces() {
     let sidebar = arranged_session();

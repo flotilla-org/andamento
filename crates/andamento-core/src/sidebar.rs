@@ -357,7 +357,7 @@ impl Sidebar {
     pub fn set_provider_stale(&mut self, provider: &str, stale: bool) -> bool {
         let changed = self.state.set_provider_stale(provider, stale);
         if changed {
-            self.invalidate();
+            self.maintain(true);
         }
         changed
     }
