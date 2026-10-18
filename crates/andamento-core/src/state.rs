@@ -2748,6 +2748,8 @@ impl ControllerState {
             if !self.retained_subjects.contains_key(&subject) {
                 let target = EntityId::Entity(subject.clone());
                 let facts = self.metadata.resolved(&target, self.now());
+                // Seed history before choosing retained display facts below.
+                // Neither saved phases nor stale facts are new lifecycle evidence.
                 if saved.get(&subject).is_some_and(|record| record.ended)
                     && subject_lifecycle(&subject, &facts, self.metadata.is_stale(&subject.provider)) != SubjectLifecycle::Live
                 {
@@ -2811,7 +2813,8 @@ impl ControllerState {
                 if let Some(subject) = subjects.get(id) {
                     let facts = self.metadata.resolved(&EntityId::Entity(subject.clone()), self.now());
                     // Historical ancestry cannot end a currently live subject.
-                    if !self.metadata.is_stale(&subject.provider) && subject_lifecycle(subject, &facts, false) != SubjectLifecycle::Live {
+                    let stale = self.metadata.is_stale(&subject.provider);
+                    if !stale && subject_lifecycle(subject, &facts, stale) != SubjectLifecycle::Live {
                         changed |= self.ended_subjects.insert(subject.clone());
                     }
                 }

@@ -236,6 +236,38 @@ fn fresh_lifecycle_overrides_saved_ended_when_opening_and_after_another_restart(
 }
 
 #[test]
+fn saved_terminal_phase_without_ended_marker_waits_for_fresh_evidence() {
+    let (config, records) = ended_workspace_records("vessel");
+    let name = format!("workspace/{WORKER}");
+    let encoded = &records.iter().find(|(key, _)| *key == name).unwrap().1;
+    let mut clock = Default::default();
+    let mut record = WorkspaceRecord::decode(encoded, &mut clock).unwrap();
+    let mut subject = record.subject.get().clone();
+    let retained = subject.retained.get_mut(&entity("vessel", "v")).unwrap();
+    retained.ended = false;
+    retained.facts.insert("flotilla.convoy.phase".into(), text("landed"));
+    record.follow_subject(&mut clock, subject);
+    let mut sidebar = Sidebar::new(&config).unwrap();
+    sidebar.import_record(&name, &record.encode()).unwrap();
+    sidebar.observe(vec![workspace(true)], vec![]);
+    assert!(nodes(&sidebar.snapshot().surface).iter().any(|node| node.entity == entity("vessel", "v") && !ended(node)));
+    sidebar.feed(200, [patch(entity("vessel", "v"), &[("flotilla.convoy.phase", text("landed"))], None)]);
+    assert!(nodes(&sidebar.snapshot().surface).iter().any(|node| node.entity == entity("vessel", "v") && ended(node)));
+}
+
+#[test]
+fn terminal_evidence_received_while_stale_waits_for_reconnect() {
+    let mut sidebar = arranged_session();
+    sidebar.feed(200, [vessel("v", "Worker"), patch(entity("vessel", "v"), &[("flotilla.convoy.phase", text("active"))], None)]);
+    assert!(nodes(&sidebar.snapshot().surface).iter().any(|node| node.entity == entity("vessel", "v") && !ended(node)));
+    assert!(sidebar.set_provider_stale(common::PROVIDER, true));
+    sidebar.feed(201, [patch(entity("vessel", "v"), &[("flotilla.convoy.phase", text("landed"))], None)]);
+    assert!(nodes(&sidebar.snapshot().surface).iter().any(|node| node.entity == entity("vessel", "v") && !ended(node)));
+    assert!(sidebar.set_provider_stale(common::PROVIDER, false));
+    assert!(nodes(&sidebar.snapshot().surface).iter().any(|node| node.entity == entity("vessel", "v") && ended(node)));
+}
+
+#[test]
 fn stale_lifecycle_waits_for_reconnect_before_correcting_saved_history() {
     for kind in ["role", "vessel", "convoy"] {
         let (config, records) = ended_workspace_records(kind);
