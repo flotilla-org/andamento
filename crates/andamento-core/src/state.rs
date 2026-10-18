@@ -627,6 +627,40 @@ struct CatalogEntity {
     facts: Rc<ResolvedFacts>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SubjectLifecycle {
+    Unknown,
+    Live,
+    Ended,
+}
+
+/// Current producer evidence, independent of attachment recipes and saved
+/// workspace history. A standing role outlives the attempt whose phase it lifts.
+fn subject_lifecycle(subject: &EntityRef, facts: &ResolvedFacts, stale: bool) -> SubjectLifecycle {
+    if stale {
+        return SubjectLifecycle::Unknown;
+    }
+    let declared = facts.contains_key(KEY_ENTITY_ID) && facts.contains_key(KEY_ENTITY_KIND);
+    match subject.kind.as_str() {
+        "role" | "project" if declared => SubjectLifecycle::Live,
+        "convoy" | "vessel" => {
+            // TODO(#122): consume a producer-declared lifecycle-ended fact.
+            if matches!(metadata_entry_text(facts, KEY_CONVOY_PHASE), Some("landed" | "abandoned" | "cancelled"))
+                || matches!(facts.get(KEY_CONVOY_SUPERSEDED).map(|e| &e.value), Some(MetadataValue::Bool(true)))
+            {
+                SubjectLifecycle::Ended
+            } else if declared
+                && matches!(metadata_entry_text(facts, KEY_CONVOY_PHASE), Some("pending" | "active" | "interrupted" | "landing"))
+            {
+                SubjectLifecycle::Live
+            } else {
+                SubjectLifecycle::Unknown
+            }
+        }
+        _ => SubjectLifecycle::Unknown,
+    }
+}
+
 impl Deref for CatalogEntity {
     type Target = ResolvedFacts;
     fn deref(&self) -> &ResolvedFacts {
@@ -2703,8 +2737,8 @@ impl ControllerState {
     /// Keep just the subjects and ancestors needed by open workspace paths.
     /// This is presentation history, never input to producer fact arbitration.
     ///
-    /// `saved` are subjects recorded in workspace records: one with no facts
-    /// is retained from its record, and one recorded as ended stays ended.
+    /// `saved` seeds presentation history when a path is first retained.
+    /// Current lifecycle evidence takes precedence over that history.
     pub(crate) fn retain_workspace_paths(&mut self, subjects: BTreeSet<EntityRef>, saved: &BTreeMap<EntityRef, SubjectRecord>) -> bool {
         let before = (self.retained_subjects.len(), self.ended_subjects.len());
         let mut changed = false;
@@ -2714,6 +2748,13 @@ impl ControllerState {
             if !self.retained_subjects.contains_key(&subject) {
                 let target = EntityId::Entity(subject.clone());
                 let facts = self.metadata.resolved(&target, self.now());
+                // Seed history before choosing retained display facts below.
+                // Neither saved phases nor stale facts are new lifecycle evidence.
+                if saved.get(&subject).is_some_and(|record| record.ended)
+                    && subject_lifecycle(&subject, &facts, self.metadata.is_stale(&subject.provider)) != SubjectLifecycle::Live
+                {
+                    changed |= self.ended_subjects.insert(subject.clone());
+                }
                 if facts.is_empty() {
                     if let Some(record) = saved.get(&subject) {
                         changed = true;
@@ -2723,11 +2764,6 @@ impl ControllerState {
                     changed = true;
                     self.retained_subjects.insert(subject.clone(), CatalogEntity { entity: subject, facts });
                 }
-            }
-        }
-        for (subject, record) in saved {
-            if record.ended && self.retained_subjects.contains_key(subject) {
-                changed |= self.ended_subjects.insert(subject.clone());
             }
         }
         changed |= before != (self.retained_subjects.len(), self.ended_subjects.len());
@@ -2750,18 +2786,17 @@ impl ControllerState {
         };
         for (subject, retained) in self.retained_subjects.range_mut::<EntityRef, _>(range) {
             let facts = self.metadata.resolved(&EntityId::Entity(subject.clone()), now);
+            let lifecycle = subject_lifecycle(subject, &facts, self.metadata.is_stale(&subject.provider));
             // While identity remains observed, individual facts keep their ordinary
             // freshness. Only unobserved identities need the last known record.
             if facts.contains_key(KEY_ENTITY_ID) || facts.contains_key(KEY_DISPLAY_LABEL) {
                 changed |= retained.facts != facts;
                 retained.facts = facts;
             }
-            // TODO(#122): consume a producer-declared lifecycle-ended fact.
-            let terminal = matches!(subject.kind.as_str(), "convoy" | "vessel")
-                && (matches!(metadata_entry_text(&retained.facts, KEY_CONVOY_PHASE), Some("landed" | "abandoned" | "cancelled"))
-                    || matches!(retained.get(KEY_CONVOY_SUPERSEDED).map(|e| &e.value), Some(MetadataValue::Bool(true))));
-            if terminal {
-                changed |= self.ended_subjects.insert(subject.clone());
+            match lifecycle {
+                SubjectLifecycle::Live => changed |= self.ended_subjects.remove(subject),
+                SubjectLifecycle::Ended => changed |= self.ended_subjects.insert(subject.clone()),
+                SubjectLifecycle::Unknown => {}
             }
         }
         changed
@@ -2776,7 +2811,12 @@ impl ControllerState {
         for (id, path) in paths {
             if path.iter().any(|subject| self.ended_subjects.contains(subject)) {
                 if let Some(subject) = subjects.get(id) {
-                    changed |= self.ended_subjects.insert(subject.clone());
+                    let facts = self.metadata.resolved(&EntityId::Entity(subject.clone()), self.now());
+                    // Historical ancestry cannot end a currently live subject.
+                    let stale = self.metadata.is_stale(&subject.provider);
+                    if !stale && subject_lifecycle(subject, &facts, stale) != SubjectLifecycle::Live {
+                        changed |= self.ended_subjects.insert(subject.clone());
+                    }
                 }
             }
         }

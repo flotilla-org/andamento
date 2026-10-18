@@ -986,8 +986,8 @@ fn reassertion_after_authoritative_removal_is_stale_for_the_same_identity() {
     removal.unset = vec!["entity.kind".into(), "entity.id".into()];
     sidebar.feed(102, [removal]);
     sidebar.feed(103, [publication]);
-    // An authoritative end is terminal for this identity. A new generation
-    // needs a new subject ID; reconnect reassertions do not revive the old one.
+    // Identity and recipe reassertions carry no positive lifecycle evidence;
+    // reconnecting with just these facts does not revive an ended subject.
     assert!(!workspace_nodes(&sidebar.snapshot().surface).is_empty());
     sidebar.dispatch(Action::ToggleDisplayVariable { name: "show-finished".into() }).unwrap();
     assert!(workspace_nodes(&sidebar.snapshot().surface)
