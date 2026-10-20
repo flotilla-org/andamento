@@ -19,6 +19,8 @@ pub(crate) struct EvaluatedSection {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PlacementAnnotation {
     pub layout: Option<String>,
+    /// From its loop: collapsed unless toggled (PlacementLoop::default_collapsed).
+    pub default_collapsed: bool,
     pub related_detail: Vec<TemplateConfigRenderedField>,
 }
 use crate::{FactMap, FastHashMap, FastHashSet};
@@ -866,6 +868,8 @@ fn placement_sort_fact<'a>(entity: &'a CatalogEntity, key: &str) -> Option<Cow<'
 #[derive(Debug, Default)]
 struct ControllerRailUiState {
     revision: RailUiRevision,
+    /// Placements toggled away from their loop's default: collapsed ones,
+    /// or expanded ones of a `default-collapsed` loop.
     collapsed_placements: BTreeSet<PlacementKey>,
     sibling_orders: BTreeMap<PlacementLoopKey, Vec<EntityRef>>,
     scroll_offset: isize,
@@ -2307,7 +2311,8 @@ impl ControllerState {
         let related_phase = profile::span("placement-related-detail");
         let (related_detail, related, related_binding) = self.related_detail_fields(&display, entity, cx.entities, cx.index);
         drop(related_phase);
-        display.annotation = PlacementAnnotation { layout: definition.layout.clone(), related_detail };
+        display.annotation =
+            PlacementAnnotation { layout: definition.layout.clone(), default_collapsed: definition.default_collapsed, related_detail };
         display.placement = Some(key.clone());
 
         let mut child_loops = ChildLoops::Own;
@@ -3946,6 +3951,7 @@ mod tests {
                 order: vec![],
                 fields: vec![],
                 layout: None,
+                default_collapsed: false,
                 tier: None,
                 loops: vec![],
                 apply_template: None,

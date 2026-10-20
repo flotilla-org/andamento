@@ -1445,6 +1445,9 @@ mod tests {
 mod cutover_tests;
 
 #[cfg(test)]
+mod placement_collapse_tests;
+
+#[cfg(test)]
 mod visibility_tests;
 
 #[cfg(test)]

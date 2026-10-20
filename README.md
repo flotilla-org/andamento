@@ -174,7 +174,9 @@ complete loop instance on its parent's line when it fits; otherwise every item
 moves to dedicated rows. `layout="row"` always uses dedicated rows, as the
 bundled issue loop does. Widths and optional columns are resolved together for
 siblings. Declared `tier="full|medium|short"` selects producer abbreviations
-without trying tiers until content fits.
+without trying tiers until content fits. `default-collapsed=true` starts the
+loop's placements collapsed; toggling one expands it, and that is what the
+saved collapse state records for it.
 
 Templates still support `extends`, reusable `fragment`/`use`, field replacement,
 `remove`, chrome, and effective-KDL inspection. User, repository, project,
