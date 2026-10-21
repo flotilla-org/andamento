@@ -137,6 +137,22 @@ fn an_expanded_default_collapsed_placement_survives_a_record_round_trip() {
 }
 
 #[test]
+fn removing_the_default_inverts_a_saved_toggle() {
+    let mut before = sidebar();
+    let convoy = node(&before, "convoy").key;
+    before.dispatch(Action::TogglePlacement { key: convoy }).unwrap();
+    assert!(!node(&before, "convoy").collapsed);
+    let record = before.export_record("dashboard").unwrap();
+
+    // The same saved toggle, read by a config whose loop no longer starts
+    // collapsed, now means collapsed (placement-model.md).
+    let mut after = Sidebar::new(&CONFIG.replace(" default-collapsed=true", "")).unwrap();
+    after.import_record("dashboard", &record).unwrap();
+    after.apply(100, PROVIDER, facts()).unwrap();
+    assert!(node(&after, "convoy").collapsed, "the opened convoy reads as collapsed without the default");
+}
+
+#[test]
 fn default_collapsed_must_be_a_boolean() {
     let config = CONFIG.replace("default-collapsed=true", "default-collapsed=\"yes\"");
     let error = Sidebar::new(&config).err().expect("a non-boolean default-collapsed is rejected");
