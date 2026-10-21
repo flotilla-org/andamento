@@ -108,6 +108,19 @@ fn loops_without_the_property_are_unchanged() {
 }
 
 #[test]
+fn a_nested_placement_keeps_its_own_state_while_its_parent_collapses_and_opens() {
+    let mut sidebar = sidebar();
+    let project = node(&sidebar, "project").key;
+    let convoy = node(&sidebar, "convoy").key;
+    sidebar.dispatch(Action::TogglePlacement { key: convoy }).unwrap();
+    sidebar.dispatch(Action::TogglePlacement { key: project.clone() }).unwrap();
+    assert!(node(&sidebar, "project").collapsed);
+    assert!(!node(&sidebar, "convoy").collapsed, "collapsing the parent leaves the opened convoy's state alone");
+    sidebar.dispatch(Action::TogglePlacement { key: project }).unwrap();
+    assert!(!node(&sidebar, "project").collapsed && !node(&sidebar, "convoy").collapsed, "reopening the parent shows it still open");
+}
+
+#[test]
 fn an_expanded_default_collapsed_placement_survives_a_record_round_trip() {
     let mut before = sidebar();
     let convoy = node(&before, "convoy").key;

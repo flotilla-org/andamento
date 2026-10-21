@@ -51,7 +51,9 @@ entity identity.
 - Placement state: collapse, node toggles, layout variables. These inherit down
   the placement tree. A placement is expanded unless its loop declares
   `default-collapsed=true`; the collapse snapshot holds the placements toggled
-  away from that default.
+  away from that default. Adding or removing the property therefore inverts
+  the saved toggles for that loop's placements: one the user had collapsed
+  opens, and one they had opened closes.
 - Entity state: highlight and pin. Hovering an entity in one place highlights
   every occurrence — the hovered one more emphatically — so you can see where a
   thing normally lives from the attention tray.
