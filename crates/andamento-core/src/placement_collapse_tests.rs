@@ -108,6 +108,19 @@ fn loops_without_the_property_are_unchanged() {
 }
 
 #[test]
+fn a_nested_placement_keeps_its_own_state_while_its_parent_collapses_and_opens() {
+    let mut sidebar = sidebar();
+    let project = node(&sidebar, "project").key;
+    let convoy = node(&sidebar, "convoy").key;
+    sidebar.dispatch(Action::TogglePlacement { key: convoy }).unwrap();
+    sidebar.dispatch(Action::TogglePlacement { key: project.clone() }).unwrap();
+    assert!(node(&sidebar, "project").collapsed);
+    assert!(!node(&sidebar, "convoy").collapsed, "collapsing the parent leaves the opened convoy's state alone");
+    sidebar.dispatch(Action::TogglePlacement { key: project }).unwrap();
+    assert!(!node(&sidebar, "project").collapsed && !node(&sidebar, "convoy").collapsed, "reopening the parent shows it still open");
+}
+
+#[test]
 fn an_expanded_default_collapsed_placement_survives_a_record_round_trip() {
     let mut before = sidebar();
     let convoy = node(&before, "convoy").key;
@@ -121,6 +134,22 @@ fn an_expanded_default_collapsed_placement_survives_a_record_round_trip() {
     after.apply(100, PROVIDER, facts()).unwrap();
     assert!(!node(&after, "convoy").collapsed, "the restored convoy stays expanded");
     assert!(!node(&after, "project").collapsed);
+}
+
+#[test]
+fn removing_the_default_inverts_a_saved_toggle() {
+    let mut before = sidebar();
+    let convoy = node(&before, "convoy").key;
+    before.dispatch(Action::TogglePlacement { key: convoy }).unwrap();
+    assert!(!node(&before, "convoy").collapsed);
+    let record = before.export_record("dashboard").unwrap();
+
+    // The same saved toggle, read by a config whose loop no longer starts
+    // collapsed, now means collapsed (placement-model.md).
+    let mut after = Sidebar::new(&CONFIG.replace(" default-collapsed=true", "")).unwrap();
+    after.import_record("dashboard", &record).unwrap();
+    after.apply(100, PROVIDER, facts()).unwrap();
+    assert!(node(&after, "convoy").collapsed, "the opened convoy reads as collapsed without the default");
 }
 
 #[test]
