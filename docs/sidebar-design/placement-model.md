@@ -49,7 +49,9 @@ one query. An entity may have several. Placement identity is separate from
 entity identity.
 
 - Placement state: collapse, node toggles, layout variables. These inherit down
-  the placement tree.
+  the placement tree. A placement is expanded unless its loop declares
+  `default-collapsed=true`; the collapse snapshot holds the placements toggled
+  away from that default.
 - Entity state: highlight and pin. Hovering an entity in one place highlights
   every occurrence — the hovered one more emphatically — so you can see where a
   thing normally lives from the attention tray.

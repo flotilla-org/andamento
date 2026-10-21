@@ -848,6 +848,11 @@ pub struct PlacementLoop {
     pub fields: Vec<TemplateConfigFieldSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<String>,
+    /// Its placements start collapsed (`default-collapsed=true`). The rail's
+    /// collapse set records placements toggled away from their default, so
+    /// for these it holds the expanded ones.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default_collapsed: bool,
     /// A loop-local abbreviation tier. When omitted, rendering reads the
     /// node-scoped `<binding>.tier` variable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2078,6 +2083,16 @@ fn parse_kdl_placement_loop(node: &KdlNode, enclosing: &BTreeSet<String>) -> Res
             other => Err(TemplateConfigError::Validation(format!("loop {binding} has unsupported abbreviation tier {other}"))),
         })
         .transpose()?;
+    let default_collapsed = node
+        .get("default-collapsed")
+        .map(|entry| {
+            entry
+                .value()
+                .as_bool()
+                .ok_or_else(|| TemplateConfigError::Validation(format!("loop {binding} default-collapsed must be a boolean")))
+        })
+        .transpose()?
+        .unwrap_or(false);
     let in_key = kdl_prop_string(node, "in");
     let of = kdl_prop_string(node, "of");
     validate_forward_source(&binding, in_key.as_deref(), of.as_deref(), enclosing)?;
@@ -2090,6 +2105,7 @@ fn parse_kdl_placement_loop(node: &KdlNode, enclosing: &BTreeSet<String>) -> Res
         order,
         fields,
         layout: kdl_prop_string(node, "layout"),
+        default_collapsed,
         tier,
         loops,
         apply_template,

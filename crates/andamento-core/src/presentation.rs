@@ -394,7 +394,8 @@ impl Resolver<'_> {
         let address = Rc::as_ptr(entity);
         let variables = self.cx.variables.get(&address).map(|memo| memo.resolved.clone());
         let state = (self.cx.state)(&entity.entity, &entity.metadata);
-        let collapsed = self.model.collapsed_placements.contains(key);
+        // The collapse set holds placements toggled away from their default.
+        let collapsed = entity.annotation.default_collapsed != self.model.collapsed_placements.contains(key);
         let stale = (self.cx.stale)(&entity.entity);
         if let Some(memo) = self.prior.remove(&address) {
             let same = Rc::ptr_eq(&memo.placement, entity)
