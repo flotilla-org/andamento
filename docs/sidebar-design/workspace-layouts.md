@@ -100,9 +100,19 @@ slot "shell" role="shell" kind="command" cwd="{git.root}"
 - Their fields are the local recipe fields of a Suggested Layout slot (`kind`,
   `argv.<n>`, `command`, `cwd`, `path`, `url`, `launcher`, `endpoint`) plus
   `role` and `presentation`. A value may name a subject fact in braces,
-  `{git.root}`, which is replaced by the fact's text.
+  `{git.root}`, which is replaced by the fact's text (a boolean's or
+  integer's too, as matchers compare them). `{{` and `}}` are literal braces:
+  `command="awk '{{print $1}}'"`. Any other brace is a configuration error.
+- In `command`, which a shell parses, each fact becomes one shell word,
+  single-quoted, so a fact's text is never shell syntax: with branch
+  `a; b`, `git switch {branch}` runs `git switch 'a; b'`. Don't quote it
+  yourself. In `argv`, `cwd` and the other fields a fact is its text as it
+  is.
 - A slot whose fact is missing is **Unavailable**, not absent: the workspace
   still opens and the Slot fills in when the fact arrives.
+- Every node takes only the properties described here; any other is a
+  configuration error, so a misspelt matcher attribute never widens what it
+  matches.
 - A `slot` is a child of `workspace`, never of a `layout`: the template's
   Slots are the workspace's, and every layout arranges the same ones.
 
