@@ -164,6 +164,22 @@ workspace kind="vessel" {
         assert!(!error.is_null());
         andamento_string_free(error);
         error = ptr::null_mut();
+        // A name that isn't UTF-8, and a null handle, fail with an error and
+        // change nothing.
+        let bad = [0xffu8, 0xfe];
+        assert_eq!(andamento_layout_choose(h, id.into(), 1, Text { data: bad.as_ptr(), len: bad.len() }, &mut error), 0);
+        assert!(!error.is_null());
+        andamento_string_free(error);
+        error = ptr::null_mut();
+        assert_eq!(arrangement(&mut error), (1, "all".into(), vec![]));
+        assert_eq!(andamento_layout_choose(ptr::null_mut(), id.into(), 0, text(""), &mut error), 0);
+        assert!(!error.is_null());
+        andamento_string_free(error);
+        error = ptr::null_mut();
+        assert!(andamento_layouts_get(ptr::null_mut(), id.into(), &mut error).is_null());
+        assert!(!error.is_null());
+        andamento_string_free(error);
+        error = ptr::null_mut();
 
         let slots = andamento_slots_get(h, id.into(), &mut error);
         let roles: Vec<(String, u32, String)> = slice((*slots).slots, (*slots).slot_count)

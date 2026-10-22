@@ -143,7 +143,10 @@ pub enum SelectedTab {
 
 /// What a tab panel (or `hide`) takes: Slots whose fields equal every given
 /// attribute and whose facet entity's facts satisfy every predicate, or,
-/// with `rest`, any Slot no earlier matcher took.
+/// with `rest`, every Slot. A Slot goes to the first matcher in template
+/// order that takes it (`LayoutDefinition::route`), so `rest` gets only the
+/// Slots that `hide` and the matchers before it didn't take, and a matcher
+/// after it gets a Slot only once the user has removed `rest`'s panel.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct SlotMatcher {
@@ -209,21 +212,80 @@ pub fn predicates_hold(predicates: &[VisibilityPredicate], facts: Option<&FactMa
     })
 }
 
-/// Replace each `{fact}` in `text` with the fact's text. `None` when a named
-/// fact is absent or not text.
-pub fn substitute(text: &str, facts: &FactMap) -> Option<String> {
-    let mut out = String::new();
+/// A piece of a template text: literal text, or the fact a `{name}` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Piece<'a> {
+    Literal(&'a str),
+    Fact(&'a str),
+}
+
+/// `text`'s pieces: `{name}` names a fact, and `{{` and `}}` are literal
+/// braces. `None` for a `{` that doesn't close, a `{}`, or a lone `}`.
+fn pieces(text: &str) -> Option<Vec<Piece<'_>>> {
+    let mut out = Vec::new();
     let mut rest = text;
-    while let Some(start) = rest.find('{') {
-        out.push_str(&rest[..start]);
-        let end = rest[start..].find('}')? + start;
-        match facts.get(&rest[start + 1..end]) {
-            Some(MetadataValue::Text(value)) => out.push_str(value),
-            _ => return None,
+    while let Some(at) = rest.find(['{', '}']) {
+        if at > 0 {
+            out.push(Piece::Literal(&rest[..at]));
         }
+        let brace = &rest[at..at + 1];
+        if rest[at + 1..].starts_with(brace) {
+            out.push(Piece::Literal(brace));
+            rest = &rest[at + 2..];
+            continue;
+        }
+        if brace == "}" {
+            return None;
+        }
+        let end = at + 1 + rest[at + 1..].find(['{', '}'])?;
+        if &rest[end..end + 1] != "}" || end == at + 1 {
+            return None;
+        }
+        out.push(Piece::Fact(&rest[at + 1..end]));
         rest = &rest[end + 1..];
     }
-    out.push_str(rest);
+    if !rest.is_empty() {
+        out.push(Piece::Literal(rest));
+    }
+    Some(out)
+}
+
+/// How a substituted fact is written into its text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quoting {
+    /// As it is: a path, a URL, an argument of its own.
+    None,
+    /// As one POSIX shell word, so a fact's text is never shell syntax.
+    Shell,
+}
+
+/// Replace each `{fact}` in `text` with the fact's text (a boolean or
+/// integer by its text, as matchers compare them), written as `quoting`
+/// says; `{{` and `}}` are literal braces. `None` when a named fact is
+/// absent or has no text, or `text` is malformed.
+pub fn substitute(text: &str, facts: &FactMap, quoting: Quoting) -> Option<String> {
+    let mut out = String::new();
+    for piece in pieces(text)? {
+        match piece {
+            Piece::Literal(literal) => out.push_str(literal),
+            Piece::Fact(name) => {
+                let value = match facts.get(name)? {
+                    MetadataValue::Text(text) => text.to_string(),
+                    MetadataValue::Bool(value) => value.to_string(),
+                    MetadataValue::Integer(value) => value.to_string(),
+                    _ => return None,
+                };
+                match quoting {
+                    Quoting::None => out.push_str(&value),
+                    Quoting::Shell => {
+                        out.push('\'');
+                        out.push_str(&value.replace('\'', r"'\''"));
+                        out.push('\'');
+                    }
+                }
+            }
+        }
+    }
     Some(out)
 }
 
@@ -365,12 +427,13 @@ pub fn template_slots(subject: &EntityRef, slots: &[TemplateSlot], facts: &FactM
 impl RecipeTemplate {
     /// The recipe with `facts` substituted; `None` while one is missing.
     pub fn build(&self, facts: &FactMap) -> Option<LocalRecipe> {
-        let text = |text: &String| substitute(text, facts);
+        let text = |text: &String| substitute(text, facts, Quoting::None);
         Some(match self {
             RecipeTemplate::Command { argv, command, cwd } => {
                 let line = match (argv.is_empty(), command) {
                     (false, _) => CommandLine::Argv(argv.iter().map(text).collect::<Option<_>>()?),
-                    (true, Some(command)) => CommandLine::Shell(text(command)?),
+                    // A shell parses the line: each fact is one word of it.
+                    (true, Some(command)) => CommandLine::Shell(substitute(command, facts, Quoting::Shell)?),
                     (true, None) => return None,
                 };
                 let cwd = match cwd {
@@ -405,6 +468,11 @@ pub(crate) fn parse_kdl_workspace(node: &KdlNode) -> Result<(Vec<TemplateSlot>, 
 
 fn parse_slot(node: &KdlNode) -> Result<TemplateSlot, TemplateConfigError> {
     let name = arg(node, "template slot name")?;
+    only(
+        node,
+        &["kind", "role", "presentation", "command", "cwd", "path", "url", "launcher", "endpoint"],
+        &format!("template slot {name}"),
+    )?;
     let text = |key: &str| string(node, key);
     let required = |key: &str| text(key)?.ok_or_else(|| invalid(format!("template slot {name} needs {key}")));
     let recipe = match required("kind")?.as_str() {
@@ -437,13 +505,18 @@ fn parse_slot(node: &KdlNode) -> Result<TemplateSlot, TemplateConfigError> {
 
 fn parse_layout(node: &KdlNode) -> Result<LayoutDefinition, TemplateConfigError> {
     let name = arg(node, "layout name")?;
+    only(node, &[], &format!("layout {name}"))?;
     let mut when = Vec::new();
     let mut hide = Vec::new();
     let mut root = None;
     for child in node.children().map(|children| children.nodes()).unwrap_or_default() {
         match child.name().value() {
-            "when" => when.extend(parse_predicates(child, &name)?),
+            "when" => {
+                only(child, &[], &format!("layout {name}"))?;
+                when.extend(parse_predicates(child, &name)?)
+            }
             "hide" => {
+                only(child, &[], &format!("layout {name}"))?;
                 for matcher in child.children().map(|children| children.nodes()).unwrap_or_default() {
                     hide.push(parse_matcher(matcher, &name)?);
                 }
@@ -461,6 +534,8 @@ fn parse_layout(node: &KdlNode) -> Result<LayoutDefinition, TemplateConfigError>
 /// its second child.
 fn parse_panel(node: &KdlNode, layout: &str, position: &str) -> Result<PanelTemplate, TemplateConfigError> {
     let id = string(node, "id")?.unwrap_or_else(|| position.to_owned());
+    let properties: &[&str] = if node.name().value() == "split" { &["id", "weight", "axis"] } else { &["id", "weight", "selected"] };
+    only(node, properties, &format!("layout {layout} panel {id}"))?;
     let weight = match node.get("weight") {
         None => 1,
         Some(entry) => entry
@@ -505,6 +580,7 @@ fn parse_matcher(node: &KdlNode, layout: &str) -> Result<SlotMatcher, TemplateCo
     if node.name().value() != "slots" {
         return Err(invalid(format!("layout {layout} matches slots with slots, not {}", node.name().value())));
     }
+    only(node, &["role", "facet", "presentation", "entity-kind", "key", "rest"], &format!("layout {layout}"))?;
     let rest = match node.get("rest") {
         None => false,
         Some(entry) => entry.value().as_bool().ok_or_else(|| invalid(format!("layout {layout} rest must be boolean")))?,
@@ -527,6 +603,7 @@ fn parse_predicates(node: &KdlNode, layout: &str) -> Result<Vec<VisibilityPredic
         if child.name().value() != "match" || child.get("of").is_some() {
             return Err(invalid(format!("layout {layout} only accepts constant fact matches")));
         }
+        only(child, &["value", "exists"], &format!("layout {layout}"))?;
         predicates.push(VisibilityPredicate {
             key: arg(child, "match fact key")?,
             value: string(child, "value")?,
@@ -620,20 +697,10 @@ fn check_predicates(predicates: &[VisibilityPredicate], at: &str) -> Result<(), 
     Ok(())
 }
 
-/// Every `{` closes before the next opens, and names something.
+/// Every `{` closes before the next opens and names something, and every
+/// other brace is doubled.
 fn well_formed(text: &str) -> bool {
-    let mut open = false;
-    let mut empty = false;
-    for c in text.chars() {
-        match (c, open) {
-            ('{', false) => (open, empty) = (true, true),
-            ('}', true) if !empty => open = false,
-            ('{' | '}', _) => return false,
-            (_, true) => empty = false,
-            _ => {}
-        }
-    }
-    !open
+    pieces(text).is_some()
 }
 
 fn check_name(name: &str) -> Result<(), String> {
@@ -646,6 +713,17 @@ fn arg(node: &KdlNode, what: &str) -> Result<String, TemplateConfigError> {
         .and_then(|entry| entry.value().as_string())
         .map(str::to_owned)
         .ok_or_else(|| invalid(format!("{} needs a {what}", node.name().value())))
+}
+
+/// Rejects a property `node` doesn't take, which would otherwise change what
+/// it means silently: `slots entity_kind="vessel"` would match every Slot.
+fn only(node: &KdlNode, properties: &[&str], at: &str) -> Result<(), TemplateConfigError> {
+    for entry in node.entries() {
+        if let Some(name) = entry.name().filter(|name| !properties.contains(&name.value())) {
+            return Err(invalid(format!("{at}: {} takes no property {}", node.name().value(), name.value())));
+        }
+    }
+    Ok(())
 }
 
 fn string(node: &KdlNode, key: &str) -> Result<Option<String>, TemplateConfigError> {
@@ -751,6 +829,13 @@ mod tests {
             (r#"layout "a" { tabs { slots { match "k" value="v" exists=true; }; }; }"#, "predicate with two tests"),
             (r#"layout "a" { when { match "k" of="x" value="v"; }; tabs; }"#, "dynamic predicate"),
             (r#"panel"#, "unknown child"),
+            (r#"slot "a" kind="file" path="x" paht="y""#, "unknown slot property"),
+            (r#"layout "a" { tabs { slots entity_kind="vessel"; }; }"#, "unknown matcher property"),
+            (r#"layout "a" { tabs widht=2; }"#, "unknown tabs property"),
+            (r#"layout "a" { split axis="row" selected="last" { tabs; }; }"#, "a tabs property on split"),
+            (r#"layout "a" default=true { tabs; }"#, "unknown layout property"),
+            (r#"layout "a" { hide role="agent"; tabs; }"#, "a property on hide"),
+            (r#"layout "a" { tabs { slots { match "k" valeu="v"; }; }; }"#, "unknown match property"),
         ] {
             let error = workspace(&wrap(body)).expect_err(&format!("{why}: {body} parses"));
             assert!(matches!(error, TemplateConfigError::Validation(_)), "{why}: {body} fails to parse: {error}");
@@ -824,11 +909,79 @@ mod tests {
     #[test]
     fn substitution_replaces_facts_and_fails_on_a_missing_one() {
         let facts = facts(&[("git.root", "/src/app"), ("branch", "main")]);
-        assert_eq!(substitute("{git.root}/docs", &facts).as_deref(), Some("/src/app/docs"));
-        assert_eq!(substitute("{git.root}@{branch}", &facts).as_deref(), Some("/src/app@main"));
-        assert_eq!(substitute("plain", &facts).as_deref(), Some("plain"));
-        assert_eq!(substitute("{missing}", &facts), None);
-        let integer: FactMap = BTreeMap::from([("port".into(), MetadataValue::Integer(80))]);
-        assert_eq!(substitute("{port}", &integer), None, "only text facts substitute");
+        let plain = |text: &str| substitute(text, &facts, Quoting::None);
+        assert_eq!(plain("{git.root}/docs").as_deref(), Some("/src/app/docs"));
+        assert_eq!(plain("{git.root}@{branch}").as_deref(), Some("/src/app@main"));
+        assert_eq!(plain("plain").as_deref(), Some("plain"));
+        assert_eq!(plain("{missing}"), None);
+        let typed: FactMap = BTreeMap::from([("port".into(), MetadataValue::Integer(80)), ("ready".into(), MetadataValue::Bool(true))]);
+        assert_eq!(substitute("{port}:{ready}", &typed, Quoting::None).as_deref(), Some("80:true"), "integers and booleans by their text");
+    }
+
+    #[test]
+    fn doubled_braces_are_literal_and_malformed_text_substitutes_nothing() {
+        let facts = facts(&[("a", "x")]);
+        let plain = |text: &str| substitute(text, &facts, Quoting::None);
+        assert_eq!(plain("awk '{{print $1}}'").as_deref(), Some("awk '{print $1}'"));
+        assert_eq!(plain("${{SHELL}}").as_deref(), Some("${SHELL}"));
+        assert_eq!(plain("{{{a}}}").as_deref(), Some("{x}"));
+        for malformed in ["{a", "{}", "a}", "{a}}", "{{a}", "{a{b}}", "}{"] {
+            assert_eq!(plain(malformed), None, "{malformed:?}");
+            assert!(!well_formed(malformed), "{malformed:?} is rejected at validation");
+        }
+        assert!(well_formed("{{}}") && well_formed("{a}/{b}") && well_formed(""));
+    }
+
+    /// A fact in a shell `command` is one shell word, whatever its text; in
+    /// `argv` and `cwd` it is the text as it is.
+    #[cfg(unix)]
+    #[test]
+    fn a_fact_in_a_shell_command_is_one_word() {
+        for value in ["main", "a b", "x; echo injected", "$(id)", "`id`", "it's", "'", "\"q\"", "a\nb", "*", "-n", ""] {
+            let facts = facts(&[("branch", value)]);
+            let line = substitute("printf %s {branch}", &facts, Quoting::Shell).expect("substitutes");
+            let output = std::process::Command::new("sh").arg("-c").arg(&line).output().expect("sh runs");
+            assert_eq!(String::from_utf8_lossy(&output.stdout), value, "{line}");
+        }
+        let facts = facts(&[("branch", "a b; c")]);
+        let shell =
+            RecipeTemplate::Command { argv: Vec::new(), command: Some("git switch {branch}".into()), cwd: Some("/w/{branch}".into()) };
+        assert_eq!(
+            shell.build(&facts),
+            Some(LocalRecipe::Command { line: CommandLine::Shell("git switch 'a b; c'".into()), cwd: Some("/w/a b; c".into()) })
+        );
+        let argv = RecipeTemplate::Command { argv: vec!["git".into(), "{branch}".into()], command: None, cwd: None };
+        assert_eq!(
+            argv.build(&facts),
+            Some(LocalRecipe::Command { line: CommandLine::Argv(vec!["git".into(), "a b; c".into()]), cwd: None })
+        );
+    }
+
+    #[test]
+    fn rest_takes_only_what_earlier_matchers_left() {
+        let layout = workspace(
+            r#"workspace kind="vessel" {
+              layout "a" {
+                split axis="row" {
+                  tabs id="agents" { slots role="agent"; slots rest=true; slots role="files"; };
+                  tabs id="files" { slots role="files"; };
+                };
+              }
+            }"#,
+        )
+        .expect("parses")
+        .layouts
+        .remove(0);
+        let slot = |role| SlotFields { key: "k", role: Some(role), facet: None, presentation: None, entity_kind: None, facts: None };
+        let route = |role| match layout.route(&slot(role)) {
+            Route::To(targets) => targets.into_iter().map(|target| (target.panel, target.matcher)).collect::<Vec<_>>(),
+            Route::Hidden => panic!("nothing is hidden"),
+        };
+        assert_eq!(route("agent"), [("agents".into(), 0)], "the first matcher that takes it");
+        assert_eq!(
+            route("files"),
+            [("agents".into(), 1), ("files".into(), 0)],
+            "rest, earlier in template order, takes it; the later panel is where it goes once rest's panel is gone"
+        );
     }
 }
