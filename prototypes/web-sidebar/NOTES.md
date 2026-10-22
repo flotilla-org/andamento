@@ -72,4 +72,4 @@ Does SolidJS's fine-grained reactivity fit Andamento's core running as wasm, and
 
 ## Verdict
 
-_Pending with Robert:_ adopt SolidJS for the web frontend?
+**Adopt SolidJS for the web frontend** (Robert, 22 October 2026). The remaining costs are on the core's side (findings 3 to 6), not the framework's.
