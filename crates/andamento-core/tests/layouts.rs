@@ -139,8 +139,12 @@ fn the_default_layout_follows_the_facts_until_the_user_chooses() {
     let info = |name: &str, default: bool, current: bool| LayoutInfo { name: name.into(), default, current };
     assert_eq!(listed(&sidebar), [info("review", false, false), info("work", true, true)]);
 
+    let before = sidebar.arrangement(worker()).unwrap().generation;
+    let content = sidebar.content_revision();
     sidebar.feed(200, [patch(subject(), &[("layout.hint", text("review"))], &[])]);
     assert_eq!(current(&sidebar).as_deref(), Some("review"));
+    assert!(sidebar.arrangement(worker()).unwrap().generation > before, "a new default makes a commit stale");
+    assert!(sidebar.content_revision() > content);
     assert_eq!(
         sidebar.arrangement(worker()).unwrap().doc,
         row(vec![tabs("review", 1.0, &["r"], Some("r")), tabs("agents", 1.0, &["primary", "a", "b"], Some("primary"))])

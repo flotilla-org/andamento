@@ -32,7 +32,7 @@ after it: `hide { slots role="agent" { match "k" exists=true; }; }`.
 ## Where layouts live
 
 Layouts are children of the `workspace kind="…"` declaration in the sidebar
-configuration (`template_config.rs`):
+configuration (`crates/andamento-core/src/template_config.rs`):
 
 ```kdl
 workspace kind="vessel" {
@@ -53,7 +53,9 @@ starting with a letter or digit, and are unique within their `workspace`
 (panel IDs within their layout). Across configuration layers, a kind is
 openable if any layer declares it, as today. Its slots and layouts come whole
 from the highest-ranked layer whose declaration has children, as a placement
-comes from the highest-ranked layer that names it.
+comes from the highest-ranked layer that names it. They are not merged: a
+layer that declares only a layout for a kind replaces the lower layers' slots
+and layouts for it, so it must repeat any it keeps.
 
 ## Roles
 
@@ -90,8 +92,9 @@ slot "files" role="files" kind="file" path="{git.root}"
 slot "shell" role="shell" kind="command" cwd="{git.root}"
 ```
 
-- Their keys are `t:<name>`, a third namespace beside provider keys (no `:`)
-  and the user's (`u:<id>`).
+- Their keys are `t:<name>`, a third namespace beside provider keys and the
+  user's (`u:<id>`). The Suggested Layout parser rejects a provider key that
+  isn't 1 to 64 of `[a-z0-9_-]`, so a provider key never contains `:`.
 - They are part of the **baseline**: the overlay treats them like provider
   Slots, so the user can remove, override or reattach them.
 - Their fields are the local recipe fields of a Suggested Layout slot (`kind`,
@@ -100,7 +103,8 @@ slot "shell" role="shell" kind="command" cwd="{git.root}"
   `{git.root}`, which is replaced by the fact's text.
 - A slot whose fact is missing is **Unavailable**, not absent: the workspace
   still opens and the Slot fills in when the fact arrives.
-- A template slot with the same name in several layouts is one Slot.
+- A `slot` is a child of `workspace`, never of a `layout`: the template's
+  Slots are the workspace's, and every layout arranges the same ones.
 
 ## Panels and matchers
 
@@ -111,7 +115,9 @@ document](slots-and-arrangements.md#arrangement-documents):
 - `tabs { … }`: a tab panel. It holds the Slots its matchers accept.
 - Both take an optional `id` and `weight` (positive integer, default 1). A
   panel without an `id` gets one from its position; give panels the user is
-  likely to keep an `id`, because the overlay keys edits by it.
+  likely to keep an `id`, because the overlay keys edits by it. An edit whose
+  panel a template change takes away is not applied, and the arrangement
+  reports it UNRESOLVED.
 - `tabs` takes `selected="first"|"last"` (default `first`).
 
 A **matcher** is a `slots` node inside `tabs`:
@@ -162,6 +168,9 @@ visibility rules' syntax:
 layout "review" { when { match "layout.hint" value="review"; }; … }
 layout "agents-and-overview" { … }
 ```
+
+`layout.hint` stands for any subject fact here; Flotilla publishes no such
+fact yet.
 
 - The workspace's **default layout** is the first whose `when` matches; a
   layout with no `when` always matches.
@@ -241,7 +250,8 @@ are provisional and the ABI version changes:
   to follow its source again, as for a changed hint.
 
 Choosing a layout bumps the content revision and the arrangement generation,
-so a commit prepared against the old layout is stale.
+so a commit prepared against the old layout is stale. So does a change of
+default layout under `when` in a workspace that follows the default.
 
 Until Wheelhouse's tool strip exists (wheelhouse#122), it switches layouts
 from a Layout submenu in the workspace's menus and from palette commands, shows
