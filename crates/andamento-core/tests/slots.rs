@@ -492,3 +492,25 @@ fn a_subject_layout_may_list_its_primary_without_primary_facts() {
         assert_eq!(sidebar.plan_slot(worker(), key, "").unwrap().state, ContentState::Updating, "{key}");
     }
 }
+
+// An empty opening recipe is none: it opens nothing on its own, and a
+// subject with one opens as a subject without a recipe does.
+#[test]
+fn an_empty_recipe_is_no_recipe() {
+    let empty = patch(subject(), &[("action.primary.recipe", text(""))], &[]);
+    let mut plain = Sidebar::new(CONFIG).unwrap();
+    plain.feed(
+        100,
+        [
+            patch(entity("project", "p"), &[("flotilla.project", text("p")), ("display.label", text("P"))], &[]),
+            patch(subject(), &[("flotilla.project", text("p")), ("display.label", text("Vee"))], &[]),
+            empty.clone(),
+        ],
+    );
+    let effects = plain.dispatch(Action::Activate { entity: subject() }).unwrap();
+    assert!(!effects.iter().any(|effect| matches!(effect, HostEffect::Materialize { .. })), "{effects:?}");
+    let mut sidebar = subject_session();
+    sidebar.feed(150, [empty]);
+    let effects = sidebar.dispatch(Action::Activate { entity: subject() }).unwrap();
+    assert!(matches!(&effects[..], [HostEffect::Materialize { recipe: None, .. }]), "{effects:?}");
+}

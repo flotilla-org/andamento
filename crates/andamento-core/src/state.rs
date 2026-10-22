@@ -1852,7 +1852,10 @@ impl ControllerState {
                 return PresentationState::Opening;
             }
             PresentationState::Latent {
-                openable: self.openable(matches!(facts.get(KEY_MATERIALIZE_RECIPE), Some(MetadataValue::Text(_))), &entity.kind),
+                openable: self.openable(
+                    matches!(facts.get(KEY_MATERIALIZE_RECIPE), Some(MetadataValue::Text(recipe)) if !recipe.is_empty()),
+                    &entity.kind,
+                ),
             }
         };
         // A node is stale when the entity it presents (a ref's target) has a
@@ -2009,7 +2012,7 @@ impl ControllerState {
                     DetailIntent::FocusWorkspace
                 } else if !evaluation.live_targets.contains(&action_target)
                     && !self.pending_latent_materializations.contains_key(&action_target)
-                    && self.openable(metadata_entry_text(&entity.facts, KEY_MATERIALIZE_RECIPE).is_some(), &entity.entity.kind)
+                    && self.openable(materialize_recipe(&entity.facts).is_some(), &entity.entity.kind)
                 {
                     DetailIntent::MaterializeWorkspace
                 } else {
@@ -2734,7 +2737,7 @@ impl ControllerState {
                     },
                     action_target,
                     name,
-                    materialize_recipe: metadata_entry_text(&entity.facts, KEY_MATERIALIZE_RECIPE).map(str::to_owned),
+                    materialize_recipe: materialize_recipe(&entity.facts).map(str::to_owned),
                     opens_workspace: self.opens_workspace(&entity.entity.kind),
                     checkout_path: metadata_entry_text(&entity.facts, KEY_CHECKOUT_PATH).map(str::to_owned),
                 })
@@ -3909,6 +3912,12 @@ fn subject_binding(subject: &EntityRef) -> BTreeMap<String, MetadataValueUpdate>
             )
         })
         .collect()
+}
+
+/// An entity's opening recipe: an empty one is none, as there is nothing to
+/// run, so every host sees a recipe-less open the same way.
+fn materialize_recipe<'a>(values: &'a impl Entries) -> Option<&'a str> {
+    metadata_entry_text(values, KEY_MATERIALIZE_RECIPE).filter(|recipe| !recipe.is_empty())
 }
 
 /// The `primary` slot's resolution, from the facts managed primary content
