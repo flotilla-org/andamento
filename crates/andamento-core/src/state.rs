@@ -3441,13 +3441,54 @@ impl ControllerState {
         entity: &EntityRef,
         primary: suggested_layout::PrimarySlot,
     ) -> Result<Option<SuggestedLayout>, LayoutError> {
-        let facts = self
-            .metadata
+        self.layout_from_facts(entity, &self.entity_facts(entity), primary)
+    }
+
+    /// `entity`'s live facts, by name.
+    pub(crate) fn entity_facts(&self, entity: &EntityRef) -> FactMap {
+        self.metadata
             .resolved(&EntityId::Entity(entity.clone()), self.now())
             .named()
             .map(|(key, fact)| (key.clone(), fact.entry.value.clone()))
-            .collect();
-        self.layout_from_facts(entity, &facts, primary)
+            .collect()
+    }
+
+    /// The Workspace Layout a workspace of `subject` shows, the user having
+    /// chosen `chosen`, planned over its `slots`: `None` when its kind's
+    /// template has no layout that applies. A matcher reads the facts of a
+    /// slot's facet entity, or the subject's for a local slot.
+    pub(crate) fn layout_plan(
+        &self,
+        subject: &EntityRef,
+        chosen: Option<&str>,
+        slots: &[crate::slots::SlotInfo],
+    ) -> Option<crate::workspace_layout::LayoutPlan> {
+        use crate::suggested_layout::Content;
+        let subject_facts = self.entity_facts(subject);
+        let definition = self.workspace_template(&subject.kind, &subject_facts)?.current_layout(chosen, &subject_facts)?;
+        let mut facts: BTreeMap<&EntityRef, FactMap> = BTreeMap::new();
+        for slot in slots {
+            if let Content::ProviderFacet { entity, .. } = &slot.spec.content {
+                if entity != subject && !facts.contains_key(entity) {
+                    facts.insert(entity, self.entity_facts(entity));
+                }
+            }
+        }
+        let fields = slots.iter().map(|slot| {
+            let (facet, entity) = match &slot.spec.content {
+                Content::ProviderFacet { entity, facet } => (Some(facet.as_str()), Some(entity)),
+                Content::Local(_) => (None, None),
+            };
+            crate::workspace_layout::SlotFields {
+                key: &slot.key,
+                role: slot.spec.role.as_deref(),
+                facet,
+                presentation: slot.spec.presentation.as_deref(),
+                entity_kind: entity.map(|entity| entity.kind.as_str()),
+                facts: Some(entity.and_then(|entity| facts.get(entity)).unwrap_or(&subject_facts)),
+            }
+        });
+        Some(crate::workspace_layout::LayoutPlan::new(definition, fields))
     }
 
     fn layout_from_facts(

@@ -11,7 +11,11 @@ to each. It builds on [Slots and arrangements](slots-and-arrangements.md), the
 wheelhouse#416 (mission wheelhouse#401); the reasons are in Wheelhouse's
 `docs/design/subject-workspaces.md`.
 
-Status: design. Nothing here is implemented yet.
+Status: implemented in the core (`workspace_layout.rs`, `slots.rs`,
+`workspace.rs`); the C interface and Wheelhouse's use of it follow.
+
+In KDL as this crate reads it, a block that closes a block needs a `;`
+after it: `hide { slots role="agent" { match "k" exists=true; }; }`.
 
 ## In short
 
@@ -174,19 +178,22 @@ layout "agents-and-overview" { … }
 
 ## The unplaced set
 
-An arrangement document gains an **unplaced** list of Slot keys: Slots in the
-workspace that the layout does not show. They keep resolving like any other
-Slot; only their Views are not built.
+A layout's arrangement has an **unplaced** list of Slot keys, in Slot order:
+Slots in the workspace that the layout does not show. They keep resolving like
+any other Slot; only their Views are not built. The list belongs to the stored
+arrangement, not to the arrangement document, which the sidebar's own
+arrangement shares.
 
 - A template layout's unplaced Slots are the ones `hide` took and the ones no
   matcher took.
 - A host places one by committing an arrangement that gives it a tab; that is
   an arrangement edit of the current layout. It unplaces one by committing an
-  arrangement that lists it as unplaced.
+  arrangement without its tab.
 - **Reconciliation changes for template layouts only.** A Slot without a tab
   is unplaced, rather than appended to the first tab panel. An arrangement
   from a hint, or the single-panel default, keeps today's rule.
-- Reading the arrangement reports the unplaced list beside the tabs.
+- Reading the arrangement reports the unplaced list and the layout's name
+  beside the tabs.
 
 ## Edits
 
@@ -230,7 +237,8 @@ are provisional and the ABI version changes:
   current layout's.
 - **Commit** an arrangement as today; it is recorded against the current
   layout.
-- **Reset** the current layout's arrangement edits.
+- **Reset** the current layout's arrangement edits: resolving the arrangement
+  to follow its source again, as for a changed hint.
 
 Choosing a layout bumps the content revision and the arrangement generation,
 so a commit prepared against the old layout is stale.

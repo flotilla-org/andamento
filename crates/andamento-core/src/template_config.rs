@@ -962,7 +962,7 @@ pub struct PlacementVisibilityRule {
     pub and_visible_when: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct VisibilityPredicate {
     pub key: String,

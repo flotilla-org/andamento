@@ -3,15 +3,18 @@
 //! panels hold Slots by first-match matchers
 //! (docs/sidebar-design/workspace-layouts.md).
 //!
-//! This module reads and validates the definitions. Evaluating a layout over
-//! a workspace's Slots is [`crate::slots`]' business.
-use std::collections::BTreeSet;
+//! This module reads and validates the definitions, routes a workspace's
+//! Slots through a layout's matchers and evaluates the layout into an
+//! arrangement document. Keeping that arrangement, with the user's edits, is
+//! [`crate::slots`]' business.
+use std::collections::{BTreeMap, BTreeSet};
 
 use kdl::KdlNode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use crate::slots::{ArrangementDoc, Panel, PanelNode};
 use crate::suggested_layout::{Axis, CommandLine, Content, LocalRecipe, RebindPolicy, Slot, SlotResolution, ViewSpec};
-use crate::template_config::{TemplateConfigError, VisibilityPredicate};
+use crate::template_config::{TemplateConfigError, VisibilityPredicate, WorkspaceDefinition};
 use crate::{EntityRef, FactMap, MetadataValue};
 
 /// The prefix of a template slot's key (`t:files`). Provider keys never
@@ -19,7 +22,7 @@ use crate::{EntityRef, FactMap, MetadataValue};
 pub const TEMPLATE_PREFIX: &str = "t:";
 
 /// A slot the template declares, built from the subject's facts.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct TemplateSlot {
     /// 1 to 64 of `[a-z0-9_-]`; its key is `t:<name>`.
@@ -39,7 +42,7 @@ impl TemplateSlot {
 
 /// A local recipe whose text values may name subject facts in braces,
 /// `{git.root}`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum RecipeTemplate {
     Command {
@@ -63,7 +66,7 @@ pub enum RecipeTemplate {
 }
 
 /// One named layout of a subject kind's Slots.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct LayoutDefinition {
     pub name: String,
@@ -100,7 +103,7 @@ impl LayoutDefinition {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct PanelTemplate {
     /// Given, or from the panel's position when the template names none.
@@ -114,7 +117,7 @@ fn one() -> u32 {
     1
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum PanelTemplateNode {
     Split {
@@ -130,7 +133,7 @@ pub enum PanelTemplateNode {
 }
 
 /// Which of a template tab panel's tabs is selected when it is made.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SelectedTab {
     #[default]
@@ -141,7 +144,7 @@ pub enum SelectedTab {
 /// What a tab panel (or `hide`) takes: Slots whose fields equal every given
 /// attribute and whose facet entity's facts satisfy every predicate, or,
 /// with `rest`, any Slot no earlier matcher took.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct SlotMatcher {
     #[serde(default)]
@@ -222,6 +225,116 @@ pub fn substitute(text: &str, facts: &FactMap) -> Option<String> {
     }
     out.push_str(rest);
     Some(out)
+}
+
+/// Where a layout puts one Slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Route {
+    /// A `hide` matcher took it: unplaced.
+    Hidden,
+    /// The tab panels whose matchers accept it, in matcher order: it goes to
+    /// the first that exists, and is unplaced when none does or the list is
+    /// empty.
+    To(Vec<RouteTarget>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteTarget {
+    pub panel: String,
+    /// The matcher's index within its panel, which orders the panel's tabs.
+    pub matcher: usize,
+}
+
+impl LayoutDefinition {
+    /// Where this layout puts `slot`: offered to `hide`, then to every tab
+    /// panel's matchers in template order.
+    pub fn route(&self, slot: &SlotFields<'_>) -> Route {
+        if self.hide.iter().any(|matcher| matcher.accepts(slot)) {
+            return Route::Hidden;
+        }
+        let mut targets = Vec::new();
+        for panel in self.panels() {
+            if let PanelTemplateNode::Tabs { matchers, .. } = &panel.node {
+                if let Some(matcher) = matchers.iter().position(|matcher| matcher.accepts(slot)) {
+                    targets.push(RouteTarget { panel: panel.id.clone(), matcher });
+                }
+            }
+        }
+        Route::To(targets)
+    }
+}
+
+impl WorkspaceDefinition {
+    /// The workspace's default layout: the first whose `when` holds over the
+    /// subject's facts.
+    pub fn default_layout(&self, facts: &FactMap) -> Option<&LayoutDefinition> {
+        self.layouts.iter().find(|layout| predicates_hold(&layout.when, Some(facts)))
+    }
+
+    /// The layout a workspace shows: the one the user chose while the
+    /// template has it, else the default.
+    pub fn current_layout(&self, chosen: Option<&str>, facts: &FactMap) -> Option<&LayoutDefinition> {
+        chosen.and_then(|name| self.layouts.iter().find(|layout| layout.name == name)).or_else(|| self.default_layout(facts))
+    }
+}
+
+/// Plans the Workspace Layout a workspace shows over its slots, if it shows
+/// one.
+pub type Planner<'a> = dyn Fn(&[crate::slots::SlotInfo]) -> Option<LayoutPlan> + 'a;
+
+/// A layout chosen for a workspace, with every Slot routed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayoutPlan {
+    pub definition: LayoutDefinition,
+    /// By slot key.
+    pub routes: BTreeMap<String, Route>,
+}
+
+impl LayoutPlan {
+    pub fn new<'a>(definition: &LayoutDefinition, slots: impl IntoIterator<Item = SlotFields<'a>>) -> Self {
+        let routes = slots.into_iter().map(|slot| (slot.key.to_owned(), definition.route(&slot))).collect();
+        Self { definition: definition.clone(), routes }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.definition.name
+    }
+
+    /// The layout's document over the Slots in `order`, and the Slots it
+    /// leaves unplaced, in that order. A panel's tabs are in matcher order,
+    /// then in `order`.
+    pub fn evaluate(&self, order: &[String]) -> (ArrangementDoc, Vec<String>) {
+        let mut held: BTreeMap<&str, Vec<(usize, usize, &String)>> = BTreeMap::new();
+        let mut unplaced = Vec::new();
+        for (position, key) in order.iter().enumerate() {
+            match self.routes.get(key) {
+                Some(Route::To(targets)) if !targets.is_empty() => {
+                    held.entry(&targets[0].panel).or_default().push((targets[0].matcher, position, key));
+                }
+                _ => unplaced.push(key.clone()),
+            }
+        }
+        fn build(panel: &PanelTemplate, held: &mut BTreeMap<&str, Vec<(usize, usize, &String)>>) -> Panel {
+            let node = match &panel.node {
+                PanelTemplateNode::Split { axis, children } => {
+                    PanelNode::Split { axis: *axis, children: children.iter().map(|child| build(child, held)).collect() }
+                }
+                PanelTemplateNode::Tabs { selected, .. } => {
+                    let mut tabs = held.remove(panel.id.as_str()).unwrap_or_default();
+                    tabs.sort();
+                    let tabs: Vec<String> = tabs.into_iter().map(|(_, _, key)| key.clone()).collect();
+                    let selected = match selected {
+                        SelectedTab::First => tabs.first(),
+                        SelectedTab::Last => tabs.last(),
+                    }
+                    .cloned();
+                    PanelNode::Tabs { tabs, selected }
+                }
+            };
+            Panel { id: panel.id.clone(), weight: f64::from(panel.weight), node }
+        }
+        (ArrangementDoc { root: Some(build(&self.definition.root, &mut held)) }, unplaced)
+    }
 }
 
 /// `slots` as Suggested Layout slots of `subject`: each a facet `t:<name>`
