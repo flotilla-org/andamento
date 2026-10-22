@@ -36,8 +36,8 @@ workspace kind="vessel" {
 
   layout "agent-and-files" {
     split axis="row" {
-      tabs id="agents" weight=3 { slots role="agent" }
-      tabs id="files" weight=2 { slots role="files" }
+      tabs id="agents" weight=3 { slots role="agent"; }
+      tabs id="files" weight=2 { slots role="files"; }
     }
   }
 }
@@ -134,10 +134,10 @@ in that layout:
 
 ```kdl
 layout "live-only" {
-  hide { slots role="agent" { match "flotilla.convoy.phase" value="landed"; } }
+  hide { slots role="agent" { match "flotilla.convoy.phase" value="landed"; }; }
   split axis="row" {
-    tabs id="agents" weight=3 { slots role="agent" }
-    tabs id="overview" weight=2 { slots role="overview" }
+    tabs id="agents" weight=3 { slots role="agent"; }
+    tabs id="overview" weight=2 { slots role="overview"; }
   }
 }
 ```
@@ -155,7 +155,7 @@ A `layout` may have a `when` condition over the subject's facts, in the
 visibility rules' syntax:
 
 ```kdl
-layout "review" { when { match "layout.hint" value="review"; } … }
+layout "review" { when { match "layout.hint" value="review"; }; … }
 layout "agents-and-overview" { … }
 ```
 

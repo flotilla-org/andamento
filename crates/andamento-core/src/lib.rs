@@ -36,6 +36,7 @@ pub mod template_config;
 pub mod versioned;
 pub mod workspace;
 mod workspace_id;
+pub mod workspace_layout;
 pub use host::tab_workspace_id;
 pub use workspace_id::WorkspaceId;
 
