@@ -173,7 +173,9 @@ sizes need pixels. When a gesture ends it commits the whole document with
 3. **Reconciliation.** Each slot with no tab is appended to the first tab
    panel in preorder, and selected there if that panel selects nothing. With
    no panels, a tab panel is made for them. A tab whose slot has gone is kept
-   and reported gone; nothing is dropped silently.
+   and reported gone; nothing is dropped silently. A
+   [Workspace Layout](workspace-layouts.md#the-unplaced-set) instead leaves a
+   slot with no tab unplaced.
 4. **Storage.** The document becomes the stored one. Its generation changes
    unless the stored document is unchanged. A commit that changes only
    weights and selected tabs is recorded as soft overrides and leaves the
@@ -244,6 +246,8 @@ Wheelhouse's: it saves the portable ones through
 ## Limits and next steps
 
 - **Overlay rules** (ADR 0013) are in [Workspace Overlay](workspace-overlay.md).
+- **Named layouts** from templates, with an unplaced set and edits kept per
+  layout, are designed in [Workspace Layouts](workspace-layouts.md).
 - **Machine-local Target Resolutions** (a local socket, `attach_token`) are
   not stored: they stay in the host's device-local state. Portable ones are
   above.
