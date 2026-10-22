@@ -3390,11 +3390,12 @@ impl ControllerState {
         if let Some(desired) = desired_primary(&values, self.subject_target(entity).as_deref()) {
             resolutions.insert(PRIMARY_SLOT.to_owned(), desired);
         }
-        if !values.iter().any(|(key, _)| key.starts_with("layout.")) {
+        let facts: FactMap = values.named().map(|(key, fact)| (key.clone(), fact.entry.value.clone())).collect();
+        let template = self.workspace_template(&entity.kind, &facts);
+        if template.is_none() && !values.iter().any(|(key, _)| key.starts_with("layout.")) {
             return resolutions;
         }
-        let facts = values.iter().map(|(key, entry)| (key.into(), entry.value.clone())).collect();
-        let Ok(Some(layout)) = suggested_layout::parse(entity, &facts, self.primary_slot(entity)) else {
+        let Ok(Some(layout)) = self.layout_from_facts(entity, &facts, self.primary_slot(entity)) else {
             return resolutions;
         };
         for slot in layout.slots {
@@ -3433,19 +3434,86 @@ impl ControllerState {
     }
 
     /// The Suggested Layout `entity` publishes now, read from its live facts,
-    /// with the primary slot as `primary` says ([`suggested_layout::parse`]).
+    /// with the primary slot as `primary` says ([`suggested_layout::parse`]),
+    /// and the template slots of its kind's workspace template after its own.
     pub(crate) fn suggested_layout(
         &self,
         entity: &EntityRef,
         primary: suggested_layout::PrimarySlot,
     ) -> Result<Option<SuggestedLayout>, LayoutError> {
-        let facts = self
-            .metadata
+        self.layout_from_facts(entity, &self.entity_facts(entity), primary)
+    }
+
+    /// `entity`'s live facts, by name.
+    pub(crate) fn entity_facts(&self, entity: &EntityRef) -> FactMap {
+        self.metadata
             .resolved(&EntityId::Entity(entity.clone()), self.now())
             .named()
             .map(|(key, fact)| (key.clone(), fact.entry.value.clone()))
-            .collect();
-        suggested_layout::parse(entity, &facts, primary)
+            .collect()
+    }
+
+    /// The Workspace Layout a workspace of `subject` shows, the user having
+    /// chosen `chosen`, planned over its `slots`: `None` when its kind's
+    /// template has no layout that applies. A matcher reads the facts of a
+    /// slot's facet entity, or the subject's for a local slot.
+    pub(crate) fn layout_plan(
+        &self,
+        subject: &EntityRef,
+        chosen: Option<&str>,
+        slots: &[crate::slots::SlotInfo],
+    ) -> Option<crate::workspace_layout::LayoutPlan> {
+        use crate::suggested_layout::Content;
+        let subject_facts = self.entity_facts(subject);
+        let definition = self.workspace_template(&subject.kind, &subject_facts)?.current_layout(chosen, &subject_facts)?;
+        let mut facts: BTreeMap<&EntityRef, FactMap> = BTreeMap::new();
+        for slot in slots {
+            if let Content::ProviderFacet { entity, .. } = &slot.spec.content {
+                if entity != subject && !facts.contains_key(entity) {
+                    facts.insert(entity, self.entity_facts(entity));
+                }
+            }
+        }
+        let fields = slots.iter().map(|slot| {
+            let (facet, entity) = match &slot.spec.content {
+                Content::ProviderFacet { entity, facet } => (Some(facet.as_str()), Some(entity)),
+                Content::Local(_) => (None, None),
+            };
+            crate::workspace_layout::SlotFields {
+                key: &slot.key,
+                role: slot.spec.role.as_deref(),
+                facet,
+                presentation: slot.spec.presentation.as_deref(),
+                entity_kind: entity.map(|entity| entity.kind.as_str()),
+                facts: Some(entity.and_then(|entity| facts.get(entity)).unwrap_or(&subject_facts)),
+            }
+        });
+        Some(crate::workspace_layout::LayoutPlan::new(definition, fields))
+    }
+
+    fn layout_from_facts(
+        &self,
+        entity: &EntityRef,
+        facts: &FactMap,
+        primary: suggested_layout::PrimarySlot,
+    ) -> Result<Option<SuggestedLayout>, LayoutError> {
+        let mut layout = suggested_layout::parse(entity, facts, primary)?;
+        let template = self.workspace_template(&entity.kind, facts).filter(|template| !template.slots.is_empty());
+        if let Some(template) = template {
+            let layout = layout.get_or_insert_with(|| SuggestedLayout {
+                version: suggested_layout::BaselineVersion::PrimaryOnly,
+                slots: Vec::new(),
+                arrangement: None,
+            });
+            layout.slots.extend(crate::workspace_layout::template_slots(entity, &template.slots, facts));
+        }
+        Ok(layout)
+    }
+
+    /// The workspace template for subjects of `kind` with `facts`, if the
+    /// configuration has one.
+    pub(crate) fn workspace_template(&self, kind: &str, facts: &FactMap) -> Option<&crate::template_config::WorkspaceDefinition> {
+        self.template_catalog.as_ref()?.workspace_template(kind, facts)
     }
 
     fn desired_content(&self, target: &EntityId) -> Option<DesiredContent> {

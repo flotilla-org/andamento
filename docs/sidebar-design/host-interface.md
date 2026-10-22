@@ -1,4 +1,4 @@
-# The host interface (ABI 7)
+# The host interface (ABI 8)
 
 What a host such as Wheelhouse uses to drive Andamento through its C ABI.
 `crates/andamento-ffi/include/andamento.h` is generated from the FFI crate
@@ -8,7 +8,7 @@ behind it is in [Slots and arrangements](slots-and-arrangements.md),
 [The sidebar arrangement](sidebar-arrangement.md) and the
 [Workspace Overlay](workspace-overlay.md).
 
-`andamento_abi_version()` returns 4. Each call has one form: there is no
+`andamento_abi_version()` returns 8. Each call has one form: there is no
 compatibility with earlier versions, and a host requires exactly the version
 it was built against.
 
@@ -113,6 +113,8 @@ ABI 4 is not imported.
 | `andamento_workspace_set_name` / `_set_mood` | The user's name and mood over the provider's. |
 | `andamento_overlay_get` / `_free` | `AndamentoOverlay`: baseline version, the user's name and mood, the subject's name (its display label now), `owned`, and TOMBSTONED and DEPARTED notes. A workspace is named by the user's name if it has one, else the subject's. |
 | `andamento_workspace_content_revision` | Poll to learn when to read slots, plans and arrangements again. |
+| `andamento_layouts_get` / `_free` | `AndamentoLayoutList`: a workspace's [Workspace Layouts](workspace-layouts.md) in the template's order, each `AndamentoLayout` with `ANDAMENTO_LAYOUT_DEFAULT` and `_CURRENT` flags. Empty when its subject's kind has no template. |
+| `andamento_layout_choose(h, ws, has_name, name)` | Show a layout, or (`has_name` 0) follow the default. The shown layout's edits are kept for when it is shown again; the arrangement's generation moves. Resetting a layout is `andamento_arrangement_resolve` FOLLOW. |
 
 ## Arrangements
 
@@ -139,9 +141,11 @@ single pass, appending each panel to its parent.
 - **A workspace's** (`andamento_arrangement_get`, `_commit(h, ws, doc,
   expected)`, `_free`): at most one root; tabs are slot keys. Commit and get
   return `AndamentoWorkspaceArrangement` with `status`, `generation`,
-  `owned`, `flags` (PROVIDER_CHANGED, SOFT, UNRESOLVED) and notes (PLACED,
-  GONE, UNRESOLVED). `andamento_arrangement_resolve` KEEPs or FOLLOWs after a
-  provider change.
+  `owned`, `flags` (PROVIDER_CHANGED, SOFT, UNRESOLVED), the Workspace Layout
+  it arranges (`has_layout`, `layout`) and notes (PLACED, GONE, UNRESOLVED,
+  and UNPLACED: slots the layout doesn't show, in slot order).
+  `andamento_arrangement_resolve` KEEPs or FOLLOWs after a provider or
+  template change, and FOLLOW resets a layout at any time.
 - **The sidebar's** (`andamento_sidebar_arrangement_get`, `_commit(h, doc,
   expected)`, `andamento_sidebar_restore_section`, `andamento_sidebar_reset`,
   `_free`, and `andamento_sidebar_arrangement_generation` to poll): an
@@ -153,6 +157,15 @@ single pass, appending each panel to its parent.
   `variable:` and the key.
 
 Committing an arrangement never changes the snapshot's revision.
+
+## From ABI 7
+
+ABI 8 adds [Workspace Layouts](workspace-layouts.md):
+`andamento_layouts_get`, `_free` and `andamento_layout_choose`, the UNPLACED
+note, and `has_layout` and `layout` in `AndamentoWorkspaceArrangement`. A
+View Spec gains a role (`has_role`, `role`), which a host may pass when it
+sets a slot. Both structs change layout, so a host built against ABI 7 must
+be rebuilt.
 
 ## From ABI 6
 

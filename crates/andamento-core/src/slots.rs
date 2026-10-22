@@ -8,6 +8,7 @@
 //! document the host commits whole, at an expected generation.
 use crate::suggested_layout::{self, Axis, BaselineVersion, Content, RebindPolicy, SuggestedLayout, ViewSpec};
 use crate::versioned::Versioned;
+use crate::workspace_layout::{LayoutDefinition, LayoutPlan, Route};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -622,10 +623,20 @@ pub struct Arrangement {
     pub placed: BTreeSet<String>,
     /// Soft overrides by panel ID, while not owned.
     pub soft: BTreeMap<String, SoftOverride>,
-    /// The provider changed its arrangement hint while the user owned the
-    /// document. It is not applied; the host keeps the user's arrangement or
-    /// follows the provider's ([`Arrangement::resolve`]).
+    /// The provider changed its arrangement hint, or the configuration its
+    /// layout's template, while the user owned the document. It is not
+    /// applied; the host keeps the user's arrangement or follows the
+    /// provider's ([`Arrangement::resolve`]).
     pub provider_changed: bool,
+    /// The Workspace Layout this is an arrangement of, as its template was
+    /// when last followed; `None` for one from the provider's hint.
+    #[serde(default)]
+    pub layout: Option<LayoutDefinition>,
+    /// Slots the layout doesn't show, in slot order: those its template
+    /// leaves out, and those the user's commit gave no tab. Only a layout's
+    /// arrangement has any.
+    #[serde(default)]
+    pub unplaced: Vec<String>,
 }
 
 /// A workspace's stored arrangement: `None`, at generation 0, until first
@@ -648,6 +659,11 @@ pub struct ArrangementView {
     /// Panel IDs of soft overrides that no longer resolve: the panel has
     /// gone, or the tab it selects is not in it. They are kept.
     pub unresolved: BTreeSet<String>,
+    /// The Workspace Layout's name; `None` for an arrangement from the
+    /// provider's hint.
+    pub layout: Option<String>,
+    /// Slots the layout doesn't show, in slot order.
+    pub unplaced: Vec<String>,
 }
 
 /// What a commit did.
@@ -751,17 +767,29 @@ impl ArrangementDoc {
 }
 
 impl Arrangement {
-    /// The document the provider's baseline gives, before soft overrides:
-    /// its hint less the slots the user removed, with every slot placed.
-    fn derived(baseline: Option<&Baseline>, slots: &[SlotInfo]) -> (ArrangementDoc, Vec<String>) {
+    /// The document the arrangement's source gives, before soft overrides,
+    /// with the slots it placed by the default rule and those it leaves
+    /// unplaced. A layout's is its template evaluated over the slots, which
+    /// leaves out what no matcher takes. Otherwise it is the baseline's hint
+    /// less the slots the user removed, with every slot placed.
+    fn derived(baseline: Option<&Baseline>, slots: &[SlotInfo], plan: Option<&LayoutPlan>) -> (ArrangementDoc, Vec<String>, Vec<String>) {
+        let order: Vec<String> = slots.iter().map(|slot| slot.key.clone()).collect();
+        if let Some(plan) = plan {
+            let (doc, unplaced) = plan.evaluate(&order);
+            return (doc, Vec::new(), unplaced);
+        }
         let mut doc = baseline.and_then(|b| b.hint.clone()).unwrap_or_default();
         let live: BTreeSet<&str> = slots.iter().map(|slot| slot.key.as_str()).collect();
         let hidden: BTreeSet<String> =
             baseline.iter().flat_map(|b| &b.slots).map(|slot| slot.key.clone()).filter(|key| !live.contains(key.as_str())).collect();
         doc.strip(&hidden);
-        let order: Vec<String> = slots.iter().map(|slot| slot.key.clone()).collect();
         let placed = doc.place(&order);
-        (doc, placed)
+        (doc, placed, Vec::new())
+    }
+
+    /// `plan`, if it is of this arrangement's layout.
+    fn plan_for<'a>(&self, plan: Option<&'a LayoutPlan>) -> Option<&'a LayoutPlan> {
+        plan.filter(|plan| self.layout.as_ref().is_some_and(|layout| layout.name == plan.name()))
     }
 
     /// Validate `doc` against the slot set and make it the stored
@@ -775,11 +803,15 @@ impl Arrangement {
     /// provider's structure keeps flowing. Any structural difference (a
     /// split, move, close, reorder or added tab) makes the overlay own the
     /// whole document from now on.
+    ///
+    /// In a layout's arrangement, a slot the commit gives no tab is
+    /// unplaced; otherwise it is placed by the default rule.
     pub fn commit(
         stored: &mut Option<Self>,
         doc: ArrangementDoc,
         baseline: Option<&Baseline>,
         slots: &[SlotInfo],
+        plan: Option<&LayoutPlan>,
     ) -> Result<Vec<String>, String> {
         doc.check()?;
         let known: BTreeSet<&str> = slots.iter().map(|slot| slot.key.as_str()).collect();
@@ -788,11 +820,19 @@ impl Arrangement {
             return Err(format!("no slot {tab:?}: add a slot before giving it a tab"));
         }
         let soft_from = stored.as_ref().filter(|a| !a.owned && shape(&doc) == shape(&a.doc));
-        let mut next = Self { owned: true, doc, ..Self::default() };
+        let layout = match stored.as_ref() {
+            Some(stored) => stored.layout.clone(),
+            None => plan.map(|plan| plan.definition.clone()),
+        };
+        let mut next = Self { owned: true, doc, layout, ..Self::default() };
+        if next.layout.is_some() {
+            let tabs: BTreeSet<&str> = next.doc.tabs().into_iter().collect();
+            next.unplaced = slots.iter().map(|slot| &slot.key).filter(|key| !tabs.contains(key.as_str())).cloned().collect();
+        }
         if let Some(stored) = soft_from {
             next.owned = false;
             next.soft = stored.soft.clone();
-            let (base, _) = Self::derived(baseline, slots);
+            let (base, _, _) = Self::derived(baseline, slots, next.plan_for(plan));
             for panel in next.doc.panels() {
                 let Some(from) = base.panels().into_iter().find(|p| p.id == panel.id) else {
                     continue;
@@ -810,58 +850,110 @@ impl Arrangement {
                 }
             }
         }
-        let placed = next.reconcile(slots);
+        let placed = next.reconcile(slots, plan);
         *stored = Some(next);
         Ok(placed)
     }
 
-    /// Place slots with no tab. Returns those placed.
-    fn reconcile(&mut self, slots: &[SlotInfo]) -> Vec<String> {
+    /// Place slots with no tab, and that aren't unplaced, and drop gone
+    /// slots from the unplaced. A layout's arrangement gives a new slot to
+    /// the first of its matching panels that survives, as if the template
+    /// were evaluated over the user's panels, and leaves it unplaced when
+    /// none does; any other places it by the default rule. Returns the
+    /// slots given tabs.
+    fn reconcile(&mut self, slots: &[SlotInfo], plan: Option<&LayoutPlan>) -> Vec<String> {
         let order: Vec<String> = slots.iter().map(|slot| slot.key.clone()).collect();
-        let placed = self.doc.place(&order);
+        if self.layout.is_none() {
+            let placed = self.doc.place(&order);
+            self.placed.extend(placed.iter().cloned());
+            return placed;
+        }
+        let plan = self.plan_for(plan);
+        let tabbed: BTreeSet<String> = self.doc.tabs().into_iter().map(str::to_owned).collect();
+        let unplaced: BTreeSet<String> = self.unplaced.iter().cloned().collect();
+        let mut placed = Vec::new();
+        let mut left = Vec::new();
+        for key in order.iter().filter(|key| !tabbed.contains(*key) && !unplaced.contains(*key)) {
+            let targets = match plan.and_then(|plan| plan.routes.get(key)) {
+                Some(Route::To(targets)) => targets.as_slice(),
+                _ => &[],
+            };
+            let panels = self.doc.panels();
+            let target = targets
+                .iter()
+                .find(|target| panels.iter().any(|panel| panel.id == target.panel && matches!(panel.node, PanelNode::Tabs { .. })));
+            let panel = target.and_then(|target| self.doc.panel_mut(&target.panel)).and_then(|panel| match &mut panel.node {
+                PanelNode::Tabs { tabs, selected } => Some((tabs, selected)),
+                PanelNode::Split { .. } => None,
+            });
+            match panel {
+                Some((tabs, selected)) => {
+                    tabs.push(key.clone());
+                    selected.get_or_insert_with(|| key.clone());
+                    placed.push(key.clone());
+                }
+                None => left.push(key.clone()),
+            }
+        }
+        let live: BTreeSet<&str> = order.iter().map(String::as_str).collect();
+        self.unplaced.retain(|key| live.contains(key.as_str()));
+        self.unplaced.extend(left);
+        let position: BTreeMap<&str, usize> = order.iter().enumerate().map(|(index, key)| (key.as_str(), index)).collect();
+        self.unplaced.sort_by_key(|key| position[key.as_str()]);
         self.placed.extend(placed.iter().cloned());
         placed
     }
 
-    /// Follow a changed slot set or baseline, storing the arrangement if
-    /// nothing is stored yet. One the user doesn't own is derived again: the
-    /// baseline's hint less removed slots, every slot placed, soft overrides
-    /// reapplied. An owned one only gets new slots placed.
-    pub fn follow(stored: &mut Option<Self>, baseline: Option<&Baseline>, slots: &[SlotInfo]) {
+    /// Follow a changed slot set, baseline or layout, storing the
+    /// arrangement if nothing is stored yet. One the user doesn't own is
+    /// derived again ([`derived`](Self::derived)), soft overrides reapplied.
+    /// An owned one only gets new slots placed, and is flagged when its
+    /// layout's template changed.
+    pub fn follow(stored: &mut Option<Self>, baseline: Option<&Baseline>, slots: &[SlotInfo], plan: Option<&LayoutPlan>) {
         let mut next = stored.take().unwrap_or_default();
-        if !next.owned {
-            let (mut doc, placed) = Self::derived(baseline, slots);
+        if next.owned {
+            if next.plan_for(plan).is_some_and(|plan| next.layout.as_ref() != Some(&plan.definition)) {
+                next.provider_changed = true;
+            }
+        } else {
+            let (mut doc, placed, unplaced) = Self::derived(baseline, slots, plan);
             doc.apply_soft(&next.soft);
             next.doc = doc;
             next.placed = placed.into_iter().collect();
+            next.unplaced = unplaced;
+            next.layout = plan.map(|plan| plan.definition.clone());
         }
-        next.reconcile(slots);
+        next.reconcile(slots, plan);
         // Placed marks only tabs that still exist.
         let tabs: BTreeSet<String> = next.doc.tabs().into_iter().map(str::to_owned).collect();
         next.placed.retain(|tab| tabs.contains(tab));
         *stored = Some(next);
     }
 
-    /// The provider's arrangement hint changed. An owned arrangement is
-    /// flagged rather than changed.
+    /// The provider's arrangement hint changed. An owned arrangement of it
+    /// is flagged rather than changed.
     pub fn note_hint_change(stored: &mut Option<Self>) {
-        if let Some(arrangement) = stored.as_mut().filter(|a| a.owned) {
+        if let Some(arrangement) = stored.as_mut().filter(|a| a.owned && a.layout.is_none()) {
             arrangement.provider_changed = true;
         }
     }
 
-    /// Keep the user's arrangement over a provider change, or follow the
-    /// provider again, dropping ownership and soft overrides.
-    pub fn resolve(stored: &mut Option<Self>, choice: Resolve, baseline: Option<&Baseline>, slots: &[SlotInfo]) {
+    /// Keep the user's arrangement over a provider or template change, or
+    /// follow its source again, dropping ownership and soft overrides:
+    /// resetting the layout.
+    pub fn resolve(stored: &mut Option<Self>, choice: Resolve, baseline: Option<&Baseline>, slots: &[SlotInfo], plan: Option<&LayoutPlan>) {
         match choice {
             Resolve::Keep => {
                 if let Some(arrangement) = stored {
                     arrangement.provider_changed = false;
+                    if let Some(plan) = arrangement.plan_for(plan) {
+                        arrangement.layout = Some(plan.definition.clone());
+                    }
                 }
             }
             Resolve::Follow => {
                 *stored = None;
-                Self::follow(stored, baseline, slots);
+                Self::follow(stored, baseline, slots, plan);
             }
         }
     }
@@ -895,6 +987,8 @@ impl Arrangement {
             generation: stored.generation(),
             gone: arrangement.gone(slots),
             unresolved: arrangement.unresolved(),
+            layout: arrangement.layout.map(|layout| layout.name),
+            unplaced: arrangement.unplaced,
             owned: arrangement.owned,
             doc: arrangement.doc,
             placed: arrangement.placed,

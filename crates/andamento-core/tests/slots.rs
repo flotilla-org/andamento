@@ -146,6 +146,7 @@ fn slots_follow_the_layout_and_arrangements_reconcile() {
     let spec = |command: &str| ViewSpec {
         content: Content::Local(LocalRecipe::Command { line: CommandLine::Argv(vec![command.into()]), cwd: Some("/tmp".into()) }),
         presentation: Some("terminal".into()),
+        role: None,
     };
     assert!(sidebar.set_slot(worker(), "u:1", spec("htop"), RebindPolicy::Ask).unwrap());
     assert!(sidebar.set_slot(worker(), "b", spec("btop"), RebindPolicy::Replace).unwrap());
@@ -189,7 +190,7 @@ fn arrangement_commits_and_slot_edits_leave_the_snapshot_current() {
         .set_slot(
             worker(),
             "u:1",
-            ViewSpec { content: Content::Local(LocalRecipe::Url { url: "https://example.com".into() }), presentation: None },
+            ViewSpec { content: Content::Local(LocalRecipe::Url { url: "https://example.com".into() }), presentation: None, role: None },
             RebindPolicy::Replace,
         )
         .unwrap();
@@ -365,6 +366,7 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     let spec = ViewSpec {
         content: Content::Local(LocalRecipe::Command { line: CommandLine::Shell("htop".into()), cwd: None }),
         presentation: None,
+        role: None,
     };
     assert!(sidebar.set_slot(worker(), "k", spec, RebindPolicy::Replace).unwrap());
     assert_eq!(sidebar.slot_resolution(worker(), "k").unwrap(), None);
@@ -388,7 +390,7 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
 /// replaced is stale (as for an arrangement), not applied over the import.
 #[test]
 fn an_imported_resolution_never_reuses_a_generation() {
-    let url = |url: &str| ViewSpec { content: Content::Local(LocalRecipe::Url { url: url.into() }), presentation: None };
+    let url = |url: &str| ViewSpec { content: Content::Local(LocalRecipe::Url { url: url.into() }), presentation: None, role: None };
     let name = format!("workspace/{WORKER}");
     let saved_at = |sidebar: &mut Sidebar, session: &str| {
         sidebar.register_workspace(worker());
@@ -463,6 +465,7 @@ fn a_workspace_with_its_own_primary_gains_no_provider_primary() {
     let terminal = ViewSpec {
         content: Content::Local(LocalRecipe::Command { line: CommandLine::Shell("printf hello".into()), cwd: None }),
         presentation: None,
+        role: None,
     };
     sidebar.set_slot(worker(), "u:primary", terminal, RebindPolicy::Replace).unwrap();
     sidebar.configure(&format!("{CONFIG}\nworkspace kind=\"vessel\"\n")).unwrap();
@@ -513,4 +516,56 @@ fn an_empty_recipe_is_no_recipe() {
     sidebar.feed(150, [empty]);
     let effects = sidebar.dispatch(Action::Activate { entity: subject() }).unwrap();
     assert!(matches!(&effects[..], [HostEffect::Materialize { recipe: None, .. }]), "{effects:?}");
+}
+
+// A workspace template's slots join the subject's baseline as facets of the
+// subject, built from its facts: unavailable while a fact they name is
+// missing, and replaced when it changes.
+#[test]
+fn template_slots_resolve_from_the_subjects_facts() {
+    let template = r#"
+workspace kind="vessel" {
+  slot "files" role="files" kind="file" path="{git.root}"
+  slot "shell" role="shell" kind="command" cwd="{git.root}" { argv "zsh" "-l"; }
+}
+"#;
+    let mut sidebar = Sidebar::new(&format!("{CONFIG}\n{template}")).unwrap();
+    sidebar.feed(
+        100,
+        [
+            patch(entity("project", "p"), &[("flotilla.project", text("p")), ("display.label", text("P"))], &[]),
+            patch(subject(), &[("flotilla.project", text("p")), ("display.label", text("Vee"))], &[]),
+        ],
+    );
+    let effects = sidebar.dispatch(Action::Activate { entity: subject() }).unwrap();
+    let [HostEffect::Materialize { request_id, .. }] = effects[..] else {
+        panic!("expected materialize: {effects:?}");
+    };
+    sidebar.complete(request_id, Ok(Some(worker())));
+    sidebar.observe(vec![Workspace { id: worker(), position: 0, name: "Worker".into(), selected: true }], vec![]);
+    assert_eq!(keys(&sidebar), ["primary", "t:files", "t:shell"]);
+    let slots = sidebar.slots(worker()).unwrap();
+    assert_eq!(slots[1].spec.role.as_deref(), Some("files"));
+    assert_eq!(slots[1].spec.content, Content::ProviderFacet { entity: subject(), facet: "t:files".into() });
+    assert!(slots[1].in_baseline);
+    for key in ["t:files", "t:shell"] {
+        assert_eq!(sidebar.plan_slot(worker(), key, "").unwrap().state, ContentState::Unavailable, "{key} before git.root");
+    }
+
+    sidebar.feed(200, [patch(subject(), &[("git.root", text("/src/v"))], &[])]);
+    let files = sidebar.plan_slot(worker(), "t:files", "").unwrap();
+    assert_eq!(files.state, ContentState::Updating);
+    let applied = files.update.unwrap();
+    assert_eq!(applied.resolution.recipe, LocalRecipe::File { path: "/src/v".into() });
+    let shell = sidebar.plan_slot(worker(), "t:shell", "").unwrap().update.unwrap();
+    assert_eq!(
+        shell.resolution.recipe,
+        LocalRecipe::Command { line: CommandLine::Argv(vec!["zsh".into(), "-l".into()]), cwd: Some("/src/v".into()) }
+    );
+    assert_eq!(sidebar.plan_slot(worker(), "t:files", &applied.id).unwrap().state, ContentState::Current);
+
+    sidebar.feed(300, [patch(subject(), &[("git.root", text("/src/w"))], &[])]);
+    let moved = sidebar.plan_slot(worker(), "t:files", &applied.id).unwrap();
+    assert_eq!(moved.state, ContentState::Updating);
+    assert_eq!(moved.update.unwrap().resolution.recipe, LocalRecipe::File { path: "/src/w".into() });
 }

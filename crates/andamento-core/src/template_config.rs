@@ -5,6 +5,7 @@ use std::fmt;
 use kdl::{KdlDocument, KdlNode, KdlValue};
 use serde::{Deserialize, Serialize};
 
+use crate::workspace_layout::{LayoutDefinition, TemplateSlot};
 use crate::{DisplayVariableValue, FactMap, MetadataValue, ResolvedTemplateFieldSource};
 
 pub fn parse_template_config_json(input: &str) -> Result<ExternalTemplateConfig, TemplateConfigError> {
@@ -59,7 +60,10 @@ pub fn parse_template_config_kdl(input: &str) -> Result<ExternalTemplateConfig, 
         .nodes()
         .iter()
         .filter(|node| node.name().value() == "workspace")
-        .map(|node| Ok(WorkspaceDefinition { kind: kdl_required_prop_string(node, "kind")? }))
+        .map(|node| {
+            let (slots, layouts) = crate::workspace_layout::parse_kdl_workspace(node)?;
+            Ok(WorkspaceDefinition { kind: kdl_required_prop_string(node, "kind")?, slots, layouts })
+        })
         .collect::<Result<Vec<_>, TemplateConfigError>>()?;
     let config = ExternalTemplateConfig {
         version,
@@ -110,6 +114,20 @@ pub struct ExternalTemplateConfig {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct WorkspaceDefinition {
     pub kind: String,
+    /// The kind's template slots and layouts
+    /// (docs/sidebar-design/workspace-layouts.md).
+    #[serde(default)]
+    pub slots: Vec<TemplateSlot>,
+    #[serde(default)]
+    pub layouts: Vec<LayoutDefinition>,
+}
+
+impl WorkspaceDefinition {
+    /// Whether the declaration has a template, rather than only making its
+    /// kind openable.
+    pub fn has_template(&self) -> bool {
+        !self.slots.is_empty() || !self.layouts.is_empty()
+    }
 }
 
 impl ExternalTemplateConfig {
@@ -124,6 +142,13 @@ impl ExternalTemplateConfig {
                 "workspace kind {:?} must be a kind, without surrounding spaces",
                 workspace.kind
             )));
+        }
+        let mut kinds = BTreeSet::new();
+        for workspace in &self.workspaces {
+            if !kinds.insert(&workspace.kind) {
+                return Err(TemplateConfigError::Validation(format!("workspace kind {} is declared twice", workspace.kind)));
+            }
+            crate::workspace_layout::validate(&workspace.kind, &workspace.slots, &workspace.layouts)?;
         }
         let mut names = BTreeSet::new();
         for template in &self.templates {
@@ -559,6 +584,17 @@ impl TemplateConfigCatalog {
         self.workspace_kinds.contains(kind)
     }
 
+    /// The template for subjects of `kind` with `facts`: the declaration
+    /// with slots or layouts from the highest-ranked layer that applies to
+    /// the subject.
+    pub fn workspace_template(&self, kind: &str, facts: &FactMap) -> Option<&WorkspaceDefinition> {
+        self.layers
+            .iter()
+            .filter(|layer| layer.applies_to(facts))
+            .flat_map(|layer| &layer.config.workspaces)
+            .find(|workspace| workspace.kind == kind && workspace.has_template())
+    }
+
     pub fn resolve(&self, context: TemplateConfigMatchContext<'_>) -> Result<Option<TemplateConfigResolved>, TemplateConfigResolveError> {
         let Some((requested_name, declared)) = template_name_for(context) else {
             return Ok(None);
@@ -926,7 +962,7 @@ pub struct PlacementVisibilityRule {
     pub and_visible_when: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct VisibilityPredicate {
     pub key: String,

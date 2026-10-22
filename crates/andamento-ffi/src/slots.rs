@@ -46,7 +46,8 @@ const _: () = {
     assert!(ANDAMENTO_SLOT_FLAG_REBIND == flag::REBIND);
 };
 
-/// A View Spec, or a resolution's recipe (whose presentation is unset).
+/// A View Spec, or a resolution's recipe (whose presentation and role are
+/// unset).
 /// Fields its content kind doesn't use are ignored on input and empty on
 /// output. presentation is an open vocabulary ("terminal", "web", ...).
 #[repr(C)]
@@ -66,6 +67,10 @@ pub struct ViewSpecView {
     pub endpoint: Text,
     pub has_presentation: u32,
     pub presentation: Text,
+    /// What the View is for ("agent", "files", ...; open vocabulary), which
+    /// Workspace Layouts arrange by.
+    pub has_role: u32,
+    pub role: Text,
 }
 
 impl ViewSpecView {
@@ -85,6 +90,8 @@ impl ViewSpecView {
             endpoint: Text::borrowed(""),
             has_presentation: 0,
             presentation: Text::borrowed(""),
+            has_role: 0,
+            role: Text::borrowed(""),
         }
     }
 
@@ -105,7 +112,11 @@ impl ViewSpecView {
             }
             other => return Err(format!("unknown slot content kind {other}")),
         };
-        Ok(ViewSpec { content, presentation: if self.has_presentation != 0 { Some(self.presentation.read()?) } else { None } })
+        Ok(ViewSpec {
+            content,
+            presentation: if self.has_presentation != 0 { Some(self.presentation.read()?) } else { None },
+            role: if self.has_role != 0 { Some(self.role.read()?) } else { None },
+        })
     }
 }
 
@@ -158,6 +169,8 @@ fn spec_view(spec: &ViewSpec) -> (ViewSpecView, SpecStorage) {
     };
     out.has_presentation = spec.presentation.is_some() as u32;
     out.presentation = Text::borrowed(spec.presentation.as_deref().unwrap_or_default());
+    out.has_role = spec.role.is_some() as u32;
+    out.role = Text::borrowed(spec.role.as_deref().unwrap_or_default());
     (out, storage)
 }
 

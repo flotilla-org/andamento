@@ -59,6 +59,7 @@ Each fact is `layout.slot.<key>.<field>`.
 | `entity` | entity refs (exactly one) | Provider facet: the entity whose aspect the slot shows. |
 | `facet` | text | Provider facet: which aspect, e.g. `terminal`, `review`, `checks`, `artifact`. |
 | `presentation` | text | Optional preferred presentation, e.g. `terminal`, `web`, `markdown`. Open vocabulary. |
+| `role` | text | Optional: what the slot is for, e.g. `agent`, `files`, `overview`. Open vocabulary; [Workspace Layouts](workspace-layouts.md#roles) arrange slots by it. Part of the spec. |
 | `rebind` | text | `replace` (default), `keep-previous` or `ask`: what happens to the live instance when the resolution changes. |
 | `state` | text | `ready` or `held`. Required for a provider facet; optional (default `ready`) for a local recipe. |
 | `target` | text | Identity of the backing instance. Required for a ready provider facet; optional for a local recipe. |

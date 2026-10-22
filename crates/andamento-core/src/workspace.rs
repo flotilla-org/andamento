@@ -21,6 +21,7 @@ use crate::{
     suggested_layout::{Content, RebindPolicy, ViewSpec},
     target_resolution::{PortableResolution, SavedResolution, SavedResolutions},
     versioned::{Clock, CommitError, Versioned},
+    workspace_layout::{LayoutPlan, Planner},
     EntityRef,
 };
 
@@ -34,12 +35,28 @@ pub struct Subject {
     pub retained: BTreeMap<EntityRef, SubjectRecord>,
 }
 
+/// Which Workspace Layout a workspace shows, and the arrangements of those
+/// it isn't showing (docs/sidebar-design/workspace-layouts.md).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LayoutChoice {
+    /// The layout the user chose; `None` follows the default. It is kept
+    /// while the configuration lacks the layout, so restoring the layout
+    /// restores the choice.
+    pub chosen: Option<String>,
+    /// The arrangements of the layouts not shown that the user edited, by
+    /// layout name; the provider hint's is under `""`. Each comes back when
+    /// its layout is shown again.
+    pub stashed: BTreeMap<String, Arrangement>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceRecord {
     pub subject: Versioned<Subject>,
     pub slots: Versioned<WorkspaceSlots>,
     pub arrangement: StoredArrangement,
     pub resolutions: Versioned<SavedResolutions>,
+    #[serde(default)]
+    pub layouts: Versioned<LayoutChoice>,
 }
 
 impl WorkspaceRecord {
@@ -50,9 +67,21 @@ impl WorkspaceRecord {
     }
 
     /// The generation of what a host reads as workspace content: slots,
-    /// arrangement and resolutions.
+    /// arrangement, layout choice and resolutions.
     pub fn content_generation(&self) -> u64 {
-        self.slots.generation().max(self.arrangement.generation()).max(self.resolutions.generation())
+        self.slots.generation().max(self.arrangement.generation()).max(self.resolutions.generation()).max(self.layouts.generation())
+    }
+
+    pub fn chosen_layout(&self) -> Option<&str> {
+        self.layouts.get().chosen.as_deref()
+    }
+
+    /// Choose the layout to show, or follow the default with `None`. The
+    /// caller then follows the layout it now shows
+    /// ([`follow_baseline`](Self::follow_baseline)). Returns whether the
+    /// choice changed.
+    pub fn choose_layout(&mut self, clock: &mut Clock, chosen: Option<String>) -> bool {
+        self.layouts.follow(clock, |layouts| layouts.chosen = chosen)
     }
 
     pub fn encode(&self) -> String {
@@ -70,6 +99,10 @@ impl WorkspaceRecord {
             }
             workspace.arrangement.restamp(clock);
         }
+        for arrangement in workspace.layouts.get().stashed.values() {
+            arrangement.doc.check()?;
+        }
+        workspace.layouts.restamp(clock);
         for saved in workspace.resolutions.get().by_slot.values() {
             saved.resolution.check()?;
         }
@@ -115,8 +148,10 @@ impl WorkspaceRecord {
 
     /// Adopt the subject's current Suggested Layout as the baseline, or
     /// none (a malformed or expired layout keeps the cached one), and bring
-    /// the arrangement up to date. Returns whether anything changed.
-    pub fn follow_baseline(&mut self, clock: &mut Clock, baseline: Option<Baseline>) -> bool {
+    /// the arrangement up to date with it and with the Workspace Layout the
+    /// workspace shows now, which `planner` plans over the slots. Returns
+    /// whether anything changed.
+    pub fn follow_baseline(&mut self, clock: &mut Clock, baseline: Option<Baseline>, planner: &Planner<'_>) -> bool {
         let mut changed = false;
         if let Some(baseline) = baseline {
             let hint_changed = self.slots.get().baseline.as_ref().is_some_and(|old| old.hint != baseline.hint);
@@ -127,10 +162,41 @@ impl WorkspaceRecord {
                 changed |= self.arrangement.follow(clock, Arrangement::note_hint_change);
             }
         }
-        if changed || (self.arrangement.get().is_none() && !self.slots.get().is_empty()) {
-            changed |= self.follow_slots(clock);
+        let slots = self.slots.get().slots();
+        let plan = planner(&slots);
+        changed |= self.switch_layout(clock, plan.as_ref());
+        // A layout follows the facts its matchers read, which change without
+        // the slots changing.
+        if changed || plan.is_some() || (self.arrangement.get().is_none() && !self.slots.get().is_empty()) {
+            let baseline = self.slots.get().baseline.as_ref();
+            changed |= self.arrangement.follow(clock, |stored| Arrangement::follow(stored, baseline, &slots, plan.as_ref()));
         }
         changed
+    }
+
+    /// Put the arrangement of the layout shown until now aside, if the user
+    /// edited it, and bring back `plan`'s, when `plan` is another layout.
+    /// Returns whether it was.
+    fn switch_layout(&mut self, clock: &mut Clock, plan: Option<&LayoutPlan>) -> bool {
+        let Some(current) = self.arrangement.get().clone() else {
+            return false;
+        };
+        let shown = current.layout.as_ref().map(|layout| layout.name.clone()).unwrap_or_default();
+        let next = plan.map(|plan| plan.name().to_owned()).unwrap_or_default();
+        if shown == next {
+            return false;
+        }
+        let mut restored = None;
+        self.layouts.follow(clock, |layouts| {
+            if current.owned || !current.soft.is_empty() {
+                layouts.stashed.insert(shown, current);
+            } else {
+                layouts.stashed.remove(&shown);
+            }
+            restored = layouts.stashed.remove(&next);
+        });
+        self.arrangement.follow(clock, |stored| *stored = restored);
+        true
     }
 
     /// Add the user's own slot, or edit a baseline slot (see
@@ -138,14 +204,21 @@ impl WorkspaceRecord {
     /// unowned one shows a tombstoned slot this restores. A slot whose
     /// content changed loses its saved resolution. Returns whether anything
     /// changed.
-    pub fn set_slot(&mut self, clock: &mut Clock, key: &str, spec: ViewSpec, rebind: RebindPolicy) -> Result<bool, String> {
+    pub fn set_slot(
+        &mut self,
+        clock: &mut Clock,
+        key: &str,
+        spec: ViewSpec,
+        rebind: RebindPolicy,
+        planner: &Planner<'_>,
+    ) -> Result<bool, String> {
         if let Content::ProviderFacet { entity, .. } = &spec.content {
             entity.check_provider()?;
         }
         let before = self.slots.get().clone();
         let changed = self.slots.edit(clock, |slots| slots.set(key, spec, rebind))?;
         if self.slots.get().hidden() != before.hidden() {
-            self.follow_unowned(clock);
+            self.follow_unowned(clock, planner);
         }
         self.forget_resolution_if_edited(clock, key, &before);
         Ok(changed)
@@ -154,10 +227,10 @@ impl WorkspaceRecord {
     /// Remove a slot (see [`WorkspaceSlots::remove`]). An owned arrangement
     /// keeps its tab, reported gone; one derived from the provider's hint
     /// loses it. Returns whether anything changed.
-    pub fn remove_slot(&mut self, clock: &mut Clock, key: &str) -> Result<bool, String> {
+    pub fn remove_slot(&mut self, clock: &mut Clock, key: &str, planner: &Planner<'_>) -> Result<bool, String> {
         let removed = self.slots.edit(clock, |slots| slots.remove(key))?;
         if removed {
-            self.follow_unowned(clock);
+            self.follow_unowned(clock, planner);
             if self.slots.get().slot(key).is_none() {
                 self.resolutions.follow(clock, |r| r.forget(key));
             }
@@ -167,13 +240,13 @@ impl WorkspaceRecord {
 
     /// Drop a baseline slot's override or tombstone. Returns whether there
     /// was one.
-    pub fn reattach_slot(&mut self, clock: &mut Clock, key: &str) -> bool {
+    pub fn reattach_slot(&mut self, clock: &mut Clock, key: &str, planner: &Planner<'_>) -> bool {
         let before = self.slots.get().clone();
         let reattached = self.slots.follow(clock, |slots| {
             slots.reattach(key);
         });
         if reattached {
-            self.follow_unowned(clock);
+            self.follow_unowned(clock, planner);
             self.forget_resolution_if_edited(clock, key, &before);
         }
         reattached
@@ -199,22 +272,37 @@ impl WorkspaceRecord {
 
     /// Commit the host's whole arrangement at `expected`, validated against
     /// the slot set and reconciled (see [`Arrangement::commit`]).
-    pub fn commit_arrangement(&mut self, clock: &mut Clock, doc: ArrangementDoc, expected: u64) -> Result<ArrangementCommit, CommitError> {
+    pub fn commit_arrangement(
+        &mut self,
+        clock: &mut Clock,
+        doc: ArrangementDoc,
+        expected: u64,
+        planner: &Planner<'_>,
+    ) -> Result<ArrangementCommit, CommitError> {
         let slots = self.slots.get().slots();
+        let plan = planner(&slots);
         let baseline = self.slots.get().baseline.as_ref();
-        let (generation, placed) =
-            self.arrangement.update(Some(expected), clock, |stored| Ok(Arrangement::commit(stored, doc, baseline, &slots)?))?;
+        let (generation, placed) = self
+            .arrangement
+            .update(Some(expected), clock, |stored| Ok(Arrangement::commit(stored, doc, baseline, &slots, plan.as_ref())?))?;
         let stored = self.arrangement.get().as_ref().expect("committed");
         Ok(ArrangementCommit { generation, placed, gone: stored.gone(&slots).into_iter().collect(), owned: stored.owned })
     }
 
     /// Settle a provider change to an owned arrangement at `expected`.
     /// Returns the generation after.
-    pub fn resolve_arrangement(&mut self, clock: &mut Clock, choice: Resolve, expected: u64) -> Result<u64, CommitError> {
+    pub fn resolve_arrangement(
+        &mut self,
+        clock: &mut Clock,
+        choice: Resolve,
+        expected: u64,
+        planner: &Planner<'_>,
+    ) -> Result<u64, CommitError> {
         let slots = self.slots.get().slots();
+        let plan = planner(&slots);
         let baseline = self.slots.get().baseline.as_ref();
         let (generation, ()) = self.arrangement.update(Some(expected), clock, |stored| {
-            Arrangement::resolve(stored, choice, baseline, &slots);
+            Arrangement::resolve(stored, choice, baseline, &slots, plan.as_ref());
             Ok(())
         })?;
         Ok(generation)
@@ -305,18 +393,19 @@ impl WorkspaceRecord {
 
     /// Re-derive an arrangement the user doesn't own after a slot edit that
     /// hides or shows a baseline slot. An owned one is left to the host.
-    fn follow_unowned(&mut self, clock: &mut Clock) {
+    fn follow_unowned(&mut self, clock: &mut Clock, planner: &Planner<'_>) {
         if self.arrangement.get().as_ref().is_some_and(|a| !a.owned) {
-            self.follow_slots(clock);
+            self.follow_slots(clock, planner);
         }
     }
 
     /// Bring the arrangement up to date with the slots, storing one if none
     /// is stored yet. Returns whether it changed.
-    fn follow_slots(&mut self, clock: &mut Clock) -> bool {
+    fn follow_slots(&mut self, clock: &mut Clock, planner: &Planner<'_>) -> bool {
         let slots = self.slots.get().slots();
+        let plan = planner(&slots);
         let baseline = self.slots.get().baseline.as_ref();
-        self.arrangement.follow(clock, |stored| Arrangement::follow(stored, baseline, &slots))
+        self.arrangement.follow(clock, |stored| Arrangement::follow(stored, baseline, &slots, plan.as_ref()))
     }
 }
 

@@ -3,13 +3,18 @@ use crate::suggested_layout::{CommandLine, LocalRecipe};
 use crate::EntityRef;
 
 fn shell(command: &str) -> ViewSpec {
-    ViewSpec { content: Content::Local(LocalRecipe::Command { line: CommandLine::Shell(command.into()), cwd: None }), presentation: None }
+    ViewSpec {
+        content: Content::Local(LocalRecipe::Command { line: CommandLine::Shell(command.into()), cwd: None }),
+        presentation: None,
+        role: None,
+    }
 }
 
 fn facet(id: &str) -> ViewSpec {
     ViewSpec {
         content: Content::ProviderFacet { entity: EntityRef::new("sub-1", "vessel", id), facet: "terminal".into() },
         presentation: Some("terminal".into()),
+        role: None,
     }
 }
 
@@ -125,14 +130,14 @@ fn invalid_commits_change_nothing() {
     let infos = slots.slots();
     let mut stored = None;
     let first = doc(tabs("1", &["a", "b"], Some("a")));
-    let placed = Arrangement::commit(&mut stored, first, slots.baseline.as_ref(), &infos).unwrap();
+    let placed = Arrangement::commit(&mut stored, first, slots.baseline.as_ref(), &infos, None).unwrap();
     assert!(placed.is_empty());
     let before = stored.clone();
     // A tab for a slot that never existed, or a malformed document.
     for (invalid, reason) in
         [(doc(tabs("1", &["a", "b", "nope"], None)), "no slot \"nope\""), (doc(tabs("1", &["a", "a"], None)), "slot \"a\" has two tabs")]
     {
-        let error = Arrangement::commit(&mut stored, invalid, slots.baseline.as_ref(), &infos).unwrap_err();
+        let error = Arrangement::commit(&mut stored, invalid, slots.baseline.as_ref(), &infos, None).unwrap_err();
         assert!(error.contains(reason), "{error}");
         assert_eq!(stored, before);
     }
@@ -148,7 +153,7 @@ fn reconciling_places_new_slots_and_reports_gone_ones() {
     let mut stored = None;
     // The host left b out: it is placed in the first tab panel.
     let host = doc(split("1", vec![split("2", vec![tabs("3", &[], None)]), tabs("4", &["a"], Some("a"))]));
-    let placed = Arrangement::commit(&mut stored, host, slots.baseline.as_ref(), &slots.slots()).unwrap();
+    let placed = Arrangement::commit(&mut stored, host, slots.baseline.as_ref(), &slots.slots(), None).unwrap();
     assert_eq!(placed, ["b"]);
     assert_eq!(arranged(&stored).doc.tabs(), ["b", "a"]);
     assert_eq!(arranged(&stored).placed, BTreeSet::from(["b".to_owned()]));
@@ -161,17 +166,17 @@ fn reconciling_places_new_slots_and_reports_gone_ones() {
     // reported gone.
     slots.set_baseline(baseline(&["b", "c"]));
     let infos = slots.slots();
-    Arrangement::follow(&mut stored, slots.baseline.as_ref(), &infos);
+    Arrangement::follow(&mut stored, slots.baseline.as_ref(), &infos, None);
     assert_eq!(arranged(&stored).doc.tabs(), ["b", "c", "a"]);
     assert_eq!(arranged(&stored).gone(&infos), BTreeSet::from(["a".to_owned()]));
     assert_eq!(arranged(&stored).placed, BTreeSet::from(["b".to_owned(), "c".to_owned()]));
     // Following an unchanged slot set changes nothing.
     let before = stored.clone();
-    Arrangement::follow(&mut stored, slots.baseline.as_ref(), &infos);
+    Arrangement::follow(&mut stored, slots.baseline.as_ref(), &infos, None);
     assert_eq!(stored, before);
     // The host may keep the gone tab in its commit; it may not add one.
     let host = doc(tabs("1", &["c", "b", "a"], Some("c")));
-    let placed = Arrangement::commit(&mut stored, host, slots.baseline.as_ref(), &infos).unwrap();
+    let placed = Arrangement::commit(&mut stored, host, slots.baseline.as_ref(), &infos, None).unwrap();
     assert!(placed.is_empty());
     assert_eq!(arranged(&stored).gone(&infos), BTreeSet::from(["a".to_owned()]));
     assert!(arranged(&stored).placed.is_empty(), "the host has seen every tab");
@@ -184,23 +189,23 @@ fn an_uncommitted_arrangement_follows_the_hint() {
     hinted.hint = Some(doc(tabs("main", &["a"], Some("a"))));
     slots.set_baseline(hinted);
     let mut stored = None;
-    Arrangement::follow(&mut stored, slots.baseline.as_ref(), &slots.slots());
+    Arrangement::follow(&mut stored, slots.baseline.as_ref(), &slots.slots(), None);
     assert!(!arranged(&stored).owned);
     assert_eq!(arranged(&stored).doc.tabs(), ["a", "b"]);
     // A new hint replaces it while the host hasn't committed.
     let mut hinted = baseline(&["a", "b"]);
     hinted.hint = Some(doc(split("main", vec![tabs("x", &["b"], None), tabs("y", &["a"], None)])));
     slots.set_baseline(hinted);
-    Arrangement::follow(&mut stored, slots.baseline.as_ref(), &slots.slots());
+    Arrangement::follow(&mut stored, slots.baseline.as_ref(), &slots.slots(), None);
     assert_eq!(arranged(&stored).doc.tabs(), ["b", "a"]);
     assert!(arranged(&stored).placed.is_empty());
     // Once committed, the host owns it: a new hint is not applied.
-    Arrangement::commit(&mut stored, doc(tabs("1", &["a", "b"], None)), slots.baseline.as_ref(), &slots.slots()).unwrap();
+    Arrangement::commit(&mut stored, doc(tabs("1", &["a", "b"], None)), slots.baseline.as_ref(), &slots.slots(), None).unwrap();
     assert!(arranged(&stored).owned);
     let mut hinted = baseline(&["a", "b"]);
     hinted.hint = Some(doc(tabs("main", &["b", "a"], None)));
     slots.set_baseline(hinted);
-    Arrangement::follow(&mut stored, slots.baseline.as_ref(), &slots.slots());
+    Arrangement::follow(&mut stored, slots.baseline.as_ref(), &slots.slots(), None);
     assert_eq!(arranged(&stored).doc.tabs(), ["a", "b"]);
 }
 

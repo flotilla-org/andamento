@@ -74,7 +74,11 @@ fn primary_facts_alone_are_a_one_slot_layout() {
         layout.slots,
         vec![Slot {
             key: "primary".into(),
-            spec: ViewSpec { content: Content::ProviderFacet { entity: convoy(), facet: "primary".into() }, presentation: None },
+            spec: ViewSpec {
+                content: Content::ProviderFacet { entity: convoy(), facet: "primary".into() },
+                presentation: None,
+                role: Some("agent".into())
+            },
             rebind: RebindPolicy::Replace,
             resolution: SlotResolution::Ready {
                 target: Some("vessel:v1".into()),
@@ -222,6 +226,33 @@ fn unknown_slot_fields_and_presentations_are_carried_or_ignored() {
         ],
     ));
     assert_eq!(layout.slot("pr").unwrap().spec.presentation.as_deref(), Some("hologram"));
+}
+
+#[test]
+fn slots_carry_their_role_and_the_primary_defaults_by_subject_kind() {
+    let layout = parse_ok(&with(
+        two_slots(),
+        [("layout.slot.pr.role", text("review")), ("layout.slot.shell.role", text("")), ("layout.slot.pr.future", text("x"))],
+    ));
+    assert_eq!(layout.slot("pr").unwrap().spec.role.as_deref(), Some("review"));
+    assert_eq!(layout.slot("shell").unwrap().spec.role, None, "an empty role is none");
+    assert!(matches!(parse_err(&with(two_slots(), [("layout.slot.pr.role", list(&["a"]))])), LayoutError::WrongType { .. }));
+    let primary = |kind: &str| {
+        let layout = parse(&entity(kind, "x"), &FactMap::new(), PrimarySlot::Always).unwrap().unwrap();
+        layout.slots[0].spec.role.clone()
+    };
+    assert_eq!(primary("vessel").as_deref(), Some("agent"));
+    assert_eq!(primary("convoy").as_deref(), Some("agent"));
+    assert_eq!(primary("project").as_deref(), Some("tui"));
+    assert_eq!(primary("role").as_deref(), Some("tui"));
+    assert_eq!(primary("issue"), None);
+}
+
+#[test]
+fn a_view_spec_recorded_before_roles_reads_without_one() {
+    let spec: ViewSpec = serde_json::from_str(r#"{"content":{"Local":{"Url":{"url":"https://example.test"}}},"presentation":null}"#)
+        .expect("an old spec reads");
+    assert_eq!(spec.role, None);
 }
 
 #[test]

@@ -26,6 +26,7 @@ use crate::{
     template_config::{parse_template_config_kdl, TemplateConfigCatalog},
     versioned::{Clock, CommitError, Versioned},
     workspace::{Subject, WorkspaceRecord},
+    workspace_layout::{LayoutPlan, Planner},
     DisplayVariableValue, EntityRef, MaterializeLatentRequest, MetadataPatch, MetadataTarget, MetadataValue, MetadataValueUpdate, NodeKey,
     PlacementKey, PlacementLoopKey, RailUiAction, WorkspaceId, LOCAL_PROVIDER,
 };
@@ -308,6 +309,9 @@ impl Sidebar {
         self.placement_keys = self.state.placement_fact_keys();
         self.invalidate();
         self.follow_sidebar_declarations();
+        // Workspace templates may have changed every workspace's slots and
+        // layout.
+        self.refresh_all_content(true);
         Ok(())
     }
 
@@ -831,9 +835,15 @@ impl Sidebar {
     /// the cached baseline: expiry is silence, not removal. This never
     /// invalidates the sidebar's snapshot; it moves the content revision.
     fn refresh_content(&mut self) {
+        self.refresh_all_content(false);
+    }
+
+    /// [`refresh_content`](Self::refresh_content), for every entity when
+    /// `all`, as after a configuration change.
+    fn refresh_all_content(&mut self, all: bool) {
         // Only the entities whose facts changed resolve differently.
         let changed = self.state.take_metadata_changes();
-        let entities: BTreeSet<EntityRef> = if changed.all {
+        let entities: BTreeSet<EntityRef> = if changed.all || all {
             self.state.metadata_entities().into_iter().chain(self.managed.published().cloned()).collect()
         } else {
             changed
@@ -869,7 +879,8 @@ impl Sidebar {
                         self.state.suggested_layout(subject, primary).ok().flatten()
                     })
                     .map(|layout| Baseline::from_layout(&layout));
-                record.follow_baseline(&mut self.clock, baseline);
+                let planner = planner(&self.state, record);
+                record.follow_baseline(&mut self.clock, baseline, &planner);
             }
             record.invalidate_resolutions(&mut self.clock, &self.managed);
         }
@@ -887,14 +898,56 @@ impl Sidebar {
     }
 
     /// Edit a registered workspace's record, with the clock its parts take
-    /// their generations from.
+    /// their generations from and the planner of the layout it shows.
     fn with_workspace<R, E: From<String>>(
         &mut self,
         id: WorkspaceId,
-        edit: impl FnOnce(&mut WorkspaceRecord, &mut Clock, &ManagedContent) -> Result<R, E>,
+        edit: impl FnOnce(&mut WorkspaceRecord, &mut Clock, &ManagedContent, &Planner<'_>) -> Result<R, E>,
     ) -> Result<R, E> {
         let entry = self.workspaces.get_mut(&id).ok_or_else(|| E::from(format!("workspace {id} is not registered")))?;
-        edit(&mut entry.record, &mut self.clock, &self.managed)
+        let planner = planner(&self.state, &entry.record);
+        edit(&mut entry.record, &mut self.clock, &self.managed, &planner)
+    }
+
+    /// A workspace's Workspace Layouts, in the template's order: empty when
+    /// its subject's kind has no template.
+    pub fn layouts(&self, workspace: WorkspaceId) -> Result<Vec<LayoutInfo>, String> {
+        let record = self.workspace(workspace)?;
+        let Some(subject) = record.subject() else {
+            return Ok(Vec::new());
+        };
+        let facts = self.state.entity_facts(subject);
+        let Some(template) = self.state.workspace_template(&subject.kind, &facts) else {
+            return Ok(Vec::new());
+        };
+        let default = template.default_layout(&facts).map(|layout| layout.name.as_str());
+        let current = template.current_layout(record.chosen_layout(), &facts).map(|layout| layout.name.as_str());
+        Ok(template
+            .layouts
+            .iter()
+            .map(|layout| LayoutInfo {
+                name: layout.name.clone(),
+                default: Some(layout.name.as_str()) == default,
+                current: Some(layout.name.as_str()) == current,
+            })
+            .collect())
+    }
+
+    /// Show the layout `name` in a workspace, or follow its default layout
+    /// with `None`. The user's edits of the layout it showed are kept for
+    /// when it shows that one again. Returns whether the choice changed.
+    pub fn choose_layout(&mut self, workspace: WorkspaceId, name: Option<&str>) -> Result<bool, String> {
+        if let Some(name) = name {
+            if !self.layouts(workspace)?.iter().any(|layout| layout.name == name) {
+                return Err(format!("no layout {name:?} for this workspace"));
+            }
+        }
+        let chosen =
+            self.with_workspace(workspace, |record, clock, _, _| Ok::<_, String>(record.choose_layout(clock, name.map(str::to_owned))))?;
+        if chosen {
+            self.with_workspace(workspace, |record, clock, _, planner| Ok::<_, String>(record.follow_baseline(clock, None, planner)))?;
+        }
+        Ok(chosen)
     }
 
     /// A registered workspace's slots, in default placement order.
@@ -908,14 +961,14 @@ impl Sidebar {
     /// The host gives a new slot a tab in its next commit, which otherwise
     /// places it. A facet's entity names its provider.
     pub fn set_slot(&mut self, workspace: WorkspaceId, key: &str, spec: ViewSpec, rebind: RebindPolicy) -> Result<bool, String> {
-        self.with_workspace(workspace, |record, clock, _| record.set_slot(clock, key, spec, rebind))
+        self.with_workspace(workspace, |record, clock, _, planner| record.set_slot(clock, key, spec, rebind, planner))
     }
 
     /// Remove a slot: the user's own slot or a detached slot its baseline
     /// dropped goes; a baseline slot gets a tombstone (see
     /// [`WorkspaceSlots::remove`](crate::slots::WorkspaceSlots::remove)).
     pub fn remove_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
-        let removed = self.with_workspace(workspace, |record, clock, _| record.remove_slot(clock, key))?;
+        let removed = self.with_workspace(workspace, |record, clock, _, planner| record.remove_slot(clock, key, planner))?;
         if removed {
             self.managed.forget_slot(workspace, key);
         }
@@ -925,26 +978,26 @@ impl Sidebar {
     /// Drop a baseline slot's override or tombstone, so it follows the
     /// provider again.
     pub fn reattach_slot(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
-        self.with_workspace(workspace, |record, clock, _| Ok(record.reattach_slot(clock, key)))
+        self.with_workspace(workspace, |record, clock, _, planner| Ok(record.reattach_slot(clock, key, planner)))
     }
 
     /// Set the user's name for a workspace over the provider's, or drop it
     /// with `None`. Returns whether it changed.
     pub fn set_workspace_name(&mut self, workspace: WorkspaceId, name: Option<String>) -> Result<bool, String> {
-        self.with_workspace(workspace, |record, clock, _| Ok(record.set_name(clock, name)))
+        self.with_workspace(workspace, |record, clock, _, _| Ok(record.set_name(clock, name)))
     }
 
     /// Set the user's mood for a workspace over the provider's, or drop it
     /// with `None`. Returns whether it changed.
     pub fn set_workspace_mood(&mut self, workspace: WorkspaceId, mood: Option<String>) -> Result<bool, String> {
-        self.with_workspace(workspace, |record, clock, _| Ok(record.set_mood(clock, mood)))
+        self.with_workspace(workspace, |record, clock, _, _| Ok(record.set_mood(clock, mood)))
     }
 
     /// The host has dealt with the live instance a rebind replaced: a
     /// `keep-previous` slot's previous instance, or the instance of a slot
     /// the provider removed. Returns whether there was one.
     pub fn release_slot_previous(&mut self, workspace: WorkspaceId, key: &str) -> Result<bool, String> {
-        let released = self.with_workspace(workspace, |record, clock, _| Ok::<_, String>(record.release_departed(clock, key)))?;
+        let released = self.with_workspace(workspace, |record, clock, _, _| Ok::<_, String>(record.release_departed(clock, key)))?;
         Ok(self.managed.release_previous(workspace, key) || released)
     }
 
@@ -993,13 +1046,15 @@ impl Sidebar {
         applied: &str,
         expected: u64,
     ) -> Result<u64, CommitError> {
-        self.with_workspace(workspace, |record, clock, managed| record.set_resolution(clock, managed, key, resolution, applied, expected))
+        self.with_workspace(workspace, |record, clock, managed, _| {
+            record.set_resolution(clock, managed, key, resolution, applied, expected)
+        })
     }
 
     /// Clear a slot's saved portable Target Resolution, if `expected` is its
     /// saved generation. Returns whether there was one.
     pub fn clear_slot_resolution(&mut self, workspace: WorkspaceId, key: &str, expected: u64) -> Result<bool, CommitError> {
-        self.with_workspace(workspace, |record, clock, _| record.clear_resolution(clock, key, expected))
+        self.with_workspace(workspace, |record, clock, _, _| record.clear_resolution(clock, key, expected))
     }
 
     /// Commit a workspace's whole arrangement, if `expected` is its current
@@ -1014,14 +1069,14 @@ impl Sidebar {
         doc: ArrangementDoc,
         expected: u64,
     ) -> Result<ArrangementCommit, CommitError> {
-        self.with_workspace(workspace, |record, clock, _| record.commit_arrangement(clock, doc, expected))
+        self.with_workspace(workspace, |record, clock, _, planner| record.commit_arrangement(clock, doc, expected, planner))
     }
 
     /// Settle a provider change to an arrangement the user owns: keep the
     /// user's, or follow the provider's again (which also drops soft
     /// overrides). Returns the generation after the call.
     pub fn resolve_arrangement(&mut self, workspace: WorkspaceId, choice: Resolve, expected: u64) -> Result<u64, CommitError> {
-        self.with_workspace(workspace, |record, clock, _| record.resolve_arrangement(clock, choice, expected))
+        self.with_workspace(workspace, |record, clock, _, planner| record.resolve_arrangement(clock, choice, expected, planner))
     }
 
     /// A registered workspace's arrangement. Before anything is stored it is
@@ -1391,6 +1446,24 @@ impl Sidebar {
 /// Ended presentation expiry policy is intentionally undecided. Keep the seam
 /// shared by all retained workspace paths; user close is the only expiry today.
 // TODO: apply the policy decided in flotilla-org/wheelhouse#159 here.
+/// Plans the layout `record`'s workspace shows, as its subject's facts and
+/// the user's choice are now; it holds no borrow of the record.
+fn planner<'a>(state: &'a ControllerState, record: &WorkspaceRecord) -> impl Fn(&[SlotInfo]) -> Option<LayoutPlan> + 'a {
+    let subject = record.subject().cloned();
+    let chosen = record.chosen_layout().map(str::to_owned);
+    move |slots| state.layout_plan(subject.as_ref()?, chosen.as_deref(), slots)
+}
+
+/// One of a workspace's Workspace Layouts, as the host lists them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayoutInfo {
+    pub name: String,
+    /// The layout the workspace shows when the user chose none.
+    pub default: bool,
+    /// The layout the workspace shows now.
+    pub current: bool,
+}
+
 fn retained_workspace_expired(_state: &ControllerState, _subjects: &BTreeSet<EntityRef>) -> bool {
     false
 }

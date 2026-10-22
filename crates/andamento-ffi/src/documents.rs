@@ -8,6 +8,7 @@
 //! host passes in is only read, during the call.
 use super::*;
 use andamento_core::{
+    sidebar::LayoutInfo,
     sidebar_arrangement::{Report, SidebarDoc, SidebarView},
     slots::{ArrangementDoc, ArrangementView, Panel, PanelNode, Resolve},
     suggested_layout::Axis,
@@ -78,6 +79,9 @@ pub const ANDAMENTO_NOTE_CLOSED: u32 = 3;
 pub const ANDAMENTO_NOTE_RESTORED: u32 = 4;
 /// A key whose later tabs were removed.
 pub const ANDAMENTO_NOTE_DUPLICATE: u32 = 5;
+/// A workspace slot the Workspace Layout doesn't show, in slot order. It
+/// still resolves; a commit that gives it a tab places it.
+pub const ANDAMENTO_NOTE_UNPLACED: u32 = 6;
 
 #[repr(C)]
 pub struct AndamentoNote {
@@ -86,7 +90,8 @@ pub struct AndamentoNote {
     pub key: Text,
 }
 
-/// The provider changed its hint while the user owns the document.
+/// The provider changed its hint, or the configuration the Workspace
+/// Layout's template, while the user owns the document.
 pub const ANDAMENTO_ARRANGEMENT_FLAG_PROVIDER_CHANGED: u32 = 1;
 /// Soft overrides apply.
 pub const ANDAMENTO_ARRANGEMENT_FLAG_SOFT: u32 = 2;
@@ -99,6 +104,12 @@ pub const ANDAMENTO_ARRANGEMENT_FLAG_UNRESOLVED: u32 = 4;
 /// selected tabs, keyed by panel ID) applied. A structural commit (a split,
 /// move, close, reorder or added tab) makes the user own it; a changed hint
 /// is then flagged PROVIDER_CHANGED until andamento_arrangement_resolve.
+///
+/// A workspace whose subject kind has a template shows a Workspace Layout
+/// instead of the hint: the template evaluated over the slots, less those
+/// it leaves out, noted UNPLACED. Once owned, a new slot goes to the first
+/// surviving panel whose template matcher takes it, or is unplaced; a slot
+/// a commit gives no tab is unplaced. Each layout keeps its own edits.
 #[repr(C)]
 pub struct AndamentoWorkspaceArrangement {
     /// ANDAMENTO_COMMITTED, or ANDAMENTO_STALE after a commit at another
@@ -110,6 +121,9 @@ pub struct AndamentoWorkspaceArrangement {
     pub owned: u32,
     /// ANDAMENTO_ARRANGEMENT_FLAG_* bits.
     pub flags: u32,
+    /// The Workspace Layout this arranges, when has_layout is nonzero.
+    pub has_layout: u32,
+    pub layout: Text,
     /// At most one root.
     pub doc: AndamentoArrangementDoc,
     pub notes: *const AndamentoNote,
@@ -262,6 +276,7 @@ fn workspace_c(view: ArrangementView, status: u32) -> *mut AndamentoWorkspaceArr
         (ANDAMENTO_NOTE_PLACED, view.placed.iter().collect()),
         (ANDAMENTO_NOTE_GONE, view.gone.iter().collect()),
         (ANDAMENTO_NOTE_UNRESOLVED, view.unresolved.iter().collect()),
+        (ANDAMENTO_NOTE_UNPLACED, view.unplaced.iter().collect()),
     ]);
     let flags = [
         (view.provider_changed, ANDAMENTO_ARRANGEMENT_FLAG_PROVIDER_CHANGED),
@@ -273,6 +288,8 @@ fn workspace_c(view: ArrangementView, status: u32) -> *mut AndamentoWorkspaceArr
         generation: view.generation,
         owned: view.owned as u32,
         flags: flags.iter().filter(|(on, _)| *on).map(|(_, bit)| bit).sum(),
+        has_layout: view.layout.is_some() as u32,
+        layout: Text::borrowed(view.layout.as_deref().unwrap_or_default()),
         doc: panels.doc(),
         notes: notes.as_ptr(),
         note_count: notes.len(),
@@ -302,7 +319,8 @@ pub unsafe extern "C" fn andamento_arrangement_get(
 /// stored document already tabbed that has since gone (noted GONE); each
 /// slot has at most one tab. Slots with no tab are appended to the first
 /// tab panel in preorder (selected there if it selects nothing) and noted
-/// PLACED. Neither this nor any slot call changes the snapshot's revision.
+/// PLACED; in a Workspace Layout they are unplaced instead. Neither this nor
+/// any slot call changes the snapshot's revision.
 #[no_mangle]
 pub unsafe extern "C" fn andamento_arrangement_commit(
     h: *mut Andamento,
@@ -323,8 +341,9 @@ pub unsafe extern "C" fn andamento_arrangement_commit(
 
 /// Keep the user's arrangement over the provider's change.
 pub const ANDAMENTO_ARRANGEMENT_KEEP: u32 = 0;
-/// Follow the provider's arrangement again, dropping ownership and soft
-/// overrides.
+/// Follow the provider's arrangement, or the Workspace Layout's template,
+/// again, dropping ownership and soft overrides: resetting the layout. It
+/// need not be PROVIDER_CHANGED.
 pub const ANDAMENTO_ARRANGEMENT_FOLLOW: u32 = 1;
 
 /// Settle a PROVIDER_CHANGED arrangement at expected_generation: KEEP or
@@ -358,6 +377,76 @@ pub unsafe extern "C" fn andamento_arrangement_resolve(
 #[no_mangle]
 pub unsafe extern "C" fn andamento_arrangement_free(arrangement: *mut AndamentoWorkspaceArrangement) {
     take::<_, WorkspaceKeep>(arrangement)
+}
+
+/// The layout a workspace shows when the user chose none.
+pub const ANDAMENTO_LAYOUT_DEFAULT: u32 = 1;
+/// The layout a workspace shows now.
+pub const ANDAMENTO_LAYOUT_CURRENT: u32 = 2;
+
+/// One of a workspace's Workspace Layouts.
+#[repr(C)]
+pub struct AndamentoLayout {
+    pub name: Text,
+    /// ANDAMENTO_LAYOUT_* bits.
+    pub flags: u32,
+}
+
+/// A workspace's Workspace Layouts, in the template's order: none when its
+/// subject's kind has no template.
+#[repr(C)]
+pub struct AndamentoLayoutList {
+    pub layouts: *const AndamentoLayout,
+    pub count: usize,
+}
+type LayoutsKeep = (Vec<LayoutInfo>, Vec<AndamentoLayout>);
+
+/// A workspace's layouts. Free the list with andamento_layouts_free.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_layouts_get(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    error_out: *mut *mut c_char,
+) -> *mut AndamentoLayoutList {
+    run(h, error_out, |h| {
+        let infos = h.sidebar.layouts(workspace.into())?;
+        let layouts: Vec<AndamentoLayout> = infos
+            .iter()
+            .map(|info| AndamentoLayout {
+                name: Text::borrowed(&info.name),
+                flags: if info.default { ANDAMENTO_LAYOUT_DEFAULT } else { 0 } | if info.current { ANDAMENTO_LAYOUT_CURRENT } else { 0 },
+            })
+            .collect();
+        let value = AndamentoLayoutList { layouts: layouts.as_ptr(), count: layouts.len() };
+        Ok(give(value, (infos, layouts)))
+    })
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn andamento_layouts_free(list: *mut AndamentoLayoutList) {
+    take::<_, LayoutsKeep>(list)
+}
+
+/// Show the layout name in a workspace, or (has_name 0) the default one.
+/// The arrangement of the layout shown until now keeps the user's edits for
+/// when it is shown again; the arrangement's generation and the content
+/// revision move, so a commit prepared against the old layout is STALE.
+/// Returns 1, or 0 with an error for a layout the workspace doesn't have.
+#[no_mangle]
+pub unsafe extern "C" fn andamento_layout_choose(
+    h: *mut Andamento,
+    workspace: WorkspaceIdView,
+    has_name: u32,
+    name: Text,
+    error_out: *mut *mut c_char,
+) -> u32 {
+    run(h, error_out, |h| {
+        let name = if has_name != 0 { Some(name.read()?) } else { None };
+        h.sidebar.choose_layout(workspace.into(), name.as_deref())?;
+        Ok(())
+    })
+    .is_some() as u32
 }
 
 fn sidebar_c(view: SidebarView, report: &Report, status: u32) -> *mut AndamentoSidebarArrangement {

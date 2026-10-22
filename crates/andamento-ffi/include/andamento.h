@@ -157,7 +157,12 @@
 // A key whose later tabs were removed.
 #define ANDAMENTO_NOTE_DUPLICATE 5
 
-// The provider changed its hint while the user owns the document.
+// A workspace slot the Workspace Layout doesn't show, in slot order. It
+// still resolves; a commit that gives it a tab places it.
+#define ANDAMENTO_NOTE_UNPLACED 6
+
+// The provider changed its hint, or the configuration the Workspace
+// Layout's template, while the user owns the document.
 #define ANDAMENTO_ARRANGEMENT_FLAG_PROVIDER_CHANGED 1
 
 // Soft overrides apply.
@@ -169,9 +174,16 @@
 // Keep the user's arrangement over the provider's change.
 #define ANDAMENTO_ARRANGEMENT_KEEP 0
 
-// Follow the provider's arrangement again, dropping ownership and soft
-// overrides.
+// Follow the provider's arrangement, or the Workspace Layout's template,
+// again, dropping ownership and soft overrides: resetting the layout. It
+// need not be PROVIDER_CHANGED.
 #define ANDAMENTO_ARRANGEMENT_FOLLOW 1
+
+// The layout a workspace shows when the user chose none.
+#define ANDAMENTO_LAYOUT_DEFAULT 1
+
+// The layout a workspace shows now.
+#define ANDAMENTO_LAYOUT_CURRENT 2
 
 // A View Spec's content: a local command (argv when argc is nonzero, else
 // the shell line in command; optional cwd).
@@ -533,6 +545,12 @@ typedef struct {
 // selected tabs, keyed by panel ID) applied. A structural commit (a split,
 // move, close, reorder or added tab) makes the user own it; a changed hint
 // is then flagged PROVIDER_CHANGED until andamento_arrangement_resolve.
+//
+// A workspace whose subject kind has a template shows a Workspace Layout
+// instead of the hint: the template evaluated over the slots, less those
+// it leaves out, noted UNPLACED. Once owned, a new slot goes to the first
+// surviving panel whose template matcher takes it, or is unplaced; a slot
+// a commit gives no tab is unplaced. Each layout keeps its own edits.
 typedef struct {
   // ANDAMENTO_COMMITTED, or ANDAMENTO_STALE after a commit at another
   // generation: nothing changed, and this is the current document.
@@ -543,11 +561,28 @@ typedef struct {
   uint32_t owned;
   // ANDAMENTO_ARRANGEMENT_FLAG_* bits.
   uint32_t flags;
+  // The Workspace Layout this arranges, when has_layout is nonzero.
+  uint32_t has_layout;
+  AndamentoText layout;
   // At most one root.
   AndamentoArrangementDoc doc;
   const AndamentoNote *notes;
   size_t note_count;
 } AndamentoWorkspaceArrangement;
+
+// One of a workspace's Workspace Layouts.
+typedef struct {
+  AndamentoText name;
+  // ANDAMENTO_LAYOUT_* bits.
+  uint32_t flags;
+} AndamentoLayout;
+
+// A workspace's Workspace Layouts, in the template's order: none when its
+// subject's kind has no template.
+typedef struct {
+  const AndamentoLayout *layouts;
+  size_t count;
+} AndamentoLayoutList;
 
 // The sidebar's document: the dock, one tree or none.
 typedef struct {
@@ -573,7 +608,8 @@ typedef struct {
   size_t note_count;
 } AndamentoSidebarArrangement;
 
-// A View Spec, or a resolution's recipe (whose presentation is unset).
+// A View Spec, or a resolution's recipe (whose presentation and role are
+// unset).
 // Fields its content kind doesn't use are ignored on input and empty on
 // output. presentation is an open vocabulary ("terminal", "web", ...).
 typedef struct {
@@ -591,6 +627,10 @@ typedef struct {
   AndamentoText endpoint;
   uint32_t has_presentation;
   AndamentoText presentation;
+  // What the View is for ("agent", "files", ...; open vocabulary), which
+  // Workspace Layouts arrange by.
+  uint32_t has_role;
+  AndamentoText role;
 } AndamentoViewSpec;
 
 // One named field of a portable Target Resolution.
@@ -997,7 +1037,8 @@ AndamentoWorkspaceArrangement *andamento_arrangement_get(Andamento *h,
 // stored document already tabbed that has since gone (noted GONE); each
 // slot has at most one tab. Slots with no tab are appended to the first
 // tab panel in preorder (selected there if it selects nothing) and noted
-// PLACED. Neither this nor any slot call changes the snapshot's revision.
+// PLACED; in a Workspace Layout they are unplaced instead. Neither this nor
+// any slot call changes the snapshot's revision.
 AndamentoWorkspaceArrangement *andamento_arrangement_commit(Andamento *h,
                                                             AndamentoWorkspaceId workspace,
                                                             const AndamentoArrangementDoc *doc,
@@ -1015,6 +1056,24 @@ uint32_t andamento_arrangement_resolve(Andamento *h,
                                        char **error_out);
 
 void andamento_arrangement_free(AndamentoWorkspaceArrangement *arrangement);
+
+// A workspace's layouts. Free the list with andamento_layouts_free.
+AndamentoLayoutList *andamento_layouts_get(Andamento *h,
+                                           AndamentoWorkspaceId workspace,
+                                           char **error_out);
+
+void andamento_layouts_free(AndamentoLayoutList *list);
+
+// Show the layout name in a workspace, or (has_name 0) the default one.
+// The arrangement of the layout shown until now keeps the user's edits for
+// when it is shown again; the arrangement's generation and the content
+// revision move, so a commit prepared against the old layout is STALE.
+// Returns 1, or 0 with an error for a layout the workspace doesn't have.
+uint32_t andamento_layout_choose(Andamento *h,
+                                 AndamentoWorkspaceId workspace,
+                                 uint32_t has_name,
+                                 AndamentoText name,
+                                 char **error_out);
 
 // The sidebar arrangement. Free it with andamento_sidebar_arrangement_free.
 // Andamento reconciles it when what is declared changes (on configure, and

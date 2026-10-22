@@ -108,6 +108,76 @@ fn a_workspace_subject_materializes_with_an_empty_recipe() {
     }
 }
 
+// A workspace's layouts reach C: their list, the one an arrangement is of,
+// the slots it leaves unplaced, choosing another and the slots' roles.
+#[test]
+fn workspace_layouts_reach_c() {
+    unsafe {
+        let template = r#"
+workspace kind="vessel" {
+  slot "shell" role="shell" kind="command" command="zsh"
+  layout "agent" { tabs id="main" { slots role="agent"; }; }
+  layout "all" { tabs id="main" { slots rest=true; }; }
+}
+"#;
+        let config = format!("{}\n{template}", include_str!("../../andamento-core/tests/fixtures/abbreviation.kdl"));
+        let mut error = ptr::null_mut();
+        let h = create(&config);
+        let patch = r#"{"type":"metadata-patch","target":{"kind":"entity","value":{"kind":"vessel","id":"worker"}},"source_id":"test","set":{"flotilla.vessel":{"value":{"type":"text","value":"worker"}},"display.label":{"value":{"type":"text","value":"worker"}}},"unset":[]}"#;
+        assert_eq!(andamento_apply_patch_json(h, 0, text(PROVIDER), text(patch), &mut error), 1);
+        let snapshot = andamento_snapshot_acquire(h, &mut error);
+        assert_eq!(andamento_dispatch(h, snapshot, node(snapshot, 1).activate, &mut error), 1);
+        andamento_snapshot_release(snapshot);
+        let effects = andamento_effects_take(h, &mut error);
+        let mut effect = MaybeUninit::<EffectView>::uninit();
+        assert_eq!(andamento_effects_get(effects, 0, effect.as_mut_ptr()), 1);
+        let request = effect.assume_init().request_id;
+        andamento_effects_release(effects);
+        let id = WorkspaceId::from_bytes([7; 16]);
+        assert_eq!(andamento_complete(h, request, ANDAMENTO_COMPLETE_MATERIALIZE, id.into(), text(""), &mut error), 1);
+        let workspace = WorkspaceInput { id: id.into(), position: 0, name: text("worker"), selected: 1 };
+        assert_eq!(andamento_observe(h, &workspace, 1, ptr::null(), 0, &mut error), 1);
+
+        let list = andamento_layouts_get(h, id.into(), &mut error);
+        let layouts: Vec<(String, u32)> =
+            slice((*list).layouts, (*list).count).unwrap().iter().map(|layout| (layout.name.read().unwrap(), layout.flags)).collect();
+        assert_eq!(layouts, [("agent".into(), ANDAMENTO_LAYOUT_DEFAULT | ANDAMENTO_LAYOUT_CURRENT), ("all".into(), 0)]);
+        andamento_layouts_free(list);
+
+        let arrangement = |error: &mut *mut c_char| {
+            let arrangement = andamento_arrangement_get(h, id.into(), error);
+            let layout = (*arrangement).layout.read().unwrap();
+            let unplaced: Vec<String> = slice((*arrangement).notes, (*arrangement).note_count)
+                .unwrap()
+                .iter()
+                .filter(|note| note.kind == ANDAMENTO_NOTE_UNPLACED)
+                .map(|note| note.key.read().unwrap())
+                .collect();
+            let has = (*arrangement).has_layout;
+            andamento_arrangement_free(arrangement);
+            (has, layout, unplaced)
+        };
+        assert_eq!(arrangement(&mut error), (1, "agent".into(), vec!["t:shell".to_owned()]));
+        assert_eq!(andamento_layout_choose(h, id.into(), 1, text("all"), &mut error), 1);
+        assert_eq!(arrangement(&mut error), (1, "all".into(), vec![]));
+        assert_eq!(andamento_layout_choose(h, id.into(), 1, text("nope"), &mut error), 0);
+        assert!(!error.is_null());
+        andamento_string_free(error);
+        error = ptr::null_mut();
+
+        let slots = andamento_slots_get(h, id.into(), &mut error);
+        let roles: Vec<(String, u32, String)> = slice((*slots).slots, (*slots).slot_count)
+            .unwrap()
+            .iter()
+            .map(|slot| (slot.key.read().unwrap(), slot.spec.has_role, slot.spec.role.read().unwrap()))
+            .collect();
+        assert_eq!(roles, [("primary".into(), 1, "agent".into()), ("t:shell".into(), 1, "shell".into())]);
+        andamento_slots_free(slots);
+        andamento_destroy(h);
+        assert!(error.is_null());
+    }
+}
+
 // A display-variable control names its variable and whether it persists;
 // both borrow from the snapshot, which outlives the sidebar.
 #[test]
