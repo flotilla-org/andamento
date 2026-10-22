@@ -3916,7 +3916,7 @@ fn subject_binding(subject: &EntityRef) -> BTreeMap<String, MetadataValueUpdate>
 
 /// An entity's opening recipe: an empty one is none, as there is nothing to
 /// run, so every host sees a recipe-less open the same way.
-fn materialize_recipe<'a>(values: &'a impl Entries) -> Option<&'a str> {
+fn materialize_recipe(values: &impl Entries) -> Option<&str> {
     metadata_entry_text(values, KEY_MATERIALIZE_RECIPE).filter(|recipe| !recipe.is_empty())
 }
 
