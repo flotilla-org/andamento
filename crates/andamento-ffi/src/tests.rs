@@ -81,6 +81,33 @@ fn declared_abbreviation_reaches_c_fields_but_keeps_full_details() {
     }
 }
 
+// A workspace subject without an opening recipe is openable, and its
+// materialization carries an empty recipe and no managed target.
+#[test]
+fn a_workspace_subject_materializes_with_an_empty_recipe() {
+    unsafe {
+        let config = format!("{}\nworkspace kind=\"vessel\"\n", include_str!("../../andamento-core/tests/fixtures/abbreviation.kdl"));
+        let mut error = ptr::null_mut();
+        let h = create(&config);
+        let patch = r#"{"type":"metadata-patch","target":{"kind":"entity","value":{"kind":"vessel","id":"worker"}},"source_id":"test","set":{"flotilla.vessel":{"value":{"type":"text","value":"worker"}},"display.label":{"value":{"type":"text","value":"worker"}}},"unset":[]}"#;
+        assert_eq!(andamento_apply_patch_json(h, 0, text(PROVIDER), text(patch), &mut error), 1);
+        let snapshot = andamento_snapshot_acquire(h, &mut error);
+        let row = node(snapshot, 1);
+        assert_eq!((row.state, row.openable), (ANDAMENTO_LATENT, 1));
+        assert_eq!(andamento_dispatch(h, snapshot, row.activate, &mut error), 1);
+        let effects = andamento_effects_take(h, &mut error);
+        assert_eq!(andamento_effects_count(effects), 1);
+        let mut effect = MaybeUninit::<EffectView>::uninit();
+        assert_eq!(andamento_effects_get(effects, 0, effect.as_mut_ptr()), 1);
+        let effect = effect.assume_init();
+        assert_eq!((effect.kind, effect.recipe.read().unwrap().as_str(), effect.has_primary_target), (1, "", 0));
+        andamento_effects_release(effects);
+        andamento_snapshot_release(snapshot);
+        andamento_destroy(h);
+        assert!(error.is_null());
+    }
+}
+
 // A display-variable control names its variable and whether it persists;
 // both borrow from the snapshot, which outlives the sidebar.
 #[test]

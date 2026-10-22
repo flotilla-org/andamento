@@ -21,7 +21,7 @@ use crate::{
     sidebar_arrangement::{self, Declared, LocalSection, Report, SidebarArrangement, SidebarDoc, SidebarView},
     slots::{ArrangementCommit, ArrangementDoc, ArrangementView, Baseline, OverlayView, Resolve, SlotInfo},
     state::{ControllerState, ControllerTab, EntityActivation, RevisionEvaluation},
-    suggested_layout::{RebindPolicy, ViewSpec},
+    suggested_layout::{PrimarySlot, RebindPolicy, ViewSpec},
     target_resolution::{PortableResolution, SavedResolution},
     template_config::{parse_template_config_kdl, TemplateConfigCatalog},
     versioned::{Clock, CommitError, Versioned},
@@ -862,7 +862,10 @@ impl Sidebar {
                 let baseline = record
                     .subject()
                     .and_then(|subject| {
-                        let primary = self.state.opens_workspace(&subject.kind) && !record.has_user_slot("u:primary");
+                        let primary = match record.has_user_slot("u:primary") {
+                            true => PrimarySlot::IfPublished,
+                            false => self.state.primary_slot(subject),
+                        };
                         self.state.suggested_layout(subject, primary).ok().flatten()
                     })
                     .map(|layout| Baseline::from_layout(&layout));

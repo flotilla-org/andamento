@@ -1190,6 +1190,31 @@ impl PluginStatsRecorder {
 mod tests {
     use super::*;
 
+    // A workspace subject requests materialization without a recipe; an
+    // entity that is neither has nothing to open. Both survive serde, and
+    // the fields are left out when unset.
+    #[test]
+    fn a_workspace_subject_requests_materialization_without_a_recipe() {
+        let subject = LatentTab {
+            entity: EntityRef::local("vessel", "v"),
+            action_target: "vessel:v".into(),
+            name: "v".into(),
+            materialization: LatentMaterializationState::default(),
+            materialize_recipe: None,
+            opens_workspace: true,
+            checkout_path: None,
+        };
+        let request = subject.materialize_request().unwrap();
+        assert_eq!(request.recipe, None);
+        assert_eq!(serde_json::from_str::<LatentTab>(&serde_json::to_string(&subject).unwrap()).unwrap(), subject);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(!json.contains("recipe"));
+        assert_eq!(serde_json::from_str::<MaterializeLatentRequest>(&json).unwrap(), request);
+        let plain = LatentTab { opens_workspace: false, ..subject };
+        assert_eq!(plain.materialize_request(), None);
+        assert!(!serde_json::to_string(&plain).unwrap().contains("opens_workspace"));
+    }
+
     #[test]
     fn plugin_message_names_use_andamento_namespace() {
         let message_names = [

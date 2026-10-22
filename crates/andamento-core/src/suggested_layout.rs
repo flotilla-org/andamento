@@ -233,14 +233,23 @@ impl fmt::Display for LayoutError {
 
 impl std::error::Error for LayoutError {}
 
+/// When a Suggested Layout has the primary slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrimarySlot {
+    /// When the entity publishes `workspace.primary.state`.
+    IfPublished,
+    /// Always, as a workspace subject whose workspace keeps no primary of its
+    /// own has: resolved from its opening recipe when it publishes no
+    /// `workspace.primary.state`, and unavailable while it has none.
+    Always,
+}
+
 /// Reads the Suggested Layout `entity` publishes, if any. `facts` are its
-/// resolved, live facts. A `subject` (a workspace subject whose workspace
-/// keeps no primary of its own) always has the primary slot, resolved from
-/// its opening recipe when it publishes no `workspace.primary.state`, and
-/// unavailable while it has none. Returns `Ok(None)` when it publishes
-/// neither `layout.*` nor `workspace.primary.state` and isn't a `subject`.
-pub fn parse(entity: &EntityRef, facts: &FactMap, subject: bool) -> Result<Option<SuggestedLayout>, LayoutError> {
-    let primary = (subject || facts.contains_key(KEY_PRIMARY_STATE)).then(|| primary_slot(entity, facts));
+/// resolved, live facts; `primary` says when it has the primary slot.
+/// Returns `Ok(None)` when it has neither `layout.*` facts nor a primary slot.
+pub fn parse(entity: &EntityRef, facts: &FactMap, primary: PrimarySlot) -> Result<Option<SuggestedLayout>, LayoutError> {
+    let always = primary == PrimarySlot::Always;
+    let primary = (always || facts.contains_key(KEY_PRIMARY_STATE)).then(|| primary_slot(entity, facts));
     if !facts.keys().any(|key| key.starts_with("layout.")) {
         return Ok(primary.map(|slot| SuggestedLayout { version: BaselineVersion::PrimaryOnly, slots: vec![slot], arrangement: None }));
     }

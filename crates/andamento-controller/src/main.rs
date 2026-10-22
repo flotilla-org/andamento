@@ -52,6 +52,9 @@ const CONFIG_ORIGIN_TAB_ID: &str = "origin_tab_id";
 const CONFIG_PANE_KIND: &str = "pane_kind";
 const CONFIG_RAIL_SCOPE: &str = "rail_scope";
 
+/// What a tab opened without an opening recipe runs: the user's shell.
+const NO_RECIPE_COMMAND: &str = "exec \"${SHELL:-/bin/sh}\"";
+
 fn command_for_materialize_recipe(recipe: &str, checkout_path: Option<&str>, home_dir: Option<&std::path::Path>) -> Option<CommandToRun> {
     let mut command = CommandToRun::new_with_args("/bin/sh", vec!["-c", recipe]);
     command.cwd = Some(checkout_path.map(PathBuf::from).or_else(|| home_dir.map(std::path::Path::to_path_buf))?);
@@ -632,12 +635,12 @@ impl PluginState {
             switch_tab_to((tab_position + 1) as u32);
             return false;
         }
-        // A workspace subject whose provider hasn't said how to fill it yet:
-        // a Zellij tab needs a command to run, so there is nothing to open.
-        let Some(recipe) = request.recipe.as_deref() else {
+        // A workspace subject whose provider hasn't said how to fill it yet
+        // opens on the user's shell, as a tmux window does.
+        let recipe = request.recipe.as_deref().unwrap_or_else(|| {
             self.stats.increment("latent.materialize.no-recipe");
-            return false;
-        };
+            NO_RECIPE_COMMAND
+        });
         if !self.state.begin_latent_materialization(&request) {
             self.stats.increment("latent.materialize.rejected-stale");
             return false;
@@ -1450,6 +1453,22 @@ mod tests {
         assert_eq!(command.path.to_string_lossy(), "/bin/sh");
         assert_eq!(command.args, vec!["-c", "flotilla attach 'latent tabs'"]);
         assert_eq!(command.cwd, Some(PathBuf::from("/home/robert")));
+    }
+
+    #[test]
+    fn a_tab_without_a_recipe_runs_the_users_shell() {
+        let run = |shell: Option<&str>| {
+            let mut command = std::process::Command::new("/bin/sh");
+            command.args(["-c", NO_RECIPE_COMMAND]).env_remove("SHELL").stdin(std::process::Stdio::null());
+            if let Some(shell) = shell {
+                command.env("SHELL", shell);
+            }
+            command.output().unwrap()
+        };
+        let echoed = run(Some("/bin/echo"));
+        assert!(echoed.status.success());
+        assert_eq!(echoed.stdout, b"\n");
+        assert!(run(None).status.success(), "falls back to /bin/sh");
     }
 
     #[test]

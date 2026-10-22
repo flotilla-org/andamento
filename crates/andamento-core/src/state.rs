@@ -1852,7 +1852,7 @@ impl ControllerState {
                 return PresentationState::Opening;
             }
             PresentationState::Latent {
-                openable: matches!(facts.get(KEY_MATERIALIZE_RECIPE), Some(MetadataValue::Text(_))) || self.opens_workspace(&entity.kind),
+                openable: self.openable(matches!(facts.get(KEY_MATERIALIZE_RECIPE), Some(MetadataValue::Text(_))), &entity.kind),
             }
         };
         // A node is stale when the entity it presents (a ref's target) has a
@@ -2009,7 +2009,7 @@ impl ControllerState {
                     DetailIntent::FocusWorkspace
                 } else if !evaluation.live_targets.contains(&action_target)
                     && !self.pending_latent_materializations.contains_key(&action_target)
-                    && (metadata_entry_text(&entity.facts, KEY_MATERIALIZE_RECIPE).is_some() || self.opens_workspace(&entity.entity.kind))
+                    && self.openable(metadata_entry_text(&entity.facts, KEY_MATERIALIZE_RECIPE).is_some(), &entity.entity.kind)
                 {
                     DetailIntent::MaterializeWorkspace
                 } else {
@@ -3391,7 +3391,7 @@ impl ControllerState {
             return resolutions;
         }
         let facts = values.iter().map(|(key, entry)| (key.into(), entry.value.clone())).collect();
-        let Ok(Some(layout)) = suggested_layout::parse(entity, &facts, false) else {
+        let Ok(Some(layout)) = suggested_layout::parse(entity, &facts, self.primary_slot(entity)) else {
             return resolutions;
         };
         for slot in layout.slots {
@@ -3414,17 +3414,35 @@ impl ControllerState {
         self.template_catalog.as_ref().is_some_and(|catalog| catalog.opens_workspace(kind))
     }
 
-    /// The Suggested Layout `entity` publishes now, read from its live facts;
-    /// `subject` gives it the primary slot of a workspace subject
-    /// ([`suggested_layout::parse`]).
-    pub(crate) fn suggested_layout(&self, entity: &EntityRef, subject: bool) -> Result<Option<SuggestedLayout>, LayoutError> {
+    /// When `entity`'s Suggested Layout has the primary slot: always for a
+    /// workspace subject.
+    pub(crate) fn primary_slot(&self, entity: &EntityRef) -> suggested_layout::PrimarySlot {
+        match self.opens_workspace(&entity.kind) {
+            true => suggested_layout::PrimarySlot::Always,
+            false => suggested_layout::PrimarySlot::IfPublished,
+        }
+    }
+
+    /// Whether an entity of `kind` is openable: it has an opening recipe, or
+    /// is a workspace subject, which opens without one.
+    fn openable(&self, has_recipe: bool, kind: &str) -> bool {
+        has_recipe || self.opens_workspace(kind)
+    }
+
+    /// The Suggested Layout `entity` publishes now, read from its live facts,
+    /// with the primary slot as `primary` says ([`suggested_layout::parse`]).
+    pub(crate) fn suggested_layout(
+        &self,
+        entity: &EntityRef,
+        primary: suggested_layout::PrimarySlot,
+    ) -> Result<Option<SuggestedLayout>, LayoutError> {
         let facts = self
             .metadata
             .resolved(&EntityId::Entity(entity.clone()), self.now())
             .named()
             .map(|(key, fact)| (key.clone(), fact.entry.value.clone()))
             .collect();
-        suggested_layout::parse(entity, &facts, subject)
+        suggested_layout::parse(entity, &facts, primary)
     }
 
     fn desired_content(&self, target: &EntityId) -> Option<DesiredContent> {

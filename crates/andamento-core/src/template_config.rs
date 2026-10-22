@@ -117,8 +117,13 @@ impl ExternalTemplateConfig {
         if self.version != 1 {
             return Err(TemplateConfigError::Validation(format!("unsupported template config version: {}", self.version)));
         }
-        if self.workspaces.iter().any(|workspace| workspace.kind.trim().is_empty()) {
-            return Err(TemplateConfigError::Validation("workspace kind cannot be empty".to_owned()));
+        if let Some(workspace) =
+            self.workspaces.iter().find(|workspace| workspace.kind.is_empty() || workspace.kind.trim() != workspace.kind)
+        {
+            return Err(TemplateConfigError::Validation(format!(
+                "workspace kind {:?} must be a kind, without surrounding spaces",
+                workspace.kind
+            )));
         }
         let mut names = BTreeSet::new();
         for template in &self.templates {
@@ -2659,7 +2664,7 @@ mod tests {
         assert!(catalog.opens_workspace("vessel") && catalog.opens_workspace("convoy"));
         assert!(!catalog.opens_workspace("issue"));
         assert!(!TemplateConfigCatalog::default().opens_workspace("vessel"));
-        for bad in [r#"workspace kind="""#, r#"workspace kind=" ""#, "workspace"] {
+        for bad in [r#"workspace kind="""#, r#"workspace kind=" ""#, r#"workspace kind=" vessel""#, "workspace"] {
             assert!(parse_template_config_kdl(bad).is_err(), "{bad} parses");
         }
     }

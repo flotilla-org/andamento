@@ -469,3 +469,26 @@ fn a_workspace_with_its_own_primary_gains_no_provider_primary() {
     sidebar.feed(200, [patch(subject(), &[("display.label", text("Renamed"))], &[])]);
     assert_eq!(keys(&sidebar), ["u:primary"]);
 }
+
+// A subject's layout may place its primary without publishing
+// `workspace.primary.*`: its other slots still resolve.
+#[test]
+fn a_subject_layout_may_list_its_primary_without_primary_facts() {
+    let mut sidebar = subject_session();
+    let mut listed = layout("1", vec![command_slot("shell", "make")], &["shell", "primary"]);
+    listed.set.insert(
+        "action.primary.recipe".into(),
+        MetadataValueUpdate { value: text("attach v"), ttl_ms: None, precedence: None, ordinal: None },
+    );
+    sidebar.feed(150, [listed]);
+    let effects = sidebar.dispatch(Action::Activate { entity: subject() }).unwrap();
+    let [HostEffect::Materialize { request_id, .. }] = effects[..] else {
+        panic!("expected materialize: {effects:?}");
+    };
+    sidebar.complete(request_id, Ok(Some(worker())));
+    sidebar.observe(vec![Workspace { id: worker(), position: 0, name: "Worker".into(), selected: true }], vec![]);
+    assert_eq!(keys(&sidebar), ["shell", "primary"]);
+    for key in ["shell", "primary"] {
+        assert_eq!(sidebar.plan_slot(worker(), key, "").unwrap().state, ContentState::Updating, "{key}");
+    }
+}
