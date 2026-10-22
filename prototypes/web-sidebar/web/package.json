@@ -1,0 +1,18 @@
+{
+  "name": "andamento-web-sidebar-prototype",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "core": "cd ../core-wasm && wasm-pack build --release --target web --out-dir ../web/src/core",
+    "dev": "pnpm core && vite",
+    "build": "pnpm core && vite build"
+  },
+  "dependencies": {
+    "solid-js": "1.9.9"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vite": "7.1.12",
+    "vite-plugin-solid": "2.11.10"
+  }
+}
