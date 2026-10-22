@@ -78,7 +78,7 @@ fn open(sidebar: &mut Sidebar) -> u64 {
     let effects = sidebar.dispatch(Action::Activate { entity: entity("vessel", "v") }).unwrap();
     match &effects[..] {
         [HostEffect::Materialize { request_id, recipe, entity: subject, .. }] => {
-            assert_eq!(recipe, "printf hello");
+            assert_eq!(recipe.as_deref(), Some("printf hello"));
             assert_eq!(subject, &entity("vessel", "v"));
             *request_id
         }
@@ -252,7 +252,7 @@ fn recipe_only_changes_invalidate_snapshot_and_activation() {
         sidebar.snapshot().surface.sections[0].nodes[0].children[0].content
     );
     let effects = sidebar.dispatch(Action::Activate { entity: entity("vessel", "v") }).unwrap();
-    assert!(matches!(&effects[0], HostEffect::Materialize { recipe, .. } if recipe == "printf changed"));
+    assert!(matches!(&effects[0], HostEffect::Materialize { recipe, .. } if recipe.as_deref() == Some("printf changed")));
 }
 
 #[test]

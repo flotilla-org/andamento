@@ -1851,7 +1851,9 @@ impl ControllerState {
             if self.pending_latent_materializations.keys().any(|target| is_action_target(entity, own, target)) {
                 return PresentationState::Opening;
             }
-            PresentationState::Latent { openable: matches!(facts.get(KEY_MATERIALIZE_RECIPE), Some(MetadataValue::Text(_))) }
+            PresentationState::Latent {
+                openable: matches!(facts.get(KEY_MATERIALIZE_RECIPE), Some(MetadataValue::Text(_))) || self.opens_workspace(&entity.kind),
+            }
         };
         // A node is stale when the entity it presents (a ref's target) has a
         // stale provider.
@@ -2007,7 +2009,7 @@ impl ControllerState {
                     DetailIntent::FocusWorkspace
                 } else if !evaluation.live_targets.contains(&action_target)
                     && !self.pending_latent_materializations.contains_key(&action_target)
-                    && metadata_entry_text(&entity.facts, KEY_MATERIALIZE_RECIPE).is_some()
+                    && (metadata_entry_text(&entity.facts, KEY_MATERIALIZE_RECIPE).is_some() || self.opens_workspace(&entity.entity.kind))
                 {
                     DetailIntent::MaterializeWorkspace
                 } else {
@@ -2733,6 +2735,7 @@ impl ControllerState {
                     action_target,
                     name,
                     materialize_recipe: metadata_entry_text(&entity.facts, KEY_MATERIALIZE_RECIPE).map(str::to_owned),
+                    opens_workspace: self.opens_workspace(&entity.entity.kind),
                     checkout_path: metadata_entry_text(&entity.facts, KEY_CHECKOUT_PATH).map(str::to_owned),
                 })
             })
@@ -3381,14 +3384,14 @@ impl ControllerState {
         use crate::suggested_layout::{SlotResolution, PRIMARY_SLOT};
         let mut resolutions = BTreeMap::new();
         let values = self.metadata.resolved(&EntityId::Entity(entity.clone()), self.now());
-        if let Some(desired) = desired_primary(&values) {
+        if let Some(desired) = desired_primary(&values, self.subject_target(entity).as_deref()) {
             resolutions.insert(PRIMARY_SLOT.to_owned(), desired);
         }
         if !values.iter().any(|(key, _)| key.starts_with("layout.")) {
             return resolutions;
         }
         let facts = values.iter().map(|(key, entry)| (key.into(), entry.value.clone())).collect();
-        let Ok(Some(layout)) = suggested_layout::parse(entity, &facts) else {
+        let Ok(Some(layout)) = suggested_layout::parse(entity, &facts, false) else {
             return resolutions;
         };
         for slot in layout.slots {
@@ -3405,19 +3408,37 @@ impl ControllerState {
         resolutions
     }
 
-    /// The Suggested Layout `entity` publishes now, read from its live facts.
-    pub(crate) fn suggested_layout(&self, entity: &EntityRef) -> Result<Option<SuggestedLayout>, LayoutError> {
+    /// Whether entities of `kind` are workspace subjects (`workspace kind=…`
+    /// in the template config): each opens a workspace without a recipe.
+    pub(crate) fn opens_workspace(&self, kind: &str) -> bool {
+        self.template_catalog.as_ref().is_some_and(|catalog| catalog.opens_workspace(kind))
+    }
+
+    /// The Suggested Layout `entity` publishes now, read from its live facts;
+    /// `subject` gives it the primary slot of a workspace subject
+    /// ([`suggested_layout::parse`]).
+    pub(crate) fn suggested_layout(&self, entity: &EntityRef, subject: bool) -> Result<Option<SuggestedLayout>, LayoutError> {
         let facts = self
             .metadata
             .resolved(&EntityId::Entity(entity.clone()), self.now())
             .named()
             .map(|(key, fact)| (key.clone(), fact.entry.value.clone()))
             .collect();
-        suggested_layout::parse(entity, &facts)
+        suggested_layout::parse(entity, &facts, subject)
     }
 
     fn desired_content(&self, target: &EntityId) -> Option<DesiredContent> {
-        desired_primary(&self.metadata.resolved(target, self.now()))
+        let subject = match target {
+            EntityId::Entity(entity) => self.subject_target(entity),
+            _ => None,
+        };
+        desired_primary(&self.metadata.resolved(target, self.now()), subject.as_deref())
+    }
+
+    /// The action target a workspace subject's primary slot falls back to,
+    /// or `None` when `entity` isn't a workspace subject.
+    fn subject_target(&self, entity: &EntityRef) -> Option<String> {
+        self.opens_workspace(&entity.kind).then(|| entity.action_target())
     }
 
     /// The managed target a materialization of `recipe` would install, if the
@@ -3873,23 +3894,31 @@ fn subject_binding(subject: &EntityRef) -> BTreeMap<String, MetadataValueUpdate>
 }
 
 /// The `primary` slot's resolution, from the facts managed primary content
-/// has always read.
-fn desired_primary(values: &impl Entries) -> Option<DesiredContent> {
+/// has always read. A workspace subject (`subject_target` is its action
+/// target) that publishes no `workspace.primary.state` (a vessel or convoy,
+/// today) resolves it to its opening recipe, at its action target: the
+/// recipe is that Slot's content, not a condition for opening the workspace,
+/// so a workspace opened without one fills in when one arrives.
+fn desired_primary(values: &impl Entries, subject_target: Option<&str>) -> Option<DesiredContent> {
     use crate::managed::TerminalContent;
     let text = |key| metadata_entry_text(values, key).map(str::to_owned);
-    match text("workspace.primary.state").as_deref()? {
-        "held" => Some(DesiredContent::Held),
-        "ready" => Some(DesiredContent::Ready(
+    let ready = |target: Option<String>| -> Option<DesiredContent> {
+        Some(DesiredContent::Ready(
             TerminalContent {
-                target: text("workspace.primary.target").filter(|s| !s.is_empty())?,
+                target: target.filter(|s| !s.is_empty())?,
                 command: text(KEY_MATERIALIZE_RECIPE).filter(|s| !s.is_empty())?,
                 // The same fact materialization launches in, so a workspace opened
                 // from this resolution compares equal to it.
                 cwd: text(KEY_CHECKOUT_PATH),
             }
             .into(),
-        )),
-        _ => None,
+        ))
+    };
+    match text("workspace.primary.state").as_deref() {
+        Some("held") => Some(DesiredContent::Held),
+        Some("ready") => ready(text("workspace.primary.target")),
+        Some(_) => None,
+        None => subject_target.and_then(|fallback| ready(text(KEY_ACTION_TARGET).or_else(|| Some(fallback.to_owned())))),
     }
 }
 

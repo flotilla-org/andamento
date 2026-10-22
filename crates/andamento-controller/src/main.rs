@@ -632,13 +632,19 @@ impl PluginState {
             switch_tab_to((tab_position + 1) as u32);
             return false;
         }
+        // A workspace subject whose provider hasn't said how to fill it yet:
+        // a Zellij tab needs a command to run, so there is nothing to open.
+        let Some(recipe) = request.recipe.as_deref() else {
+            self.stats.increment("latent.materialize.no-recipe");
+            return false;
+        };
         if !self.state.begin_latent_materialization(&request) {
             self.stats.increment("latent.materialize.rejected-stale");
             return false;
         }
         let home_dir =
             request.checkout_path.is_none().then(|| get_session_environment_variables().get("HOME").map(PathBuf::from)).flatten();
-        let Some(command) = command_for_materialize_recipe(&request.recipe, request.checkout_path.as_deref(), home_dir.as_deref()) else {
+        let Some(command) = command_for_materialize_recipe(recipe, request.checkout_path.as_deref(), home_dir.as_deref()) else {
             self.stats.increment("latent.materialize.missing-home");
             return self.state.abort_latent_materialization(&request);
         };

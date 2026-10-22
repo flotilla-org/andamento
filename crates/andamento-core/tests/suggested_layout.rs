@@ -34,7 +34,7 @@ fn layout(sidebar: &Sidebar, kind: &str) -> Option<SuggestedLayout> {
         snapshot.surface.sections.iter().flat_map(|section| &section.nodes).filter(|node| node.entity.kind == kind).collect();
     match nodes.as_slice() {
         [] => None,
-        [node] => parse(&node.entity, &node.facts).unwrap(),
+        [node] => parse(&node.entity, &node.facts, false).unwrap(),
         _ => panic!("expected one {kind}"),
     }
 }

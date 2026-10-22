@@ -18,10 +18,10 @@ fn convoy() -> EntityRef {
     entity("convoy", "c")
 }
 fn parse_ok(facts: &FactMap) -> SuggestedLayout {
-    parse(&convoy(), facts).unwrap().unwrap()
+    parse(&convoy(), facts, false).unwrap().unwrap()
 }
 fn parse_err(facts: &FactMap) -> LayoutError {
-    parse(&convoy(), facts).unwrap_err()
+    parse(&convoy(), facts, false).unwrap_err()
 }
 fn primary_facts() -> FactMap {
     facts([
@@ -62,7 +62,7 @@ fn without(mut base: FactMap, keys: &[&str]) -> FactMap {
 #[test]
 fn no_layout_or_primary_facts_is_no_layout() {
     let facts = facts([("display.label", text("x"))]);
-    assert_eq!(parse(&convoy(), &facts), Ok(None));
+    assert_eq!(parse(&convoy(), &facts, false), Ok(None));
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn primary_resolution_follows_managed_content_rules() {
     assert!(matches!(&parse_ok(&no_cwd).slots[0].resolution, SlotResolution::Ready { recipe: LocalRecipe::Command { cwd: None, .. }, .. }));
     // Without a state there is no primary slot, as there is no desired content.
     let stateless = without(primary_facts(), &["workspace.primary.state"]);
-    assert_eq!(parse(&convoy(), &stateless), Ok(None));
+    assert_eq!(parse(&convoy(), &stateless, false), Ok(None));
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn malformed_specs_are_errors() {
         ),
     ];
     for (facts, expected) in cases {
-        assert_eq!(parse(&convoy(), &facts), Err(expected));
+        assert_eq!(parse(&convoy(), &facts, false), Err(expected));
     }
 }
 
@@ -334,7 +334,7 @@ fn arrangement_errors() {
         (with(arranged(), [("layout.root", text("Main"))]), InvalidId { key: "layout.root".into(), id: "Main".into() }),
     ];
     for (facts, expected) in cases {
-        assert_eq!(parse(&convoy(), &facts), Err(expected));
+        assert_eq!(parse(&convoy(), &facts, false), Err(expected));
     }
 }
 
@@ -346,4 +346,36 @@ fn unplaced_slots_are_allowed() {
     let layout = parse_ok(&facts);
     assert_eq!(layout.slots.len(), 2);
     assert_eq!(layout.arrangement.unwrap().panels.len(), 1);
+}
+
+// A workspace subject keeps its primary slot whatever the provider publishes:
+// resolved from the opening recipe when there are no workspace.primary.*
+// facts, and unavailable while there is no recipe either.
+#[test]
+fn a_subject_always_has_a_primary_slot() {
+    let vessel = entity("vessel", "v1");
+    let recipe = facts([("action.primary.recipe", text("flotilla attach v1")), ("git.root", text("/work"))]);
+    let layout = parse(&vessel, &recipe, true).unwrap().unwrap();
+    assert_eq!(layout.version, BaselineVersion::PrimaryOnly);
+    assert_eq!(
+        layout.slots[0].resolution,
+        SlotResolution::Ready {
+            target: Some(vessel.action_target().to_string()),
+            recipe: LocalRecipe::Command { line: CommandLine::Shell("flotilla attach v1".into()), cwd: Some("/work".into()) },
+        }
+    );
+    let targeted = with(recipe.clone(), [("action.primary.target", text("vessel:elsewhere"))]);
+    assert!(matches!(&parse(&vessel, &targeted, true).unwrap().unwrap().slots[0].resolution,
+        SlotResolution::Ready { target: Some(target), .. } if target == "vessel:elsewhere"));
+
+    let bare = facts([("display.label", text("v1"))]);
+    let layout = parse(&vessel, &bare, true).unwrap().unwrap();
+    assert_eq!(layout.slots.len(), 1);
+    assert_eq!(layout.slots[0].key, "primary");
+    assert_eq!(layout.slots[0].resolution, SlotResolution::Unavailable);
+    // Not a subject: the same facts publish no layout.
+    assert_eq!(parse(&vessel, &bare, false), Ok(None));
+    // Published workspace.primary.* facts still win.
+    let held = with(recipe, [("workspace.primary.state", text("held"))]);
+    assert_eq!(parse(&vessel, &held, true).unwrap().unwrap().slots[0].resolution, SlotResolution::Held);
 }

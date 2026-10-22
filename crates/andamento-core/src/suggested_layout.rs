@@ -23,6 +23,7 @@ const KEY_PRIMARY_STATE: &str = "workspace.primary.state";
 const KEY_PRIMARY_TARGET: &str = "workspace.primary.target";
 const KEY_PRIMARY_RECIPE: &str = "action.primary.recipe";
 const KEY_PRIMARY_CWD: &str = "git.root";
+const KEY_ACTION_TARGET: &str = "action.primary.target";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SuggestedLayout {
@@ -233,10 +234,13 @@ impl fmt::Display for LayoutError {
 impl std::error::Error for LayoutError {}
 
 /// Reads the Suggested Layout `entity` publishes, if any. `facts` are its
-/// resolved, live facts. Returns `Ok(None)` when it publishes neither
-/// `layout.*` nor `workspace.primary.state`.
-pub fn parse(entity: &EntityRef, facts: &FactMap) -> Result<Option<SuggestedLayout>, LayoutError> {
-    let primary = facts.contains_key(KEY_PRIMARY_STATE).then(|| primary_slot(entity, facts));
+/// resolved, live facts. A `subject` (a workspace subject whose workspace
+/// keeps no primary of its own) always has the primary slot, resolved from
+/// its opening recipe when it publishes no `workspace.primary.state`, and
+/// unavailable while it has none. Returns `Ok(None)` when it publishes
+/// neither `layout.*` nor `workspace.primary.state` and isn't a `subject`.
+pub fn parse(entity: &EntityRef, facts: &FactMap, subject: bool) -> Result<Option<SuggestedLayout>, LayoutError> {
+    let primary = (subject || facts.contains_key(KEY_PRIMARY_STATE)).then(|| primary_slot(entity, facts));
     if !facts.keys().any(|key| key.starts_with("layout.")) {
         return Ok(primary.map(|slot| SuggestedLayout { version: BaselineVersion::PrimaryOnly, slots: vec![slot], arrangement: None }));
     }
@@ -281,25 +285,33 @@ pub fn parse(entity: &EntityRef, facts: &FactMap) -> Result<Option<SuggestedLayo
     Ok(Some(SuggestedLayout { version: BaselineVersion::Published(version.to_owned()), slots, arrangement }))
 }
 
-/// The single-slot special case, read exactly as managed primary content does.
+/// The single-slot special case, read exactly as managed primary content does
+/// (state.rs, `desired_primary`).
 fn primary_slot(entity: &EntityRef, facts: &FactMap) -> Slot {
     let text = |key| match facts.get(key) {
         Some(MetadataValue::Text(value)) => Some(value.clone()),
         _ => None,
     };
-    let resolution = match text(KEY_PRIMARY_STATE).as_deref() {
-        Some("held") => SlotResolution::Held,
-        Some("ready") => match (text(KEY_PRIMARY_TARGET).filter(|s| !s.is_empty()), text(KEY_PRIMARY_RECIPE).filter(|s| !s.is_empty())) {
-            (Some(target), Some(command)) => SlotResolution::Ready {
-                target: Some(target.to_string()),
-                recipe: LocalRecipe::Command {
-                    line: CommandLine::Shell(command.to_string()),
-                    cwd: text(KEY_PRIMARY_CWD).map(|cwd| cwd.to_string()),
-                },
+    let ready = |target: Option<std::sync::Arc<str>>| match (
+        target.filter(|s| !s.is_empty()),
+        text(KEY_PRIMARY_RECIPE).filter(|s| !s.is_empty()),
+    ) {
+        (Some(target), Some(command)) => SlotResolution::Ready {
+            target: Some(target.to_string()),
+            recipe: LocalRecipe::Command {
+                line: CommandLine::Shell(command.to_string()),
+                cwd: text(KEY_PRIMARY_CWD).map(|cwd| cwd.to_string()),
             },
-            _ => SlotResolution::Unavailable,
         },
         _ => SlotResolution::Unavailable,
+    };
+    let resolution = match text(KEY_PRIMARY_STATE).as_deref() {
+        Some("held") => SlotResolution::Held,
+        Some("ready") => ready(text(KEY_PRIMARY_TARGET)),
+        Some(_) => SlotResolution::Unavailable,
+        // No workspace.primary.* facts: the opening recipe, at the entity's
+        // action target.
+        None => ready(text(KEY_ACTION_TARGET).or_else(|| Some(entity.action_target().into()))),
     };
     Slot {
         key: PRIMARY_SLOT.to_owned(),
