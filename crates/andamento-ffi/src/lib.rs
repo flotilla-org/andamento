@@ -1348,6 +1348,8 @@ pub unsafe extern "C" fn andamento_effects_get(e: *const AndamentoEffects, index
             v.request_id = *request_id;
             v.entity = EntityView::of(entity);
             v.name = Text::borrowed(name);
+            // Empty means none: the core never materializes an empty recipe.
+            debug_assert_ne!(recipe.as_deref(), Some(""), "an empty recipe is none");
             v.recipe = Text::borrowed(recipe.as_deref().unwrap_or(""));
             v.has_cwd = cwd.is_some() as u32;
             v.cwd = Text::borrowed(cwd.as_deref().unwrap_or_default());
