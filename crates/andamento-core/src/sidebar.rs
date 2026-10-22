@@ -944,7 +944,9 @@ impl Sidebar {
         }
         let chosen =
             self.with_workspace(workspace, |record, clock, _, _| Ok::<_, String>(record.choose_layout(clock, name.map(str::to_owned))))?;
-        self.with_workspace(workspace, |record, clock, _, planner| Ok::<_, String>(record.follow_baseline(clock, None, planner)))?;
+        if chosen {
+            self.with_workspace(workspace, |record, clock, _, planner| Ok::<_, String>(record.follow_baseline(clock, None, planner)))?;
+        }
         Ok(chosen)
     }
 

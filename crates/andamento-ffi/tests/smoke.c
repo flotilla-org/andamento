@@ -71,7 +71,7 @@ static int same(AndamentoWorkspaceId a, AndamentoWorkspaceId b) {
 
 /* Facts, topology, the snapshot, dispatch, effects and completion. */
 static void check_sidebar(const char *config_path, const char *patches_path) {
-    assert(andamento_abi_version() == 7);
+    assert(andamento_abi_version() == 8);
     char *config = read_file(config_path);
     Andamento *h = create(config);
     ok(andamento_configure(h, text(config), &error));
@@ -278,7 +278,8 @@ static void check_workspace(const char *config_path) {
     uint64_t revision = andamento_workspace_content_revision(h, &error);
     AndamentoText argv[] = {T("htop"), T("-d")};
     AndamentoViewSpec spec = {.content = ANDAMENTO_SLOT_COMMAND, .argv = argv, .argc = 2,
-                              .has_presentation = 1, .presentation = T("terminal")};
+                              .has_presentation = 1, .presentation = T("terminal"),
+                              .has_role = 1, .role = T("shell")};
     ok(andamento_slot_set(h, ws, T("u:1"), &spec, ANDAMENTO_REBIND_KEEP_PREVIOUS, &error));
     AndamentoViewSpec facet = {.content = ANDAMENTO_SLOT_FACET, .entity = {T("sub-1"), T("vessel"), T("v")},
                                .facet = T("primary")};
@@ -294,6 +295,7 @@ static void check_workspace(const char *config_path) {
     const AndamentoSlot *slot = &slots->slots[0];
     assert(eq(slot->key, "u:1") && slot->flags == 0 && !slot->has_saved);
     assert(slot->spec.argc == 2 && eq(slot->spec.argv[1], "-d") && eq(slot->spec.presentation, "terminal"));
+    assert(slot->spec.has_role && eq(slot->spec.role, "shell") && !slots->slots[1].spec.has_role);
     assert(eq(slots->slots[1].spec.entity.provider, "sub-1"));
     andamento_slots_free(slots);
     assert(!andamento_slots_get(h, uuid(0x01), &error));
@@ -341,8 +343,17 @@ static void check_workspace(const char *config_path) {
 
     /* The arrangement: panels name their parents; commit, stale, invalid. */
     AndamentoWorkspaceArrangement *a = andamento_arrangement_get(h, ws, &error);
-    assert(a && !error && a->doc.panel_count == 0 && a->generation == 0);
+    assert(a && !error && a->doc.panel_count == 0 && a->generation == 0 && !a->has_layout && a->layout.data);
     andamento_arrangement_free(a);
+
+    /* Without a subject there are no layouts to list or choose. */
+    AndamentoLayoutList *layouts = andamento_layouts_get(h, ws, &error);
+    assert(layouts && !error && layouts->count == 0);
+    andamento_layouts_free(layouts);
+    assert(!andamento_layouts_get(h, uuid(0x01), &error));
+    fails(0);
+    fails(andamento_layout_choose(h, ws, 1, T("work"), &error));
+    ok(andamento_layout_choose(h, ws, 0, T(""), &error));
     AndamentoText tabs[] = {T("u:1")};
     AndamentoDocPanel panels[] = {
         {ANDAMENTO_NONE, T("root"), 1.0, ANDAMENTO_PANEL_SPLIT, ANDAMENTO_AXIS_ROW, NULL, 0, ANDAMENTO_NONE},
