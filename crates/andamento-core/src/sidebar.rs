@@ -21,7 +21,7 @@ use crate::{
     sidebar_arrangement::{self, Declared, LocalSection, Report, SidebarArrangement, SidebarDoc, SidebarView},
     slots::{ArrangementCommit, ArrangementDoc, ArrangementView, Baseline, OverlayView, Resolve, SlotInfo},
     state::{ControllerState, ControllerTab, EntityActivation, RevisionEvaluation},
-    suggested_layout::{RebindPolicy, ViewSpec},
+    suggested_layout::{PrimarySlot, RebindPolicy, ViewSpec},
     target_resolution::{PortableResolution, SavedResolution},
     template_config::{parse_template_config_kdl, TemplateConfigCatalog},
     versioned::{Clock, CommitError, Versioned},
@@ -147,7 +147,11 @@ pub enum HostEffect {
         request_id: u64,
         entity: EntityRef,
         name: String,
-        recipe: String,
+        /// What to run; none for a workspace subject whose provider hasn't
+        /// said yet: the host opens the workspace with its primary slot
+        /// unfilled, and it fills in once the recipe arrives.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recipe: Option<String>,
         cwd: Option<String>,
         /// Managed-content target this recipe resolves, when the entity opts
         /// into managed primary content and is ready. Hosts record it as the
@@ -852,9 +856,18 @@ impl Sidebar {
         for (id, entry) in self.workspaces.iter_mut() {
             let record = &mut entry.record;
             if open.contains(id) {
+                // A workspace subject's primary slot is its provider's, unless
+                // the workspace keeps a primary of its own: one opened before
+                // its kind was a subject, whose terminal is the user's slot.
                 let baseline = record
                     .subject()
-                    .and_then(|subject| self.state.suggested_layout(subject).ok().flatten())
+                    .and_then(|subject| {
+                        let primary = match record.has_user_slot("u:primary") {
+                            true => PrimarySlot::IfPublished,
+                            false => self.state.primary_slot(subject),
+                        };
+                        self.state.suggested_layout(subject, primary).ok().flatten()
+                    })
                     .map(|layout| Baseline::from_layout(&layout));
                 record.follow_baseline(&mut self.clock, baseline);
             }
@@ -1274,7 +1287,10 @@ impl Sidebar {
                             return Ok(vec![]);
                         }
                         let request_id = self.request_id();
-                        let primary_target = self.state.managed_primary_target(&entity, &request.recipe, request.checkout_path.as_deref());
+                        let primary_target = request
+                            .recipe
+                            .as_deref()
+                            .and_then(|recipe| self.state.managed_primary_target(&entity, recipe, request.checkout_path.as_deref()));
                         let effect = HostEffect::Materialize {
                             request_id,
                             entity: entity.clone(),

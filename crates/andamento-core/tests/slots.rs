@@ -410,3 +410,107 @@ fn an_imported_resolution_never_reuses_a_generation() {
         Err(CommitError::Stale { current: imported.generation })
     );
 }
+
+/// A sidebar whose config makes vessels workspace subjects, with vessel v
+/// published without an opening recipe.
+fn subject_session() -> Sidebar {
+    let mut sidebar = Sidebar::new(&format!("{CONFIG}\nworkspace kind=\"vessel\"\n")).unwrap();
+    sidebar.feed(
+        100,
+        [
+            patch(entity("project", "p"), &[("flotilla.project", text("p")), ("display.label", text("P"))], &[]),
+            patch(subject(), &[("flotilla.project", text("p")), ("display.label", text("Vee"))], &[]),
+        ],
+    );
+    sidebar
+}
+
+#[test]
+fn a_workspace_subject_opens_without_a_recipe_and_its_primary_fills_in() {
+    let mut sidebar = subject_session();
+    let effects = sidebar.dispatch(Action::Activate { entity: subject() }).unwrap();
+    let [HostEffect::Materialize { request_id, ref recipe, ref primary_target, .. }] = effects[..] else {
+        panic!("expected materialize: {effects:?}");
+    };
+    assert_eq!((recipe, primary_target), (&None, &None));
+    sidebar.complete(request_id, Ok(Some(worker())));
+    sidebar.observe(vec![Workspace { id: worker(), position: 0, name: "Worker".into(), selected: true }], vec![]);
+    assert_eq!(keys(&sidebar), ["primary"]);
+    let plan = sidebar.plan_slot(worker(), "primary", "").unwrap();
+    assert_eq!((plan.state, plan.update), (ContentState::Unavailable, None));
+
+    // The recipe arrives: the primary resolves to it, at the subject's action target.
+    sidebar.feed(200, [patch(subject(), &[("action.primary.recipe", text("attach v"))], &[])]);
+    let plan = sidebar.plan_slot(worker(), "primary", "").unwrap();
+    assert_eq!(plan.state, ContentState::Updating);
+    let update = plan.update.unwrap();
+    let expected = Resolved::from(TerminalContent { target: subject().action_target(), command: "attach v".into(), cwd: None });
+    assert_eq!(update.resolution, expected);
+    assert!(sidebar.managed.complete_slot(worker(), "primary", update.token, true));
+    assert_eq!(sidebar.plan_slot(worker(), "primary", &update.id).unwrap().state, ContentState::Current);
+
+    // Withdrawn again, the slot is unavailable; the workspace stays.
+    sidebar.feed(300, [patch(subject(), &[], &["action.primary.recipe"])]);
+    assert_eq!(sidebar.plan_slot(worker(), "primary", &update.id).unwrap().state, ContentState::Unavailable);
+    assert_eq!(keys(&sidebar), ["primary"]);
+}
+
+// A workspace opened before its kind was a subject keeps its terminal as
+// the user's slot, so it gains no second, provider primary.
+#[test]
+fn a_workspace_with_its_own_primary_gains_no_provider_primary() {
+    let mut sidebar = session(patch(subject(), &[], &[]));
+    let terminal = ViewSpec {
+        content: Content::Local(LocalRecipe::Command { line: CommandLine::Shell("printf hello".into()), cwd: None }),
+        presentation: None,
+    };
+    sidebar.set_slot(worker(), "u:primary", terminal, RebindPolicy::Replace).unwrap();
+    sidebar.configure(&format!("{CONFIG}\nworkspace kind=\"vessel\"\n")).unwrap();
+    sidebar.feed(200, [patch(subject(), &[("display.label", text("Renamed"))], &[])]);
+    assert_eq!(keys(&sidebar), ["u:primary"]);
+}
+
+// A subject's layout may place its primary without publishing
+// `workspace.primary.*`: its other slots still resolve.
+#[test]
+fn a_subject_layout_may_list_its_primary_without_primary_facts() {
+    let mut sidebar = subject_session();
+    let mut listed = layout("1", vec![command_slot("shell", "make")], &["shell", "primary"]);
+    listed.set.insert(
+        "action.primary.recipe".into(),
+        MetadataValueUpdate { value: text("attach v"), ttl_ms: None, precedence: None, ordinal: None },
+    );
+    sidebar.feed(150, [listed]);
+    let effects = sidebar.dispatch(Action::Activate { entity: subject() }).unwrap();
+    let [HostEffect::Materialize { request_id, .. }] = effects[..] else {
+        panic!("expected materialize: {effects:?}");
+    };
+    sidebar.complete(request_id, Ok(Some(worker())));
+    sidebar.observe(vec![Workspace { id: worker(), position: 0, name: "Worker".into(), selected: true }], vec![]);
+    assert_eq!(keys(&sidebar), ["shell", "primary"]);
+    for key in ["shell", "primary"] {
+        assert_eq!(sidebar.plan_slot(worker(), key, "").unwrap().state, ContentState::Updating, "{key}");
+    }
+}
+
+// An empty opening recipe is none: it opens nothing on its own, and a
+// subject with one opens as a subject without a recipe does.
+#[test]
+fn an_empty_recipe_is_no_recipe() {
+    let empty = patch(subject(), &[("action.primary.recipe", text(""))], &[]);
+    let mut plain = Sidebar::new(CONFIG).unwrap();
+    plain.feed(
+        100,
+        [
+            patch(entity("project", "p"), &[("flotilla.project", text("p")), ("display.label", text("P"))], &[]),
+            patch(subject(), &[("flotilla.project", text("p")), ("display.label", text("Vee"))], &[]),
+            empty.clone(),
+        ],
+    );
+    let effects = plain.dispatch(Action::Activate { entity: subject() }).unwrap();
+    assert!(!effects.iter().any(|effect| matches!(effect, HostEffect::Materialize { .. })), "{effects:?}");
+    let mut sidebar = subject_session();
+    sidebar.feed(150, [empty]);
+    let effects = sidebar.dispatch(Action::Activate { entity: subject() }).unwrap();
+    assert!(matches!(&effects[..], [HostEffect::Materialize { recipe: None, .. }]), "{effects:?}");
+}

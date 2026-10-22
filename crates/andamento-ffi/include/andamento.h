@@ -108,7 +108,9 @@
 #define ANDAMENTO_EFFECT_FOCUS 0
 
 // Make a workspace for entity with recipe (named name, in cwd), then
-// complete request_id with its new ID.
+// complete request_id with its new ID. An empty recipe is a workspace
+// subject's whose provider hasn't said how to fill it yet: make the
+// workspace with its primary slot unfilled; it fills in when one arrives.
 #define ANDAMENTO_EFFECT_MATERIALIZE 1
 
 // Show entity's inspector; needs no completion.

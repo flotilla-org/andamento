@@ -331,6 +331,10 @@ pub struct LatentTab {
     pub materialization: LatentMaterializationState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub materialize_recipe: Option<String>,
+    /// A workspace subject (`workspace kind=…` in the template config): it
+    /// opens without a recipe, its Slots filling in as their content resolves.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub opens_workspace: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout_path: Option<String>,
 }
@@ -339,20 +343,23 @@ pub struct LatentTab {
 pub struct MaterializeLatentRequest {
     pub action_target: String,
     pub name: String,
-    pub recipe: String,
+    /// What to run in the new workspace; none for a workspace subject whose
+    /// provider hasn't said yet, which opens with its Slots unfilled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout_path: Option<String>,
 }
 
 impl LatentTab {
     pub fn materialize_request(&self) -> Option<MaterializeLatentRequest> {
-        if self.materialization == LatentMaterializationState::Opening {
+        if self.materialization == LatentMaterializationState::Opening || (self.materialize_recipe.is_none() && !self.opens_workspace) {
             return None;
         }
         Some(MaterializeLatentRequest {
             action_target: self.action_target.clone(),
             name: self.name.clone(),
-            recipe: self.materialize_recipe.clone()?,
+            recipe: self.materialize_recipe.clone(),
             checkout_path: self.checkout_path.clone(),
         })
     }
@@ -1182,6 +1189,31 @@ impl PluginStatsRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A workspace subject requests materialization without a recipe; an
+    // entity that is neither has nothing to open. Both survive serde, and
+    // the fields are left out when unset.
+    #[test]
+    fn a_workspace_subject_requests_materialization_without_a_recipe() {
+        let subject = LatentTab {
+            entity: EntityRef::local("vessel", "v"),
+            action_target: "vessel:v".into(),
+            name: "v".into(),
+            materialization: LatentMaterializationState::default(),
+            materialize_recipe: None,
+            opens_workspace: true,
+            checkout_path: None,
+        };
+        let request = subject.materialize_request().unwrap();
+        assert_eq!(request.recipe, None);
+        assert_eq!(serde_json::from_str::<LatentTab>(&serde_json::to_string(&subject).unwrap()).unwrap(), subject);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(!json.contains("recipe"));
+        assert_eq!(serde_json::from_str::<MaterializeLatentRequest>(&json).unwrap(), request);
+        let plain = LatentTab { opens_workspace: false, ..subject };
+        assert_eq!(plain.materialize_request(), None);
+        assert!(!serde_json::to_string(&plain).unwrap().contains("opens_workspace"));
+    }
 
     #[test]
     fn plugin_message_names_use_andamento_namespace() {

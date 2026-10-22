@@ -2,7 +2,8 @@
 use andamento_core::{
     replay::{self, read, Replay},
     suggested_layout::{
-        parse, Axis, BaselineVersion, CommandLine, Content, LocalRecipe, PanelNode, RebindPolicy, SlotResolution, SuggestedLayout,
+        parse, Axis, BaselineVersion, CommandLine, Content, LocalRecipe, PanelNode, PrimarySlot, RebindPolicy, SlotResolution,
+        SuggestedLayout,
     },
     EntityRef, Sidebar, LOCAL_PROVIDER,
 };
@@ -34,7 +35,7 @@ fn layout(sidebar: &Sidebar, kind: &str) -> Option<SuggestedLayout> {
         snapshot.surface.sections.iter().flat_map(|section| &section.nodes).filter(|node| node.entity.kind == kind).collect();
     match nodes.as_slice() {
         [] => None,
-        [node] => parse(&node.entity, &node.facts).unwrap(),
+        [node] => parse(&node.entity, &node.facts, PrimarySlot::IfPublished).unwrap(),
         _ => panic!("expected one {kind}"),
     }
 }

@@ -86,6 +86,11 @@ impl WorkspaceRecord {
         self.subject.get().entity.as_ref()
     }
 
+    /// Whether the user's own slots include `key` (`u:<id>`).
+    pub fn has_user_slot(&self, key: &str) -> bool {
+        self.slots.get().user.iter().any(|slot| slot.key == key)
+    }
+
     pub fn slot(&self, key: &str) -> Result<SlotInfo, String> {
         self.slots.get().slot(key).ok_or_else(|| format!("no slot {key:?}"))
     }

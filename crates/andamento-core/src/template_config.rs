@@ -55,8 +55,24 @@ pub fn parse_template_config_kdl(input: &str) -> Result<ExternalTemplateConfig, 
         .filter(|node| node.name().value() == "visibility")
         .map(parse_kdl_visibility)
         .collect::<Result<Vec<_>, _>>()?;
-    let config =
-        ExternalTemplateConfig { version, templates, fragments, variables, display_variables, sets, regions, placements, visibility };
+    let workspaces = document
+        .nodes()
+        .iter()
+        .filter(|node| node.name().value() == "workspace")
+        .map(|node| Ok(WorkspaceDefinition { kind: kdl_required_prop_string(node, "kind")? }))
+        .collect::<Result<Vec<_>, TemplateConfigError>>()?;
+    let config = ExternalTemplateConfig {
+        version,
+        templates,
+        fragments,
+        variables,
+        display_variables,
+        sets,
+        regions,
+        placements,
+        visibility,
+        workspaces,
+    };
     config.validate()?;
     Ok(config)
 }
@@ -82,12 +98,32 @@ pub struct ExternalTemplateConfig {
     pub placements: Vec<PlacementDefinition>,
     #[serde(default)]
     pub visibility: Vec<PlacementVisibility>,
+    #[serde(default)]
+    pub workspaces: Vec<WorkspaceDefinition>,
+}
+
+/// An entity kind whose entities are workspace subjects: each opens a
+/// workspace, whether or not its provider says how to fill it yet. The
+/// workspace's Slots show what can't connect as unavailable, and fill in as
+/// their content resolves, so opening one never waits for an opening recipe.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct WorkspaceDefinition {
+    pub kind: String,
 }
 
 impl ExternalTemplateConfig {
     fn validate(&self) -> Result<(), TemplateConfigError> {
         if self.version != 1 {
             return Err(TemplateConfigError::Validation(format!("unsupported template config version: {}", self.version)));
+        }
+        if let Some(workspace) =
+            self.workspaces.iter().find(|workspace| workspace.kind.is_empty() || workspace.kind.trim() != workspace.kind)
+        {
+            return Err(TemplateConfigError::Validation(format!(
+                "workspace kind {:?} must be a kind, without surrounding spaces",
+                workspace.kind
+            )));
         }
         let mut names = BTreeSet::new();
         for template in &self.templates {
@@ -458,6 +494,7 @@ pub struct TemplateConfigCatalog {
     regions: Vec<SurfaceRegionDefinition>,
     placements: Vec<PlacementDefinition>,
     visibility: Vec<PlacementVisibility>,
+    workspace_kinds: BTreeSet<String>,
 }
 
 impl Default for TemplateConfigCatalog {
@@ -512,7 +549,14 @@ impl TemplateConfigCatalog {
             .filter(|policy| referenced_visibility.contains(&policy.name) && seen_visibility.insert(policy.name.clone()))
             .cloned()
             .collect();
-        Self { layers, display_variables, regions, placements, visibility }
+        let workspace_kinds = layers.iter().flat_map(|layer| &layer.config.workspaces).map(|workspace| workspace.kind.clone()).collect();
+        Self { layers, display_variables, regions, placements, visibility, workspace_kinds }
+    }
+
+    /// Whether entities of `kind` are workspace subjects (`workspace kind=…`),
+    /// declared in any layer.
+    pub fn opens_workspace(&self, kind: &str) -> bool {
+        self.workspace_kinds.contains(kind)
     }
 
     pub fn resolve(&self, context: TemplateConfigMatchContext<'_>) -> Result<Option<TemplateConfigResolved>, TemplateConfigResolveError> {
@@ -2610,6 +2654,22 @@ mod tests {
     }
 
     #[test]
+    fn workspace_kinds_are_declared_per_layer_and_must_be_named() {
+        let config = parse_template_config_kdl(r#"workspace kind="vessel""#).expect("workspace parses");
+        let extra = parse_template_config_kdl(r#"workspace kind="convoy""#).expect("workspace parses");
+        let catalog = TemplateConfigCatalog::from_layers(vec![
+            TemplateConfigLayer::bundled("bundled.kdl", config),
+            TemplateConfigLayer::bundled("user.kdl", extra),
+        ]);
+        assert!(catalog.opens_workspace("vessel") && catalog.opens_workspace("convoy"));
+        assert!(!catalog.opens_workspace("issue"));
+        assert!(!TemplateConfigCatalog::default().opens_workspace("vessel"));
+        for bad in [r#"workspace kind="""#, r#"workspace kind=" ""#, r#"workspace kind=" vessel""#, "workspace"] {
+            assert!(parse_template_config_kdl(bad).is_err(), "{bad} parses");
+        }
+    }
+
+    #[test]
     fn novel_entity_kind_uses_bundled_generic_form_fallback() {
         let catalog = TemplateConfigCatalog::default();
         let metadata = BTreeMap::from([
@@ -3040,6 +3100,7 @@ region "attention" root-template="r" form="full"
             regions: vec![],
             placements: vec![],
             visibility: vec![],
+            workspaces: vec![],
         };
         let catalog = TemplateConfigCatalog::from_layers(vec![
             TemplateConfigLayer::bundled("bundled.kdl", empty()),

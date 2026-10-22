@@ -587,7 +587,9 @@ pub const ANDAMENTO_DETAIL_RELATION: u32 = 4;
 /// Focus workspace_id, then complete request_id.
 pub const ANDAMENTO_EFFECT_FOCUS: u32 = 0;
 /// Make a workspace for entity with recipe (named name, in cwd), then
-/// complete request_id with its new ID.
+/// complete request_id with its new ID. An empty recipe is a workspace
+/// subject's whose provider hasn't said how to fill it yet: make the
+/// workspace with its primary slot unfilled; it fills in when one arrives.
 pub const ANDAMENTO_EFFECT_MATERIALIZE: u32 = 1;
 /// Show entity's inspector; needs no completion.
 pub const ANDAMENTO_EFFECT_INSPECT: u32 = 2;
@@ -1346,7 +1348,9 @@ pub unsafe extern "C" fn andamento_effects_get(e: *const AndamentoEffects, index
             v.request_id = *request_id;
             v.entity = EntityView::of(entity);
             v.name = Text::borrowed(name);
-            v.recipe = Text::borrowed(recipe);
+            // Empty means none: the core never materializes an empty recipe.
+            debug_assert_ne!(recipe.as_deref(), Some(""), "an empty recipe is none");
+            v.recipe = Text::borrowed(recipe.as_deref().unwrap_or(""));
             v.has_cwd = cwd.is_some() as u32;
             v.cwd = Text::borrowed(cwd.as_deref().unwrap_or_default());
             v.has_primary_target = primary_target.is_some() as u32;

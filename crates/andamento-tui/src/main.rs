@@ -50,7 +50,8 @@ mod native {
                     if let Some(cwd) = cwd.as_deref() {
                         command.args(["-c", cwd]);
                     }
-                    command.arg(recipe);
+                    // Without a recipe the window opens on tmux's default shell.
+                    command.args(recipe);
                     let output = command.output()?;
                     if !output.status.success() {
                         return Err(io::Error::other("tmux new-window failed"));
