@@ -146,6 +146,7 @@ fn slots_follow_the_layout_and_arrangements_reconcile() {
     let spec = |command: &str| ViewSpec {
         content: Content::Local(LocalRecipe::Command { line: CommandLine::Argv(vec![command.into()]), cwd: Some("/tmp".into()) }),
         presentation: Some("terminal".into()),
+        role: None,
     };
     assert!(sidebar.set_slot(worker(), "u:1", spec("htop"), RebindPolicy::Ask).unwrap());
     assert!(sidebar.set_slot(worker(), "b", spec("btop"), RebindPolicy::Replace).unwrap());
@@ -189,7 +190,7 @@ fn arrangement_commits_and_slot_edits_leave_the_snapshot_current() {
         .set_slot(
             worker(),
             "u:1",
-            ViewSpec { content: Content::Local(LocalRecipe::Url { url: "https://example.com".into() }), presentation: None },
+            ViewSpec { content: Content::Local(LocalRecipe::Url { url: "https://example.com".into() }), presentation: None, role: None },
             RebindPolicy::Replace,
         )
         .unwrap();
@@ -365,6 +366,7 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
     let spec = ViewSpec {
         content: Content::Local(LocalRecipe::Command { line: CommandLine::Shell("htop".into()), cwd: None }),
         presentation: None,
+        role: None,
     };
     assert!(sidebar.set_slot(worker(), "k", spec, RebindPolicy::Replace).unwrap());
     assert_eq!(sidebar.slot_resolution(worker(), "k").unwrap(), None);
@@ -388,7 +390,7 @@ fn portable_resolutions_are_saved_planned_and_invalidated_by_a_new_target() {
 /// replaced is stale (as for an arrangement), not applied over the import.
 #[test]
 fn an_imported_resolution_never_reuses_a_generation() {
-    let url = |url: &str| ViewSpec { content: Content::Local(LocalRecipe::Url { url: url.into() }), presentation: None };
+    let url = |url: &str| ViewSpec { content: Content::Local(LocalRecipe::Url { url: url.into() }), presentation: None, role: None };
     let name = format!("workspace/{WORKER}");
     let saved_at = |sidebar: &mut Sidebar, session: &str| {
         sidebar.register_workspace(worker());
@@ -463,6 +465,7 @@ fn a_workspace_with_its_own_primary_gains_no_provider_primary() {
     let terminal = ViewSpec {
         content: Content::Local(LocalRecipe::Command { line: CommandLine::Shell("printf hello".into()), cwd: None }),
         presentation: None,
+        role: None,
     };
     sidebar.set_slot(worker(), "u:primary", terminal, RebindPolicy::Replace).unwrap();
     sidebar.configure(&format!("{CONFIG}\nworkspace kind=\"vessel\"\n")).unwrap();

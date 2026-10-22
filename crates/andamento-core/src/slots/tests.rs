@@ -3,13 +3,18 @@ use crate::suggested_layout::{CommandLine, LocalRecipe};
 use crate::EntityRef;
 
 fn shell(command: &str) -> ViewSpec {
-    ViewSpec { content: Content::Local(LocalRecipe::Command { line: CommandLine::Shell(command.into()), cwd: None }), presentation: None }
+    ViewSpec {
+        content: Content::Local(LocalRecipe::Command { line: CommandLine::Shell(command.into()), cwd: None }),
+        presentation: None,
+        role: None,
+    }
 }
 
 fn facet(id: &str) -> ViewSpec {
     ViewSpec {
         content: Content::ProviderFacet { entity: EntityRef::new("sub-1", "vessel", id), facet: "terminal".into() },
         presentation: Some("terminal".into()),
+        role: None,
     }
 }
 

@@ -105,7 +105,7 @@ impl ViewSpecView {
             }
             other => return Err(format!("unknown slot content kind {other}")),
         };
-        Ok(ViewSpec { content, presentation: if self.has_presentation != 0 { Some(self.presentation.read()?) } else { None } })
+        Ok(ViewSpec { content, presentation: if self.has_presentation != 0 { Some(self.presentation.read()?) } else { None }, role: None })
     }
 }
 

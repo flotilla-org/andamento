@@ -64,6 +64,20 @@ pub struct ViewSpec {
     /// Open vocabulary (`terminal`, `web`, `markdown`, ...); frontends pick a
     /// renderer they support and otherwise show a placeholder.
     pub presentation: Option<String>,
+    /// What the View is for (`agent`, `files`, `shell`, ...; open
+    /// vocabulary), which Workspace Layouts arrange by.
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
+/// The primary slot's role when the provider names none, by its subject
+/// kind (docs/sidebar-design/workspace-layouts.md#roles).
+pub fn default_primary_role(kind: &str) -> Option<&'static str> {
+    match kind {
+        "vessel" | "convoy" => Some("agent"),
+        "project" | "role" => Some("tui"),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -324,7 +338,11 @@ fn primary_slot(entity: &EntityRef, facts: &FactMap) -> Slot {
     };
     Slot {
         key: PRIMARY_SLOT.to_owned(),
-        spec: ViewSpec { content: Content::ProviderFacet { entity: entity.clone(), facet: PRIMARY_FACET.to_owned() }, presentation: None },
+        spec: ViewSpec {
+            content: Content::ProviderFacet { entity: entity.clone(), facet: PRIMARY_FACET.to_owned() },
+            presentation: None,
+            role: default_primary_role(&entity.kind).map(str::to_owned),
+        },
         rebind: RebindPolicy::Replace,
         resolution,
     }
@@ -333,6 +351,7 @@ fn primary_slot(entity: &EntityRef, facts: &FactMap) -> Slot {
 fn provider_slot(f: &Facts, key: &str) -> Result<Slot, LayoutError> {
     let at = |field: &str| format!("{SLOT_PREFIX}{key}.{field}");
     let presentation = f.text(&at("presentation"))?.map(str::to_owned);
+    let role = f.text(&at("role"))?.filter(|role| !role.is_empty()).map(str::to_owned);
     let rebind = match f.text(&at("rebind"))? {
         None | Some("replace") => RebindPolicy::Replace,
         Some("keep-previous") => RebindPolicy::KeepPrevious,
@@ -375,7 +394,7 @@ fn provider_slot(f: &Facts, key: &str) -> Result<Slot, LayoutError> {
         }
         _ => return Err(LayoutError::IncompleteFacet { slot: key.to_owned() }),
     };
-    Ok(Slot { key: key.to_owned(), spec: ViewSpec { content, presentation }, rebind, resolution })
+    Ok(Slot { key: key.to_owned(), spec: ViewSpec { content, presentation, role }, rebind, resolution })
 }
 
 fn recipe(f: &Facts, key: &str) -> Result<LocalRecipe, LayoutError> {

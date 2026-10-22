@@ -102,7 +102,11 @@ fn keys(sidebar: &Sidebar) -> Vec<String> {
     sidebar.slots(worker()).unwrap().into_iter().map(|slot| slot.key).collect()
 }
 fn shell(command: &str) -> ViewSpec {
-    ViewSpec { content: Content::Local(LocalRecipe::Command { line: CommandLine::Shell(command.into()), cwd: None }), presentation: None }
+    ViewSpec {
+        content: Content::Local(LocalRecipe::Command { line: CommandLine::Shell(command.into()), cwd: None }),
+        presentation: None,
+        role: None,
+    }
 }
 fn panel_mut<'a>(doc: &'a mut ArrangementDoc, id: &str) -> &'a mut Panel {
     fn walk<'a>(panel: &'a mut Panel, id: &str) -> Option<&'a mut Panel> {
