@@ -517,3 +517,55 @@ fn an_empty_recipe_is_no_recipe() {
     let effects = sidebar.dispatch(Action::Activate { entity: subject() }).unwrap();
     assert!(matches!(&effects[..], [HostEffect::Materialize { recipe: None, .. }]), "{effects:?}");
 }
+
+// A workspace template's slots join the subject's baseline as facets of the
+// subject, built from its facts: unavailable while a fact they name is
+// missing, and replaced when it changes.
+#[test]
+fn template_slots_resolve_from_the_subjects_facts() {
+    let template = r#"
+workspace kind="vessel" {
+  slot "files" role="files" kind="file" path="{git.root}"
+  slot "shell" role="shell" kind="command" cwd="{git.root}" { argv "zsh" "-l"; }
+}
+"#;
+    let mut sidebar = Sidebar::new(&format!("{CONFIG}\n{template}")).unwrap();
+    sidebar.feed(
+        100,
+        [
+            patch(entity("project", "p"), &[("flotilla.project", text("p")), ("display.label", text("P"))], &[]),
+            patch(subject(), &[("flotilla.project", text("p")), ("display.label", text("Vee"))], &[]),
+        ],
+    );
+    let effects = sidebar.dispatch(Action::Activate { entity: subject() }).unwrap();
+    let [HostEffect::Materialize { request_id, .. }] = effects[..] else {
+        panic!("expected materialize: {effects:?}");
+    };
+    sidebar.complete(request_id, Ok(Some(worker())));
+    sidebar.observe(vec![Workspace { id: worker(), position: 0, name: "Worker".into(), selected: true }], vec![]);
+    assert_eq!(keys(&sidebar), ["primary", "t:files", "t:shell"]);
+    let slots = sidebar.slots(worker()).unwrap();
+    assert_eq!(slots[1].spec.role.as_deref(), Some("files"));
+    assert_eq!(slots[1].spec.content, Content::ProviderFacet { entity: subject(), facet: "t:files".into() });
+    assert!(slots[1].in_baseline);
+    for key in ["t:files", "t:shell"] {
+        assert_eq!(sidebar.plan_slot(worker(), key, "").unwrap().state, ContentState::Unavailable, "{key} before git.root");
+    }
+
+    sidebar.feed(200, [patch(subject(), &[("git.root", text("/src/v"))], &[])]);
+    let files = sidebar.plan_slot(worker(), "t:files", "").unwrap();
+    assert_eq!(files.state, ContentState::Updating);
+    let applied = files.update.unwrap();
+    assert_eq!(applied.resolution.recipe, LocalRecipe::File { path: "/src/v".into() });
+    let shell = sidebar.plan_slot(worker(), "t:shell", "").unwrap().update.unwrap();
+    assert_eq!(
+        shell.resolution.recipe,
+        LocalRecipe::Command { line: CommandLine::Argv(vec!["zsh".into(), "-l".into()]), cwd: Some("/src/v".into()) }
+    );
+    assert_eq!(sidebar.plan_slot(worker(), "t:files", &applied.id).unwrap().state, ContentState::Current);
+
+    sidebar.feed(300, [patch(subject(), &[("git.root", text("/src/w"))], &[])]);
+    let moved = sidebar.plan_slot(worker(), "t:files", &applied.id).unwrap();
+    assert_eq!(moved.state, ContentState::Updating);
+    assert_eq!(moved.update.unwrap().resolution.recipe, LocalRecipe::File { path: "/src/w".into() });
+}

@@ -10,9 +10,9 @@ use std::collections::BTreeSet;
 use kdl::KdlNode;
 use serde::Deserialize;
 
-use crate::suggested_layout::Axis;
+use crate::suggested_layout::{Axis, CommandLine, Content, LocalRecipe, RebindPolicy, Slot, SlotResolution, ViewSpec};
 use crate::template_config::{TemplateConfigError, VisibilityPredicate};
-use crate::{FactMap, MetadataValue};
+use crate::{EntityRef, FactMap, MetadataValue};
 
 /// The prefix of a template slot's key (`t:files`). Provider keys never
 /// contain `:`, and the user's start `u:`.
@@ -222,6 +222,57 @@ pub fn substitute(text: &str, facts: &FactMap) -> Option<String> {
     }
     out.push_str(rest);
     Some(out)
+}
+
+/// `slots` as Suggested Layout slots of `subject`: each a facet `t:<name>`
+/// of the subject, ready with its recipe built from the subject's `facts`,
+/// or unavailable while a fact it names is missing.
+pub fn template_slots(subject: &EntityRef, slots: &[TemplateSlot], facts: &FactMap) -> Vec<Slot> {
+    slots
+        .iter()
+        .map(|slot| {
+            let resolution = match slot.recipe.build(facts) {
+                Some(recipe) => SlotResolution::Ready { target: None, recipe },
+                None => SlotResolution::Unavailable,
+            };
+            Slot {
+                key: slot.key(),
+                spec: ViewSpec {
+                    content: Content::ProviderFacet { entity: subject.clone(), facet: slot.key() },
+                    presentation: slot.presentation.clone(),
+                    role: slot.role.clone(),
+                },
+                rebind: RebindPolicy::Replace,
+                resolution,
+            }
+        })
+        .collect()
+}
+
+impl RecipeTemplate {
+    /// The recipe with `facts` substituted; `None` while one is missing.
+    pub fn build(&self, facts: &FactMap) -> Option<LocalRecipe> {
+        let text = |text: &String| substitute(text, facts);
+        Some(match self {
+            RecipeTemplate::Command { argv, command, cwd } => {
+                let line = match (argv.is_empty(), command) {
+                    (false, _) => CommandLine::Argv(argv.iter().map(text).collect::<Option<_>>()?),
+                    (true, Some(command)) => CommandLine::Shell(text(command)?),
+                    (true, None) => return None,
+                };
+                let cwd = match cwd {
+                    Some(cwd) => Some(text(cwd)?),
+                    None => None,
+                };
+                LocalRecipe::Command { line, cwd }
+            }
+            RecipeTemplate::File { path } => LocalRecipe::File { path: text(path)? },
+            RecipeTemplate::Url { url } => LocalRecipe::Url { url: text(url)? },
+            RecipeTemplate::Jackstay { launcher, endpoint } => {
+                LocalRecipe::Jackstay { launcher: text(launcher)?, endpoint: text(endpoint)? }
+            }
+        })
+    }
 }
 
 /// Read a `workspace kind="…"` node's children: its template slots and

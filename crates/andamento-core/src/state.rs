@@ -3390,11 +3390,12 @@ impl ControllerState {
         if let Some(desired) = desired_primary(&values, self.subject_target(entity).as_deref()) {
             resolutions.insert(PRIMARY_SLOT.to_owned(), desired);
         }
-        if !values.iter().any(|(key, _)| key.starts_with("layout.")) {
+        let facts: FactMap = values.named().map(|(key, fact)| (key.clone(), fact.entry.value.clone())).collect();
+        let template = self.workspace_template(&entity.kind, &facts);
+        if template.is_none() && !values.iter().any(|(key, _)| key.starts_with("layout.")) {
             return resolutions;
         }
-        let facts = values.iter().map(|(key, entry)| (key.into(), entry.value.clone())).collect();
-        let Ok(Some(layout)) = suggested_layout::parse(entity, &facts, self.primary_slot(entity)) else {
+        let Ok(Some(layout)) = self.layout_from_facts(entity, &facts, self.primary_slot(entity)) else {
             return resolutions;
         };
         for slot in layout.slots {
@@ -3433,7 +3434,8 @@ impl ControllerState {
     }
 
     /// The Suggested Layout `entity` publishes now, read from its live facts,
-    /// with the primary slot as `primary` says ([`suggested_layout::parse`]).
+    /// with the primary slot as `primary` says ([`suggested_layout::parse`]),
+    /// and the template slots of its kind's workspace template after its own.
     pub(crate) fn suggested_layout(
         &self,
         entity: &EntityRef,
@@ -3445,7 +3447,32 @@ impl ControllerState {
             .named()
             .map(|(key, fact)| (key.clone(), fact.entry.value.clone()))
             .collect();
-        suggested_layout::parse(entity, &facts, primary)
+        self.layout_from_facts(entity, &facts, primary)
+    }
+
+    fn layout_from_facts(
+        &self,
+        entity: &EntityRef,
+        facts: &FactMap,
+        primary: suggested_layout::PrimarySlot,
+    ) -> Result<Option<SuggestedLayout>, LayoutError> {
+        let mut layout = suggested_layout::parse(entity, facts, primary)?;
+        let template = self.workspace_template(&entity.kind, facts).filter(|template| !template.slots.is_empty());
+        if let Some(template) = template {
+            let layout = layout.get_or_insert_with(|| SuggestedLayout {
+                version: suggested_layout::BaselineVersion::PrimaryOnly,
+                slots: Vec::new(),
+                arrangement: None,
+            });
+            layout.slots.extend(crate::workspace_layout::template_slots(entity, &template.slots, facts));
+        }
+        Ok(layout)
+    }
+
+    /// The workspace template for subjects of `kind` with `facts`, if the
+    /// configuration has one.
+    pub(crate) fn workspace_template(&self, kind: &str, facts: &FactMap) -> Option<&crate::template_config::WorkspaceDefinition> {
+        self.template_catalog.as_ref()?.workspace_template(kind, facts)
     }
 
     fn desired_content(&self, target: &EntityId) -> Option<DesiredContent> {
