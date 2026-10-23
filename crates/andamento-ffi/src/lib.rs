@@ -23,9 +23,11 @@ use std::{
 pub mod dashboard;
 pub mod documents;
 pub mod slots;
+pub mod strip;
 pub use dashboard::*;
 pub use documents::*;
 pub use slots::*;
+pub use strip::*;
 
 static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
 
@@ -201,7 +203,7 @@ unsafe fn provider(provider: Text) -> Result<String, String> {
 /// was built against.
 #[no_mangle]
 pub extern "C" fn andamento_abi_version() -> u32 {
-    9
+    10
 }
 /// A sidebar configured with a template catalog (KDL), or NULL with an
 /// error.

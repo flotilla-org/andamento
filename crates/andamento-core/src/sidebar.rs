@@ -929,6 +929,7 @@ impl Sidebar {
             .iter()
             .map(|layout| LayoutInfo {
                 name: layout.name.clone(),
+                glyph: layout.glyph.clone(),
                 default: Some(layout.name.as_str()) == default,
                 current: Some(layout.name.as_str()) == current,
             })
@@ -1084,7 +1085,8 @@ impl Sidebar {
     /// A registered workspace's arrangement. Before anything is stored it is
     /// empty, at generation 0.
     pub fn arrangement(&self, workspace: WorkspaceId) -> Result<ArrangementView, String> {
-        Ok(self.workspace(workspace)?.arrangement_view())
+        let record = self.workspace(workspace)?;
+        Ok(record.arrangement_view(&planner(&self.state, record)))
     }
 
     /// What the template and local sections declare, for the sidebar
@@ -1283,6 +1285,12 @@ impl Sidebar {
         card
     }
 
+    /// What the tool strip of `subject`'s workspace lists, in order
+    /// (docs/sidebar-design/tool-strip.md).
+    pub fn strip(&self, subject: &EntityRef) -> Vec<crate::tool_strip::StripEntry> {
+        self.state.strip_in(self.evaluation(), subject)
+    }
+
     pub fn now_ms(&self) -> u64 {
         self.state.evaluation_time()
     }
@@ -1463,6 +1471,8 @@ fn planner<'a>(state: &'a ControllerState, record: &WorkspaceRecord) -> impl Fn(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LayoutInfo {
     pub name: String,
+    /// The template's `glyph` for it, if any.
+    pub glyph: Option<String>,
     /// The layout the workspace shows when the user chose none.
     pub default: bool,
     /// The layout the workspace shows now.

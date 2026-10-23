@@ -255,6 +255,12 @@
 // instance follows, until andamento_slot_release_previous.
 #define ANDAMENTO_OVERLAY_DEPARTED 1
 
+// The workspaces next to the subject's: ancestors, then children.
+#define ANDAMENTO_STRIP_RELATED 0
+
+// Items the subject links to, such as its change requests and issues.
+#define ANDAMENTO_STRIP_LINKED 1
+
 // A sidebar: one presentation client's core. Calls on one are serialised
 // by the host.
 typedef struct Andamento Andamento;
@@ -541,6 +547,10 @@ typedef struct {
   // ANDAMENTO_NOTE_*.
   uint32_t kind;
   AndamentoText key;
+  // For an UNPLACED slot, the tab panel showing it puts it in: the first
+  // whose template matcher takes it, ignoring hide, else the first. Empty
+  // for other notes.
+  AndamentoText panel;
 } AndamentoNote;
 
 // A workspace's arrangement as stored, or after a commit. While the user
@@ -577,6 +587,8 @@ typedef struct {
 // One of a workspace's Workspace Layouts.
 typedef struct {
   AndamentoText name;
+  // The template's glyph for it: 1 to 8 characters, or empty.
+  AndamentoText glyph;
   // ANDAMENTO_LAYOUT_* bits.
   uint32_t flags;
 } AndamentoLayout;
@@ -753,6 +765,19 @@ typedef struct {
   const AndamentoOverlayNote *notes;
   size_t note_count;
 } AndamentoOverlay;
+
+typedef struct {
+  // ANDAMENTO_STRIP_*.
+  uint32_t section;
+  AndamentoEntity entity;
+} AndamentoStripEntry;
+
+// A subject's strip, in section order, then in the order its loops list
+// them.
+typedef struct {
+  const AndamentoStripEntry *entries;
+  size_t count;
+} AndamentoStrip;
 
 #ifdef __cplusplus
 extern "C" {
@@ -1255,6 +1280,14 @@ AndamentoOverlay *andamento_overlay_get(Andamento *h,
                                         char **error_out);
 
 void andamento_overlay_free(AndamentoOverlay *overlay);
+
+// The strip of subject's workspace, as the sidebar's current facts give it:
+// empty for a subject not in the catalog or a kind without a strip. It
+// follows the catalog: read it again when the snapshot's revision moves.
+// Free it with andamento_strip_free.
+AndamentoStrip *andamento_strip_get(Andamento *h, AndamentoEntity subject, char **error_out);
+
+void andamento_strip_free(AndamentoStrip *strip);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -61,8 +61,9 @@ pub fn parse_template_config_kdl(input: &str) -> Result<ExternalTemplateConfig, 
         .iter()
         .filter(|node| node.name().value() == "workspace")
         .map(|node| {
-            let (slots, layouts) = crate::workspace_layout::parse_kdl_workspace(node)?;
-            Ok(WorkspaceDefinition { kind: kdl_required_prop_string(node, "kind")?, slots, layouts })
+            let kind = kdl_required_prop_string(node, "kind")?;
+            let (slots, layouts, strip) = crate::workspace_layout::parse_kdl_workspace(node, &kind)?;
+            Ok(WorkspaceDefinition { kind, slots, layouts, strip })
         })
         .collect::<Result<Vec<_>, TemplateConfigError>>()?;
     let config = ExternalTemplateConfig {
@@ -120,13 +121,16 @@ pub struct WorkspaceDefinition {
     pub slots: Vec<TemplateSlot>,
     #[serde(default)]
     pub layouts: Vec<LayoutDefinition>,
+    /// What its tool strip lists (docs/sidebar-design/tool-strip.md).
+    #[serde(default)]
+    pub strip: crate::tool_strip::StripDefinition,
 }
 
 impl WorkspaceDefinition {
     /// Whether the declaration has a template, rather than only making its
     /// kind openable.
     pub fn has_template(&self) -> bool {
-        !self.slots.is_empty() || !self.layouts.is_empty()
+        !self.slots.is_empty() || !self.layouts.is_empty() || !self.strip.is_empty()
     }
 }
 
@@ -149,6 +153,7 @@ impl ExternalTemplateConfig {
                 return Err(TemplateConfigError::Validation(format!("workspace kind {} is declared twice", workspace.kind)));
             }
             crate::workspace_layout::validate(&workspace.kind, &workspace.slots, &workspace.layouts)?;
+            crate::tool_strip::validate(&workspace.kind, &workspace.strip)?;
         }
         let mut names = BTreeSet::new();
         for template in &self.templates {
@@ -293,6 +298,11 @@ impl ExternalTemplateConfig {
         for placement in &self.placements {
             check_visibility(&placement.loops, &visibility_names)?;
         }
+        for workspace in &self.workspaces {
+            for (_, loops) in workspace.strip.sections() {
+                check_visibility(loops, &visibility_names)?;
+            }
+        }
         let mut setter_names = BTreeSet::new();
         for setter in &self.sets {
             setter.validate()?;
@@ -379,7 +389,7 @@ fn validate_forward_source(
     Ok(())
 }
 
-fn validate_placement_loops(loops: &[PlacementLoop], enclosing: &BTreeSet<String>) -> Result<(), TemplateConfigError> {
+pub(crate) fn validate_placement_loops(loops: &[PlacementLoop], enclosing: &BTreeSet<String>) -> Result<(), TemplateConfigError> {
     let mut bindings = BTreeSet::new();
     for loop_definition in loops {
         if !bindings.insert(loop_definition.binding.clone()) {
@@ -566,6 +576,11 @@ impl TemplateConfigCatalog {
             for template in &layer.config.templates {
                 collect_visibility_names(&template.loops, &mut referenced_visibility);
             }
+            for workspace in &layer.config.workspaces {
+                for (_, loops) in workspace.strip.sections() {
+                    collect_visibility_names(loops, &mut referenced_visibility);
+                }
+            }
         }
         let mut seen_visibility = BTreeSet::new();
         let visibility = layers
@@ -695,6 +710,11 @@ impl TemplateConfigCatalog {
         for layer in &self.layers {
             for template in &layer.config.templates {
                 walk(&template.loops, &mut keys);
+            }
+            for workspace in &layer.config.workspaces {
+                for (_, loops) in workspace.strip.sections() {
+                    walk(loops, &mut keys);
+                }
             }
         }
         for policy in &self.visibility {
@@ -2116,7 +2136,7 @@ fn parse_kdl_placement(node: &KdlNode) -> Result<PlacementDefinition, TemplateCo
     Ok(PlacementDefinition { name, loops })
 }
 
-fn parse_kdl_placement_loop(node: &KdlNode, enclosing: &BTreeSet<String>) -> Result<PlacementLoop, TemplateConfigError> {
+pub(crate) fn parse_kdl_placement_loop(node: &KdlNode, enclosing: &BTreeSet<String>) -> Result<PlacementLoop, TemplateConfigError> {
     let binding = kdl_required_arg_string(node, 0, "loop binding")?;
     if binding.ends_with('s') {
         return Err(TemplateConfigError::Validation(format!("loop binding {binding} must be singular")));

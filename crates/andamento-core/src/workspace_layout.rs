@@ -17,6 +17,7 @@ use crate::suggested_layout::{
     invalid_cleat_field, Axis, CleatTransport, CommandLine, Content, LocalRecipe, RebindPolicy, Slot, SlotResolution, ViewSpec,
 };
 use crate::template_config::{TemplateConfigError, VisibilityPredicate, WorkspaceDefinition};
+use crate::tool_strip::StripDefinition;
 use crate::{EntityRef, FactMap, MetadataValue};
 
 /// The prefix of a template slot's key (`t:files`). Provider keys never
@@ -80,6 +81,10 @@ pub enum RecipeTemplate {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct LayoutDefinition {
     pub name: String,
+    /// What a host shows for it where there is room for a symbol only, such
+    /// as a tool strip: 1 to 8 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph: Option<String>,
     /// Predicates over the subject's facts, all of which must hold; none
     /// always matches.
     #[serde(default)]
@@ -91,6 +96,13 @@ pub struct LayoutDefinition {
 }
 
 impl LayoutDefinition {
+    /// Whether `other` arranges Slots as this does: all but the glyph, which
+    /// only shows it.
+    pub fn arranges_like(&self, other: &Self) -> bool {
+        let Self { name, glyph: _, when, hide, root } = self;
+        (name, when, hide, root) == (&other.name, &other.when, &other.hide, &other.root)
+    }
+
     /// The layout's panels in preorder, which is also matcher order.
     pub fn panels(&self) -> Vec<&PanelTemplate> {
         fn walk<'a>(panel: &'a PanelTemplate, out: &mut Vec<&'a PanelTemplate>) {
@@ -302,8 +314,9 @@ pub fn substitute(text: &str, facts: &FactMap, quoting: Quoting) -> Option<Strin
 /// Where a layout puts one Slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
-    /// A `hide` matcher took it: unplaced.
-    Hidden,
+    /// A `hide` matcher took it: unplaced. The targets are where the matchers
+    /// would put it otherwise, which is where showing it puts it.
+    Hidden(Vec<RouteTarget>),
     /// The tab panels whose matchers accept it, in matcher order: it goes to
     /// the first that exists, and is unplaced when none does or the list is
     /// empty.
@@ -321,9 +334,6 @@ impl LayoutDefinition {
     /// Where this layout puts `slot`: offered to `hide`, then to every tab
     /// panel's matchers in template order.
     pub fn route(&self, slot: &SlotFields<'_>) -> Route {
-        if self.hide.iter().any(|matcher| matcher.accepts(slot)) {
-            return Route::Hidden;
-        }
         let mut targets = Vec::new();
         for panel in self.panels() {
             if let PanelTemplateNode::Tabs { matchers, .. } = &panel.node {
@@ -331,6 +341,9 @@ impl LayoutDefinition {
                     targets.push(RouteTarget { panel: panel.id.clone(), matcher });
                 }
             }
+        }
+        if self.hide.iter().any(|matcher| matcher.accepts(slot)) {
+            return Route::Hidden(targets);
         }
         Route::To(targets)
     }
@@ -370,6 +383,19 @@ impl LayoutPlan {
 
     pub fn name(&self) -> &str {
         &self.definition.name
+    }
+
+    /// Where showing the unplaced Slot `key` puts it in `doc`: the first tab
+    /// panel there its matchers would give it, ignoring `hide`, else `doc`'s
+    /// first tab panel.
+    pub fn home(&self, key: &str, doc: &ArrangementDoc) -> Option<String> {
+        let tabs: Vec<&str> =
+            doc.panels().into_iter().filter(|panel| matches!(panel.node, PanelNode::Tabs { .. })).map(|panel| panel.id.as_str()).collect();
+        let targets = match self.routes.get(key) {
+            Some(Route::To(targets) | Route::Hidden(targets)) => targets.as_slice(),
+            None => &[],
+        };
+        targets.iter().map(|target| target.panel.as_str()).find(|panel| tabs.contains(panel)).or(tabs.first().copied()).map(str::to_owned)
     }
 
     /// The layout's document over the Slots in `order`, and the Slots it
@@ -470,19 +496,25 @@ impl RecipeTemplate {
     }
 }
 
-/// Read a `workspace kind="…"` node's children: its template slots and
-/// layouts.
-pub(crate) fn parse_kdl_workspace(node: &KdlNode) -> Result<(Vec<TemplateSlot>, Vec<LayoutDefinition>), TemplateConfigError> {
+/// Read a `workspace kind="…"` node's children: its template slots,
+/// layouts and tool strip.
+pub(crate) fn parse_kdl_workspace(
+    node: &KdlNode,
+    kind: &str,
+) -> Result<(Vec<TemplateSlot>, Vec<LayoutDefinition>, StripDefinition), TemplateConfigError> {
     let mut slots = Vec::new();
     let mut layouts = Vec::new();
+    let mut strip = None;
     for child in node.children().map(|children| children.nodes()).unwrap_or_default() {
         match child.name().value() {
             "slot" => slots.push(parse_slot(child)?),
             "layout" => layouts.push(parse_layout(child)?),
-            other => return Err(invalid(format!("workspace only accepts slot and layout, not {other}"))),
+            "strip" if strip.is_none() => strip = Some(crate::tool_strip::parse_kdl_strip(child, kind)?),
+            "strip" => return Err(invalid(format!("workspace {kind} declares strip twice"))),
+            other => return Err(invalid(format!("workspace only accepts slot, layout and strip, not {other}"))),
         }
     }
-    Ok((slots, layouts))
+    Ok((slots, layouts, strip.unwrap_or_default()))
 }
 
 fn parse_slot(node: &KdlNode) -> Result<TemplateSlot, TemplateConfigError> {
@@ -546,7 +578,8 @@ fn parse_slot(node: &KdlNode) -> Result<TemplateSlot, TemplateConfigError> {
 
 fn parse_layout(node: &KdlNode) -> Result<LayoutDefinition, TemplateConfigError> {
     let name = arg(node, "layout name")?;
-    only(node, &[], &format!("layout {name}"))?;
+    only(node, &["glyph"], &format!("layout {name}"))?;
+    let glyph = string(node, "glyph")?;
     let mut when = Vec::new();
     let mut hide = Vec::new();
     let mut root = None;
@@ -568,7 +601,7 @@ fn parse_layout(node: &KdlNode) -> Result<LayoutDefinition, TemplateConfigError>
         }
     }
     let root = root.ok_or_else(|| invalid(format!("layout {name} needs a split or tabs panel")))?;
-    Ok(LayoutDefinition { name, when, hide, root })
+    Ok(LayoutDefinition { name, glyph, when, hide, root })
 }
 
 /// `position` names a panel without an `id`: `1` for the root, `1.2` for
@@ -694,6 +727,9 @@ pub(crate) fn validate(kind: &str, slots: &[TemplateSlot], layouts: &[LayoutDefi
         check_name(&layout.name).map_err(|_| invalid(format!("{at}: the name is invalid")))?;
         if !names.insert(&layout.name) {
             return Err(invalid(format!("workspace {kind} declares layout {} twice", layout.name)));
+        }
+        if layout.glyph.as_ref().is_some_and(|glyph| !(1..=8).contains(&glyph.chars().count()) || glyph.trim() != glyph) {
+            return Err(invalid(format!("{at}: a glyph is 1 to 8 characters, without surrounding spaces")));
         }
         let mut ids = BTreeSet::new();
         let mut tabs = 0;
@@ -914,6 +950,10 @@ mod tests {
             (r#"layout "a" { tabs { slots { match "k" valeu="v"; }; }; }"#, "unknown match property"),
             (r#"slot "a" kind="cleat-session" transport="ssh" host="h" runtime_root="r" daemon="d""#, "cleat without session"),
             (r#"slot "a" kind="cleat-session" transport="mosh" host="h" runtime_root="r" daemon="d" session="s""#, "transport"),
+            (r#"layout "a" glyph="" { tabs; }"#, "an empty glyph"),
+            (r#"layout "a" glyph="ninechars" { tabs; }"#, "a long glyph"),
+            (r#"layout "a" glyph=" W" { tabs; }"#, "a padded glyph"),
+            (r#"strip { related { for "vessel" kind="vessel"; }; }"#, "a strip loop shadowing the subject"),
         ] {
             let error = workspace(&wrap(body)).expect_err(&format!("{why}: {body} parses"));
             assert!(matches!(error, TemplateConfigError::Validation(_)), "{why}: {body} fails to parse: {error}");
@@ -1053,7 +1093,7 @@ mod tests {
         let slot = |role| SlotFields { key: "k", role: Some(role), facet: None, presentation: None, entity_kind: None, facts: None };
         let route = |role| match layout.route(&slot(role)) {
             Route::To(targets) => targets.into_iter().map(|target| (target.panel, target.matcher)).collect::<Vec<_>>(),
-            Route::Hidden => panic!("nothing is hidden"),
+            Route::Hidden(_) => panic!("nothing is hidden"),
         };
         assert_eq!(route("agent"), [("agents".into(), 0)], "the first matcher that takes it");
         assert_eq!(

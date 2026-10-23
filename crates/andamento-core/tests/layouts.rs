@@ -21,8 +21,11 @@ workspace kind="vessel" {
       tabs id="agents" { slots role="agent"; }
     }
   }
-  layout "work" {
-    hide { slots role="agent" { match "flotilla.ended" exists=true; }; }
+  layout "work" glyph="W" {
+    hide {
+      slots role="agent" { match "flotilla.ended" exists=true; };
+      slots role="review" { match "flotilla.ended" exists=true; };
+    }
     split axis="row" {
       tabs id="agents" weight=3 { slots role="agent"; }
       tabs id="side" weight=2 selected="last" { slots role="files"; slots role="review"; }
@@ -133,10 +136,36 @@ fn a_template_layout_arranges_slots_by_role() {
 }
 
 #[test]
+fn showing_an_unplaced_slot_puts_it_where_its_matchers_would() {
+    let mut sidebar = session();
+    // The review is hidden while the vessel has ended, and the checks have no
+    // matcher.
+    sidebar.feed(
+        200,
+        [
+            patch(subject(), &[("flotilla.ended", MetadataValue::Bool(true))], &[]),
+            layout("2", &[("a", "agent"), ("b", "agent"), ("r", "review"), ("x", "checks")]),
+        ],
+    );
+    let view = sidebar.arrangement(worker()).unwrap();
+    assert_eq!(view.unplaced, ["primary", "r", "x"]);
+    let home = |key: &str| view.homes.get(key).map(String::as_str);
+    assert_eq!(home("primary"), Some("agents"));
+    assert_eq!(home("r"), Some("side"), "the panel its matcher names, not the first");
+    assert_eq!(home("x"), Some("agents"), "no matcher: the first tab panel");
+    assert_eq!(view.homes.len(), 3, "only unplaced slots have a home");
+}
+
+#[test]
 fn the_default_layout_follows_the_facts_until_the_user_chooses() {
     let mut sidebar = session();
     let listed = |sidebar: &Sidebar| sidebar.layouts(worker()).unwrap();
-    let info = |name: &str, default: bool, current: bool| LayoutInfo { name: name.into(), default, current };
+    let info = |name: &str, default: bool, current: bool| LayoutInfo {
+        name: name.into(),
+        glyph: (name == "work").then(|| "W".into()),
+        default,
+        current,
+    };
     assert_eq!(listed(&sidebar), [info("review", false, false), info("work", true, true)]);
 
     let before = sidebar.arrangement(worker()).unwrap().generation;
@@ -259,6 +288,11 @@ fn a_template_change_is_flagged_on_an_edited_layout() {
     sidebar.resolve_arrangement(worker(), Resolve::Keep, view.generation).unwrap();
     sidebar.feed(200, [patch(subject(), &[("display.label", text("Renamed"))], &[])]);
     assert!(!sidebar.arrangement(worker()).unwrap().provider_changed, "keeping settles the change");
+
+    // A new glyph only shows the layout: nothing to flag.
+    sidebar.configure(&format!("{CONFIG}\n{}", TEMPLATE.replace(r#"glyph="W""#, r#"glyph="X""#))).unwrap();
+    assert!(!sidebar.arrangement(worker()).unwrap().provider_changed);
+    assert_eq!(sidebar.layouts(worker()).unwrap()[1].glyph.as_deref(), Some("X"));
 
     // A configuration without the template falls back to the hint's rule.
     sidebar.configure(CONFIG).unwrap();

@@ -308,8 +308,12 @@ impl WorkspaceRecord {
         Ok(generation)
     }
 
-    pub fn arrangement_view(&self) -> ArrangementView {
-        Arrangement::view(&self.arrangement, &self.slots.get().slots())
+    /// The arrangement, with where `planner`'s layout would show each
+    /// unplaced Slot.
+    pub fn arrangement_view(&self, planner: &crate::workspace_layout::Planner<'_>) -> ArrangementView {
+        let slots = self.slots.get().slots();
+        let plan = planner(&slots);
+        Arrangement::view(&self.arrangement, &slots, plan.as_ref())
     }
 
     /// The overlay, with the subject's name the caller resolved.

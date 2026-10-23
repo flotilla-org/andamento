@@ -2034,6 +2034,40 @@ impl ControllerState {
         cards
     }
 
+    /// What the tool strip of `subject`'s workspace lists: its kind's `strip`
+    /// loops matched over the catalog with the subject bound by its kind's
+    /// name, by the same rules as the sidebar's (visibility, Show finished,
+    /// providers). Empty for an entity not in the catalog or a kind without a
+    /// strip.
+    pub(crate) fn strip_in(&self, evaluation: &RevisionEvaluation, subject: &EntityRef) -> Vec<crate::tool_strip::StripEntry> {
+        let catalog = &evaluation.catalog;
+        let Some(entity) = catalog.entity(subject) else {
+            return vec![];
+        };
+        let facts = entity_facts(&entity.entity, &entity.facts);
+        let Some(strip) = self.workspace_template(&subject.kind, &facts).map(|template| &template.strip) else {
+            return vec![];
+        };
+        let mut index = self.kept.placement_index.borrow_mut();
+        let reindexed = index.update(&catalog.entities, Some(catalog.generation));
+        if let Some(config) = self.template_catalog.as_ref() {
+            // The snapshot reports visibility warnings; a strip only reads it.
+            let _ = index.update_visibility(&catalog.entities, config, self.template_generation, &self.rail_ui.variables, reindexed);
+        }
+        let root = Scope::default();
+        let scope = root.within(&subject.kind, entity, true);
+        let mut entries = vec![];
+        for (section, loops) in strip.sections() {
+            for definition in loops {
+                let mut reads = LoopReads::default();
+                for position in self.placement_matches(definition, &catalog.entities, &index, &scope, &mut reads) {
+                    entries.push(crate::tool_strip::StripEntry { section, entity: catalog.entities[position].entity.clone() });
+                }
+            }
+        }
+        entries
+    }
+
     pub(crate) fn evaluation_time(&self) -> u64 {
         self.now()
     }
