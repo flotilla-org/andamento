@@ -1,4 +1,4 @@
-# The host interface (ABI 8)
+# The host interface (ABI 9)
 
 What a host such as Wheelhouse uses to drive Andamento through its C ABI.
 `crates/andamento-ffi/include/andamento.h` is generated from the FFI crate
@@ -8,7 +8,7 @@ behind it is in [Slots and arrangements](slots-and-arrangements.md),
 [The sidebar arrangement](sidebar-arrangement.md) and the
 [Workspace Overlay](workspace-overlay.md).
 
-`andamento_abi_version()` returns 8. Each call has one form: there is no
+`andamento_abi_version()` returns 9. Each call has one form: there is no
 compatibility with earlier versions, and a host requires exactly the version
 it was built against.
 
@@ -157,6 +157,18 @@ single pass, appending each panel to its parent.
   `variable:` and the key.
 
 Committing an arrangement never changes the snapshot's revision.
+
+## From ABI 8
+
+ABI 9 adds a content kind, `ANDAMENTO_SLOT_CLEAT_SESSION`: a direct Cleat
+packet view of a session (wheelhouse#104). A View Spec gains its fields at the
+end: `cleat_transport` (`local` or `ssh`), `cleat_host`,
+`cleat_runtime_root`, `cleat_daemon` and `cleat_session`. A primary slot
+resolves to one when its provider publishes a direct endpoint
+([Suggested Layouts](suggested-layouts.md#the-primary-slot)); MATERIALIZE then
+carries no recipe and no primary target, so the host opens the workspace with
+its primary waiting and the slot's first plan fills it. `AndamentoViewSpec`
+changes layout, so a host built against ABI 8 must be rebuilt.
 
 ## From ABI 7
 

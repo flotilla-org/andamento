@@ -410,3 +410,117 @@ fn a_subject_always_has_a_primary_slot() {
     let held = with(recipe, [("workspace.primary.state", text("held"))]);
     assert_eq!(parse(&vessel, &held, PrimarySlot::Always).unwrap().unwrap().slots[0].resolution, SlotResolution::Held);
 }
+
+fn cleat_slot() -> FactMap {
+    facts([
+        ("layout.version", text("1")),
+        ("layout.slots", list(&["crew"])),
+        ("layout.slot.crew.kind", text("cleat-session")),
+        ("layout.slot.crew.transport", text("ssh")),
+        ("layout.slot.crew.host", text("robert@feta")),
+        ("layout.slot.crew.runtime_root", text("/run/cleat")),
+        ("layout.slot.crew.daemon", text("d1")),
+        ("layout.slot.crew.session", text("s1")),
+    ])
+}
+fn cleat(transport: CleatTransport, host: &str) -> LocalRecipe {
+    LocalRecipe::CleatSession { transport, host: host.into(), runtime_root: "/run/cleat".into(), daemon: "d1".into(), session: "s1".into() }
+}
+
+#[test]
+fn a_cleat_session_slot_parses_and_needs_every_field_and_a_known_transport() {
+    let crew = parse_ok(&cleat_slot());
+    assert_eq!(crew.slot("crew").unwrap().spec.content, Content::Local(cleat(CleatTransport::Ssh, "robert@feta")));
+    let local = with(cleat_slot(), [("layout.slot.crew.transport", text("local"))]);
+    assert_eq!(parse_ok(&local).slot("crew").unwrap().spec.content, Content::Local(cleat(CleatTransport::Local, "robert@feta")));
+    for field in ["transport", "host", "runtime_root", "daemon", "session"] {
+        let key = format!("layout.slot.crew.{field}");
+        assert_eq!(parse_err(&without(cleat_slot(), &[key.as_str()])), LayoutError::MissingFact { key: key.clone() }, "{field}");
+        assert_eq!(parse_err(&with(cleat_slot(), [(key.as_str(), text(""))])), LayoutError::MissingFact { key: key.clone() }, "{field}");
+    }
+    let mosh = with(cleat_slot(), [("layout.slot.crew.transport", text("mosh"))]);
+    assert_eq!(parse_err(&mosh), LayoutError::InvalidValue { key: "layout.slot.crew.transport".into(), value: "mosh".into() });
+}
+
+// A host passes each field on as one argument: none may be read as an
+// option or split into more. A runtime root is a path and may hold spaces.
+#[test]
+fn cleat_session_fields_are_single_arguments() {
+    for (field, value) in [
+        ("host", "-oProxyCommand=evil"),
+        ("host", "feta extra"),
+        ("daemon", "d\n1"),
+        ("session", "-s"),
+        ("session", "s 1"),
+        ("runtime_root", "-r"),
+        ("runtime_root", "/run\u{7}"),
+    ] {
+        let key = format!("layout.slot.crew.{field}");
+        assert_eq!(
+            parse_err(&with(cleat_slot(), [(key.as_str(), text(value))])),
+            LayoutError::InvalidValue { key: key.clone(), value: value.into() },
+            "{field}={value:?}"
+        );
+        let direct = format!("action.primary.direct.{field}");
+        let primary = with(with(primary_facts(), direct_facts()), [(direct.as_str(), text(value))]);
+        assert!(
+            matches!(&parse_ok(&primary).slots[0].resolution, SlotResolution::Ready { recipe: LocalRecipe::Command { .. }, .. }),
+            "direct {field}={value:?} falls back to the command"
+        );
+    }
+    let spaced = with(cleat_slot(), [("layout.slot.crew.runtime_root", text("/Users/r/Library/Application Support/cleat"))]);
+    assert!(matches!(parse_ok(&spaced).slot("crew").unwrap().spec.content, Content::Local(LocalRecipe::CleatSession { .. })));
+}
+
+fn direct_facts() -> FactMap {
+    facts([
+        ("action.primary.direct.transport", text("ssh")),
+        ("action.primary.direct.host", text("robert@feta")),
+        ("action.primary.direct.runtime_root", text("/run/cleat")),
+        ("action.primary.direct.daemon", text("d1")),
+        ("action.primary.direct.session", text("s1")),
+    ])
+}
+
+// wheelhouse#104: a published direct endpoint opens the primary as a direct
+// Cleat packet view, at the same target; anything less keeps the command.
+#[test]
+fn the_primary_prefers_a_complete_direct_endpoint_to_its_command() {
+    let vessel = entity("vessel", "v1");
+    let recipe = facts([("action.primary.recipe", text("flotilla attach v1")), ("git.root", text("/work"))]);
+    let resolution = |facts: &FactMap| parse(&vessel, facts, PrimarySlot::Always).unwrap().unwrap().slots[0].resolution.clone();
+    let target = Some(vessel.action_target().to_string());
+    let command = SlotResolution::Ready {
+        target: target.clone(),
+        recipe: LocalRecipe::Command { line: CommandLine::Shell("flotilla attach v1".into()), cwd: Some("/work".into()) },
+    };
+    let direct = SlotResolution::Ready { target: target.clone(), recipe: cleat(CleatTransport::Ssh, "robert@feta") };
+    assert_eq!(resolution(&with(recipe.clone(), direct_facts())), direct);
+    // The endpoint alone is enough.
+    assert_eq!(resolution(&direct_facts()), direct);
+    // Published workspace.primary.* facts keep their target.
+    let ready = with(with(primary_facts(), direct_facts()), [("workspace.primary.target", text("vessel:v1#2"))]);
+    assert_eq!(
+        parse_ok(&ready).slots[0].resolution,
+        SlotResolution::Ready { target: Some("vessel:v1#2".into()), recipe: cleat(CleatTransport::Ssh, "robert@feta") }
+    );
+    let reason = with(recipe.clone(), [("action.primary.direct.reason", text("no observed Cleat daemon endpoint"))]);
+    assert_eq!(resolution(&reason), command);
+    for key in ["transport", "host", "runtime_root", "daemon", "session"] {
+        let key = format!("action.primary.direct.{key}");
+        assert_eq!(resolution(&without(with(recipe.clone(), direct_facts()), &[key.as_str()])), command, "without {key}");
+        assert_eq!(resolution(&with(with(recipe.clone(), direct_facts()), [(key.as_str(), text(""))])), command, "empty {key}");
+    }
+    let unknown = with(with(recipe, direct_facts()), [("action.primary.direct.transport", text("mosh"))]);
+    assert_eq!(resolution(&unknown), command);
+}
+
+// Workspace records persist View Specs: a Cleat session round-trips.
+#[test]
+fn a_cleat_session_view_spec_round_trips_through_serde() {
+    let spec =
+        ViewSpec { content: Content::Local(cleat(CleatTransport::Local, "feta")), presentation: Some("terminal".into()), role: None };
+    let json = serde_json::to_string(&spec).unwrap();
+    assert!(json.contains(r#""transport":"local""#), "{json}");
+    assert_eq!(serde_json::from_str::<ViewSpec>(&json).unwrap(), spec);
+}

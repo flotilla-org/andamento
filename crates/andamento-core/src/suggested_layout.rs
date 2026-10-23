@@ -24,6 +24,11 @@ const KEY_PRIMARY_TARGET: &str = "workspace.primary.target";
 const KEY_PRIMARY_RECIPE: &str = "action.primary.recipe";
 const KEY_PRIMARY_CWD: &str = "git.root";
 const KEY_ACTION_TARGET: &str = "action.primary.target";
+const KEY_DIRECT_TRANSPORT: &str = "action.primary.direct.transport";
+const KEY_DIRECT_HOST: &str = "action.primary.direct.host";
+const KEY_DIRECT_RUNTIME_ROOT: &str = "action.primary.direct.runtime_root";
+const KEY_DIRECT_DAEMON: &str = "action.primary.direct.daemon";
+const KEY_DIRECT_SESSION: &str = "action.primary.direct.session";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SuggestedLayout {
@@ -90,10 +95,69 @@ pub enum Content {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LocalRecipe {
-    Command { line: CommandLine, cwd: Option<String> },
-    File { path: String },
-    Url { url: String },
-    Jackstay { launcher: String, endpoint: String },
+    Command {
+        line: CommandLine,
+        cwd: Option<String>,
+    },
+    File {
+        path: String,
+    },
+    Url {
+        url: String,
+    },
+    Jackstay {
+        launcher: String,
+        endpoint: String,
+    },
+    /// A direct Cleat packet view of `session`, served by `daemon` under
+    /// `runtime_root` on `host` (the local host's name, or an ssh
+    /// destination).
+    CleatSession {
+        transport: CleatTransport,
+        host: String,
+        runtime_root: String,
+        daemon: String,
+        session: String,
+    },
+}
+
+/// How a frontend reaches a Cleat session's daemon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CleatTransport {
+    Local,
+    Ssh,
+}
+
+impl CleatTransport {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "local" => Some(Self::Local),
+            "ssh" => Some(Self::Ssh),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Ssh => "ssh",
+        }
+    }
+}
+
+/// The first Cleat session field a host could not pass on as one argument,
+/// if any. Each is nonempty, never starts with `-` (so it is never read as
+/// an option to ssh or cleat) and has no control characters; all but the
+/// runtime root, a path, also have no whitespace.
+pub fn invalid_cleat_field(host: &str, runtime_root: &str, daemon: &str, session: &str) -> Option<&'static str> {
+    let word = |text: &str, spaces: bool| {
+        !text.is_empty() && !text.starts_with('-') && !text.chars().any(|c| c.is_control() || (!spaces && c.is_whitespace()))
+    };
+    [("host", host, false), ("runtime_root", runtime_root, true), ("daemon", daemon, false), ("session", session, false)]
+        .into_iter()
+        .find(|(_, text, spaces)| !word(text, *spaces))
+        .map(|(field, ..)| field)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -315,18 +379,18 @@ fn primary_slot(entity: &EntityRef, facts: &FactMap) -> Slot {
         Some(MetadataValue::Text(value)) => Some(value.clone()),
         _ => None,
     };
-    let ready = |target: Option<std::sync::Arc<str>>| match (
-        target.filter(|s| !s.is_empty()),
-        text(KEY_PRIMARY_RECIPE).filter(|s| !s.is_empty()),
-    ) {
-        (Some(target), Some(command)) => SlotResolution::Ready {
-            target: Some(target.to_string()),
-            recipe: LocalRecipe::Command {
+    let ready = |target: Option<std::sync::Arc<str>>| {
+        let command = || {
+            let command = text(KEY_PRIMARY_RECIPE).filter(|s| !s.is_empty())?;
+            Some(LocalRecipe::Command {
                 line: CommandLine::Shell(command.to_string()),
                 cwd: text(KEY_PRIMARY_CWD).map(|cwd| cwd.to_string()),
-            },
-        },
-        _ => SlotResolution::Unavailable,
+            })
+        };
+        match (target.filter(|s| !s.is_empty()), direct_primary(text).or_else(command)) {
+            (Some(target), Some(recipe)) => SlotResolution::Ready { target: Some(target.to_string()), recipe },
+            _ => SlotResolution::Unavailable,
+        }
     };
     let resolution = match text(KEY_PRIMARY_STATE).as_deref() {
         Some("held") => SlotResolution::Held,
@@ -346,6 +410,28 @@ fn primary_slot(entity: &EntityRef, facts: &FactMap) -> Slot {
         rebind: RebindPolicy::Replace,
         resolution,
     }
+}
+
+/// The primary's direct Cleat endpoint (wheelhouse#104), preferred over its
+/// command recipe: all five `action.primary.direct.*` facts, with a known
+/// transport and fields [`invalid_cleat_field`] accepts. `None` when the
+/// provider publishes none (only `action.primary.direct.reason`) or an
+/// incomplete or unusable one; the primary then opens through its command
+/// recipe.
+pub(crate) fn direct_primary<S: AsRef<str>>(text: impl Fn(&'static str) -> Option<S>) -> Option<LocalRecipe> {
+    let field = |key| text(key).map(|value| value.as_ref().to_owned());
+    let (host, runtime_root, daemon, session) =
+        (field(KEY_DIRECT_HOST)?, field(KEY_DIRECT_RUNTIME_ROOT)?, field(KEY_DIRECT_DAEMON)?, field(KEY_DIRECT_SESSION)?);
+    if invalid_cleat_field(&host, &runtime_root, &daemon, &session).is_some() {
+        return None;
+    }
+    Some(LocalRecipe::CleatSession {
+        transport: CleatTransport::parse(&field(KEY_DIRECT_TRANSPORT)?)?,
+        host,
+        runtime_root,
+        daemon,
+        session,
+    })
 }
 
 fn provider_slot(f: &Facts, key: &str) -> Result<Slot, LayoutError> {
@@ -420,6 +506,16 @@ fn recipe(f: &Facts, key: &str) -> Result<LocalRecipe, LayoutError> {
         "file" => LocalRecipe::File { path: required("path")? },
         "url" => LocalRecipe::Url { url: required("url")? },
         "jackstay" => LocalRecipe::Jackstay { launcher: required("launcher")?, endpoint: required("endpoint")? },
+        "cleat-session" => {
+            let transport = required("transport")?;
+            let transport = CleatTransport::parse(&transport).ok_or_else(|| invalid(&at("transport"), &transport))?;
+            let (host, runtime_root, daemon, session) =
+                (required("host")?, required("runtime_root")?, required("daemon")?, required("session")?);
+            if let Some(field) = invalid_cleat_field(&host, &runtime_root, &daemon, &session) {
+                return Err(invalid(&at(field), &required(field)?));
+            }
+            LocalRecipe::CleatSession { transport, host, runtime_root, daemon, session }
+        }
         other => return Err(invalid(&at("kind"), other)),
     })
 }

@@ -201,6 +201,10 @@
 // A provider facet: the facet of entity's Suggested Layout.
 #define ANDAMENTO_SLOT_FACET 4
 
+// A direct Cleat packet view of a session (cleat_transport "local" or
+// "ssh", cleat_host, cleat_runtime_root, cleat_daemon, cleat_session).
+#define ANDAMENTO_SLOT_CLEAT_SESSION 5
+
 // A rebind closes the instance it replaces.
 #define ANDAMENTO_REBIND_REPLACE 0
 
@@ -631,6 +635,14 @@ typedef struct {
   // Workspace Layouts arrange by.
   uint32_t has_role;
   AndamentoText role;
+  // ANDAMENTO_SLOT_CLEAT_SESSION: the transport ("local" or "ssh"), the
+  // host (the local host's name, or an ssh destination) and the session's
+  // runtime root, daemon and name.
+  AndamentoText cleat_transport;
+  AndamentoText cleat_host;
+  AndamentoText cleat_runtime_root;
+  AndamentoText cleat_daemon;
+  AndamentoText cleat_session;
 } AndamentoViewSpec;
 
 // One named field of a portable Target Resolution.

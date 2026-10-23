@@ -13,7 +13,9 @@ use kdl::KdlNode;
 use serde::{Deserialize, Serialize};
 
 use crate::slots::{ArrangementDoc, Panel, PanelNode};
-use crate::suggested_layout::{Axis, CommandLine, Content, LocalRecipe, RebindPolicy, Slot, SlotResolution, ViewSpec};
+use crate::suggested_layout::{
+    invalid_cleat_field, Axis, CleatTransport, CommandLine, Content, LocalRecipe, RebindPolicy, Slot, SlotResolution, ViewSpec,
+};
 use crate::template_config::{TemplateConfigError, VisibilityPredicate, WorkspaceDefinition};
 use crate::{EntityRef, FactMap, MetadataValue};
 
@@ -62,6 +64,14 @@ pub enum RecipeTemplate {
     Jackstay {
         launcher: String,
         endpoint: String,
+    },
+    /// `transport` is `local` or `ssh` once substituted.
+    CleatSession {
+        transport: String,
+        host: String,
+        runtime_root: String,
+        daemon: String,
+        session: String,
     },
 }
 
@@ -447,6 +457,15 @@ impl RecipeTemplate {
             RecipeTemplate::Jackstay { launcher, endpoint } => {
                 LocalRecipe::Jackstay { launcher: text(launcher)?, endpoint: text(endpoint)? }
             }
+            // An unknown transport or an unusable field is as unresolved as a
+            // missing fact.
+            RecipeTemplate::CleatSession { transport, host, runtime_root, daemon, session } => {
+                let (host, runtime_root, daemon, session) = (text(host)?, text(runtime_root)?, text(daemon)?, text(session)?);
+                if invalid_cleat_field(&host, &runtime_root, &daemon, &session).is_some() {
+                    return None;
+                }
+                LocalRecipe::CleatSession { transport: CleatTransport::parse(&text(transport)?)?, host, runtime_root, daemon, session }
+            }
         })
     }
 }
@@ -470,7 +489,22 @@ fn parse_slot(node: &KdlNode) -> Result<TemplateSlot, TemplateConfigError> {
     let name = arg(node, "template slot name")?;
     only(
         node,
-        &["kind", "role", "presentation", "command", "cwd", "path", "url", "launcher", "endpoint"],
+        &[
+            "kind",
+            "role",
+            "presentation",
+            "command",
+            "cwd",
+            "path",
+            "url",
+            "launcher",
+            "endpoint",
+            "transport",
+            "host",
+            "runtime_root",
+            "daemon",
+            "session",
+        ],
         &format!("template slot {name}"),
     )?;
     let text = |key: &str| string(node, key);
@@ -495,6 +529,13 @@ fn parse_slot(node: &KdlNode) -> Result<TemplateSlot, TemplateConfigError> {
         "file" => RecipeTemplate::File { path: required("path")? },
         "url" => RecipeTemplate::Url { url: required("url")? },
         "jackstay" => RecipeTemplate::Jackstay { launcher: required("launcher")?, endpoint: required("endpoint")? },
+        "cleat-session" => RecipeTemplate::CleatSession {
+            transport: required("transport")?,
+            host: required("host")?,
+            runtime_root: required("runtime_root")?,
+            daemon: required("daemon")?,
+            session: required("session")?,
+        },
         other => return Err(invalid(format!("template slot {name} has unknown kind {other}"))),
     };
     if !matches!(recipe, RecipeTemplate::Command { .. }) && node.children().is_some() {
@@ -635,6 +676,13 @@ pub(crate) fn validate(kind: &str, slots: &[TemplateSlot], layouts: &[LayoutDefi
             RecipeTemplate::File { path } => vec![path],
             RecipeTemplate::Url { url } => vec![url],
             RecipeTemplate::Jackstay { launcher, endpoint } => vec![launcher, endpoint],
+            RecipeTemplate::CleatSession { transport, host, runtime_root, daemon, session } => {
+                // A literal transport is checked now; one naming a fact, when built.
+                if !transport.contains('{') && CleatTransport::parse(transport).is_none() {
+                    return Err(invalid(format!("workspace {kind} template slot {} has unknown transport {transport:?}", slot.name)));
+                }
+                vec![transport, host, runtime_root, daemon, session]
+            }
         };
         if let Some(text) = texts.into_iter().find(|text| !well_formed(text)) {
             return Err(invalid(format!("workspace {kind} template slot {} has unbalanced braces in {text:?}", slot.name)));
@@ -792,6 +840,34 @@ mod tests {
         assert_eq!(vessel.layouts[1].matchers("1"), Some(&[][..]), "a matcher-less tab panel is allowed");
     }
 
+    // A transport named by a fact is checked when the recipe is built: one
+    // that is neither local nor ssh leaves the slot unresolved.
+    #[test]
+    fn a_cleat_session_template_builds_from_facts() {
+        let crew = workspace(
+            r#"workspace kind="vessel" {
+              slot "crew" kind="cleat-session" transport="{t}" host="{h}" runtime_root="/run/cleat" daemon="d" session="{s}"
+            }"#,
+        )
+        .expect("parses");
+        let build = |pairs: &[(&str, &str)]| crew.slots[0].recipe.build(&facts(pairs));
+        assert_eq!(
+            build(&[("t", "ssh"), ("h", "robert@feta"), ("s", "s1")]),
+            Some(LocalRecipe::CleatSession {
+                transport: CleatTransport::Ssh,
+                host: "robert@feta".into(),
+                runtime_root: "/run/cleat".into(),
+                daemon: "d".into(),
+                session: "s1".into(),
+            })
+        );
+        assert_eq!(build(&[("t", "mosh"), ("h", "robert@feta"), ("s", "s1")]), None);
+        assert_eq!(build(&[("t", "local"), ("h", "feta")]), None);
+        // An empty fact, or one a host would read as an option, is unusable.
+        assert_eq!(build(&[("t", "ssh"), ("h", ""), ("s", "s1")]), None);
+        assert_eq!(build(&[("t", "ssh"), ("h", "-oProxyCommand=x"), ("s", "s1")]), None);
+    }
+
     #[test]
     fn a_workspace_without_children_has_no_template() {
         assert!(!workspace(r#"workspace kind="vessel""#).expect("parses").has_template());
@@ -836,6 +912,8 @@ mod tests {
             (r#"layout "a" default=true { tabs; }"#, "unknown layout property"),
             (r#"layout "a" { hide role="agent"; tabs; }"#, "a property on hide"),
             (r#"layout "a" { tabs { slots { match "k" valeu="v"; }; }; }"#, "unknown match property"),
+            (r#"slot "a" kind="cleat-session" transport="ssh" host="h" runtime_root="r" daemon="d""#, "cleat without session"),
+            (r#"slot "a" kind="cleat-session" transport="mosh" host="h" runtime_root="r" daemon="d" session="s""#, "transport"),
         ] {
             let error = workspace(&wrap(body)).expect_err(&format!("{why}: {body} parses"));
             assert!(matches!(error, TemplateConfigError::Validation(_)), "{why}: {body} fails to parse: {error}");

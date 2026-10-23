@@ -22,8 +22,9 @@ These optional facts opt an entity into reconciliation:
 | --- | --- |
 | workspace.primary.state | ready or held |
 | workspace.primary.target | Opaque identity of this resolved backing target; required when ready |
-| action.primary.recipe | Command to launch for the current resolution; required when ready |
+| action.primary.recipe | Command to launch for the current resolution; required when ready unless a direct endpoint is published |
 | git.root | Optional command working directory; the fact materialization also launches in |
+| action.primary.direct.* | Optional direct Cleat endpoint (`transport`, `host`, `runtime_root`, `daemon`, `session`), preferred over the command ([Suggested Layouts](suggested-layouts.md#the-primary-slot)) |
 
 The resolved target must change when replacing the backing instance even when
 the command text stays the same. It is distinct from action.primary.target,

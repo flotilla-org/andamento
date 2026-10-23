@@ -63,13 +63,22 @@ Each fact is `layout.slot.<key>.<field>`.
 | `rebind` | text | `replace` (default), `keep-previous` or `ask`: what happens to the live instance when the resolution changes. |
 | `state` | text | `ready` or `held`. Required for a provider facet; optional (default `ready`) for a local recipe. |
 | `target` | text | Identity of the backing instance. Required for a ready provider facet; optional for a local recipe. |
-| `kind` | text | Recipe kind: `command`, `file`, `url` or `jackstay`. |
+| `kind` | text | Recipe kind: `command`, `file`, `url`, `jackstay` or `cleat-session`. |
 | `argv.<n>` | text | `command`: argument `n`, contiguous from `0` ([andamento#134](https://github.com/flotilla-org/andamento/issues/134)). |
 | `command` | text | `command`: shell command line, used only when no `argv.*` is present. |
 | `cwd` | text | `command`: optional working directory. |
 | `path` | text | `file`: path to open. |
 | `url` | text | `url`: URL to open, including a Luchs page. |
 | `launcher`, `endpoint` | text | `jackstay`: Jackstay launcher and stream endpoint. |
+| `transport` | text | `cleat-session`: `local` or `ssh`. |
+| `host` | text | `cleat-session`: the local host's name (`local`) or the ssh destination (`ssh`). |
+| `runtime_root`, `daemon`, `session` | text | `cleat-session`: the Cleat runtime root, the daemon serving the session, and the session. A frontend shows it as a direct Cleat packet view. |
+
+A `cleat-session`'s `host`, `runtime_root`, `daemon` and `session` must each
+be usable as one argument: nonempty, not starting with `-` (so a host never
+passes one to ssh or cleat as an option) and without control characters; all
+but `runtime_root`, a path, also without whitespace. Any other value is an
+invalid spec.
 
 A slot with `entity` and `facet` is a **provider facet**. Its spec is the pair;
 the recipe fields (`kind` and its companions) together with `state` and
@@ -114,6 +123,20 @@ An entity publishing `workspace.primary.state` has a slot with the key
 | `workspace.primary.target` | `target` |
 | `action.primary.recipe` | `command` (shell text), kind `command` |
 | `git.root` | `cwd` |
+| `action.primary.direct.transport`, `.host`, `.runtime_root`, `.daemon`, `.session` | kind `cleat-session` and its fields, preferred over the command |
+
+A provider that can reach the primary's Cleat session directly
+([flotilla#2106](https://github.com/flotilla-org/flotilla/pull/2106))
+publishes all five `action.primary.direct.*` facts; otherwise it publishes
+only `action.primary.direct.reason`, saying why not. When all five are present
+and usable (a known transport, and fields as a `cleat-session` slot needs),
+the primary resolves to a
+`cleat-session` recipe, a direct Cleat packet view of that session
+([wheelhouse#104](https://github.com/flotilla-org/wheelhouse/issues/104)).
+Anything less (none, some, or an unknown transport) leaves the command recipe
+as the fallback. The target is the same either way. Materializing such a
+workspace carries no recipe: the host opens it with its primary waiting, and
+the slot's first plan fills it with the Cleat session.
 
 With no `layout.*` facts, these alone are a one-slot Suggested Layout with
 version `PrimaryOnly` and no arrangement hint. Alongside a published layout:
@@ -256,8 +279,9 @@ The Wheelhouse decisions leave these open. The schema does not settle them.
   field until cross-provider facets exist.
 - **Recipe kinds.** Flotilla's `attach` and `view` recipe kinds from
   andamento#134 are not slot kinds yet; an attach is published as a `command`.
-  A Luchs page is a `url`. Whether either needs its own kind is open, as is
-  carrying the `action.primary.direct.*` Cleat endpoint per slot.
+  A Luchs page is a `url`. Whether either needs its own kind is open. The
+  primary slot reads the `action.primary.direct.*` Cleat endpoint; other
+  slots may publish kind `cleat-session` themselves.
 - **Labels.** A View Spec holds only what defines the content, so there is no
   slot label. Tab titles come from the facet entity's `display.label` or the
   recipe. Whether a provider may suggest a title is open.

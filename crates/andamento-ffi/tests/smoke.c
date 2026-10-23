@@ -71,7 +71,7 @@ static int same(AndamentoWorkspaceId a, AndamentoWorkspaceId b) {
 
 /* Facts, topology, the snapshot, dispatch, effects and completion. */
 static void check_sidebar(const char *config_path, const char *patches_path) {
-    assert(andamento_abi_version() == 8);
+    assert(andamento_abi_version() == 9);
     char *config = read_file(config_path);
     Andamento *h = create(config);
     ok(andamento_configure(h, text(config), &error));

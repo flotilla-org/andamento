@@ -61,7 +61,8 @@ committing, commits, and completes. A Failed slot isn't retried until its
 resolution changes or the host retries it. Repeated plans return the same
 token until the resolution or binding changes.
 
-A resolution is a recipe (command, file, URL or Jackstay launcher) and,
+A resolution is a recipe (command, file, URL, Jackstay launcher or Cleat
+session) and,
 optionally, the target naming the backing instance. Its **identity**
 (`Resolved::id`, `AndamentoSlotContent.resolution`) is opaque text: the host
 records it once applied and passes it back to plan, which reports Current when

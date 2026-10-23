@@ -108,6 +108,84 @@ fn a_workspace_subject_materializes_with_an_empty_recipe() {
     }
 }
 
+// wheelhouse#104 through C: a subject with a direct Cleat endpoint
+// materializes with an empty recipe and no primary target, and the first
+// plan of its primary carries the Cleat session. A host's own Cleat session
+// slot round-trips through set and get.
+#[test]
+fn a_direct_cleat_primary_reaches_c_and_cleat_slots_round_trip() {
+    unsafe {
+        let config = format!("{}\nworkspace kind=\"vessel\"\n", include_str!("../../andamento-core/tests/fixtures/abbreviation.kdl"));
+        let mut error = ptr::null_mut();
+        let h = create(&config);
+        let fact = |key: &str, value: &str| format!(r#""{key}":{{"value":{{"type":"text","value":"{value}"}}}}"#);
+        let set = [
+            fact("flotilla.vessel", "worker"),
+            fact("display.label", "worker"),
+            fact("action.primary.recipe", "flotilla attach worker"),
+            fact("action.primary.direct.transport", "ssh"),
+            fact("action.primary.direct.host", "robert@feta"),
+            fact("action.primary.direct.runtime_root", "/run/cleat"),
+            fact("action.primary.direct.daemon", "d1"),
+            fact("action.primary.direct.session", "s1"),
+        ]
+        .join(",");
+        let patch = format!(
+            r#"{{"type":"metadata-patch","target":{{"kind":"entity","value":{{"kind":"vessel","id":"worker"}}}},"source_id":"test","set":{{{set}}},"unset":[]}}"#
+        );
+        assert_eq!(andamento_apply_patch_json(h, 0, text(PROVIDER), text(&patch), &mut error), 1);
+        let snapshot = andamento_snapshot_acquire(h, &mut error);
+        assert_eq!(andamento_dispatch(h, snapshot, node(snapshot, 1).activate, &mut error), 1);
+        andamento_snapshot_release(snapshot);
+        let effects = andamento_effects_take(h, &mut error);
+        let mut effect = MaybeUninit::<EffectView>::uninit();
+        assert_eq!(andamento_effects_get(effects, 0, effect.as_mut_ptr()), 1);
+        let effect = effect.assume_init();
+        assert_eq!((effect.kind, effect.recipe.read().unwrap().as_str(), effect.has_primary_target), (ANDAMENTO_EFFECT_MATERIALIZE, "", 0));
+        let request = effect.request_id;
+        andamento_effects_release(effects);
+        let id = WorkspaceId::from_bytes([9; 16]);
+        assert_eq!(andamento_complete(h, request, ANDAMENTO_COMPLETE_MATERIALIZE, id.into(), text(""), &mut error), 1);
+        let workspace = WorkspaceInput { id: id.into(), position: 0, name: text("worker"), selected: 1 };
+        assert_eq!(andamento_observe(h, &workspace, 1, ptr::null(), 0, &mut error), 1);
+
+        let cleat_fields = |spec: &ViewSpecView| {
+            [&spec.cleat_transport, &spec.cleat_host, &spec.cleat_runtime_root, &spec.cleat_daemon, &spec.cleat_session]
+                .map(|field| field.read().unwrap())
+        };
+        let plan = andamento_slot_plan(h, id.into(), text("primary"), text(""), &mut error);
+        assert_eq!(((*plan).state, (*plan).recipe.content), (ANDAMENTO_CONTENT_UPDATING, ANDAMENTO_SLOT_CLEAT_SESSION));
+        assert_eq!(cleat_fields(&(*plan).recipe), ["ssh", "robert@feta", "/run/cleat", "d1", "s1"]);
+        assert_eq!((*plan).recipe.command.read().unwrap(), "");
+        andamento_slot_plan_free(plan);
+
+        let mut spec: ViewSpecView = std::mem::zeroed();
+        spec.content = ANDAMENTO_SLOT_CLEAT_SESSION;
+        spec.cleat_transport = text("local");
+        spec.cleat_host = text("feta");
+        spec.cleat_runtime_root = text("/run/cleat");
+        spec.cleat_daemon = text("d2");
+        spec.cleat_session = text("s2");
+        assert_eq!(andamento_slot_set(h, id.into(), text("u:crew"), &spec, ANDAMENTO_REBIND_REPLACE, &mut error), 1);
+        let slots = andamento_slots_get(h, id.into(), &mut error);
+        let crew = slice((*slots).slots, (*slots).slot_count).unwrap().iter().find(|slot| slot.key.read().unwrap() == "u:crew").unwrap();
+        assert_eq!(crew.spec.content, ANDAMENTO_SLOT_CLEAT_SESSION);
+        assert_eq!(cleat_fields(&crew.spec), ["local", "feta", "/run/cleat", "d2", "s2"]);
+        andamento_slots_free(slots);
+        assert!(error.is_null());
+        // An unknown transport, an empty field and an option are refused.
+        for (transport, session) in [("mosh", "s2"), ("ssh", ""), ("ssh", "-oProxyCommand=x")] {
+            spec.cleat_transport = text(transport);
+            spec.cleat_session = text(session);
+            assert_eq!(andamento_slot_set(h, id.into(), text("u:bad"), &spec, ANDAMENTO_REBIND_REPLACE, &mut error), 0);
+            assert!(!error.is_null());
+            andamento_string_free(error);
+            error = ptr::null_mut();
+        }
+        andamento_destroy(h);
+    }
+}
+
 // A workspace's layouts reach C: their list, the one an arrangement is of,
 // the slots it leaves unplaced, choosing another and the slots' roles.
 #[test]
