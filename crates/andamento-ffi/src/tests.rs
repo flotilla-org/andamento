@@ -173,8 +173,8 @@ fn a_direct_cleat_primary_reaches_c_and_cleat_slots_round_trip() {
         assert_eq!(cleat_fields(&crew.spec), ["local", "feta", "/run/cleat", "d2", "s2"]);
         andamento_slots_free(slots);
         assert!(error.is_null());
-        // An unknown transport, and an empty field, are refused.
-        for (transport, session) in [("mosh", "s2"), ("ssh", "")] {
+        // An unknown transport, an empty field and an option are refused.
+        for (transport, session) in [("mosh", "s2"), ("ssh", ""), ("ssh", "-oProxyCommand=x")] {
             spec.cleat_transport = text(transport);
             spec.cleat_session = text(session);
             assert_eq!(andamento_slot_set(h, id.into(), text("u:bad"), &spec, ANDAMENTO_REBIND_REPLACE, &mut error), 0);

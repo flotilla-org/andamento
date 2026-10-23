@@ -442,6 +442,36 @@ fn a_cleat_session_slot_parses_and_needs_every_field_and_a_known_transport() {
     assert_eq!(parse_err(&mosh), LayoutError::InvalidValue { key: "layout.slot.crew.transport".into(), value: "mosh".into() });
 }
 
+// A host passes each field on as one argument: none may be read as an
+// option or split into more. A runtime root is a path and may hold spaces.
+#[test]
+fn cleat_session_fields_are_single_arguments() {
+    for (field, value) in [
+        ("host", "-oProxyCommand=evil"),
+        ("host", "feta extra"),
+        ("daemon", "d\n1"),
+        ("session", "-s"),
+        ("session", "s 1"),
+        ("runtime_root", "-r"),
+        ("runtime_root", "/run\u{7}"),
+    ] {
+        let key = format!("layout.slot.crew.{field}");
+        assert_eq!(
+            parse_err(&with(cleat_slot(), [(key.as_str(), text(value))])),
+            LayoutError::InvalidValue { key: key.clone(), value: value.into() },
+            "{field}={value:?}"
+        );
+        let direct = format!("action.primary.direct.{field}");
+        let primary = with(with(primary_facts(), direct_facts()), [(direct.as_str(), text(value))]);
+        assert!(
+            matches!(&parse_ok(&primary).slots[0].resolution, SlotResolution::Ready { recipe: LocalRecipe::Command { .. }, .. }),
+            "direct {field}={value:?} falls back to the command"
+        );
+    }
+    let spaced = with(cleat_slot(), [("layout.slot.crew.runtime_root", text("/Users/r/Library/Application Support/cleat"))]);
+    assert!(matches!(parse_ok(&spaced).slot("crew").unwrap().spec.content, Content::Local(LocalRecipe::CleatSession { .. })));
+}
+
 fn direct_facts() -> FactMap {
     facts([
         ("action.primary.direct.transport", text("ssh")),

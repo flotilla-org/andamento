@@ -13,7 +13,9 @@ use kdl::KdlNode;
 use serde::{Deserialize, Serialize};
 
 use crate::slots::{ArrangementDoc, Panel, PanelNode};
-use crate::suggested_layout::{Axis, CleatTransport, CommandLine, Content, LocalRecipe, RebindPolicy, Slot, SlotResolution, ViewSpec};
+use crate::suggested_layout::{
+    invalid_cleat_field, Axis, CleatTransport, CommandLine, Content, LocalRecipe, RebindPolicy, Slot, SlotResolution, ViewSpec,
+};
 use crate::template_config::{TemplateConfigError, VisibilityPredicate, WorkspaceDefinition};
 use crate::{EntityRef, FactMap, MetadataValue};
 
@@ -455,14 +457,15 @@ impl RecipeTemplate {
             RecipeTemplate::Jackstay { launcher, endpoint } => {
                 LocalRecipe::Jackstay { launcher: text(launcher)?, endpoint: text(endpoint)? }
             }
-            // An unknown transport is as unresolved as a missing fact.
-            RecipeTemplate::CleatSession { transport, host, runtime_root, daemon, session } => LocalRecipe::CleatSession {
-                transport: CleatTransport::parse(&text(transport)?)?,
-                host: text(host)?,
-                runtime_root: text(runtime_root)?,
-                daemon: text(daemon)?,
-                session: text(session)?,
-            },
+            // An unknown transport or an unusable field is as unresolved as a
+            // missing fact.
+            RecipeTemplate::CleatSession { transport, host, runtime_root, daemon, session } => {
+                let (host, runtime_root, daemon, session) = (text(host)?, text(runtime_root)?, text(daemon)?, text(session)?);
+                if invalid_cleat_field(&host, &runtime_root, &daemon, &session).is_some() {
+                    return None;
+                }
+                LocalRecipe::CleatSession { transport: CleatTransport::parse(&text(transport)?)?, host, runtime_root, daemon, session }
+            }
         })
     }
 }
@@ -860,6 +863,9 @@ mod tests {
         );
         assert_eq!(build(&[("t", "mosh"), ("h", "robert@feta"), ("s", "s1")]), None);
         assert_eq!(build(&[("t", "local"), ("h", "feta")]), None);
+        // An empty fact, or one a host would read as an option, is unusable.
+        assert_eq!(build(&[("t", "ssh"), ("h", ""), ("s", "s1")]), None);
+        assert_eq!(build(&[("t", "ssh"), ("h", "-oProxyCommand=x"), ("s", "s1")]), None);
     }
 
     #[test]

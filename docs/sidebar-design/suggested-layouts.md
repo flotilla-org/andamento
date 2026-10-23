@@ -74,6 +74,12 @@ Each fact is `layout.slot.<key>.<field>`.
 | `host` | text | `cleat-session`: the local host's name (`local`) or the ssh destination (`ssh`). |
 | `runtime_root`, `daemon`, `session` | text | `cleat-session`: the Cleat runtime root, the daemon serving the session, and the session. A frontend shows it as a direct Cleat packet view. |
 
+A `cleat-session`'s `host`, `runtime_root`, `daemon` and `session` must each
+be usable as one argument: nonempty, not starting with `-` (so a host never
+passes one to ssh or cleat as an option) and without control characters; all
+but `runtime_root`, a path, also without whitespace. Any other value is an
+invalid spec.
+
 A slot with `entity` and `facet` is a **provider facet**. Its spec is the pair;
 the recipe fields (`kind` and its companions) together with `state` and
 `target` are its **resolution**, published by the provider, and generalise
@@ -123,7 +129,8 @@ A provider that can reach the primary's Cleat session directly
 ([flotilla#2106](https://github.com/flotilla-org/flotilla/pull/2106))
 publishes all five `action.primary.direct.*` facts; otherwise it publishes
 only `action.primary.direct.reason`, saying why not. When all five are present
-and nonempty, with a known transport, the primary resolves to a
+and usable (a known transport, and fields as a `cleat-session` slot needs),
+the primary resolves to a
 `cleat-session` recipe, a direct Cleat packet view of that session
 ([wheelhouse#104](https://github.com/flotilla-org/wheelhouse/issues/104)).
 Anything less (none, some, or an unknown transport) leaves the command recipe
