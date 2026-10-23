@@ -1743,14 +1743,10 @@ impl ControllerState {
             }
         }
         let index_phase = profile::span("placement-index");
-        let mut index = self.kept.placement_index.borrow_mut();
-        let reindexed = index.update(region_catalog_entities, Some(catalog.generation));
-        if let Some(config) = self.template_catalog.as_ref() {
-            let generation = self.template_generation;
-            for warning in index.update_visibility(region_catalog_entities, config, generation, &self.rail_ui.variables, reindexed) {
-                if !template_config.warnings.contains(&warning) {
-                    template_config.warnings.push(warning);
-                }
+        let (index, warnings) = self.refreshed_placement_index(region_catalog_entities, catalog.generation);
+        for warning in warnings {
+            if !template_config.warnings.contains(&warning) {
+                template_config.warnings.push(warning);
             }
         }
         let placement_index: &PlacementIndex = &index;
@@ -2048,24 +2044,40 @@ impl ControllerState {
         let Some(strip) = self.workspace_template(&subject.kind, &facts).map(|template| &template.strip) else {
             return vec![];
         };
-        let mut index = self.kept.placement_index.borrow_mut();
-        let reindexed = index.update(&catalog.entities, Some(catalog.generation));
-        if let Some(config) = self.template_catalog.as_ref() {
-            // The snapshot reports visibility warnings; a strip only reads it.
-            let _ = index.update_visibility(&catalog.entities, config, self.template_generation, &self.rail_ui.variables, reindexed);
-        }
+        // The snapshot reports visibility warnings; a strip only reads it.
+        let (index, _) = self.refreshed_placement_index(&catalog.entities, catalog.generation);
         let root = Scope::default();
         let scope = root.within(&subject.kind, entity, true);
         let mut entries = vec![];
+        // An entity two loops match is listed once, where it first appears.
+        let mut listed = HashSet::new();
         for (section, loops) in strip.sections() {
             for definition in loops {
                 let mut reads = LoopReads::default();
                 for position in self.placement_matches(definition, &catalog.entities, &index, &scope, &mut reads) {
-                    entries.push(crate::tool_strip::StripEntry { section, entity: catalog.entities[position].entity.clone() });
+                    if listed.insert(position) {
+                        entries.push(crate::tool_strip::StripEntry { section, entity: catalog.entities[position].entity.clone() });
+                    }
                 }
             }
         }
         entries
+    }
+
+    /// The placement index, brought up to `entities` (the catalog list of
+    /// `generation`) and to the visibility policies, with their warnings.
+    fn refreshed_placement_index(
+        &self,
+        entities: &[CatalogEntity],
+        generation: u64,
+    ) -> (std::cell::RefMut<'_, PlacementIndex>, Vec<String>) {
+        let mut index = self.kept.placement_index.borrow_mut();
+        let reindexed = index.update(entities, Some(generation));
+        let warnings = match self.template_catalog.as_ref() {
+            Some(config) => index.update_visibility(entities, config, self.template_generation, &self.rail_ui.variables, reindexed),
+            None => vec![],
+        };
+        (index, warnings)
     }
 
     pub(crate) fn evaluation_time(&self) -> u64 {

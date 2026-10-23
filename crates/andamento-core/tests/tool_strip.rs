@@ -121,6 +121,46 @@ fn a_kind_without_a_strip_or_an_unknown_subject_lists_nothing() {
 }
 
 #[test]
+fn an_entity_two_loops_match_is_listed_once_where_it_first_appears() {
+    let strip = r#"
+workspace kind="project"
+workspace kind="convoy" {
+  strip {
+    related {
+      for "project" kind="project" in="flotilla.project" of="convoy";
+      for "again" kind="project" in="flotilla.project" of="convoy";
+    };
+    linked {
+      for "project" kind="project" in="flotilla.project" of="convoy";
+      for "issue" kind="issue" { match "flotilla.subject_of" of="convoy"; };
+      for "again" kind="issue" { match "flotilla.subject_of" of="convoy"; };
+    };
+  }
+}
+"#;
+    let mut sidebar = Sidebar::new(&format!("{CONFIG}\n{strip}")).unwrap();
+    sidebar.feed(
+        100,
+        [
+            patch(entity("project", "p"), &[("display.label", text("P"))]),
+            patch(entity("convoy", "c"), &[("display.label", text("C")), ("flotilla.project", refs(entity("project", "p")))]),
+            subject_of("issue", "i1", "1", "c"),
+        ],
+    );
+    assert_eq!(listed(&sidebar, entity("convoy", "c")), [related("project/p"), linked("issue/i1")]);
+}
+
+#[test]
+fn a_strip_read_before_any_snapshot_matches_one_read_after() {
+    // The strip builds the placement index itself when no snapshot has.
+    let cold = listed(&sidebar(), entity("convoy", "c"));
+    let warm = sidebar();
+    let _ = warm.snapshot();
+    assert_eq!(cold, listed(&warm, entity("convoy", "c")));
+    assert_eq!(cold.len(), 6);
+}
+
+#[test]
 fn an_entity_without_the_ref_lists_nothing_for_it() {
     let mut sidebar = sidebar();
     // A vessel that names no convoy has no convoy to list.

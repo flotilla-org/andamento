@@ -51,7 +51,8 @@ workspace kind="convoy" {
 - The subject is bound by its kind's name (`convoy` above), so a loop can't
   use that name for itself.
 - A section lists its loops' matches in loop order, each loop in its own
-  order. An entity two loops match is listed twice.
+  order. An entity two loops match, in one section or both, is listed once,
+  where it first appears.
 
 A strip is part of the kind's template, like its slots and layouts: the
 highest-ranked layer whose declaration has children supplies all three, so a
