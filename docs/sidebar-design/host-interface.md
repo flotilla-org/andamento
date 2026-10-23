@@ -1,4 +1,4 @@
-# The host interface (ABI 9)
+# The host interface (ABI 10)
 
 What a host such as Wheelhouse uses to drive Andamento through its C ABI.
 `crates/andamento-ffi/include/andamento.h` is generated from the FFI crate
@@ -115,6 +115,7 @@ ABI 4 is not imported.
 | `andamento_workspace_content_revision` | Poll to learn when to read slots, plans and arrangements again. |
 | `andamento_layouts_get` / `_free` | `AndamentoLayoutList`: a workspace's [Workspace Layouts](workspace-layouts.md) in the template's order, each `AndamentoLayout` with `ANDAMENTO_LAYOUT_DEFAULT` and `_CURRENT` flags. Empty when its subject's kind has no template. |
 | `andamento_layout_choose(h, ws, has_name, name)` | Show a layout, or (`has_name` 0) follow the default. The shown layout's edits are kept for when it is shown again; the arrangement's generation moves. Resetting a layout is `andamento_arrangement_resolve` FOLLOW. |
+| `andamento_strip_get(h, subject)` / `_free` | `AndamentoStrip`: the subject's [tool strip](tool-strip.md), its related workspaces then its linked items, each an `AndamentoStripEntry` with its `ANDAMENTO_STRIP_*` section and entity. Read each entry's detail for its label, state and actions. It follows the catalog: read it again when the snapshot's revision moves. |
 
 ## Arrangements
 
@@ -157,6 +158,14 @@ single pass, appending each panel to its parent.
   `variable:` and the key.
 
 Committing an arrangement never changes the snapshot's revision.
+
+## From ABI 9
+
+ABI 10 adds the [tool strip](tool-strip.md): `andamento_strip_get` and
+`_free`, which list a subject's related workspaces and linked items as
+entities. `AndamentoLayout` gains `glyph`, and `AndamentoNote` gains `panel`:
+for an UNPLACED slot, the tab panel showing it puts it in. Both structs
+change layout, so a host built against ABI 9 must be rebuilt.
 
 ## From ABI 8
 

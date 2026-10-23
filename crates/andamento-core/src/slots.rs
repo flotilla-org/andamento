@@ -669,6 +669,9 @@ pub struct ArrangementView {
     pub layout: Option<String>,
     /// Slots the layout doesn't show, in slot order.
     pub unplaced: Vec<String>,
+    /// For each unplaced Slot, the tab panel showing it puts it in
+    /// ([`LayoutPlan::home`]).
+    pub homes: BTreeMap<String, String>,
 }
 
 /// What a commit did.
@@ -917,7 +920,7 @@ impl Arrangement {
     pub fn follow(stored: &mut Option<Self>, baseline: Option<&Baseline>, slots: &[SlotInfo], plan: Option<&LayoutPlan>) {
         let mut next = stored.take().unwrap_or_default();
         if next.owned {
-            if next.plan_for(plan).is_some_and(|plan| next.layout.as_ref() != Some(&plan.definition)) {
+            if next.plan_for(plan).is_some_and(|plan| !next.layout.as_ref().is_some_and(|layout| layout.arranges_like(&plan.definition))) {
                 next.provider_changed = true;
             }
         } else {
@@ -986,9 +989,13 @@ impl Arrangement {
             .collect()
     }
 
-    pub fn view(stored: &StoredArrangement, slots: &[SlotInfo]) -> ArrangementView {
+    pub fn view(stored: &StoredArrangement, slots: &[SlotInfo], plan: Option<&LayoutPlan>) -> ArrangementView {
         let arrangement = stored.get().clone().unwrap_or_default();
+        let homes = plan
+            .map(|plan| arrangement.unplaced.iter().filter_map(|key| Some((key.clone(), plan.home(key, &arrangement.doc)?))).collect())
+            .unwrap_or_default();
         ArrangementView {
+            homes,
             generation: stored.generation(),
             gone: arrangement.gone(slots),
             unresolved: arrangement.unresolved(),

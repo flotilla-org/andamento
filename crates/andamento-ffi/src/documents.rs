@@ -88,6 +88,10 @@ pub struct AndamentoNote {
     /// ANDAMENTO_NOTE_*.
     pub kind: u32,
     pub key: Text,
+    /// For an UNPLACED slot, the tab panel showing it puts it in: the first
+    /// whose template matcher takes it, ignoring hide, else the first. Empty
+    /// for other notes.
+    pub panel: Text,
 }
 
 /// The provider changed its hint, or the configuration the Workspace
@@ -258,7 +262,12 @@ fn one_root(mut roots: Vec<Panel>) -> Result<Option<Panel>, String> {
 }
 
 fn notes<'a>(groups: impl IntoIterator<Item = (u32, Vec<&'a String>)>) -> Vec<AndamentoNote> {
-    groups.into_iter().flat_map(|(kind, keys)| keys.into_iter().map(move |key| AndamentoNote { kind, key: Text::borrowed(key) })).collect()
+    groups
+        .into_iter()
+        .flat_map(|(kind, keys)| {
+            keys.into_iter().map(move |key| AndamentoNote { kind, key: Text::borrowed(key), panel: Text::borrowed("") })
+        })
+        .collect()
 }
 
 /// A compare-and-set's result as a status, or the error for an invalid one.
@@ -272,12 +281,16 @@ fn status<T>(result: Result<T, CommitError>) -> Result<u32, String> {
 
 fn workspace_c(view: ArrangementView, status: u32) -> *mut AndamentoWorkspaceArrangement {
     let panels = Panels::of(&view.doc.root);
-    let notes = notes([
+    let mut notes = notes([
         (ANDAMENTO_NOTE_PLACED, view.placed.iter().collect()),
         (ANDAMENTO_NOTE_GONE, view.gone.iter().collect()),
         (ANDAMENTO_NOTE_UNRESOLVED, view.unresolved.iter().collect()),
-        (ANDAMENTO_NOTE_UNPLACED, view.unplaced.iter().collect()),
     ]);
+    notes.extend(view.unplaced.iter().map(|key| AndamentoNote {
+        kind: ANDAMENTO_NOTE_UNPLACED,
+        key: Text::borrowed(key),
+        panel: Text::borrowed(view.homes.get(key).map(String::as_str).unwrap_or_default()),
+    }));
     let flags = [
         (view.provider_changed, ANDAMENTO_ARRANGEMENT_FLAG_PROVIDER_CHANGED),
         (!view.soft.is_empty(), ANDAMENTO_ARRANGEMENT_FLAG_SOFT),
@@ -388,6 +401,8 @@ pub const ANDAMENTO_LAYOUT_CURRENT: u32 = 2;
 #[repr(C)]
 pub struct AndamentoLayout {
     pub name: Text,
+    /// The template's glyph for it: 1 to 8 characters, or empty.
+    pub glyph: Text,
     /// ANDAMENTO_LAYOUT_* bits.
     pub flags: u32,
 }
@@ -414,6 +429,7 @@ pub unsafe extern "C" fn andamento_layouts_get(
             .iter()
             .map(|info| AndamentoLayout {
                 name: Text::borrowed(&info.name),
+                glyph: Text::borrowed(info.glyph.as_deref().unwrap_or_default()),
                 flags: if info.default { ANDAMENTO_LAYOUT_DEFAULT } else { 0 } | if info.current { ANDAMENTO_LAYOUT_CURRENT } else { 0 },
             })
             .collect();

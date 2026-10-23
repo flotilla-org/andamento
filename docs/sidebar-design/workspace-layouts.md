@@ -55,7 +55,8 @@ openable if any layer declares it, as today. Its slots and layouts come whole
 from the highest-ranked layer whose declaration has children, as a placement
 comes from the highest-ranked layer that names it. They are not merged: a
 layer that declares only a layout for a kind replaces the lower layers' slots
-and layouts for it, so it must repeat any it keeps.
+and layouts for it, so it must repeat any it keeps. The same goes for its
+[tool strip](tool-strip.md), a `strip` child.
 
 ## Roles
 
@@ -132,6 +133,9 @@ document](slots-and-arrangements.md#arrangement-documents):
   panel a template change takes away is not applied, and the arrangement
   reports it UNRESOLVED.
 - `tabs` takes `selected="first"|"last"` (default `first`).
+- `layout` takes an optional `glyph`, 1 to 8 characters, which a host shows
+  where there is only room for a symbol, such as the [tool
+  strip](tool-strip.md).
 
 A **matcher** is a `slots` node inside `tabs`:
 
@@ -215,7 +219,9 @@ arrangement shares.
   is unplaced, rather than appended to the first tab panel. An arrangement
   from a hint, or the single-panel default, keeps today's rule.
 - Reading the arrangement reports the unplaced list and the layout's name
-  beside the tabs.
+  beside the tabs, and for each unplaced Slot the tab panel showing it puts
+  it in: the first whose matcher takes it, ignoring `hide`, else the first
+  tab panel.
 
 ## Edits
 

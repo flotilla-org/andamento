@@ -186,16 +186,18 @@ fn a_direct_cleat_primary_reaches_c_and_cleat_slots_round_trip() {
     }
 }
 
-// A workspace's layouts reach C: their list, the one an arrangement is of,
-// the slots it leaves unplaced, choosing another and the slots' roles.
+// A workspace's layouts reach C: their list and glyphs, the one an
+// arrangement is of, the slots it leaves unplaced and where showing them puts
+// them, choosing another, the slots' roles and the subject's strip.
 #[test]
 fn workspace_layouts_reach_c() {
     unsafe {
         let template = r#"
 workspace kind="vessel" {
   slot "shell" role="shell" kind="command" command="zsh"
-  layout "agent" { tabs id="main" { slots role="agent"; }; }
+  layout "agent" glyph="A" { tabs id="main" { slots role="agent"; }; }
   layout "all" { tabs id="main" { slots rest=true; }; }
+  strip { linked { for "issue" kind="issue" { match "flotilla.vessel" of="vessel"; order "display.label"; }; }; }
 }
 "#;
         let config = format!("{}\n{template}", include_str!("../../andamento-core/tests/fixtures/abbreviation.kdl"));
@@ -203,6 +205,12 @@ workspace kind="vessel" {
         let h = create(&config);
         let patch = r#"{"type":"metadata-patch","target":{"kind":"entity","value":{"kind":"vessel","id":"worker"}},"source_id":"test","set":{"flotilla.vessel":{"value":{"type":"text","value":"worker"}},"display.label":{"value":{"type":"text","value":"worker"}}},"unset":[]}"#;
         assert_eq!(andamento_apply_patch_json(h, 0, text(PROVIDER), text(patch), &mut error), 1);
+        for (issue, vessel) in [("i2", "worker"), ("i1", "worker"), ("i3", "other")] {
+            let patch = format!(
+                r#"{{"type":"metadata-patch","target":{{"kind":"entity","value":{{"kind":"issue","id":"{issue}"}}}},"source_id":"test","set":{{"flotilla.vessel":{{"value":{{"type":"text","value":"{vessel}"}}}},"display.label":{{"value":{{"type":"text","value":"{issue}"}}}}}},"unset":[]}}"#
+            );
+            assert_eq!(andamento_apply_patch_json(h, 0, text(PROVIDER), text(&patch), &mut error), 1);
+        }
         let snapshot = andamento_snapshot_acquire(h, &mut error);
         assert_eq!(andamento_dispatch(h, snapshot, node(snapshot, 1).activate, &mut error), 1);
         andamento_snapshot_release(snapshot);
@@ -217,25 +225,32 @@ workspace kind="vessel" {
         assert_eq!(andamento_observe(h, &workspace, 1, ptr::null(), 0, &mut error), 1);
 
         let list = andamento_layouts_get(h, id.into(), &mut error);
-        let layouts: Vec<(String, u32)> =
-            slice((*list).layouts, (*list).count).unwrap().iter().map(|layout| (layout.name.read().unwrap(), layout.flags)).collect();
-        assert_eq!(layouts, [("agent".into(), ANDAMENTO_LAYOUT_DEFAULT | ANDAMENTO_LAYOUT_CURRENT), ("all".into(), 0)]);
+        let layouts: Vec<(String, String, u32)> = slice((*list).layouts, (*list).count)
+            .unwrap()
+            .iter()
+            .map(|layout| (layout.name.read().unwrap(), layout.glyph.read().unwrap(), layout.flags))
+            .collect();
+        assert_eq!(
+            layouts,
+            [("agent".into(), "A".into(), ANDAMENTO_LAYOUT_DEFAULT | ANDAMENTO_LAYOUT_CURRENT), ("all".into(), String::new(), 0)]
+        );
         andamento_layouts_free(list);
 
         let arrangement = |error: &mut *mut c_char| {
             let arrangement = andamento_arrangement_get(h, id.into(), error);
             let layout = (*arrangement).layout.read().unwrap();
-            let unplaced: Vec<String> = slice((*arrangement).notes, (*arrangement).note_count)
-                .unwrap()
+            let notes = slice((*arrangement).notes, (*arrangement).note_count).unwrap();
+            let unplaced: Vec<String> = notes
                 .iter()
                 .filter(|note| note.kind == ANDAMENTO_NOTE_UNPLACED)
-                .map(|note| note.key.read().unwrap())
+                .map(|note| format!("{} in {}", note.key.read().unwrap(), note.panel.read().unwrap()))
                 .collect();
+            assert!(notes.iter().filter(|note| note.kind != ANDAMENTO_NOTE_UNPLACED).all(|note| note.panel.len == 0));
             let has = (*arrangement).has_layout;
             andamento_arrangement_free(arrangement);
             (has, layout, unplaced)
         };
-        assert_eq!(arrangement(&mut error), (1, "agent".into(), vec!["t:shell".to_owned()]));
+        assert_eq!(arrangement(&mut error), (1, "agent".into(), vec!["t:shell in main".to_owned()]));
         assert_eq!(andamento_layout_choose(h, id.into(), 1, text("all"), &mut error), 1);
         assert_eq!(arrangement(&mut error), (1, "all".into(), vec![]));
         assert_eq!(andamento_layout_choose(h, id.into(), 1, text("nope"), &mut error), 0);
@@ -267,6 +282,24 @@ workspace kind="vessel" {
             .collect();
         assert_eq!(roles, [("primary".into(), 1, "agent".into()), ("t:shell".into(), 1, "shell".into())]);
         andamento_slots_free(slots);
+
+        let subject = EntityView { provider: text(PROVIDER), kind: text("vessel"), id: text("worker") };
+        let strip = andamento_strip_get(h, subject, &mut error);
+        let listed: Vec<(u32, String)> = slice((*strip).entries, (*strip).count)
+            .unwrap()
+            .iter()
+            .map(|entry| (entry.section, format!("{}/{}", entry.entity.kind.read().unwrap(), entry.entity.id.read().unwrap())))
+            .collect();
+        assert_eq!(listed, [(ANDAMENTO_STRIP_LINKED, "issue/i1".into()), (ANDAMENTO_STRIP_LINKED, "issue/i2".into())]);
+        andamento_strip_free(strip);
+        let missing = EntityView { provider: text(PROVIDER), kind: text("vessel"), id: text("nobody") };
+        let strip = andamento_strip_get(h, missing, &mut error);
+        assert_eq!((*strip).count, 0);
+        andamento_strip_free(strip);
+        assert!(andamento_strip_get(ptr::null_mut(), subject, &mut error).is_null());
+        assert!(!error.is_null());
+        andamento_string_free(error);
+        error = ptr::null_mut();
         andamento_destroy(h);
         assert!(error.is_null());
     }
