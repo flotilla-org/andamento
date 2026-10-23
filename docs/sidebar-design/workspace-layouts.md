@@ -98,8 +98,11 @@ slot "shell" role="shell" kind="command" cwd="{git.root}"
 - They are part of the **baseline**: the overlay treats them like provider
   Slots, so the user can remove, override or reattach them.
 - Their fields are the local recipe fields of a Suggested Layout slot (`kind`,
-  `argv.<n>`, `command`, `cwd`, `path`, `url`, `launcher`, `endpoint`) plus
-  `role` and `presentation`. A value may name a subject fact in braces,
+  `argv.<n>`, `command`, `cwd`, `path`, `url`, `launcher`, `endpoint`,
+  and `transport`, `host`, `runtime_root`, `daemon`, `session` for
+  `cleat-session`) plus `role` and `presentation`. A literal `transport` must
+  be `local` or `ssh`; one built from a fact that is neither leaves the slot
+  Unavailable. A value may name a subject fact in braces,
   `{git.root}`, which is replaced by the fact's text (a boolean's or
   integer's too, as matchers compare them). `{{` and `}}` are literal braces:
   `command="awk '{{print $1}}'"`. Any other brace is a configuration error.

@@ -150,7 +150,9 @@ pub enum HostEffect {
         name: String,
         /// What to run; none for a workspace subject whose provider hasn't
         /// said yet: the host opens the workspace with its primary slot
-        /// unfilled, and it fills in once the recipe arrives.
+        /// unfilled, and it fills in once the recipe arrives. Also none while
+        /// the primary resolves to a direct Cleat session, which the first
+        /// plan of the primary slot fills.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         recipe: Option<String>,
         cwd: Option<String>,
@@ -1342,15 +1344,18 @@ impl Sidebar {
                             return Ok(vec![]);
                         }
                         let request_id = self.request_id();
-                        let primary_target = request
-                            .recipe
+                        // A direct Cleat primary is no shell recipe: the host
+                        // opens the workspace with its primary waiting, and the
+                        // first plan of that slot fills it.
+                        let recipe = request.recipe.clone().filter(|_| !self.state.primary_is_direct(&entity));
+                        let primary_target = recipe
                             .as_deref()
                             .and_then(|recipe| self.state.managed_primary_target(&entity, recipe, request.checkout_path.as_deref()));
                         let effect = HostEffect::Materialize {
                             request_id,
                             entity: entity.clone(),
                             name: request.name.clone(),
-                            recipe: request.recipe.clone(),
+                            recipe,
                             cwd: request.checkout_path.clone(),
                             primary_target,
                         };

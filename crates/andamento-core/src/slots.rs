@@ -419,6 +419,11 @@ fn check_spec(spec: &ViewSpec) -> Result<(), String> {
         Content::Local(LocalRecipe::Jackstay { launcher, endpoint }) if launcher.is_empty() || endpoint.is_empty() => {
             return empty("a launcher and an endpoint")
         }
+        Content::Local(LocalRecipe::CleatSession { host, runtime_root, daemon, session, .. })
+            if [host, runtime_root, daemon, session].iter().any(|field| field.is_empty()) =>
+        {
+            return empty("a host, runtime root, daemon and session")
+        }
         Content::Local(_) => {}
     }
     Ok(())

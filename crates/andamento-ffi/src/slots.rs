@@ -3,7 +3,7 @@
 use super::*;
 use andamento_core::managed::SlotPlan;
 use andamento_core::slots::SlotInfo;
-use andamento_core::suggested_layout::{CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec};
+use andamento_core::suggested_layout::{CleatTransport, CommandLine, Content, LocalRecipe, RebindPolicy, ViewSpec};
 use andamento_core::target_resolution::SavedResolution;
 
 /// A View Spec's content: a local command (argv when argc is nonzero, else
@@ -17,6 +17,9 @@ pub const ANDAMENTO_SLOT_URL: u32 = 2;
 pub const ANDAMENTO_SLOT_JACKSTAY: u32 = 3;
 /// A provider facet: the facet of entity's Suggested Layout.
 pub const ANDAMENTO_SLOT_FACET: u32 = 4;
+/// A direct Cleat packet view of a session (cleat_transport "local" or
+/// "ssh", cleat_host, cleat_runtime_root, cleat_daemon, cleat_session).
+pub const ANDAMENTO_SLOT_CLEAT_SESSION: u32 = 5;
 
 /// A rebind closes the instance it replaces.
 pub const ANDAMENTO_REBIND_REPLACE: u32 = 0;
@@ -71,6 +74,14 @@ pub struct ViewSpecView {
     /// Workspace Layouts arrange by.
     pub has_role: u32,
     pub role: Text,
+    /// ANDAMENTO_SLOT_CLEAT_SESSION: the transport ("local" or "ssh"), the
+    /// host (the local host's name, or an ssh destination) and the session's
+    /// runtime root, daemon and name.
+    pub cleat_transport: Text,
+    pub cleat_host: Text,
+    pub cleat_runtime_root: Text,
+    pub cleat_daemon: Text,
+    pub cleat_session: Text,
 }
 
 impl ViewSpecView {
@@ -92,6 +103,11 @@ impl ViewSpecView {
             presentation: Text::borrowed(""),
             has_role: 0,
             role: Text::borrowed(""),
+            cleat_transport: Text::borrowed(""),
+            cleat_host: Text::borrowed(""),
+            cleat_runtime_root: Text::borrowed(""),
+            cleat_daemon: Text::borrowed(""),
+            cleat_session: Text::borrowed(""),
         }
     }
 
@@ -109,6 +125,16 @@ impl ViewSpecView {
             ANDAMENTO_SLOT_URL => Content::Local(LocalRecipe::Url { url: self.url.read()? }),
             ANDAMENTO_SLOT_JACKSTAY => {
                 Content::Local(LocalRecipe::Jackstay { launcher: self.launcher.read()?, endpoint: self.endpoint.read()? })
+            }
+            ANDAMENTO_SLOT_CLEAT_SESSION => {
+                let transport = self.cleat_transport.read()?;
+                Content::Local(LocalRecipe::CleatSession {
+                    transport: CleatTransport::parse(&transport).ok_or_else(|| format!("unknown Cleat transport {transport:?}"))?,
+                    host: self.cleat_host.read()?,
+                    runtime_root: self.cleat_runtime_root.read()?,
+                    daemon: self.cleat_daemon.read()?,
+                    session: self.cleat_session.read()?,
+                })
             }
             other => return Err(format!("unknown slot content kind {other}")),
         };
@@ -151,6 +177,14 @@ fn recipe_view(recipe: &LocalRecipe, out: &mut ViewSpecView) -> SpecStorage {
             out.content = ANDAMENTO_SLOT_JACKSTAY;
             out.launcher = Text::borrowed(launcher);
             out.endpoint = Text::borrowed(endpoint);
+        }
+        LocalRecipe::CleatSession { transport, host, runtime_root, daemon, session } => {
+            out.content = ANDAMENTO_SLOT_CLEAT_SESSION;
+            out.cleat_transport = Text::borrowed(transport.as_str());
+            out.cleat_host = Text::borrowed(host);
+            out.cleat_runtime_root = Text::borrowed(runtime_root);
+            out.cleat_daemon = Text::borrowed(daemon);
+            out.cleat_session = Text::borrowed(session);
         }
     }
     storage

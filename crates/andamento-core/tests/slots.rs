@@ -496,6 +496,57 @@ fn a_subject_layout_may_list_its_primary_without_primary_facts() {
     }
 }
 
+// wheelhouse#104: a subject publishing a direct Cleat endpoint materializes
+// with no recipe and no primary target, so the host's primary waits, and
+// the first plan fills it with the Cleat session. When the endpoint goes,
+// the primary falls back to the command recipe.
+#[test]
+fn a_direct_endpoint_opens_the_primary_as_a_cleat_session() {
+    use andamento_core::suggested_layout::CleatTransport;
+    let mut sidebar = subject_session();
+    let direct = [
+        ("action.primary.recipe", text("flotilla attach v")),
+        ("action.primary.direct.transport", text("ssh")),
+        ("action.primary.direct.host", text("robert@feta")),
+        ("action.primary.direct.runtime_root", text("/run/cleat")),
+        ("action.primary.direct.daemon", text("d1")),
+        ("action.primary.direct.session", text("s1")),
+    ];
+    sidebar.feed(150, [patch(subject(), &direct, &[])]);
+    let effects = sidebar.dispatch(Action::Activate { entity: subject() }).unwrap();
+    let [HostEffect::Materialize { request_id, ref recipe, ref primary_target, .. }] = effects[..] else {
+        panic!("expected materialize: {effects:?}");
+    };
+    assert_eq!((recipe, primary_target), (&None, &None));
+    sidebar.complete(request_id, Ok(Some(worker())));
+    sidebar.observe(vec![Workspace { id: worker(), position: 0, name: "Worker".into(), selected: true }], vec![]);
+    let plan = sidebar.plan_slot(worker(), "primary", "").unwrap();
+    assert_eq!(plan.state, ContentState::Updating);
+    let update = plan.update.unwrap();
+    assert_eq!(update.resolution.target, Some(subject().action_target().to_string()));
+    assert_eq!(
+        update.resolution.recipe,
+        LocalRecipe::CleatSession {
+            transport: CleatTransport::Ssh,
+            host: "robert@feta".into(),
+            runtime_root: "/run/cleat".into(),
+            daemon: "d1".into(),
+            session: "s1".into(),
+        }
+    );
+    assert!(sidebar.managed.complete_slot(worker(), "primary", update.token, true));
+    assert_eq!(sidebar.plan_slot(worker(), "primary", &update.id).unwrap().state, ContentState::Current);
+
+    let gone: Vec<&str> = direct[1..].iter().map(|(key, _)| *key).collect();
+    sidebar.feed(200, [patch(subject(), &[("action.primary.direct.reason", text("no daemon"))], &gone)]);
+    let fallback = sidebar.plan_slot(worker(), "primary", &update.id).unwrap();
+    assert_eq!(fallback.state, ContentState::Updating);
+    assert!(matches!(
+        fallback.update.unwrap().resolution.recipe,
+        LocalRecipe::Command { line: CommandLine::Shell(command), .. } if command == "flotilla attach v"
+    ));
+}
+
 // An empty opening recipe is none: it opens nothing on its own, and a
 // subject with one opens as a subject without a recipe does.
 #[test]

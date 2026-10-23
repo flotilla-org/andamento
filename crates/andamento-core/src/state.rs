@@ -3542,6 +3542,16 @@ impl ControllerState {
         }
     }
 
+    /// Whether `entity`'s primary resolves to a direct Cleat session now: a
+    /// materialization then opens no recipe of its own, and the first plan
+    /// of its primary slot fills it.
+    pub(crate) fn primary_is_direct(&self, entity: &EntityRef) -> bool {
+        matches!(
+            self.desired_content(&EntityId::Entity(entity.clone())),
+            Some(DesiredContent::Ready(Resolved { recipe: suggested_layout::LocalRecipe::CleatSession { .. }, .. }))
+        )
+    }
+
     /// A subject's display label as its provider gives it now.
     pub fn subject_label(&self, subject: &EntityRef) -> Option<String> {
         let values = self.metadata.resolved(&EntityId::Entity(subject.clone()), self.now());
@@ -3993,14 +4003,19 @@ fn materialize_recipe(values: &impl Entries) -> Option<&str> {
 /// target) that publishes no `workspace.primary.state` (a vessel or convoy,
 /// today) resolves it to its opening recipe, at its action target: the
 /// recipe is that Slot's content, not a condition for opening the workspace,
-/// so a workspace opened without one fills in when one arrives.
+/// so a workspace opened without one fills in when one arrives. A direct
+/// Cleat endpoint, when published, is preferred over the recipe.
 fn desired_primary(values: &impl Entries, subject_target: Option<&str>) -> Option<DesiredContent> {
     use crate::managed::TerminalContent;
     let text = |key| metadata_entry_text(values, key).map(str::to_owned);
     let ready = |target: Option<String>| -> Option<DesiredContent> {
+        let target = target.filter(|s| !s.is_empty())?;
+        if let Some(recipe) = suggested_layout::direct_primary(text) {
+            return Some(DesiredContent::Ready(Resolved { target: Some(target), recipe }));
+        }
         Some(DesiredContent::Ready(
             TerminalContent {
-                target: target.filter(|s| !s.is_empty())?,
+                target,
                 command: text(KEY_MATERIALIZE_RECIPE).filter(|s| !s.is_empty())?,
                 // The same fact materialization launches in, so a workspace opened
                 // from this resolution compares equal to it.
