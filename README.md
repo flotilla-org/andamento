@@ -1,3 +1,5 @@
+> **Archived.** Andamento's core joined [Wheelhouse](https://github.com/flotilla-org/wheelhouse) as **wheelhouse-core** ([wheelhouse#440](https://github.com/flotilla-org/wheelhouse/issues/440), merged in [wheelhouse#454](https://github.com/flotilla-org/wheelhouse/pull/454)), with its history. The crates are `crates/wheelhouse-*` there and its docs are `docs/core/`. The Zellij plugin, rail, controller and config were retired, and live issues moved to Wheelhouse with the `area:core` label. This repository is read-only; file new work on Wheelhouse.
+
 # Andamento
 
 Andamento is an experimental Zellij workflow sidebar. It started as a vertical
